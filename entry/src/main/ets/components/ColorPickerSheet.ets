@@ -1,12 +1,8 @@
 /**
  * ColorPickerSheet.ets v2 — 二维色彩空间 + 灰阶合并面板 + 预设色系
  */
-import { AppConfig, COLOR_PRESETS, ColorPreset, Palette, buildDark, buildLight } from '../common/Theme';
+import { COLOR_PRESETS, ColorPreset, Palette, buildDark, buildLight } from '../common/Theme';
 import { preferences } from '@kit.ArkData';
-import { LengthMetrics } from '@kit.ArkUI';
-import { AppSheetHeader } from './AppSheetHeader';
-import { AppUiMetrics } from '../common/AppUiMetrics';
-import { appUiButtonFill, appUiButtonText } from '../common/AppUiColorPolicy';
 import { CloudStore } from '../services/CloudStore';
 
 @Component
@@ -19,13 +15,10 @@ export struct ColorPickerSheet {
   @State bri: number = 100;
   @State gray: number = 128;
   @State activeTab: number = 0;
-  onColorChange?: (hex: string) => void;
-  onClose: () => void = (): void => {};
-  @Prop availableHeight: number = 620;
-  @State private headerHeight: number = AppUiMetrics.sheetHeaderMinHeight;
-  @State private presetColumns: number = 2;
   private colorPlaneWidth: number = 0;
   private colorPlaneHeight: number = 0;
+  private hueTrackWidth: number = 0;
+  onColorChange?: (hex: string) => void;
 
   aboutToAppear(): void {
     this.selectedHex = this.accentColor;
@@ -154,181 +147,175 @@ export struct ColorPickerSheet {
     }
   }
 
-  private scrollMaxHeight(): number {
-    const available: number = Number.isFinite(this.availableHeight) && this.availableHeight > 0
-      ? this.availableHeight : 620;
-    return Math.max(AppUiMetrics.minTouchTarget, available - this.headerHeight);
-  }
-
-  private presetCardWidth(): string {
-    if (this.presetColumns === 4) { return 'calc(25% - 6vp)'; }
-    return this.presetColumns === 2 ? 'calc(50% - 4vp)' : '100%';
+  private onHueGesture(event: GestureEvent): void {
+    if (!Number.isFinite(this.hueTrackWidth) || this.hueTrackWidth <= 0) { return; }
+    for (let index: number = 0; index < event.fingerList.length; index++) {
+      const finger: FingerInfo | undefined = event.fingerList[index];
+      if (finger !== undefined && finger !== null && Number.isFinite(finger.localX)) {
+        const ratio: number = Math.max(0, Math.min(1, finger.localX / this.hueTrackWidth));
+        this.applyHsvColor(Math.round(ratio * 360), this.sat, this.bri);
+        return;
+      }
+    }
   }
 
   build() {
     Column() {
-      AppSheetHeader({ title: '主题色', subtitle: '选择后立即应用',
-        onClose: (): void => { this.onClose(); } })
-        .onAreaChange((_oldArea: Area, newArea: Area): void => {
-          const width: number = Number(newArea.width);
-          if (Number.isFinite(width) && width > 0) {
-            this.presetColumns = width >= 324 ? 4 : (width >= 164 ? 2 : 1);
-          }
-          const height: number = Number(newArea.height);
-          if (Number.isFinite(height) && height > 0 && Math.abs(height - this.headerHeight) >= 1) {
-            this.headerHeight = height;
-          }
-        })
-      Scroll() {
-        Column({ space: 16 }) {
-          Row({ space: 12 }) {
-            Column().width(AppUiMetrics.minTouchTarget).height(AppUiMetrics.minTouchTarget)
-              .borderRadius(12).backgroundColor(this.selectedHex)
-              .border({ width: 1, color: this.pal().cardBorder })
-              .accessibilityLevel('no')
-            Text(this.selectedHex).fontSize(16).fontFamily('monospace').fontColor(this.pal().text)
-              .layoutWeight(1).accessibilityText('当前主题色 ' + this.selectedHex)
-          }.width('100%')
-          Row({ space: 8 }) {
-            this.tabBtn('预设色系', 0)
-            this.tabBtn('自定义', 1)
-          }.width('100%')
-          if (this.activeTab === 0) {
-            this.presetGrid()
-          } else {
-            this.customPicker()
-          }
-        }.width('100%').padding({ left: AppUiMetrics.sheetPadding, right: AppUiMetrics.sheetPadding,
-          top: 4, bottom: 24 })
-      }.width('100%').constraintSize({ maxHeight: this.scrollMaxHeight() })
-        .scrollBar(BarState.Auto)
-    }.width('100%').backgroundColor(this.pal().sheetBg).borderRadius(20)
+      // 标题 + 预览
+      Row() {
+        Text('主题色').fontSize(19).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
+        Blank()
+        Column()
+          .width(36).height(36).borderRadius(12)
+          .backgroundColor(this.selectedHex)
+          .border({ width: 2, color: this.pal().cardBorder, style: BorderStyle.Solid })
+      }.width('100%').padding({ left: 24, right: 24, top: 20 }).margin({ bottom: 12 })
+
+      // Tab: 预设 / 自定义
+      Row() {
+        this.tabBtn('预设色系', 0)
+        this.tabBtn('自定义', 1)
+      }.width('100%').padding({ left: 24, right: 24 }).margin({ bottom: 14 })
+
+      if (this.activeTab === 0) {
+        this.presetGrid()
+      } else {
+        this.customPicker()
+      }
+      Blank().height(24)
+    }.width('100%')
+    .backgroundColor(this.pal().sheetBg).borderRadius(20)
   }
 
   @Builder tabBtn(label: string, idx: number) {
-    Button({ type: ButtonType.Normal }) {
-      Text(label).fontSize(14).fontFamily(AppConfig.fontFamily)
-        .fontColor(idx === this.activeTab ? appUiButtonText(this.accentColor) : this.pal().text2)
-        .fontWeight(idx === this.activeTab ? FontWeight.Medium : FontWeight.Normal)
-    }.layoutWeight(1).constraintSize({ minHeight: AppUiMetrics.minTouchTarget })
-      .padding({ left: 12, right: 12, top: 10, bottom: 10 }).borderRadius(12)
-      .backgroundColor(idx === this.activeTab ? appUiButtonFill(this.accentColor) : this.pal().surface)
-      .focusable(true).accessibilityText(label).accessibilitySelected(idx === this.activeTab)
+    Text(label).fontSize(14)
+      .fontColor(idx === this.activeTab ? this.pal().text : this.pal().text3)
+      .fontWeight(idx === this.activeTab ? FontWeight.Medium : FontWeight.Normal)
+      .padding({ left: 16, right: 16, top: 8, bottom: 8 })
+      .borderRadius(8)
+      .backgroundColor(idx === this.activeTab ? this.pal().surface : Color.Transparent)
       .onClick(() => { this.activeTab = idx; })
   }
 
   @Builder presetGrid() {
-    Flex({ wrap: FlexWrap.Wrap, alignItems: ItemAlign.Start,
-      space: { main: LengthMetrics.vp(8), cross: LengthMetrics.vp(12) } }) {
+    Grid() {
       ForEach(COLOR_PRESETS, (preset: ColorPreset) => {
-        Button({ type: ButtonType.Normal }) {
-          Column({ space: 6 }) {
-            Stack() {
-              Column().width(48).height(48).borderRadius(14).backgroundColor(preset.hex)
-                .border({ width: this.selectedHex === preset.hex ? 3 : 1,
-                  color: this.selectedHex === preset.hex ? this.pal().text : this.pal().cardBorder })
-              if (this.selectedHex === preset.hex) {
-                SymbolGlyph($r('sys.symbol.checkmark')).fontSize(20)
-                  .fontColor([appUiButtonText(preset.hex)])
-              }
-            }.width('100%').height(48).accessibilityLevel('no')
-            Text(preset.pantone).fontSize(12).fontFamily(AppConfig.fontFamily)
-              .fontColor(this.pal().text2).width('100%').textAlign(TextAlign.Center)
-              .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
-          }.width('100%').padding({ top: 4, bottom: 4 })
-        }.width(this.presetCardWidth()).flexShrink(0).padding(0)
-          .constraintSize({ minHeight: AppUiMetrics.minTouchTarget })
-          .backgroundColor(Color.Transparent).borderRadius(12).focusable(true)
-          .accessibilityText(preset.name + '，' + preset.pantone + '，' + preset.hex)
-          .accessibilitySelected(this.selectedHex === preset.hex)
+        GridItem() {
+          Column() {
+            Column().width(48).height(48).borderRadius(14).backgroundColor(preset.hex)
+              .border({ width: this.selectedHex === preset.hex ? 3 : 0, color: this.pal().text })
+            Text(preset.pantone).fontSize(9).fontColor(this.pal().text3).margin({ top: 4 }).maxLines(1)
+          }.alignItems(HorizontalAlign.Center)
           .onClick(() => { this.selectPreset(preset.hex); })
+        }
       })
-    }.width('100%')
+    }
+    .columnsTemplate('1fr 1fr 1fr 1fr').rowsGap(14).columnsGap(8)
+    .width('100%').padding({ left: 24, right: 24 }).height(260)
   }
 
   @Builder customPicker() {
-    Column({ space: 12 }) {
-      Text('色板').fontSize(12).fontColor(this.pal().text2).fontFamily(AppConfig.fontFamily)
-        .fontWeight(FontWeight.Medium).width('100%')
+    Column() {
+      // ===== 二维色板 (Saturation × Brightness) =====
+      Text('色板').fontSize(12).fontColor(this.pal().text3).fontWeight(FontWeight.Medium).margin({ bottom: 6 }).width('90%')
       Stack() {
-        Column().width('100%').height('100%').borderRadius(12).backgroundColor(this.getHueColor())
-        Column().width('100%').height('100%').borderRadius(12)
-          .linearGradient({ direction: GradientDirection.Right,
-            colors: [['#FFFFFF', 0], ['rgba(255,255,255,0)', 1]] })
-        Column().width('100%').height('100%').borderRadius(12)
-          .linearGradient({ direction: GradientDirection.Bottom,
-            colors: [['rgba(0,0,0,0)', 0], ['#000000', 1]] })
-        Column().width(12).height(12).borderRadius(6).backgroundColor(this.selectedHex)
+        // 背景：纯色 hue
+        Column()
+          .width('100%').height('100%')
+          .borderRadius(12)
+          .backgroundColor(this.getHueColor())
+        // 白→透明 水平渐变 (饱和度)
+        Column()
+          .width('100%').height('100%')
+          .borderRadius(12)
+          .linearGradient({ direction: GradientDirection.Right, colors: [['#FFFFFF', 0], ['rgba(255,255,255,0)', 1]] })
+        // 透明→黑 垂直渐变 (亮度)
+        Column()
+          .width('100%').height('100%')
+          .borderRadius(12)
+          .linearGradient({ direction: GradientDirection.Bottom, colors: [['rgba(0,0,0,0)', 0], ['#000000', 1]] })
+        // 选取指示点
+        Column()
+          .width(12).height(12).borderRadius(6)
+          .backgroundColor(this.selectedHex)
           .border({ width: 2, color: '#FFFFFF', style: BorderStyle.Solid })
           .shadow({ radius: 4, color: 'rgba(0,0,0,0.3)' })
           .position({ x: `${this.sat}%`.toString(), y: `${100 - this.bri}%` })
           .translate({ x: '-50%', y: '-50%' })
-      }.width('100%').height(180).borderRadius(12)
-        .accessibilityLevel('no')
-        .onAreaChange((_oldArea: Area, newArea: Area): void => {
-          const width: number = Number(newArea.width);
-          const height: number = Number(newArea.height);
-          this.colorPlaneWidth = Number.isFinite(width) && width > 0 ? width : 0;
-          this.colorPlaneHeight = Number.isFinite(height) && height > 0 ? height : 0;
-        })
-        .gesture(
-          GestureGroup(GestureMode.Parallel,
-            PanGesture({ direction: PanDirection.All, distance: 5 })
-              .onActionStart((event: GestureEvent) => { this.onColorPlaneGesture(event); })
-              .onActionUpdate((event: GestureEvent) => { this.onColorPlaneGesture(event); }),
-            TapGesture({ count: 1 })
-              .onAction((event: GestureEvent) => { this.onColorPlaneGesture(event); })
-          )
+      }
+      .width('90%').height(180).borderRadius(12)
+      .onAreaChange((_oldArea: Area, newArea: Area): void => {
+        this.colorPlaneWidth = Number(newArea.width);
+        this.colorPlaneHeight = Number(newArea.height);
+      })
+      .gesture(
+        GestureGroup(GestureMode.Parallel,
+          PanGesture({ direction: PanDirection.All, distance: 5 })
+            .onActionStart((event: GestureEvent) => {
+              this.onColorPlaneGesture(event);
+            })
+            .onActionUpdate((event: GestureEvent) => {
+              this.onColorPlaneGesture(event);
+            }),
+          TapGesture({ count: 1 })
+            .onAction((event: GestureEvent) => {
+              this.onColorPlaneGesture(event);
+            })
         )
-      Column() {
-        this.sliderLabel('色相', this.hue.toString() + '°')
-        Stack() {
-          Column().width('100%').height(6).borderRadius(3)
-            .linearGradient({ direction: GradientDirection.Right,
-              colors: [['#FF0000', 0], ['#FFFF00', 0.17], ['#00FF00', 0.33],
-                ['#00FFFF', 0.5], ['#0000FF', 0.67], ['#FF00FF', 0.83], ['#FF0000', 1]] })
-            .accessibilityLevel('no')
-          Slider({ style: SliderStyle.OutSet, value: this.hue, min: 0, max: 360, step: 1 })
-            .width('100%').height(AppUiMetrics.minTouchTarget)
-            .trackColor(Color.Transparent).selectedColor(Color.Transparent).blockColor(this.getHueColor())
-            .showSteps(false).showTips(true, this.hue.toString() + '°')
-            .focusable(true).accessibilityText('色相')
-            .onChange((value: number): void => { this.applyHsvColor(value, this.sat, this.bri); })
-        }.width('100%').height(AppUiMetrics.minTouchTarget)
-      }.width('100%')
-      Column() {
-        this.sliderLabel('饱和度', this.sat.toString() + '%')
-        Slider({ style: SliderStyle.OutSet, value: this.sat, min: 0, max: 100, step: 1 })
-          .width('100%').height(AppUiMetrics.minTouchTarget).selectedColor(this.getHueColor())
-          .showSteps(false).showTips(true, this.sat.toString() + '%')
-          .focusable(true).accessibilityText('饱和度')
-          .onChange((value: number): void => { this.applyHsvColor(this.hue, value, this.bri); })
-      }.width('100%')
-      Column() {
-        this.sliderLabel('亮度', this.bri.toString() + '%')
-        Slider({ style: SliderStyle.OutSet, value: this.bri, min: 0, max: 100, step: 1 })
-          .width('100%').height(AppUiMetrics.minTouchTarget).selectedColor(this.getHueColor())
-          .showSteps(false).showTips(true, this.bri.toString() + '%')
-          .focusable(true).accessibilityText('亮度')
-          .onChange((value: number): void => { this.applyHsvColor(this.hue, this.sat, value); })
-      }.width('100%')
-      Column() {
-        this.sliderLabel('灰阶', this.gray.toString())
-        Slider({ style: SliderStyle.OutSet, value: this.gray, min: 0, max: 255, step: 1 })
-          .width('100%').height(AppUiMetrics.minTouchTarget).trackColor(this.pal().surface)
-          .selectedColor(appUiButtonFill(this.selectedHex))
-          .showSteps(false).showTips(true, this.gray.toString())
-          .focusable(true).accessibilityText('灰阶')
-          .onChange((value: number) => { this.gray = value; this.applyGray(); })
-      }.width('100%')
-    }.width('100%')
-  }
+      )
+      .margin({ bottom: 16 })
 
-  @Builder sliderLabel(label: string, value: string) {
-    Flex({ wrap: FlexWrap.Wrap, alignItems: ItemAlign.Center,
-      space: { main: LengthMetrics.vp(8), cross: LengthMetrics.vp(4) } }) {
-      Text(label).fontSize(14).fontFamily(AppConfig.fontFamily).fontColor(this.pal().text)
-      Text(value).fontSize(12).fontFamily(AppConfig.fontFamily).fontColor(this.pal().text2)
+      // ===== 色相滑块 (彩虹条) =====
+      Row() {
+        Text('色相').fontSize(12).fontColor(this.pal().text3).width(36)
+        Column()
+          .layoutWeight(1).height(28).borderRadius(14)
+          .linearGradient({
+            direction: GradientDirection.Right,
+            colors: [
+              ['#FF0000',0], ['#FFFF00',0.17], ['#00FF00',0.33],
+              ['#00FFFF',0.5], ['#0000FF',0.67], ['#FF00FF',0.83], ['#FF0000',1]
+            ]
+          })
+          .margin({ left: 8, right: 8 })
+          .onAreaChange((_oldArea: Area, newArea: Area): void => {
+            this.hueTrackWidth = Number(newArea.width);
+          })
+          .gesture(
+            GestureGroup(GestureMode.Parallel,
+              PanGesture({ direction: PanDirection.Horizontal, distance: 5 })
+                .onActionStart((event: GestureEvent) => {
+                  this.onHueGesture(event);
+                })
+                .onActionUpdate((event: GestureEvent) => {
+                  this.onHueGesture(event);
+                }),
+              TapGesture({ count: 1 })
+                .onAction((event: GestureEvent) => {
+                  this.onHueGesture(event);
+                })
+            )
+          )
+      }.width('90%').height(36).margin({ bottom: 14 })
+
+      // ===== 灰阶滑块 (不重置 RGB) =====
+      Row() {
+        Text('灰阶').fontSize(12).fontColor(this.pal().text3).width(36)
+        Slider({ style: SliderStyle.OutSet, value: this.gray, min: 0, max: 255, step: 1 })
+          .layoutWeight(1).margin({ left: 8, right: 8 })
+          .trackColor('#E0E0E0')
+          .selectedColor(this.selectedHex)
+          .showSteps(false)
+          .onChange((value: number) => { this.gray = value; this.applyGray(); })
+      }.width('90%').height(36).margin({ bottom: 14 })
+
+      // 色值显示
+      Row() {
+        Text(this.selectedHex).fontSize(16).fontFamily('monospace').fontColor(this.pal().text)
+        Blank()
+        Text(`H:${this.hue}° S:${this.sat}% B:${this.bri}%`)
+          .fontSize(11).fontColor(this.pal().text3)
+      }.width('90%').margin({ top: 4 })
     }.width('100%')
   }
 }

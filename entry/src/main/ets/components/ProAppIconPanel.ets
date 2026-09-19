@@ -1,6 +1,4 @@
-import { AppConfig, Palette, buildDark, buildLight } from '../common/Theme';
-import { AppUiMetrics } from '../common/AppUiMetrics';
-import { LengthMetrics } from '@kit.ArkUI';
+import { Palette, buildDark, buildLight } from '../common/Theme';
 import { ProAppRuntime } from '../services/pro/ProAppRuntime';
 import { ProAppIcons } from '../services/pro/ProAppIcons';
 import { ProAppIconSnapshot } from '../services/pro/ProAppIconController';
@@ -48,14 +46,13 @@ export struct ProAppIconPanel {
     Button({ type: ButtonType.Normal }) {
       Column({ space: 8 }) {
         Image(icon).width(64).height(64).objectFit(ImageFit.Contain).borderRadius(14)
-        Text(label).fontFamily(AppConfig.fontFamily).fontSize(13).fontColor(this.pal().text).textAlign(TextAlign.Center).width('100%')
+        Text(label).fontSize(13).fontColor(this.pal().text).maxLines(2)
         if (this.state.loaded && this.state.currentName === name) {
-          Text('使用中').fontFamily(AppConfig.fontFamily).fontSize(11).fontColor(this.accent)
+          Text('使用中').fontSize(11).fontColor(this.accent)
         }
       }.width('100%').padding({ top: 12, bottom: 12, left: 4, right: 4 })
     }
-    .width('100%').constraintSize({ maxWidth: 120, minHeight: AppUiMetrics.minTouchTarget }).flexShrink(0)
-    .borderRadius(16).backgroundColor(this.pal().surface).focusable(true)
+    .layoutWeight(1).borderRadius(16).backgroundColor(this.pal().surface)
     .border({ width: this.state.loaded && this.state.currentName === name ? 1.5 : 0.5,
       color: this.state.loaded && this.state.currentName === name ? this.accent : this.pal().cardBorder })
     .enabled(!this.state.busy).accessibilityText(label +
@@ -64,40 +61,33 @@ export struct ProAppIconPanel {
   }
   @Builder private presets() {
     Column({ space: 10 }) {
-      Text(this.proLabel).fontFamily(AppConfig.fontFamily).fontSize(12).fontColor(this.accent).width('100%')
-      Flex({ wrap: FlexWrap.Wrap, space: { main: LengthMetrics.vp(8), cross: LengthMetrics.vp(8) } }) {
+      Text(this.proLabel).fontSize(12).fontColor(this.accent).width('100%')
+      Row({ space: 8 }) {
         this.option('', '默认', $r('app.media.layered_image'))
         this.option('rd_white', '白底版', $r('app.media.rd_logo_white'))
         this.option('rd_transparent', '透明底版', $r('app.media.rd_logo_transparent'))
-      }.width('100%')
+      }.width('100%').alignItems(VerticalAlign.Top)
     }.width('100%')
   }
   build() {
     if (this.state.supported) {
       Column({ space: 12 }) {
-        Text('应用图标').fontFamily(AppConfig.fontFamily).fontSize(16).fontWeight(FontWeight.Medium).fontColor(this.pal().text).width('100%')
-        Text('当前：' + this.name()).fontFamily(AppConfig.fontFamily).fontSize(13).fontColor(this.pal().text2).width('100%')
+        Text('应用图标').fontSize(16).fontWeight(FontWeight.Medium).fontColor(this.pal().text).width('100%')
+        Text('当前：' + this.name()).fontSize(13).fontColor(this.pal().text2).width('100%')
         ProFeatureGate({ featureId: 'pro.personalization.appIcon', content: this.presets })
         if (!this.state.loaded || this.state.currentName !== '') {
-          Button({ type: ButtonType.Normal }) {
-            Text('恢复默认图标').fontFamily(AppConfig.fontFamily).fontSize(13).fontColor(this.pal().text).textAlign(TextAlign.Center).width('100%')
-          }.width('100%').constraintSize({ minHeight: AppUiMetrics.minTouchTarget })
-            .padding(12).borderRadius(12).backgroundColor(this.pal().surface).focusable(true)
-            .enabled(!this.state.busy)
+          Button('恢复默认图标').fontSize(13).fontColor(this.accent).backgroundColor(this.pal().surface)
+            .constraintSize({ minHeight: 44 }).enabled(!this.state.busy)
             .onClick((): void => { this.select(''); })
         }
         if (!this.state.loaded) {
-          Button({ type: ButtonType.Normal }) {
-            Text('重新读取图标状态').fontFamily(AppConfig.fontFamily).fontSize(13).fontColor(this.pal().text).textAlign(TextAlign.Center).width('100%')
-          }.width('100%').constraintSize({ minHeight: AppUiMetrics.minTouchTarget })
-            .padding(12).borderRadius(12).backgroundColor(this.pal().surface).focusable(true)
-            .enabled(!this.state.busy)
+          Button('重新读取图标状态').fontSize(13).constraintSize({ minHeight: 44 }).enabled(!this.state.busy)
             .onClick((): void => { ProAppIcons.getInstance().refresh(); })
         }
         if (this.state.busy) {
-          Text('正在应用…').fontFamily(AppConfig.fontFamily).fontSize(12).fontColor(this.pal().text2)
+          Text('正在应用…').fontSize(12).fontColor(this.pal().text2)
         } else if (this.state.message.length > 0) {
-          Text(this.state.message).fontFamily(AppConfig.fontFamily).fontSize(12).fontColor(this.pal().text2).width('100%')
+          Text(this.state.message).fontSize(12).fontColor(this.pal().text2).width('100%')
         }
       }.width('100%').padding(16).backgroundColor(this.pal().card).borderRadius(20)
     }

@@ -1,9 +1,5 @@
 import { common } from '@kit.AbilityKit';
 import { promptAction } from '@kit.ArkUI';
-import { AppSheetHeader } from './AppSheetHeader';
-import { AppSettingsSwitchRow } from './AppSettingsSwitchRow';
-import { AppUiMetrics } from '../common/AppUiMetrics';
-import { appUiButtonFill, appUiButtonText } from '../common/AppUiColorPolicy';
 import {
   RemoteCustomShortcut,
   RemoteCustomShortcutKeyGroup,
@@ -369,8 +365,14 @@ export struct VirtualKeyboardSettingsSheet {
   @Builder
   private switchRow(title: string, subtitle: string, enabled: boolean,
     onChange: (enabled: boolean) => void) {
-    AppSettingsSwitchRow({ title, detail: subtitle, isOn: enabled, onChange })
-      .width('100%')
+    Row() {
+      Column({ space: 3 }) {
+        Text(title).fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.text())
+        Text(subtitle).fontSize(10).fontColor(this.text2()).maxLines(2)
+      }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+      Toggle({ type: ToggleType.Switch, isOn: enabled })
+        .selectedColor(this.accentColor).onChange(onChange)
+    }.width('100%').padding(this.contentLayout().cardPadding)
       .borderRadius(16).backgroundColor(this.card())
       .border({ width: 0.5, color: this.cardStroke() })
   }
@@ -396,12 +398,12 @@ export struct VirtualKeyboardSettingsSheet {
     Button() {
       Column({ space: 2 }) {
         Text(label).fontSize(13).fontWeight(FontWeight.Bold)
-          .fontColor(this.platform() === platform ? appUiButtonText(this.accentColor) : this.text())
+          .fontColor(this.platform() === platform ? '#FFFFFF' : this.text())
         Text(subtitle).fontSize(9)
-          .fontColor(this.platform() === platform ? appUiButtonText(this.accentColor) : this.text2())
+          .fontColor(this.platform() === platform ? 'rgba(255,255,255,0.78)' : this.text2())
       }
-    }.layoutWeight(1).constraintSize({ minHeight: 58 }).borderRadius(12)
-      .backgroundColor(this.platform() === platform ? appUiButtonFill(this.accentColor) : this.card())
+    }.layoutWeight(1).height(58).borderRadius(12)
+      .backgroundColor(this.platform() === platform ? this.accentColor : this.card())
       .border({ width: 1, color: this.platform() === platform ? this.accentColor : this.cardStroke() })
       .onClick((): void => { this.selectPlatform(platform); })
   }
@@ -411,14 +413,14 @@ export struct VirtualKeyboardSettingsSheet {
     Button() {
       Row({ space: 6 }) {
         Text(label).fontSize(11).fontWeight(FontWeight.Medium)
-          .fontColor(this.platform() === platform ? appUiButtonText(this.accentColor) : this.text2())
+          .fontColor(this.platform() === platform ? '#FFFFFF' : this.text2())
         if (this.platform() === platform) {
-          SymbolGlyph($r('sys.symbol.checkmark')).fontSize(12).fontColor([appUiButtonText(this.accentColor)])
+          SymbolGlyph($r('sys.symbol.checkmark')).fontSize(12).fontColor(['#FFFFFF'])
         }
       }.justifyContent(FlexAlign.Center)
     }
-    .layoutWeight(1).constraintSize({ minHeight: AppUiMetrics.minTouchTarget }).borderRadius(10)
-    .backgroundColor(this.platform() === platform ? appUiButtonFill(this.accentColor) : this.card())
+    .layoutWeight(1).height(38).borderRadius(10)
+    .backgroundColor(this.platform() === platform ? this.accentColor : this.card())
     .border({ width: 1, color: this.platform() === platform ? this.accentColor : this.cardStroke() })
     .onClick((): void => { this.selectPlatform(platform); })
     .accessibilityText('切换到' + label + '组合键')
@@ -426,25 +428,23 @@ export struct VirtualKeyboardSettingsSheet {
 
   @Builder
   private inputMethodRow(method: RemoteSystemInputMethodInfo) {
-    Button({ type: ButtonType.Normal }) {
-      Row() {
-        Column({ space: 3 }) {
-          Row({ space: 6 }) {
-            Text(method.label).fontSize(12).fontWeight(FontWeight.Medium).fontColor(this.text())
-            if (method.current) {
-              Text('当前').fontSize(8).fontColor(appUiButtonText(this.accentColor))
-                .padding({ left: 6, right: 6, top: 2, bottom: 2 })
-                .borderRadius(5).backgroundColor(appUiButtonFill(this.accentColor))
-            }
-            if (!method.enabled) {
-              Text('未启用').fontSize(8).fontColor(this.text2())
-            }
+    Row() {
+      Column({ space: 3 }) {
+        Row({ space: 6 }) {
+          Text(method.label).fontSize(12).fontWeight(FontWeight.Medium).fontColor(this.text())
+          if (method.current) {
+            Text('当前').fontSize(8).fontColor('#FFFFFF')
+              .padding({ left: 6, right: 6, top: 2, bottom: 2 })
+              .borderRadius(5).backgroundColor(this.accentColor)
           }
-          Text(method.subtypeSummary.length > 0 ? method.subtypeSummary : method.bundleName)
-            .fontSize(9).fontColor(this.text2()).maxLines(2)
-        }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-        SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(14).fontColor([this.text2()])
-      }.width('100%').constraintSize({ minHeight: AppUiMetrics.minTouchTarget })
+          if (!method.enabled) {
+            Text('未启用').fontSize(8).fontColor(this.text2())
+          }
+        }
+        Text(method.subtypeSummary.length > 0 ? method.subtypeSummary : method.bundleName)
+          .fontSize(9).fontColor(this.text2()).maxLines(2)
+      }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+      SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(14).fontColor([this.text2()])
     }
     .width('100%').padding(this.contentLayout().cardPadding)
     .borderRadius(14).backgroundColor(this.card())
@@ -455,19 +455,18 @@ export struct VirtualKeyboardSettingsSheet {
 
   @Builder
   private modifierChoice(label: string, keyCode: number) {
-    Button(label).constraintSize({ minHeight: AppUiMetrics.minTouchTarget }).layoutWeight(1).fontSize(12)
-      .padding({ left: 6, right: 6 }).borderRadius(8)
-      .fontColor(this.modifierActive(keyCode) ? appUiButtonText(this.accentColor) : this.text2())
-      .backgroundColor(this.modifierActive(keyCode) ? appUiButtonFill(this.accentColor) : this.card())
+    Button(label).height(34).layoutWeight(1).fontSize(10).borderRadius(8)
+      .fontColor(this.modifierActive(keyCode) ? '#FFFFFF' : this.text2())
+      .backgroundColor(this.modifierActive(keyCode) ? this.accentColor : this.card())
       .onClick((): void => { this.toggleModifier(keyCode); })
   }
 
   @Builder
   private groupChoice(group: RemoteCustomShortcutKeyGroup) {
-    Button(this.groupLabel(group)).constraintSize({ minHeight: AppUiMetrics.minTouchTarget })
-      .layoutWeight(1).fontSize(12).padding({ left: 6, right: 6 }).borderRadius(8)
-      .fontColor(this.actionGroup === group ? appUiButtonText(this.accentColor) : this.text2())
-      .backgroundColor(this.actionGroup === group ? appUiButtonFill(this.accentColor) : this.card())
+    Text(this.groupLabel(group)).height(30).layoutWeight(1).fontSize(9)
+      .textAlign(TextAlign.Center).borderRadius(8)
+      .fontColor(this.actionGroup === group ? '#FFFFFF' : this.text2())
+      .backgroundColor(this.actionGroup === group ? this.accentColor : this.card())
       .onClick((): void => {
         this.actionGroup = group;
         const options: Array<RemoteCustomShortcutKeyOption> =
@@ -478,12 +477,11 @@ export struct VirtualKeyboardSettingsSheet {
 
   @Builder
   private actionChoice(option: RemoteCustomShortcutKeyOption) {
-    Button(option.label).constraintSize({ minHeight: Math.max(this.customEditorLayout().itemHeight, AppUiMetrics.minTouchTarget) })
-      .width('100%')
-      .fontSize(12).padding({ left: 6, right: 6 })
+    Text(option.label).height(this.customEditorLayout().itemHeight).width('100%')
+      .fontSize(9).textAlign(TextAlign.Center)
       .borderRadius(7)
-      .fontColor(this.actionKeyCode === option.keyCode ? appUiButtonText(this.accentColor) : this.text2())
-      .backgroundColor(this.actionKeyCode === option.keyCode ? appUiButtonFill(this.accentColor) : this.card())
+      .fontColor(this.actionKeyCode === option.keyCode ? '#FFFFFF' : this.text2())
+      .backgroundColor(this.actionKeyCode === option.keyCode ? this.accentColor : this.card())
       .onClick((): void => { this.actionKeyCode = option.keyCode; })
   }
 
@@ -494,7 +492,7 @@ export struct VirtualKeyboardSettingsSheet {
         Column() { this.actionChoice(option) }.layoutWeight(1)
       }, (option: RemoteCustomShortcutKeyOption): string => option.keyCode.toString())
       ForEach(this.customActionEmptyCells(options.length), (index: number): void => {
-        Blank().height(Math.max(this.customEditorLayout().itemHeight, AppUiMetrics.minTouchTarget)).layoutWeight(1)
+        Blank().height(this.customEditorLayout().itemHeight).layoutWeight(1)
       }, (index: number): string => index.toString())
     }.width('100%')
   }
@@ -505,7 +503,7 @@ export struct VirtualKeyboardSettingsSheet {
       Row() {
         Text(this.editingId.length > 0 ? '编辑组合键' : '新建组合键')
           .fontSize(13).fontWeight(FontWeight.Bold).fontColor(this.text()).layoutWeight(1)
-        Button('取消').constraintSize({ minHeight: AppUiMetrics.minTouchTarget }).fontSize(10).backgroundColor(Color.Transparent)
+        Button('取消').height(32).fontSize(10).backgroundColor(Color.Transparent)
           .fontColor(this.text2()).onClick((): void => { this.closeEditor(); })
       }.width('100%')
       if (this.contentLayout().stackPrimaryActions) {
@@ -536,8 +534,6 @@ export struct VirtualKeyboardSettingsSheet {
         this.groupChoice('letters')
         this.groupChoice('digits')
         this.groupChoice('symbols')
-      }.width('100%')
-      Row({ space: 4 }) {
         this.groupChoice('functions')
         this.groupChoice('directions')
         this.groupChoice('navigation')
@@ -551,9 +547,9 @@ export struct VirtualKeyboardSettingsSheet {
         Text(this.draftLabel().length > 0 ? this.draftLabel() : '请选择修饰键和主键')
           .fontSize(11).fontColor(this.draftLabel().length > 0 ? this.text() : this.danger())
           .layoutWeight(1).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-        Button('保存').constraintSize({ minHeight: AppUiMetrics.minTouchTarget }).fontSize(11).borderRadius(9)
-          .backgroundColor(this.draftLabel().length > 0 ? appUiButtonFill(this.accentColor) : this.card())
-          .fontColor(this.draftLabel().length > 0 ? appUiButtonText(this.accentColor) : this.text2())
+        Button('保存').height(34).fontSize(11).borderRadius(9)
+          .backgroundColor(this.draftLabel().length > 0 ? this.accentColor : this.card())
+          .fontColor(this.draftLabel().length > 0 ? '#FFFFFF' : this.text2())
           .enabled(this.draftLabel().length > 0)
           .onClick((): void => { this.saveCustomShortcut(); })
       }.width('100%')
@@ -568,8 +564,8 @@ export struct VirtualKeyboardSettingsSheet {
       Row() {
         Text(this.customShortcuts.length.toString() + ' / 32')
           .fontSize(10).fontColor(this.text2()).layoutWeight(1)
-        Button('＋ 新建').constraintSize({ minHeight: AppUiMetrics.minTouchTarget }).fontSize(11).borderRadius(9)
-          .backgroundColor(appUiButtonFill(this.accentColor)).fontColor(appUiButtonText(this.accentColor))
+        Button('＋ 新建').height(34).fontSize(11).borderRadius(9)
+          .backgroundColor(this.accentColor).fontColor('#FFFFFF')
           .onClick((): void => { this.beginEditor(); })
       }.width('100%')
       if (this.visibleCustomShortcuts().length === 0) {
@@ -582,9 +578,9 @@ export struct VirtualKeyboardSettingsSheet {
           Row() {
             Text(remoteCustomShortcutLabelForPlatform(shortcut.keyCodes, this.platform()))
               .fontSize(12).fontColor(this.text()).layoutWeight(1)
-            Button('编辑').constraintSize({ minHeight: AppUiMetrics.minTouchTarget }).fontSize(10).backgroundColor(Color.Transparent)
+            Button('编辑').height(32).fontSize(10).backgroundColor(Color.Transparent)
               .fontColor(this.accentColor).onClick((): void => { this.beginEditor(shortcut); })
-            Button('删除').constraintSize({ minHeight: AppUiMetrics.minTouchTarget }).fontSize(10).backgroundColor(Color.Transparent)
+            Button('删除').height(32).fontSize(10).backgroundColor(Color.Transparent)
               .fontColor(this.danger()).onClick((): void => { this.deleteCustomShortcut(shortcut.id); })
           }.width('100%').padding({ left: 14, right: 6, top: 6, bottom: 6 })
             .backgroundColor(this.card()).border({ width: 0.5, color: this.cardStroke() })
@@ -636,15 +632,15 @@ export struct VirtualKeyboardSettingsSheet {
   @Builder
   private refreshInputMethodsButton() {
     Button(this.systemLoading ? '正在刷新…' : '刷新状态')
-      .width('100%').constraintSize({ minHeight: AppUiMetrics.minTouchTarget }).fontSize(11).borderRadius(12)
+      .width('100%').height(42).fontSize(11).borderRadius(12)
       .backgroundColor(this.card()).fontColor(this.text())
       .enabled(!this.systemLoading).onClick((): void => { this.refreshSystemInputMethods(); })
   }
 
   @Builder
   private openSystemInputMethodSettingsButton() {
-    Button('系统输入法设置').width('100%').constraintSize({ minHeight: AppUiMetrics.minTouchTarget }).fontSize(11)
-      .borderRadius(12).backgroundColor(appUiButtonFill(this.accentColor)).fontColor(appUiButtonText(this.accentColor))
+    Button('系统输入法设置').width('100%').height(42).fontSize(11)
+      .borderRadius(12).backgroundColor(this.accentColor).fontColor('#FFFFFF')
       .onClick((): void => { this.openSystemSettings(); })
   }
 
@@ -762,21 +758,36 @@ export struct VirtualKeyboardSettingsSheet {
     deviceClass: HarmonyShortcutDeviceClass,
     protocol: HarmonyShortcutProtocol
   ) {
-    AppSettingsSwitchRow({ icon: protocolIcon(protocol), title: this.harmonyShortcutProtocolLabel(protocol),
-      detail: this.harmonyShortcutProtocolStatus(deviceClass, protocol),
-      isOn: harmonyShortcutBlockingEnabled(this.harmonyShortcutBlocking, deviceClass, protocol),
-      accessibilityLabel: this.harmonyShortcutDeviceLabel(deviceClass) + ' ' +
-        this.harmonyShortcutProtocolLabel(protocol) + ' 屏蔽本机快捷键并发送远端',
-      onChange: (enabled: boolean): void => { this.setHarmonyShortcutBlocking(deviceClass, protocol, enabled); } })
+    Row() {
+      SymbolGlyph(protocolIcon(protocol)).fontSize(18).fontColor([this.text2()])
+        .margin({ right: 10 })
+      Column({ space: 2 }) {
+        Text(this.harmonyShortcutProtocolLabel(protocol))
+          .fontSize(12).fontWeight(FontWeight.Medium).fontColor(this.text())
+        Text(this.harmonyShortcutProtocolStatus(deviceClass, protocol))
+          .fontSize(9).fontColor(this.text2())
+      }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+      Toggle({
+        type: ToggleType.Switch,
+        isOn: harmonyShortcutBlockingEnabled(
+          this.harmonyShortcutBlocking, deviceClass, protocol)
+      }).selectedColor(this.accentColor).scale({ x: 0.86, y: 0.86 })
+        .onChange((enabled: boolean): void => {
+          this.setHarmonyShortcutBlocking(deviceClass, protocol, enabled);
+        })
+        .accessibilityText(this.harmonyShortcutDeviceLabel(deviceClass) + ' ' +
+          this.harmonyShortcutProtocolLabel(protocol) + '，' +
+          this.harmonyShortcutProtocolStatus(deviceClass, protocol))
+    }.width('100%').padding({ left: 13, right: 10, top: 9, bottom: 9 })
   }
 
   @Builder
   private harmonyShortcutDeviceChoice(deviceClass: HarmonyShortcutDeviceClass) {
     Button(this.harmonyShortcutDeviceLabel(deviceClass))
-      .layoutWeight(1).constraintSize({ minHeight: AppUiMetrics.minTouchTarget }).fontSize(11).fontWeight(FontWeight.Medium)
-      .fontColor(this.selectedHarmonyShortcutDevice === deviceClass ? appUiButtonText(this.accentColor) : this.text2())
+      .layoutWeight(1).height(40).fontSize(11).fontWeight(FontWeight.Medium)
+      .fontColor(this.selectedHarmonyShortcutDevice === deviceClass ? '#FFFFFF' : this.text2())
       .backgroundColor(this.selectedHarmonyShortcutDevice === deviceClass ?
-        appUiButtonFill(this.accentColor) : this.card())
+        this.accentColor : this.card())
       .borderRadius(10)
       .border({
         width: 1,
@@ -843,9 +854,27 @@ export struct VirtualKeyboardSettingsSheet {
   build() {
     Column() {
       Row() {
-        AppSheetHeader({ title: this.pageTitle(), subtitle: this.pageSubtitle(),
-          horizontalPadding: this.contentLayout().headerHorizontalPadding, onClose: this.onClose })
-          .constraintSize({ maxWidth: this.contentLayout().maxContentWidth })
+        Row() {
+          Column({ space: 3 }) {
+            Text('键盘设置').fontSize(10).fontWeight(FontWeight.Medium)
+              .fontColor(this.accentColor)
+            Text(this.pageTitle()).fontSize(this.contentLayout().titleFontSize)
+              .fontWeight(FontWeight.Bold).fontColor(this.text()).maxLines(1)
+              .textOverflow({ overflow: TextOverflow.Ellipsis })
+            Text(this.pageSubtitle()).fontSize(10).fontColor(this.text2()).maxLines(2)
+          }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+          Button() {
+            SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor([this.text()])
+          }.width(42).height(42).padding(0).borderRadius(14).backgroundColor(this.card())
+            .border({ width: 0.5, color: this.cardStroke() })
+            .onClick((): void => { this.onClose(); }).accessibilityText('关闭键盘设置')
+        }.width('100%').constraintSize({ maxWidth: this.contentLayout().maxContentWidth })
+          .padding({
+            left: this.contentLayout().headerHorizontalPadding,
+            right: this.contentLayout().headerHorizontalPadding,
+            top: this.contentLayout().headerTopPadding,
+            bottom: this.contentLayout().headerBottomPadding
+          })
       }.width('100%').justifyContent(FlexAlign.Center)
 
       Scroll() {

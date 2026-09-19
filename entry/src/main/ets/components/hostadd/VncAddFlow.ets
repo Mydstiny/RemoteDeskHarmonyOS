@@ -1,5 +1,3 @@
-import { AppUiMetrics } from '../../common/AppUiMetrics';
-import { appUiButtonFill, appUiButtonText } from '../../common/AppUiColorPolicy';
 /**
  * VNC host wizard shared by the modern and classic host FAB paths.
  *
@@ -9,7 +7,7 @@ import { appUiButtonFill, appUiButtonText } from '../../common/AppUiColorPolicy'
  * password authentication.
  */
 import { promptAction } from '@kit.ArkUI';
-import { AppConfig, Palette, buildDark, buildLight } from '../../common/Theme';
+import { Palette, buildDark, buildLight } from '../../common/Theme';
 import { DataCrypto } from '../../services/DataCrypto';
 import {
   VncHostValues,
@@ -474,36 +472,26 @@ export struct VncAddFlow {
   }
 
   @Builder private transportButton(title: string, subtitle: string, value: VncTransport) {
-    Button({ type: ButtonType.Normal }) {
-      Column() {
-        SymbolGlyph(protocolIcon(value === 'direct_tcp' ? 'vnc' : 'vnc_gateway')).fontSize(22)
-          .fontColor([this.transport === value ? appUiButtonText(this.accentColor) : this.pal().text2])
-        Text(title).fontFamily(AppConfig.fontFamily).fontSize(14).fontWeight(FontWeight.Medium)
-          .fontColor(this.transport === value ? appUiButtonText(this.accentColor) : this.pal().text).margin({ top: 6 })
-        Text(subtitle).fontFamily(AppConfig.fontFamily).fontSize(10)
-          .fontColor(this.transport === value ? appUiButtonText(this.accentColor) : this.pal().text3)
-          .margin({ top: 3 })
-      }.alignItems(HorizontalAlign.Start).width('100%')
-    }.layoutWeight(1).constraintSize({ minHeight: AppUiMetrics.minTouchTarget })
-      .padding(12).borderRadius(12).focusable(true)
-      .accessibilityText(title + '，' + subtitle).accessibilitySelected(this.transport === value)
-      .backgroundColor(this.transport === value ? appUiButtonFill(this.accentColor) : this.pal().surface)
+    Column() {
+      SymbolGlyph(protocolIcon(value === 'direct_tcp' ? 'vnc' : 'vnc_gateway')).fontSize(22)
+        .fontColor([this.transport === value ? Color.White : this.pal().text2])
+      Text(title).fontSize(14).fontWeight(FontWeight.Medium)
+        .fontColor(this.transport === value ? Color.White : this.pal().text).margin({ top: 6 })
+      Text(subtitle).fontSize(10)
+        .fontColor(this.transport === value ? '#DDEEFF' : this.pal().text3)
+        .margin({ top: 3 })
+    }.alignItems(HorizontalAlign.Start).layoutWeight(1).padding(12).borderRadius(12)
+      .backgroundColor(this.transport === value ? this.accentColor : this.pal().surface)
       .onClick((): void => { this.selectTransport(value); })
   }
 
-
   @Builder private securityButton(title: string, value: VncSecurityPolicy, danger: boolean = false,
     marginLeft: number = 0) {
-    Button({ type: ButtonType.Normal }) {
-      Text(title).fontSize(11).fontFamily(AppConfig.fontFamily)
-        .fontColor(this.securityPolicy === value ?
-          appUiButtonText(danger ? this.pal().danger : this.accentColor) : this.pal().text2).textAlign(TextAlign.Center)
-    }.layoutWeight(1).constraintSize({ minHeight: AppUiMetrics.minTouchTarget })
-      .padding({ left: 12, right: 12, top: 10, bottom: 10 }).focusable(true).borderRadius(9)
+    Button(title).layoutWeight(1).height(36).borderRadius(9)
       .backgroundColor(this.securityPolicy === value
-        ? (danger ? this.pal().danger : appUiButtonFill(this.accentColor)) : this.pal().surface)
-      .accessibilitySelected(this.securityPolicy === value)
-      .margin({ left: marginLeft })
+        ? (danger ? this.pal().danger : this.accentColor) : this.pal().surface)
+      .fontColor(this.securityPolicy === value ? Color.White : this.pal().text2)
+      .fontSize(11).margin({ left: marginLeft })
       .onClick((): void => { this.securityPolicy = value; this.errorText = ''; })
   }
 
@@ -512,12 +500,8 @@ export struct VncAddFlow {
       Column() {
         Text('还没有 VNC Gateway。请先在第三页中继服务器添加。')
           .fontSize(12).fontColor(this.pal().danger).lineHeight(17)
-        Button({ type: ButtonType.Normal }) {
-          Text('去添加 VNC Gateway').fontSize(14).fontFamily(AppConfig.fontFamily)
-            .fontColor(this.accentColor).textAlign(TextAlign.Center)
-        }.width('100%').constraintSize({ minHeight: AppUiMetrics.minTouchTarget })
-          .padding({ left: 12, right: 12, top: 10, bottom: 10 }).focusable(true).borderRadius(10).margin({ top: 8 })
-          .backgroundColor(this.pal().surface)
+        Button('去添加 VNC Gateway').width('100%').height(40).borderRadius(10).margin({ top: 8 })
+          .backgroundColor(this.pal().surface).fontColor(this.accentColor)
           .onClick((): void => { this.onOpenSettings(); })
       }.width('100%').padding({ bottom: 10 })
     } else {
@@ -641,33 +625,21 @@ export struct VncAddFlow {
       if (this.displayOverrideEnabled) {
         Text('缩放模式').fontSize(12).fontColor(this.pal().text2).margin({ bottom: 7 })
         Row() {
-          Button({ type: ButtonType.Normal }) {
-            Text('适应').fontSize(14).fontFamily(AppConfig.fontFamily)
-              .fontColor(this.scalingMode === 'fit' ? appUiButtonText(this.accentColor) : this.pal().text2).textAlign(TextAlign.Center)
-          }.layoutWeight(1).constraintSize({ minHeight: AppUiMetrics.minTouchTarget })
-            .padding({ left: 12, right: 12, top: 10, bottom: 10 }).focusable(true).borderRadius(9)
-            .backgroundColor(this.scalingMode === 'fit' ? appUiButtonFill(this.accentColor) : this.pal().surface).accessibilitySelected(this.scalingMode === 'fit')
+          Button('适应').layoutWeight(1).height(36).borderRadius(9)
+            .backgroundColor(this.scalingMode === 'fit' ? this.accentColor : this.pal().surface)
+            .fontColor(this.scalingMode === 'fit' ? Color.White : this.pal().text2)
             .onClick((): void => { this.scalingMode = 'fit'; })
-          Button({ type: ButtonType.Normal }) {
-            Text('整数').fontSize(14).fontFamily(AppConfig.fontFamily)
-              .fontColor(this.scalingMode === 'integer' ? appUiButtonText(this.accentColor) : this.pal().text2).textAlign(TextAlign.Center)
-          }.layoutWeight(1).constraintSize({ minHeight: AppUiMetrics.minTouchTarget })
-            .padding({ left: 12, right: 12, top: 10, bottom: 10 }).focusable(true).borderRadius(9).margin({ left: 6 })
-            .backgroundColor(this.scalingMode === 'integer' ? appUiButtonFill(this.accentColor) : this.pal().surface).accessibilitySelected(this.scalingMode === 'integer')
+          Button('整数').layoutWeight(1).height(36).borderRadius(9).margin({ left: 6 })
+            .backgroundColor(this.scalingMode === 'integer' ? this.accentColor : this.pal().surface)
+            .fontColor(this.scalingMode === 'integer' ? Color.White : this.pal().text2)
             .onClick((): void => { this.scalingMode = 'integer'; })
-          Button({ type: ButtonType.Normal }) {
-            Text('1:1').fontSize(14).fontFamily(AppConfig.fontFamily)
-              .fontColor(this.scalingMode === 'one_to_one' ? appUiButtonText(this.accentColor) : this.pal().text2).textAlign(TextAlign.Center)
-          }.layoutWeight(1).constraintSize({ minHeight: AppUiMetrics.minTouchTarget })
-            .padding({ left: 12, right: 12, top: 10, bottom: 10 }).focusable(true).borderRadius(9).margin({ left: 6 })
-            .backgroundColor(this.scalingMode === 'one_to_one' ? appUiButtonFill(this.accentColor) : this.pal().surface).accessibilitySelected(this.scalingMode === 'one_to_one')
+          Button('1:1').layoutWeight(1).height(36).borderRadius(9).margin({ left: 6 })
+            .backgroundColor(this.scalingMode === 'one_to_one' ? this.accentColor : this.pal().surface)
+            .fontColor(this.scalingMode === 'one_to_one' ? Color.White : this.pal().text2)
             .onClick((): void => { this.scalingMode = 'one_to_one'; })
-          Button({ type: ButtonType.Normal }) {
-            Text('平移').fontSize(14).fontFamily(AppConfig.fontFamily)
-              .fontColor(this.scalingMode === 'pan' ? appUiButtonText(this.accentColor) : this.pal().text2).textAlign(TextAlign.Center)
-          }.layoutWeight(1).constraintSize({ minHeight: AppUiMetrics.minTouchTarget })
-            .padding({ left: 12, right: 12, top: 10, bottom: 10 }).focusable(true).borderRadius(9).margin({ left: 6 })
-            .backgroundColor(this.scalingMode === 'pan' ? appUiButtonFill(this.accentColor) : this.pal().surface).accessibilitySelected(this.scalingMode === 'pan')
+          Button('平移').layoutWeight(1).height(36).borderRadius(9).margin({ left: 6 })
+            .backgroundColor(this.scalingMode === 'pan' ? this.accentColor : this.pal().surface)
+            .fontColor(this.scalingMode === 'pan' ? Color.White : this.pal().text2)
             .onClick((): void => { this.scalingMode = 'pan'; })
         }.width('100%').margin({ bottom: 12 })
       }
@@ -717,33 +689,17 @@ export struct VncAddFlow {
 
   @Builder private actionBar() {
     Row() {
-      Button({ type: ButtonType.Normal }) {
-        Text(this.step === 0 ? '返回协议' : '上一步').fontSize(14).fontFamily(AppConfig.fontFamily)
-          .fontColor(this.pal().text2).textAlign(TextAlign.Center)
-      }.layoutWeight(1).constraintSize({ minHeight: AppUiMetrics.minTouchTarget })
-        .padding({ left: 12, right: 12, top: 10, bottom: 10 }).focusable(true).borderRadius(12)
-        .backgroundColor(this.pal().surface).onClick((): void => { this.back(); })
+      Button(this.step === 0 ? '返回协议' : '上一步').layoutWeight(1).height(44).borderRadius(12)
+        .backgroundColor(this.pal().surface).fontColor(this.pal().text2).onClick((): void => { this.back(); })
       if (this.step < VNC_HOST_ADD_STEP_COUNT - 1) {
-        Button({ type: ButtonType.Normal }) {
-          Text('下一步').fontSize(14).fontFamily(AppConfig.fontFamily)
-            .fontColor(appUiButtonText(this.accentColor)).textAlign(TextAlign.Center)
-        }.layoutWeight(1).constraintSize({ minHeight: AppUiMetrics.minTouchTarget })
-          .padding({ left: 12, right: 12, top: 10, bottom: 10 }).focusable(true).borderRadius(12).margin({ left: 8 })
-          .backgroundColor(appUiButtonFill(this.accentColor)).onClick((): void => { this.next(); })
+        Button('下一步').layoutWeight(1).height(44).borderRadius(12).margin({ left: 8 })
+          .backgroundColor(this.accentColor).fontColor(Color.White).onClick((): void => { this.next(); })
       } else {
-        Button({ type: ButtonType.Normal }) {
-          Text(this.editingId.trim() === '' ? '保存' : '更新').fontSize(14).fontFamily(AppConfig.fontFamily)
-            .fontColor(this.accentColor).textAlign(TextAlign.Center)
-        }.layoutWeight(1).constraintSize({ minHeight: AppUiMetrics.minTouchTarget })
-          .padding({ left: 12, right: 12, top: 10, bottom: 10 }).focusable(true).borderRadius(12).margin({ left: 8 })
-          .backgroundColor(this.pal().surface).onClick((): void => { this.save(false); })
-        Button({ type: ButtonType.Normal }) {
-          Text(this.editingId.trim() === '' ? '保存并连接' : '更新并连接').fontSize(14).fontFamily(AppConfig.fontFamily)
-            .fontColor(appUiButtonText(this.accentColor)).textAlign(TextAlign.Center)
-        }
-          .layoutWeight(1).constraintSize({ minHeight: AppUiMetrics.minTouchTarget })
-          .padding({ left: 12, right: 12, top: 10, bottom: 10 }).focusable(true).borderRadius(12).margin({ left: 8 })
-          .backgroundColor(appUiButtonFill(this.accentColor)).onClick((): void => { this.save(true); })
+        Button(this.editingId.trim() === '' ? '保存' : '更新').layoutWeight(1).height(44).borderRadius(12).margin({ left: 8 })
+          .backgroundColor(this.pal().surface).fontColor(this.accentColor).onClick((): void => { this.save(false); })
+        Button(this.editingId.trim() === '' ? '保存并连接' : '更新并连接')
+          .layoutWeight(1).height(44).borderRadius(12).margin({ left: 8 })
+          .backgroundColor(this.accentColor).fontColor(Color.White).onClick((): void => { this.save(true); })
       }
     }.width('100%')
   }

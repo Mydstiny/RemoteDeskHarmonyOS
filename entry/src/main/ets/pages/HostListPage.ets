@@ -1,7 +1,3 @@
-import { AppSettingsChoiceButton } from '../components/AppSettingsChoiceButton';
-import { appUiButtonFill, appUiButtonText } from '../common/AppUiColorPolicy';
-import { AppSettingsActionRow } from '../components/AppSettingsActionRow';
-import { AppUiMetrics } from '../common/AppUiMetrics';
 import { AiHostEditor } from '../components/ai/AiHostEditor';
 import { AiHostService, projectAiHost, aiHostId } from '../services/ai/AiHostService';
 import { AiHost } from '../services/ai/AiModels';
@@ -21,7 +17,7 @@ import { SETTINGS_SHEET_PRO } from '../services/SettingsSheetRoutePolicy';
 /**
  * HostListPage v9 — 多端响应式 + 悬浮卡片 sheet + 滑动删除 + 官方图标按钮
  */
-import { router, promptAction, curves, LengthMetrics } from '@kit.ArkUI';
+import { router, promptAction, curves } from '@kit.ArkUI';
 import { display, window } from '@kit.ArkUI';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { preferences } from '@kit.ArkData';
@@ -1492,7 +1488,6 @@ struct HostListPage {
   private presetColors: string[] = ['#FFFFFF','#F0F0F0','#F0F5FA','#FFF8F0','#F5F0F8','#1A1A2E','#1E4377','#2D1B4E'];
   @State wallpaperItems: WallpaperItem[] = [];
   @State pageViewportHeight: number = 720;
-  @State private hostHeaderMeasuredHeight: number = 0;
   private inputDeviceListenerRegistered: boolean = false;
   private inputDevicePromptVisible: boolean = false;
   private externalInputPromptedThisSession: boolean = false;
@@ -5964,8 +5959,7 @@ struct HostListPage {
   private hostTopBarHeight(): number {
     // On xl the title and search field share one compact header row. Keep the
     // list spacer in sync so the first host card starts below that row.
-    return Math.max(this.hostHeaderMeasuredHeight,
-      this.topSafeHeightVp() + (this.breakpoint === 'xl' ? 72 : 96));
+    return this.topSafeHeightVp() + (this.breakpoint === 'xl' ? 72 : 96);
   }
 
   private titleTopBarHeight(): number {
@@ -12731,24 +12725,21 @@ struct HostListPage {
           Row() {
             Column() {
               Row().width('100%').height(44)
-              Scroll() {
-                Column() {
-                  if (this.groupedHostCardsActive()) {
-                    this.sidebarTab('远程主机', protocolIcon('rdp'), 0)
-                  } else {
-                    this.sidebarTab('RDP 远程桌面', protocolIcon('rdp'), 0)
-                    this.sidebarTab('RustDesk', protocolIcon('rustdesk'), 1)
-                    this.sidebarTab('SSH 终端', protocolIcon('ssh'), 2)
-                    this.sidebarTab('VNC 主机', protocolIcon('vnc'), 3)
-                  }
-                  this.sidebarTab('远程 AI · Pro', protocolIcon('ai'), 8)
-                  this.sidebarMoonlightTab()
-                  this.sidebarTab('密钥保险库', protocolIcon('key_vault'), 4)
-                  this.sidebarTab('2FA 验证器', protocolIcon('totp'), 5)
-                  this.sidebarRelayTab('中继服务器', 6)
-                }.width('100%').padding({ top: 24 })
-              }.width('100%').layoutWeight(1).scrollBar(BarState.Auto)
-                .edgeEffect(EdgeEffect.Spring)
+              Column() {
+                if (this.groupedHostCardsActive()) {
+                  this.sidebarTab('远程主机', protocolIcon('rdp'), 0)
+                } else {
+                  this.sidebarTab('RDP 远程桌面', protocolIcon('rdp'), 0)
+                  this.sidebarTab('RustDesk', protocolIcon('rustdesk'), 1)
+                  this.sidebarTab('SSH 终端', protocolIcon('ssh'), 2)
+                  this.sidebarTab('VNC 主机', protocolIcon('vnc'), 3)
+                }
+                this.sidebarTab('远程 AI · Pro', protocolIcon('ai'), 8)
+                this.sidebarMoonlightTab()
+                this.sidebarTab('密钥保险库', protocolIcon('key_vault'), 4)
+                this.sidebarTab('2FA 验证器', protocolIcon('totp'), 5)
+                this.sidebarRelayTab('中继服务器', 6)
+              }.layoutWeight(1).padding({ top: 24 })
               // 设置
               this.sidebarSettingsBtn()
             }
@@ -12826,13 +12817,12 @@ struct HostListPage {
         Button() {
           SymbolGlyph($r('sys.symbol.plus'))
             .fontSize(28)
-            .fontColor([appUiButtonText(this.accentColor)])
+            .fontColor([Color.White])
         }
         .width(hostListFabSizeVp(this.breakpoint))
         .height(hostListFabSizeVp(this.breakpoint))
         .borderRadius(hostListFabSizeVp(this.breakpoint) / 2).padding(0)
-        .backgroundColor(appUiButtonFill(this.accentColor))
-        .accessibilityText('添加')
+        .backgroundColor(this.accentColor)
         .onClick(() => {
           if (this.isDesktopDevice && this.breakpoint === 'xl') {
             // PC 全屏侧边栏: 所有主机协议共用同一添加 Sheet 宿主。
@@ -12977,112 +12967,89 @@ struct HostListPage {
   // ==================== 主机列表 ====================
   // PC 侧边栏 Tab 按钮
   @Builder sidebarTab(label: string, icon: Resource, index: number) {
-    Column() {
-      Button({ type: ButtonType.Normal }) {
-        Row() {
-          SymbolGlyph(icon).fontSize(28)
-            .fontColor([this.curTab === index ? appUiButtonText(this.accentColor) : this.pal().text2])
-          Text(label)
-            .fontSize(16).fontWeight(FontWeight.Medium)
-            .fontColor(this.curTab === index ? appUiButtonText(this.accentColor) : this.pal().text2)
-            .fontFamily(this.font()).margin({ left: 14 }).layoutWeight(1)
-        }
-        .width('100%').constraintSize({ minHeight: AppUiMetrics.settingsRowMinHeight })
-        .padding({ left: 24, right: 24, top: 12, bottom: 12 })
-      }.width('100%').padding(0).borderRadius(12)
-      .backgroundColor(this.curTab === index ? appUiButtonFill(this.accentColor) : Color.Transparent)
-      .focusable(true).accessibilityText(label)
-      .accessibilitySelected(this.curTab === index)
-      .onClick(() => {
-        this.curTab = index;
-        if (this.isDesktopDevice) {
-          const titles: string[] = ['RDP 远程主机', 'RustDesk 远程主机', 'SSH 终端', 'VNC 主机', '', '', '中继服务器'];
-          this.hostPageTitle = index === 8 ? '远程 AI · Pro' : titles[index] || '';
-          if (index === 4) { this.keyVaultInnerTab = 0; }
-          if (index === 5) { this.keyVaultInnerTab = 1; }
-        }
-        this.updateHostFilter();
-      })
-    }.width('100%').padding({ left: 12, right: 12, bottom: 4 })
+    Row() {
+      SymbolGlyph(icon).fontSize(28)
+        .fontColor([this.curTab === index ? this.accentColor : this.pal().text3])
+      Text(label)
+        .fontSize(16).fontWeight(FontWeight.Medium)
+        .fontColor(this.curTab === index ? this.accentColor : this.pal().text3)
+        .fontFamily(this.font()).margin({ left: 14 })
+    }
+    .width('100%').height(56).padding({ left: 24, right: 24 })
+    .borderRadius(12).margin({ left: 12, right: 12, bottom: 4 })
+    .backgroundColor(this.curTab === index ? this.pal().surface : Color.Transparent)
+    .onClick(() => {
+      this.curTab = index;
+      if (this.isDesktopDevice) {
+        const titles: string[] = ['RDP 远程主机', 'RustDesk 远程主机', 'SSH 终端', 'VNC 主机', '', '', '中继服务器'];
+        this.hostPageTitle = index === 8 ? '远程 AI · Pro' : titles[index] || '';
+        if (index === 4) { this.keyVaultInnerTab = 0; }
+        if (index === 5) { this.keyVaultInnerTab = 1; }
+      }
+      this.updateHostFilter();
+    })
   }
 
   @Builder sidebarRelayTab(label: string, index: number) {
-    Column() {
-      Button({ type: ButtonType.Normal }) {
-        Row() {
-          SymbolGlyph($r('sys.symbol.cloud_fill'))
-            .fontSize(28)
-            .fontColor([this.curTab === index ? appUiButtonText(this.accentColor) : this.pal().text2])
-          Text(label)
-            .fontSize(16).fontWeight(FontWeight.Medium)
-            .fontColor(this.curTab === index ? appUiButtonText(this.accentColor) : this.pal().text2)
-            .fontFamily(this.font()).margin({ left: 14 }).layoutWeight(1)
-        }
-        .width('100%').constraintSize({ minHeight: AppUiMetrics.settingsRowMinHeight })
-        .padding({ left: 24, right: 24, top: 12, bottom: 12 })
-      }.width('100%').padding(0).borderRadius(12)
-      .backgroundColor(this.curTab === index ? appUiButtonFill(this.accentColor) : Color.Transparent)
-      .focusable(true).accessibilityText(label)
-      .accessibilitySelected(this.curTab === index)
-      .onClick(() => {
-        this.curTab = index;
-        if (this.isDesktopDevice) {
-          const titles: string[] = ['RDP 远程主机', 'RustDesk 远程主机', 'SSH 终端', 'VNC 主机', '', '', '中继服务器'];
-          this.hostPageTitle = titles[index] || '';
-        }
-        this.updateHostFilter();
-      })
-    }.width('100%').padding({ left: 12, right: 12, bottom: 4 })
+    Row() {
+      SymbolGlyph($r('sys.symbol.cloud_fill'))
+        .fontSize(28)
+        .fontColor([this.curTab === index ? this.accentColor : this.pal().text3])
+      Text(label)
+        .fontSize(16).fontWeight(FontWeight.Medium)
+        .fontColor(this.curTab === index ? this.accentColor : this.pal().text3)
+        .fontFamily(this.font()).margin({ left: 14 })
+    }
+    .width('100%').height(56).padding({ left: 24, right: 24 })
+    .borderRadius(12).margin({ left: 12, right: 12, bottom: 4 })
+    .backgroundColor(this.curTab === index ? this.pal().surface : Color.Transparent)
+    .onClick(() => {
+      this.curTab = index;
+      if (this.isDesktopDevice) {
+        const titles: string[] = ['RDP 远程主机', 'RustDesk 远程主机', 'SSH 终端', 'VNC 主机', '', '', '中继服务器'];
+        this.hostPageTitle = titles[index] || '';
+      }
+      this.updateHostFilter();
+    })
   }
 
   @Builder sidebarMoonlightTab() {
-    Column() {
-      Button({ type: ButtonType.Normal }) {
-        Row() {
-          MoonlightBrandIcon({
-            iconSize: 28,
-            tint: this.curTab === DESKTOP_MOONLIGHT_TAB ? appUiButtonText(this.accentColor) : this.pal().text2,
-            accessibilityLabel: 'Moonlight 主机'
-          })
-          Text('Moonlight').fontSize(16).fontWeight(FontWeight.Medium)
-            .fontColor(this.curTab === DESKTOP_MOONLIGHT_TAB ? appUiButtonText(this.accentColor) : this.pal().text2)
-            .fontFamily(this.font()).margin({ left: 14 }).layoutWeight(1)
-        }
-        .width('100%').constraintSize({ minHeight: AppUiMetrics.settingsRowMinHeight })
-        .padding({ left: 24, right: 24, top: 12, bottom: 12 })
-      }.width('100%').padding(0).borderRadius(12)
-      .backgroundColor(this.curTab === DESKTOP_MOONLIGHT_TAB ? appUiButtonFill(this.accentColor) : Color.Transparent)
-      .focusable(true).accessibilityText('Moonlight 主机')
-      .accessibilitySelected(this.curTab === DESKTOP_MOONLIGHT_TAB)
-      .onClick((): void => {
-        this.curTab = DESKTOP_MOONLIGHT_TAB;
-        this.hostPageTitle = 'Moonlight 主机';
-        this.searchText = '';
-        this.refreshMoonlightDirectory();
+    Row() {
+      MoonlightBrandIcon({
+        iconSize: 28,
+        tint: this.curTab === DESKTOP_MOONLIGHT_TAB ? this.accentColor : this.pal().text3,
+        accessibilityLabel: 'Moonlight 主机'
       })
-    }.width('100%').padding({ left: 12, right: 12, bottom: 4 })
+      Text('Moonlight').fontSize(16).fontWeight(FontWeight.Medium)
+        .fontColor(this.curTab === DESKTOP_MOONLIGHT_TAB ? this.accentColor : this.pal().text3)
+        .fontFamily(this.font()).margin({ left: 14 })
+    }
+    .width('100%').height(56).padding({ left: 24, right: 24 })
+    .borderRadius(12).margin({ left: 12, right: 12, bottom: 4 })
+    .backgroundColor(this.curTab === DESKTOP_MOONLIGHT_TAB ? this.pal().surface : Color.Transparent)
+    .accessibilityText('Moonlight 主机')
+    .onClick((): void => {
+      this.curTab = DESKTOP_MOONLIGHT_TAB;
+      this.hostPageTitle = 'Moonlight 主机';
+      this.searchText = '';
+      this.refreshMoonlightDirectory();
+    })
   }
 
   @Builder sidebarSettingsBtn() {
-    Column() {
-      Button({ type: ButtonType.Normal }) {
-        Row() {
-          SymbolGlyph(protocolIcon('settings')).fontSize(28).fontColor([this.pal().text2])
-          Text('设置')
-            .fontSize(16).fontWeight(FontWeight.Medium)
-            .fontColor(this.pal().text2)
-            .fontFamily(this.font()).margin({ left: 14 }).layoutWeight(1)
-        }
-        .width('100%').constraintSize({ minHeight: AppUiMetrics.settingsRowMinHeight })
-        .padding({ left: 24, right: 24, top: 12, bottom: 12 })
-      }.width('100%').padding(0).borderRadius(12)
-      .backgroundColor(Color.Transparent)
-      .focusable(true).accessibilityText('设置')
-      .onClick(() => {
-        this.showSettingsPanel = false;
-        this.openSheetSafely((): void => { this.showSettingsPanel = true; });
-      })
-    }.width('100%').padding({ left: 12, right: 12, bottom: 16 })
+    Row() {
+      SymbolGlyph(protocolIcon('settings')).fontSize(28).fontColor([this.pal().text3])
+      Text('设置')
+        .fontSize(16).fontWeight(FontWeight.Medium)
+        .fontColor(this.pal().text3)
+        .fontFamily(this.font()).margin({ left: 14 })
+    }
+    .width('100%').height(56).padding({ left: 24, right: 24 })
+    .borderRadius(12).margin({ left: 12, right: 12, bottom: 16 })
+    .onClick(() => {
+      this.showSettingsPanel = false;
+      this.openSheetSafely((): void => { this.showSettingsPanel = true; });
+    })
   }
 
   private activeFilterProto: string = '';
@@ -13102,27 +13069,21 @@ struct HostListPage {
   }
 
   @Builder HostWorkspaceFilterBar() {
-    Scroll() {
-      Row({ space: 8 }) {
+    Column() {
+      Row() {
         ForEach(groupIdsForHosts(this.hosts), (groupId: string): void => {
-          Button({ type: ButtonType.Normal }) {
-            Text(groupId).fontSize(12).fontFamily(this.font())
-              .fontColor(this.workspaceGroupId === groupId ? appUiButtonText(this.accentColor) : this.pal().text2)
-              .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-          }.constraintSize({ minHeight: AppUiMetrics.minTouchTarget, maxWidth: 200 })
-            .padding({ left: 14, right: 14, top: 8, bottom: 8 }).borderRadius(12)
-            .backgroundColor(this.workspaceGroupId === groupId ? appUiButtonFill(this.accentColor) : this.pal().surface)
-            .focusable(true).accessibilityText('分组：' + groupId)
-            .accessibilitySelected(this.workspaceGroupId === groupId)
+          Text(groupId).fontSize(12)
+            .fontColor(this.workspaceGroupId === groupId ? this.accentColor : this.pal().text2)
+            .margin({ right: 12 })
             .onClick((): void => {
               this.workspaceGroupId = nextWorkspaceGroupId(this.workspaceGroupId, groupId);
               this.refreshWorkspaceView();
             })
         }, (groupId: string): string => groupId)
-      }.padding({ left: 4, right: 4 })
-    }.width('100%').scrollable(ScrollDirection.Horizontal)
-      .scrollBar(BarState.Auto).edgeEffect(EdgeEffect.Spring)
-      .padding({ left: 16, right: 16, top: 4, bottom: 6 })
+      }
+      .width('100%').padding({ left: 4, right: 4 })
+    }
+    .width('100%').padding({ left: 16, right: 16, top: 4, bottom: 6 })
   }
 
   @Builder HostGroupChip(host: RemoteHost) {
@@ -13212,9 +13173,22 @@ struct HostListPage {
   }
 
   private hostGroupCardHeight(): number {
-    // Minimum only: labels and native action rows may grow with their content.
-    // The xl desktop layout keeps its existing categorized cards.
+    // Keep grouped cards close to the compact settings-card rhythm. The xl
+    // desktop layout is excluded from this grouped view and keeps its existing
+    // categorized cards.
     return this.breakpoint === 'sm' ? 88 : 96;
+  }
+
+  private hostGroupHostCardHeight(): number {
+    // The card stays compact, while the larger touch targets get one shared
+    // vertical rhythm on phone, Pad, and small-screen PC layouts.
+    return this.breakpoint === 'sm' ? 102 : 98;
+  }
+
+  private hostGroupHostGridHeight(count: number): number {
+    const columns: number = hostGroupColumnsForBreakpoint(this.breakpoint);
+    const rows: number = Math.max(1, Math.ceil(count / columns));
+    return rows * this.hostGroupHostCardHeight() + Math.max(0, rows - 1) * 10;
   }
 
   private hostGroupStatusColor(state: HostPresenceState): string {
@@ -13356,52 +13330,48 @@ struct HostListPage {
   }
 
   @Builder hostGroupTypeCard(card: HostGroupCardModel) {
-    Button({ type: ButtonType.Normal }) {
-      Column() {
-        Row() {
-          Column() {
-            SymbolGlyph(protocolIcon(card.type)).fontSize(this.breakpoint === 'sm' ? 20 : 24)
-              .fontColor([this.accentColor])
-          }
-          .width(this.breakpoint === 'sm' ? 38 : 44)
-          .height(this.breakpoint === 'sm' ? 38 : 44)
-          .borderRadius(this.breakpoint === 'sm' ? 19 : 14)
-          .backgroundColor(this.pal().surface)
-          .justifyContent(FlexAlign.Center)
-          Column() {
-            Text(card.title).fontSize(this.breakpoint === 'sm' ? 16 : 18)
-              .fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
-              .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
-            Text(card.subtitle).fontSize(12)
-              .fontColor(this.pal().text2).fontFamily(this.font()).margin({ top: 3 })
-              .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
-          }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: this.breakpoint === 'sm' ? 8 : 10 })
+    Column() {
+      Row() {
+        Column() {
+          SymbolGlyph(protocolIcon(card.type)).fontSize(this.breakpoint === 'sm' ? 20 : 24)
+            .fontColor([this.accentColor])
+        }
+        .width(this.breakpoint === 'sm' ? 38 : 44)
+        .height(this.breakpoint === 'sm' ? 38 : 44)
+        .borderRadius(this.breakpoint === 'sm' ? 19 : 14)
+        .backgroundColor(this.pal().surface)
+        .justifyContent(FlexAlign.Center)
+        Column() {
+          Text(card.title).fontSize(this.breakpoint === 'sm' ? 16 : 18)
+            .fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
+            .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+          Text(card.subtitle).fontSize(this.breakpoint === 'sm' ? 10 : 11)
+            .fontColor(this.pal().text3).fontFamily(this.font()).margin({ top: 3 })
+            .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+        }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: this.breakpoint === 'sm' ? 8 : 10 })
           SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(this.breakpoint === 'sm' ? 16 : 18)
-            .fontColor([this.pal().text2])
-            .rotate({ angle: this.expandedHostGroup === card.type ? 90 : 0 })
-            .animation({ duration: 220, curve: Curve.FastOutSlowIn })
-        }.width('100%')
-        Flex({ wrap: FlexWrap.Wrap, alignItems: ItemAlign.Center,
-          space: { main: LengthMetrics.vp(8), cross: LengthMetrics.vp(4) } }) {
-          Text(card.hosts.length.toString() + ' 台主机').fontSize(12)
-            .fontColor(this.pal().text2).fontFamily(this.font())
-          if (this.hostGroupSummaryText(card) !== '') {
-            Text(this.hostGroupSummaryText(card)).fontSize(12)
-              .fontColor(this.pal().text2).fontFamily(this.font()).maxLines(1)
-              .textOverflow({ overflow: TextOverflow.Ellipsis })
-          }
-        }.width('100%').margin({ top: this.breakpoint === 'sm' ? 8 : 10 })
-      }
-      .width('100%').padding(this.breakpoint === 'sm' ? 10 : 12)
+          .fontColor([this.pal().text3])
+          .rotate({ angle: this.expandedHostGroup === card.type ? 90 : 0 })
+          .animation({ duration: 220, curve: Curve.FastOutSlowIn })
+      }.width('100%')
+      Row() {
+        Text(card.hosts.length.toString() + ' 台主机').fontSize(this.breakpoint === 'sm' ? 10 : 11)
+          .fontColor(this.pal().text2).fontFamily(this.font())
+        Blank()
+        if (this.hostGroupSummaryText(card) !== '') {
+          Text(this.hostGroupSummaryText(card)).fontSize(this.breakpoint === 'sm' ? 9 : 10)
+            .fontColor(this.pal().text3).fontFamily(this.font()).maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+        }
+      }.width('100%').margin({ top: this.breakpoint === 'sm' ? 8 : 10 })
     }
-    .layoutWeight(1).constraintSize({ minHeight: this.hostGroupCardHeight() }).padding(0)
+    .layoutWeight(1).height(this.hostGroupCardHeight())
+    .padding(this.breakpoint === 'sm' ? 10 : 12)
     .borderRadius(this.breakpoint === 'sm' ? 16 : 14)
     .backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
     .border({ width: this.expandedHostGroup === card.type ? 1.5 : 0.5,
       color: this.expandedHostGroup === card.type ? this.accentColor : this.pal().cardBorder,
       style: BorderStyle.Solid })
-    .focusable(true)
-    .accessibilityText(card.title + '主机分组' + (this.expandedHostGroup === card.type ? '，已展开' : '，已收起'))
     .onClick((): void => { this.toggleHostGroup(card.type); })
   }
 
@@ -13427,21 +13397,21 @@ struct HostListPage {
   @Builder hostGroupedProtocolDetails(host: RemoteHost) {
     Row() {
       if (host.protocol === 'rustdesk') {
-        Text('ID').fontSize(this.breakpoint === 'sm' ? 12 : 13).fontColor(this.pal().text2).constraintSize({ minWidth: 30 })
+        Text('ID').fontSize(this.breakpoint === 'sm' ? 12 : 13).fontColor(this.pal().text3).width(30)
         Text(this.protectedHostCardValue(host, hostIdentifier(host)))
           .fontSize(this.breakpoint === 'sm' ? 15 : 16)
           .fontWeight(FontWeight.Medium).fontColor(this.pal().text2).fontFamily(this.font()).layoutWeight(1)
           .textOverflow({ overflow: TextOverflow.Ellipsis }).maxLines(1)
           .accessibilityText(this.protectedHostCardValue(host, hostIdentifier(host)))
       } else if (host.protocol === 'ssh') {
-        Text('SSH').fontSize(11).fontColor(this.pal().text2).constraintSize({ minWidth: 30 })
+        Text('SSH').fontSize(11).fontColor(this.pal().text3).width(30)
         Text(this.protectedHostCardValue(host,
           formatUserAtHost(host.username, host.host, host.port)))
           .fontSize(this.breakpoint === 'sm' ? 12 : 13).fontColor(this.pal().text2)
           .fontFamily(this.font()).layoutWeight(1)
           .textOverflow({ overflow: TextOverflow.Ellipsis }).maxLines(1)
       } else if (host.protocol === 'vnc') {
-        Text('VNC').fontSize(11).fontColor(this.pal().text2).constraintSize({ minWidth: 30 })
+        Text('VNC').fontSize(11).fontColor(this.pal().text3).width(30)
         Text(this.protectedHostCardValue(host, host.gatewayHost.trim() === '' ?
           formatEndpointFieldsHostPort(host.host, host.port) :
           formatEndpointFieldsHostPort(host.host, host.port) + ' · 网关 ' +
@@ -13450,7 +13420,7 @@ struct HostListPage {
           .fontFamily(this.font()).layoutWeight(1)
           .textOverflow({ overflow: TextOverflow.Ellipsis }).maxLines(1)
       } else {
-        Text('RDP').fontSize(11).fontColor(this.pal().text2).constraintSize({ minWidth: 30 })
+        Text('RDP').fontSize(11).fontColor(this.pal().text3).width(30)
         Text(this.protectedHostCardValue(host,
           formatEndpointFieldsHostPort(host.host, host.port)))
           .fontSize(this.breakpoint === 'sm' ? 12 : 13)
@@ -13461,97 +13431,101 @@ struct HostListPage {
   }
 
   @Builder hostGroupedHostCard(host: RemoteHost) {
-    Column({ space: 8 }) {
-      Row() {
-        if (this.hostSelectionMode) {
-          Checkbox()
-            .select(this.hostSelectedIds.has(remoteHostCardKey(host.id))).selectedColor(this.accentColor)
-            .margin({ right: 7 })
-            .monopolizeEvents(true)
-            .onChange((checked: boolean): void => {
-              this.toggleHostSelect(remoteHostCardKey(host.id), checked);
-            })
-        }
-        Button({ type: ButtonType.Normal }) {
-          SymbolGlyph(this.hostGroupIconForHost(host)).fontSize(this.breakpoint === 'sm' ? 21 : 23)
-            .fontColor([appUiButtonText(this.accentColor)])
-        }
-        .width(AppUiMetrics.minTouchTarget).padding(0).focusable(true)
-        .accessibilityText('打开主机')
-        .height(AppUiMetrics.minTouchTarget)
-        .borderRadius(this.breakpoint === 'sm' ? 12 : 13)
-        .backgroundColor(appUiButtonFill(this.accentColor))
-        .margin({ right: this.breakpoint === 'sm' ? 9 : 10 })
-        .onClick((): void => { this.handleHostCardClick(host); })
-        Column() {
-          Row() {
-            Text(hostCardDisplayLabel(
-              shouldHideHostCardSensitiveInfo(this.hostCardSensitiveInfoHidden, host.locked),
-              host.protocol, host.label, host.rustdeskProPeerId, host.customHostname))
-              .fontSize(this.breakpoint === 'sm' ? 15 : 16)
-              .fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
-              .layoutWeight(1).maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
-          }.width('100%')
-          if (this.hostGroupStatusLine(host) !== '') {
-            Text(this.hostGroupStatusLine(host))
-              .fontSize(this.breakpoint === 'sm' ? 12 : 13)
-              .fontColor(this.hostGroupStatusColorForHost(host))
-              .fontFamily(this.font()).margin({ top: 2 })
-              .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-          }
-          this.hostGroupedProtocolDetails(host)
-        }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-          .onClick((): void => { this.handleHostCardClick(host); })
-      }.width('100%')
-      Flex({ wrap: FlexWrap.Wrap, alignItems: ItemAlign.Center,
-        space: { main: LengthMetrics.vp(8), cross: LengthMetrics.vp(8) } }) {
-        if (this.hostGroupHostModeLabel(host) !== '') {
-          Text(this.hostGroupHostModeLabel(host))
-            .fontSize(12)
-            .fontColor(this.hostGroupHostModeColor(host)).fontFamily(this.font())
-            .padding({ left: 7, right: 7, top: 3, bottom: 3 })
-            .borderRadius(7).backgroundColor(this.pal().surface)
+    Row() {
+      if (this.hostSelectionMode) {
+        Checkbox()
+          .select(this.hostSelectedIds.has(remoteHostCardKey(host.id))).selectedColor(this.accentColor)
+          .margin({ right: 7 })
+          .monopolizeEvents(true)
+          .onChange((checked: boolean): void => {
+            this.toggleHostSelect(remoteHostCardKey(host.id), checked);
+          })
+      }
+      Column() {
+        SymbolGlyph(this.hostGroupIconForHost(host)).fontSize(this.breakpoint === 'sm' ? 21 : 23)
+          .fontColor([Color.White])
+      }
+      .width(this.breakpoint === 'sm' ? 40 : 42)
+      .height(this.breakpoint === 'sm' ? 40 : 42)
+      .borderRadius(this.breakpoint === 'sm' ? 12 : 13)
+      .backgroundColor(this.accentColor)
+      .justifyContent(FlexAlign.Center)
+      .margin({ right: this.breakpoint === 'sm' ? 9 : 10 })
+      .onClick((): void => { this.handleHostCardClick(host); })
+      Column() {
+        Row() {
+          Text(hostCardDisplayLabel(
+            shouldHideHostCardSensitiveInfo(this.hostCardSensitiveInfoHidden, host.locked),
+            host.protocol, host.label, host.rustdeskProPeerId, host.customHostname))
+            .fontSize(this.breakpoint === 'sm' ? 15 : 16)
+            .fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
+            .layoutWeight(1).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+        }.width('100%')
+        if (this.hostGroupStatusLine(host) !== '') {
+          Text(this.hostGroupStatusLine(host))
+            .fontSize(this.breakpoint === 'sm' ? 12 : 13)
+            .fontColor(this.hostGroupStatusColorForHost(host))
+            .fontFamily(this.font()).margin({ top: 2 })
             .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
         }
-        if (this.hostGroupCanProbe(host)) {
-          Button() {
-            if (this.hostPresenceProbeBusyIds.has(host.id)) {
-              LoadingProgress().width(21).height(21).color(this.accentColor)
-            } else {
-              SymbolGlyph($r('sys.symbol.bolt_fill')).fontSize(19).fontColor([this.accentColor])
-            }
+        this.hostGroupedProtocolDetails(host)
+      }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+        .onClick((): void => { this.handleHostCardClick(host); })
+      Column() {
+        // Keep the top action row for direct hosts as well. Direct hosts do
+        // not probe, but the reserved probe slot keeps every action row aligned.
+        Row() {
+          if (this.hostGroupHostModeLabel(host) !== '') {
+            Text(this.hostGroupHostModeLabel(host))
+              .fontSize(this.breakpoint === 'sm' ? 10 : 11)
+              .fontColor(this.hostGroupHostModeColor(host)).fontFamily(this.font())
+              .padding({ left: 7, right: 7, top: 3, bottom: 3 })
+              .borderRadius(7).backgroundColor(this.pal().surface).margin({ right: 6 })
+              .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
           }
-          .width(AppUiMetrics.minTouchTarget)
-          .height(AppUiMetrics.minTouchTarget).borderRadius(19).padding(0)
-          .backgroundColor(this.pal().surface).accessibilityText('检测在线状态')
-          .enabled(!this.hostPresenceProbeBusyIds.has(host.id))
-          .onClick((): void => { void this.probeHostConnectivity(host); })
+          if (this.hostGroupCanProbe(host)) {
+            Button() {
+              if (this.hostPresenceProbeBusyIds.has(host.id)) {
+                LoadingProgress().width(21).height(21).color(this.accentColor)
+              } else {
+                SymbolGlyph($r('sys.symbol.bolt_fill')).fontSize(19).fontColor([this.accentColor])
+              }
+            }
+            .width(this.breakpoint === 'sm' ? 38 : 40)
+            .height(this.breakpoint === 'sm' ? 38 : 40).borderRadius(19).padding(0)
+            .backgroundColor(this.pal().surface).accessibilityText('检测在线状态')
+            .enabled(!this.hostPresenceProbeBusyIds.has(host.id))
+            .onClick((): void => { void this.probeHostConnectivity(host); })
+          } else {
+            Blank()
+              .width(this.breakpoint === 'sm' ? 38 : 40)
+              .height(this.breakpoint === 'sm' ? 38 : 40)
+          }
         }
-        Button() {
-          SymbolGlyph($r('sys.symbol.square_and_pencil')).fontSize(16).fontColor([this.pal().text2])
-        }
-        .width(AppUiMetrics.minTouchTarget).height(AppUiMetrics.minTouchTarget)
-        .borderRadius(18).padding(0).backgroundColor(this.pal().surface)
-        .accessibilityText('编辑').onClick((): void => { void this.editHost(host); })
-        Button() {
-          SymbolGlyph(host.locked ? $r('sys.symbol.lock_open') : $r('sys.symbol.ohos_lock'))
-            .fontSize(16).fontColor([this.pal().text2])
-        }
-        .width(AppUiMetrics.minTouchTarget).height(AppUiMetrics.minTouchTarget)
-        .borderRadius(18).padding(0).backgroundColor(this.pal().surface)
-        .accessibilityText(host.locked ? '解锁' : '上锁')
-        .visibility(host.protocol === 'ai' ? Visibility.None : Visibility.Visible)
-        .onClick((): void => { void this.toggleLock(host); })
-        Button() {
-          SymbolGlyph($r('sys.symbol.ohos_trash')).fontSize(16).fontColor([this.pal().danger])
-        }
-        .width(AppUiMetrics.minTouchTarget).height(AppUiMetrics.minTouchTarget)
-        .borderRadius(18).padding(0).backgroundColor(this.pal().surface)
-        .accessibilityText('删除')
-        .onClick((): void => { void this.doDeleteHost(host); })
-      }.width('100%')
+        Row() {
+          Button() {
+            SymbolGlyph($r('sys.symbol.square_and_pencil')).fontSize(16).fontColor([this.pal().text2])
+          }
+          .width(36).height(36).borderRadius(18).padding(0).backgroundColor(this.pal().surface)
+          .accessibilityText('编辑').onClick((): void => { void this.editHost(host); })
+          Button() {
+            SymbolGlyph(host.locked ? $r('sys.symbol.lock_open') : $r('sys.symbol.ohos_lock'))
+              .fontSize(16).fontColor([this.pal().text2])
+          }
+          .width(36).height(36).borderRadius(18).padding(0).backgroundColor(this.pal().surface)
+          .margin({ left: 8 }).accessibilityText(host.locked ? '解锁' : '上锁')
+          .visibility(host.protocol === 'ai' ? Visibility.None : Visibility.Visible)
+          .onClick((): void => { void this.toggleLock(host); })
+          Button() {
+            SymbolGlyph($r('sys.symbol.ohos_trash')).fontSize(16).fontColor([this.pal().danger])
+          }
+          .width(36).height(36).borderRadius(18).padding(0).backgroundColor(this.pal().surface)
+          .margin({ left: 8 }).accessibilityText('删除')
+          .onClick((): void => { void this.doDeleteHost(host); })
+        }.margin({ top: 7 })
+      }.alignItems(HorizontalAlign.End).margin({ left: 10 })
     }
-    .width('100%').padding(10)
+    .width('100%').height(this.hostGroupHostCardHeight()).padding(6)
     .borderRadius(12).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
     .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
     // Grouped cards intentionally have no swipe actions. Long press remains
@@ -13561,6 +13535,15 @@ struct HostListPage {
         this.beginHostSelection(remoteHostCardKey(host.id), false);
       }
     }))
+  }
+
+  private hostGroupDetailPanelHeight(card: HostGroupCardModel): number {
+    const padding: number = this.breakpoint === 'sm' ? 12 : 14;
+    const header: number = this.breakpoint === 'sm' ? 34 : 38;
+    const content: number = card.hosts.length === 0
+      ? header + (this.breakpoint === 'sm' ? 92 : 100)
+      : header + 10 + this.hostGroupHostGridHeight(card.hosts.length);
+    return padding * 2 + content;
   }
 
   @Builder hostGroupedDetailPanel(card: HostGroupCardModel) {
@@ -13574,7 +13557,7 @@ struct HostListPage {
             .fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
           Text(card.hosts.length.toString() + ' 台' +
             (this.hostGroupSummaryText(card) === '' ? '' : ' · ' + this.hostGroupSummaryText(card)))
-            .fontSize(12).fontColor(this.pal().text2).fontFamily(this.font()).margin({ top: 4 })
+            .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font()).margin({ top: 4 })
         }.alignItems(HorizontalAlign.Start).layoutWeight(1)
         Button() {
           if (this.hostGroupProbeBusyType === card.type) {
@@ -13583,7 +13566,7 @@ struct HostListPage {
             SymbolGlyph($r('sys.symbol.bolt_fill')).fontSize(15).fontColor([this.accentColor])
           }
         }
-        .width(AppUiMetrics.minTouchTarget).height(AppUiMetrics.minTouchTarget).borderRadius(14).padding(0).backgroundColor(this.pal().surface)
+        .width(28).height(28).borderRadius(14).padding(0).backgroundColor(this.pal().surface)
         .accessibilityText('检测全部' + card.title + '主机')
         .enabled(this.hostGroupProbeBusyType === '' && card.hosts.length > 0)
         .onClick((): void => { void this.probeHostGroup(card); })
@@ -13593,23 +13576,22 @@ struct HostListPage {
           SymbolGlyph(protocolIcon(card.type)).fontSize(32).fontColor([this.pal().text3])
           Text('暂无 ' + hostGroupTitle(card.type) + ' 主机').fontSize(13).fontColor(this.pal().text2)
             .fontFamily(this.font()).margin({ top: 10 })
-          Text('点击底部按钮添加主机').fontSize(12).fontColor(this.pal().text2)
+          Text('点击底部按钮添加主机').fontSize(11).fontColor(this.pal().text3)
             .fontFamily(this.font()).margin({ top: 4 })
-        }.width('100%').constraintSize({ minHeight: this.breakpoint === 'sm' ? 92 : 100 }).padding({ top: 12, bottom: 12 })
+        }.width('100%').height(this.breakpoint === 'sm' ? 92 : 100)
           .justifyContent(FlexAlign.Center).alignItems(HorizontalAlign.Center)
       } else {
-        Flex({ wrap: FlexWrap.Wrap, alignItems: ItemAlign.Start,
-          space: { main: LengthMetrics.vp(10), cross: LengthMetrics.vp(10) } }) {
+        Grid() {
           ForEach(card.hosts, (host: RemoteHost): void => {
-            Column() { this.hostGroupedHostCard(host) }
-              .width(hostGroupColumnsForBreakpoint(this.breakpoint) === 1 ? '100%' : 'calc(50% - 5vp)')
-              .flexShrink(0)
+            GridItem() { this.hostGroupedHostCard(host) }
           }, (host: RemoteHost): string => host.id + ':' + this.hostViewRevision.toString())
         }
-        .width('100%').margin({ top: 10 })
+        .columnsTemplate(hostGroupColumnsForBreakpoint(this.breakpoint) === 1 ? '1fr' : '1fr 1fr')
+        .rowsGap(10).columnsGap(10).width('100%')
+        .height(this.hostGroupHostGridHeight(card.hosts.length)).margin({ top: 10 })
       }
     }
-    .width('100%').visibility(this.expandedHostGroup === card.type ? Visibility.Visible : Visibility.None)
+    .width('100%').height(this.expandedHostGroup === card.type ? this.hostGroupDetailPanelHeight(card) : 0)
     .padding(this.expandedHostGroup === card.type ? (this.breakpoint === 'sm' ? 12 : 14) : 0)
     .opacity(this.expandedHostGroup === card.type ? 1 : 0).clip(true)
     .borderRadius(this.breakpoint === 'sm' ? 16 : 15)
@@ -13624,7 +13606,7 @@ struct HostListPage {
     Column() {
       Row() {
         this.hostGroupTypeCard(this.hostGroupCardForType(type))
-      }.width('100%').constraintSize({ minHeight: this.hostGroupCardHeight() })
+      }.width('100%').height(this.hostGroupCardHeight())
       this.hostGroupedDetailPanel(this.hostGroupCardForType(type))
     }
     .width('100%').margin({ bottom: 10 })
@@ -13636,7 +13618,7 @@ struct HostListPage {
         this.hostGroupTypeCard(this.hostGroupCardForType(first))
         Blank().width(10)
         this.hostGroupTypeCard(this.hostGroupCardForType(second))
-      }.width('100%').constraintSize({ minHeight: this.hostGroupCardHeight() }).alignItems(VerticalAlign.Top)
+      }.width('100%').height(this.hostGroupCardHeight()).alignItems(VerticalAlign.Top)
       this.hostGroupedDetailPanel(this.hostGroupCardForType(first))
       this.hostGroupedDetailPanel(this.hostGroupCardForType(second))
     }
@@ -13659,53 +13641,59 @@ struct HostListPage {
   }
 
   @Builder moonlightGroupTypeCard() {
-    Button({ type: ButtonType.Normal }) {
-      Column() {
-        Row() {
-          Column() {
-            MoonlightBrandIcon({ iconSize: this.breakpoint === 'sm' ? 20 : 24,
-              tint: this.accentColor, accessibilityLabel: 'Moonlight' })
-          }
-          .width(this.breakpoint === 'sm' ? 38 : 44)
-          .height(this.breakpoint === 'sm' ? 38 : 44)
-          .borderRadius(this.breakpoint === 'sm' ? 19 : 14)
-          .backgroundColor(this.pal().surface)
-          .justifyContent(FlexAlign.Center)
-          Column() {
-            Text('Moonlight').fontSize(this.breakpoint === 'sm' ? 16 : 18)
-              .fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
-              .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
-            Text('Sunshine / GameStream').fontSize(12)
-              .fontColor(this.pal().text2).fontFamily(this.font()).margin({ top: 3 })
-              .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
-          }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-            .margin({ left: this.breakpoint === 'sm' ? 8 : 10 })
-          SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(this.breakpoint === 'sm' ? 16 : 18)
-            .fontColor([this.pal().text2])
-            .rotate({ angle: this.expandedHostGroup === 'moonlight' ? 90 : 0 })
-            .animation({ duration: 220, curve: Curve.FastOutSlowIn })
-        }.width('100%')
-        Flex({ wrap: FlexWrap.Wrap, alignItems: ItemAlign.Center,
-          space: { main: LengthMetrics.vp(8), cross: LengthMetrics.vp(4) } }) {
-          Text(this.visibleMoonlightHosts().length.toString() + ' 台主机')
-            .fontSize(12)
-            .fontColor(this.pal().text2).fontFamily(this.font())
-          Text(this.moonlightGroupCatalogCount().toString() + ' 个应用')
-            .fontSize(12)
-            .fontColor(this.pal().text2).fontFamily(this.font()).maxLines(1)
-        }.width('100%').margin({ top: this.breakpoint === 'sm' ? 8 : 10 })
-      }
-      .width('100%').padding(this.breakpoint === 'sm' ? 10 : 12)
+    Column() {
+      Row() {
+        Column() {
+          MoonlightBrandIcon({ iconSize: this.breakpoint === 'sm' ? 20 : 24,
+            tint: this.accentColor, accessibilityLabel: 'Moonlight' })
+        }
+        .width(this.breakpoint === 'sm' ? 38 : 44)
+        .height(this.breakpoint === 'sm' ? 38 : 44)
+        .borderRadius(this.breakpoint === 'sm' ? 19 : 14)
+        .backgroundColor(this.pal().surface)
+        .justifyContent(FlexAlign.Center)
+        Column() {
+          Text('Moonlight').fontSize(this.breakpoint === 'sm' ? 16 : 18)
+            .fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
+            .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+          Text('Sunshine / GameStream').fontSize(this.breakpoint === 'sm' ? 10 : 11)
+            .fontColor(this.pal().text3).fontFamily(this.font()).margin({ top: 3 })
+            .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+        }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+          .margin({ left: this.breakpoint === 'sm' ? 8 : 10 })
+        SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(this.breakpoint === 'sm' ? 16 : 18)
+          .fontColor([this.pal().text3])
+          .rotate({ angle: this.expandedHostGroup === 'moonlight' ? 90 : 0 })
+          .animation({ duration: 220, curve: Curve.FastOutSlowIn })
+      }.width('100%')
+      Row() {
+        Text(this.visibleMoonlightHosts().length.toString() + ' 台主机')
+          .fontSize(this.breakpoint === 'sm' ? 10 : 11)
+          .fontColor(this.pal().text2).fontFamily(this.font())
+        Blank()
+        Text(this.moonlightGroupCatalogCount().toString() + ' 个应用')
+          .fontSize(this.breakpoint === 'sm' ? 9 : 10)
+          .fontColor(this.pal().text3).fontFamily(this.font()).maxLines(1)
+      }.width('100%').margin({ top: this.breakpoint === 'sm' ? 8 : 10 })
     }
-    .layoutWeight(1).constraintSize({ minHeight: this.hostGroupCardHeight() }).padding(0)
+    .layoutWeight(1).height(this.hostGroupCardHeight())
+    .padding(this.breakpoint === 'sm' ? 10 : 12)
     .borderRadius(this.breakpoint === 'sm' ? 16 : 14)
     .backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
     .border({ width: this.expandedHostGroup === 'moonlight' ? 1.5 : 0.5,
       color: this.expandedHostGroup === 'moonlight' ? this.accentColor : this.pal().cardBorder,
       style: BorderStyle.Solid })
-    .focusable(true)
-    .accessibilityText('Moonlight 主机分组' + (this.expandedHostGroup === 'moonlight' ? '，已展开' : '，已收起'))
     .onClick((): void => { this.toggleMoonlightGroup(); })
+  }
+
+  private moonlightGroupDetailPanelHeight(): number {
+    const count: number = this.visibleMoonlightHosts().length;
+    const padding: number = this.breakpoint === 'sm' ? 12 : 14;
+    const header: number = this.breakpoint === 'sm' ? 34 : 38;
+    const content: number = count === 0
+      ? header + (this.breakpoint === 'sm' ? 92 : 100)
+      : header + 10 + this.hostGroupHostGridHeight(count);
+    return padding * 2 + content;
   }
 
   @Builder moonlightGroupedDetailPanel() {
@@ -13716,12 +13704,12 @@ struct HostListPage {
             .fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
           Text(this.visibleMoonlightHosts().length.toString() + ' 台 · ' +
             this.moonlightGroupCatalogCount().toString() + ' 个应用')
-            .fontSize(12).fontColor(this.pal().text2).fontFamily(this.font()).margin({ top: 4 })
+            .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font()).margin({ top: 4 })
         }.alignItems(HorizontalAlign.Start).layoutWeight(1)
         Button() {
           MoonlightBrandIcon({ iconSize: 15, tint: this.accentColor, accessibilityLabel: '应用目录' })
         }
-        .width(AppUiMetrics.minTouchTarget).height(AppUiMetrics.minTouchTarget).borderRadius(14).padding(0).backgroundColor(this.pal().surface)
+        .width(28).height(28).borderRadius(14).padding(0).backgroundColor(this.pal().surface)
         .accessibilityText('打开 Moonlight 应用目录')
         .enabled(this.visibleMoonlightHosts().length > 0)
         .onClick((): void => {
@@ -13736,24 +13724,24 @@ struct HostListPage {
           MoonlightBrandIcon({ iconSize: 32, tint: this.pal().text3 })
           Text('暂无 Moonlight 主机').fontSize(13).fontColor(this.pal().text2)
             .fontFamily(this.font()).margin({ top: 10 })
-          Text('点击底部按钮添加主机').fontSize(12).fontColor(this.pal().text2)
+          Text('点击底部按钮添加主机').fontSize(11).fontColor(this.pal().text3)
             .fontFamily(this.font()).margin({ top: 4 })
-        }.width('100%').constraintSize({ minHeight: this.breakpoint === 'sm' ? 92 : 100 }).padding({ top: 12, bottom: 12 })
+        }.width('100%').height(this.breakpoint === 'sm' ? 92 : 100)
           .justifyContent(FlexAlign.Center).alignItems(HorizontalAlign.Center)
       } else {
-        Flex({ wrap: FlexWrap.Wrap, alignItems: ItemAlign.Start,
-          space: { main: LengthMetrics.vp(10), cross: LengthMetrics.vp(10) } }) {
+        Grid() {
           ForEach(this.visibleMoonlightHosts(), (view: MoonlightHostLocalView): void => {
-            Column() { this.moonlightGroupedHostCard(view) }
-              .width(hostGroupColumnsForBreakpoint(this.breakpoint) === 1 ? '100%' : 'calc(50% - 5vp)')
-              .flexShrink(0)
+            GridItem() { this.moonlightGroupedHostCard(view) }
           }, (view: MoonlightHostLocalView): string =>
             this.moonlightHostCardKey(view) + ':' + this.hostViewRevision.toString())
         }
-        .width('100%').margin({ top: 10 })
+        .columnsTemplate(hostGroupColumnsForBreakpoint(this.breakpoint) === 1 ? '1fr' : '1fr 1fr')
+        .rowsGap(10).columnsGap(10).width('100%')
+        .height(this.hostGroupHostGridHeight(this.visibleMoonlightHosts().length)).margin({ top: 10 })
       }
     }
-    .width('100%').visibility(this.expandedHostGroup === 'moonlight' ? Visibility.Visible : Visibility.None)
+    .width('100%').height(this.expandedHostGroup === 'moonlight' ?
+      this.moonlightGroupDetailPanelHeight() : 0)
     .padding(this.expandedHostGroup === 'moonlight' ? (this.breakpoint === 'sm' ? 12 : 14) : 0)
     .opacity(this.expandedHostGroup === 'moonlight' ? 1 : 0).clip(true)
     .borderRadius(this.breakpoint === 'sm' ? 16 : 15)
@@ -13767,7 +13755,7 @@ struct HostListPage {
   @Builder moonlightGroupedPhoneGroup() {
     Column() {
       Row() { this.moonlightGroupTypeCard() }
-        .width('100%').constraintSize({ minHeight: this.hostGroupCardHeight() })
+        .width('100%').height(this.hostGroupCardHeight())
       this.moonlightGroupedDetailPanel()
     }.width('100%').margin({ bottom: 10 })
   }
@@ -13778,7 +13766,7 @@ struct HostListPage {
         this.moonlightGroupTypeCard()
         Blank().width(10)
         Blank().layoutWeight(1)
-      }.width('100%').constraintSize({ minHeight: this.hostGroupCardHeight() }).alignItems(VerticalAlign.Top)
+      }.width('100%').height(this.hostGroupCardHeight()).alignItems(VerticalAlign.Top)
       this.moonlightGroupedDetailPanel()
     }.width('100%').margin({ bottom: 10 })
   }
@@ -13815,12 +13803,12 @@ struct HostListPage {
         }
         Column() {
           MoonlightBrandIcon({ iconSize: this.breakpoint === 'sm' ? 24 : 26,
-            tint: appUiButtonText(this.accentColor), accessibilityLabel: 'Moonlight 主机' })
+            tint: '#FFFFFF', accessibilityLabel: 'Moonlight 主机' })
         }
-        .width(this.breakpoint === 'sm' ? AppUiMetrics.minTouchTarget : 46)
-        .height(this.breakpoint === 'sm' ? AppUiMetrics.minTouchTarget : 46)
+        .width(this.breakpoint === 'sm' ? 42 : 46)
+        .height(this.breakpoint === 'sm' ? 42 : 46)
         .borderRadius(this.breakpoint === 'sm' ? 21 : 14)
-        .backgroundColor(appUiButtonFill(this.accentColor))
+        .backgroundColor(this.accentColor)
         .justifyContent(FlexAlign.Center)
         .margin({ right: this.breakpoint === 'sm' ? 10 : 12 })
         .onClick((): void => {
@@ -13840,7 +13828,7 @@ struct HostListPage {
           }.width('100%')
           if (view.host.locked === true) {
             Text('已锁定 · 需验证')
-              .fontSize(this.breakpoint === 'sm' ? 12 : 13).fontColor(this.pal().text2)
+              .fontSize(this.breakpoint === 'sm' ? 12 : 13).fontColor(this.pal().text3)
               .fontFamily(this.font()).margin({ top: this.breakpoint === 'sm' ? 3 : 4 })
           } else {
             Text('MOONLIGHT  ·  ' + this.protectedMoonlightCardValue(
@@ -13864,9 +13852,7 @@ struct HostListPage {
             Button() {
               Text('⋯').fontSize(18).fontColor(this.pal().text)
             }
-            .width(AppUiMetrics.minTouchTarget).height(AppUiMetrics.minTouchTarget)
-            .borderRadius(18).padding(0).backgroundColor(this.pal().surface)
-            .accessibilityText('Moonlight 主机操作')
+            .width(36).height(36).borderRadius(18).backgroundColor(this.pal().surface)
             .bindPopup(this.hostActionPopupId === unifiedMoonlightHostCardKey(view.host.id), {
               builder: this.moonlightActionMenuBuilder(view),
               placement: Placement.BottomRight,
@@ -13894,95 +13880,93 @@ struct HostListPage {
 
   @Builder moonlightGroupedHostCard(view: MoonlightHostLocalView) {
     if (view.host !== null) {
-      Column({ space: 8 }) {
-        Row() {
-          if (this.hostSelectionMode) {
-            Checkbox()
-              .select(this.hostSelectedIds.has(unifiedMoonlightHostCardKey(view.host.id)))
-              .selectedColor(this.accentColor).margin({ right: 7 }).monopolizeEvents(true)
-              .onChange((checked: boolean): void => {
-                this.toggleHostSelect(unifiedMoonlightHostCardKey(view.host?.id || ''), checked);
-              })
-          }
-          Button({ type: ButtonType.Normal }) {
-            MoonlightBrandIcon({ iconSize: this.breakpoint === 'sm' ? 21 : 23,
-              tint: appUiButtonText(this.accentColor), accessibilityLabel: 'Moonlight 主机' })
-          }
-          .width(AppUiMetrics.minTouchTarget).padding(0).focusable(true)
-          .accessibilityText('打开主机')
-          .height(AppUiMetrics.minTouchTarget)
-          .borderRadius(this.breakpoint === 'sm' ? 12 : 13)
-          .backgroundColor(appUiButtonFill(this.accentColor))
-          .margin({ right: this.breakpoint === 'sm' ? 9 : 10 })
+      Row() {
+        if (this.hostSelectionMode) {
+          Checkbox()
+            .select(this.hostSelectedIds.has(unifiedMoonlightHostCardKey(view.host.id)))
+            .selectedColor(this.accentColor).margin({ right: 7 }).monopolizeEvents(true)
+            .onChange((checked: boolean): void => {
+              this.toggleHostSelect(unifiedMoonlightHostCardKey(view.host?.id || ''), checked);
+            })
+        }
+        Column() {
+          MoonlightBrandIcon({ iconSize: this.breakpoint === 'sm' ? 21 : 23,
+            tint: '#FFFFFF', accessibilityLabel: 'Moonlight 主机' })
+        }
+        .width(this.breakpoint === 'sm' ? 40 : 42)
+        .height(this.breakpoint === 'sm' ? 40 : 42)
+        .borderRadius(this.breakpoint === 'sm' ? 12 : 13)
+        .backgroundColor(this.accentColor)
+        .justifyContent(FlexAlign.Center)
+        .margin({ right: this.breakpoint === 'sm' ? 9 : 10 })
+        .onClick((): void => {
+          this.handleMoonlightHostCardClick(view.host?.id || '');
+        })
+        Column() {
+          Text(view.host.displayName)
+            .fontSize(this.breakpoint === 'sm' ? 15 : 16)
+            .fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
+            .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+          Text(view.catalogItems.length.toString() + ' 个应用')
+            .fontSize(this.breakpoint === 'sm' ? 12 : 13)
+            .fontColor(this.pal().text2).fontFamily(this.font())
+            .margin({ top: 2 }).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+          Row() {
+            Text('端点').fontSize(11).fontColor(this.pal().text3).width(30)
+            Text(this.protectedMoonlightCardValue(view.host, this.moonlightAddressLabel(view.host)))
+              .fontSize(this.breakpoint === 'sm' ? 12 : 13)
+              .fontColor(this.pal().text2).fontFamily(this.font()).layoutWeight(1)
+              .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+          }.width('100%').margin({ top: 3 })
+        }.alignItems(HorizontalAlign.Start).layoutWeight(1)
           .onClick((): void => {
             this.handleMoonlightHostCardClick(view.host?.id || '');
           })
-          Column() {
-            Text(view.host.displayName)
-              .fontSize(this.breakpoint === 'sm' ? 15 : 16)
-              .fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
-              .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
-            Text(view.catalogItems.length.toString() + ' 个应用')
-              .fontSize(this.breakpoint === 'sm' ? 12 : 13)
-              .fontColor(this.pal().text2).fontFamily(this.font())
-              .margin({ top: 2 }).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-            Row() {
-              Text('端点').fontSize(11).fontColor(this.pal().text2).constraintSize({ minWidth: 30 })
-              Text(this.protectedMoonlightCardValue(view.host, this.moonlightAddressLabel(view.host)))
-                .fontSize(this.breakpoint === 'sm' ? 12 : 13)
-                .fontColor(this.pal().text2).fontFamily(this.font()).layoutWeight(1)
-                .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-            }.width('100%').margin({ top: 3 })
-          }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-            .onClick((): void => {
-              this.handleMoonlightHostCardClick(view.host?.id || '');
-            })
-        }.width('100%')
-        Flex({ wrap: FlexWrap.Wrap, alignItems: ItemAlign.Center,
-          space: { main: LengthMetrics.vp(8), cross: LengthMetrics.vp(8) } }) {
-          Button() {
-            MoonlightBrandIcon({ iconSize: 18, tint: this.accentColor,
-              accessibilityLabel: '应用目录' })
-          }
-          .width(AppUiMetrics.minTouchTarget)
-          .height(AppUiMetrics.minTouchTarget).borderRadius(19).padding(0)
-          .backgroundColor(this.pal().surface).accessibilityText('打开 Moonlight 应用目录')
-          .onClick((): void => {
-            if (!this.hostSelectionMode) {
-              void this.openMoonlightHost(view.host?.id || '', true);
+        Column() {
+          Row() {
+            Button() {
+              MoonlightBrandIcon({ iconSize: 18, tint: this.accentColor,
+                accessibilityLabel: '应用目录' })
             }
-          })
-          Button() {
-            SymbolGlyph($r('sys.symbol.square_and_pencil')).fontSize(16).fontColor([this.pal().text2])
+            .width(this.breakpoint === 'sm' ? 38 : 40)
+            .height(this.breakpoint === 'sm' ? 38 : 40).borderRadius(19).padding(0)
+            .backgroundColor(this.pal().surface).accessibilityText('打开 Moonlight 应用目录')
+            .onClick((): void => {
+              if (!this.hostSelectionMode) {
+                void this.openMoonlightHost(view.host?.id || '', true);
+              }
+            })
           }
-          .width(AppUiMetrics.minTouchTarget).height(AppUiMetrics.minTouchTarget)
-          .borderRadius(18).padding(0).backgroundColor(this.pal().surface)
-          .accessibilityText('编辑')
-          .onClick((): void => {
-            if (!this.hostSelectionMode) { void this.openMoonlightEditSheet(view); }
-          })
-          Button() {
-            SymbolGlyph(view.host.locked === true ? $r('sys.symbol.lock_open') :
-              $r('sys.symbol.ohos_lock')).fontSize(16).fontColor([this.pal().text2])
-          }
-          .width(AppUiMetrics.minTouchTarget).height(AppUiMetrics.minTouchTarget)
-          .borderRadius(18).padding(0).backgroundColor(this.pal().surface)
-          .accessibilityText(view.host.locked === true ? '解锁' : '上锁')
-          .onClick((): void => {
-            if (!this.hostSelectionMode) { void this.toggleMoonlightLock(view); }
-          })
-          Button() {
-            SymbolGlyph($r('sys.symbol.ohos_trash')).fontSize(16).fontColor([this.pal().danger])
-          }
-          .width(AppUiMetrics.minTouchTarget).height(AppUiMetrics.minTouchTarget)
-          .borderRadius(18).padding(0).backgroundColor(this.pal().surface)
-          .accessibilityText('删除')
-          .onClick((): void => {
-            if (!this.hostSelectionMode) { void this.doDeleteMoonlightHost(view); }
-          })
-        }.width('100%')
+          Row() {
+            Button() {
+              SymbolGlyph($r('sys.symbol.square_and_pencil')).fontSize(16).fontColor([this.pal().text2])
+            }
+            .width(36).height(36).borderRadius(18).padding(0).backgroundColor(this.pal().surface)
+            .accessibilityText('编辑')
+            .onClick((): void => {
+              if (!this.hostSelectionMode) { void this.openMoonlightEditSheet(view); }
+            })
+            Button() {
+              SymbolGlyph(view.host.locked === true ? $r('sys.symbol.lock_open') :
+                $r('sys.symbol.ohos_lock')).fontSize(16).fontColor([this.pal().text2])
+            }
+            .width(36).height(36).borderRadius(18).padding(0).backgroundColor(this.pal().surface)
+            .margin({ left: 8 }).accessibilityText(view.host.locked === true ? '解锁' : '上锁')
+            .onClick((): void => {
+              if (!this.hostSelectionMode) { void this.toggleMoonlightLock(view); }
+            })
+            Button() {
+              SymbolGlyph($r('sys.symbol.ohos_trash')).fontSize(16).fontColor([this.pal().danger])
+            }
+            .width(36).height(36).borderRadius(18).padding(0).backgroundColor(this.pal().surface)
+            .margin({ left: 8 }).accessibilityText('删除')
+            .onClick((): void => {
+              if (!this.hostSelectionMode) { void this.doDeleteMoonlightHost(view); }
+            })
+          }.margin({ top: 7 })
+        }.alignItems(HorizontalAlign.End).margin({ left: 10 })
       }
-      .width('100%').padding(10)
+      .width('100%').height(this.hostGroupHostCardHeight()).padding(6)
       .borderRadius(12).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
       .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
       .priorityGesture(LongPressGesture({ duration: 450 }).onAction((): void => {
@@ -14392,11 +14376,6 @@ struct HostListPage {
     }.width('100%').height('100%')
   }
 
-  private flatHostIconFill(host: RemoteHost): string {
-    return appUiButtonFill(host.protocol === 'ssh' ? this.pal().editColor :
-      (host.protocol === 'rdp' ? this.accentColor : this.pal().success));
-  }
-
   @Builder flatRemoteHostListItem(host: RemoteHost) {
     ListItem() {
       Row() {
@@ -14412,12 +14391,12 @@ struct HostListPage {
           Image(host.protocol === 'ssh' ? $r('app.media.icon_terminal') :
             (host.protocol === 'rdp' ? $r('app.media.icon_desktop') : $r('app.media.icon_laptop')))
             .width(this.breakpoint === 'sm' ? 24 : 26)
-            .height(this.breakpoint === 'sm' ? 24 : 26).fillColor(appUiButtonText(this.flatHostIconFill(host)))
+            .height(this.breakpoint === 'sm' ? 24 : 26).fillColor(Color.White)
         }
-        .width(this.breakpoint === 'sm' ? AppUiMetrics.minTouchTarget : 46)
-        .height(this.breakpoint === 'sm' ? AppUiMetrics.minTouchTarget : 46)
+        .width(this.breakpoint === 'sm' ? 42 : 46).height(this.breakpoint === 'sm' ? 42 : 46)
         .borderRadius(this.breakpoint === 'sm' ? 21 : 14)
-        .backgroundColor(this.flatHostIconFill(host))
+        .backgroundColor(host.protocol === 'ssh' ? this.pal().editColor :
+          (host.protocol === 'rdp' ? this.accentColor : this.pal().success))
         .justifyContent(FlexAlign.Center).margin({ right: this.breakpoint === 'sm' ? 10 : 12 })
         .onClick((): void => { this.handleHostCardClick(host); })
 
@@ -14452,7 +14431,7 @@ struct HostListPage {
               .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
           } else {
             Text('已锁定 · 需验证').fontSize(this.breakpoint === 'sm' ? 12 : 13)
-              .fontColor(this.pal().text2).margin({ top: this.breakpoint === 'sm' ? 3 : 4 })
+              .fontColor(this.pal().text3).margin({ top: this.breakpoint === 'sm' ? 3 : 4 })
               .fontFamily(this.font())
           }
           Row() {
@@ -14497,14 +14476,14 @@ struct HostListPage {
                   } else {
                     SymbolGlyph($r('sys.symbol.bolt_fill')).fontSize(17).fontColor([this.accentColor])
                   }
-                }.width(AppUiMetrics.minTouchTarget).height(AppUiMetrics.minTouchTarget).borderRadius(18).padding(0).backgroundColor(this.pal().surface)
+                }.width(36).height(36).borderRadius(18).padding(0).backgroundColor(this.pal().surface)
                   .accessibilityText('检测 RustDesk 在线状态')
                   .enabled(!this.hostPresenceProbeBusyIds.has(host.id))
                   .onClick((): void => { void this.probeHostConnectivity(host); })
               }
               Button() { Text('⋯').fontSize(18).fontColor(this.pal().text) }
-                .width(AppUiMetrics.minTouchTarget).height(AppUiMetrics.minTouchTarget).borderRadius(18).backgroundColor(this.pal().surface).padding(0)
-                .accessibilityText('主机操作').margin({ left: 4 })
+                .width(36).height(36).borderRadius(18).backgroundColor(this.pal().surface)
+                .margin({ left: 4 })
                 .bindPopup(this.hostActionPopupId === remoteHostCardKey(host.id), {
                   builder: this.hostActionMenuBuilder(host), placement: Placement.BottomRight,
                   enableArrow: true, popupColor: this.pal().card, width: this.hostActionPopupWidth(host),
@@ -14608,36 +14587,6 @@ struct HostListPage {
     }
   }
 
-  @Builder hostSearchField() {
-    Row() {
-      SymbolGlyph($r('sys.symbol.magnifyingglass')).fontSize(18).fontColor([this.pal().text2])
-        .margin({ left: 14, right: 8 }).accessibilityLevel('no')
-      TextInput({ placeholder: '搜索主机...', text: this.searchText })
-        .id('host-search-input').accessibilityText('搜索主机')
-        .backgroundColor(Color.Transparent).height(AppUiMetrics.minTouchTarget)
-        .fontColor(this.pal().text).placeholderColor(this.pal().text2)
-        .fontFamily(this.font()).layoutWeight(1)
-        .onChange((v: string) => { this.onSearchChange(v); })
-      if (this.searchText !== '') {
-        Button({ type: ButtonType.Normal }) {
-          SymbolGlyph($r('sys.symbol.xmark')).fontSize(16).fontColor([this.pal().text2])
-        }.width(AppUiMetrics.minTouchTarget).height(AppUiMetrics.minTouchTarget)
-          .padding(0).borderRadius(22).backgroundColor(Color.Transparent)
-          .focusable(true).focusOnTouch(false).accessibilityText('清除主机搜索')
-          .onClick(() => {
-            this.searchText = '';
-            this.refreshFilteredHostView();
-            try { this.getUIContext().getFocusController().requestFocus('host-search-input'); }
-            catch (_error) { /* The owning tab may have left the tree during the click. */ }
-          })
-      }
-    }.width('100%').height(AppUiMetrics.minTouchTarget).borderRadius(22)
-      .backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
-      .alignItems(VerticalAlign.Center)
-      .shadow({ radius: 12, color: 'rgba(0,0,0,0.06)', offsetY: 2 })
-      .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
-  }
-
   @Builder hostContent() {
     Column() {
       Stack() {
@@ -14666,37 +14615,34 @@ struct HostListPage {
         // 批量选择工具栏 (带出入动画)
         if (this.hostSelectionMode) {
           ListItem() {
-            // 保留桌面/手机计数差异；窄窗口与大字体允许操作按钮换行。
+            // desktop: 按钮全部左移 (侧边栏右侧); 手机/平板: 两端分布
             if (this.isDesktopDevice) {
-              Flex({ wrap: FlexWrap.Wrap, alignItems: ItemAlign.Center }) {
+              Row() {
                 Button(this.hostSelectedIds.size === this.selectionKeysForCurrentView().length ? '取消全选' : '全选').fontSize(12)
-                  .constraintSize({ minHeight: AppUiMetrics.minTouchTarget }).borderRadius(8)
-                  .margin({ bottom: 6 })
-                  .backgroundColor(this.pal().surface).fontColor(this.pal().text)
+                  .height(32).borderRadius(8)
+                  .backgroundColor(this.pal().surface).fontColor(this.accentColor)
                   .onClick(() => {
                     if (this.hostSelectedIds.size === this.selectionKeysForCurrentView().length) {
                       this.hostSelectedIds = new Set();
                     } else { this.hostSelectedIds = new Set(this.selectionKeysForCurrentView()); }
                   })
                 Text('已选 ' + this.hostSelectedIds.size).fontSize(13).fontColor(this.pal().text2)
-                  .margin({ left: 12, right: 12, bottom: 6 })
+                  .margin({ left: 12, right: 12 })
                 if (this.hostSelectedIds.size > 0) {
                   Button('删除(' + this.hostSelectedIds.size + ')').fontSize(12)
-                    .constraintSize({ minHeight: AppUiMetrics.minTouchTarget }).borderRadius(8)
-                    .backgroundColor(appUiButtonFill(this.pal().danger)).fontColor(appUiButtonText(this.pal().danger))
-                    .margin({ right: 6, bottom: 6 })
+                    .height(32).borderRadius(8)
+                    .backgroundColor(this.pal().danger).fontColor('#FFFFFF')
+                    .margin({ right: 6 })
                     .onClick(() => { void this.doHostBatchDelete(); })
                 }
                 if (this.hostReorderEnabled) {
-                  Button('完成').fontSize(12)
-                    .constraintSize({ minHeight: AppUiMetrics.minTouchTarget }).borderRadius(8)
-                    .backgroundColor(appUiButtonFill(this.accentColor)).fontColor(appUiButtonText(this.accentColor))
-                    .margin({ right: 6, bottom: 6 })
+                  Button('完成').fontSize(12).height(32).borderRadius(8)
+                    .backgroundColor(this.accentColor).fontColor('#FFFFFF')
+                    .margin({ right: 6 })
                     .onClick(() => { this.commitHostReorder(); })
                 }
                 Button('取消').fontSize(12)
-                  .constraintSize({ minHeight: AppUiMetrics.minTouchTarget }).borderRadius(8)
-                  .margin({ bottom: 6 })
+                  .height(32).borderRadius(8)
                   .backgroundColor(this.pal().surface).fontColor(this.pal().text2)
                   .onClick(() => { this.cancelHostEdit(); })
               }.width('100%').padding({ left: 20, right: 20, bottom: 6 })
@@ -14709,37 +14655,35 @@ struct HostListPage {
                   )
                 )
             } else {
-              Flex({ wrap: FlexWrap.Wrap, alignItems: ItemAlign.Center }) {
+              Row() {
                 Button(this.hostSelectedIds.size === this.selectionKeysForCurrentView().length ? '取消全选' : '全选').fontSize(12)
-                  .constraintSize({ minHeight: AppUiMetrics.minTouchTarget }).borderRadius(8)
-                  .margin({ bottom: 6 })
-                  .backgroundColor(this.pal().surface).fontColor(this.pal().text)
+                  .height(32).borderRadius(8)
+                  .backgroundColor(this.pal().surface).fontColor(this.accentColor)
                   .onClick(() => {
                     if (this.hostSelectedIds.size === this.selectionKeysForCurrentView().length) {
                       this.hostSelectedIds = new Set();
                     } else { this.hostSelectedIds = new Set(this.selectionKeysForCurrentView()); }
                   })
+                Blank()
                 if (!this.hostReorderEnabled) {
                   Text('已选 ' + this.hostSelectedIds.size).fontSize(13).fontColor(this.pal().text2)
-                    .margin({ left: 12, right: 12, bottom: 6 })
                 }
+                Blank()
                 if (this.hostSelectedIds.size > 0) {
                   Button('删除(' + this.hostSelectedIds.size + ')').fontSize(12)
-                    .constraintSize({ minHeight: AppUiMetrics.minTouchTarget }).borderRadius(8)
-                    .backgroundColor(appUiButtonFill(this.pal().danger)).fontColor(appUiButtonText(this.pal().danger))
-                    .margin({ right: 6, bottom: 6 })
+                    .height(32).borderRadius(8)
+                    .backgroundColor(this.pal().danger).fontColor('#FFFFFF')
+                    .margin({ right: 6 })
                     .onClick(() => { void this.doHostBatchDelete(); })
                 }
                 if (this.hostReorderEnabled) {
-                  Button('完成').fontSize(12)
-                    .constraintSize({ minHeight: AppUiMetrics.minTouchTarget }).borderRadius(8)
-                    .backgroundColor(appUiButtonFill(this.accentColor)).fontColor(appUiButtonText(this.accentColor))
-                    .margin({ right: 6, bottom: 6 })
+                  Button('完成').fontSize(12).height(32).borderRadius(8)
+                    .backgroundColor(this.accentColor).fontColor('#FFFFFF')
+                    .margin({ right: 6 })
                     .onClick(() => { this.commitHostReorder(); })
                 }
                 Button('取消').fontSize(12)
-                  .constraintSize({ minHeight: AppUiMetrics.minTouchTarget }).borderRadius(8)
-                  .margin({ bottom: 6 })
+                  .height(32).borderRadius(8)
                   .backgroundColor(this.pal().surface).fontColor(this.pal().text2)
                   .onClick(() => { this.cancelHostEdit(); })
               }.width('100%').padding({ left: 20, right: 20, bottom: 6 })
@@ -14772,13 +14716,11 @@ struct HostListPage {
             Column() {
               SymbolGlyph($r('sys.symbol.desktop_fill'))
                 .fontSize(48).fontColor([this.pal().text3])
-              Text(this.searchText.trim().length > 0 || this.workspaceGroupId.length > 0 ?
-                '没有匹配的远程主机' : '当前列表暂无远程主机')
+              Text('还没有远程主机')
                 .fontSize(17).fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
                 .margin({ top: 16 })
-              Text(this.searchText.trim().length > 0 || this.workspaceGroupId.length > 0 ?
-                '请调整搜索词或分组筛选' : '点击底部 + 添加远程主机')
-                .fontSize(13).fontColor(this.pal().text2).fontFamily(this.font())
+              Text('点击底部 + 添加远程主机')
+                .fontSize(13).fontColor(this.pal().text3).fontFamily(this.font())
                 .margin({ top: 6 }).lineHeight(20)
             }.width('100%').constraintSize({ minHeight: 400 }).justifyContent(FlexAlign.Center)
               .alignItems(HorizontalAlign.Center)
@@ -14825,19 +14767,55 @@ struct HostListPage {
               Row() {
                 Text(this.hostPageTitle).fontSize(27).fontWeight(FontWeight.Bold)
                   .fontColor(this.pal().text).fontFamily(this.font()).layoutWeight(1)
-                  .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-                Row() { this.hostSearchField() }.width('50%').constraintSize({ maxWidth: 480 })
-              }.width('100%').constraintSize({ minHeight: 52 }).padding({ left: 8, right: 8, bottom: 8 })
+              Row() {
+                Text('⌕').fontSize(18).fontColor(this.pal().text3).margin({ left: 14, right: 8 })
+                TextInput({ placeholder: '搜索主机...', text: this.searchText })
+                  .backgroundColor(Color.Transparent).height(40)
+                  .fontColor(this.pal().text).placeholderColor(this.pal().text3)
+                  .fontFamily(this.font()).layoutWeight(1)
+                  .onChange((v: string) => { this.onSearchChange(v); })
+                if (this.searchText !== '') {
+                  Text('✕').fontSize(14).fontColor(this.pal().text3).margin({ right: 14 })
+                    .onClick(() => {
+                      this.searchText = '';
+                      this.refreshFilteredHostView();
+                    })
+                }
+              }.width('50%').constraintSize({ maxWidth: 480 })
+                .height(44).borderRadius(22)
+                .backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
+                .alignItems(VerticalAlign.Center)
+                .shadow({ radius: 12, color: 'rgba(0,0,0,0.06)', offsetY: 2 })
+                .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
+              }.width('100%').height(52).padding({ left: 8, right: 8, bottom: 8 })
             }.width('100%').backgroundColor(Color.Transparent)
           } else {
             Column() {
               Row().width('100%').height(this.topSafeHeightVp() + this.titleOffsetY())
               Row() {
                 Text(this.hostPageTitle).fontSize(27).fontWeight(FontWeight.Bold)
-                  .fontColor(this.pal().text).fontFamily(this.font()).width('100%')
-                  .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+                  .fontColor(this.pal().text).fontFamily(this.font())
               }.width('100%').padding({ left: 24, right: 24, bottom: 8 })
-              Row() { this.hostSearchField() }.width('92%')
+              Row() {
+                Text('⌕').fontSize(18).fontColor(this.pal().text3).margin({ left: 14, right: 8 })
+                TextInput({ placeholder: '搜索主机...', text: this.searchText })
+                  .backgroundColor(Color.Transparent).height(40)
+                  .fontColor(this.pal().text).placeholderColor(this.pal().text3)
+                  .fontFamily(this.font()).layoutWeight(1)
+                  .onChange((v: string) => { this.onSearchChange(v); })
+                if (this.searchText !== '') {
+                  Text('✕').fontSize(14).fontColor(this.pal().text3).margin({ right: 14 })
+                    .onClick(() => {
+                      this.searchText = '';
+                      this.refreshFilteredHostView();
+                    })
+                }
+              }.width('92%')
+                .height(44).borderRadius(22)
+                .backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
+                .alignItems(VerticalAlign.Center)
+                .shadow({ radius: 12, color: 'rgba(0,0,0,0.06)', offsetY: 2 })
+                .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
             }.width('100%').backgroundColor(Color.Transparent)
           }
         }
@@ -14845,12 +14823,6 @@ struct HostListPage {
         .padding({ left: 16, right: 16 })
         .position({ x: 0, y: 0 })
         .hitTestBehavior(HitTestMode.Transparent)
-        .onAreaChange((_old: Area, next: Area): void => {
-          const height: number = next.height as number;
-          if (Number.isFinite(height) && height > 0 && Math.abs(height - this.hostHeaderMeasuredHeight) >= 1) {
-            this.hostHeaderMeasuredHeight = height;
-          }
-        })
       }
       .width('100%').height('100%')
 
@@ -15496,95 +15468,134 @@ struct HostListPage {
 
   @Builder settingsAccordionHeader(section: string, icon: Resource, title: string, subtitle: string,
     terminalStyle: boolean = false, moonlightStyle: boolean = false) {
-    Button({ type: ButtonType.Normal }) {
-      Row() {
-        Stack({ alignContent: Alignment.Center }) {
-          Column()
-            .width(34)
-            .height(34)
-            .borderRadius(10)
-            .backgroundColor(this.pal().surface)
+    Row() {
+      Stack({ alignContent: Alignment.Center }) {
+        Column()
+          .width(34)
+          .height(34)
+          .borderRadius(10)
+          .backgroundColor(this.pal().surface)
+          .opacity(this.settingsSectionExpanded(section) ? 1 : 0)
+          .scale({ x: this.settingsSectionExpanded(section) ? 1 : 0.92,
+            y: this.settingsSectionExpanded(section) ? 1 : 0.92 })
+          .animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
+
+        if (moonlightStyle) {
+          MoonlightBrandIcon({
+            iconSize: 21,
+            tint: this.settingsSectionExpanded(section) ? this.accentColor : this.pal().text,
+            accessibilityLabel: 'Moonlight'
+          })
+        } else if (terminalStyle) {
+          Image($r('app.media.icon_terminal'))
+            .width(21).height(21).fillColor(this.pal().text)
+            .opacity(this.settingsSectionExpanded(section) ? 0 : 1)
+            .scale({ x: this.settingsSectionExpanded(section) ? 0.92 : 1,
+              y: this.settingsSectionExpanded(section) ? 0.92 : 1 })
+            .animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
+          Image($r('app.media.icon_terminal'))
+            .width(21).height(21).fillColor(this.accentColor)
             .opacity(this.settingsSectionExpanded(section) ? 1 : 0)
             .scale({ x: this.settingsSectionExpanded(section) ? 1 : 0.92,
               y: this.settingsSectionExpanded(section) ? 1 : 0.92 })
             .animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
+        } else {
+          SymbolGlyph(icon)
+            .fontSize(21)
+            .fontColor([this.pal().text])
+            .opacity(this.settingsSectionExpanded(section) ? 0 : 1)
+            .scale({ x: this.settingsSectionExpanded(section) ? 0.92 : 1,
+              y: this.settingsSectionExpanded(section) ? 0.92 : 1 })
+            .animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
 
-          if (moonlightStyle) {
-            MoonlightBrandIcon({
-              iconSize: 21,
-              tint: this.settingsSectionExpanded(section) ? this.accentColor : this.pal().text,
-              accessibilityLabel: 'Moonlight'
-            })
-          } else if (terminalStyle) {
-            Image($r('app.media.icon_terminal'))
-              .width(21).height(21).fillColor(this.pal().text)
-              .opacity(this.settingsSectionExpanded(section) ? 0 : 1)
-              .scale({ x: this.settingsSectionExpanded(section) ? 0.92 : 1,
-                y: this.settingsSectionExpanded(section) ? 0.92 : 1 })
-              .animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
-            Image($r('app.media.icon_terminal'))
-              .width(21).height(21).fillColor(this.accentColor)
-              .opacity(this.settingsSectionExpanded(section) ? 1 : 0)
-              .scale({ x: this.settingsSectionExpanded(section) ? 1 : 0.92,
-                y: this.settingsSectionExpanded(section) ? 1 : 0.92 })
-              .animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
-          } else {
-            SymbolGlyph(icon)
-              .fontSize(21)
-              .fontColor([this.pal().text])
-              .opacity(this.settingsSectionExpanded(section) ? 0 : 1)
-              .scale({ x: this.settingsSectionExpanded(section) ? 0.92 : 1,
-                y: this.settingsSectionExpanded(section) ? 0.92 : 1 })
-              .animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
-
-            SymbolGlyph(icon)
-              .fontSize(21)
-              .fontColor([this.accentColor])
-              .opacity(this.settingsSectionExpanded(section) ? 1 : 0)
-              .scale({ x: this.settingsSectionExpanded(section) ? 1 : 0.92,
-                y: this.settingsSectionExpanded(section) ? 1 : 0.92 })
-              .animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
-          }
+          SymbolGlyph(icon)
+            .fontSize(21)
+            .fontColor([this.accentColor])
+            .opacity(this.settingsSectionExpanded(section) ? 1 : 0)
+            .scale({ x: this.settingsSectionExpanded(section) ? 1 : 0.92,
+              y: this.settingsSectionExpanded(section) ? 1 : 0.92 })
+            .animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
         }
-        .width(34).height(34).borderRadius(10)
-        .margin({ right: 12 })
+      }
+      .width(34).height(34).borderRadius(10)
+      .margin({ right: 12 })
 
-        Column() {
-          Text(title)
-            .fontSize(16)
-            .fontWeight(FontWeight.Medium)
-            .fontColor(this.pal().text)
-            .fontFamily(this.font())
-          Text(subtitle)
-            .fontSize(12)
-            .fontColor(this.pal().text2)
-            .fontFamily(this.font())
-            .margin({ top: 2 })
-        }
-        .alignItems(HorizontalAlign.Start)
-        .layoutWeight(1)
+      Column() {
+        Text(title)
+          .fontSize(16)
+          .fontWeight(FontWeight.Medium)
+          .fontColor(this.pal().text)
+          .fontFamily(this.font())
+        Text(subtitle)
+          .fontSize(11)
+          .fontColor(this.pal().text3)
+          .fontFamily(this.font())
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+          .margin({ top: 2 })
+      }
+      .alignItems(HorizontalAlign.Start)
+      .layoutWeight(1)
 
-        SymbolGlyph($r('sys.symbol.chevron_right'))
-          .fontSize(18)
-          .fontColor([this.pal().text3])
-          .rotate({ angle: this.settingsSectionExpanded(section) ? 90 : 0 })
-          .animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
-      }.width('100%').constraintSize({ minHeight: AppUiMetrics.sheetHeaderMinHeight })
-        .padding({ left: 16, right: 18, top: 12, bottom: 12 })
+      SymbolGlyph($r('sys.symbol.chevron_right'))
+        .fontSize(18)
+        .fontColor([this.pal().text3])
+        .rotate({ angle: this.settingsSectionExpanded(section) ? 90 : 0 })
+        .animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
     }
     .width('100%')
-    .padding(0)
+    .height(64)
+    .padding({ left: 16, right: 18 })
     .borderRadius(20)
     .backgroundColor(this.pal().card)
     .backgroundBlurStyle(BlurStyle.Regular)
     .shadow({ radius: 12, color: 'rgba(0,0,0,0.035)', offsetY: 3 })
     .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
-    .focusable(true).accessibilityText(title + (this.settingsSectionExpanded(section) ? '，已展开' : '，已折叠') + '，' + subtitle)
     .onClick((): void => { this.toggleSettingsSection(section); })
   }
 
   @Builder settingsActionHeader(icon: Resource, title: string, subtitle: string, action: () => void, imageIcon: boolean = false) {
-    AppSettingsActionRow({ icon, title, detail: subtitle, imageIcon, onAction: action })
+    Row() {
+      Row() {
+        if (imageIcon) {
+          Image(icon).width(21).height(21).fillColor(this.pal().text)
+        } else {
+          SymbolGlyph(icon).fontSize(21).fontColor([this.pal().text])
+        }
+      }
+      .width(34).height(34).borderRadius(10)
+      .justifyContent(FlexAlign.Center)
+      .backgroundColor(this.pal().surface)
+      .margin({ right: 12 })
+
+      Column() {
+        Text(title)
+          .fontSize(16)
+          .fontWeight(FontWeight.Medium)
+          .fontColor(this.pal().text)
+          .fontFamily(this.font())
+        Text(subtitle)
+          .fontSize(11)
+          .fontColor(this.pal().text3)
+          .fontFamily(this.font())
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+          .margin({ top: 2 })
+      }
+      .alignItems(HorizontalAlign.Start)
+      .layoutWeight(1)
+
+      SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(18).fontColor([this.pal().text3])
+    }
+    .width('100%')
+    .height(64)
+    .padding({ left: 16, right: 18 })
+    .borderRadius(20)
+    .backgroundColor(this.pal().card)
+    .backgroundBlurStyle(BlurStyle.Regular)
+    .shadow({ radius: 12, color: 'rgba(0,0,0,0.035)', offsetY: 3 })
+    .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
+    .onClick(action)
   }
 
   @Builder settingsContent() {
@@ -15596,41 +15607,39 @@ struct HostListPage {
 
         // --- 账号卡片 (小卡片, 点击弹出Sheet) ---
         ListItem() {
-          Button({ type: ButtonType.Normal }) {
-            Row() {
-              // 左侧头像
-              if (this.appCloneLocalOnly) {
-                Text(this.appCloneIsClone ? '分' : '本').fontSize(18).fontWeight(FontWeight.Bold)
-                  .fontColor(Color.White).textAlign(TextAlign.Center)
-                  .width(40).height(40).borderRadius(20)
-                  .backgroundColor(this.accentColor).padding({ top: 8 })
-              } else if (this.accountAvatarUrl !== '') {
-                Image(this.accountAvatarUrl).width(40).height(40).borderRadius(20)
-              } else if (this.auth.isLoggedIn()) {
-                Text('👤').fontSize(30)
-              } else {
-                Text('👤').fontSize(30)
-              }
-              // 中间信息列
-              Column() {
-                Text(this.appCloneLocalOnly ?
-                  (this.appCloneIsClone ? 'RemoteDesk 应用分身' : 'RemoteDesk 本地安全模式') :
-                  (this.accountDisplayName !== '' ? this.accountDisplayName : '华为账号'))
-                  .fontSize(19).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
-                  .fontFamily(this.font())
-                Text(this.appCloneLocalOnly ? this.appCloneStatusText :
-                  ('' + this.hostCount + ' 主机 · ' + this.keyCount + ' 密钥 · ' + this.totpCount + ' 2FA'))
-                  .fontSize(11).fontColor(this.pal().text2).fontFamily(this.font()).margin({ top: 2 })
-              }
-              .alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 12 })
-              SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(20).fontColor([this.pal().text2])
+          Row() {
+            // 左侧头像
+            if (this.appCloneLocalOnly) {
+              Text(this.appCloneIsClone ? '分' : '本').fontSize(18).fontWeight(FontWeight.Bold)
+                .fontColor(Color.White).textAlign(TextAlign.Center)
+                .width(40).height(40).borderRadius(20)
+                .backgroundColor(this.accentColor).padding({ top: 8 })
+            } else if (this.accountAvatarUrl !== '') {
+              Image(this.accountAvatarUrl).width(40).height(40).borderRadius(20)
+            } else if (this.auth.isLoggedIn()) {
+              Text('👤').fontSize(30)
+            } else {
+              Text('👤').fontSize(30)
             }
-            .width('100%').constraintSize({ minHeight: 75 }).padding({ left: 24, right: 24, top: 8, bottom: 8 }).alignItems(VerticalAlign.Center)
-            .borderRadius(22).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
-            .shadow({ radius: 16, color: 'rgba(0,0,0,0.04)', offsetY: 4 })
-            .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
-          }.width('100%').padding(0).backgroundColor(Color.Transparent).borderRadius(0)
-            .focusable(true).onClick(() => { this.openSettingsLeafSheet(SETTINGS_SHEET_ACCOUNT); })
+            // 中间信息列
+            Column() {
+              Text(this.appCloneLocalOnly ?
+                (this.appCloneIsClone ? 'RemoteDesk 应用分身' : 'RemoteDesk 本地安全模式') :
+                (this.accountDisplayName !== '' ? this.accountDisplayName : '华为账号'))
+                .fontSize(19).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
+                .fontFamily(this.font())
+              Text(this.appCloneLocalOnly ? this.appCloneStatusText :
+                ('' + this.hostCount + ' 主机 · ' + this.keyCount + ' 密钥 · ' + this.totpCount + ' 2FA'))
+                .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font()).margin({ top: 2 })
+            }
+            .alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 12 })
+            SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(20).fontColor([this.pal().text3])
+          }
+          .width('100%').height(75).padding({ left: 24, right: 24 }).alignItems(VerticalAlign.Center)
+          .borderRadius(22).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
+          .shadow({ radius: 16, color: 'rgba(0,0,0,0.04)', offsetY: 4 })
+          .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
+          .onClick(() => { this.openSettingsLeafSheet(SETTINGS_SHEET_ACCOUNT); })
         }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 20 })
         .id('account_card_' + this.loginRefreshKey)
 
@@ -15642,20 +15651,18 @@ struct HostListPage {
         // --- 个性化卡片 ---
         ListItem() {
           Column() {
-            Text('个性化').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text2)
+            Text('个性化').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text3)
               .fontFamily(this.font()).padding({ left: 8, bottom: 8 })
             Column() {
-              Button({ type: ButtonType.Normal }) {
-                Row() {
-                  Row() { SymbolGlyph($r('sys.symbol.paintpalette_fill')).fontSize(22).fontColor([this.pal().text]) }
-                    .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
-                  Text('主题色').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
-                    .fontColor(this.pal().text).fontFamily(this.font()).layoutWeight(1).margin({ left: 4 })
-                  Column().width(44).height(24).borderRadius(12).backgroundColor(this.accentColor)
-                  Text(' >').fontSize(14).fontColor(this.pal().text2).margin({ left: 6 })
-                }.width('100%').constraintSize({ minHeight: 60 }).padding({ left: 16, right: 16, top: 8, bottom: 8 })
-              }.width('100%').padding(0).backgroundColor(Color.Transparent).borderRadius(0)
-                .focusable(true).onClick(() => { this.openSettingsLeafSheet(SETTINGS_SHEET_ACCENT_COLOR); })
+              Row() {
+                Row() { SymbolGlyph($r('sys.symbol.paintpalette_fill')).fontSize(22).fontColor([this.pal().text]) }
+                  .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
+                Text('主题色').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
+                  .fontColor(this.pal().text).fontFamily(this.font()).layoutWeight(1).margin({ left: 4 })
+                Column().width(44).height(24).borderRadius(12).backgroundColor(this.accentColor)
+                Text(' >').fontSize(14).fontColor(this.pal().text3).margin({ left: 6 })
+              }.width('100%').height(60).padding({ left: 16, right: 16 })
+              .onClick(() => { this.openSettingsLeafSheet(SETTINGS_SHEET_ACCENT_COLOR); })
               this.cardDivider()
               // 深色模式(含跟随系统)
               Column() {
@@ -15665,8 +15672,6 @@ struct HostListPage {
                   Text('深色模式').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
                     .fontColor(this.pal().text).fontFamily(this.font()).layoutWeight(1).margin({ left: 4 })
                   Toggle({ type: ToggleType.Switch, isOn: this.theme === 'dark' })
-                  .constraintSize({ minWidth: 52, minHeight: AppUiMetrics.minTouchTarget })
-                  .focusable(true).accessibilityText('深色模式')
                     .selectedColor(this.accentColor)
                     .onChange((on: boolean) => {
                       if (this.followSystem) {
@@ -15676,8 +15681,8 @@ struct HostListPage {
                       }
                       this.applyManualTheme(on, 'manual-toggle');
                     })
-                    .enabled(!this.followSystem)
-                }.width('100%').constraintSize({ minHeight: 60 }).padding({ left: 16, right: 16, top: 8, bottom: 8 })
+                    .scale({ x: 0.92, y: 0.92 }).enabled(!this.followSystem)
+                }.width('100%').height(60).padding({ left: 16, right: 16 })
                 Row() {
                   Blank().width(16)
                   Column().layoutWeight(1).height(0.5).backgroundColor(this.pal().divider)
@@ -15690,8 +15695,6 @@ struct HostListPage {
                   Text('跟随系统').fontSize(14).fontWeight(FontWeight.Normal)
                     .fontColor(this.pal().text).fontFamily(this.font()).layoutWeight(1).margin({ left: 4 })
                   Toggle({ type: ToggleType.Switch, isOn: this.followSystem })
-                  .constraintSize({ minWidth: 52, minHeight: AppUiMetrics.minTouchTarget })
-                  .focusable(true).accessibilityText('跟随系统')
                     .selectedColor(this.accentColor)
                     .onChange((on: boolean) => {
                       if (on === this.followSystem) {
@@ -15705,39 +15708,35 @@ struct HostListPage {
                         this.applyManualTheme(this.theme === 'dark', 'follow-off');
                       }
                     })
-
-                }.width('100%').constraintSize({ minHeight: 52 }).padding({ left: 16, right: 16, top: 8, bottom: 8 })
+                    .scale({ x: 0.88, y: 0.88 })
+                }.width('100%').height(52).padding({ left: 16, right: 16 })
               }
               this.cardDivider()
-              Button({ type: ButtonType.Normal }) {
+              Row() {
+                Row() { SymbolGlyph($r('sys.symbol.camera_fill')).fontSize(22).fontColor([this.pal().text]) }
+                  .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
+                Text('壁纸').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
+                  .fontColor(this.pal().text).fontFamily(this.font()).layoutWeight(1).margin({ left: 4 })
                 Row() {
-                  Row() { SymbolGlyph($r('sys.symbol.camera_fill')).fontSize(22).fontColor([this.pal().text]) }
-                    .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
-                  Text('壁纸').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
-                    .fontColor(this.pal().text).fontFamily(this.font()).layoutWeight(1).margin({ left: 4 })
-                  Row() {
-                    ForEach(this.wallpaperItems.slice(0, 4), (item: WallpaperItem, idx: number) => {
-                      Column().width(20).height(20).borderRadius(10).backgroundColor(item.color).margin({ left: idx > 0 ? 4 : 0 })
-                        .border({ width: this.wallpaperIdx === idx ? 2 : 0, color: this.accentColor })
-                    })
-                  }
-                  Text(' >').fontSize(14).fontColor(this.pal().text2).margin({ left: 8 })
-                }.width('100%').constraintSize({ minHeight: 60 }).padding({ left: 16, right: 16, top: 8, bottom: 8 })
-              }.width('100%').padding(0).backgroundColor(Color.Transparent).borderRadius(0)
-                .focusable(true).onClick(() => { this.openSettingsLeafSheet(SETTINGS_SHEET_WALLPAPER); })
+                  ForEach(this.wallpaperItems.slice(0, 4), (item: WallpaperItem, idx: number) => {
+                    Column().width(20).height(20).borderRadius(10).backgroundColor(item.color).margin({ left: idx > 0 ? 4 : 0 })
+                      .border({ width: this.wallpaperIdx === idx ? 2 : 0, color: this.accentColor })
+                  })
+                }
+                Text(' >').fontSize(14).fontColor(this.pal().text3).margin({ left: 8 })
+              }.width('100%').height(60).padding({ left: 16, right: 16 })
+              .onClick(() => { this.openSettingsLeafSheet(SETTINGS_SHEET_WALLPAPER); })
               this.cardDivider()
               // 光晕颜色 (沉浸光感悬浮栏渐变遮罩色)
-              Button({ type: ButtonType.Normal }) {
-                Row() {
-                  Row() { SymbolGlyph($r('sys.symbol.sun_max_fill')).fontSize(22).fontColor([this.pal().text]) }
-                    .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
-                  Text('光晕颜色').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
-                    .fontColor(this.pal().text).fontFamily(this.font()).layoutWeight(1).margin({ left: 4 })
-                  Column().width(24).height(24).borderRadius(12).backgroundColor(this.haloColor)
-                  Text(' >').fontSize(14).fontColor(this.pal().text2).margin({ left: 6 })
-                }.width('100%').constraintSize({ minHeight: 60 }).padding({ left: 16, right: 16, top: 8, bottom: 8 })
-              }.width('100%').padding(0).backgroundColor(Color.Transparent).borderRadius(0)
-                .focusable(true).onClick(() => { this.openSettingsLeafSheet(SETTINGS_SHEET_HALO_COLOR); })
+              Row() {
+                Row() { SymbolGlyph($r('sys.symbol.sun_max_fill')).fontSize(22).fontColor([this.pal().text]) }
+                  .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
+                Text('光晕颜色').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
+                  .fontColor(this.pal().text).fontFamily(this.font()).layoutWeight(1).margin({ left: 4 })
+                Column().width(24).height(24).borderRadius(12).backgroundColor(this.haloColor)
+                Text(' >').fontSize(14).fontColor(this.pal().text3).margin({ left: 6 })
+              }.width('100%').height(60).padding({ left: 16, right: 16 })
+              .onClick(() => { this.openSettingsLeafSheet(SETTINGS_SHEET_HALO_COLOR); })
               this.cardDivider()
               Row() {
                 Row() { SymbolGlyph($r('sys.symbol.sun_max_fill')).fontSize(22).fontColor([this.pal().text]) }
@@ -15745,15 +15744,13 @@ struct HostListPage {
                 Column() {
                   Text('环境光调节光效').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
                     .fontColor(this.pal().text).fontFamily(this.font())
-                  Text('根据环境亮度微调光晕强度').fontSize(11).fontColor(this.pal().text2).fontFamily(this.font())
+                  Text('根据环境亮度微调光晕强度').fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
                 }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
                 Toggle({ type: ToggleType.Switch, isOn: this.ambientLightEffectEnabled })
-                  .constraintSize({ minWidth: 52, minHeight: AppUiMetrics.minTouchTarget })
-                  .focusable(true).accessibilityText('环境光调节光效')
                   .selectedColor(this.accentColor)
-
+                  .scale({ x: 0.88, y: 0.88 })
                   .onChange((on: boolean): void => { this.saveAmbientLightEffectEnabled(on); })
-              }.width('100%').constraintSize({ minHeight: 62 }).padding({ left: 16, right: 16, top: 8, bottom: 8 })
+              }.width('100%').height(62).padding({ left: 16, right: 16 })
               this.cardDivider()
               Row() {
                 Row() { SymbolGlyph($r('sys.symbol.eye_slash')).fontSize(22).fontColor([this.pal().text]) }
@@ -15762,14 +15759,12 @@ struct HostListPage {
                   Text('隐藏主机卡片敏感信息').fontSize(AppTheme.fontSize.body)
                     .fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
                   Text('隐藏地址、端口、用户名和 RustDesk ID；自定义主机名称仍显示')
-                    .fontSize(11).fontColor(this.pal().text2).fontFamily(this.font())
+                    .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
                 }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
                 Toggle({ type: ToggleType.Switch, isOn: this.hostCardSensitiveInfoHidden })
-                  .constraintSize({ minWidth: 52, minHeight: AppUiMetrics.minTouchTarget })
-                  .focusable(true).accessibilityText('隐藏主机卡片敏感信息')
-                  .selectedColor(this.accentColor)
+                  .selectedColor(this.accentColor).scale({ x: 0.88, y: 0.88 })
                   .onChange((on: boolean): void => { this.saveHostCardSensitiveInfoHidden(on); })
-              }.width('100%').constraintSize({ minHeight: 66 }).padding({ left: 16, right: 16, top: 8, bottom: 8 })
+              }.width('100%').height(66).padding({ left: 16, right: 16 })
             }.borderRadius(24).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
             .shadow({ radius: 16, color: 'rgba(0,0,0,0.04)', offsetY: 4 })
             .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
@@ -15787,7 +15782,8 @@ struct HostListPage {
             }
           })
         }
-        .visibility(this.settingsSectionExpanded(SETTINGS_SECTION_APPEARANCE) ? Visibility.Visible : Visibility.None)
+        .constraintSize({ maxHeight: this.settingsSectionExpanded(SETTINGS_SECTION_APPEARANCE) ?
+          this.settingsSectionExpandedMaxHeight(SETTINGS_SECTION_APPEARANCE) : 0 })
         .opacity(this.settingsSectionExpanded(SETTINGS_SECTION_APPEARANCE) ? 1 : 0)
         .scale({ x: 1, y: this.settingsSectionExpanded(SETTINGS_SECTION_APPEARANCE) ? 1 : 0.98 })
         .translate({ y: this.settingsSectionExpanded(SETTINGS_SECTION_APPEARANCE) ? 0 : -8 })
@@ -15801,7 +15797,7 @@ struct HostListPage {
 
         ListItem() {
           Column() {
-            Text('主页与主机列表').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text2)
+            Text('主页与主机列表').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text3)
               .fontFamily(this.font()).padding({ left: 8, bottom: 8 })
             Column() {
               this.rustdeskSwitchRow($r('app.media.icon_laptop'), 'RustDesk 在线检测',
@@ -15817,15 +15813,18 @@ struct HostListPage {
                     Text('添加 FAB 风格').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
                       .fontColor(this.pal().text).fontFamily(this.font())
                     Text('控制添加主机、SSH 密钥、2FA 和中继服务器的界面风格')
-                      .fontSize(11).fontColor(this.pal().text2).fontFamily(this.font())
+                      .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
                   }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
                 }.width('100%').padding({ left: 16, right: 16, top: 12, bottom: 8 })
-                Flex({ wrap: FlexWrap.Wrap, alignItems: ItemAlign.Center,
-                  space: { main: LengthMetrics.vp(8), cross: LengthMetrics.vp(8) } }) {
-                  AppSettingsChoiceButton({ label: '全新模式', isSelected: this.fabAddStyle === 'modern',
-                    onSelect: (): void => { this.saveFabAddStyle('modern'); } })
-                  AppSettingsChoiceButton({ label: '经典模式', isSelected: this.fabAddStyle === 'classic',
-                    onSelect: (): void => { this.saveFabAddStyle('classic'); } })
+                Row() {
+                  Button('全新模式').layoutWeight(1).height(36).fontSize(13)
+                    .fontColor(this.fabAddStyle === 'modern' ? Color.White : this.pal().text2)
+                    .backgroundColor(this.fabAddStyle === 'modern' ? this.accentColor : this.pal().surface)
+                    .borderRadius(10).onClick((): void => { this.saveFabAddStyle('modern'); })
+                  Button('经典模式').layoutWeight(1).height(36).fontSize(13).margin({ left: 8 })
+                    .fontColor(this.fabAddStyle === 'classic' ? Color.White : this.pal().text2)
+                    .backgroundColor(this.fabAddStyle === 'classic' ? this.accentColor : this.pal().surface)
+                    .borderRadius(10).onClick((): void => { this.saveFabAddStyle('classic'); })
                 }.width('100%').padding({ left: 16, right: 16, bottom: 12 })
               }
               this.cardDivider()
@@ -15836,20 +15835,18 @@ struct HostListPage {
                   Text('按主机类型分组').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
                     .fontColor(this.pal().text).fontFamily(this.font())
                   Text('手机、Pad 和 PC 小屏按协议显示分类卡；PC 大屏保留侧栏分类')
-                    .fontSize(11).fontColor(this.pal().text2).fontFamily(this.font())
+                    .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
                 }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
                 Toggle({ type: ToggleType.Switch, isOn: this.groupedHostCards })
-                  .constraintSize({ minWidth: 52, minHeight: AppUiMetrics.minTouchTarget })
-                  .focusable(true).accessibilityText('按主机类型分组')
-                  .selectedColor(this.accentColor)
+                  .selectedColor(this.accentColor).scale({ x: 0.88, y: 0.88 })
                   .onChange((on: boolean): void => { this.saveGroupedHostCards(on); })
-              }.width('100%').constraintSize({ minHeight: 66 }).padding({ left: 16, right: 16, top: 8, bottom: 8 })
+              }.width('100%').height(66).padding({ left: 16, right: 16 })
             }.borderRadius(24).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
               .shadow({ radius: 16, color: 'rgba(0,0,0,0.04)', offsetY: 4 })
               .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
           }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 20 })
         }
-        .visibility(this.settingsSectionExpanded(SETTINGS_SECTION_HOME) ? Visibility.Visible : Visibility.None)
+        .constraintSize({ maxHeight: this.settingsSectionExpanded(SETTINGS_SECTION_HOME) ? 520 : 0 })
         .opacity(this.settingsSectionExpanded(SETTINGS_SECTION_HOME) ? 1 : 0)
         .scale({ x: 1, y: this.settingsSectionExpanded(SETTINGS_SECTION_HOME) ? 1 : 0.98 })
         .translate({ y: this.settingsSectionExpanded(SETTINGS_SECTION_HOME) ? 0 : -8 })
@@ -15865,7 +15862,7 @@ struct HostListPage {
         ListItem() {
           Column() {
             Text(this.appCloneLocalOnly ? '分身数据' : '云端数据')
-              .fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text2)
+              .fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text3)
               .fontFamily(this.font()).padding({ left: 8, bottom: 8 })
             Column() {
               if (this.appCloneLocalOnly) {
@@ -15878,64 +15875,53 @@ struct HostListPage {
                       .fontSize(AppTheme.fontSize.body)
                       .fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
                     Text('华为账号、云上传与云下载已关闭；本地备份仍可使用')
-                      .fontSize(11).fontColor(this.pal().text2).fontFamily(this.font())
+                      .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
                   }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 12 })
-                }.width('100%').constraintSize({ minHeight: 72 }).padding({ left: 14, right: 16, top: 8, bottom: 8 })
+                }.width('100%').height(72).padding({ left: 14, right: 16 })
               } else {
-                Button({ type: ButtonType.Normal }) {
-                  Row() {
-                    Row() { SymbolGlyph($r('sys.symbol.cloud_fill')).fontSize(21).fontColor([this.accentColor]) }
-                      .width(40).height(40).borderRadius(20).backgroundColor(this.pal().card).justifyContent(FlexAlign.Center)
-                    Column() { Text('管理云同步').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font());
-                      Text(cloudSyncDetailSpec(this.cloudConnectionAvailable).statusText).fontSize(11).fontColor(this.pal().text2).fontFamily(this.font())
-                    }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 12 })
-                    SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(16).fontColor([this.pal().text2])
-                  }.width('100%').constraintSize({ minHeight: 68 }).padding({ left: 14, right: 16, top: 8, bottom: 8 })
-                }.width('100%').padding(0).backgroundColor(Color.Transparent).borderRadius(0)
-                  .focusable(true).onClick((): void => { this.openCloudSyncSheet(); })
+                Row() {
+                  Row() { SymbolGlyph($r('sys.symbol.cloud_fill')).fontSize(21).fontColor([this.accentColor]) }
+                    .width(40).height(40).borderRadius(20).backgroundColor(this.pal().card).justifyContent(FlexAlign.Center)
+                  Column() { Text('管理云同步').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font());
+                    Text(cloudSyncDetailSpec(this.cloudConnectionAvailable).statusText).fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
+                  }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 12 })
+                  SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(16).fontColor([this.pal().text3])
+                }.width('100%').height(68).padding({ left: 14, right: 16 }).onClick((): void => { this.openCloudSyncSheet(); })
                 this.cardDivider()
-                Button({ type: ButtonType.Normal }) {
-                  Row() {
-                    Row() { SymbolGlyph($r('sys.symbol.info_circle')).fontSize(20).fontColor([this.accentColor]) }
-                      .width(40).height(40).borderRadius(20).backgroundColor(this.pal().card).justifyContent(FlexAlign.Center)
-                    Column() { Text('云同步详情').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font());
-                      Text(cloudSyncDetailSpec(this.cloudConnectionAvailable).statusText).fontSize(11).fontColor(this.pal().text2).fontFamily(this.font())
-                    }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 12 })
-                    SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(16).fontColor([this.pal().text2])
-                  }.width('100%').constraintSize({ minHeight: 68 }).padding({ left: 14, right: 16, top: 8, bottom: 8 })
-                }.width('100%').padding(0).backgroundColor(Color.Transparent).borderRadius(0)
-                  .focusable(true).onClick((): void => { this.openCloudSyncDetailsSheet(); })
+                Row() {
+                  Row() { SymbolGlyph($r('sys.symbol.info_circle')).fontSize(20).fontColor([this.accentColor]) }
+                    .width(40).height(40).borderRadius(20).backgroundColor(this.pal().card).justifyContent(FlexAlign.Center)
+                  Column() { Text('云同步详情').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font());
+                    Text(cloudSyncDetailSpec(this.cloudConnectionAvailable).statusText).fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
+                  }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 12 })
+                  SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(16).fontColor([this.pal().text3])
+                }.width('100%').height(68).padding({ left: 14, right: 16 }).onClick((): void => { this.openCloudSyncDetailsSheet(); })
               }
               this.cardDivider()
-              Button({ type: ButtonType.Normal }) {
-                Row() {
-                  Row() { SymbolGlyph($r('sys.symbol.doc_plaintext')).fontSize(20).fontColor([this.accentColor]) }
-                    .width(40).height(40).borderRadius(20).backgroundColor(this.pal().card).justifyContent(FlexAlign.Center)
-                  Column() { Text('本地备份').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font());
-                    Text('可导出脱敏配置或完整备份；VNC trust 只作为候选元数据，本机确认标记不导出').fontSize(11).fontColor(this.pal().text2).fontFamily(this.font())
-                  }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 12 })
-                  SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(16).fontColor([this.pal().text2])
-                }.width('100%').constraintSize({ minHeight: 68 }).padding({ left: 14, right: 16, top: 8, bottom: 8 })
-              }.width('100%').padding(0).backgroundColor(Color.Transparent).borderRadius(0)
-                .focusable(true).onClick((): void => { this.openCloudSyncSheet(CLOUD_SYNC_SHEET_BACKUP_CONFIRM); })
+              Row() {
+                Row() { SymbolGlyph($r('sys.symbol.doc_plaintext')).fontSize(20).fontColor([this.accentColor]) }
+                  .width(40).height(40).borderRadius(20).backgroundColor(this.pal().card).justifyContent(FlexAlign.Center)
+                Column() { Text('本地备份').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font());
+                  Text('可导出脱敏配置或完整备份；VNC trust 只作为候选元数据，本机确认标记不导出').fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
+                }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 12 })
+                SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(16).fontColor([this.pal().text3])
+              }.width('100%').height(68).padding({ left: 14, right: 16 })
+                .onClick((): void => { this.openCloudSyncSheet(CLOUD_SYNC_SHEET_BACKUP_CONFIRM); })
               this.cardDivider()
-              Button({ type: ButtonType.Normal }) {
-                Row() {
-                  Row() { SymbolGlyph($r('sys.symbol.doc')).fontSize(20).fontColor([this.pal().danger]) }
-                    .width(40).height(40).borderRadius(20).backgroundColor(this.pal().card).justifyContent(FlexAlign.Center)
-                  Column() { Text('从本地恢复').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font());
-                    Text('校验 v1/v2/v3 文件并安全合并；缺表不会清空新版数据').fontSize(11).fontColor(this.pal().text2).fontFamily(this.font())
-                  }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 12 })
-                  SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(16).fontColor([this.pal().text2])
-                }.width('100%').constraintSize({ minHeight: 68 }).padding({ left: 14, right: 16, top: 8, bottom: 8 })
-              }.width('100%').padding(0).backgroundColor(Color.Transparent).borderRadius(0)
-                .focusable(true).onClick((): void => { this.chooseLocalRestore(); })
+              Row() {
+                Row() { SymbolGlyph($r('sys.symbol.doc')).fontSize(20).fontColor([this.pal().danger]) }
+                  .width(40).height(40).borderRadius(20).backgroundColor(this.pal().card).justifyContent(FlexAlign.Center)
+                Column() { Text('从本地恢复').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font());
+                  Text('校验 v1/v2/v3 文件并安全合并；缺表不会清空新版数据').fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
+                }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 12 })
+                SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(16).fontColor([this.pal().text3])
+              }.width('100%').height(68).padding({ left: 14, right: 16 }).onClick((): void => { this.chooseLocalRestore(); })
             }.borderRadius(24).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
             .shadow({ radius: 16, color: 'rgba(0,0,0,0.04)', offsetY: 4 })
             .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
           }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 20 })
         }
-        .visibility(this.settingsSectionExpanded(SETTINGS_SECTION_CLOUD_SYNC) ? Visibility.Visible : Visibility.None)
+        .constraintSize({ maxHeight: this.settingsSectionExpanded(SETTINGS_SECTION_CLOUD_SYNC) ? 390 : 0 })
         .opacity(this.settingsSectionExpanded(SETTINGS_SECTION_CLOUD_SYNC) ? 1 : 0)
         .scale({ x: 1, y: this.settingsSectionExpanded(SETTINGS_SECTION_CLOUD_SYNC) ? 1 : 0.98 })
         .translate({ y: this.settingsSectionExpanded(SETTINGS_SECTION_CLOUD_SYNC) ? 0 : -8 })
@@ -15950,7 +15936,7 @@ struct HostListPage {
         // --- 连接卡片 ---
         ListItem() {
           Column() {
-            Text('连接').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text2)
+            Text('连接').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text3)
               .fontFamily(this.font()).padding({ left: 8, bottom: 8 })
             Column() {
               this.protocolStatItemRow(protocolIcon('rdp'), '远程主机', this.hostCount + ' 台')
@@ -15969,7 +15955,8 @@ struct HostListPage {
             .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
           }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 20 })
         }
-        .visibility(this.settingsSectionExpanded(SETTINGS_SECTION_CONNECTION_LIVE) ? Visibility.Visible : Visibility.None)
+        .constraintSize({ maxHeight: this.settingsSectionExpanded(SETTINGS_SECTION_CONNECTION_LIVE) ?
+          this.settingsSectionExpandedMaxHeight(SETTINGS_SECTION_CONNECTION_LIVE) : 0 })
         .opacity(this.settingsSectionExpanded(SETTINGS_SECTION_CONNECTION_LIVE) ? 1 : 0)
         .scale({ x: 1, y: this.settingsSectionExpanded(SETTINGS_SECTION_CONNECTION_LIVE) ? 1 : 0.98 })
         .translate({ y: this.settingsSectionExpanded(SETTINGS_SECTION_CONNECTION_LIVE) ? 0 : -8 })
@@ -15979,7 +15966,7 @@ struct HostListPage {
         // --- 实况窗卡片 ---
         ListItem() {
           Column() {
-            Text('实况窗').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text2)
+            Text('实况窗').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text3)
               .fontFamily(this.font()).padding({ left: 8, bottom: 8 })
             Column() {
               // 总开关
@@ -16005,7 +15992,8 @@ struct HostListPage {
             .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
           }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 20 })
         }
-        .visibility(this.settingsSectionExpanded(SETTINGS_SECTION_CONNECTION_LIVE) ? Visibility.Visible : Visibility.None)
+        .constraintSize({ maxHeight: this.settingsSectionExpanded(SETTINGS_SECTION_CONNECTION_LIVE) ?
+          this.settingsSectionExpandedMaxHeight(SETTINGS_SECTION_CONNECTION_LIVE) : 0 })
         .opacity(this.settingsSectionExpanded(SETTINGS_SECTION_CONNECTION_LIVE) ? 1 : 0)
         .scale({ x: 1, y: this.settingsSectionExpanded(SETTINGS_SECTION_CONNECTION_LIVE) ? 1 : 0.98 })
         .translate({ y: this.settingsSectionExpanded(SETTINGS_SECTION_CONNECTION_LIVE) ? 0 : -8 })
@@ -16019,7 +16007,7 @@ struct HostListPage {
 
         ListItem() {
           Column() {
-            Text('显示与交互').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text2)
+            Text('显示与交互').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text3)
               .fontFamily(this.font()).padding({ left: 8, bottom: 8 })
             Column() {
               this.remoteDisplayScaleRow()
@@ -16041,15 +16029,18 @@ struct HostListPage {
                       Text('触控板鼠标样式').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
                         .fontColor(this.pal().text).fontFamily(this.font())
                       Text('手机和平板触控板模式，选择圆环或官方远端鼠标').fontSize(11)
-                        .fontColor(this.pal().text2).fontFamily(this.font())
+                        .fontColor(this.pal().text3).fontFamily(this.font())
                     }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
                   }.width('100%').padding({ left: 16, right: 16, top: 12, bottom: 8 })
-                  Flex({ wrap: FlexWrap.Wrap, alignItems: ItemAlign.Center,
-                    space: { main: LengthMetrics.vp(8), cross: LengthMetrics.vp(8) } }) {
-                    AppSettingsChoiceButton({ label: '圆环', isSelected: this.virtualMouseStyle === 'circle',
-                      onSelect: (): void => { this.saveVirtualMouseStyle('circle'); } })
-                    AppSettingsChoiceButton({ label: '官方远端鼠标', isSelected: this.virtualMouseStyle === 'arrow',
-                      onSelect: (): void => { this.saveVirtualMouseStyle('arrow'); } })
+                  Row() {
+                    Button('圆环').layoutWeight(1).height(36).fontSize(13)
+                      .fontColor(this.virtualMouseStyle === 'circle' ? Color.White : this.pal().text2)
+                      .backgroundColor(this.virtualMouseStyle === 'circle' ? this.accentColor : this.pal().surface)
+                      .borderRadius(10).onClick((): void => { this.saveVirtualMouseStyle('circle'); })
+                    Button('官方远端鼠标').layoutWeight(1).height(36).fontSize(13).margin({ left: 8 })
+                      .fontColor(this.virtualMouseStyle === 'arrow' ? Color.White : this.pal().text2)
+                      .backgroundColor(this.virtualMouseStyle === 'arrow' ? this.accentColor : this.pal().surface)
+                      .borderRadius(10).onClick((): void => { this.saveVirtualMouseStyle('arrow'); })
                   }.width('100%').padding({ left: 16, right: 16, bottom: 12 })
                 }
                 this.cardDivider()
@@ -16060,18 +16051,19 @@ struct HostListPage {
                     Text('握持手感知对齐').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
                       .fontColor(this.pal().text).fontFamily(this.font())
                     Text(this.gripPermissionGranted ? '已启用；根据握持手移动添加按钮' : '启动后自动申请权限，不影响主机列表显示')
-                      .fontSize(11).fontColor(this.pal().text2).fontFamily(this.font())
+                      .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
                   }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
                   Text(this.gripPermissionGranted ? '已开启' : '启动申请')
                     .fontSize(12).fontColor(this.accentColor).fontFamily(this.font()).margin({ right: 8 })
-                }.width('100%').constraintSize({ minHeight: 62 }).padding({ left: 16, right: 16, top: 8, bottom: 8 })
+                }.width('100%').height(62).padding({ left: 16, right: 16 })
               }
             }.borderRadius(24).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
             .shadow({ radius: 16, color: 'rgba(0,0,0,0.04)', offsetY: 4 })
             .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
           }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 20 })
         }
-        .visibility(this.settingsSectionExpanded(SETTINGS_SECTION_DISPLAY_INTERACTION) ? Visibility.Visible : Visibility.None)
+        .constraintSize({ maxHeight: this.settingsSectionExpanded(SETTINGS_SECTION_DISPLAY_INTERACTION) ?
+          this.settingsSectionExpandedMaxHeight(SETTINGS_SECTION_DISPLAY_INTERACTION) : 0 })
         .opacity(this.settingsSectionExpanded(SETTINGS_SECTION_DISPLAY_INTERACTION) ? 1 : 0)
         .scale({ x: 1, y: this.settingsSectionExpanded(SETTINGS_SECTION_DISPLAY_INTERACTION) ? 1 : 0.98 })
         .translate({ y: this.settingsSectionExpanded(SETTINGS_SECTION_DISPLAY_INTERACTION) ? 0 : -8 })
@@ -16087,7 +16079,7 @@ struct HostListPage {
         ListItem() {
           Column() {
             Text('键盘').fontSize(13).fontWeight(FontWeight.Medium)
-              .fontColor(this.pal().text2).fontFamily(this.font()).padding({ left: 8, bottom: 8 })
+              .fontColor(this.pal().text3).fontFamily(this.font()).padding({ left: 8, bottom: 8 })
             Column() {
               this.cardActionRow($r('app.media.icon_phone'), '系统输入法',
                 '当前输入法、语言子类型与 HarmonyOS 官方设置',
@@ -16118,7 +16110,8 @@ struct HostListPage {
               .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
           }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 20 })
         }
-        .visibility(this.settingsSectionExpanded(SETTINGS_SECTION_VIRTUAL_KEYBOARD) ? Visibility.Visible : Visibility.None)
+        .constraintSize({ maxHeight: this.settingsSectionExpanded(SETTINGS_SECTION_VIRTUAL_KEYBOARD) ?
+          this.settingsSectionExpandedMaxHeight(SETTINGS_SECTION_VIRTUAL_KEYBOARD) : 0 })
         .opacity(this.settingsSectionExpanded(SETTINGS_SECTION_VIRTUAL_KEYBOARD) ? 1 : 0)
         .scale({ x: 1, y: this.settingsSectionExpanded(SETTINGS_SECTION_VIRTUAL_KEYBOARD) ? 1 : 0.98 })
         .translate({ y: this.settingsSectionExpanded(SETTINGS_SECTION_VIRTUAL_KEYBOARD) ? 0 : -8 })
@@ -16133,7 +16126,7 @@ struct HostListPage {
         // --- Windows RDP 个性化卡片 ---
         ListItem() {
           Column() {
-            Text('Windows RDP').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text2)
+            Text('Windows RDP').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text3)
               .fontFamily(this.font()).padding({ left: 8, bottom: 8 })
             Column() {
               this.rdpDesktopPresetRow()
@@ -16176,7 +16169,8 @@ struct HostListPage {
             .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
           }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 20 })
         }
-        .visibility(this.settingsSectionExpanded(SETTINGS_SECTION_RDP) ? Visibility.Visible : Visibility.None)
+        .constraintSize({ maxHeight: this.settingsSectionExpanded(SETTINGS_SECTION_RDP) ?
+          this.settingsSectionExpandedMaxHeight(SETTINGS_SECTION_RDP) : 0 })
         .opacity(this.settingsSectionExpanded(SETTINGS_SECTION_RDP) ? 1 : 0)
         .scale({ x: 1, y: this.settingsSectionExpanded(SETTINGS_SECTION_RDP) ? 1 : 0.98 })
         .translate({ y: this.settingsSectionExpanded(SETTINGS_SECTION_RDP) ? 0 : -8 })
@@ -16191,7 +16185,7 @@ struct HostListPage {
         // --- RustDesk 个性化卡片 ---
         ListItem() {
           Column() {
-            Text('RustDesk').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text2)
+            Text('RustDesk').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text3)
               .fontFamily(this.font()).padding({ left: 8, bottom: 8 })
             Column() {
               this.rustdeskImageQualityRow()
@@ -16202,22 +16196,22 @@ struct HostListPage {
               this.cardDivider()
               // LAN 发现 — 手动扫描按钮
               Row() {
-                Row() { Image($r('app.media.icon_desktop')).width(22).height(22).fillColor(this.pal().text2) }
+                Row() { Image($r('app.media.icon_desktop')).width(22).height(22).fillColor(this.pal().text3) }
                   .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
                 Column() {
                   Text('LAN 发现').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
                     .fontColor(this.pal().text).fontFamily(this.font())
                   Text(this.lanScanning ? '正在扫描...' : (this.lanScanResults.length > 0 ?
                     '发现 ' + this.lanScanResults.length + ' 台设备' : '扫描同局域网 RustDesk 设备'))
-                    .fontSize(11).fontColor(this.pal().text2).fontFamily(this.font())
+                    .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
                 }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
                 Button(this.lanScanning ? '扫描中' : '扫描')
                   .fontSize(12).fontWeight(FontWeight.Medium)
-                  .backgroundColor(appUiButtonFill(this.accentColor)).fontColor(appUiButtonText(this.accentColor))
-                  .borderRadius(16).constraintSize({ minHeight: AppUiMetrics.minTouchTarget, minWidth: AppUiMetrics.minTouchTarget }).padding({ left: 12, right: 12 })
+                  .backgroundColor(this.accentColor).fontColor('#FFFFFF')
+                  .borderRadius(16).height(30).padding({ left: 12, right: 12 })
                   .enabled(!this.lanScanning)
                   .onClick(() => { this.startLanScan(); })
-              }.width('100%').constraintSize({ minHeight: 64 }).padding({ left: 16, right: 16, top: 8, bottom: 8 })
+              }.width('100%').height(64).padding({ left: 16, right: 16 })
               // 扫描结果
               if (this.lanScanResults.length > 0) {
                 Column() {
@@ -16226,14 +16220,14 @@ struct HostListPage {
                       Column() {
                         Text(peer.deviceName).fontSize(13).fontColor(this.pal().text).fontFamily(this.font())
                         Row() {
-                          Text(peer.peerId).fontSize(10).fontColor(this.pal().text2).fontFamily(this.font())
+                          Text(peer.peerId).fontSize(10).fontColor(this.pal().text3).fontFamily(this.font())
                           Text(' · ' + peer.host + ':' + peer.port.toString())
-                            .fontSize(10).fontColor(this.pal().text2).fontFamily(this.font())
+                            .fontSize(10).fontColor(this.pal().text3).fontFamily(this.font())
                         }.margin({ top: 2 })
                       }.alignItems(HorizontalAlign.Start).layoutWeight(1)
                       Button('添加').fontSize(11).fontWeight(FontWeight.Medium)
-                        .backgroundColor(appUiButtonFill(this.accentColor)).fontColor(appUiButtonText(this.accentColor))
-                        .borderRadius(14).constraintSize({ minHeight: AppUiMetrics.minTouchTarget, minWidth: AppUiMetrics.minTouchTarget }).padding({ left: 10, right: 10 })
+                        .backgroundColor(this.accentColor).fontColor('#FFFFFF')
+                        .borderRadius(14).height(26).padding({ left: 10, right: 10 })
                         .onClick(() => { this.addLanPeer(peer); })
                     }.width('100%').padding({ left: 8, right: 8, top: 6, bottom: 6 })
                     .borderRadius(8).backgroundColor(this.pal().surface).margin({ bottom: 6 })
@@ -16266,7 +16260,8 @@ struct HostListPage {
             .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
           }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 20 })
         }
-        .visibility(this.settingsSectionExpanded(SETTINGS_SECTION_RUSTDESK) ? Visibility.Visible : Visibility.None)
+        .constraintSize({ maxHeight: this.settingsSectionExpanded(SETTINGS_SECTION_RUSTDESK) ?
+          this.settingsSectionExpandedMaxHeight(SETTINGS_SECTION_RUSTDESK) : 0 })
         .opacity(this.settingsSectionExpanded(SETTINGS_SECTION_RUSTDESK) ? 1 : 0)
         .scale({ x: 1, y: this.settingsSectionExpanded(SETTINGS_SECTION_RUSTDESK) ? 1 : 0.98 })
         .translate({ y: this.settingsSectionExpanded(SETTINGS_SECTION_RUSTDESK) ? 0 : -8 })
@@ -16281,83 +16276,75 @@ struct HostListPage {
         // --- SSH 终端卡片 ---
         ListItem() {
           Column() {
-            Text('SSH 终端').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text2)
+            Text('SSH 终端').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text3)
               .fontFamily(this.font()).padding({ left: 8, bottom: 8 })
             Column() {
-              Button({ type: ButtonType.Normal }) {
-                Row() {
-                  Row() { Text('Aa').fontSize(16).fontColor(this.pal().text).fontWeight(FontWeight.Bold) }
-                    .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
-                  Text('终端字体颜色').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
-                    .fontColor(this.pal().text).fontFamily(this.font()).layoutWeight(1).margin({ left: 4 })
-                  Column().width(24).height(24).borderRadius(12).backgroundColor(this.terminalFgColor)
-                  Text(' >').fontSize(14).fontColor(this.pal().text2).margin({ left: 6 })
-                }.width('100%').constraintSize({ minHeight: 60 }).padding({ left: 16, right: 16, top: 8, bottom: 8 })
-              }.width('100%').padding(0).backgroundColor(Color.Transparent).borderRadius(0)
-                .focusable(true).onClick(() => { this.openSettingsLeafSheet(SETTINGS_SHEET_TERMINAL_FG_COLOR); })
+              Row() {
+                Row() { Text('Aa').fontSize(16).fontColor(this.pal().text).fontWeight(FontWeight.Bold) }
+                  .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
+                Text('终端字体颜色').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
+                  .fontColor(this.pal().text).fontFamily(this.font()).layoutWeight(1).margin({ left: 4 })
+                Column().width(24).height(24).borderRadius(12).backgroundColor(this.terminalFgColor)
+                Text(' >').fontSize(14).fontColor(this.pal().text3).margin({ left: 6 })
+              }.width('100%').height(60).padding({ left: 16, right: 16 })
+                .onClick(() => { this.openSettingsLeafSheet(SETTINGS_SHEET_TERMINAL_FG_COLOR); })
               this.cardDivider()
-              Button({ type: ButtonType.Normal }) {
-                Row() {
-                  Row() { Text('T').fontSize(14).fontColor(this.pal().text).fontWeight(FontWeight.Bold) }
-                    .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
-                  Text('终端字体大小').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
-                    .fontColor(this.pal().text).fontFamily(this.font()).layoutWeight(1).margin({ left: 4 })
-                  Text(this.terminalFontSize + 'vp').fontSize(13).fontColor(this.pal().text2)
-                  Text(' >').fontSize(14).fontColor(this.pal().text2).margin({ left: 6 })
-                }.width('100%').constraintSize({ minHeight: 60 }).padding({ left: 16, right: 16, top: 8, bottom: 8 })
-              }.width('100%').padding(0).backgroundColor(Color.Transparent).borderRadius(0)
-                .focusable(true).onClick(() => { this.openSettingsLeafSheet(SETTINGS_SHEET_TERMINAL_FONT_SIZE); })
+              Row() {
+                Row() { Text('T').fontSize(14).fontColor(this.pal().text).fontWeight(FontWeight.Bold) }
+                  .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
+                Text('终端字体大小').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
+                  .fontColor(this.pal().text).fontFamily(this.font()).layoutWeight(1).margin({ left: 4 })
+                Text(this.terminalFontSize + 'vp').fontSize(13).fontColor(this.pal().text2)
+                Text(' >').fontSize(14).fontColor(this.pal().text3).margin({ left: 6 })
+              }.width('100%').height(60).padding({ left: 16, right: 16 })
+                .onClick(() => { this.openSettingsLeafSheet(SETTINGS_SHEET_TERMINAL_FONT_SIZE); })
               this.cardDivider()
-              Button({ type: ButtonType.Normal }) {
+              Row() {
                 Row() {
-                  Row() {
-                    Column() {
-                      SymbolGlyph($r('sys.symbol.arrow_up')).fontSize(9).fontColor([this.pal().text])
-                      SymbolGlyph($r('sys.symbol.arrow_down')).fontSize(9).fontColor([this.pal().text])
-                    }
+                  Column() {
+                    SymbolGlyph($r('sys.symbol.arrow_up')).fontSize(9).fontColor([this.pal().text])
+                    SymbolGlyph($r('sys.symbol.arrow_down')).fontSize(9).fontColor([this.pal().text])
                   }
-                    .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
-                  Text('终端行距').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
-                    .fontColor(this.pal().text).fontFamily(this.font()).layoutWeight(1).margin({ left: 4 })
-                  Text(this.terminalLineSpacingLabel()).fontSize(13).fontColor(this.pal().text2)
-                  Text(' >').fontSize(14).fontColor(this.pal().text2).margin({ left: 6 })
-                }.width('100%').constraintSize({ minHeight: 60 }).padding({ left: 16, right: 16, top: 8, bottom: 8 })
-              }.width('100%').padding(0).backgroundColor(Color.Transparent).borderRadius(0)
-                .focusable(true).onClick(() => { this.openSettingsLeafSheet(SETTINGS_SHEET_TERMINAL_LINE_SPACING); })
+                }
+                  .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
+                Text('终端行距').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
+                  .fontColor(this.pal().text).fontFamily(this.font()).layoutWeight(1).margin({ left: 4 })
+                Text(this.terminalLineSpacingLabel()).fontSize(13).fontColor(this.pal().text2)
+                Text(' >').fontSize(14).fontColor(this.pal().text3).margin({ left: 6 })
+              }.width('100%').height(60).padding({ left: 16, right: 16 })
+                .onClick(() => { this.openSettingsLeafSheet(SETTINGS_SHEET_TERMINAL_LINE_SPACING); })
               this.cardDivider()
               Row() {
                 Column() {
                   Text('新 SSH 工作台').fontSize(AppTheme.fontSize.body)
                     .fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
                   Text('启用终端搜索、命名 Profile 与后续分屏能力；关闭时沿用现有终端')
-                    .fontSize(11).fontColor(this.pal().text2).fontFamily(this.font())
+                    .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
                     .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
                 }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 16 })
                 Toggle({ type: ToggleType.Switch, isOn: this.sshWorkbenchEnabled })
-                  .constraintSize({ minWidth: 52, minHeight: AppUiMetrics.minTouchTarget })
-                  .focusable(true).accessibilityText('新 SSH 工作台')
                   .selectedColor(this.accentColor)
                   .onChange((enabled: boolean): void => {
                     this.saveSshWorkbenchEnabled(enabled);
                   })
-              }.width('100%').constraintSize({ minHeight: 66 }).padding({ right: 16, top: 8, bottom: 8 })
+              }.width('100%').height(66).padding({ right: 16 })
               this.cardDivider()
               Row() {
                 Column() {
                   Text('SSH 系统通知').fontSize(AppTheme.fontSize.body)
                     .fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
                   Text('用于后台连接与命令完成提醒；不显示命令、IP、用户名或路径')
-                    .fontSize(11).fontColor(this.pal().text2).fontFamily(this.font())
+                    .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
                     .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
                 }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 16 })
                 Button(this.sshSystemNotificationsEnabled ? '已开启' :
                   (this.sshNotificationAuthorizationPending ? '请求中' : '开启'))
-                  .constraintSize({ minHeight: AppUiMetrics.minTouchTarget, minWidth: AppUiMetrics.minTouchTarget }).fontSize(12).borderRadius(8)
-                  .fontColor(this.sshSystemNotificationsEnabled ? this.pal().text2 : appUiButtonText(this.accentColor))
-                  .backgroundColor(this.sshSystemNotificationsEnabled ? this.pal().surface : appUiButtonFill(this.accentColor))
+                  .height(32).fontSize(12).borderRadius(8)
+                  .fontColor(this.sshSystemNotificationsEnabled ? this.pal().text3 : '#FFFFFF')
+                  .backgroundColor(this.sshSystemNotificationsEnabled ? this.pal().surface : this.accentColor)
                   .enabled(!this.sshSystemNotificationsEnabled && !this.sshNotificationAuthorizationPending)
                   .onClick((): void => { this.requestSshNotificationAuthorization(); })
-              }.width('100%').constraintSize({ minHeight: 68 }).padding({ right: 16, top: 8, bottom: 8 })
+              }.width('100%').height(68).padding({ right: 16 })
               this.cardDivider()
               this.sshInputModeRow()
               this.cardDivider()
@@ -16366,7 +16353,7 @@ struct HostListPage {
                   Text('终端预览').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
                     .fontColor(this.pal().text).fontFamily(this.font())
                   Text('显示当前颜色、字号和行距，实时映射终端外观')
-                    .fontSize(11).fontColor(this.pal().text2).fontFamily(this.font())
+                    .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
                     .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
                 }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 16 })
                 Column() {
@@ -16381,8 +16368,7 @@ struct HostListPage {
                 }.width(this.terminalPreviewWidth()).height(this.terminalPreviewHeight())
                   .alignItems(HorizontalAlign.Start).padding({ left: 10, right: 10, top: 8, bottom: 8 })
                   .backgroundColor('#0D0D0D').borderRadius(8)
-              }.width('100%').constraintSize({ minHeight: this.terminalPreviewHeight() })
-                .padding({ left: 0, right: 16, top: 8, bottom: 8 })
+              }.width('100%').height(this.terminalPreviewHeight()).padding({ left: 0, right: 16 })
               this.cardDivider()
               this.cardActionRow($r('app.media.icon_terminal'), '管理 SSH 主机',
                 this.sshCount.toString() + ' 台主机 · 地址、认证和代理仍按主机配置',
@@ -16397,19 +16383,20 @@ struct HostListPage {
                   Text('主机指纹').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
                     .fontColor(this.pal().text).fontFamily(this.font())
                   Text('继续在“数据安全”中管理，暂不迁移 trust 入口')
-                    .fontSize(11).fontColor(this.pal().text2).fontFamily(this.font())
+                    .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
                     .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
                 }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 16 })
-                Button('恢复默认').constraintSize({ minHeight: AppUiMetrics.minTouchTarget, minWidth: AppUiMetrics.minTouchTarget }).fontSize(12).backgroundColor(this.pal().surface)
+                Button('恢复默认').height(32).fontSize(12).backgroundColor(this.pal().surface)
                   .fontColor(this.pal().text2).borderRadius(8)
                   .onClick((): void => { this.resetSshTerminalAppearance(); })
-              }.width('100%').constraintSize({ minHeight: 62 }).padding({ left: 0, right: 16, top: 8, bottom: 8 })
+              }.width('100%').height(62).padding({ left: 0, right: 16 })
             }.borderRadius(24).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
               .shadow({ radius: 16, color: 'rgba(0,0,0,0.04)', offsetY: 4 })
               .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
           }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 20 })
         }
-        .visibility(this.settingsSectionExpanded(SETTINGS_SECTION_SSH) ? Visibility.Visible : Visibility.None)
+        .constraintSize({ maxHeight: this.settingsSectionExpanded(SETTINGS_SECTION_SSH) ?
+          this.settingsSectionExpandedMaxHeight(SETTINGS_SECTION_SSH) : 0 })
         .opacity(this.settingsSectionExpanded(SETTINGS_SECTION_SSH) ? 1 : 0)
         .scale({ x: 1, y: this.settingsSectionExpanded(SETTINGS_SECTION_SSH) ? 1 : 0.98 })
         .translate({ y: this.settingsSectionExpanded(SETTINGS_SECTION_SSH) ? 0 : -8 })
@@ -16429,7 +16416,7 @@ struct HostListPage {
         // --- VNC protocol settings: leaf bindSheets, not a cloud-data card ---
         ListItem() {
           Column() {
-            Text('VNC').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text2)
+            Text('VNC').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text3)
               .fontFamily(this.font()).padding({ left: 8, bottom: 8 })
             Column() {
               this.protocolActionRow($r('sys.symbol.link'), '连接默认值',
@@ -16476,7 +16463,8 @@ struct HostListPage {
               .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
           }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 20 })
         }
-        .visibility(this.settingsSectionExpanded(SETTINGS_SECTION_VNC) ? Visibility.Visible : Visibility.None)
+        .constraintSize({ maxHeight: this.settingsSectionExpanded(SETTINGS_SECTION_VNC) ?
+          this.settingsSectionExpandedMaxHeight(SETTINGS_SECTION_VNC) : 0 })
         .opacity(this.settingsSectionExpanded(SETTINGS_SECTION_VNC) ? 1 : 0)
         .scale({ x: 1, y: this.settingsSectionExpanded(SETTINGS_SECTION_VNC) ? 1 : 0.98 })
         .translate({ y: this.settingsSectionExpanded(SETTINGS_SECTION_VNC) ? 0 : -8 })
@@ -16490,7 +16478,7 @@ struct HostListPage {
 
         ListItem() {
           Column() {
-            Text('Moonlight').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text2)
+            Text('Moonlight').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text3)
               .fontFamily(this.font()).padding({ left: 8, bottom: 8 })
             Column() {
               this.protocolActionRow($r('sys.symbol.display'), '画面',
@@ -16527,7 +16515,8 @@ struct HostListPage {
               .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
           }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 20 })
         }
-        .visibility(this.settingsSectionExpanded(SETTINGS_SECTION_MOONLIGHT) ? Visibility.Visible : Visibility.None)
+        .constraintSize({ maxHeight: this.settingsSectionExpanded(SETTINGS_SECTION_MOONLIGHT) ?
+          this.settingsSectionExpandedMaxHeight(SETTINGS_SECTION_MOONLIGHT) : 0 })
         .opacity(this.settingsSectionExpanded(SETTINGS_SECTION_MOONLIGHT) ? 1 : 0)
         .scale({ x: 1, y: this.settingsSectionExpanded(SETTINGS_SECTION_MOONLIGHT) ? 1 : 0.98 })
         .translate({ y: this.settingsSectionExpanded(SETTINGS_SECTION_MOONLIGHT) ? 0 : -8 })
@@ -16542,21 +16531,21 @@ struct HostListPage {
         // --- 数据安全卡片 ---
         ListItem() {
           Column() {
-            Text('数据安全').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text2)
+            Text('数据安全').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text3)
               .fontFamily(this.font()).padding({ left: 8, bottom: 8 })
             Column() {
               // ---- 端到端加密 ----
               Row() {
                 Row() {
                   SymbolGlyph($r('sys.symbol.lock_shield_fill'))
-                    .fontSize(22).fontColor([this.cryptoEnabled ? this.accentColor : this.pal().text2])
+                    .fontSize(22).fontColor([this.cryptoEnabled ? this.accentColor : this.pal().text3])
                 }.width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
                 Column() {
                   Text('端到端加密')
                     .fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
                     .fontColor(this.pal().text).fontFamily(this.font())
                   Text(this.cryptoEnabled ? (this.cryptoUnlocked ? '已启用 · 数据已加密保护' : '已锁定 · 需解锁后解密数据') : '未启用 · 主机密码、SSH密钥、2FA将加密后云同步')
-                    .fontSize(11).fontColor(this.pal().text2).fontFamily(this.font())
+                    .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
                     .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
                 }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 10 })
                 if (this.cryptoEnabled) {
@@ -16564,22 +16553,16 @@ struct HostListPage {
                     Row() {
                       Text('已启用').fontSize(12).fontColor(this.pal().success).fontWeight(FontWeight.Medium)
                         .margin({ right: 6 })
-                      Button('关闭', { type: ButtonType.Normal })
-                        .constraintSize({ minWidth: AppUiMetrics.minTouchTarget, minHeight: AppUiMetrics.minTouchTarget })
-                        .padding({ left: 8, right: 8 }).backgroundColor(this.pal().surface).focusable(true).fontSize(11).fontColor(this.pal().text2)
+                      Text('关闭').fontSize(11).fontColor(this.pal().text3)
                         .onClick(() => { this.confirmDisableEncryption(); })
-                      Text('·').fontSize(11).fontColor(this.pal().text2)
+                      Text('·').fontSize(11).fontColor(this.pal().text3)
                         .margin({ left: 4, right: 4 })
-                      Button('重置', { type: ButtonType.Normal })
-                        .constraintSize({ minWidth: AppUiMetrics.minTouchTarget, minHeight: AppUiMetrics.minTouchTarget })
-                        .padding({ left: 8, right: 8 }).backgroundColor(this.pal().surface).focusable(true).fontSize(11).fontColor(this.pal().danger)
+                      Text('重置').fontSize(11).fontColor(this.pal().danger)
                         .onClick(() => { this.confirmResetEncryption(); })
                     }
                   } else {
                     Row() {
-                      Button('已锁定', { type: ButtonType.Normal })
-                        .constraintSize({ minWidth: AppUiMetrics.minTouchTarget, minHeight: AppUiMetrics.minTouchTarget })
-                        .padding({ left: 8, right: 8 }).backgroundColor(this.pal().surface).focusable(true).fontSize(12).fontColor(this.pal().danger).fontWeight(FontWeight.Medium)
+                      Text('已锁定').fontSize(12).fontColor(this.pal().danger).fontWeight(FontWeight.Medium)
                         .onClick(() => {
                           this.openSettingsLeafSheet(SETTINGS_SHEET_POPUP, (): void => {
                             this.cryptoMode = 1;
@@ -16587,15 +16570,13 @@ struct HostListPage {
                           });
                         })
                         .margin({ right: 6 })
-                      Button('重置', { type: ButtonType.Normal })
-                        .constraintSize({ minWidth: AppUiMetrics.minTouchTarget, minHeight: AppUiMetrics.minTouchTarget })
-                        .padding({ left: 8, right: 8 }).backgroundColor(this.pal().surface).focusable(true).fontSize(11).fontColor(this.pal().danger)
+                      Text('重置').fontSize(11).fontColor(this.pal().danger)
                         .onClick(() => { this.confirmResetEncryption(); })
                     }
                   }
                 } else {
-                  Button('启用').constraintSize({ minHeight: AppUiMetrics.minTouchTarget, minWidth: AppUiMetrics.minTouchTarget }).fontSize(12)
-                    .backgroundColor(appUiButtonFill(this.accentColor)).fontColor(appUiButtonText(this.accentColor)).borderRadius(8)
+                  Button('启用').height(32).fontSize(12)
+                    .backgroundColor(this.accentColor).fontColor('#FFFFFF').borderRadius(8)
                     .onClick(() => {
                       this.openSettingsLeafSheet(SETTINGS_SHEET_POPUP, (): void => {
                         this.cryptoMode = 0;
@@ -16603,7 +16584,7 @@ struct HostListPage {
                       });
                     })
                 }
-              }.width('100%').constraintSize({ minHeight: 64 }).padding({ left: 16, right: 16, top: 8, bottom: 8 })
+              }.width('100%').height(64).padding({ left: 16, right: 16 })
 
               this.cardDivider()
 
@@ -16617,7 +16598,7 @@ struct HostListPage {
               Row() {
                 Row() {
                   SymbolGlyph($r('sys.symbol.lock_fill'))
-                    .fontSize(22).fontColor([this.totpPageLocked ? this.accentColor : this.pal().text2])
+                    .fontSize(22).fontColor([this.totpPageLocked ? this.accentColor : this.pal().text3])
                 }.width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
                 Column() {
                   Text('TOTP 隐私保护')
@@ -16626,14 +16607,12 @@ struct HostListPage {
                   Text(this.totpPageLocked ?
                     '已开启 · 查看或绑定 2FA 前需要系统身份认证' :
                     '未开启 · 绑定 RustDesk 2FA 无需额外认证')
-                    .fontSize(10).fontColor(this.pal().text2).fontFamily(this.font())
+                    .fontSize(10).fontColor(this.pal().text3).fontFamily(this.font())
                     .margin({ top: 3 })
                 }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
                 Toggle({ type: ToggleType.Switch, isOn: this.totpPageLocked })
-                  .constraintSize({ minWidth: 52, minHeight: AppUiMetrics.minTouchTarget })
-                  .focusable(true).accessibilityText('TOTP 隐私保护')
                   .selectedColor(this.accentColor)
-
+                  .scale({ x: 0.88, y: 0.88 })
                   .onChange(async (on: boolean) => {
                     if (on) {
                       const r = await showLockGate('开启 TOTP 隐私保护，请验证系统身份', 'biometric');
@@ -16657,7 +16636,7 @@ struct HostListPage {
                       }
                     }
                   })
-              }.width('100%').constraintSize({ minHeight: 60 }).padding({ left: 16, right: 16, top: 8, bottom: 8 })
+              }.width('100%').height(60).padding({ left: 16, right: 16 })
 
               this.cardDivider()
 
@@ -16669,15 +16648,18 @@ struct HostListPage {
                     Text('2FA 验证器头像').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
                       .fontColor(this.pal().text).fontFamily(this.font())
                     Text('切换真实品牌 Logo 或高对比度首字母')
-                      .fontSize(11).fontColor(this.pal().text2).fontFamily(this.font())
+                      .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
                   }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
                 }.width('100%').padding({ left: 16, right: 16, top: 12, bottom: 8 })
-                Flex({ wrap: FlexWrap.Wrap, alignItems: ItemAlign.Center,
-                  space: { main: LengthMetrics.vp(8), cross: LengthMetrics.vp(8) } }) {
-                  AppSettingsChoiceButton({ label: '真实 Logo', isSelected: this.totpLogoMode === 'logo',
-                    onSelect: (): void => { this.saveTotpLogoMode('logo'); } })
-                  AppSettingsChoiceButton({ label: '首字母', isSelected: this.totpLogoMode === 'initials',
-                    onSelect: (): void => { this.saveTotpLogoMode('initials'); } })
+                Row() {
+                  Button('真实 Logo').layoutWeight(1).height(36).fontSize(13)
+                    .fontColor(this.totpLogoMode === 'logo' ? Color.White : this.pal().text2)
+                    .backgroundColor(this.totpLogoMode === 'logo' ? this.accentColor : this.pal().surface)
+                    .borderRadius(10).onClick((): void => { this.saveTotpLogoMode('logo'); })
+                  Button('首字母').layoutWeight(1).height(36).fontSize(13).margin({ left: 8 })
+                    .fontColor(this.totpLogoMode === 'initials' ? Color.White : this.pal().text2)
+                    .backgroundColor(this.totpLogoMode === 'initials' ? this.accentColor : this.pal().surface)
+                    .borderRadius(10).onClick((): void => { this.saveTotpLogoMode('initials'); })
                 }.width('100%').padding({ left: 16, right: 16, bottom: 12 })
               }
 
@@ -16715,7 +16697,8 @@ struct HostListPage {
             .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
           }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 20 })
         }
-        .visibility(this.settingsSectionExpanded(SETTINGS_SECTION_SECURITY) ? Visibility.Visible : Visibility.None)
+        .constraintSize({ maxHeight: this.settingsSectionExpanded(SETTINGS_SECTION_SECURITY) ?
+          this.settingsSectionExpandedMaxHeight(SETTINGS_SECTION_SECURITY) : 0 })
         .opacity(this.settingsSectionExpanded(SETTINGS_SECTION_SECURITY) ? 1 : 0)
         .scale({ x: 1, y: this.settingsSectionExpanded(SETTINGS_SECTION_SECURITY) ? 1 : 0.98 })
         .translate({ y: this.settingsSectionExpanded(SETTINGS_SECTION_SECURITY) ? 0 : -8 })
@@ -16730,7 +16713,7 @@ struct HostListPage {
         // --- 教程卡片 ---
         ListItem() {
           Column() {
-            Text('教程').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text2)
+            Text('教程').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text3)
               .fontFamily(this.font()).padding({ left: 8, bottom: 8 })
             Column() {
               this.cardActionRow($r('app.media.icon_info'), '本版本更新日志',
@@ -16772,7 +16755,8 @@ struct HostListPage {
             .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
           }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 20 })
         }
-        .visibility(this.settingsSectionExpanded(SETTINGS_SECTION_TUTORIAL) ? Visibility.Visible : Visibility.None)
+        .constraintSize({ maxHeight: this.settingsSectionExpanded(SETTINGS_SECTION_TUTORIAL) ?
+          this.settingsSectionExpandedMaxHeight(SETTINGS_SECTION_TUTORIAL) : 0 })
         .opacity(this.settingsSectionExpanded(SETTINGS_SECTION_TUTORIAL) ? 1 : 0)
         .scale({ x: 1, y: this.settingsSectionExpanded(SETTINGS_SECTION_TUTORIAL) ? 1 : 0.98 })
         .translate({ y: this.settingsSectionExpanded(SETTINGS_SECTION_TUTORIAL) ? 0 : -8 })
@@ -16787,7 +16771,7 @@ struct HostListPage {
         // --- 关于卡片 ---
         ListItem() {
           Column() {
-            Text('关于').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text2)
+            Text('关于').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text3)
               .fontFamily(this.font()).padding({ left: 8, bottom: 8 })
             Column() {
               this.cardItemRow($r('app.media.icon_info'), '版本', CURRENT_RELEASE_VERSION + ' · FreeRDP+RustDesk+SSH')
@@ -16812,7 +16796,8 @@ struct HostListPage {
             .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
           }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 20 })
         }
-        .visibility(this.settingsSectionExpanded(SETTINGS_SECTION_ABOUT) ? Visibility.Visible : Visibility.None)
+        .constraintSize({ maxHeight: this.settingsSectionExpanded(SETTINGS_SECTION_ABOUT) ?
+          this.settingsSectionExpandedMaxHeight(SETTINGS_SECTION_ABOUT) : 0 })
         .opacity(this.settingsSectionExpanded(SETTINGS_SECTION_ABOUT) ? 1 : 0)
         .scale({ x: 1, y: this.settingsSectionExpanded(SETTINGS_SECTION_ABOUT) ? 1 : 0.98 })
         .translate({ y: this.settingsSectionExpanded(SETTINGS_SECTION_ABOUT) ? 0 : -8 })
@@ -18383,61 +18368,54 @@ struct HostListPage {
 
   @Builder cardItemRow(icon: Resource, label: string, value: string) {
     Row() {
-      Row() { Image(icon).width(22).height(22).fillColor(this.pal().text2) }
+      Row() { Image(icon).width(22).height(22).fillColor(this.pal().text3) }
         .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
       Text(label).fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
         .fontColor(this.pal().text).fontFamily(this.font()).layoutWeight(1).margin({ left: 4 })
-      Text(value).constraintSize({ maxWidth: '45%' }).fontSize(14).fontColor(this.pal().text2).margin({ right: 16 })
-    }.width('100%').constraintSize({ minHeight: 60 }).padding({ left: 16, right: 16, top: 8, bottom: 8 })
+      Text(value).fontSize(14).fontColor(this.pal().text2).margin({ right: 16 })
+    }.width('100%').height(60).padding({ left: 16, right: 16 })
   }
 
   @Builder protocolStatItemRow(icon: Resource, label: string, value: string) {
     Row() {
-      Row() { SymbolGlyph(icon).fontSize(22).fontColor([this.pal().text2]) }
+      Row() { SymbolGlyph(icon).fontSize(22).fontColor([this.pal().text3]) }
         .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
       Text(label).fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
         .fontColor(this.pal().text).fontFamily(this.font()).layoutWeight(1).margin({ left: 4 })
-      Text(value).constraintSize({ maxWidth: '45%' }).fontSize(14).fontColor(this.pal().text2).margin({ right: 16 })
-    }.width('100%').constraintSize({ minHeight: 60 }).padding({ left: 16, right: 16, top: 8, bottom: 8 })
+      Text(value).fontSize(14).fontColor(this.pal().text2).margin({ right: 16 })
+    }.width('100%').height(60).padding({ left: 16, right: 16 })
   }
 
   @Builder cardActionRow(icon: Resource, label: string, value: string, action: () => void) {
-    Button({ type: ButtonType.Normal }) {
-      Row() {
-        Row() { Image(icon).width(22).height(22).fillColor(this.pal().text2) }
-          .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
-        Column() {
-          Text(label).fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
-            .fontColor(this.pal().text).fontFamily(this.font())
-          Text(value).fontSize(11).fontColor(this.pal().text2).fontFamily(this.font())
-            .margin({ top: 2 })
-        }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
-        SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(18).fontColor([this.pal().text2])
-          .margin({ right: 14 })
-      }
-      .width('100%').constraintSize({ minHeight: 62 }).padding({ left: 16, right: 16, top: 8, bottom: 8 })
-    }.width('100%').padding(0).backgroundColor(Color.Transparent).borderRadius(0)
-      .focusable(true).accessibilityText(label + '，' + value)
-      .onClick(action)
+    Row() {
+      Row() { Image(icon).width(22).height(22).fillColor(this.pal().text3) }
+        .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
+      Column() {
+        Text(label).fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
+          .fontColor(this.pal().text).fontFamily(this.font())
+        Text(value).fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
+          .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).margin({ top: 2 })
+      }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
+      SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(18).fontColor([this.pal().text3])
+        .margin({ right: 14 })
+    }
+    .width('100%').height(62).padding({ left: 16, right: 16 })
+    .onClick(action)
   }
 
   @Builder protocolActionRow(icon: Resource, label: string, value: string, action: () => void) {
-    Button({ type: ButtonType.Normal }) {
-      Row() {
-        SymbolGlyph(icon).fontSize(22).fontColor([this.pal().text2])
-          .width(22).height(22).margin({ left: 9, right: 9 })
-        Column() {
-          Text(label).fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
-            .fontColor(this.pal().text).fontFamily(this.font())
-          Text(value).fontSize(11).fontColor(this.pal().text2).fontFamily(this.font())
-            .margin({ top: 2 })
-        }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
-        SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(18).fontColor([this.pal().text2])
-          .margin({ right: 14 })
-      }.width('100%').constraintSize({ minHeight: 62 }).padding({ left: 16, right: 16, top: 8, bottom: 8 })
-    }.width('100%').padding(0).backgroundColor(Color.Transparent).borderRadius(0)
-      .focusable(true).accessibilityText(label + '，' + value)
-      .onClick(action)
+    Row() {
+      SymbolGlyph(icon).fontSize(22).fontColor([this.pal().text3])
+        .width(22).height(22).margin({ left: 9, right: 9 })
+      Column() {
+        Text(label).fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
+          .fontColor(this.pal().text).fontFamily(this.font())
+        Text(value).fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
+          .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).margin({ top: 2 })
+      }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
+      SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(18).fontColor([this.pal().text3])
+        .margin({ right: 14 })
+    }.width('100%').height(62).padding({ left: 16, right: 16 }).onClick(action)
   }
 
   @Builder cardDivider() {
@@ -18451,55 +18429,98 @@ struct HostListPage {
 
   // 图像质量芯片 — 直接读 @StorageLink rustdeskImageQuality (跟 _codecChip 一样的模式)
   @Builder _qualityChip(label: string, value: number) {
-    AppSettingsChoiceButton({ label, isSelected: this.rustdeskImageQuality === value,
-      onSelect: (): void => { this.saveRustDeskImageQuality(value); } })
+    Column() {
+      Text(label)
+        .fontSize(12)
+        .fontColor(this.rustdeskImageQuality === value ? '#FFFFFF' : this.pal().text2)
+        .fontWeight(this.rustdeskImageQuality === value ? FontWeight.Medium : FontWeight.Normal)
+        .textAlign(TextAlign.Center)
+        .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+        .padding({ left: 10, right: 10, top: 6, bottom: 6 })
+        .borderRadius(8)
+        .onClick((): void => { this.saveRustDeskImageQuality(value); })
+    }.width(44).justifyContent(FlexAlign.Center)
   }
 
   @Builder rustdeskImageQualityRow() {
-    Column({ space: 10 }) {
-      Row() {
-        Row() { Image($r('app.media.icon_laptop')).width(22).height(22).fillColor(this.pal().text2) }
-          .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
-        Column() {
-          Text('图像质量').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
-            .fontColor(this.pal().text).fontFamily(this.font())
-          Text(this.rustdeskImageQuality === 0 ? '速度优先' : (this.rustdeskImageQuality === 2 ? '画质优先' : '平衡'))
-            .fontSize(11).fontColor(this.pal().text2).fontFamily(this.font())
-        }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
-      }.width('100%')
-      Flex({ wrap: FlexWrap.Wrap, alignItems: ItemAlign.Center,
-        space: { main: LengthMetrics.vp(8), cross: LengthMetrics.vp(8) } }) {
-        this._qualityChip('速度', 0)
-        this._qualityChip('平衡', 1)
-        this._qualityChip('画质', 2)
-      }.width('100%')
-    }.width('100%').alignItems(HorizontalAlign.Start)
-      .padding({ left: 16, right: 16, top: 12, bottom: 12 })
+    Row() {
+      Row() { Image($r('app.media.icon_laptop')).width(22).height(22).fillColor(this.pal().text3) }
+        .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
+      Column() {
+        Text('图像质量').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
+          .fontColor(this.pal().text).fontFamily(this.font())
+        Text(this.rustdeskImageQuality === 0 ? '速度优先' : (this.rustdeskImageQuality === 2 ? '画质优先' : '平衡'))
+          .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
+      }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
+      Stack({ alignContent: Alignment.Start }) {
+        // 滑动指示器背景
+        Column()
+          .width(44).height(30).borderRadius(8)
+          .backgroundColor(this.accentColor)
+          .translate({ x: this.rustdeskImageQuality * 48, y: 0 })
+          .animation({ duration: 300, curve: Curve.FastOutSlowIn })
+        Row() {
+          this._qualityChip('速度', 0)
+          Blank().width(4)
+          this._qualityChip('平衡', 1)
+          Blank().width(4)
+          this._qualityChip('画质', 2)
+        }
+      }.padding(3).borderRadius(11).backgroundColor(this.pal().surface)
+    }.width('100%').height(64).padding({ left: 16, right: 16 })
   }
 
   @Builder rustdeskCodecRow() {
-    Column({ space: 10 }) {
+    if (this.breakpoint === 'sm') {
+      Column() {
+        Row() {
+          Row() { Image($r('app.media.icon_laptop')).width(22).height(22).fillColor(this.pal().text3) }
+            .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
+          Column() {
+            Text('默认编码').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
+              .fontColor(this.pal().text).fontFamily(this.font())
+            Text(this.rustdeskCodecLabel()).fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
+            Text(this.rustdeskCodecLongRunHint()).fontSize(10).fontColor(this.pal().text3).fontFamily(this.font())
+              .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+          }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
+        }.width('100%').height(50).padding({ left: 16, right: 16, top: 8 })
+        Row() {
+          Stack({ alignContent: Alignment.Start }) {
+            Column()
+              .width(40).height(26).borderRadius(6)
+              .backgroundColor(this.accentColor)
+              .translate({ x: this.rustdeskCodec * 41, y: 0 })
+              .animation({ duration: 280, curve: Curve.FastOutSlowIn })
+            Row() { this._codecChip('自动', 0); this._codecChip('VP8', 1)
+              this._codecChip('VP9', 2); this._codecChip('AV1', 3)
+              this._codecChip('H264', 4); this._codecChip('H265', 5) }
+          }.padding(3).borderRadius(10).backgroundColor(this.pal().surface)
+        }.width('100%').justifyContent(FlexAlign.Center)
+        .margin({ left: 16, right: 16, bottom: 12 })
+      }.width('100%')
+    } else {
       Row() {
-        Row() { Image($r('app.media.icon_laptop')).width(22).height(22).fillColor(this.pal().text2) }
+        Row() { Image($r('app.media.icon_laptop')).width(22).height(22).fillColor(this.pal().text3) }
           .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
-        Column() {
-          Text('默认编码').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
-            .fontColor(this.pal().text).fontFamily(this.font())
-          Text(this.rustdeskCodecLabel()).fontSize(11).fontColor(this.pal().text2).fontFamily(this.font())
-          Text(this.rustdeskCodecLongRunHint()).fontSize(10).fontColor(this.pal().text2).fontFamily(this.font())
-        }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
-      }.width('100%')
-      Flex({ wrap: FlexWrap.Wrap, alignItems: ItemAlign.Center,
-        space: { main: LengthMetrics.vp(8), cross: LengthMetrics.vp(8) } }) {
-        this._codecChip('自动', 0)
-        this._codecChip('VP8', 1)
-        this._codecChip('VP9', 2)
-        this._codecChip('AV1', 3)
-        this._codecChip('H264', 4)
-        this._codecChip('H265', 5)
-      }.width('100%')
-    }.width('100%').alignItems(HorizontalAlign.Start)
-      .padding({ left: 16, right: 16, top: 12, bottom: 12 })
+          Column() {
+            Text('默认编码').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
+              .fontColor(this.pal().text).fontFamily(this.font())
+            Text(this.rustdeskCodecLabel()).fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
+            Text(this.rustdeskCodecLongRunHint()).fontSize(10).fontColor(this.pal().text3).fontFamily(this.font())
+              .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+          }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
+        Stack({ alignContent: Alignment.Start }) {
+          Column()
+            .width(40).height(26).borderRadius(6)
+            .backgroundColor(this.accentColor)
+            .translate({ x: this.rustdeskCodec * 41, y: 0 })
+            .animation({ duration: 280, curve: Curve.FastOutSlowIn })
+          Row() { this._codecChip('自动', 0); this._codecChip('VP8', 1)
+            this._codecChip('VP9', 2); this._codecChip('AV1', 3)
+            this._codecChip('H264', 4); this._codecChip('H265', 5) }
+        }.padding(3).borderRadius(10).backgroundColor(this.pal().surface)
+      }.width('100%').height(76).padding({ left: 16, right: 16 })
+    }
   }
 
   private rustdeskCodecLongRunHint(): string {
@@ -18510,8 +18531,15 @@ struct HostListPage {
   }
 
   @Builder _codecChip(label: string, codecIdx: number) {
-    AppSettingsChoiceButton({ label, isSelected: this.rustdeskCodec === codecIdx,
-      onSelect: (): void => { this.saveRustDeskCodec(codecIdx); } })
+    Column() {
+      Text(label).fontSize(10)
+        .fontColor(this.rustdeskCodec === codecIdx ? '#FFFFFF' : this.pal().text2)
+        .fontWeight(this.rustdeskCodec === codecIdx ? FontWeight.Medium : FontWeight.Normal)
+        .textAlign(TextAlign.Center)
+        .padding({ left: 3, right: 3, top: 4, bottom: 4 })
+        .borderRadius(6).onClick((): void => { this.saveRustDeskCodec(codecIdx); })
+    }.width(40).justifyContent(FlexAlign.Center)
+    if (codecIdx < 5) { Blank().width(1) }
   }
 
   private rdpDesktopPresetLabel(): string {
@@ -18535,63 +18563,82 @@ struct HostListPage {
       .scrollable(ScrollDirection.Horizontal)
       .scrollBar(BarState.Off)
       .width('100%')
-      .constraintSize({ minHeight: AppUiMetrics.minTouchTarget })
+      .height(42)
       .margin({ top: 4 })
-    }.width('100%').padding({ top: 10, bottom: 10 })
+    }.width('100%').height(110).padding({ top: 10, bottom: 10 })
   }
 
   @Builder rdpDesktopPresetLabelBlock() {
     Row() {
-      Row() { Image($r('app.media.icon_desktop')).width(22).height(22).fillColor(this.pal().text2) }
+      Row() { Image($r('app.media.icon_desktop')).width(22).height(22).fillColor(this.pal().text3) }
         .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
       Column() {
         Text('远端桌面大小').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
           .fontColor(this.pal().text).fontFamily(this.font())
-        Text(this.rdpDesktopPresetLabel()).fontSize(11).fontColor(this.pal().text2).fontFamily(this.font())
+        Text(this.rdpDesktopPresetLabel()).fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
       }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
-    }.width('100%').padding({ left: 16, right: 16 })
+    }.layoutWeight(1)
   }
 
   @Builder rdpResolutionPresetChip(label: string, id: string) {
-    AppSettingsChoiceButton({ label, isSelected: this.rdpDesktopResolutionId === id,
-      onSelect: (): void => { this.saveRdpDesktopResolutionId(id); } })
+    Text(label)
+      .fontSize(11)
+      .fontColor(this.rdpDesktopResolutionId === id ? '#FFFFFF' : this.pal().text2)
+      .fontWeight(this.rdpDesktopResolutionId === id ? FontWeight.Medium : FontWeight.Normal)
+      .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+      .padding({ left: 10, right: 10, top: 7, bottom: 7 })
+      .backgroundColor(this.rdpDesktopResolutionId === id ? this.accentColor : this.pal().surface)
+      .borderRadius(6)
+      .onClick((): void => { this.saveRdpDesktopResolutionId(id); })
   }
 
   @Builder rdpRemoteUiScaleRow() {
-    Column({ space: 10 }) {
-      this.rdpRemoteUiScaleLabelBlock()
-      this.rdpRemoteUiScaleSelector()
-    }.width('100%').alignItems(HorizontalAlign.Start)
-      .padding({ left: 16, right: 16, top: 12, bottom: 12 })
+    if (this.breakpoint === 'md' || this.breakpoint === 'lg') {
+      Row() {
+        this.rdpRemoteUiScaleLabelBlock()
+        this.rdpRemoteUiScaleSelector()
+      }.width('100%').height(64).padding({ left: 16, right: 16 })
+    } else {
+      Column() {
+        Row() { this.rdpRemoteUiScaleLabelBlock() }.width('100%')
+        Row() { this.rdpRemoteUiScaleSelector() }
+          .width('100%').justifyContent(FlexAlign.Center).margin({ top: 10 })
+      }.width('100%').height(92).padding({ left: 16, right: 16, top: 14, bottom: 12 })
+    }
   }
 
   @Builder rdpRemoteUiScaleLabelBlock() {
     Row() {
-      Row() { Image($r('app.media.icon_laptop')).width(22).height(22).fillColor(this.pal().text2) }
+      Row() { Image($r('app.media.icon_laptop')).width(22).height(22).fillColor(this.pal().text3) }
         .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
       Column() {
         Text('远端界面大小').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
           .fontColor(this.pal().text).fontFamily(this.font())
         Text(rdpRemoteUiScaleLabel(this.rdpRemoteUiScale) + '，调整 Windows 字体与控件')
-          .fontSize(11).fontColor(this.pal().text2).fontFamily(this.font())
-
+          .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
+          .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
       }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
-    }.width('100%')
+    }.layoutWeight(1)
   }
 
   @Builder rdpRemoteUiScaleSelector() {
-    Flex({ wrap: FlexWrap.Wrap, alignItems: ItemAlign.Center,
-      space: { main: LengthMetrics.vp(8), cross: LengthMetrics.vp(8) } }) {
+    Row({ space: 4 }) {
       this.rdpRemoteUiScaleChip('自动', 'auto')
       this.rdpRemoteUiScaleChip('标准', '100')
       this.rdpRemoteUiScaleChip('大', '140')
       this.rdpRemoteUiScaleChip('特大', '180')
-    }.width('100%')
+    }.padding(3).borderRadius(11).backgroundColor(this.pal().surface)
   }
 
   @Builder rdpRemoteUiScaleChip(label: string, value: string) {
-    AppSettingsChoiceButton({ label, isSelected: this.rdpRemoteUiScale === value,
-      onSelect: (): void => { this.saveRdpRemoteUiScale(value); } })
+    Text(label).fontSize(11)
+      .fontColor(this.rdpRemoteUiScale === value ? '#FFFFFF' : this.pal().text2)
+      .fontWeight(this.rdpRemoteUiScale === value ? FontWeight.Medium : FontWeight.Normal)
+      .textAlign(TextAlign.Center).maxLines(1)
+      .padding({ left: 9, right: 9, top: 7, bottom: 7 })
+      .backgroundColor(this.rdpRemoteUiScale === value ? this.accentColor : Color.Transparent)
+      .borderRadius(8)
+      .onClick((): void => { this.saveRdpRemoteUiScale(value); })
   }
 
   private remoteDisplayScaleLabel(): string {
@@ -18604,15 +18651,15 @@ struct HostListPage {
   @Builder remoteDisplayScaleRow() {
     Column() {
       Row() {
-        Row() { Image($r('app.media.icon_desktop')).width(22).height(22).fillColor(this.pal().text2) }
+        Row() { Image($r('app.media.icon_desktop')).width(22).height(22).fillColor(this.pal().text3) }
           .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
         Column() {
           Text('本地显示缩放').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
             .fontColor(this.pal().text).fontFamily(this.font())
           Text(this.remoteDisplayScaleLabel() + '，不改变远端分辨率')
-            .fontSize(11).fontColor(this.pal().text2).fontFamily(this.font())
+            .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
         }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
-      }.width('100%').constraintSize({ minHeight: 54 }).padding({ left: 16, right: 16 })
+      }.width('100%').height(54).padding({ left: 16, right: 16 })
       Scroll() {
         Row({ space: 8 }) {
           this.remoteDisplayScaleChip('适应', 'fit')
@@ -18626,43 +18673,77 @@ struct HostListPage {
         }.padding({ left: 16, right: 16 })
       }
       .scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off)
-      .width('100%').constraintSize({ minHeight: AppUiMetrics.minTouchTarget })
+      .width('100%').height(42)
       if (normalizeLocalViewScaleMode(this.remoteDisplayScaleMode) === 'custom') {
-        Flex({ wrap: FlexWrap.Wrap, alignItems: ItemAlign.Center,
-          space: { main: LengthMetrics.vp(8), cross: LengthMetrics.vp(8) } }) {
+        Row({ space: 8 }) {
           Text('自定义比例').fontSize(12).fontColor(this.pal().text2)
           TextInput({ text: this.remoteDisplayCustomScalePercent.toString(), placeholder: '50 - 300' })
-            .width(96).constraintSize({ minHeight: AppUiMetrics.minTouchTarget }).type(InputType.Number).fontSize(13)
+            .width(96).height(34).type(InputType.Number).fontSize(13)
             .fontColor(this.pal().text).backgroundColor(this.pal().surface).borderRadius(6)
             .onChange((value: string): void => { this.saveRemoteDisplayCustomScalePercent(value); })
-          Text('%').fontSize(12).fontColor(this.pal().text2)
+          Text('%').fontSize(12).fontColor(this.pal().text3)
         }.width('100%').padding({ left: 16, right: 16, bottom: 10 })
       }
     }.width('100%')
   }
 
   @Builder remoteDisplayScaleChip(label: string, mode: string) {
-    AppSettingsChoiceButton({ label, isSelected: this.remoteDisplayScaleMode === mode,
-      onSelect: (): void => { this.saveRemoteDisplayScaleMode(mode); } })
+    Text(label).fontSize(11)
+      .fontColor(this.remoteDisplayScaleMode === mode ? '#FFFFFF' : this.pal().text2)
+      .fontWeight(this.remoteDisplayScaleMode === mode ? FontWeight.Medium : FontWeight.Normal)
+      .padding({ left: 10, right: 10, top: 7, bottom: 7 })
+      .backgroundColor(this.remoteDisplayScaleMode === mode ? this.accentColor : this.pal().surface)
+      .borderRadius(6)
+      .onClick((): void => { this.saveRemoteDisplayScaleMode(mode); })
   }
 
   @Builder remoteWheelDirectionRow() {
-    this.cardActionRow($r('app.media.icon_desktop'), '远程滚轮方向',
-      remoteWheelSelectionSummary(this.remoteWheelPreferences()),
-      (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_REMOTE_WHEEL_DIRECTION); })
+    Row() {
+      Row() { Image($r('app.media.icon_desktop')).width(22).height(22).fillColor(this.pal().text3) }
+        .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
+      Column() {
+        Text('远程滚轮方向').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
+          .fontColor(this.pal().text).fontFamily(this.font())
+        Text(remoteWheelSelectionSummary(this.remoteWheelPreferences()))
+          .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
+          .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).margin({ top: 2 })
+      }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
+      Button('编辑').height(34).padding({ left: 12, right: 12 }).fontSize(12)
+        .fontColor(this.accentColor).backgroundColor(this.pal().surface).borderRadius(8)
+        .onClick((): void => {
+          this.openSettingsLeafSheet(SETTINGS_SHEET_REMOTE_WHEEL_DIRECTION);
+        })
+    }.width('100%').height(62).padding({ left: 16, right: 16 })
   }
 
   @Builder sessionControlBarVisibilityRow() {
-    this.cardActionRow($r('app.media.icon_desktop'), '会话侧栏与顶栏',
-      remoteSessionControlBarSelectionSummary(
-        this.sessionControlBarVisibility(), this.remoteSessionQuickExitDisabled),
-      (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_SESSION_CONTROL_BAR); })
+    Row() {
+      Row() {
+        Image($r('app.media.icon_desktop')).width(22).height(22).fillColor(this.pal().text3)
+      }.width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
+      Column() {
+        Text('会话侧栏与顶栏').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
+          .fontColor(this.pal().text).fontFamily(this.font())
+        Text(remoteSessionControlBarSelectionSummary(
+          this.sessionControlBarVisibility(), this.remoteSessionQuickExitDisabled))
+          .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
+          .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).margin({ top: 2 })
+      }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
+      Button('选择协议').height(34).padding({ left: 12, right: 12 }).fontSize(12)
+        .fontColor(this.accentColor).backgroundColor(this.pal().surface).borderRadius(8)
+        .onClick((): void => {
+          this.openSettingsLeafSheet(SETTINGS_SHEET_SESSION_CONTROL_BAR);
+        })
+    }.width('100%').height(62).padding({ left: 16, right: 16 })
+      .onClick((): void => {
+        this.openSettingsLeafSheet(SETTINGS_SHEET_SESSION_CONTROL_BAR);
+      })
   }
 
   @Builder remoteSessionQuickExitRow() {
     Row() {
       Row() {
-        SymbolGlyph($r('sys.symbol.lock_shield_fill')).fontSize(22).fontColor([this.pal().text2])
+        SymbolGlyph($r('sys.symbol.lock_shield_fill')).fontSize(22).fontColor([this.pal().text3])
       }.width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
       Column() {
         Text('关闭快捷退出').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
@@ -18670,32 +18751,58 @@ struct HostListPage {
         Text(this.remoteSessionQuickExitDisabled ?
           '已开启：只能使用会话控制栏或顶栏按钮退出' :
           '允许系统返回和 SSH Ctrl+Shift+Q 退出会话')
-          .fontSize(11).fontColor(this.pal().text2).fontFamily(this.font())
+          .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
           .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis }).margin({ top: 2 })
       }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
       Toggle({ type: ToggleType.Switch, isOn: this.remoteSessionQuickExitDisabled })
-        .selectedColor(this.accentColor).constraintSize({ minWidth: 52, minHeight: AppUiMetrics.minTouchTarget }).focusable(true)
+        .selectedColor(this.accentColor).scale({ x: 0.88, y: 0.88 })
         .accessibilityText('关闭快捷退出')
         .onChange((on: boolean): void => {
           if (!this.saveRemoteSessionQuickExitDisabled(on)) {
             promptAction.showToast({ message: '快捷退出设置保存失败，已保留原状态', duration: 2200 });
           }
         })
-    }.width('100%').constraintSize({ minHeight: 68 }).padding({ left: 16, right: 16, top: 8, bottom: 8 })
+    }.width('100%').height(68).padding({ left: 16, right: 16 })
   }
 
   @Builder remotePinchZoomRow() {
-    this.cardActionRow($r('app.media.icon_desktop'), '双指缩放',
-      remotePinchZoomSelectionSummary(this.remotePinchZoomPreferences()),
-      (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_REMOTE_PINCH_ZOOM); })
+    Row() {
+      Row() { Image($r('app.media.icon_desktop')).width(22).height(22).fillColor(this.pal().text3) }
+        .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
+      Column() {
+        Text('双指缩放').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
+          .fontColor(this.pal().text).fontFamily(this.font())
+        Text(remotePinchZoomSelectionSummary(this.remotePinchZoomPreferences()))
+          .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
+          .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).margin({ top: 2 })
+      }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
+      Button('选择协议').height(34).padding({ left: 12, right: 12 }).fontSize(12)
+        .fontColor(this.accentColor).backgroundColor(this.pal().surface).borderRadius(8)
+        .onClick((): void => {
+          this.openSettingsLeafSheet(SETTINGS_SHEET_REMOTE_PINCH_ZOOM);
+        })
+    }.width('100%').height(62).padding({ left: 16, right: 16 })
+      .onClick((): void => {
+        this.openSettingsLeafSheet(SETTINGS_SHEET_REMOTE_PINCH_ZOOM);
+      })
   }
 
   @Builder rdpColorDepthRow() {
-    Column({ space: 10 }) {
-      this.rdpColorDepthLabelBlock()
-      this.rdpColorDepthSlider()
-    }.width('100%').alignItems(HorizontalAlign.Start)
-      .padding({ left: 16, right: 16, top: 12, bottom: 12 })
+    if (this.breakpoint === 'md' || this.breakpoint === 'lg') {
+      Row() {
+        this.rdpColorDepthLabelBlock()
+        this.rdpColorDepthSlider()
+      }.width('100%').height(64).padding({ left: 16, right: 16 })
+    } else {
+      Column() {
+        Row() {
+          this.rdpColorDepthLabelBlock()
+        }.width('100%')
+        Row() {
+          this.rdpColorDepthSlider()
+        }.width('100%').justifyContent(FlexAlign.Center).margin({ top: 10 })
+      }.width('100%').height(92).padding({ left: 16, right: 16, top: 14, bottom: 12 })
+    }
   }
 
   private rdpColorDepthIndex(): number {
@@ -18706,36 +18813,63 @@ struct HostListPage {
 
   @Builder rdpColorDepthLabelBlock() {
     Row() {
-      Row() { Image($r('app.media.icon_laptop')).width(22).height(22).fillColor(this.pal().text2) }
+      Row() { Image($r('app.media.icon_laptop')).width(22).height(22).fillColor(this.pal().text3) }
         .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
       Column() {
         Text('色彩深度').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
           .fontColor(this.pal().text).fontFamily(this.font())
-        Text(this.rdpColorDepth.toString() + ' 位色').fontSize(11).fontColor(this.pal().text2).fontFamily(this.font())
+        Text(this.rdpColorDepth.toString() + ' 位色').fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
       }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
-    }.width('100%')
+    }.layoutWeight(1)
   }
 
   @Builder rdpColorDepthSlider() {
-    Flex({ wrap: FlexWrap.Wrap, alignItems: ItemAlign.Center,
-      space: { main: LengthMetrics.vp(8), cross: LengthMetrics.vp(8) } }) {
-      this._rdpColorDepthSliderChip('16', 16)
-      this._rdpColorDepthSliderChip('24', 24)
-      this._rdpColorDepthSliderChip('32', 32)
-    }.width('100%')
+    Stack({ alignContent: Alignment.Start }) {
+      Column()
+        .width(72).height(30).borderRadius(8)
+        .backgroundColor(this.accentColor)
+        .translate({ x: this.rdpColorDepthIndex() * 76, y: 0 })
+        .animation({ duration: 260, curve: Curve.FastOutSlowIn })
+      Row() {
+        this._rdpColorDepthSliderChip('16', 16)
+        Blank().width(4)
+        this._rdpColorDepthSliderChip('24', 24)
+        Blank().width(4)
+        this._rdpColorDepthSliderChip('32', 32)
+      }
+    }.padding(3).borderRadius(11).backgroundColor(this.pal().surface)
   }
 
   @Builder _rdpColorDepthSliderChip(label: string, value: number) {
-    AppSettingsChoiceButton({ label, isSelected: this.rdpColorDepth === value,
-      onSelect: (): void => { this.saveRdpColorDepth(value); } })
+    Column() {
+      Text(label)
+        .fontSize(11)
+        .fontColor(this.rdpColorDepth === value ? '#FFFFFF' : this.pal().text2)
+        .fontWeight(this.rdpColorDepth === value ? FontWeight.Medium : FontWeight.Normal)
+        .textAlign(TextAlign.Center)
+        .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+        .padding({ left: 8, right: 8, top: 6, bottom: 6 })
+        .borderRadius(8)
+        .onClick((): void => { this.saveRdpColorDepth(value); })
+    }.width(72).justifyContent(FlexAlign.Center)
   }
 
   @Builder rdpControlModeRow() {
-    Column({ space: 10 }) {
-      this.rdpControlModeLabel()
-      this.rdpControlModeSlider()
-    }.width('100%').alignItems(HorizontalAlign.Start)
-      .padding({ left: 16, right: 16, top: 12, bottom: 12 })
+    if (this.breakpoint === 'md' || this.breakpoint === 'lg') {
+      Row() {
+        this.rdpControlModeLabel()
+        this.rdpControlModeSlider()
+      }.width('100%').height(64).padding({ left: 16, right: 16 })
+    } else {
+      Column() {
+        Row() {
+          this.rdpControlModeLabel()
+        }.width('100%')
+        Row() {
+          this.rdpControlModeSlider()
+        }.width('100%').justifyContent(FlexAlign.Center).margin({ top: 10 })
+      }.width('100%').height(92).padding({ left: 16, right: 16, top: 14, bottom: 12 })
+    }
   }
 
   private rdpControlModeDetail(): string {
@@ -18746,30 +18880,47 @@ struct HostListPage {
 
   @Builder rdpControlModeLabel() {
     Row() {
-      Row() { Image($r('app.media.icon_desktop')).width(22).height(22).fillColor(this.pal().text2) }
+      Row() { Image($r('app.media.icon_desktop')).width(22).height(22).fillColor(this.pal().text3) }
         .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
       Column() {
         Text('操控模式').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
           .fontColor(this.pal().text).fontFamily(this.font())
         Text(this.rdpControlModeDetail())
-          .fontSize(11).fontColor(this.pal().text2).fontFamily(this.font())
-
+          .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
+          .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
       }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
-    }.width('100%')
+    }.layoutWeight(1)
   }
 
   @Builder rdpControlModeSlider() {
-    Flex({ wrap: FlexWrap.Wrap, alignItems: ItemAlign.Center,
-      space: { main: LengthMetrics.vp(8), cross: LengthMetrics.vp(8) } }) {
-      this._rdpControlModeChip('触控板', 0)
-      this._rdpControlModeChip('触控', 1)
-      this._rdpControlModeChip('键鼠', 2)
-    }.width('100%')
+    Stack({ alignContent: Alignment.Start }) {
+      Column()
+        .width(72).height(30).borderRadius(8)
+        .backgroundColor(this.accentColor)
+        .translate({ x: this.rdpControlMode * 76, y: 0 })
+        .animation({ duration: 260, curve: Curve.FastOutSlowIn })
+      Row() {
+        this._rdpControlModeChip('触控板', 0)
+        Blank().width(4)
+        this._rdpControlModeChip('触控', 1)
+        Blank().width(4)
+        this._rdpControlModeChip('键鼠', 2)
+      }
+    }.padding(3).borderRadius(11).backgroundColor(this.pal().surface)
   }
 
   @Builder _rdpControlModeChip(label: string, mode: number) {
-    AppSettingsChoiceButton({ label, isSelected: this.rdpControlMode === mode,
-      onSelect: (): void => { this.saveRdpControlMode(mode); } })
+    Column() {
+      Text(label)
+        .fontSize(11)
+        .fontColor(this.rdpControlMode === mode ? '#FFFFFF' : this.pal().text2)
+        .fontWeight(this.rdpControlMode === mode ? FontWeight.Medium : FontWeight.Normal)
+        .textAlign(TextAlign.Center)
+        .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+        .padding({ left: 8, right: 8, top: 6, bottom: 6 })
+        .borderRadius(8)
+        .onClick((): void => { this.saveRdpControlMode(mode); })
+    }.width(72).justifyContent(FlexAlign.Center)
   }
 
   private rdpAuthIdentityModeLabel(): string {
@@ -18781,93 +18932,127 @@ struct HostListPage {
   }
 
   @Builder rdpAuthIdentityModeRow() {
-    Column({ space: 10 }) {
-      this.rdpAuthIdentityModeLabelBlock()
-      this.rdpAuthIdentityModeSlider()
-    }.width('100%').alignItems(HorizontalAlign.Start)
-      .padding({ left: 16, right: 16, top: 12, bottom: 12 })
+    if (this.breakpoint === 'md' || this.breakpoint === 'lg') {
+      Row() {
+        this.rdpAuthIdentityModeLabelBlock()
+        this.rdpAuthIdentityModeSlider()
+      }.width('100%').height(64).padding({ left: 16, right: 16 })
+    } else {
+      Column() {
+        Row() {
+          this.rdpAuthIdentityModeLabelBlock()
+        }.width('100%')
+        Row() {
+          this.rdpAuthIdentityModeSlider()
+        }.width('100%').justifyContent(FlexAlign.Center).margin({ top: 10 })
+      }.width('100%').height(92).padding({ left: 16, right: 16, top: 14, bottom: 12 })
+    }
   }
 
   @Builder rdpAuthIdentityModeLabelBlock() {
     Row() {
-      Row() { Image($r('app.media.icon_lock')).width(22).height(22).fillColor(this.pal().text2) }
+      Row() { Image($r('app.media.icon_lock')).width(22).height(22).fillColor(this.pal().text3) }
         .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
       Column() {
         Text('账号格式').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
           .fontColor(this.pal().text).fontFamily(this.font())
-        Text(this.rdpAuthIdentityModeLabel()).fontSize(11).fontColor(this.pal().text2).fontFamily(this.font())
-
+        Text(this.rdpAuthIdentityModeLabel()).fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
+          .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
       }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
-    }.width('100%')
+    }.layoutWeight(1)
   }
 
   @Builder rdpAuthIdentityModeSlider() {
-    Flex({ wrap: FlexWrap.Wrap, alignItems: ItemAlign.Center,
-      space: { main: LengthMetrics.vp(8), cross: LengthMetrics.vp(8) } }) {
-      this._rdpAuthIdentityModeSliderChip('MSA前', 0)
-      this._rdpAuthIdentityModeSliderChip('MSA域', 1)
-      this._rdpAuthIdentityModeSliderChip('邮箱', 2)
-      this._rdpAuthIdentityModeSliderChip('AAD.', 3)
-      this._rdpAuthIdentityModeSliderChip('AAD域', 4)
-    }.width('100%')
+    Stack({ alignContent: Alignment.Start }) {
+      Column()
+        .width(58).height(30).borderRadius(8)
+        .backgroundColor(this.accentColor)
+        .translate({ x: this.rdpAuthIdentityMode * 61, y: 0 })
+        .animation({ duration: 260, curve: Curve.FastOutSlowIn })
+      Row() {
+        this._rdpAuthIdentityModeSliderChip('MSA前', 0)
+        Blank().width(3)
+        this._rdpAuthIdentityModeSliderChip('MSA域', 1)
+        Blank().width(3)
+        this._rdpAuthIdentityModeSliderChip('邮箱', 2)
+        Blank().width(3)
+        this._rdpAuthIdentityModeSliderChip('AAD.', 3)
+        Blank().width(3)
+        this._rdpAuthIdentityModeSliderChip('AAD域', 4)
+      }
+    }.padding(3).borderRadius(11).backgroundColor(this.pal().surface)
   }
 
   @Builder _rdpAuthIdentityModeSliderChip(label: string, mode: number) {
-    AppSettingsChoiceButton({ label, isSelected: this.rdpAuthIdentityMode === mode,
-      onSelect: (): void => { this.saveRdpAuthIdentityMode(mode); } })
+    Column() {
+      Text(label)
+        .fontSize(11)
+        .fontColor(this.rdpAuthIdentityMode === mode ? '#FFFFFF' : this.pal().text2)
+        .fontWeight(this.rdpAuthIdentityMode === mode ? FontWeight.Medium : FontWeight.Normal)
+        .textAlign(TextAlign.Center)
+        .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+        .padding({ left: 8, right: 8, top: 6, bottom: 6 })
+        .borderRadius(8)
+        .onClick((): void => { this.saveRdpAuthIdentityMode(mode); })
+    }.width(58).justifyContent(FlexAlign.Center)
   }
 
   @Builder rdpDriveNameRow() {
-    Column({ space: 10 }) {
-      Row() {
-        Row() { Image($r('app.media.icon_folder')).width(22).height(22).fillColor(this.pal().text2) }
-          .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
-        Column() {
-          Text('文件共享盘名称').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
-            .fontColor(this.pal().text).fontFamily(this.font())
-          Text('Windows 路径: \\\\tsclient\\' + this.rdpDriveName)
-            .fontSize(11).fontColor(this.pal().text2).fontFamily(this.font())
-        }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
-      }.width('100%')
+    Row() {
+      Row() { Image($r('app.media.icon_folder')).width(22).height(22).fillColor(this.pal().text3) }
+        .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
+      Column() {
+        Text('文件共享盘名称').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
+          .fontColor(this.pal().text).fontFamily(this.font())
+        Text('Windows 路径: \\\\tsclient\\' + this.rdpDriveName)
+          .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
+          .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+      }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
       TextInput({ text: this.rdpDriveName, placeholder: 'RemoteDesktop' })
-        .width('100%').constraintSize({ minHeight: AppUiMetrics.minTouchTarget }).fontSize(13).fontColor(this.pal().text).placeholderColor(this.pal().text2)
+        .width(144).height(36).fontSize(13).fontColor(this.pal().text).placeholderColor(this.pal().text3)
         .backgroundColor(this.pal().surface).borderRadius(10).padding({ left: 10, right: 10 })
         .enabled(this.rdpDriveEnabled)
         .opacity(this.rdpDriveEnabled ? 1.0 : 0.55)
         .onChange((v: string): void => { this.saveRdpDriveName(v); })
-        .accessibilityText('文件共享盘名称')
-    }.width('100%').alignItems(HorizontalAlign.Start)
-      .padding({ left: 16, right: 16, top: 12, bottom: 12 })
+    }.width('100%').height(64).padding({ left: 16, right: 16 })
   }
 
   @Builder rdpCredentialManagerRow() {
-    Button({ type: ButtonType.Normal }) {
-      Row() {
-        Row() { Image($r('app.media.icon_lock')).width(22).height(22).fillColor(this.pal().text2) }
-          .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
-        Column() {
-          Text('Windows 凭据').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
-            .fontColor(this.pal().text).fontFamily(this.font())
-          Text(this.rdpCredentials.length > 0 ? '已保存 ' + this.rdpCredentials.length + ' 个账户' : '添加邮箱或本地 Windows 账户')
-            .fontSize(11).fontColor(this.pal().text2).fontFamily(this.font())
-        }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
-        Text('管理').fontSize(13).fontColor(this.accentColor).fontWeight(FontWeight.Medium)
-          .fontFamily(this.font()).margin({ right: 6 })
-        Text(' >').fontSize(14).fontColor(this.pal().text2)
-      }.width('100%').constraintSize({ minHeight: 64 }).padding({ left: 16, right: 16, top: 8, bottom: 8 })
-    }.width('100%').padding(0).backgroundColor(Color.Transparent).borderRadius(0)
-      .focusable(true).accessibilityText('Windows 凭据，管理')
-      .onClick((): void => {
+    Row() {
+      Row() { Image($r('app.media.icon_lock')).width(22).height(22).fillColor(this.pal().text3) }
+        .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
+      Column() {
+        Text('Windows 凭据').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
+          .fontColor(this.pal().text).fontFamily(this.font())
+        Text(this.rdpCredentials.length > 0 ? '已保存 ' + this.rdpCredentials.length + ' 个账户' : '添加邮箱或本地 Windows 账户')
+          .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
+      }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
+      Text('管理').fontSize(13).fontColor(this.accentColor).fontWeight(FontWeight.Medium)
+        .fontFamily(this.font()).margin({ right: 6 })
+      Text(' >').fontSize(14).fontColor(this.pal().text3)
+    }.width('100%').height(64).padding({ left: 16, right: 16 })
+    .onClick((): void => {
       this.openRdpCredentialManager();
     })
   }
 
   @Builder sshInputModeRow() {
-    Column({ space: 10 }) {
-      this.sshInputModeLabel()
-      this.sshInputModeSlider()
-    }.width('100%').alignItems(HorizontalAlign.Start)
-      .padding({ left: 16, right: 16, top: 12, bottom: 12 })
+    if (this.breakpoint === 'md' || this.breakpoint === 'lg') {
+      Row() {
+        this.sshInputModeLabel()
+        this.sshInputModeSlider()
+      }.width('100%').height(64).padding({ left: 16, right: 16 })
+    } else {
+      Column() {
+        Row() {
+          this.sshInputModeLabel()
+        }.width('100%')
+        Row() {
+          Blank().layoutWeight(1)
+          this.sshInputModeSlider()
+        }.width('100%').margin({ top: 10 })
+      }.width('100%').height(92).padding({ left: 16, right: 16, top: 14, bottom: 12 })
+    }
   }
 
   private sshInputModeDetail(): string {
@@ -18878,37 +19063,65 @@ struct HostListPage {
 
   @Builder sshInputModeLabel() {
     Row() {
-      Row() { Image($r('app.media.icon_terminal')).width(22).height(22).fillColor(this.pal().text2) }
+      Row() { Image($r('app.media.icon_terminal')).width(22).height(22).fillColor(this.pal().text3) }
         .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
       Column() {
         Text('输入设备').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
           .fontColor(this.pal().text).fontFamily(this.font())
-        Text(this.sshInputModeDetail()).fontSize(11).fontColor(this.pal().text2).fontFamily(this.font())
-
+        Text(this.sshInputModeDetail()).fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
+          .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
       }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
-    }.width('100%')
+    }.layoutWeight(1)
   }
 
   @Builder sshInputModeSlider() {
-    Flex({ wrap: FlexWrap.Wrap, alignItems: ItemAlign.Center,
-      space: { main: LengthMetrics.vp(8), cross: LengthMetrics.vp(8) } }) {
-      this._sshInputModeChip('自动', 0)
-      this._sshInputModeChip('虚拟键盘', 1)
-      this._sshInputModeChip('实体键鼠', 2)
-    }.width('100%')
+    Stack({ alignContent: Alignment.Start }) {
+      Column()
+        .width(72).height(30).borderRadius(8)
+        .backgroundColor(this.accentColor)
+        .translate({ x: this.sshInputMode * 76, y: 0 })
+        .animation({ duration: 260, curve: Curve.FastOutSlowIn })
+      Row() {
+        this._sshInputModeChip('自动', 0)
+        Blank().width(4)
+        this._sshInputModeChip('虚拟键盘', 1)
+        Blank().width(4)
+        this._sshInputModeChip('实体键鼠', 2)
+      }
+    }.padding(3).borderRadius(11).backgroundColor(this.pal().surface)
   }
 
   @Builder _sshInputModeChip(label: string, mode: number) {
-    AppSettingsChoiceButton({ label, isSelected: this.sshInputMode === mode,
-      onSelect: (): void => { this.saveSshInputMode(mode); } })
+    Column() {
+      Text(label)
+        .fontSize(11)
+        .fontColor(this.sshInputMode === mode ? '#FFFFFF' : this.pal().text2)
+        .fontWeight(this.sshInputMode === mode ? FontWeight.Medium : FontWeight.Normal)
+        .textAlign(TextAlign.Center)
+        .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+        .padding({ left: 8, right: 8, top: 6, bottom: 6 })
+        .borderRadius(8)
+        .onClick((): void => { this.saveSshInputMode(mode); })
+    }.width(72).justifyContent(FlexAlign.Center)
   }
 
   @Builder rustdeskControlModeRow() {
-    Column({ space: 10 }) {
-      this.rustdeskControlModeLabel()
-      this.rustdeskControlModeSlider()
-    }.width('100%').alignItems(HorizontalAlign.Start)
-      .padding({ left: 16, right: 16, top: 12, bottom: 12 })
+    if (this.breakpoint === 'md' || this.breakpoint === 'lg') {
+      Row() {
+        this.rustdeskControlModeLabel()
+        this.rustdeskControlModeSlider()
+      }.width('100%').height(64).padding({ left: 16, right: 16 })
+    } else {
+      Column() {
+        Row() {
+          this.rustdeskControlModeLabel()
+        }.width('100%')
+        Row() {
+          Blank().layoutWeight(1)
+          this.rustdeskControlModeSlider()
+        }.width('100%').margin({ top: 10 })
+      }.width('100%').height(92).padding({ left: 16, right: 16, top: 14, bottom: 12 })
+    }
   }
 
   private rustdeskControlModeDetail(): string {
@@ -18919,30 +19132,47 @@ struct HostListPage {
 
   @Builder rustdeskControlModeLabel() {
     Row() {
-      Row() { Image($r('app.media.icon_desktop')).width(22).height(22).fillColor(this.pal().text2) }
+      Row() { Image($r('app.media.icon_desktop')).width(22).height(22).fillColor(this.pal().text3) }
         .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
       Column() {
         Text('操控模式').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
           .fontColor(this.pal().text).fontFamily(this.font())
         Text(this.rustdeskControlModeDetail())
-          .fontSize(11).fontColor(this.pal().text2).fontFamily(this.font())
-
+          .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
+          .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
       }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
-    }.width('100%')
+    }.layoutWeight(1)
   }
 
   @Builder rustdeskControlModeSlider() {
-    Flex({ wrap: FlexWrap.Wrap, alignItems: ItemAlign.Center,
-      space: { main: LengthMetrics.vp(8), cross: LengthMetrics.vp(8) } }) {
-      this._controlModeChip('触控板', 0)
-      this._controlModeChip('触控', 1)
-      this._controlModeChip('键鼠', 2)
-    }.width('100%')
+    Stack({ alignContent: Alignment.Start }) {
+      Column()
+        .width(72).height(30).borderRadius(8)
+        .backgroundColor(this.accentColor)
+        .translate({ x: this.rustdeskControlMode * 76, y: 0 })
+        .animation({ duration: 260, curve: Curve.FastOutSlowIn })
+      Row() {
+        this._controlModeChip('触控板', 0)
+        Blank().width(4)
+        this._controlModeChip('触控', 1)
+        Blank().width(4)
+        this._controlModeChip('键鼠', 2)
+      }
+    }.padding(3).borderRadius(11).backgroundColor(this.pal().surface)
   }
 
   @Builder _controlModeChip(label: string, mode: number) {
-    AppSettingsChoiceButton({ label, isSelected: this.rustdeskControlMode === mode,
-      onSelect: (): void => { this.saveRustDeskControlMode(mode); } })
+    Column() {
+      Text(label)
+        .fontSize(11)
+        .fontColor(this.rustdeskControlMode === mode ? '#FFFFFF' : this.pal().text2)
+        .fontWeight(this.rustdeskControlMode === mode ? FontWeight.Medium : FontWeight.Normal)
+        .textAlign(TextAlign.Center)
+        .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+        .padding({ left: 8, right: 8, top: 6, bottom: 6 })
+        .borderRadius(8)
+        .onClick((): void => { this.saveRustDeskControlMode(mode); })
+    }.width(72).justifyContent(FlexAlign.Center)
   }
   @Builder rustdeskSwitchRow(icon: Resource, label: string, detail: string, isOn: boolean,
     onToggle: (on: boolean) => void, neutralIcon: boolean = false, enabled: boolean = true) {
@@ -18952,48 +19182,42 @@ struct HostListPage {
       Column() {
         Text(label).fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
           .fontColor(this.pal().text).fontFamily(this.font())
-        Text(detail).fontSize(12).fontColor(this.pal().text2).fontFamily(this.font())
-          .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
+        Text(detail).fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
+          .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
       }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
       Toggle({ type: ToggleType.Switch, isOn: isOn })
         .selectedColor(this.accentColor)
-        .constraintSize({ minWidth: 52, minHeight: AppUiMetrics.minTouchTarget })
-        .focusable(true).accessibilityText(label)
+        .scale({ x: 0.88, y: 0.88 })
         .enabled(enabled)
         .onChange((on: boolean) => {
           animateTo({ duration: 250, curve: Curve.FastOutSlowIn }, () => {
             onToggle(on);
           })
         })
-    }.width('100%').constraintSize({ minHeight: AppUiMetrics.sheetHeaderMinHeight })
-      .padding({ left: 16, right: 16, top: 8, bottom: 8 })
+    }.width('100%').height(64).padding({ left: 16, right: 16 })
   }
 
   /** 灵动岛模式选择行: 类似 radio 按钮的视觉效果 */
   @Builder liveViewModeRow(label: string, detail: string, mode: number) {
-    Button({ type: ButtonType.Normal }) {
+    Row() {
       Row() {
-        Row() {
-          // 选中指示器: 实心圆 / 空心圆
-          if (this.liveViewMode === mode && this.liveViewEnabled) {
-            Column().width(18).height(18).borderRadius(9)
-              .backgroundColor(this.accentColor)
-          } else {
-            Column().width(18).height(18).borderRadius(9)
-              .border({ width: 1.5, color: this.liveViewEnabled ? this.pal().text2 : this.pal().divider })
-          }
-        }.width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
-        Column() {
-          Text(label).fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
-            .fontColor(this.liveViewEnabled ? this.pal().text : this.pal().text2).fontFamily(this.font())
-          Text(detail).fontSize(11).fontColor(this.pal().text2).fontFamily(this.font())
-
-        }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
-      }.width('100%').constraintSize({ minHeight: 64 }).padding({ left: 16, right: 16, top: 8, bottom: 8 })
-    }.width('100%').padding(0).backgroundColor(Color.Transparent).borderRadius(0)
-      .focusable(true).accessibilityText(label + '，' + detail)
-      .accessibilitySelected(this.liveViewMode === mode && this.liveViewEnabled)
-      .onClick(() => {
+        // 选中指示器: 实心圆 / 空心圆
+        if (this.liveViewMode === mode && this.liveViewEnabled) {
+          Column().width(18).height(18).borderRadius(9)
+            .backgroundColor(this.accentColor)
+        } else {
+          Column().width(18).height(18).borderRadius(9)
+            .border({ width: 1.5, color: this.liveViewEnabled ? this.pal().text3 : this.pal().divider })
+        }
+      }.width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
+      Column() {
+        Text(label).fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
+          .fontColor(this.liveViewEnabled ? this.pal().text : this.pal().text3).fontFamily(this.font())
+        Text(detail).fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
+          .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+      }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
+    }.width('100%').height(64).padding({ left: 16, right: 16 })
+    .onClick(() => {
       animateTo({ duration: 250, curve: Curve.FastOutSlowIn }, () => {
         // 选择模式时自动启用开关
         if (!this.liveViewEnabled) {
@@ -19007,32 +19231,27 @@ struct HostListPage {
   }
 
   @Builder rustdeskPortRow() {
-    Column({ space: 10 }) {
-      Row() {
-        Row() { Image($r('app.media.icon_desktop')).width(22).height(22).fillColor(this.rustdeskDirectIp ? this.accentColor : this.pal().text2) }
-          .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
-        Column() {
-          Text('直连端口').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
-            .fontColor(this.pal().text).fontFamily(this.font())
-          Text('默认 21118').fontSize(11).fontColor(this.pal().text2).fontFamily(this.font())
-        }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
-      }.width('100%')
+    Row() {
+      Row() { Image($r('app.media.icon_desktop')).width(22).height(22).fillColor(this.rustdeskDirectIp ? this.accentColor : this.pal().text3) }
+        .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
+      Column() {
+        Text('直连端口').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
+          .fontColor(this.pal().text).fontFamily(this.font())
+        Text('默认 21118').fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
+      }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
       TextInput({ text: this.rustdeskDirectPort.toString(), placeholder: '21118' })
-        .width('100%').constraintSize({ minHeight: AppUiMetrics.minTouchTarget }).fontSize(13).fontColor(this.pal().text).placeholderColor(this.pal().text2)
+        .width(96).height(36).fontSize(13).fontColor(this.pal().text).placeholderColor(this.pal().text3)
         .backgroundColor(this.pal().surface).borderRadius(10).padding({ left: 10, right: 10 })
         .enabled(this.rustdeskDirectIp)
         .onChange((v: string): void => {
           const n: number = parseInt(v);
           if (!isNaN(n)) { this.saveRustDeskDirectPort(n); }
         })
-        .accessibilityText('直连端口')
-    }.width('100%').alignItems(HorizontalAlign.Start)
-      .padding({ left: 16, right: 16, top: 12, bottom: 12 })
+    }.width('100%').height(64).padding({ left: 16, right: 16 })
   }
 
   @Builder colorPickerSheet() {
-    ColorPickerSheet({ availableHeight: Math.max(120, this.pageViewportHeight - 48),
-      onClose: (): void => { this.closeSettingsLeafSheet(); } })
+    ColorPickerSheet()
   }
 
   // ==================== Sheet builder ====================

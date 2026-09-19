@@ -1,6 +1,4 @@
-import { AppConfig, Palette, buildDark, buildLight } from '../../common/Theme';
-import { AppUiMetrics } from '../../common/AppUiMetrics';
-import { appUiButtonFill, appUiButtonText } from '../../common/AppUiColorPolicy';
+import { Palette, buildDark, buildLight } from '../../common/Theme';
 import { RemoteHost } from '../../model/RemoteHost';
 import { SshAddBasicFields } from '../../common/SshAddBasicFields';
 import { SshKey } from '../../model/SshKey';
@@ -122,7 +120,7 @@ export struct SshAddFlow {
   @Builder private field(title: string, value: string, hint: string, change: (value: string) => void,
     password: boolean = false) {
     Column() {
-      Text(title).fontFamily(AppConfig.fontFamily).fontSize(12).fontColor(this.pal().text2).margin({ bottom: 5 })
+      Text(title).fontSize(12).fontColor(this.pal().text2).margin({ bottom: 5 })
       TextInput({ text: value, placeholder: hint }).height(44).fontSize(14)
         .type(password ? InputType.Password : InputType.Normal).fontColor(this.pal().text)
         .placeholderColor(this.pal().text3).backgroundColor(this.pal().surface).borderRadius(11)
@@ -133,17 +131,15 @@ export struct SshAddFlow {
   @Builder private header() {
     Row() {
       Button() { SymbolGlyph($r('sys.symbol.chevron_left')).fontSize(18).fontColor([this.pal().text2]) }
-        .width(AppUiMetrics.minTouchTarget).height(AppUiMetrics.minTouchTarget).borderRadius(22).padding(0).backgroundColor(this.pal().surface)
-        .focusable(true).accessibilityText(this.step === 1 ? '返回协议选择' : '返回基础信息')
+        .width(36).height(36).borderRadius(18).padding(0).backgroundColor(this.pal().surface)
         .onClick((): void => { if (this.step === 1) { this.onBackToProtocols(); } else { this.step = 1; } })
       Column() {
-        Text('添加 SSH 主机').fontFamily(AppConfig.fontFamily).fontSize(20).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
-        Text(this.step === 1 ? '1/2  基础信息' : '2/2  登录认证').fontFamily(AppConfig.fontFamily).fontSize(12).fontColor(this.pal().text3).margin({ top: 3 })
+        Text('添加 SSH 主机').fontSize(20).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
+        Text(this.step === 1 ? '1/2  基础信息' : '2/2  登录认证').fontSize(12).fontColor(this.pal().text3).margin({ top: 3 })
       }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 12 })
       Button() {
         SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor([this.pal().text2])
       }.width(44).height(44).borderRadius(22).padding(0).backgroundColor(this.pal().surface)
-        .focusable(true).accessibilityText('关闭添加 SSH 主机')
         .onClick((): void => { this.onClose(); })
     }.width('100%').margin({ bottom: 18 })
   }
@@ -168,12 +164,8 @@ export struct SshAddFlow {
                 keys: this.availableKeys(),
                 onChange: (value: SshProxyEditorValue): void => { this.proxyEditorValue = value; }
               })
-              Button({ type: ButtonType.Normal }) {
-                  Text('下一步').fontFamily(AppConfig.fontFamily).fontSize(14)
-                    .fontColor(appUiButtonText(this.accentColor)).textAlign(TextAlign.Center)
-                }.width('100%').constraintSize({ minHeight: AppUiMetrics.minTouchTarget })
-                  .padding({ left: 12, right: 12, top: 10, bottom: 10 }).focusable(true).borderRadius(12).backgroundColor(appUiButtonFill(this.accentColor))
-                .onClick((): void => {
+              Button('下一步').width('100%').height(44).borderRadius(12).backgroundColor(this.accentColor)
+                .fontColor(Color.White).onClick((): void => {
                   const parsed: EndpointAddressResult = this.parsedEndpoint();
                   if (this.label.trim() === '' || this.username.trim() === '') {
                     this.errorText = '请完整填写基础信息和有效端口'; return;
@@ -187,21 +179,13 @@ export struct SshAddFlow {
                 })
             } else {
               Row() {
-                Button({ type: ButtonType.Normal }) {
-                  Text('密码登录').fontFamily(AppConfig.fontFamily).fontSize(14)
-                    .fontColor(!this.useKey ? appUiButtonText(this.accentColor) : this.pal().text2).textAlign(TextAlign.Center)
-                }.layoutWeight(1).constraintSize({ minHeight: AppUiMetrics.minTouchTarget })
-                  .padding({ left: 12, right: 12, top: 10, bottom: 10 }).focusable(true).borderRadius(10)
-                  .backgroundColor(!this.useKey ? appUiButtonFill(this.accentColor) : this.pal().surface)
-                  .accessibilitySelected(!this.useKey)
+                Button('密码登录').layoutWeight(1).height(38).borderRadius(10)
+                  .backgroundColor(!this.useKey ? this.accentColor : this.pal().surface)
+                  .fontColor(!this.useKey ? Color.White : this.pal().text2)
                   .onClick((): void => { this.useKey = false; })
-                Button({ type: ButtonType.Normal }) {
-                  Text('密钥登录').fontFamily(AppConfig.fontFamily).fontSize(14)
-                    .fontColor(this.useKey ? appUiButtonText(this.accentColor) : this.pal().text2).textAlign(TextAlign.Center)
-                }.layoutWeight(1).constraintSize({ minHeight: AppUiMetrics.minTouchTarget })
-                  .padding({ left: 12, right: 12, top: 10, bottom: 10 }).focusable(true).borderRadius(10).margin({ left: 8 })
-                  .backgroundColor(this.useKey ? appUiButtonFill(this.accentColor) : this.pal().surface)
-                  .accessibilitySelected(this.useKey).onClick((): void => {
+                Button('密钥登录').layoutWeight(1).height(38).borderRadius(10).margin({ left: 8 })
+                  .backgroundColor(this.useKey ? this.accentColor : this.pal().surface)
+                  .fontColor(this.useKey ? Color.White : this.pal().text2).onClick((): void => {
                     const keys = this.availableKeys();
                     this.useKey = true;
                     if (this.keyId === '' && keys.length > 0) { this.keyId = keys[0].id; }
@@ -212,61 +196,42 @@ export struct SshAddFlow {
                   (v: string): void => { this.password = v; }, true)
               } else {
                 if (this.availableKeys().length === 0) {
-                  Text('密钥保险库为空，请添加或导入 SSH 私钥。').fontFamily(AppConfig.fontFamily).fontSize(12).fontColor(this.pal().text3)
+                  Text('密钥保险库为空，请添加或导入 SSH 私钥。').fontSize(12).fontColor(this.pal().text3)
                     .width('100%').textAlign(TextAlign.Center).padding(14)
                 } else {
                   ForEach(this.availableKeys(), (key: SshKey) => {
-                    Button({ type: ButtonType.Normal }) {
-                      Row() {
-                        Column() {
-                          Text(key.label !== '' ? key.label : SshKey.typeLabel(key.keyType))
-                            .fontFamily(AppConfig.fontFamily).fontSize(14).fontColor(this.pal().text)
-                          Text(key.fingerprint !== '' ? key.fingerprint : SshKey.typeLabel(key.keyType))
-                            .fontFamily(AppConfig.fontFamily).fontSize(10).fontColor(this.pal().text3)
-                            .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-                        }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-                        if (this.keyId === key.id) {
-                          SymbolGlyph($r('sys.symbol.checkmark')).fontColor([this.accentColor])
-                        }
-                      }.width('100%')
-                    }.width('100%').constraintSize({ minHeight: AppUiMetrics.minTouchTarget })
-                      .padding(11).borderRadius(10).focusable(true)
-                      .accessibilitySelected(this.keyId === key.id)
-                      .accessibilityText((key.label !== '' ? key.label : SshKey.typeLabel(key.keyType)) +
-                        (key.fingerprint !== '' ? '，' + key.fingerprint : ''))
+                    Row() {
+                      Column() {
+                        Text(key.label !== '' ? key.label : SshKey.typeLabel(key.keyType))
+                          .fontSize(14).fontColor(this.pal().text)
+                        Text(key.fingerprint !== '' ? key.fingerprint : SshKey.typeLabel(key.keyType))
+                          .fontSize(10).fontColor(this.pal().text3).maxLines(1)
+                      }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+                      if (this.keyId === key.id) {
+                        SymbolGlyph($r('sys.symbol.checkmark')).fontColor([this.accentColor])
+                      }
+                    }.width('100%').padding(11).borderRadius(10)
                       .backgroundColor(this.pal().surface).margin({ bottom: 6 })
                       .onClick((): void => { this.keyId = key.id; })
                   }, (key: SshKey): string => key.id + ':' + key.createdAt.toString())
                 }
-                Button({ type: ButtonType.Normal }) {
-                  Text('添加到 SSH 密钥保险库').fontFamily(AppConfig.fontFamily).fontSize(14)
-                    .fontColor(this.pal().text).textAlign(TextAlign.Center)
-                }.width('100%').constraintSize({ minHeight: AppUiMetrics.minTouchTarget })
-                  .padding({ left: 12, right: 12, top: 10, bottom: 10 }).focusable(true).borderRadius(10)
-                  .backgroundColor(this.pal().surface)
+                Button('添加到 SSH 密钥保险库').width('100%').height(38).borderRadius(10)
+                  .backgroundColor(this.pal().surface).fontColor(this.accentColor)
                   .onClick((): void => { this.addingKey = true; }).margin({ bottom: 12 })
                 this.field('私钥密码（如有）', this.passphrase, '加密私钥的 passphrase',
                   (v: string): void => { this.passphrase = v; }, true)
               }
               Row() {
-                Button({ type: ButtonType.Normal }) {
-                  Text('保存').fontFamily(AppConfig.fontFamily).fontSize(14)
-                    .fontColor(this.pal().text).textAlign(TextAlign.Center)
-                }.layoutWeight(1).constraintSize({ minHeight: AppUiMetrics.minTouchTarget })
-                  .padding({ left: 12, right: 12, top: 10, bottom: 10 }).focusable(true).borderRadius(12)
-                  .backgroundColor(this.pal().surface)
+                Button('保存').layoutWeight(1).height(44).borderRadius(12)
+                  .backgroundColor(this.pal().surface).fontColor(this.accentColor)
                   .onClick((): void => {
                     const host = this.buildHost();
                     if (host && this.pendingProxyProfile) {
                       this.onSave(host, false, this.pendingProxyProfile);
                     }
                   })
-                Button({ type: ButtonType.Normal }) {
-                  Text('保存并连接').fontFamily(AppConfig.fontFamily).fontSize(14)
-                    .fontColor(appUiButtonText(this.accentColor)).textAlign(TextAlign.Center)
-                }.layoutWeight(1).constraintSize({ minHeight: AppUiMetrics.minTouchTarget })
-                  .padding({ left: 12, right: 12, top: 10, bottom: 10 }).focusable(true).borderRadius(12).margin({ left: 8 })
-                  .backgroundColor(appUiButtonFill(this.accentColor))
+                Button('保存并连接').layoutWeight(1).height(44).borderRadius(12).margin({ left: 8 })
+                  .backgroundColor(this.accentColor).fontColor(Color.White)
                   .onClick((): void => {
                     const host = this.buildHost();
                     if (host && this.pendingProxyProfile) {
@@ -276,7 +241,7 @@ export struct SshAddFlow {
               }.width('100%')
             }
             if (this.errorText !== '') {
-              Text(this.errorText).fontFamily(AppConfig.fontFamily).fontSize(12).fontColor(this.pal().danger).margin({ top: 10 })
+              Text(this.errorText).fontSize(12).fontColor(this.pal().danger).margin({ top: 10 })
             }
           }.width('100%')
       }

@@ -1,7 +1,3 @@
-import { AppSheetHeader } from './AppSheetHeader';
-import { AppSettingsSwitchRow } from './AppSettingsSwitchRow';
-import { AppUiMetrics } from '../common/AppUiMetrics';
-import { appUiButtonFill, appUiButtonText } from '../common/AppUiColorPolicy';
 import { promptAction } from '@kit.ArkUI';
 import { AppTheme, Palette, buildDark, buildLight } from '../common/Theme';
 import { protocolIcon } from '../services/ProtocolIconPolicy';
@@ -99,17 +95,40 @@ export struct RemoteSessionControlBarSettingsSheet {
   }
 
   @Builder private header() {
-    AppSheetHeader({ title: '会话侧栏与顶栏', subtitle: '按协议选择是否显示会话控制栏',
-      closeLabel: '取消', actionLabel: '保存', horizontalPadding: AppUiMetrics.sheetPadding,
-      onClose: this.onClose, onAction: (): void => { this.save(); } })
+    Row() {
+      Column() {
+        Text('会话侧栏与顶栏').fontSize(20).fontWeight(FontWeight.Bold)
+          .fontColor(this.pal().text).fontFamily(AppTheme.fontFamily)
+        Text('按协议选择是否显示会话控制栏')
+          .fontSize(11).fontColor(this.pal().text3).fontFamily(AppTheme.fontFamily)
+          .margin({ top: 3 })
+      }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+      Text('取消').fontSize(13).fontColor(this.pal().text2)
+        .fontFamily(AppTheme.fontFamily).margin({ right: 18 })
+        .onClick((): void => { this.onClose(); })
+      Text('保存').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.accentColor)
+        .fontFamily(AppTheme.fontFamily).onClick((): void => { this.save(); })
+    }.width('100%').padding({ left: 22, right: 22, top: 22, bottom: 14 })
   }
 
   @Builder private protocolRow(icon: Resource, title: string, hidden: boolean,
     onChange: (value: boolean) => void) {
-    AppSettingsSwitchRow({ icon, title, isOn: hidden, isEnabled: !this.quickExitDisabled,
-      detail: this.quickExitDisabled ? '关闭快捷退出时必须显示' :
-        (hidden ? '侧栏和顶栏均已隐藏' : '显示会话侧栏与顶栏'),
-      accessibilityLabel: '隐藏 ' + title + ' 会话控制栏', onChange })
+    Row() {
+      SymbolGlyph(icon).fontSize(21).fontColor([this.pal().text3]).margin({ right: 12 })
+      Column() {
+        Text(title).fontSize(14).fontWeight(FontWeight.Medium)
+          .fontColor(this.pal().text).fontFamily(AppTheme.fontFamily)
+        Text(this.quickExitDisabled ? '关闭快捷退出时必须显示' :
+          (hidden ? '侧栏和顶栏均已隐藏' : '显示会话侧栏与顶栏'))
+          .fontSize(11).fontColor(this.pal().text3)
+          .fontFamily(AppTheme.fontFamily).lineHeight(16).margin({ top: 3 })
+      }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+      Toggle({ type: ToggleType.Switch, isOn: hidden })
+        .selectedColor(this.accentColor).scale({ x: 0.88, y: 0.88 })
+        .enabled(!this.quickExitDisabled).opacity(this.quickExitDisabled ? 0.45 : 1)
+        .accessibilityText((hidden ? '显示 ' : '隐藏 ') + title + ' 会话控制栏')
+        .onChange(onChange)
+    }.width('100%').padding({ left: 15, right: 12, top: 11, bottom: 11 })
   }
 
   @Builder private divider() {
@@ -130,14 +149,14 @@ export struct RemoteSessionControlBarSettingsSheet {
             .borderRadius(12).backgroundColor(this.pal().surface).margin({ bottom: 14 })
 
           Row() {
-            Button('全部显示').layoutWeight(1).constraintSize({ minHeight: AppUiMetrics.minTouchTarget }).borderRadius(10)
+            Button('全部显示').layoutWeight(1).height(38).borderRadius(10)
               .backgroundColor(this.pal().surface).fontColor(this.pal().text2).fontSize(12)
               .onClick((): void => { this.setAll(false); })
-            Button('全部隐藏').layoutWeight(1).constraintSize({ minHeight: AppUiMetrics.minTouchTarget }).borderRadius(10)
+            Button('全部隐藏').layoutWeight(1).height(38).borderRadius(10)
               .backgroundColor(this.pal().surface).fontColor(this.pal().text2).fontSize(12)
               .margin({ left: 8 }).onClick((): void => { this.setAll(true); })
               .enabled(!this.quickExitDisabled).opacity(this.quickExitDisabled ? 0.45 : 1)
-          }.width('100%').margin({ bottom: AppUiMetrics.sectionGap })
+          }.width('100%').margin({ bottom: 16 })
 
           Column() {
             this.protocolRow(protocolIcon('rdp'), 'RDP', this.draftRdpHidden,
@@ -163,14 +182,14 @@ export struct RemoteSessionControlBarSettingsSheet {
             .border({ width: 0.5, color: this.pal().cardBorder })
 
           Row() {
-            Button('取消').constraintSize({ minHeight: AppUiMetrics.minTouchTarget }).layoutWeight(1).borderRadius(10)
+            Button('取消').height(40).layoutWeight(1).borderRadius(10)
               .backgroundColor(this.pal().surface).fontColor(this.pal().text2).fontSize(13)
               .onClick((): void => { this.onClose(); })
-            Button('保存').constraintSize({ minHeight: AppUiMetrics.minTouchTarget }).layoutWeight(1).borderRadius(10)
-              .backgroundColor(appUiButtonFill(this.accentColor)).fontColor(appUiButtonText(this.accentColor)).fontSize(13)
+            Button('保存').height(40).layoutWeight(1).borderRadius(10)
+              .backgroundColor(this.accentColor).fontColor(Color.White).fontSize(13)
               .margin({ left: 10 }).onClick((): void => { this.save(); })
           }.width('100%').margin({ top: 18, bottom: 24 })
-        }.width('100%').padding({ left: AppUiMetrics.sheetPadding, right: AppUiMetrics.sheetPadding })
+        }.width('100%').padding({ left: 22, right: 22 })
       }.layoutWeight(1).scrollBar(BarState.Auto).edgeEffect(EdgeEffect.Spring)
     }.width('100%').height('100%').backgroundColor(this.pal().sheetBg).borderRadius(20)
   }

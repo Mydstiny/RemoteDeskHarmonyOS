@@ -1,5 +1,3 @@
-import { AppUiMetrics } from '../../common/AppUiMetrics';
-import { appUiButtonFill, appUiButtonText } from '../../common/AppUiColorPolicy';
 /** Two-step RDP add flow: endpoint first, then an explicit authentication mode. */
 import { RdpCredential } from '../../model/RdpCredential';
 import {
@@ -9,7 +7,7 @@ import {
   RdpRestrictedAdminSecretSource,
   normalizeRdpNtlmHash
 } from '../../model/RemoteHost';
-import { AppConfig, Palette, buildDark, buildLight } from '../../common/Theme';
+import { Palette, buildDark, buildLight } from '../../common/Theme';
 import { DiscoveredRdpHost } from '../../services/RdpLanDiscoveryService';
 import {
   EndpointAddressResult,
@@ -198,13 +196,10 @@ export struct RdpAddFlow {
   }
 
   @Builder private authModeButton(label: string, mode: RdpAuthMode, marginLeft: number = 0) {
-    Button({ type: ButtonType.Normal }) {
-      Text(label).fontSize(12).fontFamily(AppConfig.fontFamily)
-        .fontColor(this.authMode === mode ? appUiButtonText(this.accentColor) : this.pal().text2).textAlign(TextAlign.Center)
-    }.layoutWeight(1).constraintSize({ minHeight: AppUiMetrics.minTouchTarget })
-      .padding({ left: 12, right: 12, top: 10, bottom: 10 }).focusable(true).borderRadius(10).margin({ left: marginLeft })
-      .backgroundColor(this.authMode === mode ? appUiButtonFill(this.accentColor) : this.pal().surface).accessibilitySelected(this.authMode === mode)
-
+    Button(label).layoutWeight(1).height(38).borderRadius(10).margin({ left: marginLeft })
+      .backgroundColor(this.authMode === mode ? this.accentColor : this.pal().surface)
+      .fontColor(this.authMode === mode ? Color.White : this.pal().text2)
+      .fontSize(12)
       .onClick((): void => { this.selectAuthMode(mode); })
   }
 
@@ -239,12 +234,9 @@ export struct RdpAddFlow {
 
   @Builder private endpointSourceChoice() {
     Row({ space: 8 }) {
-      Button({ type: ButtonType.Normal }) {
-        Text('手动填写').fontSize(14).fontFamily(AppConfig.fontFamily)
-          .fontColor(!this.useLanSearch ? appUiButtonText(this.accentColor) : this.pal().text2).textAlign(TextAlign.Center)
-      }.layoutWeight(1).constraintSize({ minHeight: AppUiMetrics.minTouchTarget })
-        .padding({ left: 12, right: 12, top: 10, bottom: 10 }).focusable(true).borderRadius(10)
-        .backgroundColor(!this.useLanSearch ? appUiButtonFill(this.accentColor) : this.pal().surface).accessibilitySelected(!this.useLanSearch)
+      Button('手动填写').layoutWeight(1).height(38).borderRadius(10)
+        .backgroundColor(!this.useLanSearch ? this.accentColor : this.pal().surface)
+        .fontColor(!this.useLanSearch ? Color.White : this.pal().text2)
         .onClick((): void => {
           this.useLanSearch = false;
           this.selectedLanStableId = '';
@@ -252,12 +244,9 @@ export struct RdpAddFlow {
           this.lanAddressMode = '';
           this.errorText = '';
         })
-      Button({ type: ButtonType.Normal }) {
-        Text('局域网搜索').fontSize(14).fontFamily(AppConfig.fontFamily)
-          .fontColor(this.useLanSearch ? appUiButtonText(this.accentColor) : this.pal().text2).textAlign(TextAlign.Center)
-      }.layoutWeight(1).constraintSize({ minHeight: AppUiMetrics.minTouchTarget })
-        .padding({ left: 12, right: 12, top: 10, bottom: 10 }).focusable(true).borderRadius(10)
-        .backgroundColor(this.useLanSearch ? appUiButtonFill(this.accentColor) : this.pal().surface).accessibilitySelected(this.useLanSearch)
+      Button('局域网搜索').layoutWeight(1).height(38).borderRadius(10)
+        .backgroundColor(this.useLanSearch ? this.accentColor : this.pal().surface)
+        .fontColor(this.useLanSearch ? Color.White : this.pal().text2)
         .onClick((): void => { this.useLanSearch = true; this.errorText = ''; })
     }.width('100%').margin({ bottom: 14 })
   }
@@ -265,13 +254,9 @@ export struct RdpAddFlow {
   @Builder private lanSearchResults() {
     Text('使用上方当前端口扫描同一局域网；只显示通过 RDP 预检的主机。')
       .fontSize(11).fontColor(this.pal().text3).width('100%').margin({ bottom: 8 })
-    Button({ type: ButtonType.Normal }) {
-      Text(this.lanScanning ? '正在搜索…' : '搜索 RDP 主机').fontSize(14).fontFamily(AppConfig.fontFamily)
-        .fontColor(this.accentColor).textAlign(TextAlign.Center)
-    }
-      .width('100%').constraintSize({ minHeight: AppUiMetrics.minTouchTarget })
-      .padding({ left: 12, right: 12, top: 10, bottom: 10 }).focusable(true).borderRadius(10).enabled(!this.lanScanning)
-      .backgroundColor(this.pal().surface).margin({ bottom: 10 })
+    Button(this.lanScanning ? '正在搜索…' : '搜索 RDP 主机')
+      .width('100%').height(40).borderRadius(10).enabled(!this.lanScanning)
+      .backgroundColor(this.pal().surface).fontColor(this.accentColor).margin({ bottom: 10 })
       .onClick((): void => {
         const port: number = parseEndpointPortText(this.portText);
         if (port === 0) {
@@ -312,21 +297,14 @@ export struct RdpAddFlow {
     Text('账号和密码保存方式').fontSize(12).fontColor(this.pal().text3)
       .width('100%').margin({ bottom: 8 })
     Row() {
-      Button({ type: ButtonType.Normal }) {
-        Text('保存到本地').fontSize(14).fontFamily(AppConfig.fontFamily)
-          .fontColor(this.credentialStorageMode === 'saved' ? appUiButtonText(this.accentColor) : this.pal().text2).textAlign(TextAlign.Center)
-      }.layoutWeight(1).constraintSize({ minHeight: AppUiMetrics.minTouchTarget })
-        .padding({ left: 12, right: 12, top: 10, bottom: 10 }).focusable(true).borderRadius(10)
-        .backgroundColor(this.credentialStorageMode === 'saved' ? appUiButtonFill(this.accentColor) : this.pal().surface).accessibilitySelected(this.credentialStorageMode === 'saved')
+      Button('保存到本地').layoutWeight(1).height(38).borderRadius(10)
+        .backgroundColor(this.credentialStorageMode === 'saved' ? this.accentColor : this.pal().surface)
+        .fontColor(this.credentialStorageMode === 'saved' ? Color.White : this.pal().text2)
         .onClick((): void => { this.selectCredentialStorageMode('saved'); })
-      Button({ type: ButtonType.Normal }) {
-        Text('每次连接输入').fontSize(14).fontFamily(AppConfig.fontFamily)
-          .fontColor(this.credentialStorageMode === 'connect_time' ? appUiButtonText(this.accentColor) : this.pal().text2).textAlign(TextAlign.Center)
-      }.layoutWeight(1).constraintSize({ minHeight: AppUiMetrics.minTouchTarget })
-        .padding({ left: 12, right: 12, top: 10, bottom: 10 }).focusable(true).borderRadius(10).margin({ left: 8 })
+      Button('每次连接输入').layoutWeight(1).height(38).borderRadius(10).margin({ left: 8 })
         .backgroundColor(this.credentialStorageMode === 'connect_time' ?
-          appUiButtonFill(this.accentColor) : this.pal().surface)
-        .accessibilitySelected(this.credentialStorageMode === 'connect_time')
+          this.accentColor : this.pal().surface)
+        .fontColor(this.credentialStorageMode === 'connect_time' ? Color.White : this.pal().text2)
         .onClick((): void => { this.selectCredentialStorageMode('connect_time'); })
     }.width('100%').margin({ bottom: 14 })
     if (this.credentialStorageMode === 'connect_time') {
@@ -339,19 +317,13 @@ export struct RdpAddFlow {
         .margin({ bottom: 12 })
     } else {
       Row() {
-        Button({ type: ButtonType.Normal }) {
-          Text('账号密码').fontSize(14).fontFamily(AppConfig.fontFamily)
-            .fontColor(this.credentialId === '' ? appUiButtonText(this.accentColor) : this.pal().text2).textAlign(TextAlign.Center)
-        }.layoutWeight(1).constraintSize({ minHeight: AppUiMetrics.minTouchTarget })
-          .padding({ left: 12, right: 12, top: 10, bottom: 10 }).focusable(true).borderRadius(10)
-          .backgroundColor(this.credentialId === '' ? appUiButtonFill(this.accentColor) : this.pal().surface).accessibilitySelected(this.credentialId === '')
+        Button('账号密码').layoutWeight(1).height(38).borderRadius(10)
+          .backgroundColor(this.credentialId === '' ? this.accentColor : this.pal().surface)
+          .fontColor(this.credentialId === '' ? Color.White : this.pal().text2)
           .onClick((): void => { this.credentialId = ''; this.errorText = ''; })
-        Button({ type: ButtonType.Normal }) {
-          Text('Windows 凭据').fontSize(14).fontFamily(AppConfig.fontFamily)
-            .fontColor(this.credentialId !== '' ? appUiButtonText(this.accentColor) : this.pal().text2).textAlign(TextAlign.Center)
-        }.layoutWeight(1).constraintSize({ minHeight: AppUiMetrics.minTouchTarget })
-          .padding({ left: 12, right: 12, top: 10, bottom: 10 }).focusable(true).borderRadius(10).margin({ left: 8 })
-          .backgroundColor(this.credentialId !== '' ? appUiButtonFill(this.accentColor) : this.pal().surface).accessibilitySelected(this.credentialId !== '')
+        Button('Windows 凭据').layoutWeight(1).height(38).borderRadius(10).margin({ left: 8 })
+          .backgroundColor(this.credentialId !== '' ? this.accentColor : this.pal().surface)
+          .fontColor(this.credentialId !== '' ? Color.White : this.pal().text2)
           .onClick((): void => {
             if (this.credentials.length > 0) { this.credentialId = this.credentials[0].id; }
             this.errorText = '';
@@ -377,12 +349,8 @@ export struct RdpAddFlow {
           .onClick((): void => { this.credentialId = credential.id; })
         }, (credential: RdpCredential): string => credential.id + ':' + this.credentialsViewRevision.toString())
       }
-      Button({ type: ButtonType.Normal }) {
-        Text('添加 Windows 凭据').fontSize(14).fontFamily(AppConfig.fontFamily)
-          .fontColor(this.accentColor).textAlign(TextAlign.Center)
-      }.width('100%').constraintSize({ minHeight: AppUiMetrics.minTouchTarget })
-        .padding({ left: 12, right: 12, top: 10, bottom: 10 }).focusable(true).borderRadius(10)
-        .backgroundColor(this.pal().surface).margin({ bottom: 12 })
+      Button('添加 Windows 凭据').width('100%').height(38).borderRadius(10)
+        .backgroundColor(this.pal().surface).fontColor(this.accentColor).margin({ bottom: 12 })
         .onClick((): void => {
           this.credentialIdsBeforeAdd = this.credentials.map((credential: RdpCredential): string => credential.id);
           this.awaitingNewCredential = true;
@@ -420,8 +388,7 @@ export struct RdpAddFlow {
   @Builder private header() {
     Row() {
       Button() { SymbolGlyph($r('sys.symbol.chevron_left')).fontSize(18).fontColor([this.pal().text2]) }
-        .width(AppUiMetrics.minTouchTarget).height(AppUiMetrics.minTouchTarget).borderRadius(22)
-        .focusable(true).accessibilityText(this.step === 1 ? '返回协议选择' : '返回上一步').padding(0).backgroundColor(this.pal().surface)
+        .width(36).height(36).borderRadius(18).padding(0).backgroundColor(this.pal().surface)
         .onClick((): void => { if (this.step === 1) { this.onBackToProtocols(); } else { this.step = 1; } })
       Column() {
         Text('添加 RDP 主机').fontSize(20).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
@@ -448,12 +415,8 @@ export struct RdpAddFlow {
         this.inputField('客户端主机名（可选）', this.clientHostname, '发送给 Windows 的客户端名称',
           (v: string): void => { this.clientHostname = v; })
         if (this.useLanSearch) { this.lanSearchResults() }
-        Button({ type: ButtonType.Normal }) {
-          Text('下一步').fontSize(14).fontFamily(AppConfig.fontFamily)
-            .fontColor(appUiButtonText(this.accentColor)).textAlign(TextAlign.Center)
-        }.width('100%').constraintSize({ minHeight: AppUiMetrics.minTouchTarget })
-          .padding({ left: 12, right: 12, top: 10, bottom: 10 }).focusable(true).borderRadius(12)
-          .backgroundColor(appUiButtonFill(this.accentColor))
+        Button('下一步').width('100%').height(44).borderRadius(12)
+          .backgroundColor(this.accentColor).fontColor(Color.White)
           .onClick((): void => {
             const parsed: EndpointAddressResult = this.parsedEndpoint();
             if (this.label.trim() === '') { this.errorText = '请输入主机名称'; return; }
@@ -479,21 +442,13 @@ export struct RdpAddFlow {
           this.restrictedAdminFields()
         }
         Row() {
-          Button({ type: ButtonType.Normal }) {
-            Text('保存').fontSize(14).fontFamily(AppConfig.fontFamily)
-              .fontColor(this.accentColor).textAlign(TextAlign.Center)
-          }.layoutWeight(1).constraintSize({ minHeight: AppUiMetrics.minTouchTarget })
-            .padding({ left: 12, right: 12, top: 10, bottom: 10 }).focusable(true).borderRadius(12).backgroundColor(this.pal().surface)
-            .onClick((): void => {
+          Button('保存').layoutWeight(1).height(44).borderRadius(12).backgroundColor(this.pal().surface)
+            .fontColor(this.accentColor).onClick((): void => {
               const host: RemoteHost | null = this.buildHost();
               if (host) { this.onSave(host, false, this.authMode === 'restricted_admin' ? this.restrictedAdminHash : ''); }
             })
-          Button({ type: ButtonType.Normal }) {
-            Text('保存并连接').fontSize(14).fontFamily(AppConfig.fontFamily)
-              .fontColor(appUiButtonText(this.accentColor)).textAlign(TextAlign.Center)
-          }.layoutWeight(1).constraintSize({ minHeight: AppUiMetrics.minTouchTarget })
-            .padding({ left: 12, right: 12, top: 10, bottom: 10 }).focusable(true).borderRadius(12).margin({ left: 8 })
-            .backgroundColor(appUiButtonFill(this.accentColor)).onClick((): void => {
+          Button('保存并连接').layoutWeight(1).height(44).borderRadius(12).margin({ left: 8 })
+            .backgroundColor(this.accentColor).fontColor(Color.White).onClick((): void => {
               const host: RemoteHost | null = this.buildHost();
               if (host) { this.onSave(host, true, this.authMode === 'restricted_admin' ? this.restrictedAdminHash : ''); }
             })

@@ -1,7 +1,4 @@
 import { promptAction } from '@kit.ArkUI';
-import { AppSheetHeader } from './AppSheetHeader';
-import { AppUiMetrics } from '../common/AppUiMetrics';
-import { appUiButtonFill, appUiButtonText } from '../common/AppUiColorPolicy';
 import { common } from '@kit.AbilityKit';
 import { AppConfig, Palette, buildDark, buildLight } from '../common/Theme';
 import {
@@ -228,8 +225,26 @@ export struct DiagnosticCaptureSettingsSheet {
 
   build() {
     Column() {
-      AppSheetHeader({ title: '日志', subtitle: '手动抓取脱敏诊断事件',
-        horizontalPadding: AppUiMetrics.sheetPadding, onClose: this.onClose })
+      Row() {
+        Row() {
+          SymbolGlyph($r('sys.symbol.doc_plaintext'))
+            .fontSize(22)
+            .fontColor([this.accentColor])
+        }
+        .width(38).height(38).borderRadius(11)
+        .justifyContent(FlexAlign.Center)
+        .backgroundColor(this.pal().surface)
+
+        Column() {
+          Text('日志').fontSize(20).fontWeight(FontWeight.Bold)
+            .fontColor(this.pal().text).fontFamily(this.font())
+          Text('手动抓取脱敏诊断事件').fontSize(12).fontColor(this.pal().text3)
+            .fontFamily(this.font()).margin({ top: 2 })
+        }.alignItems(HorizontalAlign.Start).margin({ left: 12 }).layoutWeight(1)
+
+        SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor([this.pal().text2])
+          .width(36).height(36).onClick((): void => { this.onClose(); })
+      }.width('100%').padding({ left: 24, right: 20, top: 20, bottom: 12 })
 
       Scroll() {
         Column() {
@@ -262,12 +277,11 @@ export struct DiagnosticCaptureSettingsSheet {
           Flex({ wrap: FlexWrap.Wrap, justifyContent: FlexAlign.Start }) {
             ForEach(this.durationOptions, (minutes: number) => {
               Button(minutes.toString() + ' 分钟')
-                .constraintSize({ minHeight: AppUiMetrics.minTouchTarget })
-                .padding({ left: 14, right: 14, top: 10, bottom: 10 })
+                .height(36).padding({ left: 14, right: 14 })
                 .fontSize(13).fontFamily(this.font())
-                .fontColor(this.selectedDurationMinutes === minutes ? appUiButtonText(this.accentColor) : this.pal().text2)
+                .fontColor(this.selectedDurationMinutes === minutes ? Color.White : this.pal().text2)
                 .backgroundColor(this.selectedDurationMinutes === minutes ?
-                  appUiButtonFill(this.accentColor) : this.pal().surface)
+                  this.accentColor : this.pal().surface)
                 .borderRadius(12).margin({ right: 8, bottom: 8 })
                 .enabled(!this.optionsLocked())
                 .opacity(this.optionsLocked() ? 0.65 : 1)
@@ -279,11 +293,8 @@ export struct DiagnosticCaptureSettingsSheet {
             Text('抓取模组').fontSize(14).fontWeight(FontWeight.Medium)
               .fontColor(this.pal().text).fontFamily(this.font())
             Blank()
-            Button(this.selectedModules.length === this.moduleSpecs.length ? '仅保留应用状态' : '全选')
-              .fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text2)
-              .constraintSize({ minHeight: AppUiMetrics.minTouchTarget, minWidth: AppUiMetrics.minTouchTarget })
-              .padding({ left: 10, right: 10, top: 10, bottom: 10 }).backgroundColor(Color.Transparent)
-              .enabled(!this.optionsLocked()).focusable(true)
+            Text(this.selectedModules.length === this.moduleSpecs.length ? '仅保留应用状态' : '全选')
+              .fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.accentColor)
               .opacity(this.optionsLocked() ? 0.45 : 1)
               .onClick((): void => { this.toggleAllModules(); })
           }.width('100%').margin({ top: 12, bottom: 8 })
@@ -295,16 +306,14 @@ export struct DiagnosticCaptureSettingsSheet {
                   .select(this.moduleSelected(spec.id))
                   .selectedColor(this.accentColor)
                   .enabled(!this.optionsLocked() && !spec.alwaysEnabled)
-                  .accessibilityText(spec.label + (spec.alwaysEnabled ? '，始终启用' : ''))
                   .onChange((selected: boolean): void => { this.toggleModule(spec.id, selected); })
                 Text(spec.label).fontSize(14).fontColor(this.pal().text)
                   .fontFamily(this.font()).margin({ left: 10 }).layoutWeight(1)
                 if (spec.alwaysEnabled) {
-                  Text('始终启用').fontSize(11).fontColor(this.pal().text2).fontFamily(this.font())
+                  Text('始终启用').fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
                 }
               }
-              .width('100%').constraintSize({ minHeight: AppUiMetrics.settingsRowMinHeight })
-              .padding({ left: 14, right: 14, top: 8, bottom: 8 })
+              .width('100%').height(44).padding({ left: 14, right: 14 })
               if (index < this.moduleSpecs.length - 1) {
                 Divider().strokeWidth(0.5).color(this.pal().divider).margin({ left: 50 })
               }
@@ -332,23 +341,23 @@ export struct DiagnosticCaptureSettingsSheet {
           Row() {
             if (this.phase !== 'idle') {
               Button('丢弃')
-                .constraintSize({ minHeight: 46 }).borderRadius(14).layoutWeight(1)
+                .height(46).borderRadius(14).layoutWeight(1)
                 .fontSize(15).fontColor(this.pal().danger)
                 .backgroundColor(this.pal().surface)
                 .enabled(this.phase !== 'saving')
                 .onClick((): void => { this.confirmDiscard(); })
             }
             Button(this.primaryButtonText())
-              .constraintSize({ minHeight: 46 }).borderRadius(14)
+              .height(46).borderRadius(14)
               .layoutWeight(this.phase === 'idle' ? 1 : 2)
-              .fontSize(15).fontWeight(FontWeight.Medium).fontColor(appUiButtonText(this.accentColor))
-              .backgroundColor(appUiButtonFill(this.accentColor))
+              .fontSize(15).fontWeight(FontWeight.Medium).fontColor(Color.White)
+              .backgroundColor(this.accentColor)
               .margin({ left: this.phase === 'idle' ? 0 : 10 })
               .enabled(this.phase !== 'saving')
               .onClick((): void => { this.primaryAction(); })
           }.width('100%').margin({ top: 18, bottom: 24 })
         }
-        .width('100%').padding({ left: AppUiMetrics.sheetPadding, right: AppUiMetrics.sheetPadding })
+        .width('100%').padding({ left: 24, right: 24 })
       }
       .width('100%').layoutWeight(1).scrollBar(BarState.Off)
     }

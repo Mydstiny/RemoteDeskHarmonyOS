@@ -1,8 +1,4 @@
 import { promptAction } from '@kit.ArkUI';
-import { AppSheetHeader } from './AppSheetHeader';
-import { AppSettingsSwitchRow } from './AppSettingsSwitchRow';
-import { AppUiMetrics } from '../common/AppUiMetrics';
-import { appUiButtonFill, appUiButtonText } from '../common/AppUiColorPolicy';
 import { AppTheme, Palette, buildDark, buildLight } from '../common/Theme';
 import {
   EditableSecretKind,
@@ -67,14 +63,33 @@ export struct SecretVisibilitySettingsSheet {
   }
 
   @Builder private header() {
-    AppSheetHeader({ title: '密码与秘密回显', subtitle: '选择编辑时不读取、不显示旧值的密码类型',
-      closeLabel: '完成', horizontalPadding: AppUiMetrics.sheetPadding, onClose: this.onClose })
+    Row() {
+      Column() {
+        Text('密码与秘密回显').fontSize(20).fontWeight(FontWeight.Bold)
+          .fontColor(this.pal().text).fontFamily(AppTheme.fontFamily)
+        Text('选择编辑时不读取、不显示旧值的密码类型')
+          .fontSize(11).fontColor(this.pal().text3).fontFamily(AppTheme.fontFamily)
+          .margin({ top: 3 })
+      }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+      Text('完成').fontSize(13).fontColor(this.accentColor)
+        .fontFamily(AppTheme.fontFamily).onClick((): void => { this.onClose(); })
+    }.width('100%').padding({ left: 22, right: 22, top: 22, bottom: 14 })
   }
 
   @Builder private secretRow(kind: EditableSecretKind, title: string, detail: string) {
-    AppSettingsSwitchRow({ title, detail, isOn: secretPresentationHidden(this.policy(), kind),
-      accessibilityLabel: '隐藏 ' + title,
-      onChange: (hidden: boolean): void => { this.toggle(kind, hidden); } })
+    Row() {
+      Column() {
+        Text(title).fontSize(14).fontWeight(FontWeight.Medium)
+          .fontColor(this.pal().text).fontFamily(AppTheme.fontFamily)
+        Text(detail).fontSize(11).fontColor(this.pal().text3)
+          .fontFamily(AppTheme.fontFamily).lineHeight(16).margin({ top: 3 })
+      }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+      Toggle({
+        type: ToggleType.Switch,
+        isOn: secretPresentationHidden(this.policy(), kind)
+      }).selectedColor(this.accentColor).scale({ x: 0.88, y: 0.88 })
+        .onChange((hidden: boolean): void => { this.toggle(kind, hidden); })
+    }.width('100%').padding({ left: 15, right: 12, top: 10, bottom: 10 })
   }
 
   @Builder private divider() {
@@ -83,17 +98,16 @@ export struct SecretVisibilitySettingsSheet {
 
   @Builder private alwaysHiddenRow(title: string, detail: string) {
     Row() {
-      SymbolGlyph($r('sys.symbol.lock_fill')).fontSize(17).fontColor([this.pal().text2])
-        .margin({ right: 10 }).accessibilityLevel('no')
+      SymbolGlyph($r('sys.symbol.lock_fill')).fontSize(17).fontColor([this.pal().text3])
+        .margin({ right: 10 })
       Column() {
         Text(title).fontSize(13).fontColor(this.pal().text).fontFamily(AppTheme.fontFamily)
-        Text(detail).fontSize(12).fontColor(this.pal().text2)
+        Text(detail).fontSize(10).fontColor(this.pal().text3)
           .fontFamily(AppTheme.fontFamily).margin({ top: 2 })
       }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-      Text('始终隐藏').fontSize(11).fontColor(this.pal().text2)
+      Text('始终隐藏').fontSize(10).fontColor(this.pal().text3)
         .fontFamily(AppTheme.fontFamily)
-    }.width('100%').constraintSize({ minHeight: AppUiMetrics.settingsRowMinHeight })
-      .padding({ left: 15, right: 15, top: 10, bottom: 10 })
+    }.width('100%').padding({ left: 15, right: 15, top: 9, bottom: 9 })
   }
 
   build() {
@@ -110,14 +124,14 @@ export struct SecretVisibilitySettingsSheet {
             .margin({ bottom: 14 })
 
           Row() {
-            Button('全部隐藏').layoutWeight(1).constraintSize({ minHeight: AppUiMetrics.minTouchTarget }).borderRadius(10)
-              .backgroundColor(appUiButtonFill(this.accentColor)).fontColor(appUiButtonText(this.accentColor)).fontSize(12)
+            Button('全部隐藏').layoutWeight(1).height(38).borderRadius(10)
+              .backgroundColor(this.accentColor).fontColor(Color.White).fontSize(12)
               .onClick((): void => { this.persist(allHiddenSecretPresentationPolicy()); })
-            Button('恢复兼容默认').layoutWeight(1).constraintSize({ minHeight: AppUiMetrics.minTouchTarget }).borderRadius(10)
+            Button('恢复兼容默认').layoutWeight(1).height(38).borderRadius(10)
               .backgroundColor(this.pal().surface).fontColor(this.pal().text2).fontSize(12)
               .margin({ left: 8 })
               .onClick((): void => { this.persist(defaultSecretPresentationPolicy()); })
-          }.width('100%').margin({ bottom: AppUiMetrics.sectionGap })
+          }.width('100%').margin({ bottom: 16 })
 
           Text('可选择隐藏').fontSize(12).fontWeight(FontWeight.Medium)
             .fontColor(this.pal().text3).fontFamily(AppTheme.fontFamily)
@@ -147,7 +161,7 @@ export struct SecretVisibilitySettingsSheet {
           }.width('100%').borderRadius(14).backgroundColor(this.pal().card)
             .border({ width: 0.5, color: this.pal().cardBorder })
           Blank().height(24)
-        }.width('100%').padding({ left: AppUiMetrics.sheetPadding, right: AppUiMetrics.sheetPadding })
+        }.width('100%').padding({ left: 22, right: 22 })
       }.layoutWeight(1).scrollBar(BarState.Auto).edgeEffect(EdgeEffect.Spring)
     }.width('100%').height('100%').backgroundColor(this.pal().sheetBg)
       .borderRadius(this.breakpointRadius())

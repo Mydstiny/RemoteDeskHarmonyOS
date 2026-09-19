@@ -17,7 +17,6 @@ import {
   feedbackCommunityRemainingText
 } from '../services/FeedbackCommunityPolicy';
 import { FeedbackCommunityService } from '../services/FeedbackCommunityService';
-import { AppSheetHeader } from './AppSheetHeader';
 
 @Component
 export struct FeedbackSettingsSheet {
@@ -206,10 +205,16 @@ export struct FeedbackSettingsSheet {
 
   build() {
     Column() {
-      AppSheetHeader({ title: '反馈', horizontalPadding: 0, onClose: this.onClose })
+      Row() {
+        Text('反馈').fontSize(20).fontWeight(FontWeight.Bold)
+          .fontColor(this.pal().text).fontFamily(this.font())
+        Blank()
+        SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor([this.pal().text2])
+          .width(36).height(36).onClick((): void => { this.onClose(); })
+      }.width('100%').padding({ left: 24, right: 20, top: 20 }).margin({ bottom: 4 })
 
       Text('选择一种方式联系作者或加入用户群').fontSize(13).fontColor(this.pal().text3)
-        .fontFamily(this.font()).width('100%').margin({ bottom: 8 })
+        .fontFamily(this.font()).width('100%').padding({ left: 24, right: 24 }).margin({ bottom: 8 })
 
       HdsTabs({ controller: this.tabsController }) {
         TabContent() { this.emailContent() }
