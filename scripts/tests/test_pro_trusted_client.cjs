@@ -353,3 +353,151 @@ test('billing diagnostics distinguish authorization, login and product failures 
   assert.match(proBillingError(new Error('Product unavailable')), /商品暂不可用/);
   assert.match(proBillingError({ code: -1, message: 'private-native-detail' }), /未能完成权益验证/);
 });
+
+function refundReceipt(overrides = {}) {
+  const payload = { applicationId: config.applicationId, productId: config.productId, productType: '1',
+    environment: 'SANDBOX', purchaseOrderId: 'sandbox-order-1', ...overrides };
+  return JSON.stringify({ jwsPurchaseOrder: 'e30.' + Buffer.from(JSON.stringify(payload)).toString('base64url') + '.eA' });
+}
+async function refundFixture(t, options = {}) {
+  const calls = []; let f;
+  const iap = { ProductType: { NONCONSUMABLE: 1 }, PurchaseQueryType: { CURRENT_ENTITLEMENT: 2 },
+    isSandboxActivated: async () => true,
+    queryPurchases: async (_context, query) => { calls.push(['query', query]); return { purchaseDataList: [refundReceipt()] }; },
+    createRefundRequest: async (_context, id) => { calls.push(['refund', id]); },
+    createPurchase: () => assert.fail('refund must never create a purchase'),
+    finishPurchase: () => assert.fail('refund must never acknowledge delivery'), ...options.iap };
+  f = await fixture(t, { debug: options.debug ?? true, mocks: { '@kit.IAPKit': { iap } } });
+  const { HuaweiProBillingProvider, proRefundError } = f.load('ProBillingService');
+  return { ...f, calls, iap, proRefundError, provider: new HuaweiProBillingProvider(f.backend) };
+}
+test('sandbox refund opens only the unique matching native order; a successful UI does not locally revoke', async t => {
+  const f = await refundFixture(t);
+  f.iap.queryPurchases = async (_context, query) => ({ purchaseDataList: [refundReceipt(), refundReceipt(),
+    refundReceipt({ productId: 'other-product', purchaseOrderId: 'other-order' })],
+    continuationToken: query.continuationToken ? undefined : 'second-page' });
+  const result = await f.provider.refund({}, config.productId, () => true);
+  assert.deepEqual(f.calls, [['refund', 'sandbox-order-1']]);
+  assert.equal(result.verified, true); assert.equal(f.service.snapshot().state, 'active');
+  assert.equal(f.protocol.calls.length, 1); assert.equal(f.protocol.calls[0].operation, 'reconcile');
+});
+test('refund returns the newly signed revocation, while vendor cancellation makes no entitlement decision', async t => {
+  const f = await refundFixture(t); await f.service.reconcile([], true);
+  f.iap.createRefundRequest = async () => { throw { code: 1001860000 }; };
+  const before = f.protocol.calls.length;
+  await assert.rejects(f.provider.refund({}, config.productId, () => true), error => error.code === 1001860000);
+  assert.equal(f.protocol.calls.length, before); assert.equal(f.service.snapshot().state, 'active');
+  f.iap.createRefundRequest = async () => { f.protocol.revision = 2; f.protocol.status = 'revoked'; f.state.now++; };
+  assert.equal((await f.provider.refund({}, config.productId, () => true)).verified, false);
+  assert.equal(f.service.snapshot().state, 'revoked');
+});
+test('refund fails closed for wrong application/environment/type, malformed, absent or ambiguous orders', async t => {
+  const cases = [[], [refundReceipt(), refundReceipt({ purchaseOrderId: 'second-order' })], ['bad-json'],
+    [refundReceipt({ applicationId: 'other-app' })], [refundReceipt({ environment: 'NORMAL' })],
+    [refundReceipt({ productType: '0' })], [refundReceipt({ purchaseOrderId: 'invalid\norder' })]];
+  for (const records of cases) {
+    const f = await refundFixture(t, { iap: { queryPurchases: async () => ({ purchaseDataList: records }) } });
+    await assert.rejects(f.provider.refund({}, config.productId, () => true));
+    assert.equal(f.calls.length, 0); assert.equal(f.protocol.calls.length, 0);
+  }
+});
+test('refund rejects pagination cycles and enforces the cumulative 100-record limit', async t => {
+  for (const mode of ['cycle', 'count']) {
+    let queries = 0;
+    const f = await refundFixture(t, { iap: { queryPurchases: async () => {
+      queries++; return { purchaseDataList: Array(mode === 'count' ? 60 : 1).fill(refundReceipt()), continuationToken: 'next' };
+    } } });
+    await assert.rejects(f.provider.refund({}, config.productId, () => true));
+    assert.equal(queries, 2); assert.equal(f.calls.length, 0); assert.equal(f.protocol.calls.length, 0);
+  }
+});
+test('refund account changes and dismissal during sandbox/query preflight prevent the vendor side effect', async t => {
+  for (const step of ['sandbox', 'query']) {
+    for (const change of ['account', 'dismiss']) {
+      const f = await refundFixture(t); let current = true;
+      const invalidate = () => { if (change === 'account') f.rebind(other, 2); else current = false; };
+      if (step === 'sandbox') f.iap.isSandboxActivated = async () => { invalidate(); return true; };
+      else f.iap.queryPurchases = async () => { invalidate(); return { purchaseDataList: [refundReceipt()] }; };
+      assert.equal((await f.provider.refund({}, config.productId, () => current)).records, 0);
+      assert.equal(f.calls.length, 0); assert.equal(f.protocol.calls.length, 0);
+    }
+  }
+});
+test('Release and non-sandbox sessions cannot open refund; a late UI return cannot reconcile another account', async t => {
+  const release = await refundFixture(t, { debug: false });
+  await assert.rejects(release.provider.refund({}, config.productId, () => true)); assert.equal(release.calls.length, 0);
+  const normal = await refundFixture(t, { iap: { isSandboxActivated: async () => false } });
+  await assert.rejects(normal.provider.refund({}, config.productId, () => true)); assert.equal(normal.calls.length, 0);
+  const changed = await refundFixture(t);
+  changed.iap.createRefundRequest = async () => { changed.rebind(other, 2); };
+  assert.equal((await changed.provider.refund({}, config.productId, () => true)).verified, false);
+  assert.equal(changed.protocol.calls.length, 0); assert.equal(changed.service.snapshot().state, 'free');
+});
+test('refund diagnostics distinguish cancellation/refused/already-refunded without exposing order details', async t => {
+  const f = await refundFixture(t);
+  for (const code of [1001860000, 1001860061, 1001860062, 123]) {
+    const message = f.proRefundError({ code, message: 'private-order-token' });
+    assert.ok(!message.includes('private-order-token'));
+    if (code === 1001860000) assert.ok(message.includes('取消退款'));
+  }
+});
+
+async function restartedService(f) {
+  const { ProEntitlementStore } = f.load('ProEntitlementStore');
+  const store = new ProEntitlementStore(); await store.initialize({});
+  const { ProTrustedEntitlementClient } = f.load('ProTrustedEntitlementClient');
+  const client = new ProTrustedEntitlementClient(config, store, f.transport, f.clock); client.bind(owner, 2);
+  const { ProEntitlementService } = f.load('ProEntitlementService');
+  const service = new ProEntitlementService(client, () => f.clock.now()); service.bindAccount(owner, 'sandbox', 2);
+  return { store, client, service };
+}
+test('verified refund survives cache-read, cache-write and receipt-delete faults across offline restart', async t => {
+  for (const operation of ['SELECT signed,revision', 'INSERT OR REPLACE INTO pro_cache', 'DELETE FROM pro_pending']) {
+    const f = await fixture(t); await f.service.reconcile([], true);
+    await f.client.retain(f.lease, ['refund-reference']);
+    f.protocol.revision = 2; f.protocol.status = 'revoked'; f.state.now++; f.state.uptime++;
+    f.state.beforeSql = sql => { if (sql.startsWith(operation)) throw new Error('local storage fault'); };
+    assert.equal(await f.service.reconcile(['refund-reference'], true), false);
+    assert.equal(f.service.snapshot().state, 'revoked');
+    f.state.beforeSql = () => {}; f.protocol.offline = true;
+    const restarted = await restartedService(f);
+    await restarted.service.restoreCached(); assert.notEqual(restarted.service.snapshot().state, 'active');
+    await restarted.service.reconcile([], true); assert.notEqual(restarted.service.snapshot().state, 'active');
+    assert.deepEqual(normalize(await restarted.store.pending(f.lease.scope)), ['refund-reference']);
+    f.protocol.offline = false;
+    await restarted.service.reconcile(['refund-reference'], true);
+    assert.equal(restarted.service.snapshot().state, 'revoked');
+    assert.equal((await restarted.store.pending(f.lease.scope)).length, 0);
+  }
+});
+test('a durable verification fence survives process interruption and requires a successful online result to clear', async t => {
+  const f = await fixture(t); await f.service.reconcile([], true);
+  assert.equal(await f.store.beginVerification(f.lease.scope), true);
+  await assert.rejects(f.store.beginVerification(f.lease.scope), /already running/);
+  f.protocol.offline = true;
+  const restarted = await restartedService(f);
+  await restarted.service.restoreCached(); assert.notEqual(restarted.service.snapshot().state, 'active');
+  await restarted.service.reconcile([], true); assert.notEqual(restarted.service.snapshot().state, 'active');
+  assert.equal(f.database.prepare('SELECT COUNT(*) AS n FROM pro_verifying').get().n, 1);
+  f.protocol.offline = false; f.state.now++; f.state.uptime++;
+  assert.equal(await restarted.service.reconcile([], true), true);
+  assert.equal(f.database.prepare('SELECT COUNT(*) AS n FROM pro_verifying').get().n, 0);
+});
+test('ordinary offline requests preserve signed offline access, and fence-write failure prevents any server request', async t => {
+  const f = await fixture(t); await f.service.reconcile([], true); f.protocol.offline = true;
+  assert.equal(await f.service.reconcile([], true), false);
+  assert.equal(f.service.snapshot().state, 'active');
+  const restarted = await restartedService(f); await restarted.service.restoreCached();
+  assert.equal(restarted.service.snapshot().state, 'active');
+  f.state.beforeSql = sql => { if (sql.startsWith('INSERT OR IGNORE INTO pro_verifying')) throw new Error('disk full'); };
+  const before = f.protocol.calls.length;
+  await f.service.reconcile([], true); assert.equal(f.protocol.calls.length, before);
+});
+test('version-one cache migration preserves its signed grant and recovery receipts', async t => {
+  const f = await fixture(t); await f.service.reconcile([], true); await f.client.retain(f.lease, ['preserved']);
+  f.database.exec('DROP TABLE pro_verifying; PRAGMA user_version=1');
+  const restarted = await restartedService(f);
+  assert.equal(f.database.prepare('PRAGMA user_version').get().user_version, 2);
+  await restarted.service.restoreCached(); assert.equal(restarted.service.snapshot().state, 'active');
+  assert.deepEqual(normalize(await restarted.store.pending(f.lease.scope)), ['preserved']);
+});

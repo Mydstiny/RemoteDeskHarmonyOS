@@ -14,6 +14,8 @@ export interface ProCachedRecord {
   clockBlocked: boolean;
 }
 export interface ProEntitlementStorePort {
+  beginVerification(scope: ProStoreScope): Promise<boolean>;
+  endVerification(scope: ProStoreScope, clear: boolean): Promise<void>;
   read(scope: ProStoreScope, now: number): Promise<ProCachedRecord | null>;
   accept(scope: ProStoreScope, snapshot: ProTrustedSnapshot, observedAt: number, receipts: string[]): Promise<void>;
   retain(scope: ProStoreScope, receipts: string[]): Promise<void>;
@@ -44,6 +46,7 @@ export class ProEntitlementStore implements ProEntitlementStorePort {
   private store: relationalStore.RdbStore | null = null;
   private opening: Promise<void> | null = null;
   private queue: Promise<void> = Promise.resolve();
+  private verifying: Set<string> = new Set();
   static getInstance(): ProEntitlementStore {
     if (!ProEntitlementStore.instance) { ProEntitlementStore.instance = new ProEntitlementStore(); }
     return ProEntitlementStore.instance;
@@ -58,7 +61,7 @@ export class ProEntitlementStore implements ProEntitlementStorePort {
     const store = await relationalStore.getRdbStore(context, { name: 'remotedesk_pro_private_v1.db',
       securityLevel: relationalStore.SecurityLevel.S3, encrypt: true });
     try {
-      if (store.version !== 0 && store.version !== 1) { throw new Error('Unsupported Pro cache schema'); }
+      if (store.version !== 0 && store.version !== 1 && store.version !== 2) { throw new Error('Unsupported Pro cache schema'); }
       if (store.version === 0) {
         store.beginTransaction();
         try {
@@ -69,6 +72,14 @@ export class ProEntitlementStore implements ProEntitlementStorePort {
           store.version = 1;
           store.commit();
         } catch (_error) { store.rollBack(); throw new Error('Pro cache schema transaction failed'); }
+      }
+      if (store.version === 1) {
+        store.beginTransaction();
+        try {
+          await store.executeSql('CREATE TABLE pro_verifying (scope TEXT PRIMARY KEY)');
+          store.version = 2;
+          store.commit();
+        } catch (_error) { store.rollBack(); throw new Error('Pro cache migration failed'); }
       }
       this.store = store;
     } catch (_error) { await store.close(); throw new Error('Pro cache opening failed'); }
@@ -104,8 +115,32 @@ export class ProEntitlementStore implements ProEntitlementStorePort {
       if (observed !== record.observedAt || blocked !== record.clockBlocked) {
         await store.executeSql('UPDATE pro_cache SET observed_at=?,clock_blocked=? WHERE scope=?', [observed, blocked ? 1 : 0, key]);
       }
-      record.observedAt = observed; record.clockBlocked = blocked;
+      const fence = await store.querySql('SELECT scope FROM pro_verifying WHERE scope=?', [key]);
+      try { record.clockBlocked = blocked || fence.goToFirstRow(); } finally { fence.close(); }
+      record.observedAt = observed;
       return record;
+    });
+  }
+  // Persist before contacting the server: a crash or disk failure after an
+  // observed refund must never make the previous positive cache usable again.
+  // The singleton store also excludes a second in-process verifier per scope.
+  beginVerification(scope: ProStoreScope): Promise<boolean> {
+    const key = scopeKey(scope);
+    return this.serialize(async (store: relationalStore.RdbStore): Promise<boolean> => {
+      if (this.verifying.has(key)) { throw new Error('Pro verification already running'); }
+      const fence = await store.querySql('SELECT scope FROM pro_verifying WHERE scope=?', [key]);
+      let existed: boolean = false;
+      try { existed = fence.goToFirstRow(); } finally { fence.close(); }
+      await store.executeSql('INSERT OR IGNORE INTO pro_verifying VALUES (?)', [key]);
+      this.verifying.add(key);
+      return !existed;
+    });
+  }
+  endVerification(scope: ProStoreScope, clear: boolean): Promise<void> {
+    const key = scopeKey(scope);
+    return this.serialize(async (store: relationalStore.RdbStore): Promise<void> => {
+      try { if (clear) { await store.executeSql('DELETE FROM pro_verifying WHERE scope=?', [key]); } }
+      finally { this.verifying.delete(key); }
     });
   }
   accept(scope: ProStoreScope, snapshot: ProTrustedSnapshot, observedAt: number, receipts: string[]): Promise<void> {
@@ -122,6 +157,10 @@ export class ProEntitlementStore implements ProEntitlementStorePort {
         }
         await store.executeSql('INSERT OR REPLACE INTO pro_cache VALUES (?,?,?,?,?,0)',
           [key, snapshot.signedEntitlement, snapshot.revision, snapshot.verifiedAt, observedAt]);
+        await store.executeSql('DELETE FROM pro_verifying WHERE scope=?', [key]);
+        // A refund must survive even when removal of recovery receipts fails.
+        // Positive grants retain the original all-or-nothing transaction.
+        if (snapshot.signedStatus !== 'verified') { store.commit(); store.beginTransaction(); }
         for (const receipt of receipts) {
           await store.executeSql('DELETE FROM pro_pending WHERE scope=? AND id=?', [key, hash(receipt)]);
         }

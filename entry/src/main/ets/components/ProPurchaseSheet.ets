@@ -10,7 +10,7 @@ import { Palette, buildDark, buildLight } from '../common/Theme';
 import { ProFeature, proFeatures } from '../services/pro/ProFeatureCatalog';
 import {
   HuaweiProBillingProvider, ProStoreProduct, ProPurchaseCoordinator,
-  PRO_LAUNCH_PRICE, PRO_REGULAR_PRICE, proBillingError
+  PRO_LAUNCH_PRICE, PRO_REGULAR_PRICE, proBillingError, proRefundError
 } from '../services/pro/ProBillingService';
 
 @Component
@@ -71,6 +71,14 @@ export struct ProPurchaseSheet {
           '本次尚未开通沙盒 Pro，请使用恢复购买继续核验。';
         this.product = null;
         this.storePrice = '';
+      } else if (action === 'refund' && this.testing) {
+        const outcome = await this.provider.refund(this.context(), this.productId, (): boolean =>
+          this.live && generation === this.generation && ProPurchaseLifecycle.current(epoch));
+        if (!this.live || generation !== this.generation || !ProPurchaseLifecycle.current(epoch)) { return; }
+        this.message = outcome.verified ? '退款页面已返回，服务端仍确认沙盒 Pro 有效；可稍后恢复购买同步状态。' :
+          '退款页面已返回，请使用恢复购买同步最新权益；退款结果以华为订单状态为准。';
+        this.product = null;
+        this.storePrice = '';
       } else if (action === 'restore') {
         const outcome = await this.provider.restore(this.context(), this.productId, (): boolean =>
           this.live && generation === this.generation && ProPurchaseLifecycle.current(epoch));
@@ -80,7 +88,7 @@ export struct ProPurchaseSheet {
       }
     } catch (error) {
       if (this.live && generation === this.generation) {
-        this.message = proBillingError(error as BusinessError);
+        this.message = action === 'refund' ? proRefundError(error as BusinessError) : proBillingError(error as BusinessError);
         this.product = null;
         this.storePrice = '';
       }
@@ -167,6 +175,10 @@ export struct ProPurchaseSheet {
               Text('测试商品：' + this.productId).fontSize(12).fontColor(this.pal().text2)
               Button('检查沙盒并读取商品').fontSize(13).enabled(!this.busy && this.productId.trim().length > 0)
                 .onClick((): void => { this.operate('load'); })
+              Button('申请沙盒订单退款').fontSize(13).enabled(!this.busy)
+                .onClick((): void => { this.operate('refund'); })
+              Text('打开华为退款页面后自行确认。仅选择唯一的当前沙盒 Pro 订单，返回后重新核验权益。')
+                .fontSize(12).fontColor(this.pal().text2).lineHeight(19)
               if (this.storeName.length > 0) {
                 Text(this.storeName).fontSize(13).fontColor(this.pal().text)
               }

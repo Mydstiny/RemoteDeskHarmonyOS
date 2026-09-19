@@ -2,6 +2,7 @@ import { common } from '@kit.AbilityKit';
 import { iap } from '@kit.IAPKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { util } from '@kit.ArkTS';
+import { DEBUG } from 'BuildProfile';
 import { ProClientLease, ProPurchaseIntent, proPurchaseBatches } from './ProTrustedEntitlementClient';
 import { ProReconciliationOutcome } from './ProEntitlementService';
 
@@ -24,6 +25,40 @@ export interface ProBillingProvider {
 }
 interface ProPurchaseEnvelope { jwsPurchaseOrder: string; }
 interface ProPurchaseProductHint { productId: string; }
+interface ProRefundOrderHint {
+  applicationId: string;
+  productId: string;
+  productType: string;
+  environment: string;
+  purchaseOrderId: string;
+}
+
+// Native IAP supplies this routing hint solely to open Huawei's refund UI.
+// Neither this hint nor the UI result grants or revokes any entitlement.
+function sandboxRefundOrder(record: string, lease: ProClientLease): string {
+  const envelope = JSON.parse(record) as ProPurchaseEnvelope;
+  if (!envelope || typeof envelope.jwsPurchaseOrder !== 'string') { throw new Error('Invalid refund record'); }
+  const parts = envelope.jwsPurchaseOrder.split('.');
+  if (parts.length !== 3 || !/^[A-Za-z0-9_-]+$/.test(parts[1])) { throw new Error('Invalid refund record'); }
+  let encoded = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+  while (encoded.length % 4 !== 0) { encoded += '='; }
+  const decoded = new util.Base64Helper().decodeSync(encoded);
+  const hint = JSON.parse(util.TextDecoder.create('utf-8', { fatal: true }).decodeToString(decoded)) as ProRefundOrderHint;
+  if (!hint || hint.productId !== lease.scope.productId) { return ''; }
+  if (hint.applicationId !== lease.scope.applicationId || hint.environment !== 'SANDBOX' || hint.productType !== '1' ||
+    typeof hint.purchaseOrderId !== 'string' || !/^[^\s\u0000-\u001f\u007f]{1,256}$/.test(hint.purchaseOrderId)) {
+    throw new Error('Invalid refund record');
+  }
+  return hint.purchaseOrderId;
+}
+
+export function proRefundError(error: BusinessError): string {
+  if (error.code === 1001860000) { return '已取消退款申请，权益仍以服务端核验结果为准。'; }
+  if (error.code === 1001860061) { return '该订单已退款或正在退款，请使用恢复购买同步最新权益。'; }
+  if (error.code === 1001860062) { return '华为暂不允许此订单退款，请在华为支付页面查看订单状态。'; }
+  if (error.message === 'Refund order not unique') { return '未找到唯一的当前沙盒 Pro 订单，无法自动选择退款订单。'; }
+  return proBillingError(error);
+}
 // This hint only routes records. It never grants, acknowledges delivery or
 // substitutes for the server's signature and current-order verification.
 function recordsForProduct(records: string[], productId: string): string[] {
@@ -131,6 +166,40 @@ export class HuaweiProBillingProvider implements ProBillingProvider {
       } while (cursor);
     }
     return { verified: await this.reconcilePending(lease), records: records.size };
+  }
+  async refund(context: common.UIAbilityContext, id: string, isCurrent: () => boolean): Promise<ProBillingOutcome> {
+    if (!DEBUG) { throw new Error('Pro service unavailable'); }
+    const lease = this.capture(id);
+    const current = (): boolean => this.backend.current(lease) && isCurrent();
+    await this.sandbox(context);
+    if (!current()) { return { verified: false, records: 0 }; }
+    const orders: Set<string> = new Set();
+    const seen: string[] = [];
+    let count: number = 0;
+    let cursor: string | undefined = undefined;
+    do {
+      if (!current()) { return { verified: false, records: 0 }; }
+      const result: iap.QueryPurchaseResult = await iap.queryPurchases(context, { productType: iap.ProductType.NONCONSUMABLE,
+        queryType: iap.PurchaseQueryType.CURRENT_ENTITLEMENT, continuationToken: cursor });
+      if (!current()) { return { verified: false, records: 0 }; }
+      proPurchaseBatches(result.purchaseDataList);
+      count += result.purchaseDataList.length;
+      if (count > 100) { throw new Error('Too many Pro purchase records'); }
+      result.purchaseDataList.forEach((record: string): void => {
+        const order = sandboxRefundOrder(record, lease);
+        if (order.length > 0) { orders.add(order); }
+      });
+      cursor = result.continuationToken;
+      if (cursor) {
+        if (seen.indexOf(cursor) >= 0 || seen.length >= 100) { throw new Error('Invalid pagination'); }
+        seen.push(cursor);
+      }
+    } while (cursor);
+    if (orders.size !== 1) { throw new Error('Refund order not unique'); }
+    if (!current()) { return { verified: false, records: 0 }; }
+    await iap.createRefundRequest(context, Array.from(orders)[0]);
+    if (!current()) { return { verified: false, records: 1 }; }
+    return { verified: await this.reconcilePending(lease), records: 1 };
   }
 }
 

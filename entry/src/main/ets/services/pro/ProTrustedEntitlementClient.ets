@@ -79,6 +79,10 @@ export class ProTrustedEntitlementClient implements ProOrderVerifier {
   }
   private async cache(lease: ProClientLease, forceRevalidation: boolean): Promise<ProVerificationResult> {
     try {
+      const denied = this.observed.get(lease.scope.owner);
+      if (denied !== undefined && denied.signedStatus !== 'verified' && this.current(lease)) {
+        return this.observedFailure(lease.scope.owner, denied);
+      }
       const now = this.clock.now();
       const cached = await this.store.read(lease.scope, now);
       if (cached === null || cached.clockBlocked || !Number.isSafeInteger(now) || !this.current(lease)) {
@@ -120,11 +124,17 @@ export class ProTrustedEntitlementClient implements ProOrderVerifier {
     return this.serialize(async (): Promise<ProVerificationResult> => {
       if (!this.current(lease)) { return this.unavailable(owner); }
       let verificationStage: number = 0;
+      let fenced: boolean = false;
+      let newFence: boolean = false;
+      let denial: ProTrustedSnapshot | null = null;
       try {
         if (copied.length > 32 || proPurchaseBatches(copied).length > 1) { throw new Error('Invalid Pro batch'); }
         const random = await cryptoFramework.createRandom().generateRandom(32);
         const challenge = new util.Base64Helper().encodeToStringSync(random.data)
           .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+        if (!this.current(lease)) { throw new Error('Stale Pro scope'); }
+        newFence = await this.store.beginVerification(lease.scope);
+        fenced = true;
         if (!this.current(lease)) { throw new Error('Stale Pro scope'); }
         const startedAt = this.clock.wallNow();
         verificationStage = 1;
@@ -140,6 +150,7 @@ export class ProTrustedEntitlementClient implements ProOrderVerifier {
           throw new Error('Stale Pro signature');
         }
         verificationStage = 3;
+        if (snapshot.signedStatus !== 'verified') { denial = snapshot; }
         const previous: ProCachedRecord | null = await this.store.read(lease.scope, this.clock.now());
         if (previous !== null) {
           const old: ProTrustedSnapshot = await this.signature.inspectCached(previous.signedEntitlement, owner, this.clock.wallNow());
@@ -156,8 +167,8 @@ export class ProTrustedEntitlementClient implements ProOrderVerifier {
         if (!this.current(lease)) { throw new Error('Stale Pro scope'); }
         if (!this.observed.has(owner) && this.observed.size >= 64) { throw new Error('Pro account observation limit'); }
         this.observed.set(owner, snapshot);
-        // Cache and dequeue share one local transaction. A failure cannot report
-        // online success or drop receipts that are still needed for recovery.
+        // Positive grants and dequeue are atomic; negative grants commit before
+        // dequeue so receipt cleanup cannot roll back a verified refund.
         verificationStage = 4;
         await this.store.accept(lease.scope, snapshot, this.clock.wallNow(), copied);
         if (!this.current(lease)) { return this.unavailable(owner); }
@@ -166,11 +177,29 @@ export class ProTrustedEntitlementClient implements ProOrderVerifier {
         return snapshot.result;
       } catch (_error) {
         if (DEBUG) { console.info(`[ProVerify] reconcile failed stage=${verificationStage}`); }
+        if (fenced) {
+          // Only failures before a fresh trusted response may restore a newly
+          // placed fence. A previous crash's fence requires online acceptance.
+          try { await this.store.endVerification(lease.scope, newFence && verificationStage < 3); }
+          catch (_endError) { /* retain the durable fence and require revalidation */ }
+          fenced = false;
+        }
+        if (denial !== null && this.current(lease)) {
+          const old = this.observed.get(owner);
+          if ((old !== undefined && denial.revision >= old.revision) || (old === undefined && this.observed.size < 64)) {
+            this.observed.set(owner, denial);
+          }
+          return this.observedFailure(owner, denial);
+        }
         const observed = this.observed.get(owner);
         if (observed !== undefined && observed.signedStatus !== 'verified' && this.current(lease)) {
           return this.observedFailure(owner, observed);
         }
         return this.cache(lease, true);
+      } finally {
+        if (fenced) {
+          try { await this.store.endVerification(lease.scope, false); } catch (_endError) { /* fence remains safe */ }
+        }
       }
     });
   }
