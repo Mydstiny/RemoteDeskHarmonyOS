@@ -21,10 +21,12 @@ export struct ProPurchaseSheet {
   @State entered: boolean = false;
   @State busy: boolean = false;
   @State testing: boolean = false;
+  @State billingReady: boolean = false;
+  @State purchased: boolean = false;
   @State proLabel: string = '免费版';
   @State debugMode: ProDebugMode = 'real';
   private unsubscribe: (() => void) | null = null;
-  @State productId: string = 'RemoteDesktop_Pro_Test';
+  @State productId: string = '';
   @State storePrice: string = '';
   @State storeName: string = '';
   @State message: string = 'Pro 正在准备中，当前版本的功能继续免费使用。';
@@ -37,18 +39,29 @@ export struct ProPurchaseSheet {
   aboutToAppear(): void {
     this.live = true;
     this.testing = ProAppRuntime.getInstance().sandboxSelected();
+    this.syncBilling();
     this.unsubscribe = ProAppRuntime.getInstance().runtime.subscribe((): void => {
       const snapshot = ProAppRuntime.getInstance().runtime.snapshot();
       this.proLabel = snapshot.label;
       this.debugMode = snapshot.mode;
+      this.purchased = snapshot.realState === 'active';
     });
   }
   aboutToDisappear(): void { this.live = false; this.generation++; this.unsubscribe?.(); this.unsubscribe = null; }
   private pal(): Palette { return this.theme === 'light' ? buildLight(this.accent) : buildDark(this.accent); }
   private context(): common.UIAbilityContext { return getContext(this) as common.UIAbilityContext; }
 
+  private syncBilling(): void {
+    const runtime = ProAppRuntime.getInstance();
+    this.productId = runtime.billingProductId();
+    this.billingReady = runtime.billingAvailable();
+    this.product = null; this.storePrice = ''; this.storeName = '';
+    this.message = this.billingReady ? '读取商品价格后可购买；已购买的账号可直接恢复权益。' :
+      'Pro 正在准备中，当前版本的功能继续免费使用。';
+  }
+  private prefix(): string { return this.testing ? '沙盒 ' : ''; }
   private async operate(action: string): Promise<void> {
-    if (!DEBUG) { return; }
+    if (!this.billingReady || (this.testing && !DEBUG)) { return; }
     if (this.busy) { return; }
     if (!ProPurchaseCoordinator.enter()) { this.message = '上一项操作仍在处理中，请稍后再试。'; return; }
     const generation: number = ++this.generation;
@@ -63,16 +76,16 @@ export struct ProPurchaseSheet {
         this.product = product;
         this.storePrice = product.price;
         this.storeName = product.name;
-        this.message = '沙盒商品已确认，购买后将验证订单并开通沙盒 Pro。';
-      } else if (action === 'buy' && this.product !== null && this.testing) {
+        this.message = this.prefix() + '商品已确认，购买后将验证订单并开通 Pro。';
+      } else if (action === 'buy' && this.product !== null && !this.purchased) {
         const outcome = await this.provider.purchase(this.context(), this.product.id, (): boolean =>
           this.live && generation === this.generation && ProPurchaseLifecycle.current(epoch));
         if (!this.live || generation !== this.generation || !ProPurchaseLifecycle.current(epoch)) { return; }
-        this.message = outcome.verified ? '沙盒订单验证通过，沙盒 Pro 已开通。' :
-          '本次尚未开通沙盒 Pro，请使用恢复购买继续核验。';
+        this.message = outcome.verified ? this.prefix() + '订单验证通过，Pro 已开通。' :
+          '已收到购买结果，权益仍待核验；请使用恢复购买，不必重复付款。';
         this.product = null;
         this.storePrice = '';
-      } else if (action === 'refund' && this.testing) {
+      } else if (action === 'refund' && DEBUG && this.testing) {
         const outcome = await this.provider.refund(this.context(), this.productId, (): boolean =>
           this.live && generation === this.generation && ProPurchaseLifecycle.current(epoch));
         if (!this.live || generation !== this.generation || !ProPurchaseLifecycle.current(epoch)) { return; }
@@ -84,9 +97,9 @@ export struct ProPurchaseSheet {
         const outcome = await this.provider.restore(this.context(), this.productId, (): boolean =>
           this.live && generation === this.generation && ProPurchaseLifecycle.current(epoch));
         if (!this.live || generation !== this.generation || !ProPurchaseLifecycle.current(epoch)) { return; }
-        this.message = outcome.verified ? '沙盒权益已验证并恢复。' :
-          ProAppRuntime.getInstance().runtime.snapshot().realState === 'revoked' ? '服务端已确认沙盒 Pro 权益撤销。' : outcome.records > 0 ?
-          '已查询到订单，本次尚未恢复有效沙盒权益，请稍后重试。' : '当前未恢复到有效的沙盒 Pro 权益。';
+        this.message = outcome.verified ? this.prefix() + '权益已验证并恢复。' :
+          ProAppRuntime.getInstance().runtime.snapshot().realState === 'revoked' ? '服务端已确认' + this.prefix() + 'Pro 权益撤销。' : outcome.records > 0 ?
+          '已查询到订单，本次尚未恢复有效权益，请稍后重试。' : '当前账号未恢复到有效的' + this.prefix() + 'Pro 权益。';
       }
     } catch (error) {
       if (this.live && generation === this.generation) {
@@ -171,7 +184,7 @@ export struct ProPurchaseSheet {
             .enabled(!this.busy).onClick((): void => {
               this.testing = !this.testing;
               ProAppRuntime.getInstance().setSandbox(this.testing);
-              this.product = null; this.storePrice = ''; this.storeName = '';
+              this.generation++; this.syncBilling();
             })
           if (this.testing) {
             Column({ space: 10 }) {
@@ -201,12 +214,13 @@ export struct ProPurchaseSheet {
           Text('计划首发 ' + PRO_LAUNCH_PRICE + ' · 后续常规价 ' + PRO_REGULAR_PRICE)
             .fontSize(13).fontColor(this.pal().text2)
         }
-        Button(this.busy ? '正在处理…' : this.storePrice.length > 0 ? '沙盒购买 Pro · ' + this.storePrice : 'Pro 即将推出')
+        Button(this.busy ? '正在处理…' : this.purchased ? 'Pro 已开通' : !this.billingReady ? 'Pro 即将推出' :
+          this.storePrice.length > 0 ? this.prefix() + '购买 Pro · ' + this.storePrice : '读取商品价格')
           .width('100%').height(48).fontSize(16).fontWeight(FontWeight.Medium)
           .fontColor(Color.White).backgroundColor(this.accent)
-          .enabled(!this.busy && this.testing && this.storePrice.length > 0)
-          .onClick((): void => { this.operate('buy'); })
-        if (this.testing) {
+          .enabled(!this.busy && this.billingReady && !this.purchased)
+          .onClick((): void => { this.operate(this.storePrice.length > 0 ? 'buy' : 'load'); })
+        if (this.billingReady) {
           Button('恢复购买 / 查询订单').fontSize(12).fontColor(this.accent).backgroundColor(Color.Transparent)
             .enabled(!this.busy).onClick((): void => { this.operate('restore'); })
         } else {

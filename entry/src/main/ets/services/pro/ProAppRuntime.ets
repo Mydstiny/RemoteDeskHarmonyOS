@@ -31,6 +31,7 @@ export class ProAppRuntime implements ProBillingBackend {
   private store: ProEntitlementStore = ProEntitlementStore.getInstance();
   private entitlement: ProEntitlementService = new ProEntitlementService(this.bridge, (): number => this.clock.now());
   readonly runtime: ProRuntime = new ProRuntime(this.entitlement);
+  private productionClient: ProTrustedEntitlementClient | null = null;
   private sandboxClient: ProTrustedEntitlementClient | null = null;
   private environment: ProEnvironment = 'production';
   private initializing: Promise<void> | null = null;
@@ -57,6 +58,11 @@ export class ProAppRuntime implements ProBillingBackend {
             new ProCloudTransport(configuration, context), this.clock);
         }
       }
+      const production = proBackendConfiguration('production');
+      if (!DEBUG && production !== null && production.trust.environment === 'production') {
+        this.productionClient = new ProTrustedEntitlementClient(production.trust, this.store,
+          new ProCloudTransport(production, context), this.clock);
+      }
       this.initialized = true;
       this.boundKey = '';
       this.selectClient();
@@ -76,9 +82,11 @@ export class ProAppRuntime implements ProBillingBackend {
   }
   sandboxSelected(): boolean { return DEBUG && this.environment === 'sandbox'; }
   private selectClient(): void {
-    this.bridge.client = null;
+    this.bridge.client = this.environment === 'production' ? this.productionClient : null;
     if (DEBUG && this.environment === 'sandbox') { this.bridge.client = this.sandboxClient; }
   }
+  billingProductId(): string { return proBackendConfiguration(this.environment)?.trust.productId ?? ''; }
+  billingAvailable(): boolean { return this.bridge.client !== null; }
   private start(): void {
     if (this.stopAccount !== null) { return; }
     const account = AccountSessionCoordinator.getInstance();
@@ -118,7 +126,11 @@ export class ProAppRuntime implements ProBillingBackend {
     return client.intent(lease, isCurrent);
   }
   retain(lease: ProClientLease, records: string[]): Promise<void> {
-    if (DEBUG && this.sandboxClient !== null) { return this.sandboxClient.retain(lease, records); }
+    // Retain late payment receipts in their captured environment, including after a UI switch.
+    if (lease.scope.environment === 'production' && this.productionClient !== null) {
+      return this.productionClient.retain(lease, records);
+    }
+    if (DEBUG && lease.scope.environment === 'sandbox' && this.sandboxClient !== null) { return this.sandboxClient.retain(lease, records); }
     return Promise.reject(new Error('Pro service unavailable'));
   }
   pending(lease: ProClientLease): Promise<string[]> {

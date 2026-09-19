@@ -1,3 +1,4 @@
+import { productionProBackendConfiguration } from './ProProductionRelease';
 import { DEBUG } from 'BuildProfile';
 import { util } from '@kit.ArkTS';
 import { ProEnvironment } from './ProAccessPolicy';
@@ -21,5 +22,6 @@ export function proBackendConfiguration(environment: ProEnvironment): ProBackend
         publicKeyDer: new util.Base64Helper().decodeSync(publicKey) } };
     }
   }
+  if (!DEBUG && environment === 'production') { return productionProBackendConfiguration(); }
   return null;
 }

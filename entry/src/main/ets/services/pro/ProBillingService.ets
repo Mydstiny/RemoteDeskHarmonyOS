@@ -83,7 +83,7 @@ function recordsForProduct(records: string[], productId: string): string[] {
 }
 
 export function proBillingError(error: BusinessError): string {
-  if (error.message === 'Pro service unavailable') { return '沙盒验证服务尚未就绪，请确认服务部署和华为账号登录。'; }
+  if (error.message === 'Pro service unavailable') { return '购买验证服务暂不可用，请确认华为账号登录后重试。'; }
   if (error.message === 'Sandbox required') { return '当前未启用支付沙盒，请检查测试账号和 debug 签名。'; }
   if (error.code === 1001860002) { return '当前测试包未获支付授权（1001860002），请检查 AGC 签名指纹与 IAP 服务配置。'; }
   if (error.code === 1001860050) { return '请先在设备上登录用于沙盒测试的华为账号。'; }
@@ -102,16 +102,20 @@ export class HuaweiProBillingProvider implements ProBillingProvider {
   constructor(backend: ProBillingBackend) { this.backend = backend; }
   private capture(id: string): ProClientLease {
     const lease = this.backend.lease(id);
-    if (lease === null || lease.scope.environment !== 'sandbox') { throw new Error('Pro service unavailable'); }
+    if (lease === null || (lease.scope.environment === 'sandbox' ? !DEBUG : DEBUG)) { throw new Error('Pro service unavailable'); }
     return lease;
   }
-  private async sandbox(context: common.UIAbilityContext): Promise<void> {
-    if (!await iap.isSandboxActivated(context)) { throw new Error('Sandbox required'); }
+  private async environment(context: common.UIAbilityContext, lease: ProClientLease): Promise<void> {
+    if (lease.scope.environment === 'sandbox') {
+      if (!DEBUG || !await iap.isSandboxActivated(context)) { throw new Error('Sandbox required'); }
+    }
+    // isSandboxActivated explicitly rejects release provisions (1001860057).
+    // Production authority is the fixed Release configuration and signed NORMAL server verification.
   }
   async product(context: common.UIAbilityContext, id: string): Promise<ProStoreProduct> {
     if (!/^[A-Za-z0-9_.-]{1,128}$/.test(id)) { throw new Error('Invalid product ID'); }
     const lease = this.capture(id);
-    await this.sandbox(context);
+    await this.environment(context, lease);
     const products = await iap.queryProducts(context, { productType: iap.ProductType.NONCONSUMABLE, productIds: [id] });
     if (!this.backend.current(lease)) { throw new Error('Pro account changed'); }
     const product = products.find((item: iap.Product): boolean => item.id === id && item.type === iap.ProductType.NONCONSUMABLE);
@@ -120,7 +124,7 @@ export class HuaweiProBillingProvider implements ProBillingProvider {
   }
   async purchase(context: common.UIAbilityContext, id: string, isCurrent: () => boolean): Promise<ProBillingOutcome> {
     const lease = this.capture(id);
-    await this.sandbox(context);
+    await this.environment(context, lease);
     const current = (): boolean => this.backend.current(lease) && isCurrent();
     if (!current()) { return { verified: false, records: 0 }; }
     const intent = await this.backend.intent(lease, current);
@@ -147,7 +151,7 @@ export class HuaweiProBillingProvider implements ProBillingProvider {
   }
   async restore(context: common.UIAbilityContext, id: string, isCurrent: () => boolean): Promise<ProBillingOutcome> {
     const lease = this.capture(id);
-    await this.sandbox(context);
+    await this.environment(context, lease);
     const records: Set<string> = new Set();
     const types: iap.PurchaseQueryType[] = [iap.PurchaseQueryType.CURRENT_ENTITLEMENT, iap.PurchaseQueryType.UNFINISHED];
     for (const queryType of types) {
@@ -174,8 +178,9 @@ export class HuaweiProBillingProvider implements ProBillingProvider {
   async refund(context: common.UIAbilityContext, id: string, isCurrent: () => boolean): Promise<ProBillingOutcome> {
     if (!DEBUG) { throw new Error('Pro service unavailable'); }
     const lease = this.capture(id);
+    if (lease.scope.environment !== 'sandbox') { throw new Error('Sandbox required'); }
     const current = (): boolean => this.backend.current(lease) && isCurrent();
-    await this.sandbox(context);
+    await this.environment(context, lease);
     if (!current()) { return { verified: false, records: 0 }; }
     const orders: Set<string> = new Set();
     const seen: string[] = [];
