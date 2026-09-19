@@ -14516,6 +14516,7 @@ struct HostListPage {
             }
           }
         }.alignItems(HorizontalAlign.End).margin({ left: 6 })
+          .alignSelf(host.protocol === 'ai' ? ItemAlign.Start : ItemAlign.Center)
       }
       .width('100%').constraintSize({ minHeight: this.breakpoint === 'sm' ? 66 : 80 })
       .padding(this.breakpoint === 'sm' ? { left: 12, right: 14, top: 12, bottom: 12 } : 14)

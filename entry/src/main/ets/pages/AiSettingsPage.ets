@@ -167,7 +167,7 @@ export struct AiSettingsPage {
             AppSettingsActionRow({ icon: protocolIcon('ai'), title: host.label,
               detail: (host.backend === 'codex' ? 'Codex' : 'DSH') + ' · ' + host.address + ':' + host.port + ' · 编辑与配对',
               isEnabled: !this.busy, onAction: (): void => { this.openEditor(host); } })
-          }, (host: AiHost): string => host.id)
+          }, (host: AiHost): string => host.id + ':' + host.revision.toString())
           AppSettingsActionRow({ icon: protocolIcon('ai'), title: '添加主机', detail: '沿用当前经典／全新添加偏好',
             isEnabled: !this.busy, onAction: (): void => { this.openEditor(null); } })
           }
