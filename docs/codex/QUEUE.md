@@ -4,7 +4,7 @@ Updated: 2026-09-19 Asia/Shanghai
 
 ## Now
 
-- Overall Pro remainder: [2026-09-19 audit](plans/2026-09-19-pro-remaining.md); M3-M7 exit conditions, UI device/forms and AI acceptance/relay remain open. Next local work: remaining host/resource forms; device acceptance stays open.
+- Overall Pro remainder: [2026-09-19 audit](plans/2026-09-19-pro-remaining.md); M3-M7 exit conditions, UI device/forms and AI acceptance/relay remain open. Next local work: remaining input/resource controls; device acceptance stays open (current HDC inventory: zero targets).
 
 - VNC LastRect: `e67724ac` + `21da46aa` code and independent review PASS; next original failing peer first/repeated updates and reconnect acceptance. [Repair scope](plans/2026-09-08-vnc-lastrect-update-repair.md).
 
@@ -34,7 +34,7 @@ Updated: 2026-09-19 Asia/Shanghai
 
 
 
-- Base UI: nine public batches independently PASS through host/SSH controls 12f342cb; this batch awaits device typography/window/input/reader acceptance. Continue remaining forms and API23/26 Phone/Pad/PC fonts, keyboard, reader and performance. Native emulator awaits Huawei agreement acceptance.
+- Base UI: ten public batches independently PASS through four-protocol controls c808d95c; this batch awaits device typography/window/input/reader acceptance. Continue remaining forms and API23/26 Phone/Pad/PC fonts, keyboard, reader and performance. Native emulator awaits Huawei agreement acceptance.
 
 - M5 SSH Share Kit eca8f8aa, PC SSH 3fc4a578 and RDP 35e38224 + 13413239 independently PASS. RDP paired-fence finding closed. Real App Link/fragment, Windows and Phone/Pad/PC cross-device acceptance remain open.
 

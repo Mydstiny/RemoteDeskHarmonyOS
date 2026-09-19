@@ -3,7 +3,7 @@
   "task": "pro-purchase-foundation",
   "branch": "codex/pro-purchase-foundation",
   "base": "8edc187868e94ed41634e8a6c4c4c072e3a48679",
-  "head": "a5672b069d905c874e17850478db6df2bd72284b",
+  "head": "c808d95cc6cb12eae24a4e48a38363b68a9d23e6",
   "phase": "Full roadmap active; M6 USB library capability probe independently reviewed; hardware/RDPEWA/PIN acceptance remains open",
   "status": "in-progress",
   "next": "Continue remaining local forms; validate USB on approved hardware before RDPEWA/session/PIN integration. Cloud deployment, live pairing and real payment remain deferred.",
@@ -209,7 +209,11 @@
       "scripts/tests/test_pro_fido_native.py",
       "scripts/verify_fido2_dependencies.py",
       "scripts/verify_open_source_release.ps1",
-      "entry/src/main/ets/components/hostadd/HostProtocolPicker.ets"
+      "entry/src/main/ets/components/hostadd/HostProtocolPicker.ets",
+      "entry/src/main/ets/components/hostadd/RdpAddFlow.ets",
+      "entry/src/main/ets/components/hostadd/RustDeskAddFlow.ets",
+      "entry/src/main/ets/components/hostadd/VncAddFlow.ets",
+      "entry/src/main/ets/components/hostadd/MoonlightHostAddFlow.ets"
     ],
     "findings": [],
     "reviewedHead": "13413239bd7475539ade4deaae522a3d6a2e753e",
@@ -273,7 +277,7 @@
   "baseUiPreparation": {
     "planPath": "docs/codex/plans/2026-09-07-api26-base-ui-upgrade.md",
     "entitlement": "free",
-    "status": "u1-u3-nine-increments-code-reviewed-device-pending",
+    "status": "u1-u3-ten-increments-code-reviewed-device-pending",
     "codeImplemented": true,
     "reviewerTaskId": "/root/review_pro_plan",
     "reviewResult": "Eight public UI batches independently PASS through dc19ebcf Pro panels; remaining forms and U0-U4 device/performance acceptance remain open.",
@@ -524,6 +528,30 @@
       },
       "reviewResult": "PASS exact 5ddda2ce8..12f342cb two-file scope; no findings. Independently verified 38 state/business declarations and 11 click/1 change/1 error callbacks unchanged; executed 24 protocol states, all SSH actions, five invalid-input categories and four password/key save combinations using production endpoint/proxy/business code with mocked model/vault. Independently reran 49 SSH and 27 share checks; current compile/signed HAP/Light logs and API23 compatibility verified. Device, original inputs/proxy editor/Sheet scrolling and shared M6 changes excluded.",
       "reviewReceiptId": "base-ui-host-actions-12f342cb-20260919"
+    },
+    "protocolFormActions": {
+      "status": "code-independently-reviewed-device-pending",
+      "base": "a01350525983d9afae224be3866257871db385de",
+      "head": "c808d95cc6cb12eae24a4e48a38363b68a9d23e6",
+      "scope": [
+        "entry/src/main/ets/components/hostadd/RdpAddFlow.ets",
+        "entry/src/main/ets/components/hostadd/RustDeskAddFlow.ets",
+        "entry/src/main/ets/components/hostadd/VncAddFlow.ets",
+        "entry/src/main/ets/components/hostadd/MoonlightHostAddFlow.ets"
+      ],
+      "reviewTaskId": "/root/review_pro_ui8",
+      "reviewStatus": "PASS",
+      "validation": {
+        "testCompile": "PASS exit0; BUILD SUCCESSFUL in 10 s 12 ms",
+        "assembleHap": "PASS exit0; signed BUILD SUCCESSFUL in 11 s 541 ms; SignHap1s23",
+        "hostChecks": "15 explicit-phone + 9 phone-choice/backup + 17 existing Moonlight/VNC flow cases PASS;63click/13change/1error unchanged,10original enabled retained with one additional guard matching old callback",
+        "compliance": "Light/diff PASS",
+        "recovery": "4 identical untracked generated resource duplicates quarantined; final four-file gates rerun successfully",
+        "device": "NOT RUN; remaining inputs/other cards/proxy subform and actual fonts/keyboard/reader/Sheet/performance open",
+        "metadataGates": "PASS testCompile4s723; signed assembleHap5s908 Sign1s40; exit0;Light/diff/state PASS"
+      },
+      "reviewResult": "PASS exact a0135052..c808d95c four-file scope, no findings.202 state/business declarations,63click/13change/1imageError unchanged;10original enabled retained,extra Moonlight guard matches existing callback.15+9+17 existing checks independently PASS. Actual RDP credential/save,RustDesk phone selection,VNC danger contrast/encryption lock/confirmation and Moonlight disabled/cancel-pair/trust/save callbacks checked with platform/storage mocks. API23 compatibility,source identity,diff and current compile/signed HAP/Light evidence verified. Remaining inputs/discovery cards and actual device keyboard/Sheet/reader/performance excluded.",
+      "reviewReceiptId": "base-ui-protocol-forms-c808d95c-20260919"
     }
   },
   "remoteAiPreparation": {
@@ -1726,5 +1754,11 @@
       "M7"
     ],
     "boundary": "No effort percentage or overall device/release completion claim; UI and remote AI are additional open tracks"
+  },
+  "deviceInventory": {
+    "checked": "2026-09-19",
+    "method": "read-only hdc list targets",
+    "listedTargets": 0,
+    "scope": "No device installation or control; device acceptance not run"
   }
 }

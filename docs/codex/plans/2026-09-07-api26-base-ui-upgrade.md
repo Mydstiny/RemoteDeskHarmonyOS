@@ -1,7 +1,7 @@
 # API 26 基础版本 UI 升级与优化计划
 
 - 日期：2026-09-07。
-- 状态：前八批公共 UI 代码已提交并独立复核；第九批协议选择和 SSH 表单操作控件也已提交并独立复核。U0 基线及 API23/26 视觉、键盘、性能矩阵仍待验收，不能标记 U0-U4 完成。
+- 状态：前十批公共 UI 代码已提交并独立复核，最新覆盖四协议添加表单的操作控件。U0 基线及 API23/26 视觉、键盘、性能矩阵仍待验收，不能标记 U0-U4 完成。
 - 权益归属：基础版本免费升级，所有用户可用，不属于 Pro，不要求购买、登录、联网验单或开启模拟 Pro。
 - 关联：[总体路线图](2026-09-06-pro-product-roadmap.md)、[Pro M1/M2 实施准备](2026-09-07-pro-m1-m2-implementation.md)。
 
@@ -183,3 +183,14 @@ U1 首个代码增量：新增免费 `AppSheetHeader`，接入反馈页和 Pro �
 - 独立复核：`/root/review_pro_ui8` 复用做本次精确两文件审查，精确两文件 PASS，无待修 finding；原 M6 未提交硬化及他人审查凭据不属于本批。
 
 - 独立复核结果：PASS exact 5ddda2ce8..12f342cb two-file scope; no findings. Independently verified 38 state/business declarations and 11 click/1 change/1 error callbacks unchanged; executed 24 protocol states, all SSH actions, five invalid-input categories and four password/key save combinations using production endpoint/proxy/business code with mocked model/vault. Independently reran 49 SSH and 27 share checks; current compile/signed HAP/Light logs and API23 compatibility verified. Device, original inputs/proxy editor/Sheet scrolling and shared M6 changes excluded.
+
+
+## U2/U3 四协议表单操作第十批（2026-09-19）
+
+- `c808d95c`（基线 `a0135052`）：RDP、RustDesk、VNC、Moonlight 四个添加主机表单的 45 个文字按钮采用自然高度、最小 44vp、共享字体与主色对比色；4 个连接模式/目标设备卡片改为原生 Button 并暴露选中状态。返回按钮扩至 44vp。
+- 四文件状态/业务方法保持一致；63 个点击、13 个输入变化及 1 个图片错误回调 token 一致。原 10 个 enabled 表达式保持；Moonlight 模式卡片增加 `.enabled(enabled)`，与原回调首行拒绝禁用状态一致，不新增扫描/配对动作。VNC 危险策略沿用红色背景，对比文字按危险色计算。
+- 最终四文件门禁：testCompile `BUILD SUCCESSFUL in 10 s 12 ms`；signed assembleHap `BUILD SUCCESSFUL in 11 s 541 ms`（SignHap 1 s 23 ms），exit 0；Light/diff PASS。15 RustDesk explicit-phone + 9 目标选择/备份检查 PASS；主机运行原有 Moonlight/VNC flow 的 17 个测试用例（仅断言框架适配，业务使用生产模块）PASS。
+- 首次两文件编译被生成目录的 4 个 `string 2.json` 重复资源阻断。逐字节核对与原文件一致且 Git 未跟踪后，隔离副本并重跑成功；最终扩展四文件后重新运行两项门禁，不沿用中间两文件构建结论。
+- 精确四文件独立复核由 `/root/review_pro_ui8` 完成，PASS，无待修 finding。输入控件、其余发现/资源卡片、代理子表单及 API23/26 三端字体/键盘/读屏/滚动/性能矩阵继续待验收；没有执行实际网络扫描、配对、连接或修改网络策略。
+
+- 第十批独立复核：PASS exact a0135052..c808d95c four-file scope, no findings.202 state/business declarations,63click/13change/1imageError unchanged;10original enabled retained,extra Moonlight guard matches existing callback.15+9+17 existing checks independently PASS. Actual RDP credential/save,RustDesk phone selection,VNC danger contrast/encryption lock/confirmation and Moonlight disabled/cancel-pair/trust/save callbacks checked with platform/storage mocks. API23 compatibility,source identity,diff and current compile/signed HAP/Light evidence verified. Remaining inputs/discovery cards and actual device keyboard/Sheet/reader/performance excluded.
