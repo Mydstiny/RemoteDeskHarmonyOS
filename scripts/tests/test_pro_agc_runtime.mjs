@@ -139,10 +139,10 @@ test('AGC entry uses the platform logger only for bounded diagnostics while supp
     }
   `);
   const script = `const assert=require('node:assert/strict');
-    global.logger={info:message=>process.stdout.write(message+'\\n')};
+    const logger={info:message=>process.stdout.write(message+'\\n')};
     const handler=require('./handler.cjs');
     handler.myHandler({}, {}, reply => { assert.equal(reply.status,503);
-      handler.myWorker({}, {}, result => { assert.equal(result.result.checked,0); }); });`;
+      handler.myWorker({}, {}, result => { assert.equal(result.result.checked,0); }); }, logger);`;
   const { stdout, stderr } = await promisify(execFile)(process.execPath, ['-e', script], { cwd: directory });
   assert.equal(stderr, '');
   assert.deepEqual(stdout.trim().split('\n').map(line => JSON.parse(line)),

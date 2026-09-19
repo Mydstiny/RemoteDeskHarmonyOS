@@ -3,8 +3,11 @@
 // Each AGC function runs this dedicated deployment. The SDK may log raw error
 // objects, so suppress its console output before import. Our callbacks expose
 // only bounded business replies or fixed errors; events/secrets are never logged.
+const { AsyncLocalStorage } = require('node:async_hooks');
+const invocationLogger = new AsyncLocalStorage();
 const diagnosticLog = message => {
-  if (global.logger && typeof global.logger.info === 'function') global.logger.info(message);
+  const logger = invocationLogger.getStore();
+  if (logger && typeof logger.info === 'function') logger.info(message);
 };
 for (const method of ['log', 'info', 'debug', 'warn', 'error']) console[method] = () => {};
 let pending;
@@ -13,9 +16,9 @@ function runtime() {
     .catch(() => { pending = undefined; throw new Error('sandbox_startup_failed'); });
   return pending;
 }
-exports.myHandler = function (event, _context, callback) {
-  runtime().then(value => value.api.handle(event))
-    .then(result => callback(result), () => callback({ version: 1, status: 503, body: '{"error":"verification_unavailable"}' }));
+exports.myHandler = function (event, context, callback, logger) {
+  invocationLogger.run(logger || context?.logger || global.logger, () => runtime().then(value => value.api.handle(event))
+    .then(result => callback(result), () => callback({ version: 1, status: 503, body: '{"error":"verification_unavailable"}' })));
 };
 // Deploy as a separate function with only a timer trigger. The client function
 // never chooses a handler from event input and cannot dispatch this worker.
