@@ -1,7 +1,7 @@
 # API 26 基础版本 UI 升级与优化计划
 
 - 日期：2026-09-07。
-- 状态：前十批公共 UI 代码已提交并独立复核，最新覆盖四协议添加表单的操作控件。U0 基线及 API23/26 视觉、键盘、性能矩阵仍待验收，不能标记 U0-U4 完成。
+- 状态：2026-09-19 用户在真机上明确拒绝公共 UI 改造，当前撤回前十批对既有页面的外观/排版/动效变更。保留后续 Pro/AI/协议业务与非视觉正确性修复；历史代码复核不构成视觉验收。原外观恢复与真机确认优先，不继续扩大改造。
 - 权益归属：基础版本免费升级，所有用户可用，不属于 Pro，不要求购买、登录、联网验单或开启模拟 Pro。
 - 关联：[总体路线图](2026-09-06-pro-product-roadmap.md)、[Pro M1/M2 实施准备](2026-09-07-pro-m1-m2-implementation.md)。
 
@@ -194,3 +194,11 @@ U1 首个代码增量：新增免费 `AppSheetHeader`，接入反馈页和 Pro �
 - 精确四文件独立复核由 `/root/review_pro_ui8` 完成，PASS，无待修 finding。输入控件、其余发现/资源卡片、代理子表单及 API23/26 三端字体/键盘/读屏/滚动/性能矩阵继续待验收；没有执行实际网络扫描、配对、连接或修改网络策略。
 
 - 第十批独立复核：PASS exact a0135052..c808d95c four-file scope, no findings.202 state/business declarations,63click/13change/1imageError unchanged;10original enabled retained,extra Moonlight guard matches existing callback.15+9+17 existing checks independently PASS. Actual RDP credential/save,RustDesk phone selection,VNC danger contrast/encryption lock/confirmation and Moonlight disabled/cancel-pair/trust/save callbacks checked with platform/storage mocks. API23 compatibility,source identity,diff and current compile/signed HAP/Light evidence verified. Remaining inputs/discovery cards and actual device keyboard/Sheet/reader/performance excluded.
+
+## 16. 用户反馈后的恢复边界（2026-09-19）
+
+安装用于 Pro 沙盒购买测试的 Debug 包时，包含了前十批未经设备视觉验收的公共 UI 改动。用户报告整体方正、排版和动画变化，因此撤回这些既有页面的视觉改造。不能把构建/业务回调相同等同于外观保持不变。
+
+采用逐提交 UI hunks 反向恢复，禁止整文件回到旧版本而丢掉新业务。保留新 AI 页面使用的公共组件、购买/图标生命周期、沙盒入口、SSH 分享/接续、RDP 接续和 RustDesk phoneChoiceVersion。保留 HdsTabs.scrollable(false)、色板及色相条实测坐标和无效触点保护、40vp Moonlight 固定操作区预算。旧页面恢复原圆角、Grid/固定布局和已有展开动画连接；Theme.ets 未改动。
+
+实际视觉验收仍须在保留数据覆盖安装后确认，尚不宣称所有设备的视觉/动效已通过。后续 UI 工作不得继续整体换样式。

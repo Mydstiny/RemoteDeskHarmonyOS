@@ -3,14 +3,15 @@
   "task": "pro-purchase-foundation",
   "branch": "codex/pro-purchase-foundation",
   "base": "8edc187868e94ed41634e8a6c4c4c072e3a48679",
-  "head": "c808d95cc6cb12eae24a4e48a38363b68a9d23e6",
-  "phase": "Full roadmap active; M6 USB library capability probe independently reviewed; hardware/RDPEWA/PIN acceptance remains open",
+  "head": "7f73d3376c694aa4e54223bc115ba24ffeea750b",
+  "phase": "Original UI restored and simulation crash fixed; real sandbox payment succeeded, backend order verification under repair",
   "status": "in-progress",
-  "next": "Continue remaining local forms; validate USB on approved hardware before RDPEWA/session/PIN integration. Cloud deployment, live pairing and real payment remain deferred.",
+  "next": "Deploy independently reviewed bounded diagnostics; repair actual order verification, then signed activation/manual delivery/restart/restore/refund tests.",
   "blockers": [
+    "Real sandbox payment and order restore succeeded, but trusted reconciliation has not activated Pro; ledger has an unbound intent and no granted order. Backend diagnosis in progress.",
     "M3/U0-U4 device matrix and M4 PC real Share Kit/SFTP file-integrity acceptance remain unverified.",
     "M5 Share Kit App Linking domain, association and actual fragment delivery remain unverified; ServiceInteraction ACL is a separate path. M6 USB/RDP authenticator and phone-passkey RP/origin proof remain pending.",
-    "M7 native cloud entry and AGC package independently PASS. Upload consent/browser file access, full AGC deployment, notification endpoint and real device purchase/refund remain open."
+    "M7 API/worker now deployed and console smoke passed; native SDK authorization, real sandbox purchase/restore/refund and notification endpoint remain open. AGC numeric-version publication reports unknown error; worker timer stays disabled; initial acceptance uses manual execution."
   ],
   "planPaths": [
     "docs/codex/plans/2026-09-06-pro-purchase-foundation.md",
@@ -213,25 +214,21 @@
       "entry/src/main/ets/components/hostadd/RdpAddFlow.ets",
       "entry/src/main/ets/components/hostadd/RustDeskAddFlow.ets",
       "entry/src/main/ets/components/hostadd/VncAddFlow.ets",
-      "entry/src/main/ets/components/hostadd/MoonlightHostAddFlow.ets"
+      "entry/src/main/ets/components/hostadd/MoonlightHostAddFlow.ets",
+      "scripts/tests/test_pro_backend_configuration.cjs"
     ],
     "findings": [],
     "reviewedHead": "13413239bd7475539ade4deaae522a3d6a2e753e",
-    "reason": "New M6 real-library USB probe, dependency/provenance and Release gates need independent exact-checkpoint review; previous M5 and M6 INIT scoped PASS facts remain historical."
+    "reason": "Latest public UI restoration needs independent exact-checkpoint review; prior scoped receipts remain historical."
   },
   "lastVerification": {
-    "testCompile": "PASS exit 0; BUILD SUCCESSFUL in 4 s 909 ms",
-    "assembleHap": "PASS exit 0; signed BUILD SUCCESSFUL in 1 min 3 s 383 ms; SignHap 877 ms",
-    "release": "PASS exit 0; BUILD SUCCESSFUL in 32 s 723 ms; SignHap 949 ms; independent actual Runtime/simulation/USB/sandbox pruning PASS",
-    "releaseAbcSha256": "54043c4f4eb725ea4a0f38c3de5e9af7cb1eaf005482c2b0cb6830cb87f3df31",
-    "hostChecks": "Independent 145 original checks, ten actual routing/handoff groups and 100 SSH V1 parent/current comparisons PASS; platform calls mocked.",
-    "native": "Independent production pending/apply/presented/canvas three-thread pipeline 2084838 observations, coherent viewport snapshot 9632 observations and three swap boundaries PASS; actual OHOS dual ABI syntax and ARM64 five-function dmb checks PASS. Host stress is not weak-memory or device proof.",
-    "compliance": "PASS independent Light and exact diff",
-    "recovery": "Initial cache EPERM resolved with approved access; first signed build encountered concurrent Rust declaration edit, owner corrected it before successful rerun.",
-    "reviewRecordGates": "PASS testCompile 5 s 349 ms; signed assembleHap 6 s 198 ms, SignHap 942 ms; Light/diff/state PASS. Byte-identical generated string 2.json copies in four resource locales were removed after resource-conflict failures; application resources were unchanged.",
-    "sourceIntegrity": "Exact original 35e38224 Pro increment plus 13413239 two-file correction reviewed; all intervening phone/clipboard changes excluded.",
-    "device": "NOT RUN; actual Phone/Pad/PC system flow, EGL presentation, Windows authentication/resume and DDO receipt acceptance remain open.",
-    "scope": "M5 RDP continuation increment and its fence correction only"
+    "scope": "Current live progress records; latest server diagnostic code7f73d337 and billingc625958e independently reviewed",
+    "testCompile": "PASS exit0; BUILD SUCCESSFUL in4s906",
+    "assembleHap": "PASS exit0; signed BUILD SUCCESSFUL in5s965; SignHap917ms",
+    "hostChecks": "79server,22client, independent33server/15message-boundary checks PASS",
+    "compliance": "Light/diff PASS",
+    "device": "Builder crash reproduction fixed; original rounded UI screenshots; native sandbox lookup/account intent/payment passed; restore sees order but activation fails",
+    "release": "Prior restoredUI frozen Release pruning PASS; latest diagnostic increment is server-only, actual activation unresolved"
   },
   "updated": "2026-09-19 Asia/Shanghai",
   "roadmapPaths": [
@@ -277,10 +274,10 @@
   "baseUiPreparation": {
     "planPath": "docs/codex/plans/2026-09-07-api26-base-ui-upgrade.md",
     "entitlement": "free",
-    "status": "u1-u3-ten-increments-code-reviewed-device-pending",
+    "status": "original-ui-restored-basic-device-checks-passed",
     "codeImplemented": true,
     "reviewerTaskId": "/root/review_pro_plan",
-    "reviewResult": "Eight public UI batches independently PASS through dc19ebcf Pro panels; remaining forms and U0-U4 device/performance acceptance remain open.",
+    "reviewResult": "Exact db7665f8 22-file restoration independent PASS; basic screenshots checked; full visual/animation matrix remains open.",
     "stageCommit": "ca929ceb3c419ef0336818074c19637f96137e7b",
     "publicControls": {
       "status": "code-independently-reviewed-device-pending",
@@ -552,6 +549,37 @@
       },
       "reviewResult": "PASS exact a0135052..c808d95c four-file scope, no findings.202 state/business declarations,63click/13change/1imageError unchanged;10original enabled retained,extra Moonlight guard matches existing callback.15+9+17 existing checks independently PASS. Actual RDP credential/save,RustDesk phone selection,VNC danger contrast/encryption lock/confirmation and Moonlight disabled/cancel-pair/trust/save callbacks checked with platform/storage mocks. API23 compatibility,source identity,diff and current compile/signed HAP/Light evidence verified. Remaining inputs/discovery cards and actual device keyboard/Sheet/reader/performance excluded.",
       "reviewReceiptId": "base-ui-protocol-forms-c808d95c-20260919"
+    },
+    "restoration": {
+      "commit": "db7665f8a656a58f8a8b78bd3614848635c308ad",
+      "status": "independently-reviewed-and-installed",
+      "reviewTaskId": "/root/review_pro_ui8",
+      "scope": [
+        "entry/src/main/ets/components/AboutSettingsSheet.ets",
+        "entry/src/main/ets/components/ColorPickerSheet.ets",
+        "entry/src/main/ets/components/DiagnosticCaptureSettingsSheet.ets",
+        "entry/src/main/ets/components/FeedbackSettingsSheet.ets",
+        "entry/src/main/ets/components/ProAppIconPanel.ets",
+        "entry/src/main/ets/components/ProPurchaseSheet.ets",
+        "entry/src/main/ets/components/RemotePinchZoomSettingsSheet.ets",
+        "entry/src/main/ets/components/RemoteSessionControlBarSettingsSheet.ets",
+        "entry/src/main/ets/components/RemoteWheelDirectionSettingsSheet.ets",
+        "entry/src/main/ets/components/SecretVisibilitySettingsSheet.ets",
+        "entry/src/main/ets/components/VirtualKeyboardSettingsSheet.ets",
+        "entry/src/main/ets/components/VncSessionToolbar.ets",
+        "entry/src/main/ets/components/hostadd/HostProtocolPicker.ets",
+        "entry/src/main/ets/components/hostadd/MoonlightHostAddFlow.ets",
+        "entry/src/main/ets/components/hostadd/RdpAddFlow.ets",
+        "entry/src/main/ets/components/hostadd/RustDeskAddFlow.ets",
+        "entry/src/main/ets/components/hostadd/SshAddFlow.ets",
+        "entry/src/main/ets/components/hostadd/VncAddFlow.ets",
+        "entry/src/main/ets/components/moonlight/MoonlightSessionToolbar.ets",
+        "entry/src/main/ets/components/vnc/VncSheetScaffold.ets",
+        "entry/src/main/ets/pages/HostListPage.ets",
+        "entry/src/main/ets/services/RemoteSessionTopBarPolicy.ets"
+      ],
+      "preserved": "Existing Pro/AI/protocol business, six shared UI modules, tab child gestures, measured color coordinates, Moonlight fixed-action budget",
+      "device": "HDC screenshots confirm rounded home/settings/add-host sheet and no search overlap. Full animation/device matrix unverified."
     }
   },
   "remoteAiPreparation": {
@@ -1179,7 +1207,7 @@
       }
     },
     "m7": {
-      "status": "package-independently-reviewed-awaiting-deployment",
+      "status": "sandbox-deployed-purchase-testing-interrupted-for-ui-restoration",
       "scope": "Trusted Huawei protocol, immutable owner binding, persistent order ledger, atomic signed-state snapshot and delivery outbox",
       "planPath": "docs/codex/plans/2026-09-07-pro-m7-trusted-purchase.md",
       "reviewStatus": "PASS",
@@ -1192,7 +1220,7 @@
       ],
       "hostChecks": "30 PASS; 17 ledger checks independently PASS",
       "productionSaleEnabled": false,
-      "deployment": "Runtime probe live; complete reviewed API/worker package ready but not uploaded; private-data transfer consent and browser file access pending",
+      "deployment": "Protected API and timer-only worker deployed; native account session, sandbox product and payment passed. Actual signed activation failing; bounded diagnostics increment under review.",
       "agcSandbox": {
         "productId": "RemoteDesktop_Pro_Test",
         "productType": "nonconsumable",
@@ -1239,7 +1267,7 @@
       "sandboxInfrastructure": {
         "function": "remotedesk-pro-sandbox",
         "runtime": "Node 22.23.2 Linux x64",
-        "deployedCode": "runtime probe only; purchase disabled",
+        "deployedCode": "Full API and worker package; original runtime probe preserved",
         "cloudDatabase": {
           "zone": "ProSandbox",
           "model": "ProLedgerRecord",
@@ -1250,7 +1278,7 @@
           "controlRecord": "Control-only real SDK snapshot and 4 concurrent transactions PASS; 0 business records"
         },
         "managedSdkCredentialAvailable": false,
-        "completeDeployment": false,
+        "completeDeployment": true,
         "projectSdkCredential": "Project-only Development API client; private deployment configuration; actual SDK empty-zone read PASS",
         "oauthClient": "Existing application OAuth credential privately retained and official client-credentials endpoint returned HTTP 200; actual native user-code exchange pending",
         "cloudEntry": "Native Cloud Foundation SDK with protected client gateway; implementation independently reviewed, fixed function identity still blank pending deployment"
@@ -1350,8 +1378,52 @@
           "gateCoordination": "Package fix sources frozen before the current shared Remote-AI documentation build and matched afterward; final logs independently verified",
           "scopeBoundary": "Deployment packaging and local Linux/control-only checks; no actual full AGC deployment, native user-code exchange or real IAP acceptance"
         },
-        "findings": []
+        "findings": [],
+        "deployment20260919": {
+          "pkixCommit": "066b738fc7db54efe4cfe231b52f5e2dae2228e7",
+          "clientCommit": "db98101914d09a0a9537a79fe807caee4105dc87",
+          "packageSha256": "d367573fbd45fa463ad6fc480ba28237cb15a9b46a63651a2c6ce246f005f5fb",
+          "bytes": 4635042,
+          "api": "remotedesk-pro-sandbox-api",
+          "apiEntry": "handler.myHandler",
+          "apiAuthentication": "Client API authentication, POST, decode true",
+          "worker": "remotedesk-pro-sandbox-worker",
+          "workerEntry": "handler.myWorker",
+          "workerTimerEnabled": false,
+          "apiConsoleSmoke": "PASS business 401 account_login_required",
+          "workerConsoleSmoke": "PASS status200 checked0 successful0 busyfalse",
+          "numericVersion": "AGC publish unknown error twice; explicit Debug sandbox uses $latest",
+          "device": "API26 Mate 80 Pro Max; preserve-data Debug installation succeeded; purchase/auth testing pending",
+          "evidence": "docs/codex/archive/2026-09/2026-09-19-pro-m7-sandbox-deployment.md"
+        }
+      },
+      "devicePurchaseAcceptance": {
+        "date": "2026-09-19",
+        "debugTrust": "Existing public signing fingerprint added in AGC with explicit user approval",
+        "sandboxProduct": "PASS actual isSandboxActivated/queryProducts",
+        "accountSessionAndIntent": "PASS checkout reached after native authorization and server intent",
+        "payment": "User confirmed successful no-charge sandbox purchase",
+        "restore": "Actual query finds order; activation false",
+        "ledger": "Read-only count: one unbound intent and one control, no order",
+        "workerTimer": "DISABLED",
+        "remaining": "Repair verification, verify signed activation, manual delivery, restart/restore and refund"
+      },
+      "diagnostics": {
+        "commit": "7f73d3376c694aa4e54223bc115ba24ffeea750b",
+        "reviewTaskId": "/root/review_pro_plan",
+        "reviewStatus": "PASS exact5-file and ZIP",
+        "packageSha256": "f07679c94ba802ff586b380990f28eedfcd31209deb64e232fb050807b24b2fd",
+        "privateIdentity": "Eight files byte-identical to authorized previous deployment",
+        "deployment": "NOT COMPLETE; portal login expired before submission, user sign-in requested"
       }
+    },
+    "simulationCrash": {
+      "commit": "ad3c1a206ffe41c7ffec327eebf24fc6381124a1",
+      "reviewTaskId": "/root/review_pro_ui8",
+      "status": "PASS scoped code and actual device reproduction retest",
+      "rootCause": "Direct BuilderParam callbacks rebound parent builders to ProFeatureGate; use parent-capturing closures in three controls",
+      "device": "Real/free/Pro/real transitions without process restart or crash",
+      "verification": "Generated ArkUI binding tests; compile13s860/signed12s093/Light/diff PASS"
     }
   },
   "videoRepair": {
@@ -1635,17 +1707,7 @@
     "scope": "M6 Debug INIT/GetInfo library capability probe only; independent checkpoint review pending",
     "metadataGates": "PASS testCompile BUILD SUCCESSFUL in 4 s 940 ms; signed assembleHap BUILD SUCCESSFUL in 5 s 928 ms; SignHap 881 ms; both exit 0."
   },
-  "executionBoundary": {
-    "updated": "2026-09-08 Asia/Shanghai",
-    "request": "Continue the Pro plan while skipping work with network security risk.",
-    "currentScope": "Local development, builds, regression tests and independent review. Preserve authentication, encryption and all security gates.",
-    "deferred": [
-      "Cloud deployment and secret-bearing package upload",
-      "Public notification endpoints and App Linking rollout",
-      "Real purchase/refund and production enablement",
-      "Live LAN/cross-network pairing, relay deployment and network configuration changes"
-    ]
-  },
+  "executionBoundary": "User authorized real sandbox purchase/authentication and HDC UI control. Original visual design restored. Security-key tests excluded; worker scheduling disabled; authentication and signature validation retained.",
   "vncUpdateRepair": {
     "status": "code-complete-reviewed-peer-acceptance-pending",
     "commits": [
@@ -1757,8 +1819,8 @@
   },
   "deviceInventory": {
     "checked": "2026-09-19",
-    "method": "read-only hdc list targets",
-    "listedTargets": 0,
-    "scope": "No device installation or control; device acceptance not run"
+    "method": "User-authorized HDC screenshot/click/log/install",
+    "listedTargets": 1,
+    "scope": "API26 Mate 80 Pro Max; preserve-data Debug install, simulation crash retest, native sandbox product and payment; signed activation not yet passing"
   }
 }
