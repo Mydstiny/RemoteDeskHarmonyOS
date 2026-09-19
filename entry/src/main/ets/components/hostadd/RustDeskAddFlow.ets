@@ -1,4 +1,6 @@
-import { Palette, buildDark, buildLight } from '../../common/Theme';
+import { AppUiMetrics } from '../../common/AppUiMetrics';
+import { appUiButtonFill, appUiButtonText } from '../../common/AppUiColorPolicy';
+import { AppConfig, Palette, buildDark, buildLight } from '../../common/Theme';
 import { RemoteHost } from '../../model/RemoteHost';
 import { RustDeskRelayConfig } from '../../model/RustDeskRelayConfig';
 import { DiscoveredRustDeskPeer } from '../../services/RustDeskLanDiscoveryService';
@@ -191,7 +193,8 @@ export struct RustDeskAddFlow {
   @Builder private header() {
     Row() {
       Button() { SymbolGlyph($r('sys.symbol.chevron_left')).fontSize(18).fontColor([this.pal().text2]) }
-        .width(36).height(36).borderRadius(18).padding(0).backgroundColor(this.pal().surface)
+        .width(AppUiMetrics.minTouchTarget).height(AppUiMetrics.minTouchTarget).borderRadius(22)
+        .focusable(true).accessibilityText(this.step === 1 ? '返回协议选择' : '返回上一步').padding(0).backgroundColor(this.pal().surface)
         .onClick((): void => { if (this.step === 1) { this.onBackToProtocols(); } else { this.step--; } })
       Column() {
         Text('添加 RustDesk 主机').fontSize(20).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
@@ -202,30 +205,40 @@ export struct RustDeskAddFlow {
   }
 
   @Builder private modeButton(title: string, subtitle: string, directMode: boolean) {
-    Column() {
-      Text(title).fontSize(15).fontWeight(FontWeight.Medium)
-        .fontColor(this.direct === directMode ? Color.White : this.pal().text)
-      Text(subtitle).fontSize(11)
-        .fontColor(this.direct === directMode ? '#DDEEFF' : this.pal().text3).margin({ top: 4 })
-    }.alignItems(HorizontalAlign.Start).layoutWeight(1).padding(14).borderRadius(12)
-    .backgroundColor(this.direct === directMode ? this.accentColor : this.pal().surface)
+    Button({ type: ButtonType.Normal }) {
+      Column() {
+        Text(title).fontFamily(AppConfig.fontFamily).fontSize(15).fontWeight(FontWeight.Medium)
+          .fontColor(this.direct === directMode ? appUiButtonText(this.accentColor) : this.pal().text)
+        Text(subtitle).fontFamily(AppConfig.fontFamily).fontSize(11)
+          .fontColor(this.direct === directMode ? appUiButtonText(this.accentColor) : this.pal().text3).margin({ top: 4 })
+      }.alignItems(HorizontalAlign.Start).width('100%')
+    }.layoutWeight(1).constraintSize({ minHeight: AppUiMetrics.minTouchTarget })
+      .padding(14).borderRadius(12)
+      .focusable(true).accessibilityText(title + '，' + subtitle).accessibilitySelected(this.direct === directMode)
+    .backgroundColor(this.direct === directMode ? appUiButtonFill(this.accentColor) : this.pal().surface)
     .onClick((): void => { this.direct = directMode; })
   }
 
+
   @Builder private targetButton(title: string, subtitle: string, target: RustDeskTargetDevice) {
-    Column() {
-      Text(title).fontSize(14).fontWeight(FontWeight.Medium)
-        .fontColor(this.targetDevice === target ? Color.White : this.pal().text)
-      Text(subtitle).fontSize(11)
-        .fontColor(this.targetDevice === target ? '#DDEEFF' : this.pal().text3).margin({ top: 4 })
-    }.alignItems(HorizontalAlign.Start).layoutWeight(1).padding(12).borderRadius(10)
-      .backgroundColor(this.targetDevice === target ? this.accentColor : this.pal().surface)
+    Button({ type: ButtonType.Normal }) {
+      Column() {
+        Text(title).fontFamily(AppConfig.fontFamily).fontSize(14).fontWeight(FontWeight.Medium)
+          .fontColor(this.targetDevice === target ? appUiButtonText(this.accentColor) : this.pal().text)
+        Text(subtitle).fontFamily(AppConfig.fontFamily).fontSize(11)
+          .fontColor(this.targetDevice === target ? appUiButtonText(this.accentColor) : this.pal().text3).margin({ top: 4 })
+      }.alignItems(HorizontalAlign.Start).width('100%')
+    }.layoutWeight(1).constraintSize({ minHeight: AppUiMetrics.minTouchTarget })
+      .padding(12).borderRadius(10)
+      .focusable(true).accessibilityText(title + '，' + subtitle).accessibilitySelected(this.targetDevice === target)
+      .backgroundColor(this.targetDevice === target ? appUiButtonFill(this.accentColor) : this.pal().surface)
       .onClick((): void => {
         this.targetDevice = target;
         this.phoneChoiceVersion = target === 'phone' ? 1 : 0;
         if (target === 'computer') { this.adaptiveOrientation = false; }
       })
   }
+
 
   @Builder private addressPolicyChoice() {
     Text('局域网地址策略（必选）').fontSize(12).fontColor(this.pal().text2)
@@ -265,8 +278,12 @@ export struct RustDeskAddFlow {
           if (this.relays.length === 0) {
             Text('还没有中继服务器，请先到中继目录添加。').fontSize(13).fontColor(this.pal().text3)
               .width('100%').textAlign(TextAlign.Center).padding(18)
-            Button('前往中继目录').width('100%').height(40).borderRadius(10)
-              .backgroundColor(this.pal().surface).fontColor(this.accentColor)
+            Button({ type: ButtonType.Normal }) {
+              Text('前往中继目录').fontSize(14).fontFamily(AppConfig.fontFamily)
+                .fontColor(this.accentColor).textAlign(TextAlign.Center)
+            }.width('100%').constraintSize({ minHeight: AppUiMetrics.minTouchTarget })
+              .padding({ left: 12, right: 12, top: 10, bottom: 10 }).focusable(true).borderRadius(10)
+              .backgroundColor(this.pal().surface)
               .onClick((): void => { this.manageRelays(); })
           } else {
             ForEach(this.relays, (relay: RustDeskRelayConfig) => {
@@ -280,22 +297,34 @@ export struct RustDeskAddFlow {
               }.width('100%').padding(12).borderRadius(10).backgroundColor(this.pal().surface).margin({ bottom: 7 })
               .onClick((): void => { this.relayId = relay.id; })
             }, (relay: RustDeskRelayConfig): string => relay.id + ':' + relay.updatedAt.toString())
-            Button('管理中继服务器').width('100%').height(36).borderRadius(9)
-              .backgroundColor(this.pal().surface).fontColor(this.accentColor)
+            Button({ type: ButtonType.Normal }) {
+              Text('管理中继服务器').fontSize(14).fontFamily(AppConfig.fontFamily)
+                .fontColor(this.accentColor).textAlign(TextAlign.Center)
+            }.width('100%').constraintSize({ minHeight: AppUiMetrics.minTouchTarget })
+              .padding({ left: 12, right: 12, top: 10, bottom: 10 }).focusable(true).borderRadius(9)
+              .backgroundColor(this.pal().surface)
               .onClick((): void => { this.manageRelays(); })
           }
         } else {
           Text('直连仅支持设备密码，不能请求被控端批准。').fontSize(12).fontColor(this.pal().danger)
             .width('100%').margin({ bottom: 12 })
           Row() {
-            Button('手动配置').layoutWeight(1).height(38).borderRadius(10)
-              .backgroundColor(!this.useLan ? this.accentColor : this.pal().surface)
-              .fontColor(!this.useLan ? Color.White : this.pal().text2).onClick((): void => {
+            Button({ type: ButtonType.Normal }) {
+              Text('手动配置').fontSize(14).fontFamily(AppConfig.fontFamily)
+                .fontColor(!this.useLan ? appUiButtonText(this.accentColor) : this.pal().text2).textAlign(TextAlign.Center)
+            }.layoutWeight(1).constraintSize({ minHeight: AppUiMetrics.minTouchTarget })
+              .padding({ left: 12, right: 12, top: 10, bottom: 10 }).focusable(true).borderRadius(10)
+              .backgroundColor(!this.useLan ? appUiButtonFill(this.accentColor) : this.pal().surface).accessibilitySelected(!this.useLan)
+              .onClick((): void => {
                 this.useLan = false; this.selectedLanPeerId = ''; this.lanAddressMode = '';
               })
-            Button('局域网搜索').layoutWeight(1).height(38).borderRadius(10).margin({ left: 8 })
-              .backgroundColor(this.useLan ? this.accentColor : this.pal().surface)
-              .fontColor(this.useLan ? Color.White : this.pal().text2).onClick((): void => {
+            Button({ type: ButtonType.Normal }) {
+              Text('局域网搜索').fontSize(14).fontFamily(AppConfig.fontFamily)
+                .fontColor(this.useLan ? appUiButtonText(this.accentColor) : this.pal().text2).textAlign(TextAlign.Center)
+            }.layoutWeight(1).constraintSize({ minHeight: AppUiMetrics.minTouchTarget })
+              .padding({ left: 12, right: 12, top: 10, bottom: 10 }).focusable(true).borderRadius(10).margin({ left: 8 })
+              .backgroundColor(this.useLan ? appUiButtonFill(this.accentColor) : this.pal().surface).accessibilitySelected(this.useLan)
+              .onClick((): void => {
                 this.useLan = true; this.selectedLanPeerId = ''; this.lanAddressMode = ''; this.onStartLanScan();
               })
           }.width('100%').margin({ bottom: 10 })
@@ -332,8 +361,12 @@ export struct RustDeskAddFlow {
             }, (peer: DiscoveredRustDeskPeer): string => peer.peerId)
           }
         }
-        Button('下一步').width('100%').height(44).borderRadius(12).margin({ top: 10 })
-          .backgroundColor(this.accentColor).fontColor(Color.White).onClick((): void => {
+        Button({ type: ButtonType.Normal }) {
+          Text('下一步').fontSize(14).fontFamily(AppConfig.fontFamily)
+            .fontColor(appUiButtonText(this.accentColor)).textAlign(TextAlign.Center)
+        }.width('100%').constraintSize({ minHeight: AppUiMetrics.minTouchTarget })
+          .padding({ left: 12, right: 12, top: 10, bottom: 10 }).focusable(true).borderRadius(12).margin({ top: 10 })
+          .backgroundColor(appUiButtonFill(this.accentColor)).onClick((): void => {
             if (!this.direct && this.selectedRelay() === undefined) { this.errorText = '请选择中继服务器'; return; }
             if (this.direct && this.useLan && this.selectedLanPeerId === '') {
               this.errorText = '请先选择一台已发现的设备'; return;
@@ -379,12 +412,20 @@ export struct RustDeskAddFlow {
           this.direct ? '直连必须填写' : '留空时连接前选择密码或请求批准',
           (v: string): void => { this.password = v; }, true)
         Row() {
-          Button('一次性密码').layoutWeight(1).height(36).borderRadius(9)
-            .backgroundColor(this.passwordMode === 0 ? this.accentColor : this.pal().surface)
-            .fontColor(this.passwordMode === 0 ? Color.White : this.pal().text2).onClick((): void => { this.passwordMode = 0; })
-          Button('永久密码').layoutWeight(1).height(36).borderRadius(9).margin({ left: 8 })
-            .backgroundColor(this.passwordMode === 1 ? this.accentColor : this.pal().surface)
-            .fontColor(this.passwordMode === 1 ? Color.White : this.pal().text2).onClick((): void => { this.passwordMode = 1; })
+          Button({ type: ButtonType.Normal }) {
+            Text('一次性密码').fontSize(14).fontFamily(AppConfig.fontFamily)
+              .fontColor(this.passwordMode === 0 ? appUiButtonText(this.accentColor) : this.pal().text2).textAlign(TextAlign.Center)
+          }.layoutWeight(1).constraintSize({ minHeight: AppUiMetrics.minTouchTarget })
+            .padding({ left: 12, right: 12, top: 10, bottom: 10 }).focusable(true).borderRadius(9)
+            .backgroundColor(this.passwordMode === 0 ? appUiButtonFill(this.accentColor) : this.pal().surface).accessibilitySelected(this.passwordMode === 0)
+            .onClick((): void => { this.passwordMode = 0; })
+          Button({ type: ButtonType.Normal }) {
+            Text('永久密码').fontSize(14).fontFamily(AppConfig.fontFamily)
+              .fontColor(this.passwordMode === 1 ? appUiButtonText(this.accentColor) : this.pal().text2).textAlign(TextAlign.Center)
+          }.layoutWeight(1).constraintSize({ minHeight: AppUiMetrics.minTouchTarget })
+            .padding({ left: 12, right: 12, top: 10, bottom: 10 }).focusable(true).borderRadius(9).margin({ left: 8 })
+            .backgroundColor(this.passwordMode === 1 ? appUiButtonFill(this.accentColor) : this.pal().surface).accessibilitySelected(this.passwordMode === 1)
+            .onClick((): void => { this.passwordMode = 1; })
         }.width('100%').margin({ bottom: 14 })
         Column({ space: 6 }) {
           Row() {
@@ -413,10 +454,18 @@ export struct RustDeskAddFlow {
           }
         }.width('100%').margin({ bottom: 14 })
         Row() {
-          Button('保存').layoutWeight(1).height(44).borderRadius(12).backgroundColor(this.pal().surface)
-            .fontColor(this.accentColor).onClick((): void => { const host = this.buildHost(); if (host) { this.onSave(host, false); } })
-          Button('保存并连接').layoutWeight(1).height(44).borderRadius(12).margin({ left: 8 })
-            .backgroundColor(this.accentColor).fontColor(Color.White)
+          Button({ type: ButtonType.Normal }) {
+            Text('保存').fontSize(14).fontFamily(AppConfig.fontFamily)
+              .fontColor(this.accentColor).textAlign(TextAlign.Center)
+          }.layoutWeight(1).constraintSize({ minHeight: AppUiMetrics.minTouchTarget })
+            .padding({ left: 12, right: 12, top: 10, bottom: 10 }).focusable(true).borderRadius(12).backgroundColor(this.pal().surface)
+            .onClick((): void => { const host = this.buildHost(); if (host) { this.onSave(host, false); } })
+          Button({ type: ButtonType.Normal }) {
+            Text('保存并连接').fontSize(14).fontFamily(AppConfig.fontFamily)
+              .fontColor(appUiButtonText(this.accentColor)).textAlign(TextAlign.Center)
+          }.layoutWeight(1).constraintSize({ minHeight: AppUiMetrics.minTouchTarget })
+            .padding({ left: 12, right: 12, top: 10, bottom: 10 }).focusable(true).borderRadius(12).margin({ left: 8 })
+            .backgroundColor(appUiButtonFill(this.accentColor))
             .onClick((): void => { const host = this.buildHost(); if (host) { this.onSave(host, true); } })
         }.width('100%')
       }
