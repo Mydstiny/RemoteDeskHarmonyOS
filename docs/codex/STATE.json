@@ -4,11 +4,11 @@
   "branch": "codex/pro-purchase-foundation",
   "base": "8edc187868e94ed41634e8a6c4c4c072e3a48679",
   "head": "1c466f3956fe133da9fd0b8b6879564736b1b2d5",
-  "phase": "Sandbox core flow passed; delivered-order refund route reviewed; AGC login expired before deployment",
+  "phase": "Refund-route API deployed and actual Huawei refund page opened; awaiting user submission",
   "status": "in-progress",
-  "next": "Restore AGC login, deploy reviewed refund-route package, then actual Huawei refund/revocation/restart tests; USB and second sandbox account needed for offline/cross-account.",
+  "next": "User submits sandbox refund in Huawei UI; verify vendor revocation, ledger revision, signed client denial and restart. Offline/cross-account still need USB and second sandbox account.",
   "blockers": [
-    "AGC session expired during package selection; refund-route deployment NOT confirmed. New Debug installed preserving data. Actual refund, offline and cross-account remain open; USB and second sandbox account unavailable.",
+    "Actual Huawei refund reason/submission UI is open; final submission belongs to user. Refund revocation/restart not yet accepted. Offline/cross-account still lack USB and second sandbox account.",
     "M3/U0-U4 device matrix and M4 PC real Share Kit/SFTP file-integrity acceptance remain unverified.",
     "M5 Share Kit App Linking domain, association and actual fragment delivery remain unverified; ServiceInteraction ACL is a separate path. M6 USB/RDP authenticator and phone-passkey RP/origin proof remain pending.",
     "Sandbox core device flow passed. Numeric-version publication, notification endpoint and formal merchant/product release remain open; worker timer disabled."
@@ -228,8 +228,8 @@
     "release": "PASS exit0 signed BUILD SUCCESSFUL in22s815; SignHap846ms",
     "hostChecks": "93 server +54 client PASS; independent92 +3 boundaries PASS",
     "compliance": "Light/diff PASS",
-    "device": "0a4f updated client started with preserved original UI/data and restored signed real sandbox grant;46bb native history still no unique order;1c466 Debug preserve-data installed. Refund route not yet deployed.",
-    "progressRecordGates": "PASS compile 4 s 877 ms; signed assembleHap5s774 Sign872ms; Light/diff PASS"
+    "device": "New1c466f39 Debug launched with original rounded UI and preserved host counts; DEBUG real mode selected, native ALL omitted delivered order, authenticated ledger fallback opened Huawei refund reason UI at20:57. Before submission ledger six rows, one finished nonrevoked order, revision1 active1 pending0 attempts1.",
+    "progressRecordGates": "PASS compile 5 s 25 ms; signed assembleHap5s898 Sign930ms; Light/diff PASS. Initial duplicate generated-resource failure resolved by quarantining four byte-identical copies."
   },
   "updated": "2026-09-19 Asia/Shanghai",
   "roadmapPaths": [
@@ -1413,7 +1413,8 @@
         "failure": "RESOLVED: precise leaf/root CRL HTTPS mappings and CloudDB backoff/fenced batch lookup; full certificate and revocation verification preserved",
         "restart": "PASS real-mode sandbox Pro active after force-stop/start; production remains free until explicit Debug sandbox selection",
         "manualDelivery": "PASS one actual order finished; pendingfalse attempts1",
-        "finalGates": "90server; compile4s958/signed5s945 Sign950ms; Light/diff PASS; independent scoped reviews PASS"
+        "finalGates": "90server; compile4s958/signed5s945 Sign950ms; Light/diff PASS; independent scoped reviews PASS",
+        "refundEntry": "PASS actual authenticated lookup and native Huawei refund reason UI opened; final refund submission pending user"
       },
       "diagnostics": {
         "commit": "6975799b14a9dd7d0bc8501a63160091293d00b3",
@@ -1425,7 +1426,7 @@
       },
       "refundRoute": {
         "commit": "1c466f3956fe133da9fd0b8b6879564736b1b2d5",
-        "status": "reviewed-installed-awaiting-agc-login",
+        "status": "api-deployed-device-refund-ui-open",
         "reviewTaskId": "/root/review_pro_plan",
         "reviewStatus": "PASS",
         "cause": "API26 queryPurchases documentation at lines1435-1436 excludes delivered sandbox non-consumables; ALL query did not recover the real delivered order.",
@@ -1440,13 +1441,23 @@
           "compliance": "Light and diff PASS",
           "package": "851 public source files;8 same authorized private inputs; Linux Node22 cold-start PASS; forged refund-order session401",
           "releasePruning": "PASS both ABI/sandbox/simulation/USB gates; ProAppRuntime refundOrder rejects unconditionally; client refundOrder constant-true rejection precedes transport (unreachable async body remains).",
-          "recordGates": "PASS compile 4 s 877 ms; signed assembleHap5s774 Sign872ms; Light/diff PASS"
+          "recordGates": "PASS compile 4 s 877 ms; signed assembleHap5s774 Sign872ms; Light/diff PASS",
+          "liveDeploymentRecordGates": "PASS compile 5 s 25 ms; signed assembleHap5s898 Sign930ms; Light/diff PASS. Initial duplicate generated-resource failure resolved by quarantining four byte-identical copies."
         },
         "packageSha256": "88b910e2b6976e6f23685bda0f56db67093c0782b7ca28ac086c6f387de9cb6a",
         "debugHapSha256": "b0fb8d9dfca51e136fd202e9bbbc857032b5aef950550450b0108352511ee7ba",
-        "device": "0a4f updated client started with preserved original UI/data and restored signed real sandbox grant;46bb native history still no unique order;1c466 Debug preserve-data installed. Refund route not yet deployed. Latest launch again returned10106102 after automatic screen lock; do not disable device lock.",
+        "device": "New1c466f39 Debug launched with original rounded UI and preserved host counts; DEBUG real mode selected, native ALL omitted delivered order, authenticated ledger fallback opened Huawei refund reason UI at20:57. Before submission ledger six rows, one finished nonrevoked order, revision1 active1 pending0 attempts1.",
         "boundary": "Worker timer and formal checkout OFF; no full-plan or refund acceptance claim.",
-        "releaseAbcSha256": "3b7dc1ef9841ebf0059e8700582b0658120cab62e39731dace4fb03200af301e"
+        "releaseAbcSha256": "3b7dc1ef9841ebf0059e8700582b0658120cab62e39731dace4fb03200af301e",
+        "deployment": {
+          "function": "remotedesk-pro-sandbox-api",
+          "consoleUpdatedAt": "2026-09-19 20:30:10 Asia/Shanghai",
+          "version": "$latest",
+          "verified": "Actual AGC refund-order probe rejects forged session with business401 account_login_required; device authenticated lookup opens Huawei refund UI",
+          "packageSha256": "88b910e2b6976e6f23685bda0f56db67093c0782b7ca28ac086c6f387de9cb6a",
+          "worker": "Previous reviewed package retained; no worker behavior changed, timer OFF",
+          "uploadIssue": "Initial submission updated function. Later repeated submissions returned121080 StorageInfo param error; refreshed console timestamp and actual new-route execution confirmed deployed code. No further repeat uploads."
+        }
       }
     },
     "simulationCrash": {

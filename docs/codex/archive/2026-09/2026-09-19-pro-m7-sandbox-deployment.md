@@ -131,3 +131,11 @@
   "device": "0a4f updated client started with preserved original UI/data and restored signed real sandbox grant;46bb native history still no unique order;1c466 Debug preserve-data installed. Refund route not yet deployed.",
   "boundary": "Worker timer and formal checkout OFF; no full-plan or refund acceptance claim."
 }
+
+## Refund-route deployment and real UI entry
+
+- API updated at20:30:10 Asia/Shanghai with package88b910e2b6976e6f23685bda0f56db67093c0782b7ca28ac086c6f387de9cb6a; actual refund-order forged-session console probe401 account_login_required. Worker previous package retained; timerOFF.
+- A stale UI after first submission led to repeated submissions; later requests returned HTTP400/code121080 StorageInfo param error. Reloaded console timestamp plus actual new-route execution confirmed the initial update, so retries stopped. One browser call stalled about19minutes; no security/network configuration changed.
+- New1c466f39 Debug launched preserving original rounded UI/data. At20:57, native empty-history fallback successfully opened Huawei refund reason/Submit screen for the existing delivered sandbox order. Final submission handed to user; no agent refund submission or local entitlement change.
+- Pre-submission ledger: six rows, one order active/nonrevoked/finished/pendingfalse/attempts1; account revision1 total1 active1 pending0. Refund/revocation/restart acceptance pending.
+- Record gates: PASS compile 5 s 25 ms; signed assembleHap5s898 Sign930ms; Light/diff PASS. Initial duplicate generated-resource failure resolved by quarantining four byte-identical copies.
