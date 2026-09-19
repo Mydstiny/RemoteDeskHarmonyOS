@@ -78,3 +78,18 @@
 
 -17:46/17:47 after batch lookup: restore advanced through the ledger precheck, then cryptoStage3/iap_crl_download_failed. No grant persisted. Local exact leaf and candidate root HTTPS endpoints both returned200(<0.2s); the actual second certificate URL still needs live identification.
 -6975799b adds bounded CRL download index/category/status and strictly limited public PKI URL diagnostics. Fetch targets, redirect:error,5s/2MiB bounds, signature/chain/revocation checks and cache admission are unchanged.90serverPASS; compile4s970/signed5s863 Sign906/Light/diffPASS. ZIPc0185f421318af67d71858b93cd98c8d0d244884cffcb60cbe1b8c7af32118e8,851public/8private deployed to API. Independent review in progress.
+
+### Confirmed root CRL redirect
+
+-17:55 actual diagnostic identifies crlIndex1/redirect: `http://pki.consumer.huawei.com/ca/crl/root_g2_crl.crl`. A separate public request confirms302 to the existing h5hosting.dbankcdn.com root CRL path. Its clean HTTPS form returns the same375-byte DER; pinned RootCaG2Ecdsa signature verification again PASS.
+-50cac0f2 maps only that exact source URL to the previously validated fixed HTTPS target. No generic redirect following, extra hosts, TLS exemptions or revocation bypass.90serverPASS; compile5s264/signed6s538 Sign965/Light/diffPASS. Independent review_pro_plan exact2-file and21PKIX PASS,8private unchanged.
+-ZIP602368394502501bbc6ae82e7ad62280c1c44c5051ef9e1dd742b735dcbdf564,851public/8private; uploading API. Prior exported CRL-diagnostic ZIP exactly matchedc0185f42; initial requests used prior runtime until new fields appeared.
+
+### Actual trusted activation and fulfillment acceptance
+
+-Root-CDP fix50cac0f2 deployed to API. Phone in real entitlement mode reports “沙盒权益已验证并恢复”; ledger grows from3 to6 rows: control, one bound+one unbound intent, one token, one active order and one account. First grant revision1/total1/active1/pending1; no second payment.
+-Worker update initially rejected by automatic review because API/worker package compatibility was not established. Verified ZIP public handler.js contains both myHandler/myWorker, is byte-identical to the existing worker entry, and cloud DOM entry remains handler.myWorker. Re-submission with this evidence was permitted and completed; no trigger change. This was a shared reviewed package, not an API-only entry replacement.
+-Worker manual invocation with updated package returns status200,checked1,successful1,busyfalse. Independent read confirms order revokedfalse/pendingfalse/finishedtrue/attempts1 and account revision1,total1,active1,pending0.
+-Actual force-stop/start preserves account data. Production remains isolated/free by default; explicit Debug sandbox selection loads persisted signed grant and shows “沙盒 · Pro 已激活” in real mode. Screenshot saved only locally as pro-active-after-restart.jpeg. No simulated Pro override.
+-Post-delivery restore again reports verified/recovered. Ledger remains6 rows with exactly one order/token/account, revision1 and attempts1; no duplicate fulfillment.
+-Current official sandbox guide distinguishes purchase-history deletion (irreversible for all sandbox purchases on the account) from refund. No purchase history was cleared, no refund was fabricated, and no production merchant agreement/charging was enabled. Actual refund/account/offline/multi-device and notifications remain unverified; worker scheduling remains disabled.

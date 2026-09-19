@@ -3,15 +3,15 @@
   "task": "pro-purchase-foundation",
   "branch": "codex/pro-purchase-foundation",
   "base": "8edc187868e94ed41634e8a6c4c4c072e3a48679",
-  "head": "6975799b14a9dd7d0bc8501a63160091293d00b3",
-  "phase": "Sandbox payment succeeded; live restore reaches CRL download after bounded CloudDB retry and fenced batch lookup",
+  "head": "50cac0f2cc5ebff8341a87059ff0246f8a9d243f",
+  "phase": "Sandbox payment, signed activation, manual delivery and restart/restore verified on actual device",
   "status": "in-progress",
-  "next": "Resolve actual CRL transport failure, verify signed activation, manual delivery and restart/restore/refund behavior.",
+  "next": "Complete actual refund/cross-account/device acceptance and notification/version/production prerequisites; keep formal checkout and worker timer disabled.",
   "blockers": [
-    "Actual restore still returns503; latest cloud request fails at PKIX stage3 CRL download. No signed activation/order ledger grant yet.",
+    "Actual sandbox core flow PASS. Refund, cross-account/offline device matrix, server notification and production merchant/product release acceptance remain open.",
     "M3/U0-U4 device matrix and M4 PC real Share Kit/SFTP file-integrity acceptance remain unverified.",
     "M5 Share Kit App Linking domain, association and actual fragment delivery remain unverified; ServiceInteraction ACL is a separate path. M6 USB/RDP authenticator and phone-passkey RP/origin proof remain pending.",
-    "Sandbox API/worker deployed, native auth/product/payment passed. Numeric-version publication and notification endpoint remain open; worker timer disabled."
+    "Sandbox core device flow passed. Numeric-version publication, notification endpoint and formal merchant/product release remain open; worker timer disabled."
   ],
   "planPaths": [
     "docs/codex/plans/2026-09-06-pro-purchase-foundation.md",
@@ -1221,7 +1221,7 @@
       ],
       "hostChecks": "30 PASS; 17 ledger checks independently PASS",
       "productionSaleEnabled": false,
-      "deployment": "Protected API and timer-only worker deployed; native auth/product/payment passed. Current API includes CRL mapping, bounded CloudDB backoff and fenced restore lookup; actual activation unresolved.",
+      "deployment": "Protected API and timer-only worker updated to reviewed50cac0f2 package; actual sandbox purchase/auth/signed activation/manual delivery/restart/restore PASS",
       "agcSandbox": {
         "productId": "RemoteDesktop_Pro_Test",
         "productType": "nonconsumable",
@@ -1392,12 +1392,12 @@
           "workerEntry": "handler.myWorker",
           "workerTimerEnabled": false,
           "apiConsoleSmoke": "PASS business 401 account_login_required",
-          "workerConsoleSmoke": "PASS refreshed worker manual status200 checked0 successful0 busyfalse; timer disabled",
+          "workerConsoleSmoke": "PASS manual status200 checked1 successful1 busyfalse; ledger finishedtrue/pendingfalse/attempts1; timer disabled",
           "numericVersion": "AGC publish unknown error twice; explicit Debug sandbox uses $latest",
-          "device": "915b6c9b preserve-data installed; native sandbox/product/auth/payment passed; latest restore fails CRL download, no grant",
+          "device": "PASS sandbox purchase and signed activation; after force-stop/start and selecting sandbox, real-mode label shows sandbox Pro active; post-delivery restore PASS",
           "evidence": "docs/codex/archive/2026-09/2026-09-19-pro-m7-sandbox-deployment.md",
-          "apiPackageSha256": "c0185f421318af67d71858b93cd98c8d0d244884cffcb60cbe1b8c7af32118e8",
-          "workerPackageSha256": "f0074361089ba35149bb3750d376cf9c909244db99ae8ec4687409d4251b3df4"
+          "apiPackageSha256": "602368394502501bbc6ae82e7ad62280c1c44c5051ef9e1dd742b735dcbdf564",
+          "workerPackageSha256": "602368394502501bbc6ae82e7ad62280c1c44c5051ef9e1dd742b735dcbdf564"
         }
       },
       "devicePurchaseAcceptance": {
@@ -1406,19 +1406,22 @@
         "sandboxProduct": "PASS actual isSandboxActivated/queryProducts",
         "accountSessionAndIntent": "PASS checkout reached after native authorization and server intent",
         "payment": "User confirmed successful no-charge sandbox purchase",
-        "restore": "Actual query finds order; activation false",
-        "ledger": "Live count3: two unbound intents, one control; no order/account/token grant",
+        "restore": "PASS existing order restored signed sandbox grant; repeat restore after delivery keeps revision1/one order/one finish attempt",
+        "ledger": "Six rows: control, one unbound intent, one bound intent, one token, one active order, one account; account total1 active1 pending0 revision1",
         "workerTimer": "DISABLED",
-        "remaining": "Repair live transport and verify activation, manual delivery, restart/restore/refund",
-        "failure": "Latest restore PKIX stage3 CRL download failure; earlier CloudDB3007009 terminalReference read2 was addressed with bounded retries and exact batched control/order query"
+        "remaining": "Actual refund and cross-account/offline/device matrix; signed notification/public production prerequisites",
+        "failure": "RESOLVED: precise leaf/root CRL HTTPS mappings and CloudDB backoff/fenced batch lookup; full certificate and revocation verification preserved",
+        "restart": "PASS real-mode sandbox Pro active after force-stop/start; production remains free until explicit Debug sandbox selection",
+        "manualDelivery": "PASS one actual order finished; pendingfalse attempts1",
+        "finalGates": "90server; compile4s958/signed5s945 Sign950ms; Light/diff PASS; independent scoped reviews PASS"
       },
       "diagnostics": {
         "commit": "6975799b14a9dd7d0bc8501a63160091293d00b3",
         "reviewTaskId": "/root/review_pro_ui8",
-        "reviewStatus": "PASS exact5-file/ZIP,36tests+84independent boundaries",
+        "reviewStatus": "PASS all scoped increments; root mapping independently21PKIX andZIP verified",
         "packageSha256": "c0185f421318af67d71858b93cd98c8d0d244884cffcb60cbe1b8c7af32118e8",
         "privateIdentity": "Eight inputs unchanged from authorized deployment",
-        "deployment": "Deployed; exported AGC ZIP hash matches c0185f42 exactly. Waiting for new-runtime device diagnostic; newest responses still showed older fields."
+        "deployment": "Actual failure diagnosed and resolved. API/worker current50cac0f2 package; exact mappings and logger retained."
       }
     },
     "simulationCrash": {
