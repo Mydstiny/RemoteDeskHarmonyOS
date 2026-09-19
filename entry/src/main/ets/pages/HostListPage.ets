@@ -15572,7 +15572,8 @@ struct HostListPage {
     .onClick((): void => { this.toggleSettingsSection(section); })
   }
 
-  @Builder settingsActionHeader(icon: Resource, title: string, subtitle: string, action: () => void, imageIcon: boolean = false) {
+  @Builder settingsActionHeader(icon: Resource, title: string, subtitle: string, action: () => void,
+    imageIcon: boolean = false, liveProStatus: boolean = false) {
     Row() {
       Row() {
         if (imageIcon) {
@@ -15592,7 +15593,7 @@ struct HostListPage {
           .fontWeight(FontWeight.Medium)
           .fontColor(this.pal().text)
           .fontFamily(this.font())
-        Text(subtitle)
+        Text(liveProStatus ? this.proStatusLabel + ' · 全部协议免费连接' : subtitle)
           .fontSize(11)
           .fontColor(this.pal().text3)
           .fontFamily(this.font())
@@ -16864,8 +16865,8 @@ struct HostListPage {
 
         ListItem() {
           this.settingsActionHeader($r('app.media.icon_pro'), 'RemoteDesk Pro',
-            this.proStatusLabel + ' · 全部协议免费连接',
-            (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_PRO); }, true)
+            '',
+            (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_PRO); }, true, true)
         }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 20 })
 
         ListItem() { Column().height(120) }
