@@ -261,3 +261,18 @@ test('exact observed Huawei CDPs use fixed HTTPS targets with unchanged full CRL
   }
   assert.equal(f.calls.length,0);
 });
+
+test('CRL transport failures expose only bounded download index and failure kind', async () => {
+  for(const [fetcher,expected] of [
+    [async()=>{throw new DOMException('private endpoint','TimeoutError');},{index:0,kind:'timeout'}],
+    [async()=>new Response(null,{status:403}),{index:0,kind:'http',status:403}],
+    [async()=>{throw new TypeError('private receipt',{cause:{code:'ENOTFOUND',token:'secret'}});},{index:0,kind:'dns'}]
+  ]) {
+    const f=liveCrlFixture(fetcher);
+    await assert.rejects(()=>f.verifier.verify(jwt()),error=>{
+      assert.equal(error.message,'iap_verification_failed');
+      assert.deepEqual(error.cause.downloadFailure,{...expected,url:'http://pki.consumer.huawei.com/ca/crl/intermediate.crl'});
+      assert.equal(JSON.stringify(error.cause).includes('private'),false);return true;
+    });
+  }
+});

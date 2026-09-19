@@ -211,6 +211,7 @@ export class HuaweiIapJwsVerifier {
       const match = typeof error?.stderr === 'string' ? /(?:^|\n)error ([0-9]{1,3}) at [0-9]{1,2} depth lookup:/.exec(error.stderr) : null;
       throw new Error('iap_verification_failed', { cause: { stage, reason,
         ...(match ? { opensslError: Number(match[1]) } : {}),
+        ...(reason === 'iap_crl_download_failed' ? { downloadFailure: error.cause } : {}),
         ...(reason === 'iap_crl_distribution_unsupported' ? { distributionPoints: error.cause } : {}) } });
     }
     finally {

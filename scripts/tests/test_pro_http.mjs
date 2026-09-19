@@ -181,3 +181,11 @@ test('CloudDB diagnostics admit only fixed ledger operations and bounded read co
     assert.deepEqual(proFailureDiagnostic(error),{code:'cloud_database_failed',vendorCode:'3007009'});
   }
 });
+
+test('CRL download diagnostics retain only bounded transport categories', () => {
+  const make = downloadFailure => proFailureDiagnostic(new Error('iap_verification_failed',{cause:{stage:3,reason:'iap_crl_download_failed',downloadFailure}}));
+  assert.deepEqual(make({index:1,kind:'http',status:403,url:'secret'}),{code:'iap_verification_failed',cryptoStage:3,reason:'iap_crl_download_failed',crlIndex:1,downloadKind:'http',downloadStatus:403});
+  for(const value of [{index:2,kind:'http',status:403},{index:0,kind:'private'},{index:'0',kind:'timeout'},null])
+    assert.equal(make(value).crlIndex,undefined);
+  assert.equal(make({index:0,kind:'http',status:'secret'}).downloadStatus,undefined);
+});

@@ -37,7 +37,7 @@ export class HuaweiIapCrlSource {
   async #download(url) {
     const result = await this.#fetcher(url, { method: 'GET', redirect: 'error',
       headers: { Accept: 'application/pkix-crl, application/octet-stream' }, signal: AbortSignal.timeout(5000) });
-    if (result.status !== 200 || !result.body) fail('iap_crl_download_failed');
+    if (result.status !== 200 || !result.body) throw new Error('iap_crl_download_failed', { cause: { status: result.status } });
     const declared = result.headers.get('content-length');
     if (declared !== null && (!/^\d+$/.test(declared) || Number(declared) > MAX_BYTES)) fail('iap_crl_oversized');
     const reader = result.body.getReader(); const chunks = []; let size = 0;
@@ -69,7 +69,19 @@ export class HuaweiIapCrlSource {
       return { url, value: { bytes: await this.#download(url), created: now, expires: now + CACHE_MS } };
     }));
     // Retain the verifier's concurrency slot until both bounded downloads end.
-    if (results.some(result => result.status !== 'fulfilled')) fail('iap_crl_download_failed');
+    const failedIndex = results.findIndex(result => result.status !== 'fulfilled');
+    if (failedIndex >= 0) {
+      const error = results[failedIndex].reason;
+      const code = error?.cause?.code;
+      const kind = error?.name === 'TimeoutError' ? 'timeout' : error?.cause?.message === 'unexpected redirect' ? 'redirect' :
+        ['ENOTFOUND', 'EAI_AGAIN'].includes(code) ? 'dns' :
+        ['ECONNREFUSED', 'UND_ERR_CONNECT_TIMEOUT'].includes(code) ? 'connect' :
+        ['CERT_HAS_EXPIRED', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE', 'UNABLE_TO_GET_ISSUER_CERT_LOCALLY'].includes(code) ? 'tls' :
+        Number.isInteger(error?.cause?.status) ? 'http' :
+        error?.message === 'iap_crl_oversized' ? 'oversized' : error?.message === 'iap_crl_empty' ? 'empty' : 'network';
+      throw new Error('iap_crl_download_failed', { cause: { index: failedIndex, kind, url: urls[failedIndex],
+        ...(kind === 'http' ? { status: error.cause.status } : {}) } });
+    }
     const records = results.map(result => result.value);
     return { pem: records.map(record => pem(record.value.bytes)).join(''),
       // Untrusted or stale responses are never admitted to the cache. Each

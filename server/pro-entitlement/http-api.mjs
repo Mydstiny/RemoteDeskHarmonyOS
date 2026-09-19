@@ -78,11 +78,19 @@ export function proFailureDiagnostic(error) {
     // These are public PKI addresses from a pinned, verified certificate, not
     // order fields. Restrict logging to bounded public URLs and safe ASCII; never fetch them here.
     const points = error.cause.distributionPoints;
+    const download = error.cause.downloadFailure;
+    const downloadFailure = reason === 'iap_crl_download_failed' && [0, 1].includes(download?.index) &&
+      ['timeout', 'dns', 'connect', 'tls', 'http', 'oversized', 'empty', 'network', 'redirect'].includes(download?.kind) ?
+      { crlIndex: download.index, downloadKind: download.kind,
+        ...(typeof download.url === 'string' && download.url.length <= 256 &&
+          /^https?:\/\/(?:pki\.consumer\.huawei\.com|h5hosting-drcn\.dbankcdn\.cn|h5hosting\.dbankcdn\.com)\/[A-Za-z0-9_./-]+\.crl$/.test(download.url) ? { crlUrl: download.url } : {}),
+        ...(Number.isInteger(download.status) && download.status >= 100 && download.status <= 599 ? { downloadStatus: download.status } : {}) } : {};
     const distributionPoints = reason === 'iap_crl_distribution_unsupported' && Array.isArray(points) ?
       points.filter(value => typeof value === 'string' && value.length <= 256 &&
         /^https?:\/\/[a-z0-9.-]+(?::[0-9]{1,5})?\/[A-Za-z0-9_./?=&%+-]+$/.test(value)).slice(0,8) : [];
 
     return { code, cryptoStage: error.cause.stage, reason,
+      ...downloadFailure,
       ...(Number.isInteger(opensslError) && opensslError >= 0 && opensslError <= 999 ? { opensslError } : {}),
       ...(distributionPoints.length ? { distributionPoints } : {}) };
   }
