@@ -170,3 +170,14 @@ test('CloudDB diagnostics retain only the official numeric code and bounded loca
   const type = new TypeError('private order'); type.stack = 'TypeError: private order\n at fn (/secret/home/cloud-ledger.mjs:113:9)';
   assert.deepEqual(proFailureDiagnostic(type), { code:'unclassified',errorType:'TypeError',module:'cloud-ledger',line:113 });
 });
+
+test('CloudDB diagnostics admit only fixed ledger operations and bounded read counts', () => {
+  const error = Object.assign(new Error('private message'), {name:'database-server',errorCode:{code:'3007009'},
+    cause:{ledgerOperation:'applyCurrentOrder',ledgerRead:4}});
+  assert.deepEqual(proFailureDiagnostic(error),{code:'cloud_database_failed',vendorCode:'3007009',ledgerOperation:'applyCurrentOrder',ledgerRead:4});
+  for(const cause of [{ledgerOperation:'private-token',ledgerRead:4},{ledgerOperation:'snapshot',ledgerRead:1001},
+    {ledgerOperation:'snapshot',ledgerRead:'private-value'},{ledgerOperation:'snapshot',ledgerRead:-1}]) {
+    error.cause=cause;
+    assert.deepEqual(proFailureDiagnostic(error),{code:'cloud_database_failed',vendorCode:'3007009'});
+  }
+});

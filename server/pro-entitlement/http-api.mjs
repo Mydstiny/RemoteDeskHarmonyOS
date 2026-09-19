@@ -54,7 +54,12 @@ export function proFailureDiagnostic(error) {
   const code = DIAGNOSTIC_CODES.has(error?.message) ? error.message : 'unclassified';
   const databaseCode = error?.name === 'database-server' ? error?.errorCode?.code : undefined;
   if (typeof databaseCode === 'string' && /^[0-9]{1,12}$/.test(databaseCode)) {
-    return { code: 'cloud_database_failed', vendorCode: databaseCode };
+    const operation = error?.cause?.ledgerOperation;
+    const read = error?.cause?.ledgerRead;
+    const ledger = ['createIntent', 'applyCurrentOrder', 'references', 'terminalReference', 'snapshot',
+      'claimFinish', 'finishSucceeded', 'finishFailed', 'dueOrders'].includes(operation) &&
+      Number.isInteger(read) && read >= 0 && read <= 1000 ? { ledgerOperation: operation, ledgerRead: read } : {};
+    return { code: 'cloud_database_failed', vendorCode: databaseCode, ...ledger };
   }
   if (code === 'unclassified') {
     const errorType = ['TypeError', 'RangeError', 'SyntaxError'].includes(error?.name) ? error.name : 'Error';

@@ -94,8 +94,8 @@ export class ProCloudOrderLedger {
     return record(CONTROL_ID, 'control', '', { schema: 1, identity: this.#identity,
       keyCheck: this.#encrypt(this.#identity, CONTROL_ID), commit: randomUUID() });
   }
-  async #transaction(action) {
-    let result;
+  async #transaction(operation, action) {
+    let result; let step = 0;
     // The official SDK reports a rejected rate-limited request as 3007009.
     // Share one bounded backoff budget between reads and transaction commits;
     // never retry an ambiguous network failure or bypass the control fence.
@@ -109,8 +109,10 @@ export class ProCloudOrderLedger {
         }
       }
     };
-    const committed = await retryThrottle(() => this.#collection.runTransaction({ apply: async transaction => {
-      const query = value => retryThrottle(() => transaction.executeQuery(value));
+    let committed;
+    try { committed = await retryThrottle(() => this.#collection.runTransaction({ apply: async transaction => {
+      step = 0;
+      const query = value => { step++; return retryThrottle(() => transaction.executeQuery(value)); };
       const cache = new Map();
       const read = async id => {
         if (!cache.has(id)) {
@@ -129,14 +131,21 @@ export class ProCloudOrderLedger {
       control.commit = randomUUID();
       transaction.executeUpsert([...writes, record(CONTROL_ID, 'control', '', control)]);
       return true;
-    } }));
+    } })); } catch (error) {
+      if (error?.name === 'database-server' && typeof error?.errorCode?.code === 'string' &&
+          /^[0-9]{1,12}$/.test(error.errorCode.code)) {
+        throw Object.assign(new Error('cloud_database_failed'), { name: 'database-server',
+          errorCode: { code: error.errorCode.code }, cause: { ledgerOperation: operation, ledgerRead: step } });
+      }
+      throw error;
+    }
     if (committed !== true) fail('ledger_transaction_conflict');
     return result;
   }
   async createIntent(owner, now) {
     ownerId(owner); time(now);
     const id = randomBytes(32).toString('base64url'); const expiresAt = now + 3600000;
-    return this.#transaction(async ({ read, query, writes }) => {
+    return this.#transaction('createIntent', async ({ read, query, writes }) => {
       const previous = await read(key('intent', id));
       if (previous) {
         const saved = content(previous);
@@ -166,7 +175,7 @@ export class ProCloudOrderLedger {
     this.#assertOrder(order); time(now);
     if (expectedOwner !== undefined) ownerId(expectedOwner);
     if (notificationId) boundedString(notificationId);
-    return this.#transaction(async ({ read, writes }) => {
+    return this.#transaction('applyCurrentOrder', async ({ read, writes }) => {
       const oldRow = await read(key('order', order.purchaseOrderId)); const old = oldRow ? content(oldRow) : undefined;
       let owner; let intent;
       if (old) {
@@ -210,7 +219,7 @@ export class ProCloudOrderLedger {
   }
   async references(owner, activeOnly = false) {
     ownerId(owner);
-    return this.#transaction(async ({ query }) => {
+    return this.#transaction('references', async ({ query }) => {
       const queryBuilder = this.#collection.query().equalTo('kind', 'order').equalTo('owner', owner);
       if (activeOnly) queryBuilder.equalTo('state', 'active');
       const rows = await query(queryBuilder.limit(101));
@@ -224,14 +233,14 @@ export class ProCloudOrderLedger {
   }
   async terminalReference(owner, reference) {
     ownerId(owner); boundedString(reference.purchaseOrderId);
-    return this.#transaction(async ({ read }) => {
+    return this.#transaction('terminalReference', async ({ read }) => {
       const row = await read(key('order', reference.purchaseOrderId)); if (!row) return false;
       const order = content(row); this.#binding(order, reference, owner); return order.revoked === true;
     });
   }
   async snapshot(owner) {
     ownerId(owner);
-    return this.#transaction(async ({ read }) => {
+    return this.#transaction('snapshot', async ({ read }) => {
       const account = counts(await read(key('account', owner)));
       return { status: account.active > 0 ? 'verified' : account.total > 0 ? 'revoked' : 'noEntitlement',
         revision: account.revision, pending: account.pending > 0, checkedAt: 0 };
@@ -239,7 +248,7 @@ export class ProCloudOrderLedger {
   }
   async claimFinish(reference, now) {
     boundedString(reference.purchaseOrderId); time(now);
-    return this.#transaction(async ({ read, writes }) => {
+    return this.#transaction('claimFinish', async ({ read, writes }) => {
       const row = await read(key('order', reference.purchaseOrderId)); if (!row) return '';
       const order = content(row); this.#binding(order, reference);
       if (order.revoked || !order.pending || order.leaseUntil > now || order.nextAttempt > now) return '';
@@ -249,7 +258,7 @@ export class ProCloudOrderLedger {
   }
   async finishSucceeded(orderId, lease) {
     boundedString(orderId); boundedString(lease);
-    return this.#transaction(async ({ read, writes }) => {
+    return this.#transaction('finishSucceeded', async ({ read, writes }) => {
       const row = await read(key('order', orderId)); if (!row) return;
       const order = content(row); if (order.lease !== lease) return;
       const account = counts(await read(key('account', order.owner)));
@@ -261,7 +270,7 @@ export class ProCloudOrderLedger {
   }
   async finishFailed(orderId, lease, now) {
     boundedString(orderId); boundedString(lease); time(now);
-    return this.#transaction(async ({ read, writes }) => {
+    return this.#transaction('finishFailed', async ({ read, writes }) => {
       const row = await read(key('order', orderId)); if (!row) return;
       const order = content(row); if (order.lease !== lease) return;
       order.lease = ''; order.leaseUntil = 0; order.nextAttempt = now + 120000; writes.push(orderRecord(order));
@@ -269,7 +278,7 @@ export class ProCloudOrderLedger {
   }
   async dueOrders(now, limit = 20) {
     time(now); if (!Number.isInteger(limit) || limit < 1 || limit > 100) fail('invalid_batch_limit');
-    return this.#transaction(async ({ query, writes }) => {
+    return this.#transaction('dueOrders', async ({ query, writes }) => {
       const rows = await query(this.#collection.query().equalTo('kind', 'order').lessThanOrEqualTo('dueAt', now)
         .orderByAsc('sortAt').limit(limit));
       return rows.map(row => {

@@ -247,7 +247,8 @@ test('CloudDB persistent throttle terminates and other errors or false commits a
     const waits = []; let calls = 0;
     f.collection.runTransaction = async () => { calls++; throw error; };
     const ledger = new ProCloudOrderLedger(f.collection, config, f.key, async ms => waits.push(ms));
-    await assert.rejects(() => ledger.snapshot(owner), thrown => thrown === error);
+    await assert.rejects(() => ledger.snapshot(owner), thrown => error.name === 'database-server' ?
+      thrown.errorCode.code === error.errorCode.code && thrown.cause.ledgerOperation === 'snapshot' && thrown.cause.ledgerRead === 0 : thrown === error);
     const throttled = error.errorCode?.code === '3007009';
     assert.equal(calls, throttled ? 4 : 1);
     assert.deepEqual(waits, throttled ? [1000, 2000, 3000] : []);
