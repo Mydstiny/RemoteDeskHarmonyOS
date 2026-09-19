@@ -172,7 +172,7 @@ export class HuaweiIapJwsVerifier {
     if (!Number.isSafeInteger(now) || now <= 0) fail('invalid_clock');
     if (this.#busy >= 4) fail('verification_busy');
     this.#busy++;
-    let directory; let bundle;
+    let directory; let bundle; let stage = 0;
     try {
       directory = await mkdtemp(join(tmpdir(), 'remotedesk-iap-cert-'));
       await Promise.all([
@@ -185,19 +185,33 @@ export class HuaweiIapJwsVerifier {
         '-CAfile', join(directory, 'root.pem'), '-no-CApath', '-no-CAstore',
         '-untrusted', join(directory, 'intermediate.pem')];
       const options = { timeout: 4000, maxBuffer: 65536 };
+      stage = 1;
       if (this.#crlSource) await runFile(this.#openssl, [...pathArguments, join(directory, 'leaf.pem')], options);
+      stage = 2;
       if (!verify('sha256', parts.input, { key: leaf.publicKey, dsaEncoding: 'ieee-p1363' }, parts.signature)) {
         fail('invalid_iap_signature');
       }
+      stage = 3;
       if (this.#crlSource) bundle = await this.#crlSource.prepare([leaf.raw, intermediate.raw]);
       const crls = bundle ? bundle.pem : this.#crls;
       if (typeof crls !== 'string' || crls.length === 0 || crls.length > 6 * 1024 * 1024) fail('iap_crls_required');
       await writeFile(join(directory, 'crls.pem'), crls, { mode: 0o600 });
+      stage = 4;
       await runFile(this.#openssl, [...pathArguments, '-crl_check_all', '-CRLfile', join(directory, 'crls.pem'),
         join(directory, 'leaf.pem')], options);
       bundle?.accept();
       return parts.payload;
-    } catch { bundle?.reject(); fail('iap_verification_failed'); }
+    } catch (error) {
+      bundle?.reject();
+      // Keep only bounded stage/error identifiers; never propagate OpenSSL
+      // output, certificate subjects or download URLs to deployment logs.
+      const reason = ['invalid_iap_signature', 'iap_crl_distribution_required', 'iap_crl_distribution_unsupported',
+        'iap_crl_download_failed', 'iap_crls_required', 'invalid_certificate', 'ENOENT', 'EACCES'].includes(error?.code || error?.message)
+        ? (error.code || error.message) : 'unclassified';
+      const match = typeof error?.stderr === 'string' ? /(?:^|\n)error ([0-9]{1,3}) at [0-9]{1,2} depth lookup:/.exec(error.stderr) : null;
+      throw new Error('iap_verification_failed', { cause: { stage, reason,
+        ...(match ? { opensslError: Number(match[1]) } : {}) } });
+    }
     finally {
       this.#busy--;
       if (directory) await rm(directory, { recursive: true, force: true });

@@ -138,3 +138,17 @@ test('deployment diagnostics allow only fixed categories and numeric vendor code
   f.service.reconcile = async () => ({});
   assert.equal((await api.handle(request('/v1/pro/reconcile', { purchaseDataList: [], challenge }))).status, 200);
 });
+
+test('PKIX diagnostics retain only bounded stage and numeric verification errors', () => {
+  assert.deepEqual(proFailureDiagnostic(new Error('iap_verification_failed', { cause:
+    { stage: 4, reason: 'secret-subject', opensslError: 3, stderr: 'private certificate' } })),
+    { code: 'iap_verification_failed', cryptoStage: 4, reason: 'unclassified', opensslError: 3 });
+  for (const stage of [-1, 5, '3', NaN]) {
+    assert.deepEqual(proFailureDiagnostic(new Error('iap_verification_failed', { cause: { stage } })),
+      { code: 'iap_verification_failed' });
+  }
+  for (const opensslError of [-1, 1000, 'private-token', NaN]) {
+    assert.equal(proFailureDiagnostic(new Error('iap_verification_failed', { cause:
+      { stage: 3, reason: 'iap_crl_download_failed', opensslError } })).opensslError, undefined);
+  }
+});

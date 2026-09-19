@@ -52,6 +52,15 @@ export function proFailureDiagnostic(error) {
   const code = DIAGNOSTIC_CODES.has(error?.message) ? error.message : 'unclassified';
   const vendorCode = code === 'iap_request_failed' && typeof error?.cause === 'string' &&
     /^[0-9]{1,12}$/.test(error.cause) ? error.cause : undefined;
+  if (code === 'iap_verification_failed' && Number.isInteger(error?.cause?.stage) &&
+      error.cause.stage >= 0 && error.cause.stage <= 4) {
+    const reason = ['invalid_iap_signature', 'iap_crl_distribution_required', 'iap_crl_distribution_unsupported',
+      'iap_crl_download_failed', 'iap_crls_required', 'invalid_certificate', 'ENOENT', 'EACCES'].includes(error.cause.reason)
+      ? error.cause.reason : 'unclassified';
+    const opensslError = error.cause.opensslError;
+    return { code, cryptoStage: error.cause.stage, reason,
+      ...(Number.isInteger(opensslError) && opensslError >= 0 && opensslError <= 999 ? { opensslError } : {}) };
+  }
   return vendorCode === undefined ? { code } : { code, vendorCode };
 }
 function failure(error) {
