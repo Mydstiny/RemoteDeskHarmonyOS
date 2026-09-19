@@ -3,15 +3,15 @@
   "task": "pro-purchase-foundation",
   "branch": "codex/pro-purchase-foundation",
   "base": "8edc187868e94ed41634e8a6c4c4c072e3a48679",
-  "head": "7f73d3376c694aa4e54223bc115ba24ffeea750b",
-  "phase": "Original UI restored and simulation crash fixed; real sandbox payment succeeded, backend order verification under repair",
+  "head": "fdc07e5589428e0a5f4bd3a19f68a31f6c98761f",
+  "phase": "Sandbox payment succeeded; actual reconcile fails in backend PKIX verification; diagnostic staging under test",
   "status": "in-progress",
   "next": "Deploy independently reviewed bounded diagnostics; repair actual order verification, then signed activation/manual delivery/restart/restore/refund tests.",
   "blockers": [
-    "Real sandbox payment and order restore succeeded, but trusted reconciliation has not activated Pro; ledger has an unbound intent and no granted order. Backend diagnosis in progress.",
+    "Actual phone session200 and reconcile503; cloud logs show iap_verification_failed. Signed activation, manual delivery, restart/restore and refund acceptance remain open.",
     "M3/U0-U4 device matrix and M4 PC real Share Kit/SFTP file-integrity acceptance remain unverified.",
     "M5 Share Kit App Linking domain, association and actual fragment delivery remain unverified; ServiceInteraction ACL is a separate path. M6 USB/RDP authenticator and phone-passkey RP/origin proof remain pending.",
-    "M7 API/worker now deployed and console smoke passed; native SDK authorization, real sandbox purchase/restore/refund and notification endpoint remain open. AGC numeric-version publication reports unknown error; worker timer stays disabled; initial acceptance uses manual execution."
+    "Sandbox API/worker deployed, native auth/product/payment passed. Numeric-version publication and notification endpoint remain open; worker timer disabled."
   ],
   "planPaths": [
     "docs/codex/plans/2026-09-06-pro-purchase-foundation.md",
@@ -222,13 +222,14 @@
     "reason": "Latest public UI restoration needs independent exact-checkpoint review; prior scoped receipts remain historical."
   },
   "lastVerification": {
-    "scope": "Current live progress records; latest server diagnostic code7f73d337 and billingc625958e independently reviewed",
-    "testCompile": "PASS exit0; BUILD SUCCESSFUL in4s906",
-    "assembleHap": "PASS exit0; signed BUILD SUCCESSFUL in5s965; SignHap917ms",
-    "hostChecks": "79server,22client, independent33server/15message-boundary checks PASS",
+    "scope": "PKIX stage diagnostic fdc07e55 and client diagnostic915b6c9b, independently PASS",
+    "testCompile": "PASS exit0; BUILD SUCCESSFUL in4s683",
+    "assembleHap": "PASS exit0; signed BUILD SUCCESSFUL in5s922; SignHap913ms",
+    "hostChecks": "81server+19real PKIX;41client+28independent client boundaries;30independent HTTP/PKIX PASS",
     "compliance": "Light/diff PASS",
-    "device": "Builder crash reproduction fixed; original rounded UI screenshots; native sandbox lookup/account intent/payment passed; restore sees order but activation fails",
-    "release": "Prior restoredUI frozen Release pruning PASS; latest diagnostic increment is server-only, actual activation unresolved"
+    "device": "Preserve-data915b6c9b installed; session200/reconcile503/stage1 observed; server iap_verification_failed; activation not complete",
+    "release": "PASS22s434 SignHap851; dual ABI/ABC sandbox/simulation/USB pruning; ABC562d71b605f49e9a23277d95d57cc347fb4ac759b60330cddec471c3cdbd0c07",
+    "progressRecordGates": "PASS compile5s257; signed6s226 SignHap919; Light/diff/state"
   },
   "updated": "2026-09-19 Asia/Shanghai",
   "roadmapPaths": [
@@ -1393,7 +1394,7 @@
           "apiConsoleSmoke": "PASS business 401 account_login_required",
           "workerConsoleSmoke": "PASS status200 checked0 successful0 busyfalse",
           "numericVersion": "AGC publish unknown error twice; explicit Debug sandbox uses $latest",
-          "device": "API26 Mate 80 Pro Max; preserve-data Debug installation succeeded; purchase/auth testing pending",
+          "device": "Native sandbox/product/account/payment passed;915b6c9b preserve-data install; signed activation remains blocked in PKIX",
           "evidence": "docs/codex/archive/2026-09/2026-09-19-pro-m7-sandbox-deployment.md"
         }
       },
@@ -1406,15 +1407,16 @@
         "restore": "Actual query finds order; activation false",
         "ledger": "Read-only count: one unbound intent and one control, no order",
         "workerTimer": "DISABLED",
-        "remaining": "Repair verification, verify signed activation, manual delivery, restart/restore and refund"
+        "remaining": "Repair verification, verify signed activation, manual delivery, restart/restore and refund",
+        "failure": "Phone session200/reconcile503; cloud iap_verification_failed on actual restored order"
       },
       "diagnostics": {
-        "commit": "7f73d3376c694aa4e54223bc115ba24ffeea750b",
+        "commit": "fdc07e5589428e0a5f4bd3a19f68a31f6c98761f",
         "reviewTaskId": "/root/review_pro_plan",
-        "reviewStatus": "PASS exact5-file and ZIP",
-        "packageSha256": "f07679c94ba802ff586b380990f28eedfcd31209deb64e232fb050807b24b2fd",
-        "privateIdentity": "Eight files byte-identical to authorized previous deployment",
-        "deployment": "NOT COMPLETE; portal login expired before submission, user sign-in requested"
+        "reviewStatus": "PASS exact3-file and ZIP",
+        "packageSha256": "6d825abdc7bf1305568fb0739bf7888c6d7be6eaf4add492ae9496386f3a8c29",
+        "privateIdentity": "Eight inputs unchanged from authorized deployment",
+        "deployment": "Invocation logger1c02e089 deployed and actual logs verified. PKIX stages fdc07e55 reviewed; upload pending browser availability."
       }
     },
     "simulationCrash": {

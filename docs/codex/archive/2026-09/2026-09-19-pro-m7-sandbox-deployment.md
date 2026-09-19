@@ -41,3 +41,11 @@
 - 原生账号会话与服务器意图创建通过，华为支付页明确显示沙盒、不产生扣费；用户完成人脸验证并确认购买成功。
 - App 返回未激活；恢复购买能查到订单，但尚无有效签名权益。只读 CloudDB 汇总为一个 unbound intent 与一个 control，无 order。正在定位服务端验单失败，未再次购买、未手动写权益、未开启定时器。
 - `c625958e` 支付配置错误提示：22 项客户端回归、编译5s184、签名6s642（SignHap963ms）、Light/diff 和独立复核通过。`7f73d337` 服务端固定故障分类：79项服务端回归、编译5s059、签名6s340（SignHap972ms）、Light/diff通过；独立五文件与 ZIP 复核通过，八份私有材料与原授权部署逐字节一致。AGC 会话过期、已请用户重新登录；诊断包尚未完成提交。
+
+## Actual verification diagnosis, 16:53
+
+- Invocation logger1c02e089 uses the platform fourth argument and AsyncLocalStorage; protected API deployed. Console invalid-session probe returned401 and emitted a fixed failure category. Earlier stdout/console/global-only variants had no visible diagnostics.
+- Existing purchased order restore returned cloud iap_verification_failed at16:44. Header/root pin/leaf policy checks passed before this bounded catch; path, signature or CRL checks still need separation.
+- Client915b6c9b independently PASS (41tests+28boundary checks), preserve-data installed. Actual phone logs: session200, reconcile503, reconcile stage1. No repeated purchase, no activation claim.
+- PKIX stage diagnosticfdc07e55 independently PASS:81server+19real PKIX and30reviewer HTTP/PKIX checks; compile4s683/signed5s922 SignHap913, Light/diff PASS. Package sha2566d825abdc7bf1305568fb0739bf7888c6d7be6eaf4add492ae9496386f3a8c29;851public files,8private bytes unchanged. Upload pending browser availability.
+- Release22s434 SignHap851 and dual-ABI/ABC sandbox/simulation/USB pruning PASS; ABC562d71b605f49e9a23277d95d57cc347fb4ac759b60330cddec471c3cdbd0c07.
