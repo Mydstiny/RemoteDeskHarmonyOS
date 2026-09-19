@@ -3,12 +3,12 @@
   "task": "pro-purchase-foundation",
   "branch": "codex/pro-purchase-foundation",
   "base": "8edc187868e94ed41634e8a6c4c4c072e3a48679",
-  "head": "1c466f3956fe133da9fd0b8b6879564736b1b2d5",
-  "phase": "Refund-route API deployed and actual Huawei refund page opened; awaiting user submission",
+  "head": "3e099221ae5503af71c1384109707d3912648770",
+  "phase": "Actual sandbox refund, signed revocation, restart and repeated restore passed; explicit outcome wording reviewed and verified on device",
   "status": "in-progress",
-  "next": "User submits sandbox refund in Huawei UI; verify vendor revocation, ledger revision, signed client denial and restart. Offline/cross-account still need USB and second sandbox account.",
+  "next": "Complete USB/offline and second-account device matrix, notification/version and production prerequisites.",
   "blockers": [
-    "Actual Huawei refund reason/submission UI is open; final submission belongs to user. Refund revocation/restart not yet accepted. Offline/cross-account still lack USB and second sandbox account.",
+    "Actual refund/revocation/restart/repeated restore PASS. Remaining device offline/cross-account matrix lacks USB and second sandbox account; notification and production prerequisites remain open.",
     "M3/U0-U4 device matrix and M4 PC real Share Kit/SFTP file-integrity acceptance remain unverified.",
     "M5 Share Kit App Linking domain, association and actual fragment delivery remain unverified; ServiceInteraction ACL is a separate path. M6 USB/RDP authenticator and phone-passkey RP/origin proof remain pending.",
     "Sandbox core device flow passed. Numeric-version publication, notification endpoint and formal merchant/product release remain open; worker timer disabled."
@@ -222,14 +222,14 @@
     "reason": "Latest public UI restoration needs independent exact-checkpoint review; prior scoped receipts remain historical."
   },
   "lastVerification": {
-    "scope": "1c466f39 refund route",
-    "testCompile": "PASS exit0 BUILD SUCCESSFUL in700ms",
-    "assembleHap": "PASS exit0 signed BUILD SUCCESSFUL in12s407; SignHap863ms",
+    "scope": "3e099221 refund outcome wording plus actual refund acceptance",
+    "testCompile": "PASS7s207",
+    "assembleHap": "PASS8s577 Sign893ms",
     "release": "PASS exit0 signed BUILD SUCCESSFUL in22s815; SignHap846ms",
-    "hostChecks": "93 server +54 client PASS; independent92 +3 boundaries PASS",
+    "hostChecks": "35trusted PASS; prior broader protocol tests remain recorded separately",
     "compliance": "Light/diff PASS",
-    "device": "New1c466f39 Debug launched with original rounded UI and preserved host counts; DEBUG real mode selected, native ALL omitted delivered order, authenticated ledger fallback opened Huawei refund reason UI at20:57. Before submission ledger six rows, one finished nonrevoked order, revision1 active1 pending0 attempts1.",
-    "progressRecordGates": "PASS compile 5 s 25 ms; signed assembleHap5s898 Sign930ms; Light/diff PASS. Initial duplicate generated-resource failure resolved by quarantining four byte-identical copies."
+    "device": "PASS actual refund/revoke/restart/repeated restore; preserve-data 3e099221 Debug install and explicit server-confirmed revoked message verified in real mode",
+    "progressRecordGates": "PASS compile5s192; signed assembleHap5s675 Sign879ms; Light/diff PASS"
   },
   "updated": "2026-09-19 Asia/Shanghai",
   "roadmapPaths": [
@@ -1407,14 +1407,16 @@
         "accountSessionAndIntent": "PASS checkout reached after native authorization and server intent",
         "payment": "User confirmed successful no-charge sandbox purchase",
         "restore": "PASS existing order restored signed sandbox grant; repeat restore after delivery keeps revision1/one order/one finish attempt",
-        "ledger": "Six rows: control, one unbound intent, one bound intent, one token, one active order, one account; account total1 active1 pending0 revision1",
+        "ledger": "Six rows; one revoked finished order,pendingfalse attempts1; account revision2 total1 active0 pending0",
         "workerTimer": "DISABLED",
-        "remaining": "Actual refund and cross-account/offline/device matrix; signed notification/public production prerequisites",
+        "remaining": "USB/offline and second-account/device matrix; signed notification/public production prerequisites",
         "failure": "RESOLVED: precise leaf/root CRL HTTPS mappings and CloudDB backoff/fenced batch lookup; full certificate and revocation verification preserved",
         "restart": "PASS real-mode sandbox Pro active after force-stop/start; production remains free until explicit Debug sandbox selection",
         "manualDelivery": "PASS one actual order finished; pendingfalse attempts1",
         "finalGates": "90server; compile4s958/signed5s945 Sign950ms; Light/diff PASS; independent scoped reviews PASS",
-        "refundEntry": "PASS actual authenticated lookup and native Huawei refund reason UI opened; final refund submission pending user"
+        "refundEntry": "PASS actual authenticated order lookup and vendor refund submission by user",
+        "refund": "PASS actual vendor revocation accepted through signed reconciliation despite misleading vendor UI timeout",
+        "refundRestart": "PASS force-stop/start and repeat restore keep signed revoked state"
       },
       "diagnostics": {
         "commit": "6975799b14a9dd7d0bc8501a63160091293d00b3",
@@ -1426,7 +1428,7 @@
       },
       "refundRoute": {
         "commit": "1c466f3956fe133da9fd0b8b6879564736b1b2d5",
-        "status": "api-deployed-device-refund-ui-open",
+        "status": "actual-refund-revocation-restart-pass",
         "reviewTaskId": "/root/review_pro_plan",
         "reviewStatus": "PASS",
         "cause": "API26 queryPurchases documentation at lines1435-1436 excludes delivered sandbox non-consumables; ALL query did not recover the real delivered order.",
@@ -1457,6 +1459,15 @@
           "packageSha256": "88b910e2b6976e6f23685bda0f56db67093c0782b7ca28ac086c6f387de9cb6a",
           "worker": "Previous reviewed package retained; no worker behavior changed, timer OFF",
           "uploadIssue": "Initial submission updated function. Later repeated submissions returned121080 StorageInfo param error; refreshed console timestamp and actual new-route execution confirmed deployed code. No further repeat uploads."
+        },
+        "refundAcceptance": {
+          "vendorUi": "User submission showed service unavailable. Device vendor IAP log21:00:27: HTTP500 N00002 [BiS]Read timed out; next responseS00002 frequent operations. Neither response alone proved refund outcome.",
+          "reconciliation": "After exiting vendor UI and explicit restore, fresh backend verification changed order to revokedtrue and account revision1 to2, active1 to0; pendingfalse finishedtrue attempts1. No manual ledger mutation.",
+          "client": "PASS explicit real-mode top label sandbox Pro revoked; force-stop/start, explicit sandbox selection and repeated restore retain revoked state; ledger remains revision2,one order,attempts1.",
+          "offline": "NOT RUN; current device uses WiFi HDC and USB unavailable.",
+          "wordingCommit": "3e099221ae5503af71c1384109707d3912648770",
+          "wording": "Exit now says closed refund page, not cancelled refund. Signed revoked real state now gets explicit revoke result instead of generic no-entitlement text.",
+          "wordingValidation": "PASS independent exact3-file review and3targeted reviewer checks;35trusted; compile7s207 signedDebug8s577 Sign893ms; Light/diff; preserve-data Debug install and actual explicit revoked message verified"
         }
       }
     },
@@ -1864,6 +1875,6 @@
     "checked": "2026-09-19",
     "method": "User-authorized HDC screenshot/click/log/install",
     "listedTargets": 1,
-    "scope": "API26 Mate 80 Pro Max; preserve-data Debug installs; native sandbox payment, signed activation, manual delivery, restart and restore passed; new refund route runtime pending deployment."
+    "scope": "API26 Mate 80 Pro Max; preserve-data Debug installs; native sandbox payment, signed activation, manual delivery, restore, actual refund, signed revocation and online restart passed. Offline and second-account matrix remain unverified."
   }
 }

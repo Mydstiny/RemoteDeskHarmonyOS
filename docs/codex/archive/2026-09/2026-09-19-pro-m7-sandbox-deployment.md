@@ -139,3 +139,11 @@
 - New1c466f39 Debug launched preserving original rounded UI/data. At20:57, native empty-history fallback successfully opened Huawei refund reason/Submit screen for the existing delivered sandbox order. Final submission handed to user; no agent refund submission or local entitlement change.
 - Pre-submission ledger: six rows, one order active/nonrevoked/finished/pendingfalse/attempts1; account revision1 total1 active1 pending0. Refund/revocation/restart acceptance pending.
 - Record gates: PASS compile 5 s 25 ms; signed assembleHap5s898 Sign930ms; Light/diff PASS. Initial duplicate generated-resource failure resolved by quarantining four byte-identical copies.
+
+## Refund timeout with successful vendor completion
+
+- User final submission at21:00:27: vendor IAP6.26.10.302 returned HTTP500/N00002/[BiS]Read timed out from refunds (2095ms), immediately followed by S00002 frequent operations. UI showed service unavailable. No further refund submitted by agent.
+- Exited error/refund UI and restored purchases. Server fresh Huawei verification persisted revokedtrue, account revision2 total1 active0 pending0; order finishedtrue pendingfalse attempts1. Six ledger rows unchanged in count. App top label clearly sandbox Pro revoked in real mode.
+- Force-stop/start, explicit sandbox selection and repeated restore did not revive old Pro. Ledger remained revision2/one revoked order/attempts1. This is online restart acceptance, not offline proof.
+- Wording fix3e099221 removes misleading cancellation claim on vendor-UI exit and displays signed real-state revocation explicitly.35trusted PASS; testCompile7s207, signedDebug8s577 Sign893ms, Light/diff PASS.
+- Exact wording3e099221 independent review PASS (three files, three extra targeted checks). Frozen HAP SHA2565d25fb5dc40a9a64b1f52561cb356b5972538bec513a94b13b43f010eaf1bda7 installed preserving data; real-mode Pro sheet displays both sandbox revoked status and explicit server-confirmed revocation result. Final record gates compile5s192/signed5s675 Sign879ms, Light/diff PASS. Offline and cross-account device acceptance remain open.
