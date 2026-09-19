@@ -1,3 +1,4 @@
+import { DEBUG } from 'BuildProfile';
 import { cloudCommon, cloudFunction } from '@kit.CloudFoundationKit';
 import { common } from '@kit.AbilityKit';
 import { util } from '@kit.ArkTS';
@@ -93,6 +94,7 @@ export class ProCloudTransport implements ProBackendTransport {
         typeof reply.body !== 'string' || new util.TextEncoder().encodeInto(reply.body).length > 32768) {
         throw new Error('Pro verification unavailable');
       }
+      if (DEBUG) { console.info(`[ProVerify] cloud ${operation} status=${reply.status}`); }
       return reply;
     } finally {
       if (timer !== -1) { clearTimeout(timer); }

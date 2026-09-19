@@ -1,3 +1,4 @@
+import { DEBUG } from 'BuildProfile';
 import { util } from '@kit.ArkTS';
 import { cryptoFramework } from '@kit.CryptoArchitectureKit';
 import { ProEnvironment } from './ProAccessPolicy';
@@ -118,6 +119,7 @@ export class ProTrustedEntitlementClient implements ProOrderVerifier {
     const copied = records.slice();
     return this.serialize(async (): Promise<ProVerificationResult> => {
       if (!this.current(lease)) { return this.unavailable(owner); }
+      let verificationStage: number = 0;
       try {
         if (copied.length > 32 || proPurchaseBatches(copied).length > 1) { throw new Error('Invalid Pro batch'); }
         const random = await cryptoFramework.createRandom().generateRandom(32);
@@ -125,16 +127,19 @@ export class ProTrustedEntitlementClient implements ProOrderVerifier {
           .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
         if (!this.current(lease)) { throw new Error('Stale Pro scope'); }
         const startedAt = this.clock.wallNow();
+        verificationStage = 1;
         const text = await this.transport.post('reconcile', JSON.stringify({ purchaseDataList: copied, challenge }),
           (): boolean => this.current(lease));
         if (!this.current(lease) || typeof text !== 'string' || text.length > 32768) { throw new Error('Stale Pro response'); }
         const reply = JSON.parse(text) as ProBackendReply;
         if (!reply || Object.keys(reply).length !== 2 || typeof reply.signedEntitlement !== 'string' ||
           typeof reply.pendingDelivery !== 'boolean') { throw new Error('Invalid Pro response'); }
+        verificationStage = 2;
         const snapshot = await this.signature.verify(reply.signedEntitlement, owner, this.clock.wallNow());
         if (snapshot.challenge !== challenge || snapshot.verifiedAt < startedAt - 60000 || !this.current(lease)) {
           throw new Error('Stale Pro signature');
         }
+        verificationStage = 3;
         const previous: ProCachedRecord | null = await this.store.read(lease.scope, this.clock.now());
         if (previous !== null) {
           const old: ProTrustedSnapshot = await this.signature.inspectCached(previous.signedEntitlement, owner, this.clock.wallNow());
@@ -153,12 +158,14 @@ export class ProTrustedEntitlementClient implements ProOrderVerifier {
         this.observed.set(owner, snapshot);
         // Cache and dequeue share one local transaction. A failure cannot report
         // online success or drop receipts that are still needed for recovery.
+        verificationStage = 4;
         await this.store.accept(lease.scope, snapshot, this.clock.wallNow(), copied);
         if (!this.current(lease)) { return this.unavailable(owner); }
         this.clock.resetAfterOnlineVerification();
         snapshot.result.fromCache = false;
         return snapshot.result;
       } catch (_error) {
+        if (DEBUG) { console.info(`[ProVerify] reconcile failed stage=${verificationStage}`); }
         const observed = this.observed.get(owner);
         if (observed !== undefined && observed.signedStatus !== 'verified' && this.current(lease)) {
           return this.observedFailure(owner, observed);
