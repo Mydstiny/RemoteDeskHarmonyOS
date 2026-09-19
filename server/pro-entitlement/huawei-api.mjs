@@ -115,7 +115,8 @@ export class HuaweiIapClient {
       purchaseToken: boundedString(reference.purchaseToken) });
     const result = await vendorPost(IAP_ROOT + path, body, { 'Content-Type': 'application/json;charset=UTF-8',
       Authorization: 'Bearer ' + iapAuthorization(body, this.configuration, this.now()) }, this.fetcher);
-    if (result.responseCode !== '0') fail('iap_request_failed');
+    if (result.responseCode !== '0') throw new Error('iap_request_failed', { cause:
+      typeof result.responseCode === 'string' && /^[0-9]{1,12}$/.test(result.responseCode) ? result.responseCode : undefined });
     return result;
   }
   async query(reference) {

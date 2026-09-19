@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
-import { ProHttpApi, startProReconciliationWorker } from '../../server/pro-entitlement/http-api.mjs';
+import { ProHttpApi, proFailureDiagnostic, startProReconciliationWorker } from '../../server/pro-entitlement/http-api.mjs';
 import { createProNodeListener } from '../../server/pro-entitlement/node-listener.mjs';
 
 const challenge = Buffer.alloc(32, 7).toString('base64url');
@@ -117,4 +117,24 @@ test('real loopback HTTP listener enforces routes and returns no grant for cross
   f.service.reconcile = async () => { throw new Error('order_belongs_to_another_account'); };
   const conflict = await fetch(base + '/v1/pro/reconcile', { ...options, body: JSON.stringify({ purchaseDataList: [], challenge }) });
   assert.equal(conflict.status, 409); assert.deepEqual(await conflict.json(), { error: 'purchase_binding_rejected' });
+});
+
+
+test('deployment diagnostics allow only fixed categories and numeric vendor codes; response remains private', async () => {
+  const sensitive = 'private-token-order-and-account';
+  for (const error of [new Error(sensitive), new Error('iap_request_failed', { cause: sensitive }),
+    new Error('iap_request_failed', { cause: { token: sensitive } }), new Error('invalid_jws', { cause: '1234' })]) {
+    assert.equal(JSON.stringify(proFailureDiagnostic(error)).includes(sensitive), false);
+    assert.equal(proFailureDiagnostic(error).vendorCode, undefined);
+  }
+  assert.deepEqual(proFailureDiagnostic(new Error('iap_request_failed', { cause: '100123' })),
+    { code: 'iap_request_failed', vendorCode: '100123' });
+  const f = fixture(); const messages = [];
+  f.service.reconcile = async () => { throw new Error('invalid_iap_certificate', { cause: sensitive }); };
+  const api = new ProHttpApi(f.service, f.accounts, 4, value => { messages.push(value); throw new Error('logger failed'); });
+  const reply = await api.handle(request('/v1/pro/reconcile', { purchaseDataList: ['private-receipt'], challenge }));
+  assert.equal(reply.status, 503); assert.deepEqual(await reply.json(), { error: 'verification_unavailable' });
+  assert.deepEqual(messages, [{ code: 'invalid_iap_certificate' }]);
+  f.service.reconcile = async () => ({});
+  assert.equal((await api.handle(request('/v1/pro/reconcile', { purchaseDataList: [], challenge }))).status, 200);
 });

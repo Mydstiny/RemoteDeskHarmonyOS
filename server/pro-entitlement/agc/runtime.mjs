@@ -90,7 +90,9 @@ export async function createSandboxRuntime({ privateDirectory = join(root, 'priv
   const iap = new HuaweiIapClient({ ...identity, issuerId: identity.iapIssuerId, keyId: identity.iapKeyId, privateKey: iapKey }, verifier);
   const fulfillment = new ProFulfillmentService(ledger, iap, signer);
   const sessions = new ProSessionService(identity, new HuaweiAuthorizationCodeVerifier(oauth.clientId, oauth.clientSecret), sessionKey);
-  const api = new ProCloudApi(new ProHttpApi(fulfillment, sessions));
+  const api = new ProCloudApi(new ProHttpApi(fulfillment, sessions, 4, diagnostic => {
+    process.stdout.write(JSON.stringify({ event: 'pro_verification_failure', ...diagnostic }) + '\n');
+  }));
   let working = false;
   return { api, async worker() {
     if (working) return { checked: 0, successful: 0, busy: true };

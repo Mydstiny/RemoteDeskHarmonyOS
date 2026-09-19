@@ -40,6 +40,20 @@ async function requestBody(request, maximum = MAX_BODY) {
 function onlyKeys(body, allowed) {
   if (Object.keys(body).some(key => !allowed.includes(key))) throw new HttpFailure(400, 'invalid_request');
 }
+// Only fixed, non-identifying categories reach the deployment logger.
+const DIAGNOSTIC_CODES = new Set(['invalid_purchase_data', 'invalid_jws', 'invalid_base64', 'invalid_json',
+  'invalid_object', 'invalid_string', 'vendor_request_failed', 'iap_request_failed', 'invalid_iap_header',
+  'invalid_iap_certificate', 'iap_verification_failed', 'order_scope_or_freshness_invalid',
+  'invalid_finish_status', 'invalid_finish_requirement', 'invalid_revocation', 'purchase_not_completed',
+  'purchase_intent_not_found', 'order_belongs_to_another_account', 'order_binding_mismatch',
+  'purchase_token_already_bound', 'ledger_integrity_error', 'ledger_transaction_conflict',
+  'ledger_configuration_mismatch', 'stale_order_response', 'verification_busy']);
+export function proFailureDiagnostic(error) {
+  const code = DIAGNOSTIC_CODES.has(error?.message) ? error.message : 'unclassified';
+  const vendorCode = code === 'iap_request_failed' && typeof error?.cause === 'string' &&
+    /^[0-9]{1,12}$/.test(error.cause) ? error.cause : undefined;
+  return vendorCode === undefined ? { code } : { code, vendorCode };
+}
 function failure(error) {
   if (error instanceof HttpFailure) return response(error.status, { error: error.message });
   if (error?.message === 'account_verification_failed') return response(401, { error: 'account_login_required' });
@@ -57,9 +71,10 @@ export class ProHttpApi {
   #accounts;
   #active = 0;
   #maximum;
-  constructor(service, accounts, maximumConcurrent = 4) {
+  #diagnostic;
+  constructor(service, accounts, maximumConcurrent = 4, diagnostic = () => {}) {
     if (!Number.isInteger(maximumConcurrent) || maximumConcurrent < 1 || maximumConcurrent > 16) throw new Error('invalid_concurrency');
-    this.#service = service; this.#accounts = accounts; this.#maximum = maximumConcurrent;
+    this.#service = service; this.#accounts = accounts; this.#maximum = maximumConcurrent; this.#diagnostic = diagnostic;
   }
   async handle(request) {
     const url = new URL(request.url);
@@ -109,7 +124,10 @@ export class ProHttpApi {
         throw new HttpFailure(400, 'invalid_request');
       }
       return response(200, await this.#service.reconcile(owner, body.purchaseDataList, request.signal, body.challenge));
-    } catch (error) { return failure(error); }
+    } catch (error) {
+      try { this.#diagnostic(proFailureDiagnostic(error)); } catch { /* logging cannot affect verification */ }
+      return failure(error);
+    }
     finally { this.#active--; }
   }
 }
