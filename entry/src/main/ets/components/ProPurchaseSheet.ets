@@ -1,3 +1,4 @@
+import { ProBadge } from './ProBadge';
 import { DEBUG } from 'BuildProfile';
 import { ProAppIconPanel } from './ProAppIconPanel';
 import { ProUsbFidoProbePanel } from './ProUsbFidoProbePanel';
@@ -107,11 +108,14 @@ export struct ProPurchaseSheet {
         .backgroundColor(this.pal().surface).borderRadius(14)
       Column({ space: 6 }) {
         Row({ space: 8 }) {
-          Text(feature.title).fontSize(16).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
+          Text(feature.title).fontSize(16).fontWeight(FontWeight.Medium).fontColor(this.pal().text).layoutWeight(1)
+          ProBadge()
+        }.width('100%')
+        if (feature.availability !== 'available') {
           Text(feature.availability === 'planned' ? '规划中' : feature.availability === 'experimental' ?
             '验证中' : feature.availability === 'disabled' ? '暂不可用' : 'Pro').fontSize(10).fontColor(this.pal().text2)
             .padding({ left: 7, right: 7, top: 3, bottom: 3 }).backgroundColor(this.pal().surface).borderRadius(6)
-        }.width('100%')
+        }
         Text(feature.description).fontSize(13).fontColor(this.pal().text2).lineHeight(20).width('100%')
       }.layoutWeight(1).alignItems(HorizontalAlign.Start)
     }.width('100%').padding(16).backgroundColor(this.pal().card).borderRadius(20)

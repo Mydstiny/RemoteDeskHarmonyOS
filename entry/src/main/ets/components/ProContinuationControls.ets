@@ -1,3 +1,4 @@
+import { ProBadge } from './ProBadge';
 import { common } from '@kit.AbilityKit';
 import { window, LengthMetrics } from '@kit.ArkUI';
 import { Palette, buildDark, buildLight } from '../common/Theme';
@@ -27,6 +28,7 @@ export struct ProContinuationControls {
   aboutToDisappear(): void { this.stop?.(); this.stop = null; }
   @Builder private controls() {
     Column({ space: 8 }) {
+      Row() { Blank(); ProBadge() }.width('100%')
       Button(this.status === '' ? '准备同账号接续' : '重新准备接续')
         .width('100%').constraintSize({ minHeight: 44 }).fontSize(14)
         .backgroundColor(Color.Transparent).fontColor(this.accent).onClick(this.onPrepare)

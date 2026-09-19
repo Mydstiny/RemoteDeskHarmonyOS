@@ -1,3 +1,4 @@
+import { ProBadge } from './ProBadge';
 import { Palette, buildDark, buildLight } from '../common/Theme';
 import { ProAppRuntime } from '../services/pro/ProAppRuntime';
 import { ProAppIcons } from '../services/pro/ProAppIcons';
@@ -72,7 +73,10 @@ export struct ProAppIconPanel {
   build() {
     if (this.state.supported) {
       Column({ space: 12 }) {
-        Text('应用图标').fontSize(16).fontWeight(FontWeight.Medium).fontColor(this.pal().text).width('100%')
+        Row() {
+          Text('应用图标').fontSize(16).fontWeight(FontWeight.Medium).fontColor(this.pal().text).layoutWeight(1)
+          ProBadge()
+        }.width('100%')
         Text('当前：' + this.name()).fontSize(13).fontColor(this.pal().text2).width('100%')
         ProFeatureGate({ featureId: 'pro.personalization.appIcon', content: (): void => { this.presets(); } })
         if (!this.state.loaded || this.state.currentName !== '') {

@@ -15,7 +15,7 @@ const rdp=Object.assign(new RemoteHost(),{id:'rdpHost',label:'Desktop',protocol:
 const filter=load('services/HostListFilterService'),group=load('services/HostGroupCardPolicy');
 assert.equal(projected.id,'ai:codexHost');assert.equal(projected.protocol,'ai');assert.equal(load('services/ai/AiHostService').aiHostId(projected),'codexHost');
 assert.equal(group.buildHostGroupCards([projected,rdp]).find(row=>row.type==='ai').hosts.length,1);
-assert.equal(group.hostGroupTitle('ai'),'远程 AI · Pro');
+assert.equal(group.hostGroupTitle('ai'),'远程 AI');
 assert.deepEqual(Array.from(filter.visibleHostsForHostListMode([projected,rdp],'',true,'xl','',8),host=>host.id),['ai:codexHost']);
 assert.equal(filter.visibleHostsForHostListMode([projected,rdp],'codex',false,'sm','',0).length,1);
 for(let i=0;i<4;i++)assert.equal(filter.hostListProtocolForTab(i),['rdp','rustdesk','ssh','vnc'][i]);

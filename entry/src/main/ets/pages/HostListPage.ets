@@ -1,3 +1,4 @@
+import { ProBadge } from '../components/ProBadge';
 import { AiHostEditor } from '../components/ai/AiHostEditor';
 import { AiHostService, projectAiHost, aiHostId } from '../services/ai/AiHostService';
 import { AiHost } from '../services/ai/AiModels';
@@ -586,6 +587,7 @@ import {
   SETTINGS_SECTION_RUSTDESK,
   SETTINGS_SECTION_SSH,
   SETTINGS_SECTION_VNC,
+  SETTINGS_SECTION_AI,
   SETTINGS_SECTION_SECURITY,
   SETTINGS_SECTION_TUTORIAL,
   SETTINGS_RDP_SWITCH_ROW_COUNT,
@@ -10997,6 +10999,7 @@ struct HostListPage {
   }
 
   private hostPlatformText(host: RemoteHost): string {
+    if (host.protocol === 'ai') { return host.username === 'DSH' ? 'DSH' : 'Codex'; }
     if (host.rustdeskProManaged && host.rustdeskProPlatform.trim() !== '') {
       return host.rustdeskProPlatform.trim();
     }
@@ -13212,6 +13215,7 @@ struct HostListPage {
 
   private hostGroupSummaryText(card: HostGroupCardModel): string {
     if (card.hosts.length === 0) { return '暂无主机'; }
+    if (card.type === 'ai') { return 'Codex / DSH'; }
     if (card.type === 'rustdesk' && !this.rustdeskPresenceDetectionEnabled) {
       return '';
     }
@@ -13250,6 +13254,7 @@ struct HostListPage {
   }
 
   private hostGroupStatusLine(host: RemoteHost): string {
+    if (host.protocol === 'ai') { return '局域网直连'; }
     if (host.protocol === 'rustdesk' && !this.rustdeskPresenceDetectionEnabled) {
       return '';
     }
@@ -13349,6 +13354,7 @@ struct HostListPage {
             .fontColor(this.pal().text3).fontFamily(this.font()).margin({ top: 3 })
             .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
         }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: this.breakpoint === 'sm' ? 8 : 10 })
+        if (card.type === 'ai') { ProBadge().margin({ right: 8 }).alignSelf(ItemAlign.Start) }
           SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(this.breakpoint === 'sm' ? 16 : 18)
           .fontColor([this.pal().text3])
           .rotate({ angle: this.expandedHostGroup === card.type ? 90 : 0 })
@@ -13396,7 +13402,12 @@ struct HostListPage {
 
   @Builder hostGroupedProtocolDetails(host: RemoteHost) {
     Row() {
-      if (host.protocol === 'rustdesk') {
+      if (host.protocol === 'ai') {
+        Text(host.username === 'DSH' ? 'DSH' : 'Codex').fontSize(11).fontColor(this.pal().text3).width(42)
+        Text(this.protectedHostCardValue(host, formatEndpointFieldsHostPort(host.host, host.port)))
+          .fontSize(this.breakpoint === 'sm' ? 12 : 13).fontColor(this.pal().text2)
+          .fontFamily(this.font()).layoutWeight(1).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+      } else if (host.protocol === 'rustdesk') {
         Text('ID').fontSize(this.breakpoint === 'sm' ? 12 : 13).fontColor(this.pal().text3).width(30)
         Text(this.protectedHostCardValue(host, hostIdentifier(host)))
           .fontSize(this.breakpoint === 'sm' ? 15 : 16)
@@ -13475,6 +13486,7 @@ struct HostListPage {
         // Keep the top action row for direct hosts as well. Direct hosts do
         // not probe, but the reserved probe slot keeps every action row aligned.
         Row() {
+          if (host.protocol === 'ai') { ProBadge() }
           if (this.hostGroupHostModeLabel(host) !== '') {
             Text(this.hostGroupHostModeLabel(host))
               .fontSize(this.breakpoint === 'sm' ? 10 : 11)
@@ -13496,7 +13508,7 @@ struct HostListPage {
             .backgroundColor(this.pal().surface).accessibilityText('检测在线状态')
             .enabled(!this.hostPresenceProbeBusyIds.has(host.id))
             .onClick((): void => { void this.probeHostConnectivity(host); })
-          } else {
+          } else if (host.protocol !== 'ai') {
             Blank()
               .width(this.breakpoint === 'sm' ? 38 : 40)
               .height(this.breakpoint === 'sm' ? 38 : 40)
@@ -14388,10 +14400,14 @@ struct HostListPage {
             })
         }
         Column() {
+          if (host.protocol === 'ai') {
+            SymbolGlyph(protocolIcon('ai')).fontSize(this.breakpoint === 'sm' ? 24 : 26).fontColor([Color.White])
+          } else {
           Image(host.protocol === 'ssh' ? $r('app.media.icon_terminal') :
             (host.protocol === 'rdp' ? $r('app.media.icon_desktop') : $r('app.media.icon_laptop')))
             .width(this.breakpoint === 'sm' ? 24 : 26)
             .height(this.breakpoint === 'sm' ? 24 : 26).fillColor(Color.White)
+          }
         }
         .width(this.breakpoint === 'sm' ? 42 : 46).height(this.breakpoint === 'sm' ? 42 : 46)
         .borderRadius(this.breakpoint === 'sm' ? 21 : 14)
@@ -14437,7 +14453,7 @@ struct HostListPage {
           Row() {
             this.HostGroupChip(host)
             if (host.groupId.length > 0) { Blank().width(6) }
-            if (host.protocol !== 'ssh' && host.protocol !== 'rustdesk') {
+            if (host.protocol !== 'ssh' && host.protocol !== 'rustdesk' && host.protocol !== 'ai') {
               this.HostConnectionHealth(host)
             }
           }.margin({ top: 2 })
@@ -14445,6 +14461,7 @@ struct HostListPage {
           .onClick((): void => { this.handleHostCardClick(host); })
 
         Column() {
+          if (host.protocol === 'ai') { ProBadge() }
           if (host.protocol === 'rustdesk') {
             Row() {
               ForEach(resolveRustDeskBadges(host.rustdeskDirectEnabled,
@@ -15537,6 +15554,7 @@ struct HostListPage {
       .alignItems(HorizontalAlign.Start)
       .layoutWeight(1)
 
+      if (section === SETTINGS_SECTION_AI) { ProBadge().margin({ right: 8 }).alignSelf(ItemAlign.Start) }
       SymbolGlyph($r('sys.symbol.chevron_right'))
         .fontSize(18)
         .fontColor([this.pal().text3])
@@ -16408,11 +16426,6 @@ struct HostListPage {
             'VNC', '连接、画面、输入、性能监视和证书信任')
         }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 10 })
 
-        ListItem() {
-          this.protocolActionRow(protocolIcon('ai'), '远程 AI · Pro', '电脑配对、显示偏好与本机数据管理',
-            (): void => { router.pushUrl({ url: 'pages/AiSettingsPage' }); })
-        }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 10 })
-
         // --- VNC protocol settings: leaf bindSheets, not a cloud-data card ---
         ListItem() {
           Column() {
@@ -16470,6 +16483,33 @@ struct HostListPage {
         .translate({ y: this.settingsSectionExpanded(SETTINGS_SECTION_VNC) ? 0 : -8 })
         .clip(true)
         .animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
+
+        ListItem() {
+          this.settingsAccordionHeader(SETTINGS_SECTION_AI, protocolIcon('ai'),
+            '远程 AI', '连接与配对、显示、数据与电脑端安装')
+        }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 10 })
+        ListItem() {
+          Column() {
+            Column() {
+              this.protocolActionRow(protocolIcon('ai'), '连接与配对', '主机管理、默认 AI 与配对',
+                (): void => { router.pushUrl({ url: 'pages/AiSettingsPage', params: { section: 'hosts' } }); })
+              this.cardDivider()
+              this.protocolActionRow(protocolIcon('ai'), '显示与恢复', '工具过程、文字大小与前台恢复',
+                (): void => { router.pushUrl({ url: 'pages/AiSettingsPage', params: { section: 'display' } }); })
+              this.cardDivider()
+              this.protocolActionRow(protocolIcon('ai'), '本机数据管理', '配置导入导出与操作记录',
+                (): void => { router.pushUrl({ url: 'pages/AiSettingsPage', params: { section: 'data' } }); })
+              this.cardDivider()
+              this.protocolActionRow(protocolIcon('ai'), '电脑端安装', 'Codex 与 DSH 安装指引',
+                (): void => { router.pushUrl({ url: 'pages/AiSettingsPage', params: { section: 'install' } }); })
+            }.borderRadius(24).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
+              .border({ width: 0.5, color: this.pal().cardBorder })
+          }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 20 })
+        }.constraintSize({ maxHeight: this.settingsSectionExpanded(SETTINGS_SECTION_AI) ? 400 : 0 })
+          .opacity(this.settingsSectionExpanded(SETTINGS_SECTION_AI) ? 1 : 0)
+          .scale({ x: 1, y: this.settingsSectionExpanded(SETTINGS_SECTION_AI) ? 1 : 0.98 })
+          .translate({ y: this.settingsSectionExpanded(SETTINGS_SECTION_AI) ? 0 : -8 })
+          .clip(true).animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
 
         ListItem() {
           this.settingsAccordionHeader(SETTINGS_SECTION_MOONLIGHT, protocolIcon('moonlight'),

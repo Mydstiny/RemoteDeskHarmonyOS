@@ -1,3 +1,4 @@
+import { ProBadge } from './ProBadge';
 import { window } from '@kit.ArkUI';
 import { Palette, buildDark, buildLight } from '../common/Theme';
 import { ProFeatureGate } from './ProFeatureGate';
@@ -23,6 +24,7 @@ export struct ProConnectionShareControls {
   aboutToDisappear(): void { this.stop?.(); this.stop = null; }
   @Builder private controls() {
     Column({ space: 8 }) {
+      Row() { Blank(); ProBadge() }.width('100%')
       Button(this.message === '' ? '准备碰一碰分享连接' : '重新准备连接分享')
         .width('100%').constraintSize({ minHeight: 44 }).fontSize(14)
         .backgroundColor(Color.Transparent).fontColor(this.accent).onClick(this.onPrepare)

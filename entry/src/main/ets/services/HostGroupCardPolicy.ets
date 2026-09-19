@@ -33,7 +33,7 @@ export function hostGroupTypes(): HostGroupType[] {
 
 export function hostGroupTitle(type: HostGroupType): string {
   switch (type) {
-    case 'ai': return '远程 AI · Pro';
+    case 'ai': return '远程 AI';
     case 'rdp': return 'RDP';
     case 'rustdesk': return 'RustDesk';
     case 'ssh': return 'SSH';

@@ -1,3 +1,4 @@
+import { ProBadge } from '../components/ProBadge';
 import { ProContinuationControls } from '../components/ProContinuationControls';
 import { ProConnectionShareControls } from '../components/ProConnectionShareControls';
 import { ProConnectionShareSender } from '../services/pro/ProConnectionShareSender';
@@ -18758,6 +18759,7 @@ struct SshTerminal {
   @Builder
   SftpKnockControl() {
     Column({ space: 6 }) {
+      Row() { Blank(); ProBadge() }.width('100%')
       Button(this.sftpKnockActive ? '停止接收手机文件' : '准备碰一碰接收')
         .height(44).fontSize(13).enabled(this.sftpKnockActive || !this.sftpBusy)
         .onClick((): void => { this.armSftpKnock(); })

@@ -73,18 +73,20 @@ function authority() {
 }
 const editorFile = 'entry/src/main/ets/components/ai/AiHostEditor.ets';
 const workspaceFile = 'entry/src/main/ets/pages/RemoteAiWorkspace.ets';
-function editor({ blocked = false } = {}) {
-  const state = authority(), gate = deferred();
+async function editor({ blocked = false, defaultsBlocked = false, defaultBackend = 'codex' } = {}) {
+  const state = authority(), gate = deferred(); let initializes = 0;
   Object.assign(state, { pairs: [], saves: [], completions: [], backs: 0, closes: 0 });
   state.page = loadClass(editorFile, 'AiHostEditor', {
     ...models, aiRandomId: () => 'fixture-host', AiAccess: { getInstance: () => state.access },
-    AiLocalStore: { getInstance: () => ({ initialize: () => blocked ? gate.promise : Promise.resolve(),
+    AiLocalStore: { getInstance: () => ({ initialize: () => (++initializes === 1 ? defaultsBlocked : blocked) ? gate.promise : Promise.resolve(),
+      settings: async () => ({ ...models.defaultAiSettings(), defaultBackend }),
       saveHost: async (_lease, host) => { state.saves.push(JSON.parse(JSON.stringify(host))); } }) },
     AiBridgeClient: { pair: async (host, invitation) => {
       assert.ok(state.granted, 'Pair called without current access'); state.pairs.push({ host: JSON.parse(JSON.stringify(host)), invitation });
     } }, getContext: () => ({}), aiErrorText: value => value
   });
   state.release = gate.resolve; state.page.aboutToAppear();
+  for (let i = 0; i < 5; i++) await Promise.resolve();
   state.page.label = 'Fixture'; state.page.address = '192.0.2.1';
   state.page.onSaved = (id, connect) => state.completions.push({ id, connect });
   state.page.onBackToProtocols = () => { state.backs++; }; state.page.onClose = () => { state.closes++; };
@@ -123,8 +125,46 @@ function cleanDrafts(page) {
   assert.equal(page.approval, null);
 }
 const cases = [
+  ['settings write failure restores displayed settings without changing another account', async () => {
+    for (const changeAccount of [false, true]) {
+      const state = authority(); let attempted;
+      const page = loadClass('entry/src/main/ets/pages/AiSettingsPage.ets', 'AiSettingsPage', {
+        ...models, AiAccess: { getInstance: () => state.access }, aiErrorText: value => value,
+        AiLocalStore: { getInstance: () => ({ saveSettings: async (_account, next) => {
+          attempted = next;
+          if (changeAccount) { state.owner = 'owner-' + 'b'.repeat(64); page.settings = { ...models.defaultAiSettings(), textSize: 21 }; }
+          throw Error('storage unavailable');
+        } }) }
+      });
+      page.alive = true; page.account = state.access.capture();
+      page.settings = { ...models.defaultAiSettings(), textSize: 19, defaultBackend: 'dsh' }; page.save();
+      for (let i = 0; i < 8; i++) await Promise.resolve();
+      assert.equal(attempted.defaultBackend, 'dsh'); assert.equal(attempted.textSize, 19);
+      assert.equal(page.settings.textSize, changeAccount ? 21 : 15);
+      assert.equal(page.busy, false); assert.equal(page.error, 'storage unavailable');
+    }
+  }],
+  ['new host uses saved default backend and matching port', async () => {
+    const state = await editor({ defaultBackend: 'dsh' });
+    assert.equal(state.page.backend, 'dsh'); assert.equal(state.page.port, '9444');
+    assert.equal(state.page.defaultsPending, false); state.page.aboutToDisappear();
+  }],
+  ['pending defaults freeze user edits and stale account cannot populate form', async () => {
+    const state = await editor({ defaultsBlocked: true, defaultBackend: 'dsh' }), page = state.page;
+    page.selectBackend('dsh'); page.nextStep(); await page.save(true);
+    assert.equal(page.backend, 'codex'); assert.equal(page.step, 1); assert.equal(state.saves.length, 0);
+    state.owner = 'owner-' + 'b'.repeat(64); state.publish(); state.release();
+    for (let i = 0; i < 5; i++) await Promise.resolve();
+    assert.equal(page.backend, 'codex'); assert.equal(page.draft, null); assert.equal(page.defaultsPending, false);
+    page.aboutToDisappear();
+  }],
+  ['edit retains complete form even when new-host preference is modern', async () => {
+    const state = await editor(), page = state.page; page.modern = true;
+    assert.equal(page.wizard(), true); page.host = models.emptyAiHost(state.owner, 'existing', 'dsh');
+    assert.equal(page.wizard(), false); page.aboutToDisappear();
+  }],
   ['modern validation, two-step return and FAB protocol return', async () => {
-    const state = editor(), page = state.page; page.modern = true; page.canReturnToProtocols = true;
+    const state = await editor(), page = state.page; page.modern = true; page.canReturnToProtocols = true;
     page.address = ''; page.nextStep(); assert.equal(page.step, 1);
     page.address = '192.0.2.1'; page.nextStep(); assert.equal(page.step, 2);
     page.previousStep(); assert.equal(page.step, 1); assert.equal(state.backs, 0);
@@ -136,25 +176,25 @@ const cases = [
     const source = read(editorFile);
     const host = source.match(/if \(([^\n]+)\) \{ this\.hostFields\(\) \}/)[1];
     const pair = source.match(/if \(([^\n]+)\) \{ this\.pairingFields\(\) \}/)[1];
-    assert.equal(evaluate(host, { modern: false, step: 1 }), true); assert.equal(evaluate(pair, { modern: false, step: 1 }), true);
-    assert.equal(evaluate(host, { modern: true, step: 1 }), true); assert.equal(evaluate(pair, { modern: true, step: 1 }), false);
-    assert.equal(evaluate(host, { modern: true, step: 2 }), false); assert.equal(evaluate(pair, { modern: true, step: 2 }), true);
+    assert.equal(evaluate(host, { modern: false, step: 1, wizard() { return this.modern; } }), true); assert.equal(evaluate(pair, { modern: false, step: 1, wizard() { return this.modern; } }), true);
+    assert.equal(evaluate(host, { modern: true, step: 1, wizard() { return this.modern; } }), true); assert.equal(evaluate(pair, { modern: true, step: 1, wizard() { return this.modern; } }), false);
+    assert.equal(evaluate(host, { modern: true, step: 2, wizard() { return this.modern; } }), false); assert.equal(evaluate(pair, { modern: true, step: 2, wizard() { return this.modern; } }), true);
   }],
   ['same backend keeps custom port and busy methods cannot switch', async () => {
-    const state = editor(), page = state.page; page.port = '12345'; page.invite = 'fixture'; page.selectBackend('codex');
+    const state = await editor(), page = state.page; page.port = '12345'; page.invite = 'fixture'; page.selectBackend('codex');
     assert.equal(page.port, '12345'); assert.equal(page.invite, 'fixture');
     page.busy = true; page.selectBackend('dsh'); page.nextStep(); page.previousStep(); await page.save(true);
     assert.equal(page.backend, 'codex'); assert.equal(page.step, 1); assert.equal(state.pairs.length + state.saves.length, 0);
     page.busy = false; page.selectBackend('dsh'); assert.equal(page.port, '9444'); assert.equal(page.invite, ''); page.aboutToDisappear();
   }],
   ['save freezes both host and invitation before initialization', async () => {
-    const state = editor({ blocked: true }), page = state.page; page.invite = 'original invitation';
+    const state = await editor({ blocked: true }), page = state.page; page.invite = 'original invitation';
     const saving = page.save(true); page.invite = 'replacement invitation'; page.label = 'replacement label'; state.release(); await bounded(saving);
     assert.equal(state.pairs.length, 1); assert.equal(state.pairs[0].invitation, 'original invitation');
     assert.equal(state.pairs[0].host.label, 'Fixture'); assert.equal(state.saves.length, 0); assert.equal(state.completions.length, 1); page.aboutToDisappear();
   }],
   ...['background', 'exit', 'revoke_restore', 'account'].map(reason => [reason + ' during initialization cannot downgrade or dispatch the old save', async () => {
-    const state = editor({ blocked: true }), page = state.page; page.invite = 'fixture invitation'; const saving = page.save(true);
+    const state = await editor({ blocked: true }), page = state.page; page.invite = 'fixture invitation'; const saving = page.save(true);
     if (reason === 'background') { page.inBackground = true; page.onBackgroundChanged(); page.inBackground = false; }
     if (reason === 'exit') page.aboutToDisappear();
     if (reason === 'revoke_restore') { state.granted = false; state.publish(); state.granted = true; state.publish(); }
@@ -163,7 +203,7 @@ const cases = [
     if (reason !== 'exit') page.aboutToDisappear();
   }]),
   ['late invitation IME callbacks honor alive, background, busy and access', async () => {
-    const state = editor(), page = state.page, change = callback(editorFile, '.onChange(', page);
+    const state = await editor(), page = state.page, change = callback(editorFile, '.onChange(', page);
     for (const [key, value] of [['alive', false], ['inBackground', true], ['busy', true], ['allowed', false]]) {
       Object.assign(page, { alive: true, inBackground: false, busy: false, allowed: true, invite: '' }); page[key] = value;
       change('late fixture invitation'); assert.equal(page.invite, '', key);
