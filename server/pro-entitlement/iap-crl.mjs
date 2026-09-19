@@ -2,7 +2,19 @@ import { certificateCrlUrls, fail } from './iap-crypto.mjs';
 
 const MAX_BYTES = 2 * 1024 * 1024;
 const CACHE_MS = 300000;
+// Exact public CDPs observed in the pinned Huawei chain. Never follow a
+// server-selected redirect or admit another CDN path. Revocation signatures
+// and validity are still checked by OpenSSL before any cache admission.
+const FIXED_CRL_URLS = new Map([
+  ['http://h5hosting-drcn.dbankcdn.cn/cch5/crl/haicag3/HuaweiCBGHAIG3crl.crl',
+    'https://h5hosting-drcn.dbankcdn.cn/cch5/crl/haicag3/HuaweiCBGHAIG3crl.crl'],
+  ['https://h5hosting-drcn.dbankcdn.cn/cch5/crl/haicag3/HuaweiCBGHAIG3crl.crl',
+    'https://h5hosting-drcn.dbankcdn.cn/cch5/crl/haicag3/HuaweiCBGHAIG3crl.crl'],
+  ['http://cpki-caweb.huawei.com/cpki/servlet/crlFileDown.crl?certype=10&/root_g2_crl.crl',
+    'https://h5hosting.dbankcdn.com/cch5/crl/pki_CRL_root_g2_crl/root_g2_crl.crl']
+]);
 function supportedUrl(value) {
+  if (FIXED_CRL_URLS.has(value)) return true;
   try {
     const url = new URL(value);
     if (!['http:', 'https:'].includes(url.protocol) || url.hostname !== 'pki.consumer.huawei.com' ||
@@ -42,11 +54,11 @@ export class HuaweiIapCrlSource {
   }
   async prepare(certificates) {
     if (!Array.isArray(certificates) || certificates.length !== 2) fail('iap_crl_path_required');
-    const urls = [...new Set(certificates.map(certificate => {
-      const distributions = certificateCrlUrls(certificate);
+    const allDistributions = certificates.map(certificateCrlUrls);
+    const urls = [...new Set(allDistributions.map(distributions => {
       const url = distributions.find(supportedUrl);
-      if (!url) throw new Error('iap_crl_distribution_unsupported', { cause: distributions });
-      return url;
+      if (!url) throw new Error('iap_crl_distribution_unsupported', { cause: allDistributions.flat() });
+      return FIXED_CRL_URLS.get(url) || url;
     }))];
     const now = this.#now();
     if (!Number.isSafeInteger(now) || now <= 0) fail('invalid_clock');
