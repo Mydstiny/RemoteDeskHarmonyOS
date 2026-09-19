@@ -7,7 +7,7 @@ binutils-2.45.1-r1 - Tools necessary to build programs
 build-base-0.5-r4 - Meta package for build base
 busybox-1.37.0-r31 - Size optimized toolbox of many common UNIX utilities
 busybox-binsh-1.37.0-r31 - busybox ash /bin/sh
-ca-certificates-20260611-r0 - Common CA certificates PEM files from Mozilla
+ca-certificates-20260909-r0 - Common CA certificates PEM files from Mozilla
 ca-certificates-bundle-20260611-r0 - Pre generated bundle of Mozilla certificates
 file-5.47-r2 - File type identification utility
 fortify-headers-3.0.1-r2 - standalone fortify source implementation

@@ -3,12 +3,12 @@
   "dataLicense": "CC0-1.0",
   "SPDXID": "SPDXRef-DOCUMENT",
   "name": "RemoteDesk Pro AGC static PKIX runtime",
-  "documentNamespace": "https://github.com/Mydstiny/RemoteDeskHarmonyOS/spdx/pro-agc-pkix/6e19cf9d386056d618c1066a71f8b949c394902c4c703542bdafd1519c0fe488",
+  "documentNamespace": "https://github.com/Mydstiny/RemoteDeskHarmonyOS/spdx/pro-agc-pkix/7b5e6b696cc8a38d204717b692c6c7ae4443d98c23339cdab174fef32bd7f759",
   "creationInfo": {
     "creators": [
       "Tool: RemoteDesk Pro deployment inventory"
     ],
-    "created": "2026-09-08T02:30:00Z"
+    "created": "2026-09-19T05:25:14Z"
   },
   "packages": [
     {
@@ -69,7 +69,7 @@
       "checksums": [
         {
           "algorithm": "SHA256",
-          "checksumValue": "6e19cf9d386056d618c1066a71f8b949c394902c4c703542bdafd1519c0fe488"
+          "checksumValue": "7b5e6b696cc8a38d204717b692c6c7ae4443d98c23339cdab174fef32bd7f759"
         }
       ],
       "licenseConcluded": "Apache-2.0 AND MIT AND (GPL-3.0-or-later WITH GCC-exception-3.1)",

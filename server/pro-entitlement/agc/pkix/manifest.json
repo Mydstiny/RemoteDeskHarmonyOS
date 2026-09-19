@@ -6,7 +6,7 @@
   "architecture": "x64",
   "binary": {
     "path": "bin/openssl",
-    "sha256": "6e19cf9d386056d618c1066a71f8b949c394902c4c703542bdafd1519c0fe488",
+    "sha256": "7b5e6b696cc8a38d204717b692c6c7ae4443d98c23339cdab174fef32bd7f759",
     "bytes": 8403352
   },
   "source": {
@@ -53,5 +53,10 @@
       "name": "fortify headers license",
       "url": "https://raw.githubusercontent.com/jvoisin/fortify-headers/3.0.1/LICENSE"
     }
-  ]
+  ],
+  "rebuild": {
+    "date": "2026-09-19",
+    "reason": "Previous temporary artifact absent; same pinned OpenSSL source and Alpine image rebuilt for sandbox deployment.",
+    "sourceArchiveVerified": true
+  }
 }

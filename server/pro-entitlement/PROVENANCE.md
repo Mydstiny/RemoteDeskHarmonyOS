@@ -32,4 +32,6 @@
 - 官方 [调用函数](https://developer.huawei.com/consumer/cn/doc/harmonyos-guides/cloudfoundation-call-function)、[公共模块](https://developer.huawei.com/consumer/cn/doc/harmonyos-references/cloudfoundation-cloudcommon) 和 [Node.js 入口](https://developer.huawei.com/consumer/cn/doc/harmonyos-guides/cloudfoundation-develop-function-nodejs)：函数调用不需要用户级 AuthProvider；用户账号归属仍由独立 Pro 短会话验证。HTTP 触发器需要应用侧网关鉴权，函数通过 callback 返回 JSON 兼容对象。
 - 当前 API26 `@hms.core.deviceCloudGateway.cloudFunction.d.ts`、`cloudCommon.d.ts` 证实 `call`、`init` 自 API12 提供；官方设备约束说明 PC/2in1 从 API23 支持。保留的最低 API23 覆盖所有目标设备；不使用本地 `localUrl`、安装预加载或不存在的取消接口。
 
-私有沙盒包新增静态 PKIX 运行时：OpenSSL 3.5.8，Linux x64、musl 1.2.6-r2、GCC 15.2.0-r5；二进制 SHA-256 为 `6e19cf9d386056d618c1066a71f8b949c394902c4c703542bdafd1519c0fe488`。来源归档、构建镜像摘要、参数、包清单、许可证逐文件哈希和独立 SBOM 均在 [agc/pkix](agc/pkix/manifest.json)。已在实际 Linux Node22 环境使用该字节执行 19 项 PKIX/厂商协议测试；AGC 实例的冷启动和真实 IAP 另行验证。私有包带可执行文件和受保护凭据；Git/HAP 均不保存这两类材料。受管 AGC Node/系统不在本包中复制，包 SBOM 不代表服务商整个运行镜像。
+私有沙盒包新增静态 PKIX 运行时：OpenSSL 3.5.8，Linux x64、musl 1.2.6-r2、GCC 15.2.0-r5；二进制 SHA-256 为 `7b5e6b696cc8a38d204717b692c6c7ae4443d98c23339cdab174fef32bd7f759`。来源归档、构建镜像摘要、参数、包清单、许可证逐文件哈希和独立 SBOM 均在 [agc/pkix](agc/pkix/manifest.json)。已在实际 Linux Node22 环境使用该字节执行 19 项 PKIX/厂商协议测试；AGC 实例的冷启动和真实 IAP 另行验证。私有包带可执行文件和受保护凭据；Git/HAP 均不保存这两类材料。受管 AGC Node/系统不在本包中复制，包 SBOM 不代表服务商整个运行镜像。
+
+2026-09-19：原临时部署产物已不在本机，使用上述同一源码、构建镜像和脚本重新生成并锁定新字节；构建包清单仅 ca-certificates 更新为 20260909-r0。未做新旧二进制差异归因。本次 Linux Node22 / 重建静态 OpenSSL 的 19 项协议与 PKIX 检查通过；后续仍以 AGC 实际冷启动和设备内购为准。
