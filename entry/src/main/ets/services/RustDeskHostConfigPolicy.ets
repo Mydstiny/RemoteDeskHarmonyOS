@@ -80,6 +80,19 @@ export function rustDeskConnectionError(input: RustDeskConnectionCheckInput): st
 }
 
 /**
+ * The rendezvous/relay route needs the remote RustDesk ID.  Fixed direct-IP
+ * hosts connect by endpoint and may leave that metadata empty; LAN discovery
+ * still keeps the discovered ID as the binding that protects the selected
+ * peer from an address mix-up.
+ */
+export function rustDeskAddControlIdError(directEnabled: boolean, useLan: boolean,
+  controlId: string): string {
+  if (controlId.trim() !== '') { return ''; }
+  if (!directEnabled) { return '请输入 RustDesk 控制 ID'; }
+  return useLan ? '局域网直连需要已选择设备 ID' : '';
+}
+
+/**
  * 直连没有 ID/中继批准通道，只能使用被控端设备密码。
  * 统一在表单保存和连接参数生成处调用，兼容旧版本已保存的组合。
  */

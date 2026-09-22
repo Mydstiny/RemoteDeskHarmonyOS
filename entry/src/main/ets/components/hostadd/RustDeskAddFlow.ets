@@ -13,6 +13,7 @@ import {
   parseEndpointFields,
   parseEndpointPortText
 } from '../../services/EndpointAddressPolicy';
+import { rustDeskAddControlIdError } from '../../services/RustDeskHostConfigPolicy';
 
 @Component
 export struct RustDeskAddFlow {
@@ -128,7 +129,9 @@ export struct RustDeskAddFlow {
   private buildHost(): RemoteHost | null {
     const directEndpoint: EndpointAddressResult = this.parsedDirectEndpoint();
     if (this.label.trim() === '') { this.errorText = '请输入主机名称'; return null; }
-    if (this.controlId.trim() === '') { this.errorText = '请输入 RustDesk 控制 ID'; return null; }
+    const controlIdError: string = rustDeskAddControlIdError(
+      this.direct, this.useLan, this.controlId);
+    if (controlIdError !== '') { this.errorText = controlIdError; return null; }
     if (this.direct && !directEndpoint.ok) {
       this.errorText = directEndpoint.error === 'invalid_port' ? '端口必须在 1-65535 之间' :
         '请输入有效的直连域名、IPv4 或 IPv6 地址';
@@ -343,7 +346,9 @@ export struct RustDeskAddFlow {
       } else {
         if (this.direct && this.useLan) { this.addressPolicyChoice() }
         this.field('名称', this.label, '例如：办公室电脑', (v: string): void => { this.label = v; })
-        this.field('控制 ID', this.controlId, 'RustDesk 设备 ID',
+        this.field(this.direct ? (this.useLan ? '控制 ID（发现身份）' : '控制 ID（可选）') : '控制 ID',
+          this.controlId,
+          this.direct ? (this.useLan ? '来自局域网搜索' : '直连可留空；使用 IP/域名连接') : 'RustDesk 设备 ID',
           (v: string): void => { this.controlId = v; }, false, !this.useLan)
         if (this.direct && this.useLan) {
           Text('控制 ID、直连 IP 和端口来自已选择的搜索结果；如需修改，请返回重新选择或改用手动配置。')
