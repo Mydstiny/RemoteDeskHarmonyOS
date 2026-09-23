@@ -4633,6 +4633,12 @@ impl RustDeskConnector {
     }
 
     fn windows_scancode_to_linux_xkb_keycode(scancode: u32) -> Option<u32> {
+        // RustDesk's Linux input table maps Windows Apps to KEY_COMPOSE
+        // (evdev 127), whose XKB keycode is 135 after the +8 offset.
+        if scancode == 0xE05D {
+            return Some(135);
+        }
+
         let linux_evdev_code = match scancode {
             // RustDesk's Harmony media-key mapping uses the corresponding E0
             // Set-1 values; Linux represents these as consumer-key evdev codes.
@@ -4661,7 +4667,6 @@ impl RustDeskConnector {
             0xE053 => 111, // KEY_DELETE
             0xE05B => 125, // KEY_LEFTMETA
             0xE05C => 126, // KEY_RIGHTMETA
-            0xE05D => 139, // KEY_MENU
 
             // Linux evdev assigns F13-F24 to 183-194; the Windows mapping
             // represents the same physical keys as Set-1 0x64-0x6F.
@@ -6784,6 +6789,7 @@ mod tests {
             (2009, 18),  // 9 / (
             (2065, 11),  // @ key alias keeps the physical 2 position
             (2066, 21),  // + key alias keeps the physical equals position
+            (2067, 135), // Apps/Menu -> RustDesk KEY_COMPOSE
             (2057, 20),  // - / _
             (2058, 21),  // = / +
             (2059, 34),  // [ / {
