@@ -427,6 +427,7 @@ enum RemoteKeyboardTransport {
     Legacy,
     MacosMap,
     WindowsMap,
+    LinuxMap,
 }
 
 impl RustDeskConnector {
@@ -4392,6 +4393,12 @@ impl RustDeskConnector {
         Self::build_map_key_message(scancode, pressed)
     }
 
+    /// Linux peers interpret Map-mode `chr` as an XKB keycode. RustDesk's
+    /// Linux X11 and Wayland paths both expect the evdev code plus eight.
+    fn build_linux_map_message(keycode: u32, pressed: bool) -> Message {
+        Self::build_map_key_message(keycode, pressed)
+    }
+
     /// HarmonyOS keyCode -> macOS ANSI virtual keycode (Carbon `kVK_*`).
     /// Values are physical positions, not characters, so the remote macOS input
     /// source receives and composes the keystrokes exactly like a local keyboard.
@@ -4607,6 +4614,67 @@ impl RustDeskConnector {
         })
     }
 
+    /// Convert the existing HarmonyOS physical-key mapping to the XKB keycode
+    /// used by RustDesk Map mode on Linux. Most Set-1 make codes used by the
+    /// Windows mapping match Linux evdev codes; E0 keys and extended function
+    /// keys need explicit Linux positions.
+    fn harmony_keycode_to_linux_xkb_keycode(scancode: u32) -> Option<u32> {
+        let linux_evdev_code = match scancode {
+            // Pause/Break and the dedicated keypad-equals key do not have a
+            // directly equivalent Windows Set-1 code in the shared mapping.
+            2080 => 119, // KEY_PAUSE
+            2120 => 117, // KEY_KPEQUAL
+            _ => {
+                let windows_scancode = Self::harmony_keycode_to_windows_scancode(scancode)?;
+                return Self::windows_scancode_to_linux_xkb_keycode(windows_scancode);
+            }
+        };
+        Some(linux_evdev_code + 8)
+    }
+
+    fn windows_scancode_to_linux_xkb_keycode(scancode: u32) -> Option<u32> {
+        let linux_evdev_code = match scancode {
+            // RustDesk's Harmony media-key mapping uses the corresponding E0
+            // Set-1 values; Linux represents these as consumer-key evdev codes.
+            0xE010 => 165, // KEY_PREVIOUSSONG
+            0xE019 => 163, // KEY_NEXTSONG
+            0xE022 => 164, // KEY_PLAYPAUSE
+            0xE02E => 114, // KEY_VOLUMEDOWN
+            0xE030 => 115, // KEY_VOLUMEUP
+
+            // E0-prefixed extended keyboard keys. Values here are Linux
+            // evdev codes; the XKB compatibility offset is applied below.
+            0xE01C => 96,  // KEY_KPENTER
+            0xE01D => 97,  // KEY_RIGHTCTRL
+            0xE035 => 98,  // KEY_KPSLASH
+            0xE037 => 99,  // KEY_SYSRQ
+            0xE038 => 100, // KEY_RIGHTALT
+            0xE047 => 102, // KEY_HOME
+            0xE048 => 103, // KEY_UP
+            0xE049 => 104, // KEY_PAGEUP
+            0xE04B => 105, // KEY_LEFT
+            0xE04D => 106, // KEY_RIGHT
+            0xE04F => 107, // KEY_END
+            0xE050 => 108, // KEY_DOWN
+            0xE051 => 109, // KEY_PAGEDOWN
+            0xE052 => 110, // KEY_INSERT
+            0xE053 => 111, // KEY_DELETE
+            0xE05B => 125, // KEY_LEFTMETA
+            0xE05C => 126, // KEY_RIGHTMETA
+            0xE05D => 139, // KEY_MENU
+
+            // Linux evdev assigns F13-F24 to 183-194; the Windows mapping
+            // represents the same physical keys as Set-1 0x64-0x6F.
+            0x64..=0x6F => 183 + scancode - 0x64,
+
+            // The shared standard Set-1 and Linux evdev positions match for
+            // the ordinary 104/105-key PC keyboard range.
+            0x01..=0x58 => scancode,
+            _ => return None,
+        };
+        Some(linux_evdev_code + 8)
+    }
+
     fn parse_version_component(component: Option<&str>) -> u32 {
         component
             .unwrap_or_default()
@@ -4634,6 +4702,9 @@ impl RustDeskConnector {
             // Preserve the verified macOS physical-key/IME path. Existing macOS
             // connections already use Map mode and need no compatibility downgrade.
             return RemoteKeyboardTransport::MacosMap;
+        }
+        if platform.contains("linux") && Self::peer_supports_map_mode(version) {
+            return RemoteKeyboardTransport::LinuxMap;
         }
         if platform.contains("windows") && Self::peer_supports_map_mode(version) {
             return RemoteKeyboardTransport::WindowsMap;
@@ -4706,6 +4777,26 @@ impl RustDeskConnector {
             crate::set_last_error(status.clone());
             eprintln!("[RustDesk-FFI] {}", status);
             return Self::send_message_encrypted(crypto, &msg);
+        }
+        if remote_keyboard_transport == RemoteKeyboardTransport::LinuxMap {
+            physical_modifiers.update(scancode, pressed);
+            if let Some(keycode) = Self::harmony_keycode_to_linux_xkb_keycode(scancode) {
+                let msg = Self::build_linux_map_message(keycode, pressed);
+                let status = format!(
+                    "send linux physical key scancode={} pressed={} mode=map keycode={}",
+                    scancode, pressed, keycode,
+                );
+                crate::set_last_error(status.clone());
+                eprintln!("[RustDesk-FFI] {}", status);
+                return Self::send_message_encrypted(crypto, &msg);
+            }
+            let status = format!(
+                "skip unsupported linux physical key scancode={} mode=map",
+                scancode
+            );
+            crate::set_last_error(status.clone());
+            eprintln!("[RustDesk-FFI] {}", status);
+            return Ok(());
         }
         if remote_keyboard_transport == RemoteKeyboardTransport::WindowsMap {
             // Physical modifiers are still tracked so a later unsupported-key
@@ -6648,6 +6739,116 @@ mod tests {
             RustDeskConnector::keyboard_transport_for_peer("Mac OS", "1.1.0"),
             RemoteKeyboardTransport::MacosMap
         );
+    }
+
+    #[test]
+    fn supported_linux_peers_use_map_transport_for_physical_keys() {
+        assert_eq!(
+            RustDeskConnector::keyboard_transport_for_peer("Linux", "1.2.0"),
+            RemoteKeyboardTransport::LinuxMap
+        );
+        assert_eq!(
+            RustDeskConnector::keyboard_transport_for_peer("deepin Linux", "1.4.6"),
+            RemoteKeyboardTransport::LinuxMap
+        );
+        assert_eq!(
+            RustDeskConnector::keyboard_transport_for_peer("Linux", "1.1.9"),
+            RemoteKeyboardTransport::Legacy
+        );
+        assert_eq!(
+            RustDeskConnector::keyboard_transport_for_peer("Linux", "unknown"),
+            RemoteKeyboardTransport::Legacy
+        );
+    }
+
+    #[test]
+    fn linux_map_uses_xkb_positions_for_modifiers_symbols_and_navigation() {
+        for (harmony_keycode, expected_xkb_keycode) in [
+            (2047, 50),  // Left Shift: evdev 42 + XKB offset 8
+            (2048, 62),  // Right Shift
+            (2072, 37),  // Left Ctrl
+            (2073, 105), // Right Ctrl
+            (2045, 64),  // Left Alt
+            (2046, 108), // Right Alt / AltGr
+            (2076, 133), // Left Meta
+            (2077, 134), // Right Meta
+            (2000, 19),  // 0 / )
+            (2001, 10),  // 1 / !
+            (2002, 11),  // 2 / @
+            (2003, 12),  // 3 / #
+            (2004, 13),  // 4 / $
+            (2005, 14),  // 5 / %
+            (2006, 15),  // 6 / ^
+            (2007, 16),  // 7 / &
+            (2008, 17),  // 8 / *
+            (2009, 18),  // 9 / (
+            (2065, 11),  // @ key alias keeps the physical 2 position
+            (2066, 21),  // + key alias keeps the physical equals position
+            (2057, 20),  // - / _
+            (2058, 21),  // = / +
+            (2059, 34),  // [ / {
+            (2060, 35),  // ] / }
+            (2061, 51),  // \\ / |
+            (2062, 47),  // ; / :
+            (2063, 48),  // ' / "
+            (2056, 49),  // ` / ~
+            (2043, 59),  // , / <
+            (2044, 60),  // . / >
+            (2064, 61),  // / / ?
+            (2017, 38),  // A
+            (2090, 67),  // F1
+            (2816, 191), // F13
+            (2012, 111), // Up
+            (2081, 110), // Home
+            (2071, 119), // Delete
+            (2074, 66),  // Caps Lock
+            (2080, 127), // Pause
+            (2119, 104), // Numpad Enter
+            (2120, 125), // Numpad equals
+        ] {
+            assert_eq!(
+                RustDeskConnector::harmony_keycode_to_linux_xkb_keycode(harmony_keycode),
+                Some(expected_xkb_keycode),
+                "Harmony keycode {}",
+                harmony_keycode
+            );
+        }
+        assert_eq!(
+            RustDeskConnector::harmony_keycode_to_linux_xkb_keycode(9999),
+            None
+        );
+    }
+
+    #[test]
+    fn linux_map_preserves_shift_bracket_physical_event_order() {
+        let physical_events = [
+            (2047, true),  // Left Shift down
+            (2059, true),  // Left bracket down
+            (2059, false), // Left bracket up
+            (2047, false), // Left Shift up
+        ];
+        let expected = [(50, true), (34, true), (34, false), (50, false)];
+
+        for ((harmony_keycode, pressed), (expected_keycode, expected_down)) in
+            physical_events.into_iter().zip(expected)
+        {
+            let keycode = RustDeskConnector::harmony_keycode_to_linux_xkb_keycode(harmony_keycode)
+                .expect("supported physical key must map to Linux XKB");
+            assert_eq!(keycode, expected_keycode);
+            let message = RustDeskConnector::build_linux_map_message(keycode, pressed);
+            match message.union {
+                Some(Message_oneof_union::key_event(key)) => {
+                    assert_eq!(key.mode, KeyboardMode::Map);
+                    assert_eq!(key.down, expected_down);
+                    assert!(matches!(
+                        key.union,
+                        Some(KeyEvent_oneof_union::chr(code)) if code == expected_keycode
+                    ));
+                    assert!(key.modifiers.is_empty());
+                }
+                _ => panic!("Linux physical key must use a Map key event"),
+            }
+        }
     }
 
     #[test]
