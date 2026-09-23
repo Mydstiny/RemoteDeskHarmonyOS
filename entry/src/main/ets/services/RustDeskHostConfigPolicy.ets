@@ -127,12 +127,14 @@ export function shouldBindLegacyRustDeskHostToRelay(protocol: string, directEnab
 }
 
 export function rustDeskCardEndpoint(directEnabled: boolean, directHost: string, directPort: number,
-  host: string, port: number): string {
-  const displayHost: string = directEnabled ? directHost.trim() : host.trim();
-  const displayPort: number = directEnabled ?
-    normalizeRustDeskPort(directPort, RUSTDESK_PEER_TCP_PORT) : port;
-  const parsed: EndpointAddressResult = parseEndpointFields(displayHost, displayPort);
-  return parsed.ok ? formatEndpointHostPort(parsed.endpoint) : displayHost + ':' + displayPort;
+  host: string, port: number, relay: RustDeskRelayConfig | null = null): string {
+  // Managed hosts keep a legacy endpoint snapshot on RemoteHost. Resolve the
+  // card through the current relay too, matching the connection path below.
+  const endpoint: RustDeskHostEndpoint = !directEnabled && relay === null ?
+    { host: host.trim(), port: normalizeRustDeskPort(port) } :
+    resolveRustDeskHostEndpoint(relay, host, directEnabled, directHost, directPort);
+  const parsed: EndpointAddressResult = parseEndpointFields(endpoint.host, endpoint.port);
+  return parsed.ok ? formatEndpointHostPort(parsed.endpoint) : endpoint.host + ':' + endpoint.port;
 }
 
 export function shouldAdoptRustDeskDirectPort(directEnabled: boolean, hostDirectPort: number,

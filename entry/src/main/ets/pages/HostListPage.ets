@@ -5697,9 +5697,15 @@ struct HostListPage {
     this.rustdeskCount = this.srv.getRustdeskCount();
     this.sshCount = this.srv.getSshCount();
     this.vncCount = vncViews.length;
+    // Relay edits do not necessarily mutate the legacy host endpoint fields.
+    // Include the relay snapshot in the render signature so cards rebuild
+    // immediately when an idServer/idServerPort changes.
+    const relaySignature: string = JSON.stringify(this.srv.getAllRelays()
+      .map((relay: RustDeskRelayConfig): string => JSON.stringify(
+        [relay.id, relay.idServer, relay.idServerPort.toString()])).sort());
     const nextSignature: string = JSON.stringify(nextHosts.map(
       (host: RemoteHost): string => JSON.stringify(host.toJSON()) + '|' +
-        host.runtimeSecretStateSignature()));
+        host.runtimeSecretStateSignature())) + '|relays=' + relaySignature;
     if (!force && nextSignature === this.hostDataSignature && !activeSessionChanged) { return; }
     this.hostDataSignature = nextSignature;
     this.hosts = nextHosts;
@@ -14439,7 +14445,10 @@ struct HostListPage {
           if (!host.locked) {
             Text(this.hostPlatformText(host) + '  ·  ' + this.protectedHostCardValue(host,
               host.protocol === 'rustdesk' ? rustDeskCardEndpoint(host.rustdeskDirectEnabled,
-                host.rustdeskDirectHost, host.rustdeskDirectPort, host.host, host.port) :
+                host.rustdeskDirectHost, host.rustdeskDirectPort, host.host, host.port,
+                host.rustdeskDirectEnabled ? null :
+                  (this.srv.getAllRelays().find((relay: RustDeskRelayConfig): boolean =>
+                    relay.id === host.rustdeskRelayId) ?? null)) :
               host.protocol === 'ssh' ? formatUserAtHost(host.username, host.host, host.port) :
                 formatEndpointFieldsHostPort(host.host, host.port)))
               .fontSize(this.breakpoint === 'sm' ? 12 : 14).fontColor(this.pal().text2)

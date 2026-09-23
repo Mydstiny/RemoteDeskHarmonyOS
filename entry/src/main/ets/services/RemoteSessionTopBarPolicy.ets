@@ -391,6 +391,7 @@ export function remoteKeyboardSidebarAction(
 }
 
 const RUSTDESK_DISABLED_REASONS: Record<string, string> = {
+  'relativeMouse': '当前 RustDesk 传输未提供相对鼠标模式',
   'screenshot': '截屏需要本地截图保存和权限链路接入后启用',
   'textChat': '文字聊天需要 RustDesk 会话消息通道接入后启用',
   'voiceCall': '语音通话需要 RustDesk 音频输入和通话信令接入后启用',

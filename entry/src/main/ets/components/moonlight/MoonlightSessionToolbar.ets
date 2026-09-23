@@ -232,6 +232,11 @@ export struct MoonlightSessionToolbar {
     return item.enabled ? item.label : item.label + '，' + item.disabledReason;
   }
 
+  private itemRenderKey(item: MoonlightToolbarItem): string {
+    return item.action + '|' + this.itemLabel(item) + '|' + (this.itemEnabled(item) ? '1' : '0') + '|' +
+      (this.itemActive(item) ? '1' : '0') + '|' + (item.dangerous ? '1' : '0') + '|' + item.disabledReason;
+  }
+
   aboutToAppear(): void {
     this.expanded = false;
     this.pinned = false;
@@ -430,7 +435,7 @@ export struct MoonlightSessionToolbar {
           Column({ space: layout.itemGap }) {
             ForEach(this.railItems(), (item: MoonlightToolbarItem): void => {
               this.toolItem(item, layout);
-            }, (item: MoonlightToolbarItem): string => item.action)
+            }, (item: MoonlightToolbarItem): string => this.itemRenderKey(item))
           }
         }.width(layout.iconSize + 18)
           .constraintSize({ maxHeight: this.railScrollMaxHeight(layout) })
@@ -454,7 +459,7 @@ export struct MoonlightSessionToolbar {
         Row({ space: layout.itemGap }) {
           ForEach(this.items(), (item: MoonlightToolbarItem): void => {
             this.toolItem(item, layout);
-          }, (item: MoonlightToolbarItem): string => item.action)
+          }, (item: MoonlightToolbarItem): string => this.itemRenderKey(item))
           this.trailingItem(layout)
         }
         .padding(8).backgroundColor(this.pal().floatBg).backdropBlur(18).borderRadius(18)

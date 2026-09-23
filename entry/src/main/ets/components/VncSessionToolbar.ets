@@ -118,6 +118,13 @@ export struct VncSessionToolbar {
     this.primaryActionButton(actionId)
   }
 
+  private primaryActionRenderKey(actionId: VncToolbarPrimaryActionId): string {
+    return actionId + '|' + (this.keyboardOpen ? '1' : '0') + '|' +
+      (this.shortcutsOpen ? '1' : '0') + '|' + (this.diagnosticsEnabled ? '1' : '0') + '|' +
+      (this.canvasResetAvailable ? '1' : '0') + '|' + this.controlModeLabel + '|' +
+      this.displayScaleLabel;
+  }
+
   @Builder
   private primaryActionButtons(vertical: boolean) {
     if (vertical) {
@@ -125,14 +132,16 @@ export struct VncSessionToolbar {
         ForEach(vncToolbarPrimaryActionIds(),
           (actionId: VncToolbarPrimaryActionId): void => {
             this.primaryActionButtonWithReset(actionId)
-          }, (actionId: VncToolbarPrimaryActionId): string => actionId)
+          }, (actionId: VncToolbarPrimaryActionId): string =>
+            this.primaryActionRenderKey(actionId))
       }
     } else {
       Row({ space: 5 }) {
         ForEach(vncToolbarPrimaryActionIds(),
           (actionId: VncToolbarPrimaryActionId): void => {
             this.primaryActionButtonWithReset(actionId)
-          }, (actionId: VncToolbarPrimaryActionId): string => actionId)
+          }, (actionId: VncToolbarPrimaryActionId): string =>
+            this.primaryActionRenderKey(actionId))
       }
     }
   }

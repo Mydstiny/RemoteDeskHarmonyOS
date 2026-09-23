@@ -847,18 +847,18 @@ export struct RemoteSessionTopBar {
       if (this.activeSubMenu === 'imageQuality') {
         this.imageQualitySubMenuContent()
       }
-      this.subMenuItem('编解码', this.codecLabel(this.codec),
+      this.subMenuItem('编解码（重连生效）', this.codecLabel(this.codec),
         'displaySettings', 'codec')
       if (this.activeSubMenu === 'codec') {
         this.codecSubMenuContent()
       }
       this.menuItem('虚拟显示器', 'virtualDisplay', (): void => {})
-      this.menuItem('隐私模式', 'togglePrivacyMode', (): void => {
+      this.menuItem('隐私模式（重连生效）', 'togglePrivacyMode', (): void => {
         this.actions.onTogglePrivacy(!this.privacyMode);
       }, this.privacyMode)
-      this.menuItem('静音', 'toggleAudio', (): void => {
+      this.menuItem('远端音频（重连生效）', 'toggleAudio', (): void => {
         this.actions.onToggleAudio(!this.audioEnabled);
-      }, !this.audioEnabled)
+      }, this.audioEnabled)
       this.menuItem('允许复制粘贴文件', 'toggleFilePaste', (): void => {
         this.actions.onToggleFilePaste(!this.filePasteEnabled);
       }, this.filePasteEnabled)
@@ -1074,7 +1074,7 @@ export struct RemoteSessionTopBar {
       this.menuItem('显示我的光标', 'keyboardMouseSettings', (): void => {
         this.actions.onToggleShowLocalCursor(!this.showLocalCursor);
       }, this.showLocalCursor)
-      this.menuItem('相对鼠标模式', 'keyboardMouseSettings', (): void => {
+      this.menuItem('相对鼠标模式', 'relativeMouse', (): void => {
         this.actions.onToggleRelativeMouse(!this.relativeMouseMode);
       }, this.relativeMouseMode)
     }
@@ -1184,6 +1184,20 @@ export struct RemoteSessionTopBar {
     }
   }
 
+  private primaryActionRenderKey(actionId: RemoteSessionPrimaryActionId): string {
+    // Several primary buttons derive their label/colour from parent @Prop
+    // state. Include that visible state in the ForEach key so a retained
+    // toolbar node cannot keep a stale action presentation.
+    return actionId + '|' + (this.keyboardOpen ? '1' : '0') + '|' +
+      (this.shortcutsOpen ? '1' : '0') + '|' + (this.diagnosticsEnabled ? '1' : '0') + '|' +
+      (this.pinned ? '1' : '0') + '|' + (this.canvasResetAvailable ? '1' : '0') + '|' +
+      this.rustDeskDesktopFlipMode + '|' + this.accentColor + '|' +
+      (this.rustDeskPhoneTarget ? '1' : '0') + '|' + this.protocol + '|' +
+      (this.capabilities.connect.enabled ? '1' : '0') + '|' +
+      (this.capabilities.fileUpload.enabled ? '1' : '0') + '|' +
+      (this.capabilities.clipboardSend.enabled ? '1' : '0');
+  }
+
   @Builder
   private primaryActionButtons(vertical: boolean) {
     if (vertical) {
@@ -1192,7 +1206,8 @@ export struct RemoteSessionTopBar {
           this.protocol, this.layout.deviceClass, this.rustDeskPhoneTarget),
           (actionId: RemoteSessionPrimaryActionId): void => {
             this.primaryActionButton(actionId)
-          }, (actionId: RemoteSessionPrimaryActionId): string => actionId)
+          }, (actionId: RemoteSessionPrimaryActionId): string =>
+            this.primaryActionRenderKey(actionId))
         if (this.protocol === 'rustdesk' && this.explicitPhone) {
           this.iconButton($r('sys.symbol.gearshape_fill'), this.accentColor,
             (): void => { this.toggleMenu('phone'); }, 18, '打开手机操作')
@@ -1204,7 +1219,8 @@ export struct RemoteSessionTopBar {
           this.protocol, this.layout.deviceClass, this.rustDeskPhoneTarget),
           (actionId: RemoteSessionPrimaryActionId): void => {
             this.primaryActionButton(actionId)
-          }, (actionId: RemoteSessionPrimaryActionId): string => actionId)
+          }, (actionId: RemoteSessionPrimaryActionId): string =>
+            this.primaryActionRenderKey(actionId))
         if (this.protocol === 'rustdesk' && this.explicitPhone) {
           this.iconButton($r('sys.symbol.gearshape_fill'), this.accentColor,
             (): void => { this.toggleMenu('phone'); }, 18, '打开手机操作')

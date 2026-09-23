@@ -124,7 +124,9 @@ export struct MoonlightControlCenter {
       Toggle({ type: ToggleType.Switch, isOn: value })
         .selectedColor(this.accentColor)
         .onChange((next: boolean): void => {
-          if (next !== value) { action(); }
+          // Do not compare with the captured builder value: a retained Toggle
+          // can otherwise swallow the second transition after a round trip.
+          action();
         })
         .accessibilityText(title + '，' + (value ? '已开启' : '已关闭'))
     }.width('100%').height(this.layout().rowHeight)

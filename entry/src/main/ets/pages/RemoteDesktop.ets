@@ -186,6 +186,7 @@ import {
 } from '../services/HarmonyShortcutBlockingPolicy';
 import {
   HarmonyCapturedSystemKeyEvent,
+  HarmonyShortcutCaptureStatus,
   HarmonyShortcutCaptureService
 } from '../services/HarmonyShortcutCaptureService';
 import {
@@ -1106,7 +1107,7 @@ struct RemoteDesktop {
   rustdeskPinchZoomEnabled: boolean = false;
   @StorageLink(VNC_PINCH_ZOOM_ENABLED_KEY) @Watch('onVncPinchZoomSettingChange')
   vncPinchZoomEnabled: boolean = false;
-  @StorageLink('rustdeskShowLocalCursor') rustdeskShowLocalCursor: boolean = true;
+  @StorageLink('rustdeskShowLocalCursor') @Watch('onRustDeskLocalCursorChanged') rustdeskShowLocalCursor: boolean = true;
   @StorageLink('rustdeskBrowseMode') @Watch('onHarmonyShortcutInputOwnerChange')
   rustdeskBrowseMode: boolean = false;
   @StorageLink('rustdeskRelativeMouseMode') rustdeskRelativeMouseMode: boolean = false;
@@ -1714,6 +1715,13 @@ struct RemoteDesktop {
   private harmonyShortcutWindowActive: boolean = false;
   private harmonyShortcutWindowFocusKnown: boolean = false;
   private harmonyShortcutWindowStatusKnown: boolean = false;
+  // Runtime capture state is kept separately from the preference. A saved
+  // preference can be active, partially registered, or temporarily blocked
+  // while focus/window readiness is unknown.
+  private harmonyShortcutCaptureEligibilityState: string = 'window-unknown';
+  private harmonyShortcutCaptureDesiredKeyCodes: number[] = [];
+  private harmonyShortcutCaptureActiveKeyCodes: number[] = [];
+  private harmonyShortcutCaptureFailedKeyCodes: number[] = [];
   private kbListenerGeneration: number = 0;
   private touchHoldDragTimer: number = -1;
   private touchDirectRightClickTimer: number = -1;
@@ -4242,6 +4250,9 @@ struct RemoteDesktop {
 
   private syncHarmonyShortcutCapture(reason: string): void {
     const protocol: string = this.currentProtocolName();
+    const requestedKeyCodes: number[] = harmonyShortcutCaptureKeyCodes(
+      protocol, this.physicalKeyboardLayout);
+    this.harmonyShortcutCaptureDesiredKeyCodes = requestedKeyCodes.slice();
     const enabled: boolean = harmonyShortcutCaptureEligible({
       configured: this.harmonyShortcutBlockingActive(),
       foreground: !this.currentAbilityBackgroundState(),
@@ -4254,17 +4265,53 @@ struct RemoteDesktop {
       modalOwnsInput: this.harmonyShortcutModalOwnsInput()
     });
     if (!enabled) {
+      this.harmonyShortcutCaptureEligibilityState =
+        !this.harmonyShortcutBlockingActive() ? 'disabled' :
+          (!this.harmonyShortcutWindowFocusKnown ||
+            !this.harmonyShortcutWindowStatusKnown ? 'window-unknown' :
+            (!this.harmonyShortcutRemoteInputAllowed() ? 'input-unavailable' : 'inactive'));
+      const beforeDeactivateStatus = this.harmonyShortcutCapture.getStatus();
       this.harmonyShortcutCapture.deactivate(this.harmonyShortcutCaptureOwner);
+      const inactiveStatus = this.harmonyShortcutCapture.getStatus();
+      this.harmonyShortcutCaptureActiveKeyCodes = inactiveStatus.activeKeyCodes;
+      if (beforeDeactivateStatus.failedKeyCodes.length > 0 || requestedKeyCodes.length === 0) {
+        this.harmonyShortcutCaptureFailedKeyCodes = beforeDeactivateStatus.failedKeyCodes;
+      }
+      const failedCount: number = beforeDeactivateStatus.failedKeyCodes.length > 0 ?
+        beforeDeactivateStatus.failedKeyCodes.length :
+        this.harmonyShortcutCaptureFailedKeyCodes.length;
+      hilog.info(RD_DOMAIN, RD_TAG,
+        'harmony-shortcut-capture state=' + this.harmonyShortcutCaptureEligibilityState +
+        ' reason=' + reason + ' desired=' + requestedKeyCodes.length.toString() +
+        ' active=' + inactiveStatus.activeKeyCodes.length.toString() +
+        ' failed=' + failedCount.toString());
       return;
     }
+    this.harmonyShortcutCaptureEligibilityState = 'registering';
     const count: number = this.harmonyShortcutCapture.activate(
       this.harmonyShortcutCaptureOwner,
       (event: HarmonyCapturedSystemKeyEvent): void => {
         this.handleHarmonyCapturedSystemKey(event);
-      }, harmonyShortcutCaptureKeyCodes(protocol, this.physicalKeyboardLayout));
+      }, requestedKeyCodes, (status: HarmonyShortcutCaptureStatus): void => {
+        this.harmonyShortcutCaptureActiveKeyCodes = status.activeKeyCodes;
+        this.harmonyShortcutCaptureFailedKeyCodes = status.failedKeyCodes;
+        this.harmonyShortcutCaptureEligibilityState = status.state;
+        if (status.retryExhausted && status.owner === this.harmonyShortcutCaptureOwner) {
+          promptAction.showToast({ message: '部分系统按键拦截未生效，请关闭后重新开启快捷键屏蔽', duration: 2500 });
+        }
+      });
+    const captureStatus = this.harmonyShortcutCapture.getStatus();
+    this.harmonyShortcutCaptureActiveKeyCodes = captureStatus.activeKeyCodes;
+    this.harmonyShortcutCaptureFailedKeyCodes = captureStatus.failedKeyCodes;
+    this.harmonyShortcutCaptureEligibilityState = captureStatus.state;
     hilog.info(RD_DOMAIN, RD_TAG,
       'harmony-shortcut-capture reason=' + reason + ' protocol=' +
-      this.currentProtocolName() + ' subscriptions=' + count.toString());
+      this.currentProtocolName() + ' subscriptions=' + count.toString() +
+      ' desired=' + captureStatus.desiredKeyCodes.length.toString() +
+      ' active=' + captureStatus.activeKeyCodes.length.toString() +
+      ' failed=' + captureStatus.failedKeyCodes.length.toString() +
+      ' retry=' + captureStatus.retryAttempts.toString() +
+      ' retryExhausted=' + (captureStatus.retryExhausted ? '1' : '0'));
   }
 
   private handleHarmonyCapturedSystemKey(event: HarmonyCapturedSystemKeyEvent): void {
@@ -4461,6 +4508,7 @@ struct RemoteDesktop {
   }
 
   private shouldShowTouchIndicator(): boolean {
+    if (this.isRustDeskSession() && !this.rustdeskShowLocalCursor) { return false; }
     const cursorViewRevision: number = this.remoteCursorViewRevision;
     const style: RemoteCursorStyle = this.remoteCursorDisplayStyle();
     const configuredCircle: boolean = shouldRenderCircleCursor(style, this.remoteCursorReady,
@@ -4480,6 +4528,7 @@ struct RemoteDesktop {
   }
 
   private shouldShowArrowCursor(): boolean {
+    if (this.isRustDeskSession() && !this.rustdeskShowLocalCursor) { return false; }
     const cursorViewRevision: number = this.remoteCursorViewRevision;
     if (this.isVncSession() &&
       !(this.remoteCursorNativeVisible && this.remoteCursorPixelMap !== null)) {
@@ -4570,7 +4619,8 @@ struct RemoteDesktop {
   }
 
   private isRemoteCursorNativePointerEligible(): boolean {
-    return this.connected && this.isKeyboardMouseControlMode() &&
+    return (!this.isRustDeskSession() || this.rustdeskShowLocalCursor) &&
+      this.connected && this.isKeyboardMouseControlMode() &&
       this.remoteSurfaceUsesSystemPointer === true &&
       (!this.isVncSession() || this.vncLocalCursorMode === 'auto') &&
       this.remoteSurfaceHovered !== false && this.remoteCursorNativeVisible &&
@@ -4807,6 +4857,9 @@ struct RemoteDesktop {
         this.remoteCursorNativePointerPendingMap !== null) {
         this.resetRemoteNativePointer(reason);
       }
+      if (this.shouldHideRustDeskLocalPointer(this.remoteSurfaceHovered === true)) {
+        this.setRemoteSystemPointerVisible(false, reason, true);
+      }
       return;
     }
     const pixelMap: image.PixelMap = this.remoteCursorPixelMap as image.PixelMap;
@@ -4914,7 +4967,8 @@ struct RemoteDesktop {
 
   private syncRemoteSystemPointer(reason: string, hovered: boolean = true,
     force: boolean = false): void {
-    const hideSystemPointer: boolean = this.shouldHideSystemPointerForVirtualTouchpad() ||
+    const hideSystemPointer: boolean = this.shouldHideRustDeskLocalPointer(hovered) ||
+      this.shouldHideSystemPointerForVirtualTouchpad() ||
       shouldHideVncSystemPointer(this.currentProtocolName(), this.connected,
         this.isKeyboardMouseControlMode(), hovered, this.vncLocalCursorMode,
         this.vncCursorOwnershipEvidence());
@@ -4924,6 +4978,10 @@ struct RemoteDesktop {
       shouldUseSystemMousePointer(this.isKeyboardMouseControlMode()), force);
     this.setRemoteSystemPointerVisible(!hideSystemPointer, reason,
       force || hideSystemPointer);
+  }
+
+  private shouldHideRustDeskLocalPointer(hovered: boolean): boolean {
+    return this.connected && hovered && this.isRustDeskSession() && !this.rustdeskShowLocalCursor;
   }
 
   private restoreRemoteSystemPointer(reason: string): void {
@@ -5182,7 +5240,7 @@ struct RemoteDesktop {
     this.rustdeskAudioEnabled = on;
     this.persistSessionPref('rustdeskAudioEnabled', on);
     promptAction.showToast({
-      message: on ? '远端音频已启用' : '远端音频将在下次连接时静音',
+      message: on ? '远端音频偏好已保存，下次连接时启用' : '远端音频偏好已保存，下次连接时静音',
       duration: 1800
     });
   }
@@ -6921,6 +6979,13 @@ struct RemoteDesktop {
   private setRustDeskShowLocalCursor(on: boolean): void {
     this.rustdeskShowLocalCursor = on;
     this.persistSessionPref('rustdeskShowLocalCursor', on);
+    this.onRustDeskLocalCursorChanged();
+  }
+
+  private onRustDeskLocalCursorChanged(): void {
+    if (!this.isRustDeskSession()) { return; }
+    this.syncRemoteSystemPointer('local-cursor-setting', this.remoteSurfaceHovered === true, true);
+    this.requestRemoteCursorViewRefresh(true);
   }
 
   private setRustDeskBrowseMode(on: boolean): void {
@@ -14821,7 +14886,13 @@ struct RemoteDesktop {
       } else if (host.protocol === 'rdp') {
         await this.applyRdpOrientationPolicy('CONNECT-SUCCESS');
       } else {
-        await this.setPreferredOrientation(window.Orientation.LANDSCAPE, 'LANDSCAPE');
+        // Tablets must keep both physical landscape directions. A fixed
+        // LANDSCAPE preference selects one side of the charging port and can
+        // make the remote desktop appear upside down after the device flips.
+        await this.setPreferredOrientation(
+          this.isDesktopDevice ? window.Orientation.LANDSCAPE :
+            window.Orientation.AUTO_ROTATION_LANDSCAPE,
+          this.isDesktopDevice ? 'LANDSCAPE' : 'AUTO-ROTATION-LANDSCAPE');
       }
       await this.setRemoteKeepScreenOn(true);
       await this.setRemoteNavigationHidden(true, 'connect-success');
@@ -14996,8 +15067,11 @@ struct RemoteDesktop {
       await this.setPreferredOrientation(window.Orientation.AUTO_ROTATION,
         'RUSTDESK-AUTO-ROTATION-' + reason);
     } else if (policy === 'landscape') {
-      await this.setPreferredOrientation(window.Orientation.LANDSCAPE,
-        'RUSTDESK-LANDSCAPE-' + reason);
+      await this.setPreferredOrientation(
+        this.isDesktopDevice ? window.Orientation.LANDSCAPE :
+          window.Orientation.AUTO_ROTATION_LANDSCAPE,
+        (this.isDesktopDevice ? 'RUSTDESK-LANDSCAPE-' :
+          'RUSTDESK-AUTO-ROTATION-LANDSCAPE-') + reason);
     }
   }
 
@@ -15008,8 +15082,11 @@ struct RemoteDesktop {
       await this.setPreferredOrientation(window.Orientation.UNSPECIFIED,
         'RDP-PC-AUTO-UNSPECIFIED-' + reason);
     } else {
-      await this.setPreferredOrientation(window.Orientation.LANDSCAPE,
-        'RDP-LANDSCAPE-' + reason);
+      await this.setPreferredOrientation(
+        this.isDesktopDevice ? window.Orientation.LANDSCAPE :
+          window.Orientation.AUTO_ROTATION_LANDSCAPE,
+        (this.isDesktopDevice ? 'RDP-LANDSCAPE-' :
+          'RDP-AUTO-ROTATION-LANDSCAPE-') + reason);
     }
   }
 
@@ -18729,18 +18806,28 @@ struct RemoteDesktop {
     } catch (_err) { return false; }
   }
 
-  private startDeferredRdpFileDrop(event: DragEvent): void {
+  /** Resolve a delayed file-station drag into the same private staging area used
+   * by ordinary drops. RDP publishes the staged batch through cliprdr; RustDesk
+   * sends staged regular files through its explicit file session. RDP keeps its
+   * existing controlled directory-root publication contract.
+   */
+  private startDeferredFileDrop(event: DragEvent): void {
     const lease: RemoteTransferLease | null = this.captureTransferLease();
+    const targetDirectory: string = this.remoteTransferDirectory;
     const context: common.UIAbilityContext | null = this.getFileTransferContext();
-    if (lease === null || context === null || !this.rdpFileTransferEnabledForSession(lease.sessionId, lease.attemptId)) {
+    if (lease === null || context === null || !this.currentSessionCapabilities().fileUpload.enabled ||
+      (lease.protocol === 'rdp' && !this.rdpFileTransferEnabledForSession(lease.sessionId, lease.attemptId)) ||
+      (lease.protocol === 'rustdesk' && (!this.rustdeskFilePasteEnabled ||
+        !remoteTransferPathIsAbsolute(targetDirectory)))) {
       event.setResult(DragResult.DRAG_FAILED); return;
     }
     const batch: TransferArtifactBatch | null = this.createTransferArtifactBatch(context, lease, 'clipboard');
     if (batch === null) { event.setResult(DragResult.DRAG_FAILED); return; }
     let slot: TransferPlatformIncomingDirectory | null = null;
     try {
-      const current = (): boolean => this.transferLeaseIsCurrent(lease) &&
-        this.rdpFileTransferEnabledForSession(lease.sessionId, lease.attemptId);
+      const current = (): boolean => this.transferLeaseIsCurrent(lease) && this.currentSessionCapabilities().fileUpload.enabled &&
+        (lease.protocol === 'rdp' ? this.rdpFileTransferEnabledForSession(lease.sessionId, lease.attemptId) :
+          this.rustdeskFilePasteEnabled);
       slot = batch.createPlatformIncomingSync(current);
       const incoming: TransferPlatformIncomingDirectory = slot;
       if (!current()) { void incoming.retainPartial().then((): void => { batch.release(); }); event.setResult(DragResult.DRAG_FAILED); return; }
@@ -18761,16 +18848,33 @@ struct RemoteDesktop {
                 if (!current()) { return; }
                 const roots: TransferArtifact[] = artifacts.filter((artifact: TransferArtifact): boolean =>
                   (artifact.relativePath ?? artifact.name).indexOf('/') < 0);
+                if (lease.protocol === 'rustdesk' && roots.some((artifact: TransferArtifact): boolean => artifact.directory === true)) {
+                  this.setFileTransferStatus('本批包含文件夹，未发送任何文件；请在文件传输中选择整目录发送', -1, false);
+                  return;
+                }
                 const sources: TransferFileSource[] = roots.map((artifact: TransferArtifact): TransferFileSource =>
                   ({ uri: artifact.path, name: artifact.name, size: artifact.size }));
-                await this.prepareAndOfferRdpFiles(sources, lease, 'deferred-drop', undefined, batch, roots);
+                if (sources.length === 0) { throw new Error('deferred_drop_empty'); }
+                if (lease.protocol === 'rdp') {
+                  await this.prepareAndOfferRdpFiles(sources, lease, 'deferred-drop', undefined, batch, roots);
+                } else {
+                  let sent: number = 0;
+                  for (const source of sources) {
+                    const outcome: TransferState = await this.submitFileToRustDesk(source.uri, source.name, source.size,
+                      lease, targetDirectory);
+                    if (outcome === 'senderCompleted') { sent++; }
+                  }
+                  if (current()) { this.setFileTransferStatus('发送端完成 ' + sent.toString() + '/' +
+                    sources.length.toString() + ' 个文件，目标文件尚未校验', sent === sources.length ? 1 : -1, false); }
+                }
               } catch (_error) {
                 await incoming.retainPartial();
                 if (current()) { this.setFileTransferStatus('文件中转站数据处理失败，未完成副本保留', -1, false); }
               } finally { batch.release(); }
             };
             void finish();
-          } else if (progress.progress < 0) {
+          } else if (progress.progress < 0 && !completed) {
+            completed = true;
             void incoming.retainPartial().then((): void => { batch.release(); });
             if (current()) { this.setFileTransferStatus('文件中转站获取失败，未完成副本保留', -1, false); }
           } else if (current() && progress.progress >= 0 && progress.progress < 100) {
@@ -18809,8 +18913,7 @@ struct RemoteDesktop {
       const data: unifiedDataChannel.UnifiedData = event.getData();
       sources = this.transferSourcesFromUnifiedData(data);
     } catch (_error) {
-      if (lease.protocol === 'rdp') { this.startDeferredRdpFileDrop(event); }
-      else { event.setResult(DragResult.DRAG_FAILED); this.setFileTransferStatus('无法取得拖入文件的读取授权', -1, false); }
+      this.startDeferredFileDrop(event);
       return;
     }
     try {

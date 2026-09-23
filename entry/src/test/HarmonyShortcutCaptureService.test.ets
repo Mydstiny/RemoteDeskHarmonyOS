@@ -2,6 +2,7 @@ import { describe, expect, it } from '@ohos/hypium';
 import {
   HarmonyCapturedSystemKeyEvent,
   HarmonyShortcutCaptureService,
+  HarmonyShortcutCaptureStatus,
   HarmonyShortcutConsumerCallback,
   HarmonyShortcutConsumerPort,
   HarmonyShortcutConsumerSubscription,
@@ -129,8 +130,48 @@ export default function harmonyShortcutCaptureServiceTest(): void {
       expect(service.activate('owner', (_event: HarmonyCapturedSystemKeyEvent): void => {},
         [16, 17])).assertEqual(1);
       expect(service.activate('owner', (_event: HarmonyCapturedSystemKeyEvent): void => {},
-        [16, 17])).assertEqual(2);
+        [16, 17])).assertEqual(1);
+      scheduler.runNext();
       expect(port.callbacks.size).assertEqual(2);
+      service.deactivate('owner');
+    });
+
+    it('reports_partial_state_and_retries_missing_subscription_with_bound', 0, (): void => {
+      const port = new FakeHarmonyShortcutConsumerPort();
+      const scheduler = new FakeHarmonyShortcutRetryScheduler();
+      const service = new HarmonyShortcutCaptureService(port, scheduler);
+      port.subscribeFailures.set(17, 1);
+      const states: string[] = [];
+      expect(service.activate('owner', (_event: HarmonyCapturedSystemKeyEvent): void => {},
+        [16, 17], (status: HarmonyShortcutCaptureStatus): void => {
+          states.push(status.state);
+        })).assertEqual(1);
+      expect(service.getStatus().state).assertEqual('partial');
+      expect(service.getStatus().failedKeyCodes.length).assertEqual(1);
+      scheduler.runNext();
+      expect(service.getStatus().state).assertEqual('active');
+      expect(service.getStatus().retryAttempts).assertEqual(1);
+      expect(states.join(',')).assertEqual('partial,active');
+      service.deactivate('owner');
+    });
+
+    it('stops_retrying_after_three_missing_subscription_retries', 0, (): void => {
+      const port = new FakeHarmonyShortcutConsumerPort();
+      const scheduler = new FakeHarmonyShortcutRetryScheduler();
+      const service = new HarmonyShortcutCaptureService(port, scheduler);
+      port.subscribeFailures.set(16, 10);
+      service.activate('owner', (_event: HarmonyCapturedSystemKeyEvent): void => {}, [16]);
+      scheduler.runNext();
+      scheduler.runNext();
+      scheduler.runNext();
+      expect(service.getStatus().retryExhausted).assertTrue();
+      expect(scheduler.pendingCount()).assertEqual(0);
+      const failuresRemaining: number = port.subscribeFailures.get(16) ?? 0;
+      for (let i: number = 0; i < 10; i++) {
+        service.activate('owner', (_event: HarmonyCapturedSystemKeyEvent): void => {}, [16]);
+      }
+      expect(port.subscribeFailures.get(16)).assertEqual(failuresRemaining);
+      expect(scheduler.pendingCount()).assertEqual(0);
       service.deactivate('owner');
     });
 
@@ -142,9 +183,11 @@ export default function harmonyShortcutCaptureServiceTest(): void {
       service.activate('owner', (_event: HarmonyCapturedSystemKeyEvent): void => {}, [16]);
       service.deactivate('owner');
       expect(port.callbacks.has(16)).assertTrue();
+      expect(service.getStatus().releasePending).assertTrue();
       expect(scheduler.pendingCount()).assertEqual(1);
       scheduler.runNext();
       expect(port.callbacks.has(16)).assertFalse();
+      expect(service.getStatus().releasePending).assertFalse();
       expect(port.released.length).assertEqual(1);
       expect(scheduler.pendingCount()).assertEqual(0);
     });

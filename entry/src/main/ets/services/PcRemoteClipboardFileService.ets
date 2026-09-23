@@ -25,7 +25,8 @@ export interface PcRemoteClipboardFileStatus {
 }
 
 /** Eager, bounded preparation of real files. No remote path inference or synchronous network provider.
- * Keep one instance for a clipboard lease; failed native source sequences are attempted only once.
+ * A failed publication before any OS write keeps a completed private batch for bounded retries; an incomplete native
+ * receive is never treated as delivered and is never reused as a new source sequence.
  * The caller's guard must accept its own remoteTag write while retaining source/epoch/count fencing.
  */
 export class PcRemoteClipboardFileService {
@@ -34,7 +35,16 @@ export class PcRemoteClipboardFileService {
   private context: common.UIAbilityContext;
   private epoch: number = 0;
   private disposed: boolean = false;
+  private deliveredSequence: number = 0;
+  // Native receive failures are terminal for that source snapshot. A later
+  // sequence is required; only a retained completed batch can retry locally.
   private attemptedSequence: number = 0;
+  private processingSequence: number = 0;
+  private retrySequence: number = 0;
+  private retryBatch: TransferArtifactBatch | null = null;
+  private publicationWriteAttempted: boolean = false;
+  private publicationRetries: number = 0;
+  private publicationRetryAt: number = 0;
   private listener: ((status: PcRemoteClipboardFileStatus) => void) | null = null;
   private authorityWriter: ((operation: () => boolean) => boolean) | null = null;
   private status: PcRemoteClipboardFileStatus = { phase: 'idle', writtenBytes: 0, totalBytes: 0, error: 'none' };
@@ -53,7 +63,18 @@ export class PcRemoteClipboardFileService {
     return { phase: this.status.phase, writtenBytes: this.status.writtenBytes,
       totalBytes: this.status.totalBytes, error: this.status.error };
   }
-  dispose(): void { this.disposed = true; this.epoch++; this.listener = null; }
+  dispose(): void {
+    this.disposed = true; this.epoch++; this.listener = null;
+    this.clearRetryBatch();
+  }
+  private clearRetryBatch(): void {
+    const batch: TransferArtifactBatch | null = this.retryBatch;
+    this.retryBatch = null; this.retrySequence = 0;
+    if (batch !== null) { try { batch.release('publish-retry'); } catch (_error) {} }
+  }
+  private retainRetryBatch(batch: TransferArtifactBatch): boolean {
+    try { batch.retain('publish-retry'); return true; } catch (_error) { return false; }
+  }
   private report(epoch: number, phase: PcRemoteClipboardFilePhase, written: number = 0,
     total: number = 0, error: PcRemoteClipboardFileError = 'none'): void {
     if (epoch !== this.epoch || this.disposed) { return; }
@@ -113,7 +134,9 @@ export class PcRemoteClipboardFileService {
     let offer: SessionRdpClipboardFiles = this.loader.getSessionRdpClipboardFiles(sid, generation);
     if (this.validRdpOffer(offer, sequence) && current()) { return offer; }
     if (!current() || !this.loader.requestSessionRdpClipboardFiles(sid, generation, sequence)) { return null; }
-    const deadline: number = Date.now() + 10000;
+    // Native descriptor acquisition expires after 15 seconds. Allow a final
+    // polling interval rather than abandoning a still-valid native request.
+    const deadline: number = Date.now() + 16000;
     while (current() && Date.now() < deadline) {
       offer = this.loader.getSessionRdpClipboardFiles(sid, generation);
       if (offer.sequence === sequence && offer.state === 'ready') { return this.validRdpOffer(offer, sequence) ? offer : null; }
@@ -235,6 +258,7 @@ export class PcRemoteClipboardFileService {
     } catch (_error) { return { stage: 'failed', evidence: 'none' }; }
   }
   private publish(batch: TransferArtifactBatch, current: () => boolean, tag: string, epoch: number): number {
+    this.publicationWriteAttempted = false;
     const publications: TransferArtifactPublicationService = TransferArtifactPublicationService.getInstance();
     let publicationId: string = ''; let writeAttempted: boolean = false;
     try {
@@ -259,7 +283,7 @@ export class PcRemoteClipboardFileService {
       const written: boolean = this.authorityWriter((): boolean => {
         if (!current()) { return false; }
         const board: pasteboard.SystemPasteboard = pasteboard.getSystemPasteboard();
-        writeAttempted = true; board.setDataSync(data);
+        writeAttempted = true; this.publicationWriteAttempted = true; board.setDataSync(data);
         const count: number = board.getChangeCount();
         const observed: pasteboard.PasteData = board.getDataSync();
         if (observed.getTag() !== tag || observed.getRecordCount() !== artifacts.length || board.getChangeCount() !== count ||
@@ -278,11 +302,50 @@ export class PcRemoteClipboardFileService {
   async receiveRemote(snapshot: RemoteClipboardSnapshot, guard: () => boolean, remoteTag: string): Promise<boolean> {
     if (this.disposed || deviceInfo.deviceType !== '2in1' || ['rdp', 'rustdesk'].indexOf(this.lease.protocol) < 0 ||
       remoteTag.length > 128 || !/^remotedesk:remote-text:v1:[a-zA-Z0-9_.:@-]+$/.test(remoteTag) ||
-      snapshot.kind !== 'files' || !Number.isSafeInteger(snapshot.sequence) || snapshot.sequence <= this.attemptedSequence) { return false; }
-    const sequence: number = snapshot.sequence; const epoch: number = ++this.epoch;
+      snapshot.kind !== 'files' || !Number.isSafeInteger(snapshot.sequence) || snapshot.sequence <= this.deliveredSequence ||
+      (snapshot.sequence <= this.attemptedSequence &&
+        !(this.retryBatch !== null && this.retrySequence === snapshot.sequence))) { return false; }
+    const sequence: number = snapshot.sequence;
+    if (this.processingSequence === sequence) { return false; }
+    if (this.retryBatch !== null && this.retrySequence !== sequence) { this.clearRetryBatch(); }
+    const epoch: number = ++this.epoch;
     const current = (): boolean => this.current(epoch, sequence, guard);
     if (!current()) { return false; }
+    // A completed receive whose publication failed is safe to retry locally. Do not
+    // ask the peer for the bytes again, and never reuse this batch for another sequence.
+    if (this.retryBatch !== null && this.retrySequence === sequence) {
+      if (Date.now() < this.publicationRetryAt) { return false; }
+      this.publicationRetries++;
+      this.processingSequence = sequence;
+      try {
+        const publishedCount: number = this.publish(this.retryBatch, current, remoteTag, epoch);
+        if (this.status.phase === 'cached') {
+          // Directory trees stay in the private cache for explicit export. They are
+          // intentionally not publication-retry candidates.
+          this.clearRetryBatch(); return false;
+        }
+        if (publishedCount < 0 || !current()) {
+          if (this.publicationWriteAttempted || this.publicationRetries >= 3 || !current()) {
+            this.clearRetryBatch();
+          } else { this.publicationRetryAt = Date.now() + 500 * Math.pow(2, this.publicationRetries); }
+          this.report(epoch, 'failed', 0, 0, 'publication_failed'); return false;
+        }
+        const board: pasteboard.SystemPasteboard = pasteboard.getSystemPasteboard();
+        if (board.getChangeCount() !== publishedCount || board.getDataSync().getTag() !== remoteTag || !current()) {
+          this.clearRetryBatch();
+          this.report(epoch, 'failed', 0, 0, 'publication_failed'); return false;
+        }
+        this.retryBatch.release('publish-retry'); this.retryBatch = null; this.retrySequence = 0;
+        this.deliveredSequence = sequence;
+        this.report(epoch, 'ready', this.status.writtenBytes, this.status.totalBytes); return true;
+      } catch (_error) {
+        this.clearRetryBatch();
+        this.report(epoch, 'failed', 0, 0, 'publication_failed'); return false;
+      } finally { if (this.processingSequence === sequence) { this.processingSequence = 0; } }
+    }
+    this.processingSequence = sequence;
     this.attemptedSequence = sequence;
+    this.publicationRetries = 0;
     this.report(epoch, 'preparing');
     let batch: TransferArtifactBatch | null = null; let admitted: boolean = false; let publishedCount: number = -1;
     try {
@@ -314,28 +377,56 @@ export class PcRemoteClipboardFileService {
             await this.receiveRustDesk(client, sequence, entries, ownedBatch, control, current, epoch);
           if (result.stage !== 'completed' || !alive()) { return result; }
           if (!await control.enterCommit() || !alive()) { return { stage: 'cancelled', evidence: 'metadataVerified' }; }
+          // Keep the complete private copy alive when only the system clipboard
+          // publication failed. This is the only retryable post-receive state.
+          if (!this.retainRetryBatch(ownedBatch)) { return { stage: 'failed', evidence: 'none', diagnosticCode: 'publication_failed' }; }
+          this.retryBatch = ownedBatch; this.retrySequence = sequence;
           publishedCount = this.publish(ownedBatch, alive, remoteTag, epoch);
-          return { stage: 'completed', evidence: 'metadataVerified' };
+          if (publishedCount < 0) {
+            // A write followed by a failed confirmation may already own the OS
+            // clipboard. Retain its publication lease, but never write it again.
+            if (this.publicationWriteAttempted || !alive()) { this.clearRetryBatch(); }
+            else { this.publicationRetryAt = Date.now() + 500; }
+          }
+          return publishedCount >= 0 ? { stage: 'completed', evidence: 'metadataVerified' } :
+            { stage: 'failed', evidence: 'none', diagnosticCode: 'publication_failed' };
         });
       admitted = handle.accepted;
       const result: ManagedTransferOutcome = await handle.result;
-      if (!current()) { this.report(epoch, 'cancelled', this.status.writtenBytes, total, 'source_changed'); return false; }
+      if (!current()) {
+        if (this.retrySequence === sequence) { this.clearRetryBatch(); }
+        this.report(epoch, 'cancelled', this.status.writtenBytes, total, 'source_changed'); return false;
+      }
       if (publishedCount >= 0 && result.stage === 'completed') {
         const board: pasteboard.SystemPasteboard = pasteboard.getSystemPasteboard();
         if (board.getChangeCount() !== publishedCount || board.getDataSync().getTag() !== remoteTag ||
           board.getChangeCount() !== publishedCount || !current()) {
+          if (this.retrySequence === sequence) { this.clearRetryBatch(); }
           this.report(epoch, 'cancelled', this.status.writtenBytes, total, 'source_changed'); return false;
         }
+        if (this.retryBatch !== null && this.retrySequence === sequence) {
+          this.retryBatch.release('publish-retry'); this.retryBatch = null; this.retrySequence = 0;
+        }
+        this.deliveredSequence = sequence;
         this.report(epoch, 'ready', this.status.writtenBytes, this.status.totalBytes); return true;
       }
-      if (this.status.phase !== 'cached') {
-        this.report(epoch, 'failed', this.status.writtenBytes, total,
-          result.stage === 'completed' ? 'publication_failed' : 'receive_failed');
+      if (this.status.phase === 'cached') {
+        // The complete tree is available for cache/export workflows, but cannot be
+        // represented as a flat system clipboard URI set. Do not overwrite this
+        // diagnostic with a generic publication failure or retain a retry holder.
+        this.clearRetryBatch(); return false;
       }
+      this.report(epoch, 'failed', this.status.writtenBytes, total,
+        result.stage === 'completed' || result.diagnosticCode === 'publication_failed' ?
+          'publication_failed' : 'receive_failed');
       return false;
     } catch (_error) {
+      if (this.retrySequence === sequence) { this.clearRetryBatch(); }
       this.report(epoch, current() ? 'failed' : 'cancelled', this.status.writtenBytes,
         this.status.totalBytes, current() ? 'receive_failed' : 'source_changed'); return false;
-    } finally { if (batch !== null && !admitted) { batch.release(); } }
+    } finally {
+      if (batch !== null && !admitted) { batch.release(); }
+      if (this.processingSequence === sequence) { this.processingSequence = 0; }
+    }
   }
 }

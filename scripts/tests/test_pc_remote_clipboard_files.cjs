@@ -23,7 +23,8 @@ function fixture(protocol = 'rdp', names = ['a.txt', 'empty.txt'], installWriter
  class Batch {
   constructor() { this.id='batch'+s.batches.length;this.directory='/cache/'+this.id;this.artifacts=[];
    this.holds=new Set(['creator']);this.pubs=new Set();this.retained=0;this.aborts=0;s.batches.push(this); }
-  release() { this.holds.delete('creator'); }
+  retain(owner='creator') { this.holds.add(owner); }
+  release(owner='creator') { this.holds.delete(owner); }
   retainPublication(id) { this.pubs.add(id); }
   releasePublication(id) { return this.pubs.delete(id); }
   getArtifacts() { return this.artifacts.slice(); }
@@ -80,8 +81,10 @@ function fixture(protocol = 'rdp', names = ['a.txt', 'empty.txt'], installWriter
  const receiver=new api.PcRemoteClipboardFileService(native,lease,{filesDir:'/files'});
  if(installWriter)receiver.setAuthorityWriter(operation=>operation());
  receiver.setStatusListener(state=>{s.stages.push(state);});
+ let attempts=0;
  return {s,receiver,native,registry,board,lease,tag:'remotedesk:remote-text:v1:4:9',
-  run(){return receiver.receiveRemote(snapshot(),()=>s.current,'remotedesk:remote-text:v1:4:9');}};
+  run(){const tag='remotedesk:remote-text:v1:4:9'+(attempts++===0?'':':retry:'+attempts);
+   return receiver.receiveRemote(snapshot(),()=>s.current,tag);}};
 }
 for(const protocol of ['rdp','rustdesk']) {
  test(protocol+' publishes once only after entire real-file batch is complete and retains system lease',async()=>{
@@ -129,10 +132,33 @@ test('RustDesk later file failure preserves earlier complete cache but never pub
 test('a throwing OS confirmation retains possibly published files and never reports ready',async()=>{
  const f=fixture();f.s.readHook=()=>{throw Error('no read permission');};assert.equal(await f.run(),false);
  assert.equal(f.s.writes,1);assert.equal(f.s.batches[0].pubs.size,1);assert.equal(f.receiver.getStatus().phase,'failed');
+ for(let i=0;i<10;i++){f.s.now+=1000;assert.equal(await f.run(),false);}
+ assert.equal(f.s.writes,1);assert.equal(f.s.batches[0].pubs.size,1);
+});
+test('publication retries complete private bytes without receiving again',async()=>{
+ const f=fixture();f.receiver.setAuthorityWriter(()=>false);assert.equal(await f.run(),false);
+ const starts=f.s.starts;assert.ok(f.s.batches[0].holds.has('publish-retry'));
+ f.receiver.setAuthorityWriter(operation=>operation());
+ assert.equal(await f.run(),false);f.s.now+=500;assert.equal(await f.run(),true);
+ assert.equal(f.s.starts,starts);assert.equal(f.s.batches.length,1);assert.equal(f.s.batches[0].holds.size,0);
+});
+test('permanent publication denial stops after three retries and releases the holder',async()=>{
+ const f=fixture();let attempts=0;f.receiver.setAuthorityWriter(()=>{attempts++;return false;});
+ assert.equal(await f.run(),false);
+ for(let i=0;i<10;i++){f.s.now+=5000;assert.equal(await f.run(),false);}
+ assert.equal(attempts,4);assert.equal(f.s.batches.length,1);assert.equal(f.s.batches[0].holds.size,0);
+ assert.equal(f.s.batches[0].pubs.size,0);
+});
+test('RDP descriptor ready after ten seconds is received within the native deadline',async()=>{
+ const f=fixture();const ready=f.native.getSessionRdpClipboardFiles;
+ f.native.getSessionRdpClipboardFiles=()=>f.s.now>=12000?ready():({sequence:9,state:'loading',entries:[]});
+ assert.equal(await f.run(),true);assert.equal(f.s.now,12000);assert.equal(f.s.starts,1);
 });
 test('local clipboard replacement while managed finalization yields cannot return success',async()=>{
  const f=fixture();f.s.finalizeHook=()=>{f.s.count++;f.s.boardData.tag='new-local';};assert.equal(await f.run(),false);
  assert.equal(f.s.writes,1);assert.equal(f.receiver.getStatus().phase,'cancelled');assert.equal(f.s.batches[0].pubs.size,1);
+ for(let i=0;i<10;i++){f.s.now+=5000;assert.equal(await f.run(),false);}
+ assert.equal(f.s.writes,1);assert.equal(f.s.boardData.tag,'new-local');assert.equal(f.s.batches[0].holds.size,0);
 });
 test('source changes before synchronous clipboard publication release only unpublished registration',async()=>{
  const f=fixture();f.receiver.setStatusListener(state=>{if(state.phase==='publishing')f.s.current=false;});

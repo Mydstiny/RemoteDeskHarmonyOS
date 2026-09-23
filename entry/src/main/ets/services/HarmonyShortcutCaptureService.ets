@@ -37,6 +37,20 @@ export interface HarmonyShortcutConsumerPort {
     callback: HarmonyShortcutConsumerCallback): HarmonyShortcutConsumerSubscription;
 }
 
+export type HarmonyShortcutCaptureState = 'inactive' | 'active' | 'partial' | 'failed';
+
+export interface HarmonyShortcutCaptureStatus {
+  owner: string;
+  activationEpoch: number;
+  desiredKeyCodes: number[];
+  activeKeyCodes: number[];
+  failedKeyCodes: number[];
+  retryAttempts: number;
+  retryExhausted: boolean;
+  state: HarmonyShortcutCaptureState;
+  releasePending: boolean;
+}
+
 export interface HarmonyShortcutRetryScheduler {
   schedule(callback: () => void, delayMs: number): number;
   cancel(timerId: number): void;
@@ -118,10 +132,17 @@ export class HarmonyShortcutCaptureService {
   private activationEpoch: number = 0;
   private activeOwner: string = '';
   private activeHandler: HarmonyCapturedSystemKeyHandler | null = null;
+  private statusHandler: ((status: HarmonyShortcutCaptureStatus) => void) | null = null;
+  private lastStatusSignature: string = '';
   private subscriptions: HarmonyShortcutTrackedSubscription[] = [];
   private desiredKeyCodes: number[] = [];
+  private failedKeyCodes: number[] = [];
   private pressedKeys: HarmonyShortcutPressedKeyIdentity[] = [];
   private releaseRetryTimer: number = -1;
+  private subscriptionRetryTimer: number = -1;
+  private subscriptionRetryAttempts: number = 0;
+  private subscriptionRetryExhausted: boolean = false;
+  private static readonly MAX_SUBSCRIPTION_RETRIES: number = 3;
   private readonly consumerPort: HarmonyShortcutConsumerPort;
   private readonly retryScheduler: HarmonyShortcutRetryScheduler;
 
@@ -147,8 +168,33 @@ export class HarmonyShortcutCaptureService {
     return prefix + '-' + this.ownerSequence.toString();
   }
 
+  getStatus(): HarmonyShortcutCaptureStatus {
+    const activeKeyCodes: number[] = this.subscriptionKeyCodes();
+    const desiredKeyCodes: number[] = this.desiredKeyCodes.slice();
+    const failedKeyCodes: number[] = this.failedKeyCodes.slice();
+    let state: HarmonyShortcutCaptureState = 'inactive';
+    if (desiredKeyCodes.length > 0) {
+      state = activeKeyCodes.length === desiredKeyCodes.length ? 'active' :
+        (activeKeyCodes.length > 0 ? 'partial' : 'failed');
+    }
+    return {
+      owner: this.activeOwner,
+      activationEpoch: this.activationEpoch,
+      desiredKeyCodes,
+      activeKeyCodes,
+      failedKeyCodes,
+      retryAttempts: this.subscriptionRetryAttempts,
+      retryExhausted: this.subscriptionRetryAttempts >=
+        HarmonyShortcutCaptureService.MAX_SUBSCRIPTION_RETRIES &&
+        harmonyShortcutMissingSubscriptionKeyCodes(desiredKeyCodes, activeKeyCodes).length > 0,
+      state,
+      releasePending: this.hasUnrequestedSubscription()
+    };
+  }
+
   activate(owner: string, handler: HarmonyCapturedSystemKeyHandler,
-    requestedKeyCodes: number[]): number {
+    requestedKeyCodes: number[],
+    onStatus: ((status: HarmonyShortcutCaptureStatus) => void) | null = null): number {
     const normalizedOwner: string = owner.trim();
     if (normalizedOwner.length === 0) { return 0; }
     const desired: number[] = this.normalizeRequestedKeyCodes(requestedKeyCodes);
@@ -157,14 +203,24 @@ export class HarmonyShortcutCaptureService {
     if (registrationChanged) {
       this.cancelActivePressedKeys();
       this.activationEpoch += 1;
+      this.failedKeyCodes = [];
+      this.subscriptionRetryAttempts = 0;
+      this.subscriptionRetryExhausted = false;
+      this.cancelSubscriptionRetry();
     }
     this.activeOwner = normalizedOwner;
     this.activeHandler = handler;
+    this.statusHandler = onStatus;
     this.desiredKeyCodes = desired;
     this.reconcileSubscriptions();
+    const status: HarmonyShortcutCaptureStatus = this.getStatus();
     hilog.info(0x0014, 'HarmonyShortcutCapture',
       'activate owner=' + normalizedOwner +
-      ' subscriptions=' + this.requestedSubscriptionCount().toString());
+      ' state=' + status.state +
+      ' desired=' + status.desiredKeyCodes.length.toString() +
+      ' active=' + status.activeKeyCodes.length.toString() +
+      ' failed=' + status.failedKeyCodes.length.toString() +
+      ' retry=' + status.retryAttempts.toString());
     return this.requestedSubscriptionCount();
   }
 
@@ -173,7 +229,13 @@ export class HarmonyShortcutCaptureService {
     this.cancelActivePressedKeys();
     this.activeOwner = '';
     this.activeHandler = null;
+    this.statusHandler = null;
+    this.lastStatusSignature = '';
     this.desiredKeyCodes = [];
+    this.failedKeyCodes = [];
+    this.subscriptionRetryAttempts = 0;
+    this.subscriptionRetryExhausted = false;
+    this.cancelSubscriptionRetry();
     this.activationEpoch += 1;
     this.reconcileSubscriptions();
     hilog.info(0x0014, 'HarmonyShortcutCapture', 'deactivate');
@@ -235,10 +297,21 @@ export class HarmonyShortcutCaptureService {
   private reconcileSubscriptions(): void {
     this.releaseUnrequestedSubscriptions();
     this.subscribeMissingSubscriptions();
+    this.updateSubscriptionRetry();
     this.updateReleaseRetry();
+    const status: HarmonyShortcutCaptureStatus = this.getStatus();
+    const signature: string = JSON.stringify(status);
+    if (signature !== this.lastStatusSignature) {
+      this.lastStatusSignature = signature;
+      hilog.info(0x0014, 'HarmonyShortcutCapture', 'status=' + signature);
+      try { this.statusHandler?.(status); } catch (_error) { /* Observer isolation. */ }
+    }
   }
 
   private subscribeMissingSubscriptions(): void {
+    // Focus/geometry reconciliation and release retries share this path. Only
+    // the bounded subscription timer may retry a failed registration.
+    if (this.subscriptionRetryTimer >= 0 || this.subscriptionRetryExhausted) { return; }
     const keys: number[] = harmonyShortcutMissingSubscriptionKeyCodes(
       this.desiredKeyCodes, this.subscriptionKeyCodes());
     for (let index: number = 0; index < keys.length; index++) {
@@ -270,12 +343,43 @@ export class HarmonyShortcutCaptureService {
           this.consumerPort.subscribe(configuredKeyCode, callback);
         this.subscriptions.push(new HarmonyShortcutTrackedSubscription(
           registrationOwner, registrationEpoch, subscription));
+        this.failedKeyCodes = this.failedKeyCodes.filter((keyCode: number): boolean =>
+          keyCode !== configuredKeyCode);
       } catch (error) {
+        if (this.failedKeyCodes.indexOf(configuredKeyCode) < 0) {
+          this.failedKeyCodes.push(configuredKeyCode);
+        }
         hilog.warn(0x0014, 'HarmonyShortcutCapture',
           'subscription rejected key=' + configuredKeyCode.toString() +
           ' error=' + JSON.stringify(error));
       }
     }
+  }
+
+  private cancelSubscriptionRetry(): void {
+    if (this.subscriptionRetryTimer >= 0) {
+      this.retryScheduler.cancel(this.subscriptionRetryTimer);
+      this.subscriptionRetryTimer = -1;
+    }
+  }
+
+  private updateSubscriptionRetry(): void {
+    const missing: number[] = harmonyShortcutMissingSubscriptionKeyCodes(
+      this.desiredKeyCodes, this.subscriptionKeyCodes());
+    if (missing.length === 0 || this.subscriptionRetryAttempts >=
+      HarmonyShortcutCaptureService.MAX_SUBSCRIPTION_RETRIES ||
+      this.activeOwner.length === 0) {
+      this.subscriptionRetryExhausted = missing.length > 0 && this.subscriptionRetryAttempts >=
+        HarmonyShortcutCaptureService.MAX_SUBSCRIPTION_RETRIES;
+      this.cancelSubscriptionRetry();
+      return;
+    }
+    if (this.subscriptionRetryTimer >= 0) { return; }
+    this.subscriptionRetryTimer = this.retryScheduler.schedule((): void => {
+      this.subscriptionRetryTimer = -1;
+      this.subscriptionRetryAttempts++;
+      this.reconcileSubscriptions();
+    }, 250);
   }
 
   private rememberPressedKey(event: HarmonyCapturedSystemKeyEvent): void {

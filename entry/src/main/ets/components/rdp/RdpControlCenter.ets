@@ -160,7 +160,10 @@ export struct RdpControlCenter {
           .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis }).margin({ top: 2 })
       }.alignItems(HorizontalAlign.Start).layoutWeight(1)
       Toggle({ type: ToggleType.Switch, isOn: value }).selectedColor(RDP_SESSION_CONTROL_ACCENT)
-        .onChange((next: boolean): void => { if (next !== value) { action(next); } })
+        // `value` is a builder argument and may be stale when ArkUI retains
+        // this Toggle node. Forward the actual target; the state owner is the
+        // single source of truth and handles any duplicate request.
+        .onChange((next: boolean): void => { action(next); })
     }.width('100%').height(60).padding({ left: 12, right: 12, top: 7, bottom: 7 })
   }
 
