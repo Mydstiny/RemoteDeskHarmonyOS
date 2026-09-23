@@ -158,7 +158,7 @@ export struct AiSettingsPage {
             AppSettingsChoiceButton({ label: 'DSH', isSelected: this.settings.defaultBackend === 'dsh',
               onSelect: (): void => { if (!this.busy && this.settingsReady) { this.settings.defaultBackend = 'dsh'; this.save(); } } }).layoutWeight(1).enabled(!this.busy && this.settingsReady)
           }.width('100%')
-          this.sectionTitle('主机与配对', '局域网直连 · RustDesk 中继将在后续版本开放')
+          this.sectionTitle('主机与配对', '局域网连接 · RustDesk 中继将在后续版本开放')
           if (this.hosts.length === 0) {
             Text('还没有 AI 主机。添加电脑地址后，可粘贴电脑生成的邀请完成配对。')
               .fontSize(13).fontFamily(AppConfig.fontFamily).fontColor(this.pal().text2).width('100%')

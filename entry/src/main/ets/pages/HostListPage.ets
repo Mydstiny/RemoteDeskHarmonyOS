@@ -6269,6 +6269,12 @@ struct HostListPage {
       'hostManualSortOrder', JSON.stringify(this.hostManualOrder)));
   }
 
+  private hostCardProtocolColor(host: RemoteHost): string {
+    if (host.protocol === 'ssh') { return this.pal().editColor; }
+    if (host.protocol === 'rdp' || host.protocol === 'ai') { return this.accentColor; }
+    return this.pal().success;
+  }
+
   @Builder hostDragPreviewBuilder(host: RemoteHost) {
     Row() {
       Column() {
@@ -6277,8 +6283,7 @@ struct HostListPage {
           .width(24).height(24).fillColor(Color.White)
       }
       .width(42).height(42).borderRadius(21)
-      .backgroundColor(host.protocol === 'ssh' ? this.pal().editColor :
-        (host.protocol === 'rdp' ? this.accentColor : this.pal().success))
+      .backgroundColor(this.hostCardProtocolColor(host))
       .justifyContent(FlexAlign.Center)
       .margin({ right: 10 })
 
@@ -13277,7 +13282,7 @@ struct HostListPage {
   }
 
   private hostGroupStatusLine(host: RemoteHost): string {
-    if (host.protocol === 'ai') { return '局域网直连'; }
+    if (host.protocol === 'ai') { return '局域网配置'; }
     if (host.protocol === 'rustdesk' && !this.rustdeskPresenceDetectionEnabled) {
       return '';
     }
@@ -14434,8 +14439,7 @@ struct HostListPage {
         }
         .width(this.breakpoint === 'sm' ? 42 : 46).height(this.breakpoint === 'sm' ? 42 : 46)
         .borderRadius(this.breakpoint === 'sm' ? 21 : 14)
-        .backgroundColor(host.protocol === 'ssh' ? this.pal().editColor :
-          (host.protocol === 'rdp' ? this.accentColor : this.pal().success))
+        .backgroundColor(this.hostCardProtocolColor(host))
         .justifyContent(FlexAlign.Center).margin({ right: this.breakpoint === 'sm' ? 10 : 12 })
         .onClick((): void => { this.handleHostCardClick(host); })
 

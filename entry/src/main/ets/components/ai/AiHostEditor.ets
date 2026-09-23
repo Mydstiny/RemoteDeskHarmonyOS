@@ -178,7 +178,8 @@ export struct AiHostEditor {
       Row({ space: 12 }) {
         if (this.wizard() && (this.step === 2 || this.canReturnToProtocols)) {
           Button() { SymbolGlyph($r('sys.symbol.chevron_left')).fontSize(18).fontColor([this.pal().text2]) }
-            .width(36).height(36).borderRadius(18).padding(0).backgroundColor(this.pal().surface)
+            .width(AppUiMetrics.minTouchTarget).height(AppUiMetrics.minTouchTarget)
+            .borderRadius(AppUiMetrics.minTouchTarget / 2).padding(0).backgroundColor(this.pal().surface)
             .enabled(!this.busy && !this.defaultsPending).accessibilityText(this.step === 2 ? '返回主机信息' : '返回协议选择')
             .onClick((): void => { this.previousStep(); })
         }
@@ -190,14 +191,15 @@ export struct AiHostEditor {
         }.alignItems(HorizontalAlign.Start).layoutWeight(1)
         ProBadge().alignSelf(ItemAlign.Start)
         Button() { SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor([this.pal().text2]) }
-          .width(36).height(36).borderRadius(18).padding(0).backgroundColor(this.pal().surface)
+          .width(AppUiMetrics.minTouchTarget).height(AppUiMetrics.minTouchTarget)
+          .borderRadius(AppUiMetrics.minTouchTarget / 2).padding(0).backgroundColor(this.pal().surface)
           .accessibilityText('关闭远程 AI 编辑').onClick(this.onClose)
       }.width('100%').margin({ bottom: 18 })
       // An intrinsic form lets the shared FIT_CONTENT sheet own scrolling and IME avoidance.
       Column({ space: AppUiMetrics.sectionGap }) {
         if (!this.wizard() || this.step === 1) { this.hostFields() }
         if (!this.wizard() || this.step === 2) { this.pairingFields() }
-        Text('局域网直连 · RustDesk 中继将在后续版本开放')
+        Text('局域网连接 · RustDesk 中继将在后续版本开放')
           .fontSize(12).fontFamily(AppConfig.fontFamily).fontColor(this.pal().text2).width('100%')
         if (!this.allowed) {
           Text('远程 AI 为 Pro 实验功能。可先保存配置，配对与控制以 Pro 功能页开放状态为准。')
