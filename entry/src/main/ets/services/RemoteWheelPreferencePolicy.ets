@@ -8,6 +8,23 @@ export const RUSTDESK_REVERSE_WHEEL_KEY: string = 'rustdeskReverseWheel';
 export const SSH_REVERSE_WHEEL_KEY: string = 'sshReverseWheel';
 export const VNC_REVERSE_WHEEL_KEY: string = 'vncReverseWheel';
 export const MOONLIGHT_REVERSE_WHEEL_KEY: string = 'moonlightReverseWheel';
+export const RUSTDESK_WHEEL_DIRECTION_FOLLOWS_KEYBOARD_KEY: string =
+  'rustdeskWheelDirectionFollowsKeyboard';
+
+export function defaultRustDeskWheelDirectionFollowsKeyboard(
+  followsKeyboardPreferencePresent: boolean,
+  storedFollowsKeyboard: boolean,
+  legacyReverseWheel: boolean
+): boolean {
+  if (followsKeyboardPreferencePresent) { return storedFollowsKeyboard; }
+  // Preserve an old reversed choice as manual. Legacy false was also the
+  // default, so it adopts the new keyboard-following behavior.
+  return !legacyReverseWheel;
+}
+
+export function rustDeskWheelReversedForKeyboardLayout(layout: string): boolean {
+  return layout.trim().toLowerCase() === 'macos';
+}
 
 export interface RemoteWheelPreferences {
   rdp: boolean;

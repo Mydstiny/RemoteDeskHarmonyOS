@@ -541,6 +541,7 @@ import {
   REMOTE_WHEEL_PREFERENCE_VERSION,
   REMOTE_WHEEL_PREFERENCE_VERSION_KEY,
   RUSTDESK_REVERSE_WHEEL_KEY,
+  RUSTDESK_WHEEL_DIRECTION_FOLLOWS_KEYBOARD_KEY,
   SSH_REVERSE_WHEEL_KEY,
   VNC_REVERSE_WHEEL_KEY,
   RemoteWheelPreferenceMigration,
@@ -1213,6 +1214,8 @@ struct HostListPage {
   @StorageLink('rustdeskRelativeMouseMode') rustdeskRelativeMouseMode: boolean = false;
   @StorageLink(RDP_REVERSE_WHEEL_KEY) rdpReverseWheel: boolean = false;
   @StorageLink(RUSTDESK_REVERSE_WHEEL_KEY) rustdeskReverseWheel: boolean = false;
+  @StorageLink(RUSTDESK_WHEEL_DIRECTION_FOLLOWS_KEYBOARD_KEY)
+  rustdeskWheelDirectionFollowsKeyboard: boolean = true;
   @StorageLink(SSH_REVERSE_WHEEL_KEY) sshReverseWheel: boolean = false;
   @StorageLink(VNC_REVERSE_WHEEL_KEY) vncReverseWheel: boolean = false;
   @StorageLink(MOONLIGHT_REVERSE_WHEEL_KEY) moonlightReverseWheel: boolean = false;
@@ -11398,7 +11401,8 @@ struct HostListPage {
     };
   }
 
-  private saveRemoteWheelPreferences(values: RemoteWheelPreferences): boolean {
+  private saveRemoteWheelPreferences(values: RemoteWheelPreferences,
+    rustDeskExplicitlyUpdated: boolean = false): boolean {
     try {
       const prefs: preferences.Preferences = preferences.getPreferencesSync(
         getContext(this), { name: 'RemoteDesktopAppPrefs' });
@@ -11419,6 +11423,10 @@ struct HostListPage {
       const versionPresent: boolean = prefs.hasSync(REMOTE_WHEEL_PREFERENCE_VERSION_KEY);
       const previousVersion: number = prefs.getSync(
         REMOTE_WHEEL_PREFERENCE_VERSION_KEY, 0) as number;
+      const wheelModePresent: boolean = prefs.hasSync(
+        RUSTDESK_WHEEL_DIRECTION_FOLLOWS_KEYBOARD_KEY);
+      const previousWheelMode: boolean = prefs.getSync(
+        RUSTDESK_WHEEL_DIRECTION_FOLLOWS_KEYBOARD_KEY, true) as boolean;
       try {
         prefs.putSync(RDP_REVERSE_WHEEL_KEY, values.rdp);
         prefs.putSync(RUSTDESK_REVERSE_WHEEL_KEY, values.rustdesk);
@@ -11426,6 +11434,9 @@ struct HostListPage {
         prefs.putSync(VNC_REVERSE_WHEEL_KEY, values.vnc);
         prefs.putSync(MOONLIGHT_REVERSE_WHEEL_KEY, values.moonlight);
         prefs.putSync(REMOTE_WHEEL_PREFERENCE_VERSION_KEY, REMOTE_WHEEL_PREFERENCE_VERSION);
+        if (rustDeskExplicitlyUpdated) {
+          prefs.putSync(RUSTDESK_WHEEL_DIRECTION_FOLLOWS_KEYBOARD_KEY, false);
+        }
         prefs.flushSync();
       } catch (_writeError) {
         try {
@@ -11441,6 +11452,11 @@ struct HostListPage {
             prefs, MOONLIGHT_REVERSE_WHEEL_KEY, present.moonlight, previous.moonlight);
           this.restoreRemoteWheelPreferenceValue(
             prefs, REMOTE_WHEEL_PREFERENCE_VERSION_KEY, versionPresent, previousVersion);
+          if (rustDeskExplicitlyUpdated) {
+            this.restoreRemoteWheelPreferenceValue(
+              prefs, RUSTDESK_WHEEL_DIRECTION_FOLLOWS_KEYBOARD_KEY,
+              wheelModePresent, previousWheelMode);
+          }
           prefs.flushSync();
         } catch (_rollbackError) { /* The UI state still retains the last confirmed values. */ }
         return false;
@@ -11450,6 +11466,7 @@ struct HostListPage {
     }
     this.rdpReverseWheel = values.rdp;
     this.rustdeskReverseWheel = values.rustdesk;
+    if (rustDeskExplicitlyUpdated) { this.rustdeskWheelDirectionFollowsKeyboard = false; }
     this.sshReverseWheel = values.ssh;
     this.vncReverseWheel = values.vnc;
     this.moonlightReverseWheel = values.moonlight;
@@ -11472,12 +11489,12 @@ struct HostListPage {
   private saveProtocolReverseWheel(protocol: 'rdp' | 'rustdesk' | 'ssh' | 'vnc' | 'moonlight',
     reversed: boolean): boolean {
     return this.saveRemoteWheelPreferences(withRemoteWheelPreference(
-      this.remoteWheelPreferences(), protocol, reversed));
+      this.remoteWheelPreferences(), protocol, reversed), protocol === 'rustdesk');
   }
 
   private saveRemoteWheelPreferenceUpdate(update: RemoteWheelPreferenceUpdate): boolean {
     return this.saveRemoteWheelPreferences(applyRemoteWheelPreferenceUpdate(
-      this.remoteWheelPreferences(), update));
+      this.remoteWheelPreferences(), update), update.touched.rustdesk);
   }
 
   private reportPreferencePersistence(localSaved: boolean,

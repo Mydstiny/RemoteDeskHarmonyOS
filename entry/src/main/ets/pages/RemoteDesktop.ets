@@ -714,6 +714,9 @@ import {
 import {
   RDP_REVERSE_WHEEL_KEY,
   RUSTDESK_REVERSE_WHEEL_KEY,
+  RUSTDESK_WHEEL_DIRECTION_FOLLOWS_KEYBOARD_KEY,
+  defaultRustDeskWheelDirectionFollowsKeyboard,
+  rustDeskWheelReversedForKeyboardLayout,
   VNC_REVERSE_WHEEL_KEY
 } from '../services/RemoteWheelPreferencePolicy';
 import {
@@ -1115,6 +1118,8 @@ struct RemoteDesktop {
   rdpReverseWheel: boolean = false;
   @StorageLink(RUSTDESK_REVERSE_WHEEL_KEY) @Watch('onRemoteWheelPreferenceChange')
   rustdeskReverseWheel: boolean = false;
+  @StorageLink(RUSTDESK_WHEEL_DIRECTION_FOLLOWS_KEYBOARD_KEY)
+  rustdeskWheelDirectionFollowsKeyboard: boolean = true;
   @StorageLink(VNC_REVERSE_WHEEL_KEY) @Watch('onRemoteWheelPreferenceChange')
   vncReverseWheel: boolean = false;
   @StorageLink('rustdeskSwapMouseButtons') rustdeskSwapMouseButtons: boolean = false;
@@ -5077,6 +5082,25 @@ struct RemoteDesktop {
     }
   }
 
+  private restoreRustDeskWheelDirectionMode(): void {
+    try {
+      const prefs: preferences.Preferences = preferences.getPreferencesSync(
+        getContext(this), { name: 'RemoteDesktopAppPrefs' });
+      const present: boolean = prefs.hasSync(RUSTDESK_WHEEL_DIRECTION_FOLLOWS_KEYBOARD_KEY);
+      const followsKeyboard: boolean = defaultRustDeskWheelDirectionFollowsKeyboard(
+        present,
+        prefs.getSync(RUSTDESK_WHEEL_DIRECTION_FOLLOWS_KEYBOARD_KEY, true) as boolean,
+        prefs.getSync(RUSTDESK_REVERSE_WHEEL_KEY, this.rustdeskReverseWheel) as boolean);
+      this.rustdeskWheelDirectionFollowsKeyboard = followsKeyboard;
+      if (!present) {
+        prefs.putSync(RUSTDESK_WHEEL_DIRECTION_FOLLOWS_KEYBOARD_KEY, followsKeyboard);
+        prefs.flushSync();
+      }
+    } catch (_error) {
+      this.rustdeskWheelDirectionFollowsKeyboard = !this.rustdeskReverseWheel;
+    }
+  }
+
   /** Keep direct-to-session routes in sync with the per-protocol local switches. */
   private restoreSessionControlBarVisibilityPreferences(): void {
     try {
@@ -7011,6 +7035,18 @@ struct RemoteDesktop {
     this.persistSessionPref(RUSTDESK_REVERSE_WHEEL_KEY, on);
   }
 
+  private setRustDeskWheelDirectionFollowsKeyboard(on: boolean): void {
+    this.rustdeskWheelDirectionFollowsKeyboard = on;
+    this.persistSessionPref(RUSTDESK_WHEEL_DIRECTION_FOLLOWS_KEYBOARD_KEY, on);
+    if (on) { this.syncRustDeskWheelDirectionForKeyboardLayout(); }
+  }
+
+  private syncRustDeskWheelDirectionForKeyboardLayout(): void {
+    if (!this.rustdeskWheelDirectionFollowsKeyboard || !this.isRustDeskSession()) { return; }
+    const next: boolean = rustDeskWheelReversedForKeyboardLayout(this.physicalKeyboardLayout);
+    if (this.rustdeskReverseWheel !== next) { this.setRustDeskReverseWheel(next); }
+  }
+
   private setCurrentProtocolReverseWheel(on: boolean): void {
     const protocol: string = this.currentProtocolName();
     if (protocol === 'rdp') {
@@ -7022,6 +7058,8 @@ struct RemoteDesktop {
       this.persistSessionPref(VNC_REVERSE_WHEEL_KEY, on);
       return;
     }
+    this.rustdeskWheelDirectionFollowsKeyboard = false;
+    this.persistSessionPref(RUSTDESK_WHEEL_DIRECTION_FOLLOWS_KEYBOARD_KEY, false);
     this.setRustDeskReverseWheel(on);
   }
 
@@ -7148,6 +7186,9 @@ struct RemoteDesktop {
       },
       onToggleReverseWheel: (on: boolean): void => {
         this.setCurrentProtocolReverseWheel(on);
+      },
+      onToggleWheelDirectionFollowsKeyboard: (on: boolean): void => {
+        this.setRustDeskWheelDirectionFollowsKeyboard(on);
       },
       onToggleSwapMouseButtons: (on: boolean): void => {
         this.setRustDeskSwapMouseButtons(on);
@@ -9145,6 +9186,7 @@ struct RemoteDesktop {
     this.physicalKeyboardLayout = RemoteKeyboardLayout.WINDOWS;
     this.physicalKeyboardLayoutConfirmed = false;
     this.physicalKeyboardLayoutPromptVisible = false;
+    this.restoreRustDeskWheelDirectionMode();
     this.xComponentController.setListener(this);
     this.rustDeskPreviewController.setListener(this);
     this.restoreSessionControlBarVisibilityPreferences();
@@ -11897,6 +11939,7 @@ struct RemoteDesktop {
       const response: Record<string, number> = result as Record<string, number>;
       this.physicalKeyboardLayout = response['index'] === 1 ?
         RemoteKeyboardLayout.MACOS : RemoteKeyboardLayout.WINDOWS;
+      this.syncRustDeskWheelDirectionForKeyboardLayout();
       this.physicalKeyboardLayoutConfirmed = true;
       this.physicalKeyboardLayoutPromptVisible = false;
       this.syncHarmonyShortcutCapture('keyboard-layout-prompt-close');
@@ -14871,6 +14914,9 @@ struct RemoteDesktop {
         }
       }
       this.promptPhysicalKeyboardLayout();
+      if (host.protocol === 'rustdesk') {
+        this.syncRustDeskWheelDirectionForKeyboardLayout();
+      }
       if (host.protocol === 'rdp') {
         this.startRdpRenderWatchdog(sid, attemptId);
         this.startRdpNativeStateMonitor(sid, attemptId);
@@ -21818,6 +21864,7 @@ struct RemoteDesktop {
           browseMode: this.rustdeskBrowseMode,
           relativeMouseMode: this.rustdeskRelativeMouseMode,
           reverseWheel: this.reverseWheelForCurrentProtocol(),
+          wheelDirectionFollowsKeyboard: this.rustdeskWheelDirectionFollowsKeyboard,
           swapMouseButtons: this.rustdeskSwapMouseButtons,
           touchpadSpeed: this.rustdeskTouchpadSpeed,
           rustDeskPhoneTarget: this.isRustDeskPhoneSession(),

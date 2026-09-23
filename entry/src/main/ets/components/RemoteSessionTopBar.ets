@@ -111,6 +111,7 @@ export interface RemoteSessionTopBarActions {
   onToggleBrowseMode: (on: boolean) => void;
   onToggleRelativeMouse: (on: boolean) => void;
   onToggleReverseWheel: (on: boolean) => void;
+  onToggleWheelDirectionFollowsKeyboard: (on: boolean) => void;
   onToggleSwapMouseButtons: (on: boolean) => void;
   onSetTouchpadSpeed: (speed: number) => void;
   onToggleDiagnostics: (on: boolean) => void;
@@ -144,6 +145,7 @@ export struct RemoteSessionTopBar {
   @Prop browseMode: boolean = false;
   @Prop relativeMouseMode: boolean = false;
   @Prop reverseWheel: boolean = false;
+  @Prop wheelDirectionFollowsKeyboard: boolean = true;
   @Prop swapMouseButtons: boolean = false;
   @Prop touchpadSpeed: number = 1.0;
   @Prop @Watch('onRustDeskPhoneTargetChange') rustDeskPhoneTarget: boolean = false;
@@ -169,6 +171,7 @@ export struct RemoteSessionTopBar {
   @State private activeMenu: string = '';
   @State private activeSubMenu: string = '';
   @State private subMenuPinned: boolean = false;
+  @State private menuItemRenderRevision: number = 0;
   @State private railSwipeX: number = 0;
   @State private viewportWidth: number = 360;
   @State private viewportHeight: number = 640;
@@ -204,6 +207,7 @@ export struct RemoteSessionTopBar {
     onToggleBrowseMode: (_on: boolean): void => {},
     onToggleRelativeMouse: (_on: boolean): void => {},
     onToggleReverseWheel: (_on: boolean): void => {},
+    onToggleWheelDirectionFollowsKeyboard: (_on: boolean): void => {},
     onToggleSwapMouseButtons: (_on: boolean): void => {},
     onSetTouchpadSpeed: (_speed: number): void => {},
     onToggleDiagnostics: (_on: boolean): void => {},
@@ -599,13 +603,6 @@ export struct RemoteSessionTopBar {
       .focusable(false)
       .focusOnTouch(false)
       .accessibilityText(accessibilityLabel)
-      .bindTips(accessibilityLabel, {
-        appearingTime: 300,
-        disappearingTime: 0,
-        appearingTimeWithContinuousOperation: 100,
-        disappearingTimeWithContinuousOperation: 0,
-        enableArrow: true
-      })
       .onClick((): void => {
         this.noteUserActivity();
         action();
@@ -703,8 +700,12 @@ export struct RemoteSessionTopBar {
     .borderRadius(6)
     .focusable(false)
     .focusOnTouch(false)
+    .id('remote-session-menu-item|' + actionId + '|' + label + '|' +
+      (checked === undefined ? 'none' : (checked ? '1' : '0')) + '|' +
+      this.menuItemRenderRevision.toString())
     .onClick((): void => {
       this.runAction(actionId, action);
+      this.menuItemRenderRevision++;
     })
   }
 
@@ -1077,6 +1078,9 @@ export struct RemoteSessionTopBar {
       this.menuItem('相对鼠标模式', 'relativeMouse', (): void => {
         this.actions.onToggleRelativeMouse(!this.relativeMouseMode);
       }, this.relativeMouseMode)
+      this.menuItem('滚轮方向跟随键盘映射', 'keyboardMouseSettings', (): void => {
+        this.actions.onToggleWheelDirectionFollowsKeyboard(!this.wheelDirectionFollowsKeyboard);
+      }, this.wheelDirectionFollowsKeyboard)
     }
     this.menuItem('远程滚轮反向', 'keyboardMouseSettings', (): void => {
       this.actions.onToggleReverseWheel(!this.reverseWheel);
