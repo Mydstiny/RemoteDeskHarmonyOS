@@ -86,7 +86,7 @@ export default function rdpSessionErrorPolicyTest() {
       );
       expect(model.title).assertEqual('RDP 账号认证失败');
       expect(model.message).assertEqual(
-        '请核对 Windows 账号、用户名/域格式、密码和远程登录权限。若使用 AD UPN（user@domain），检查全局“RDP 身份格式”；默认模式会把邮箱按 Microsoft Account 域发送。域策略禁用 NTLM 时，当前 NLA 认证也可能不兼容。此码也可能来自本地 CredSSP/SSPI 凭据失败，不能单独证明密码错误。'
+        '请核对 Windows 账号、用户名/域格式、密码和远程登录权限。若使用 AD UPN（user@domain），检查全局“RDP 身份格式”；若当前选择 Microsoft Account 域模式，邮箱会按该域发送。域策略禁用 NTLM 时，当前 NLA 认证也可能不兼容。此码也可能来自本地 CredSSP/SSPI 凭据失败，不能单独证明密码错误。'
       );
       expect(model.code).assertEqual('0x20014');
       expect(model.source).assertEqual(RdpSessionErrorSource.CONNECT_FAILURE);
