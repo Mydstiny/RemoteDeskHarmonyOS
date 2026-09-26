@@ -2,6 +2,7 @@ import { describe, it, expect } from '@ohos/hypium';
 import {
   canUseRustDeskAdaptiveOrientation,
   isRustDeskPhoneSessionForPeer,
+  remoteOrientationRequestIsActive,
   remoteOrientationRequestIsCurrent,
   rustDeskOrientationPolicy
 } from '../main/ets/services/RemoteOrientationPolicy';
@@ -46,6 +47,14 @@ export default function remoteOrientationPolicyTest(): void {
       expect(remoteOrientationRequestIsCurrent(7, 8)).assertFalse();
       expect(remoteOrientationRequestIsCurrent(8, 8)).assertTrue();
       expect(remoteOrientationRequestIsCurrent(0, 0)).assertFalse();
+    });
+
+    it('invalidates old page generations and blocks stale locks during cleanup', 0, (): void => {
+      expect(remoteOrientationRequestIsActive(8, 8, 3, 3, false, false)).assertTrue();
+      expect(remoteOrientationRequestIsActive(8, 8, 2, 3, false, false)).assertFalse();
+      expect(remoteOrientationRequestIsActive(8, 9, 3, 3, false, false)).assertFalse();
+      expect(remoteOrientationRequestIsActive(8, 8, 3, 3, true, false)).assertFalse();
+      expect(remoteOrientationRequestIsActive(8, 8, 3, 3, true, true)).assertTrue();
     });
   });
 }

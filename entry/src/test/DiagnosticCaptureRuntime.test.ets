@@ -8,6 +8,7 @@ import { DIAGNOSTIC_MAX_EVENTS } from '../main/ets/services/DiagnosticCapturePol
 import {
   DiagnosticNetworkFacts,
   DiagnosticRuntimeFacts,
+  DiagnosticWindowFacts,
   diagnosticNetworkFactsForEndpoints
 } from '../main/ets/services/DiagnosticCapturePolicy';
 
@@ -164,6 +165,27 @@ export default function diagnosticCaptureRuntimeTest(): void {
       expect(frozen.events[1].network.configuredRouteFamily).assertEqual('hostname');
       expect(JSON.stringify(frozen).indexOf('peer-id-canary')).assertEqual(-1);
       expect(JSON.stringify(frozen).indexOf('raw-address-canary')).assertEqual(-1);
+    });
+
+    it('copies_window_orientation_facts_and_keeps_wms_success_without_a_rect', 0, (): void => {
+      const clock: FakeDiagnosticClock = new FakeDiagnosticClock();
+      const runtime: DiagnosticCaptureRuntime = new DiagnosticCaptureRuntime(clock);
+      runtime.start(3, ['connection.rustdesk']);
+      const windowFacts: DiagnosticWindowFacts = {
+        requestedOrientation: 'auto_rotation_landscape',
+        appliedOrientation: 'auto_rotation_landscape',
+        requestPhase: 'succeeded', appLifecycle: 'foreground',
+        requestGeneration: 8, windowGeneration: 2,
+        width: 0, height: 0, displayRotation: 1, isLandscape: false,
+        orientationApplied: true, rotationSwitchControlled: false
+      };
+      expect(runtime.record('connection.rustdesk', 'rustdesk_orientation_observation',
+        'state', 8, 2, 0, 12, 0, 0, undefined, undefined, windowFacts)).assertTrue();
+      windowFacts.requestGeneration = 0;
+      expect(runtime.stop()).assertEqual('ok');
+      const frozen: FrozenDiagnosticCapture = runtime.frozenCapture() as FrozenDiagnosticCapture;
+      expect(frozen.events[1].window.orientationApplied).assertTrue();
+      expect(frozen.events[1].window.requestGeneration).assertEqual(8);
     });
 
     it('caps_high_frequency_events_without_interrupting_the_capture', 0, (): void => {

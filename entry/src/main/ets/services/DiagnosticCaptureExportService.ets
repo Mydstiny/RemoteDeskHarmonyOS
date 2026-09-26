@@ -28,6 +28,10 @@ import {
   DiagnosticPeerPlatform,
   DiagnosticPresentation,
   DiagnosticProducerTransform,
+  DiagnosticWindowFacts,
+  DiagnosticWindowOrientation,
+  DiagnosticWindowRequestPhase,
+  DiagnosticAppLifecycle,
   diagnosticDurationIsAllowed,
   diagnosticEventIsAllowed,
   diagnosticLevelForOutcome,
@@ -36,6 +40,7 @@ import {
   diagnosticOutcomeIsAllowed,
   diagnosticRuntimeFactsAreValid,
   diagnosticSafeInteger,
+  diagnosticWindowFactsAreValid,
   normalizeDiagnosticModules
 } from './DiagnosticCapturePolicy';
 import {
@@ -108,6 +113,7 @@ interface DiagnosticEventLine {
   bytes: number;
   runtime: DiagnosticRuntimeFacts;
   network: DiagnosticNetworkFacts;
+  window: DiagnosticWindowFacts;
 }
 
 interface DiagnosticSummaryLine {
@@ -160,7 +166,8 @@ function eventLine(event: DiagnosticCaptureEvent): DiagnosticEventLine {
     count: event.count,
     bytes: event.bytes,
     runtime: event.runtime,
-    network: event.network
+    network: event.network,
+    window: event.window
   };
 }
 
@@ -243,7 +250,8 @@ function eventIsValid(event: DiagnosticCaptureEvent, capture: FrozenDiagnosticCa
     event.level !== diagnosticLevelForOutcome(event.outcome) ||
     !sessionRefIsValid(event.sessionRef) ||
     !diagnosticRuntimeFactsAreValid(event.runtime) ||
-    !diagnosticNetworkFactsAreValid(event.network)) {
+    !diagnosticNetworkFactsAreValid(event.network) ||
+    !diagnosticWindowFactsAreValid(event.window)) {
     return false;
   }
   return true;
@@ -333,6 +341,49 @@ function jsonNetworkFacts(value: Object): DiagnosticNetworkFacts | null {
     scopedIpv6: scopedIpv6
   };
   return diagnosticNetworkFactsAreValid(facts) ? facts : null;
+}
+
+function jsonWindowFacts(value: Object): DiagnosticWindowFacts | null {
+  if (typeof value !== 'object' || value === null) { return null; }
+  const source: Record<string, Object> = value as Record<string, Object>;
+  if (!objectHasExactKeys(source, [
+    'requestedOrientation', 'appliedOrientation', 'requestPhase', 'appLifecycle',
+    'requestGeneration', 'windowGeneration', 'width', 'height', 'displayRotation',
+    'isLandscape', 'orientationApplied', 'rotationSwitchControlled'
+  ])) { return null; }
+  const requestedOrientation: string | null = jsonString(source, 'requestedOrientation');
+  const appliedOrientation: string | null = jsonString(source, 'appliedOrientation');
+  const requestPhase: string | null = jsonString(source, 'requestPhase');
+  const appLifecycle: string | null = jsonString(source, 'appLifecycle');
+  const requestGeneration: number | null = jsonNumber(source, 'requestGeneration');
+  const windowGeneration: number | null = jsonNumber(source, 'windowGeneration');
+  const width: number | null = jsonNumber(source, 'width');
+  const height: number | null = jsonNumber(source, 'height');
+  const displayRotation: number | null = jsonNumber(source, 'displayRotation');
+  const isLandscape: boolean | null = jsonBoolean(source, 'isLandscape');
+  const orientationApplied: boolean | null = jsonBoolean(source, 'orientationApplied');
+  const rotationSwitchControlled: boolean | null =
+    jsonBoolean(source, 'rotationSwitchControlled');
+  if (requestedOrientation === null || appliedOrientation === null ||
+    requestPhase === null || appLifecycle === null || requestGeneration === null ||
+    windowGeneration === null || width === null || height === null ||
+    displayRotation === null || isLandscape === null || orientationApplied === null ||
+    rotationSwitchControlled === null) { return null; }
+  const facts: DiagnosticWindowFacts = {
+    requestedOrientation: requestedOrientation as DiagnosticWindowOrientation,
+    appliedOrientation: appliedOrientation as DiagnosticWindowOrientation,
+    requestPhase: requestPhase as DiagnosticWindowRequestPhase,
+    appLifecycle: appLifecycle as DiagnosticAppLifecycle,
+    requestGeneration: requestGeneration,
+    windowGeneration: windowGeneration,
+    width: width,
+    height: height,
+    displayRotation: displayRotation,
+    isLandscape: isLandscape,
+    orientationApplied: orientationApplied,
+    rotationSwitchControlled: rotationSwitchControlled
+  };
+  return diagnosticWindowFactsAreValid(facts) ? facts : null;
 }
 
 function jsonRuntimeFacts(value: Object): DiagnosticRuntimeFacts | null {
@@ -525,7 +576,7 @@ export function validateDiagnosticJsonl(text: string): boolean {
       if (!objectHasExactKeys(parsed, [
         'kind', 'schemaVersion', 'sequence', 'elapsedMs', 'wallTimeMs', 'moduleId',
         'eventCode', 'level', 'outcome', 'sessionRef', 'generation', 'code',
-        'durationMs', 'count', 'bytes', 'runtime', 'network'
+        'durationMs', 'count', 'bytes', 'runtime', 'network', 'window'
       ]) || jsonString(parsed, 'kind') !== 'event' ||
         jsonNumber(parsed, 'schemaVersion') !== DIAGNOSTIC_CAPTURE_SCHEMA_VERSION) { return false; }
       const moduleId: string | null = jsonString(parsed, 'moduleId');
@@ -543,10 +594,11 @@ export function validateDiagnosticJsonl(text: string): boolean {
       const bytes: number | null = jsonNumber(parsed, 'bytes');
       const runtime: DiagnosticRuntimeFacts | null = jsonRuntimeFacts(parsed['runtime']);
       const network: DiagnosticNetworkFacts | null = jsonNetworkFacts(parsed['network']);
+      const windowFacts: DiagnosticWindowFacts | null = jsonWindowFacts(parsed['window']);
       if (moduleId === null || eventCode === null || level === null || outcome === null ||
         sessionRef === null || sequence === null || elapsedMs === null || wallTimeMs === null ||
         generation === null || code === null || durationMs === null || count === null || bytes === null ||
-        runtime === null || network === null ||
+        runtime === null || network === null || windowFacts === null ||
         !diagnosticModuleIsKnown(moduleId) || !diagnosticOutcomeIsAllowed(outcome)) { return false; }
       events.push({
         sequence: sequence, elapsedMs: elapsedMs, wallTimeMs: wallTimeMs,
@@ -554,7 +606,7 @@ export function validateDiagnosticJsonl(text: string): boolean {
         level: level as 'info' | 'warn' | 'error', outcome: outcome as DiagnosticOutcome,
         sessionRef: sessionRef, generation: generation, code: code,
         durationMs: durationMs, count: count, bytes: bytes, runtime: runtime,
-        network: network
+        network: network, window: windowFacts
       });
     }
     const dropped: number | null = jsonNumber(last, 'droppedEventCount');

@@ -1,5 +1,12 @@
 import { diagnosticDesktopRuntimeFacts } from '../services/DiagnosticRuntimeSnapshotPolicy';
 import { recordVideoOrientation } from '../services/VideoOrientationCapture';
+import { recordDiagnosticWindowEvent } from '../services/DiagnosticCaptureRuntime';
+import {
+  DiagnosticAppLifecycle,
+  DiagnosticWindowFacts,
+  DiagnosticWindowOrientation,
+  DiagnosticWindowRequestPhase
+} from '../services/DiagnosticCapturePolicy';
 /**
  * RemoteDesktop.ets v4 — 全屏远程桌面 + XComponent 生命周期 + 输入转发 + 错误诊断
  */
@@ -565,7 +572,7 @@ import { RemoteProtocol } from '../services/RemoteSessionState';
 import {
   canUseRustDeskAdaptiveOrientation,
   isRustDeskPhoneSessionForPeer,
-  remoteOrientationRequestIsCurrent,
+  remoteOrientationRequestIsActive,
   rustDeskOrientationPolicy
 } from '../services/RemoteOrientationPolicy';
 import {
@@ -1311,6 +1318,11 @@ struct RemoteDesktop {
   private orientationApplied: boolean = false;
   private preferredOrientationRequestGeneration: number = 0;
   private preferredOrientationUpdate: Promise<void> = Promise.resolve();
+  // A page/cleanup generation fences late WMS promises. Cleanup owns the one
+  // allowed UNSPECIFIED request that restores the system's orientation policy.
+  private orientationLifecycleGeneration: number = 0;
+  private orientationCleanupRequested: boolean = false;
+  private orientationRestoreIssuedGeneration: number = -1;
   private connectAttemptId: number = 0;
   private pendingHost: RemoteHost | null = null;
   private proRdpIncomingId: string = '';
@@ -9143,6 +9155,23 @@ struct RemoteDesktop {
   }
 
   async aboutToAppear(): Promise<void> {
+    const reusedAfterOrientationCleanup: boolean = this.orientationCleanupRequested;
+    // A reused page must not let a previous teardown's WMS promise suppress
+    // the new session's orientation request. Bump both fences before the first
+    // await so the old page/cleanup generation can never publish state here.
+    this.orientationLifecycleGeneration += 1;
+    this.preferredOrientationRequestGeneration += 1;
+    this.orientationCleanupRequested = false;
+    this.orientationRestoreIssuedGeneration = -1;
+    this.orientationApplied = false;
+    // The old page may have been reused before its queued UNSPECIFIED request
+    // reached WMS. Reissue that restore in the new page generation before any
+    // new session policy is queued; the serialized update chain preserves the
+    // new session's later preference while fixing the no-connect path.
+    if (reusedAfterOrientationCleanup) {
+      void this.setPreferredOrientation(window.Orientation.UNSPECIFIED,
+        'UNSPECIFIED-page-reuse');
+    }
     const routeParams: Object = router.getParams();
     this.stageProRdpIncoming(routeParams);
     // Must happen before AccountSessionCoordinator.init(): on PC the new
@@ -10560,6 +10589,7 @@ struct RemoteDesktop {
     this.registryPresentationRestorePending = true;
     this.bgRestorePending = true;
     this.cleanupStarted = false;
+    this.orientationCleanupRequested = false;
     this.connectStarted = false;
     this.connected = false;
     // A live session moved between ability-local ExtensionLoader facades keeps
@@ -15136,36 +15166,217 @@ struct RemoteDesktop {
     }
   }
 
+  /**
+   * Fence every old orientation request before explicit session teardown.
+   * The restore request is the only orientation operation allowed after this
+   * boundary, so a late connect/selection promise cannot lock the page again.
+   */
+  private beginOrientationCleanup(reason: string): void {
+    if (this.orientationCleanupRequested) {
+      // Repeated teardown callbacks share the same cleanup generation. The
+      // restore request is already queued (or completed) for that generation.
+      this.restoreOrientationAfterCleanup(reason);
+      return;
+    }
+    this.orientationLifecycleGeneration += 1;
+    this.preferredOrientationRequestGeneration += 1;
+    this.orientationCleanupRequested = true;
+    this.orientationApplied = false;
+    hilog.info(RD_DOMAIN, RD_TAG, 'orientation cleanup fence generation=' +
+      this.orientationLifecycleGeneration.toString() + ' reason=' + reason);
+    this.restoreOrientationAfterCleanup(reason);
+  }
+
+  /** Issue one idempotent restore for the current cleanup generation. */
+  private restoreOrientationAfterCleanup(reason: string): void {
+    const lifecycleGeneration: number = this.orientationLifecycleGeneration;
+    if (this.orientationRestoreIssuedGeneration === lifecycleGeneration) {
+      return;
+    }
+    this.orientationRestoreIssuedGeneration = lifecycleGeneration;
+    void this.setPreferredOrientation(window.Orientation.UNSPECIFIED,
+      'UNSPECIFIED-' + reason);
+  }
+
+  private retryOrientationRestore(lifecycleGeneration: number): void {
+    setTimeout((): void => {
+      if (this.orientationCleanupRequested &&
+        lifecycleGeneration === this.orientationLifecycleGeneration &&
+        this.orientationRestoreIssuedGeneration < 0) {
+        this.restoreOrientationAfterCleanup('retry');
+      }
+    }, 250);
+  }
+
+  private diagnosticOrientationName(value: window.Orientation): DiagnosticWindowOrientation {
+    switch (value) {
+      case window.Orientation.UNSPECIFIED: return 'unspecified';
+      case window.Orientation.PORTRAIT: return 'portrait';
+      case window.Orientation.LANDSCAPE: return 'landscape';
+      case window.Orientation.PORTRAIT_INVERTED: return 'portrait_inverted';
+      case window.Orientation.LANDSCAPE_INVERTED: return 'landscape_inverted';
+      case window.Orientation.AUTO_ROTATION: return 'auto_rotation';
+      case window.Orientation.AUTO_ROTATION_PORTRAIT: return 'auto_rotation_portrait';
+      case window.Orientation.AUTO_ROTATION_LANDSCAPE: return 'auto_rotation_landscape';
+      case window.Orientation.AUTO_ROTATION_RESTRICTED: return 'auto_rotation_restricted';
+      case window.Orientation.AUTO_ROTATION_PORTRAIT_RESTRICTED:
+        return 'auto_rotation_portrait_restricted';
+      case window.Orientation.AUTO_ROTATION_LANDSCAPE_RESTRICTED:
+        return 'auto_rotation_landscape_restricted';
+      case window.Orientation.LOCKED: return 'locked';
+      case window.Orientation.AUTO_ROTATION_UNSPECIFIED: return 'auto_rotation_unspecified';
+      case window.Orientation.USER_ROTATION_PORTRAIT: return 'user_rotation_portrait';
+      case window.Orientation.USER_ROTATION_LANDSCAPE: return 'user_rotation_landscape';
+      case window.Orientation.USER_ROTATION_PORTRAIT_INVERTED:
+        return 'user_rotation_portrait_inverted';
+      case window.Orientation.USER_ROTATION_LANDSCAPE_INVERTED:
+        return 'user_rotation_landscape_inverted';
+      case window.Orientation.FOLLOW_DESKTOP: return 'follow_desktop';
+      default: return 'unknown';
+    }
+  }
+
+  private diagnosticOrientationUsesRotationSwitch(value: DiagnosticWindowOrientation): boolean {
+    return value === 'auto_rotation_restricted' ||
+      value === 'auto_rotation_portrait_restricted' ||
+      value === 'auto_rotation_landscape_restricted' ||
+      value === 'auto_rotation_unspecified' ||
+      value === 'user_rotation_portrait' || value === 'user_rotation_landscape' ||
+      value === 'user_rotation_portrait_inverted' ||
+      value === 'user_rotation_landscape_inverted' || value === 'follow_desktop';
+  }
+
+  private diagnosticAppLifecycle(): DiagnosticAppLifecycle {
+    if (this.renderPreservedInPip) { return 'pip'; }
+    // Teardown is not an Ability background transition. Keep explicit exits
+    // as foreground so the event does not misdiagnose a lifecycle change.
+    return 'foreground';
+  }
+
+  private orientationIsLandscape(value: window.Orientation): boolean {
+    return value === window.Orientation.LANDSCAPE ||
+      value === window.Orientation.LANDSCAPE_INVERTED ||
+      value === window.Orientation.AUTO_ROTATION_LANDSCAPE ||
+      value === window.Orientation.AUTO_ROTATION_LANDSCAPE_RESTRICTED ||
+      value === window.Orientation.USER_ROTATION_LANDSCAPE ||
+      value === window.Orientation.USER_ROTATION_LANDSCAPE_INVERTED;
+  }
+
+  private recordOrientationDiagnostic(outcome: 'started' | 'succeeded' | 'failed' | 'skipped',
+    requested: DiagnosticWindowOrientation, applied: DiagnosticWindowOrientation,
+    phase: DiagnosticWindowRequestPhase, requestGeneration: number,
+    lifecycleGeneration: number, width: number = 0, height: number = 0,
+    orientationApplied: boolean = false, durationMs: number = 0): void {
+    const safeWidth: number = Number.isSafeInteger(width) && width > 0 ? width : 0;
+    const safeHeight: number = Number.isSafeInteger(height) && height > 0 ? height : 0;
+    const isLandscape: boolean = safeWidth > 0 && safeHeight > 0 && safeWidth >= safeHeight;
+    let displayRotation: number = 0;
+    try {
+      const currentDisplay: display.Display = display.getDefaultDisplaySync();
+      displayRotation = Number.isSafeInteger(currentDisplay.rotation) &&
+        currentDisplay.rotation >= 0 && currentDisplay.rotation <= 3 ?
+        currentDisplay.rotation : 0;
+    } catch (_err) {
+      // Keep the event exportable if the display service is unavailable.
+    }
+    const facts: DiagnosticWindowFacts = {
+      requestedOrientation: requested,
+      appliedOrientation: applied,
+      requestPhase: phase,
+      appLifecycle: this.diagnosticAppLifecycle(),
+      requestGeneration: requestGeneration,
+      windowGeneration: lifecycleGeneration,
+      width: safeWidth,
+      height: safeHeight,
+      displayRotation: displayRotation,
+      isLandscape: isLandscape,
+      orientationApplied: orientationApplied,
+      rotationSwitchControlled: this.diagnosticOrientationUsesRotationSwitch(requested)
+    };
+    // Keep the envelope generation aligned with the request generation. The
+    // window facts retain the independent page/cleanup generation so a log
+    // reader can distinguish a stale request from a reused page.
+    recordDiagnosticWindowEvent(outcome, this.sessionId > 0 ? this.sessionId : 0,
+      requestGeneration, 0, durationMs, facts);
+  }
+
   private async setPreferredOrientation(orientation: window.Orientation, label: string): Promise<void> {
+    const allowDuringCleanup: boolean = orientation === window.Orientation.UNSPECIFIED;
+    const requestedName: DiagnosticWindowOrientation = this.diagnosticOrientationName(orientation);
+    const queuedGeneration: number = this.preferredOrientationRequestGeneration + 1;
+    if (this.orientationCleanupRequested && !allowDuringCleanup) {
+      hilog.info(RD_DOMAIN, RD_TAG, 'setPreferredOrientation skipped after cleanup label=' + label);
+      this.recordOrientationDiagnostic('skipped', requestedName, 'unknown', 'superseded',
+        queuedGeneration, this.orientationLifecycleGeneration);
+      return;
+    }
     const requestGeneration: number = ++this.preferredOrientationRequestGeneration;
+    const requestLifecycleGeneration: number = this.orientationLifecycleGeneration;
+    const requestStartedAtMs: number = Date.now();
+    this.recordOrientationDiagnostic('started', requestedName, 'unknown', 'queued',
+      requestGeneration, requestLifecycleGeneration);
     const update: Promise<void> = this.preferredOrientationUpdate.then(async (): Promise<void> => {
-      if (!remoteOrientationRequestIsCurrent(
-        requestGeneration, this.preferredOrientationRequestGeneration)) {
+      if (!remoteOrientationRequestIsActive(
+        requestGeneration, this.preferredOrientationRequestGeneration,
+        requestLifecycleGeneration, this.orientationLifecycleGeneration,
+        this.orientationCleanupRequested, allowDuringCleanup)) {
+        this.recordOrientationDiagnostic('skipped', requestedName, 'unknown', 'superseded',
+          requestGeneration, requestLifecycleGeneration,
+          0, 0, false, Date.now() - requestStartedAtMs);
         return;
       }
       try {
         const ctx = this.getUIContext().getHostContext();
         if (!ctx) {
           hilog.warn(RD_DOMAIN, RD_TAG, 'setPreferredOrientation skipped: host context is null');
+          if (allowDuringCleanup && requestLifecycleGeneration === this.orientationLifecycleGeneration &&
+            this.orientationCleanupRequested) {
+            this.orientationRestoreIssuedGeneration = -1;
+            this.retryOrientationRestore(requestLifecycleGeneration);
+          }
+          this.recordOrientationDiagnostic('failed', requestedName, 'unknown', 'failed',
+            requestGeneration, requestLifecycleGeneration,
+            0, 0, false, Date.now() - requestStartedAtMs);
           return;
         }
         const win: window.Window = await window.getLastWindow(ctx);
-        if (!remoteOrientationRequestIsCurrent(
-          requestGeneration, this.preferredOrientationRequestGeneration)) {
+        if (!remoteOrientationRequestIsActive(
+          requestGeneration, this.preferredOrientationRequestGeneration,
+          requestLifecycleGeneration, this.orientationLifecycleGeneration,
+          this.orientationCleanupRequested, allowDuringCleanup)) {
+          this.recordOrientationDiagnostic('skipped', requestedName, 'unknown', 'superseded',
+            requestGeneration, requestLifecycleGeneration,
+            0, 0, false, Date.now() - requestStartedAtMs);
           return;
         }
         await win.setPreferredOrientation(orientation);
         // Requests are serialized. If a newer preference arrived while the
         // system call was in flight, it runs next and remains the final OS
         // orientation; the stale completion must not publish page state.
-        if (!remoteOrientationRequestIsCurrent(
-          requestGeneration, this.preferredOrientationRequestGeneration)) {
+        if (!remoteOrientationRequestIsActive(
+          requestGeneration, this.preferredOrientationRequestGeneration,
+          requestLifecycleGeneration, this.orientationLifecycleGeneration,
+          this.orientationCleanupRequested, allowDuringCleanup)) {
+          this.recordOrientationDiagnostic('skipped', requestedName, 'unknown', 'superseded',
+            requestGeneration, requestLifecycleGeneration,
+            0, 0, false, Date.now() - requestStartedAtMs);
           return;
         }
         this.orientationApplied = orientation !== window.Orientation.UNSPECIFIED;
-        this.isLandscape = orientation === window.Orientation.LANDSCAPE ||
-          orientation === window.Orientation.AUTO_ROTATION_LANDSCAPE ||
-          orientation === window.Orientation.USER_ROTATION_LANDSCAPE;
+        this.isLandscape = this.orientationIsLandscape(orientation);
+        let width: number = 0;
+        let height: number = 0;
+        try {
+          const rect = win.getWindowProperties().windowRect;
+          width = Number.isSafeInteger(rect.width) && rect.width > 0 ? rect.width : 0;
+          height = Number.isSafeInteger(rect.height) && rect.height > 0 ? rect.height : 0;
+        } catch (_err) {
+          // The orientation result remains valid evidence even when the
+          // window rectangle is unavailable during teardown.
+        }
+        this.recordOrientationDiagnostic('succeeded', requestedName, requestedName, 'succeeded',
+          requestGeneration, requestLifecycleGeneration, width, height,
+          this.orientationApplied, Date.now() - requestStartedAtMs);
         hilog.info(RD_DOMAIN, RD_TAG, 'setPreferredOrientation(' + label + ') OK');
         if ((this.isVncSession() || this.isRdpRemoteSession()) && this.kbWin !== null) {
           this.syncVncToolbarAvoidAreas(this.kbWin);
@@ -15175,6 +15386,17 @@ struct RemoteDesktop {
         }
       } catch (err) {
         const errObj: Error = err as Error;
+        if (allowDuringCleanup && requestLifecycleGeneration === this.orientationLifecycleGeneration &&
+          this.orientationCleanupRequested) {
+          // Let the terminal teardown fallback retry a restore that failed
+          // before reaching WMS. Marking it issued before the async call is
+          // only an in-flight de-duplication guard.
+          this.orientationRestoreIssuedGeneration = -1;
+          this.retryOrientationRestore(requestLifecycleGeneration);
+        }
+        this.recordOrientationDiagnostic('failed', requestedName, 'unknown', 'failed',
+          requestGeneration, requestLifecycleGeneration,
+          0, 0, false, Date.now() - requestStartedAtMs);
         hilog.warn(RD_DOMAIN, RD_TAG, 'setPreferredOrientation(' + label + ') failed: ' +
           (errObj.message ? errObj.message : JSON.stringify(err)));
       }
@@ -15270,6 +15492,7 @@ struct RemoteDesktop {
 
   private disconnectAndCleanup(reason: string): void {
     this.harmonyShortcutCapture.deactivate(this.harmonyShortcutCaptureOwner);
+    this.beginOrientationCleanup(reason);
     const explicitUserDisconnect: boolean = reason.indexOf('explicit') >= 0 ||
       reason.indexOf('toolbar') >= 0 || reason.indexOf('topbar') >= 0 ||
       reason.indexOf('remote-back') >= 0;
@@ -15443,9 +15666,8 @@ struct RemoteDesktop {
       this.rdpGeometryReady = false;
       this.rdpPendingLayoutWidth = 0;
       this.rdpPendingLayoutHeight = 0;
-      const shouldRestoreOrientation: boolean = this.orientationApplied;
       this.scheduleNativeDisconnectAfterPip(
-        reason, shouldRestoreOrientation, cleanupStartedAtMs,
+        reason, true, cleanupStartedAtMs,
         presentationLease, terminatingRecord);
     } catch (err) {
       hilog.error(RD_DOMAIN, RD_TAG, '[RDP-SHUTDOWN] phase=arkts-error elapsedMs=' +
@@ -15756,10 +15978,11 @@ struct RemoteDesktop {
           RemoteSessionBackgroundTaskService.getInstance().stopSessionTask(ctx);
         }
       } catch (_e) { /* ignore */ }
-      if (shouldRestoreOrientation) {
-        setTimeout((): void => {
-          this.setPreferredOrientation(window.Orientation.UNSPECIFIED, 'UNSPECIFIED');
-        }, 250);
+      // The cleanup fence already issued the restore. Keep this call as an
+      // idempotent fallback for teardown paths that reach the native terminal
+      // barrier after the page was briefly reused.
+      if (shouldRestoreOrientation && this.orientationCleanupRequested) {
+        this.restoreOrientationAfterCleanup('native-disconnect-' + reason);
       }
       this.connected = false;
       this.connectStarted = false;
@@ -16402,6 +16625,7 @@ struct RemoteDesktop {
     const presentationLease: RemoteSessionServiceLease | null =
       this.currentRemoteSessionPresentationLease();
     this.cleanupStarted = false; // 允许重新 attach
+    this.orientationCleanupRequested = false;
     // The free-node PIP surface replaced the page surface while the app was
     // backgrounded. Reacquire the current page SurfaceId after the terminal
     // PIP state instead of rebinding the decoder to a stale surface.

@@ -79,12 +79,16 @@ export default function diagnosticCaptureExportServiceTest(): void {
       const summary: Record<string, Object> =
         JSON.parse(lines[lines.length - 1]) as Record<string, Object>;
       expect(manifest['kind'] as string).assertEqual('manifest');
-      expect(manifest['schemaVersion'] as number).assertEqual(5);
+      expect(manifest['schemaVersion'] as number).assertEqual(6);
       expect(manifest['appVersionCode'] as number).assertEqual(1001006);
       expect((manifest['buildId'] as string).startsWith('1.1.5.1+')).assertTrue();
       expect(summary['kind'] as string).assertEqual('summary');
       expect(summary['eventCount'] as number).assertEqual(capture.events.length);
       expect(summary['serializedBytes'] as number).assertEqual(result.bytes.length);
+      const event: Record<string, Object> = JSON.parse(lines[1]) as Record<string, Object>;
+      expect(event['window'] !== undefined).assertTrue();
+      expect((event['window'] as Record<string, Object>)['requestPhase'] as string)
+        .assertEqual('idle');
     });
 
     it('never_serializes_rejected_free_text_or_raw_correlation_ids', 0, (): void => {

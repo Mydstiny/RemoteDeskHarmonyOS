@@ -57,6 +57,44 @@ export type DiagnosticProducerTransform =
   'rotate_90' | 'rotate_180' | 'rotate_270' | 'transpose' | 'transverse' |
   'other' | 'read_failed';
 
+/** Redacted window orientation values used by the app-level request trace. */
+export type DiagnosticWindowOrientation =
+  'unknown' | 'unspecified' | 'landscape' | 'portrait' |
+  'portrait_inverted' | 'landscape_inverted' | 'auto_rotation' |
+  'auto_rotation_portrait' | 'auto_rotation_landscape' |
+  'auto_rotation_restricted' | 'auto_rotation_portrait_restricted' |
+  'auto_rotation_landscape_restricted' | 'locked' | 'auto_rotation_unspecified' |
+  'user_rotation_portrait' | 'user_rotation_landscape' |
+  'user_rotation_portrait_inverted' | 'user_rotation_landscape_inverted' |
+  'follow_desktop';
+
+export type DiagnosticWindowRequestPhase =
+  'idle' | 'queued' | 'started' | 'succeeded' | 'failed' | 'superseded';
+
+export type DiagnosticAppLifecycle =
+  'unknown' | 'foreground' | 'background' | 'pip' | 'split';
+
+/**
+ * Window facts are deliberately separate from video transform facts. A
+ * renderer rotation cannot prove which preferred orientation was requested
+ * from the OS window manager, so both are captured independently.
+ */
+export interface DiagnosticWindowFacts {
+  requestedOrientation: DiagnosticWindowOrientation;
+  /** The orientation value accepted by the WMS request; API 26 has no readback. */
+  appliedOrientation: DiagnosticWindowOrientation;
+  requestPhase: DiagnosticWindowRequestPhase;
+  appLifecycle: DiagnosticAppLifecycle;
+  requestGeneration: number;
+  windowGeneration: number;
+  width: number;
+  height: number;
+  displayRotation: number;
+  isLandscape: boolean;
+  orientationApplied: boolean;
+  rotationSwitchControlled: boolean;
+}
+
 export type DiagnosticAddressFamily =
   'unknown' | 'hostname' | 'ipv4' | 'ipv6' | 'mixed';
 
@@ -116,7 +154,7 @@ export interface DiagnosticEventSpec {
   eventCode: string;
 }
 
-export const DIAGNOSTIC_CAPTURE_SCHEMA_VERSION: number = 5;
+export const DIAGNOSTIC_CAPTURE_SCHEMA_VERSION: number = 6;
 export const DIAGNOSTIC_REDACTION_POLICY_VERSION: number = 3;
 export const DIAGNOSTIC_DEFAULT_DURATION_MINUTES: number = 10;
 export const DIAGNOSTIC_MAX_EVENTS: number = 10000;
@@ -149,6 +187,9 @@ const DIAGNOSTIC_EVENTS: DiagnosticEventSpec[] = [
   { moduleId: 'core.app', eventCode: 'capture_started' },
   { moduleId: 'core.app', eventCode: 'capture_stopped' },
   { moduleId: 'core.app', eventCode: 'capture_expired' },
+  { moduleId: 'core.app', eventCode: 'app_lifecycle' },
+  { moduleId: 'core.app', eventCode: 'window_orientation_request' },
+  { moduleId: 'core.app', eventCode: 'window_orientation_state' },
 
   { moduleId: 'connection.rdp', eventCode: 'rdp_connection_request' },
   { moduleId: 'connection.rdp', eventCode: 'rdp_preflight' },
@@ -303,6 +344,80 @@ const DIAGNOSTIC_PRODUCER_TRANSFORMS: DiagnosticProducerTransform[] = [
   'rotate_90', 'rotate_180', 'rotate_270', 'transpose', 'transverse',
   'other', 'read_failed'
 ];
+
+const DIAGNOSTIC_WINDOW_ORIENTATIONS: DiagnosticWindowOrientation[] = [
+  'unknown', 'unspecified', 'landscape', 'portrait', 'portrait_inverted',
+  'landscape_inverted', 'auto_rotation', 'auto_rotation_portrait',
+  'auto_rotation_landscape', 'auto_rotation_restricted',
+  'auto_rotation_portrait_restricted', 'auto_rotation_landscape_restricted',
+  'locked', 'auto_rotation_unspecified', 'user_rotation_portrait',
+  'user_rotation_landscape', 'user_rotation_portrait_inverted',
+  'user_rotation_landscape_inverted', 'follow_desktop'
+];
+
+const DIAGNOSTIC_WINDOW_REQUEST_PHASES: DiagnosticWindowRequestPhase[] = [
+  'idle', 'queued', 'started', 'succeeded', 'failed', 'superseded'
+];
+
+const DIAGNOSTIC_APP_LIFECYCLES: DiagnosticAppLifecycle[] = [
+  'unknown', 'foreground', 'background', 'pip', 'split'
+];
+
+export function emptyDiagnosticWindowFacts(): DiagnosticWindowFacts {
+  return {
+    requestedOrientation: 'unknown', appliedOrientation: 'unknown',
+    requestPhase: 'idle', appLifecycle: 'unknown', requestGeneration: 0,
+    windowGeneration: 0, width: 0, height: 0, displayRotation: 0,
+    isLandscape: false, orientationApplied: false, rotationSwitchControlled: false
+  };
+}
+
+export function diagnosticWindowFactsAreValid(facts: DiagnosticWindowFacts): boolean {
+  if (DIAGNOSTIC_WINDOW_ORIENTATIONS.indexOf(facts.requestedOrientation) < 0 ||
+    DIAGNOSTIC_WINDOW_ORIENTATIONS.indexOf(facts.appliedOrientation) < 0 ||
+    DIAGNOSTIC_WINDOW_REQUEST_PHASES.indexOf(facts.requestPhase) < 0 ||
+    DIAGNOSTIC_APP_LIFECYCLES.indexOf(facts.appLifecycle) < 0 ||
+    typeof facts.isLandscape !== 'boolean' ||
+    typeof facts.orientationApplied !== 'boolean' ||
+    typeof facts.rotationSwitchControlled !== 'boolean') {
+    return false;
+  }
+  const numbers: number[] = [facts.requestGeneration, facts.windowGeneration,
+    facts.width, facts.height, facts.displayRotation];
+  for (let index: number = 0; index < numbers.length; index++) {
+    if (diagnosticSafeInteger(numbers[index]) === null || numbers[index] < 0) {
+      return false;
+    }
+  }
+  if (facts.displayRotation < 0 || facts.displayRotation > 3) { return false; }
+  // A successful WMS request is useful evidence even when the window
+  // properties API is temporarily unavailable during teardown. Only the
+  // derived landscape bit requires a non-zero rectangle.
+  if (facts.width === 0 || facts.height === 0) {
+    if (facts.isLandscape) { return false; }
+  }
+  if (facts.width > 0 && facts.height > 0 && facts.isLandscape !== (facts.width >= facts.height)) {
+    return false;
+  }
+  if (facts.requestPhase === 'idle' && facts.requestGeneration !== 0) { return false; }
+  return true;
+}
+
+export function copyDiagnosticWindowFacts(
+  facts: DiagnosticWindowFacts): DiagnosticWindowFacts {
+  return {
+    requestedOrientation: facts.requestedOrientation,
+    appliedOrientation: facts.appliedOrientation,
+    requestPhase: facts.requestPhase,
+    appLifecycle: facts.appLifecycle,
+    requestGeneration: facts.requestGeneration,
+    windowGeneration: facts.windowGeneration,
+    width: facts.width, height: facts.height, displayRotation: facts.displayRotation,
+    isLandscape: facts.isLandscape,
+    orientationApplied: facts.orientationApplied,
+    rotationSwitchControlled: facts.rotationSwitchControlled
+  };
+}
 
 export function emptyDiagnosticRuntimeFacts(): DiagnosticRuntimeFacts {
   return {
