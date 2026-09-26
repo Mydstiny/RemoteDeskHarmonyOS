@@ -13499,6 +13499,7 @@ struct HostListPage {
             .fontSize(this.breakpoint === 'sm' ? 15 : 16)
             .fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
             .layoutWeight(1).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+          if (host.protocol === 'ai') { ProBadge().margin({ left: 6 }).alignSelf(ItemAlign.Center) }
         }.width('100%')
         if (this.hostGroupStatusLine(host) !== '') {
           Text(this.hostGroupStatusLine(host))
@@ -13514,7 +13515,6 @@ struct HostListPage {
         // Keep the top action row for direct hosts as well. Direct hosts do
         // not probe, but the reserved probe slot keeps every action row aligned.
         Row() {
-          if (host.protocol === 'ai') { ProBadge() }
           if (this.hostGroupHostModeLabel(host) !== '') {
             Text(this.hostGroupHostModeLabel(host))
               .fontSize(this.breakpoint === 'sm' ? 10 : 11)
@@ -14462,6 +14462,7 @@ struct HostListPage {
               SymbolGlyph($r('sys.symbol.ohos_lock')).fontSize(this.breakpoint === 'sm' ? 14 : 18)
                 .fontColor([this.pal().danger]).margin({ left: this.breakpoint === 'sm' ? 6 : 8 })
             }
+            if (host.protocol === 'ai') { ProBadge().margin({ left: 6 }).alignSelf(ItemAlign.Center) }
           }.width('100%')
           if (!host.locked) {
             Text(this.hostPlatformText(host) + '  ·  ' + this.protectedHostCardValue(host,
@@ -14491,7 +14492,6 @@ struct HostListPage {
           .onClick((): void => { this.handleHostCardClick(host); })
 
         Column() {
-          if (host.protocol === 'ai') { ProBadge() }
           if (host.protocol === 'rustdesk') {
             Row() {
               ForEach(resolveRustDeskBadges(host.rustdeskDirectEnabled,
