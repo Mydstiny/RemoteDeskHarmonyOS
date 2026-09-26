@@ -6,6 +6,7 @@ import {
   RemoteSessionWindowRecord
 } from '../services/RemoteSessionWindowCoordinator';
 import { ProContinuationService, PRO_CONTINUATION_PARAM } from '../services/pro/ProContinuationService';
+import { recordDiagnosticAppLifecycleEvent } from '../services/DiagnosticCaptureRuntime';
 
 const DOMAIN: number = 0x0025;
 const TAG: string = 'RemoteSessionAbility';
@@ -28,6 +29,7 @@ export default class RemoteSessionAbility extends UIAbility {
   private released: boolean = false;
   private nativeWindowId: number = 0;
   private continuationTransferId: string = '';
+  private diagnosticLifecycleGeneration: number = 0;
 
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     ProContinuationService.getInstance().initializeMission(this.context);
@@ -185,6 +187,8 @@ export default class RemoteSessionAbility extends UIAbility {
   }
 
   onForeground(): void {
+    recordDiagnosticAppLifecycleEvent('state', 'foreground',
+      ++this.diagnosticLifecycleGeneration, 11);
     this.uiStorage?.set<boolean>('sessionWindowBackground', false);
     // A PC mission can be restored through the system task/window switcher
     // after the primary EntryAbility has been brought to the front.  The
@@ -199,10 +203,14 @@ export default class RemoteSessionAbility extends UIAbility {
   }
 
   onWillBackground(): void {
+    recordDiagnosticAppLifecycleEvent('state', 'background',
+      ++this.diagnosticLifecycleGeneration, 12);
     this.uiStorage?.set<boolean>('sessionWindowBackground', true);
   }
 
   onBackground(): void {
+    recordDiagnosticAppLifecycleEvent('state', 'background',
+      ++this.diagnosticLifecycleGeneration, 13);
     this.uiStorage?.set<boolean>('sessionWindowBackground', true);
   }
 

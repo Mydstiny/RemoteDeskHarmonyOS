@@ -41,6 +41,7 @@ import { RemoteSessionPipService } from '../services/RemoteSessionPipService';
 import { SshTerminalBackgroundTaskService } from '../services/SshTerminalBackgroundTaskService';
 import { SshTerminalPipService } from '../services/SshTerminalPipService';
 import { RemoteSessionWindowCoordinator } from '../services/RemoteSessionWindowCoordinator';
+import { recordDiagnosticAppLifecycleEvent } from '../services/DiagnosticCaptureRuntime';
 import { GuideVisibilityService } from '../services/GuideVisibilityService';
 import { RemoteKeyboardSettingsService } from '../services/RemoteKeyboardSettingsService';
 import {
@@ -76,6 +77,7 @@ export default class EntryAbility extends UIAbility {
   private avoidAreaCallback: ((data: window.AvoidAreaOptions) => void) | null = null;
   private shutdownPromise: Promise<void> | null = null;
   private foregroundCloudResumePromise: Promise<void> | null = null;
+  private diagnosticLifecycleGeneration: number = 0;
 
   /**
    * Foreground recovery is Ability-owned so a pending account/cloud barrier
@@ -497,6 +499,8 @@ export default class EntryAbility extends UIAbility {
   }
 
   onForeground(): void {
+    recordDiagnosticAppLifecycleEvent('state', 'foreground',
+      ++this.diagnosticLifecycleGeneration, 1);
     void ProAppRuntime.getInstance().refreshOnline();
     ProAppRuntime.getInstance().runtime.refresh();
     // 前台恢复 — 清除后台标志, 停止后台保活任务
@@ -541,6 +545,8 @@ export default class EntryAbility extends UIAbility {
   }
 
   onWillBackground(): void {
+    recordDiagnosticAppLifecycleEvent('state', 'background',
+      ++this.diagnosticLifecycleGeneration, 2);
     // API 20+ 在 onBackground 前回调；先通知 RemoteDesktop，避免页面
     // aboutToDisappear 先一步把后台保活连接误判为显式退出。
     AppStorage.setOrCreate<boolean>(BG_FLAG_KEY, true);
@@ -548,6 +554,8 @@ export default class EntryAbility extends UIAbility {
   }
 
   onBackground(): void {
+    recordDiagnosticAppLifecycleEvent('state', 'background',
+      ++this.diagnosticLifecycleGeneration, 3);
     // 切后台 — 标记后台标志, 不再无条件断连
     // RemoteDesktop.aboutToDisappear() 读取此标志决定是保活还是完全断连
     AppStorage.setOrCreate<boolean>(BG_FLAG_KEY, true);

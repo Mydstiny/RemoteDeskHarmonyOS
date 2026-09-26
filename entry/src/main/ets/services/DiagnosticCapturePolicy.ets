@@ -95,6 +95,92 @@ export interface DiagnosticWindowFacts {
   rotationSwitchControlled: boolean;
 }
 
+/**
+ * Protocol counters are kept in one closed, numeric shape so a runtime
+ * snapshot cannot silently lose a native counter at the export boundary.
+ */
+export interface DiagnosticProtocolFacts {
+  supported: boolean;
+  sessionActive: boolean;
+  snapshotAvailable: boolean;
+  videoSeen: boolean;
+  inputPermissionKnown: boolean;
+  inputAllowed: boolean;
+  clipboardPermissionKnown: boolean;
+  clipboardAllowed: boolean;
+  filePermissionKnown: boolean;
+  fileAllowed: boolean;
+  targetBitrateKbps: number;
+  requestedQuality: number;
+  effectiveQuality: number;
+  sentQuality: number;
+  qualityProfile: number;
+  qualityFps: number;
+  qualityRequestedGeneration: number;
+  qualityAppliedGeneration: number;
+  qualityUpdateStatus: number;
+  messages: number;
+  receivedFrames: number;
+  keyframes: number;
+  receivedBytes: number;
+  audioFrames: number;
+  cadenceGaps: number;
+  maxCadenceGapMs: number;
+  testDelayCount: number;
+  receivedFps: number;
+  displayFps: number;
+  decodeFps: number;
+  bitrateKbps: number;
+  lastFrameAgeMs: number;
+  lastPresentedFrameAgeMs: number;
+  decodeOk: number;
+  decodeErrors: number;
+  decodeP50Us: number;
+  decodeP95Us: number;
+  decodeMaxUs: number;
+  presentedFrames: number;
+  presentationRejected: number;
+  lastDirtyX: number;
+  lastDirtyY: number;
+  lastDirtyWidth: number;
+  lastDirtyHeight: number;
+  requestedColorDepthCode: number;
+  effectiveColorDepth: number;
+  inputEventsSent: number;
+  inputEventsDropped: number;
+  presentationWindowSamples: number;
+  presentationWindowMs: number;
+  renderP50Us: number;
+  renderP95Us: number;
+  renderMaxUs: number;
+  queueMax: number;
+  droppedFrames: number;
+  inputBytes: number;
+  writeBytes: number;
+  readBytes: number;
+  callbackBytes: number;
+  inputQueueBytes: number;
+  inputQueueMaxBytes: number;
+  inputReorder: number;
+  ownerStallEvents: number;
+  coverageMask: number;
+  coverageComplete: boolean;
+  lastInputSequence: number;
+  maxInputToWriteAttemptNs: number;
+  maxInputToWriteCompleteNs: number;
+}
+
+export interface DiagnosticResourceFacts {
+  supported: boolean;
+  cpuAvailable: boolean;
+  cpuPercent: number;
+  memoryAvailable: boolean;
+  memoryBytes: number;
+  gpuAvailable: boolean;
+  gpuPercent: number;
+  sampledAtMs: number;
+}
+
 export type DiagnosticAddressFamily =
   'unknown' | 'hostname' | 'ipv4' | 'ipv6' | 'mixed';
 
@@ -141,6 +227,8 @@ export interface DiagnosticRuntimeFacts {
   errors: number;
   queueDepth: number;
   latencyMs: number;
+  protocol: DiagnosticProtocolFacts;
+  resources: DiagnosticResourceFacts;
 }
 
 export interface DiagnosticModuleSpec {
@@ -154,7 +242,7 @@ export interface DiagnosticEventSpec {
   eventCode: string;
 }
 
-export const DIAGNOSTIC_CAPTURE_SCHEMA_VERSION: number = 6;
+export const DIAGNOSTIC_CAPTURE_SCHEMA_VERSION: number = 7;
 export const DIAGNOSTIC_REDACTION_POLICY_VERSION: number = 3;
 export const DIAGNOSTIC_DEFAULT_DURATION_MINUTES: number = 10;
 export const DIAGNOSTIC_MAX_EVENTS: number = 10000;
@@ -195,6 +283,7 @@ const DIAGNOSTIC_EVENTS: DiagnosticEventSpec[] = [
   { moduleId: 'connection.rdp', eventCode: 'rdp_preflight' },
   { moduleId: 'connection.rdp', eventCode: 'rdp_state_changed' },
   { moduleId: 'connection.rdp', eventCode: 'rdp_runtime_snapshot' },
+  { moduleId: 'connection.rdp', eventCode: 'rdp_display_layout' },
   { moduleId: 'connection.rdp', eventCode: 'rdp_disconnect' },
 
   { moduleId: 'connection.rustdesk', eventCode: 'rustdesk_presence' },
@@ -202,6 +291,7 @@ const DIAGNOSTIC_EVENTS: DiagnosticEventSpec[] = [
   { moduleId: 'connection.rustdesk', eventCode: 'rustdesk_state_changed' },
   { moduleId: 'connection.rustdesk', eventCode: 'rustdesk_two_factor' },
   { moduleId: 'connection.rustdesk', eventCode: 'rustdesk_runtime_snapshot' },
+  { moduleId: 'connection.rustdesk', eventCode: 'rustdesk_display_switch' },
   { moduleId: 'connection.rustdesk', eventCode: 'rustdesk_orientation_observation' },
   { moduleId: 'connection.rustdesk', eventCode: 'rustdesk_disconnect' },
 
@@ -419,6 +509,143 @@ export function copyDiagnosticWindowFacts(
   };
 }
 
+function protocolCounterFields(facts: DiagnosticProtocolFacts): number[] {
+  return [facts.targetBitrateKbps, facts.requestedQuality, facts.effectiveQuality,
+    facts.sentQuality, facts.qualityProfile, facts.qualityFps,
+    facts.qualityRequestedGeneration, facts.qualityAppliedGeneration,
+    facts.qualityUpdateStatus, facts.messages, facts.receivedFrames, facts.keyframes,
+    facts.receivedBytes, facts.audioFrames, facts.cadenceGaps, facts.maxCadenceGapMs,
+    facts.testDelayCount, facts.receivedFps, facts.displayFps, facts.decodeFps,
+    facts.bitrateKbps, facts.lastFrameAgeMs, facts.lastPresentedFrameAgeMs,
+    facts.decodeOk, facts.decodeErrors, facts.decodeP50Us, facts.decodeP95Us,
+    facts.decodeMaxUs, facts.presentedFrames, facts.presentationRejected,
+    facts.lastDirtyX, facts.lastDirtyY, facts.lastDirtyWidth, facts.lastDirtyHeight,
+    facts.requestedColorDepthCode, facts.effectiveColorDepth, facts.inputEventsSent,
+    facts.inputEventsDropped, facts.presentationWindowSamples,
+    facts.presentationWindowMs, facts.renderP50Us, facts.renderP95Us,
+    facts.renderMaxUs, facts.queueMax, facts.droppedFrames, facts.inputBytes,
+    facts.writeBytes, facts.readBytes, facts.callbackBytes, facts.inputQueueBytes,
+    facts.inputQueueMaxBytes, facts.inputReorder, facts.ownerStallEvents,
+    facts.coverageMask, facts.lastInputSequence, facts.maxInputToWriteAttemptNs,
+    facts.maxInputToWriteCompleteNs];
+}
+
+export function emptyDiagnosticProtocolFacts(): DiagnosticProtocolFacts {
+  return {
+    supported: false, sessionActive: false, snapshotAvailable: false, videoSeen: false,
+    inputPermissionKnown: false, inputAllowed: false,
+    clipboardPermissionKnown: false, clipboardAllowed: false,
+    filePermissionKnown: false, fileAllowed: false,
+    targetBitrateKbps: 0, requestedQuality: 0, effectiveQuality: 0, sentQuality: 0,
+    qualityProfile: 0, qualityFps: 0, qualityRequestedGeneration: 0,
+    qualityAppliedGeneration: 0, qualityUpdateStatus: 0, messages: 0,
+    receivedFrames: 0, keyframes: 0, receivedBytes: 0, audioFrames: 0,
+    cadenceGaps: 0, maxCadenceGapMs: 0, testDelayCount: 0, receivedFps: 0,
+    displayFps: 0, decodeFps: 0, bitrateKbps: 0, lastFrameAgeMs: 0,
+    lastPresentedFrameAgeMs: 0, decodeOk: 0, decodeErrors: 0, decodeP50Us: 0,
+    decodeP95Us: 0, decodeMaxUs: 0, presentedFrames: 0, presentationRejected: 0,
+    lastDirtyX: 0, lastDirtyY: 0, lastDirtyWidth: 0, lastDirtyHeight: 0,
+    requestedColorDepthCode: 0, effectiveColorDepth: 0, inputEventsSent: 0,
+    inputEventsDropped: 0, presentationWindowSamples: 0, presentationWindowMs: 0,
+    renderP50Us: 0, renderP95Us: 0, renderMaxUs: 0, queueMax: 0,
+    droppedFrames: 0, inputBytes: 0, writeBytes: 0, readBytes: 0,
+    callbackBytes: 0, inputQueueBytes: 0, inputQueueMaxBytes: 0,
+    inputReorder: 0, ownerStallEvents: 0, coverageMask: 0, coverageComplete: false,
+    lastInputSequence: 0, maxInputToWriteAttemptNs: 0, maxInputToWriteCompleteNs: 0
+  };
+}
+
+export function emptyDiagnosticResourceFacts(): DiagnosticResourceFacts {
+  return {
+    supported: false, cpuAvailable: false, cpuPercent: 0,
+    memoryAvailable: false, memoryBytes: 0, gpuAvailable: false, gpuPercent: 0,
+    sampledAtMs: 0
+  };
+}
+
+export function diagnosticProtocolFactsAreValid(facts: DiagnosticProtocolFacts): boolean {
+  if (typeof facts.supported !== 'boolean' || typeof facts.sessionActive !== 'boolean' ||
+    typeof facts.snapshotAvailable !== 'boolean' || typeof facts.videoSeen !== 'boolean' ||
+    typeof facts.inputPermissionKnown !== 'boolean' || typeof facts.inputAllowed !== 'boolean' ||
+    typeof facts.clipboardPermissionKnown !== 'boolean' || typeof facts.clipboardAllowed !== 'boolean' ||
+    typeof facts.filePermissionKnown !== 'boolean' || typeof facts.fileAllowed !== 'boolean' ||
+    typeof facts.coverageComplete !== 'boolean') { return false; }
+  const numbers: number[] = protocolCounterFields(facts);
+  for (let index: number = 0; index < numbers.length; index++) {
+    if (diagnosticSafeInteger(numbers[index]) === null || numbers[index] < 0) { return false; }
+  }
+  return true;
+}
+
+export function diagnosticResourceFactsAreValid(facts: DiagnosticResourceFacts): boolean {
+  if (typeof facts.supported !== 'boolean' || typeof facts.cpuAvailable !== 'boolean' ||
+    typeof facts.memoryAvailable !== 'boolean' || typeof facts.gpuAvailable !== 'boolean') {
+    return false;
+  }
+  const numbers: number[] = [facts.cpuPercent, facts.memoryBytes, facts.gpuPercent,
+    facts.sampledAtMs];
+  for (let index: number = 0; index < numbers.length; index++) {
+    if (!Number.isFinite(numbers[index]) || numbers[index] < 0) { return false; }
+  }
+  if (facts.cpuPercent > 100 || facts.gpuPercent > 100) { return false; }
+  return true;
+}
+
+export function copyDiagnosticProtocolFacts(
+  facts: DiagnosticProtocolFacts): DiagnosticProtocolFacts {
+  return {
+    supported: facts.supported, sessionActive: facts.sessionActive,
+    snapshotAvailable: facts.snapshotAvailable, videoSeen: facts.videoSeen,
+    inputPermissionKnown: facts.inputPermissionKnown, inputAllowed: facts.inputAllowed,
+    clipboardPermissionKnown: facts.clipboardPermissionKnown,
+    clipboardAllowed: facts.clipboardAllowed,
+    filePermissionKnown: facts.filePermissionKnown, fileAllowed: facts.fileAllowed,
+    targetBitrateKbps: facts.targetBitrateKbps, requestedQuality: facts.requestedQuality,
+    effectiveQuality: facts.effectiveQuality, sentQuality: facts.sentQuality,
+    qualityProfile: facts.qualityProfile, qualityFps: facts.qualityFps,
+    qualityRequestedGeneration: facts.qualityRequestedGeneration,
+    qualityAppliedGeneration: facts.qualityAppliedGeneration,
+    qualityUpdateStatus: facts.qualityUpdateStatus, messages: facts.messages,
+    receivedFrames: facts.receivedFrames, keyframes: facts.keyframes,
+    receivedBytes: facts.receivedBytes, audioFrames: facts.audioFrames,
+    cadenceGaps: facts.cadenceGaps, maxCadenceGapMs: facts.maxCadenceGapMs,
+    testDelayCount: facts.testDelayCount, receivedFps: facts.receivedFps,
+    displayFps: facts.displayFps, decodeFps: facts.decodeFps,
+    bitrateKbps: facts.bitrateKbps, lastFrameAgeMs: facts.lastFrameAgeMs,
+    lastPresentedFrameAgeMs: facts.lastPresentedFrameAgeMs, decodeOk: facts.decodeOk,
+    decodeErrors: facts.decodeErrors, decodeP50Us: facts.decodeP50Us,
+    decodeP95Us: facts.decodeP95Us, decodeMaxUs: facts.decodeMaxUs,
+    presentedFrames: facts.presentedFrames, presentationRejected: facts.presentationRejected,
+    lastDirtyX: facts.lastDirtyX, lastDirtyY: facts.lastDirtyY,
+    lastDirtyWidth: facts.lastDirtyWidth, lastDirtyHeight: facts.lastDirtyHeight,
+    requestedColorDepthCode: facts.requestedColorDepthCode,
+    effectiveColorDepth: facts.effectiveColorDepth,
+    inputEventsSent: facts.inputEventsSent, inputEventsDropped: facts.inputEventsDropped,
+    presentationWindowSamples: facts.presentationWindowSamples,
+    presentationWindowMs: facts.presentationWindowMs, renderP50Us: facts.renderP50Us,
+    renderP95Us: facts.renderP95Us, renderMaxUs: facts.renderMaxUs,
+    queueMax: facts.queueMax, droppedFrames: facts.droppedFrames,
+    inputBytes: facts.inputBytes, writeBytes: facts.writeBytes,
+    readBytes: facts.readBytes, callbackBytes: facts.callbackBytes,
+    inputQueueBytes: facts.inputQueueBytes, inputQueueMaxBytes: facts.inputQueueMaxBytes,
+    inputReorder: facts.inputReorder, ownerStallEvents: facts.ownerStallEvents,
+    coverageMask: facts.coverageMask, coverageComplete: facts.coverageComplete,
+    lastInputSequence: facts.lastInputSequence,
+    maxInputToWriteAttemptNs: facts.maxInputToWriteAttemptNs,
+    maxInputToWriteCompleteNs: facts.maxInputToWriteCompleteNs
+  };
+}
+
+export function copyDiagnosticResourceFacts(
+  facts: DiagnosticResourceFacts): DiagnosticResourceFacts {
+  return {
+    supported: facts.supported, cpuAvailable: facts.cpuAvailable,
+    cpuPercent: facts.cpuPercent, memoryAvailable: facts.memoryAvailable,
+    memoryBytes: facts.memoryBytes, gpuAvailable: facts.gpuAvailable,
+    gpuPercent: facts.gpuPercent, sampledAtMs: facts.sampledAtMs
+  };
+}
+
 export function emptyDiagnosticRuntimeFacts(): DiagnosticRuntimeFacts {
   return {
     state: 'unknown', backend: 'unknown', codec: 'unknown', path: 'unknown',
@@ -432,12 +659,15 @@ export function emptyDiagnosticRuntimeFacts(): DiagnosticRuntimeFacts {
     rendererRotationQuarterTurns: 0, rendererFlipX: false, rendererFlipY: false,
     decoderGeneration: 0, rendererGeneration: 0,
     width: 0, height: 0, frames: 0, dropped: 0, errors: 0,
-    queueDepth: 0, latencyMs: 0
+    queueDepth: 0, latencyMs: 0,
+    protocol: emptyDiagnosticProtocolFacts(), resources: emptyDiagnosticResourceFacts()
   };
 }
 
 export function diagnosticRuntimeFactsAreValid(facts: DiagnosticRuntimeFacts): boolean {
   if (facts.video !== undefined && parseVideoDiagnosticEvidence(facts.video) === null) { return false; }
+  if (!diagnosticProtocolFactsAreValid(facts.protocol) ||
+    !diagnosticResourceFactsAreValid(facts.resources)) { return false; }
   if (DIAGNOSTIC_RUNTIME_STATES.indexOf(facts.state) < 0 ||
     DIAGNOSTIC_RUNTIME_BACKENDS.indexOf(facts.backend) < 0 ||
     DIAGNOSTIC_RUNTIME_CODECS.indexOf(facts.codec) < 0 ||
@@ -508,7 +738,9 @@ export function copyDiagnosticRuntimeFacts(
     decoderGeneration: facts.decoderGeneration,
     rendererGeneration: facts.rendererGeneration, width: facts.width,
     height: facts.height, frames: facts.frames, dropped: facts.dropped,
-    errors: facts.errors, queueDepth: facts.queueDepth, latencyMs: facts.latencyMs
+    errors: facts.errors, queueDepth: facts.queueDepth, latencyMs: facts.latencyMs,
+    protocol: copyDiagnosticProtocolFacts(facts.protocol),
+    resources: copyDiagnosticResourceFacts(facts.resources)
   };
 }
 

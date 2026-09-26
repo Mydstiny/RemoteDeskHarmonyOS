@@ -18,6 +18,7 @@ import {
 } from '../main/ets/services/DiagnosticCaptureRuntime';
 import {
   DiagnosticNetworkFacts,
+  emptyDiagnosticRuntimeFacts,
   diagnosticNetworkFactsForEndpoints
 } from '../main/ets/services/DiagnosticCapturePolicy';
 
@@ -50,11 +51,24 @@ class FakeDiagnosticDocumentPort implements DiagnosticDocumentPort {
   }
 }
 
-function frozenCapture(): FrozenDiagnosticCapture {
+function frozenCapture(withFractionalResources: boolean = false): FrozenDiagnosticCapture {
   const clock: ExportFakeClock = new ExportFakeClock();
   const runtime: DiagnosticCaptureRuntime = new DiagnosticCaptureRuntime(clock);
   runtime.start(10, ['connection.rdp', 'security.ssh_key']);
   runtime.record('connection.rdp', 'rdp_state_changed', 'state', 987654321, 7, 2, 12, 1, 0);
+  if (withFractionalResources) {
+    const facts = emptyDiagnosticRuntimeFacts();
+    facts.resources.supported = true;
+    facts.resources.cpuAvailable = true;
+    facts.resources.cpuPercent = 37.5;
+    facts.resources.memoryAvailable = true;
+    facts.resources.memoryBytes = 4096;
+    facts.resources.gpuAvailable = true;
+    facts.resources.gpuPercent = 12.25;
+    facts.resources.sampledAtMs = 1234;
+    runtime.record('connection.rdp', 'rdp_runtime_snapshot', 'state',
+      987654321, 7, 0, 10, 1, 0, facts);
+  }
   runtime.record('security.ssh_key', 'ssh_key_import', 'succeeded', 0, 0, 0, 30, 1, 2048);
   clock.uptime += 500;
   clock.wall += 500;
@@ -79,7 +93,7 @@ export default function diagnosticCaptureExportServiceTest(): void {
       const summary: Record<string, Object> =
         JSON.parse(lines[lines.length - 1]) as Record<string, Object>;
       expect(manifest['kind'] as string).assertEqual('manifest');
-      expect(manifest['schemaVersion'] as number).assertEqual(6);
+      expect(manifest['schemaVersion'] as number).assertEqual(7);
       expect(manifest['appVersionCode'] as number).assertEqual(1001006);
       expect((manifest['buildId'] as string).startsWith('1.1.5.1+')).assertTrue();
       expect(summary['kind'] as string).assertEqual('summary');
@@ -89,6 +103,13 @@ export default function diagnosticCaptureExportServiceTest(): void {
       expect(event['window'] !== undefined).assertTrue();
       expect((event['window'] as Record<string, Object>)['requestPhase'] as string)
         .assertEqual('idle');
+    });
+
+    it('round_trips_fractional_resource_percentages', 0, (): void => {
+      const capture: FrozenDiagnosticCapture = frozenCapture(true);
+      const result: DiagnosticSerializationResult = serializeDiagnosticCapture(capture);
+      expect(result.ok).assertTrue();
+      expect(validateDiagnosticJsonl(result.text)).assertTrue();
     });
 
     it('never_serializes_rejected_free_text_or_raw_correlation_ids', 0, (): void => {

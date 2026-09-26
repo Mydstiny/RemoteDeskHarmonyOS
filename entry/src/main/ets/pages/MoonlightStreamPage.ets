@@ -1,6 +1,10 @@
 import { MoonlightNativeStreamSnapshot } from '../services/MoonlightHostService';
 import { diagnosticMoonlightRuntimeFacts } from '../services/DiagnosticRuntimeSnapshotPolicy';
 import { recordVideoOrientation } from '../services/VideoOrientationCapture';
+import {
+  recordDiagnosticWindowObservation
+} from '../services/DiagnosticCaptureRuntime';
+import { DiagnosticWindowOrientation } from '../services/DiagnosticCapturePolicy';
 import { display, promptAction, router, window } from '@kit.ArkUI';
 import { common } from '@kit.AbilityKit';
 import { preferences } from '@kit.ArkData';
@@ -1425,6 +1429,9 @@ struct MoonlightStreamPage {
     orientation: window.Orientation, label: string
   ): Promise<void> {
     const requestGeneration: number = ++this.orientationRequestGeneration;
+    const startedAt: number = Date.now();
+    const requestedName: DiagnosticWindowOrientation =
+      this.diagnosticOrientationName(orientation);
     try {
       const context = this.getUIContext().getHostContext();
       if (!context) {
@@ -1435,11 +1442,19 @@ struct MoonlightStreamPage {
         }
         hilog.warn(0x0014, 'MoonlightStreamUi',
           'setPreferredOrientation skipped label=' + label + ' reason=no-context');
+        recordDiagnosticWindowObservation('failed', requestedName, 'unknown', 'failed',
+          requestGeneration, this.orientationApplied,
+          Math.max(0, Date.now() - startedAt));
+        this.scheduleMoonlightOrientationRestoreRetry(orientation, label, requestGeneration);
         return;
       }
       const win: window.Window = await window.getLastWindow(context);
       await win.setPreferredOrientation(orientation);
-      if (requestGeneration !== this.orientationRequestGeneration) { return; }
+      if (requestGeneration !== this.orientationRequestGeneration) {
+        recordDiagnosticWindowObservation('skipped', requestedName, 'unknown', 'superseded',
+          requestGeneration, false, Math.max(0, Date.now() - startedAt));
+        return;
+      }
       this.orientationApplied = orientation !== window.Orientation.UNSPECIFIED;
       this.syncConnectStageSheet();
       if (orientation !== window.Orientation.UNSPECIFIED) {
@@ -1447,6 +1462,9 @@ struct MoonlightStreamPage {
       }
       hilog.info(0x0014, 'MoonlightStreamUi',
         'setPreferredOrientation label=' + label + ' ok');
+      recordDiagnosticWindowObservation('succeeded', requestedName, requestedName,
+        'succeeded', requestGeneration, this.orientationApplied,
+        Math.max(0, Date.now() - startedAt));
     } catch (error) {
       if (requestGeneration === this.orientationRequestGeneration &&
           orientation !== window.Orientation.UNSPECIFIED) {
@@ -1457,7 +1475,36 @@ struct MoonlightStreamPage {
       }
       hilog.warn(0x0014, 'MoonlightStreamUi',
         'setPreferredOrientation label=' + label + ' failed=' + JSON.stringify(error));
+      recordDiagnosticWindowObservation('failed', requestedName, 'unknown', 'failed',
+        requestGeneration, this.orientationApplied,
+        Math.max(0, Date.now() - startedAt));
+      this.scheduleMoonlightOrientationRestoreRetry(orientation, label, requestGeneration);
     }
+  }
+
+  private scheduleMoonlightOrientationRestoreRetry(orientation: window.Orientation,
+    label: string, requestGeneration: number): void {
+    if (orientation !== window.Orientation.UNSPECIFIED || label.indexOf('-RETRY') >= 0) {
+      return;
+    }
+    setTimeout((): void => {
+      if (this.orientationRequestGeneration === requestGeneration) {
+        void this.setMoonlightPreferredOrientation(orientation, label + '-RETRY');
+      }
+    }, 250);
+  }
+
+  private diagnosticOrientationName(orientation: window.Orientation): DiagnosticWindowOrientation {
+    if (orientation === window.Orientation.PORTRAIT) { return 'portrait'; }
+    if (orientation === window.Orientation.LANDSCAPE) { return 'landscape'; }
+    if (orientation === window.Orientation.AUTO_ROTATION) { return 'auto_rotation'; }
+    if (orientation === window.Orientation.AUTO_ROTATION_PORTRAIT) {
+      return 'auto_rotation_portrait';
+    }
+    if (orientation === window.Orientation.AUTO_ROTATION_LANDSCAPE) {
+      return 'auto_rotation_landscape';
+    }
+    return 'unspecified';
   }
 
   /**

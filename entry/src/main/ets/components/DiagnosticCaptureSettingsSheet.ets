@@ -89,6 +89,13 @@ export struct DiagnosticCaptureSettingsSheet {
     return this.selectedModules.indexOf(moduleId) >= 0;
   }
 
+  private allModulesSelected(): boolean {
+    for (let index: number = 0; index < this.moduleSpecs.length; index++) {
+      if (!this.moduleSelected(this.moduleSpecs[index].id)) { return false; }
+    }
+    return true;
+  }
+
   private toggleModule(moduleId: DiagnosticModuleId, selected: boolean): void {
     if (this.optionsLocked() || moduleId === 'core.app') { return; }
     const next: string[] = this.selectedModules.slice();
@@ -100,7 +107,7 @@ export struct DiagnosticCaptureSettingsSheet {
 
   private toggleAllModules(): void {
     if (this.optionsLocked()) { return; }
-    this.selectedModules = this.selectedModules.length === this.moduleSpecs.length ?
+    this.selectedModules = this.allModulesSelected() ?
       ['core.app'] : diagnosticAllModules();
   }
 
@@ -293,7 +300,7 @@ export struct DiagnosticCaptureSettingsSheet {
             Text('抓取模组').fontSize(14).fontWeight(FontWeight.Medium)
               .fontColor(this.pal().text).fontFamily(this.font())
             Blank()
-            Text(this.selectedModules.length === this.moduleSpecs.length ? '仅保留应用状态' : '全选')
+            Text(this.allModulesSelected() ? '取消全选' : '全选')
               .fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.accentColor)
               .opacity(this.optionsLocked() ? 0.45 : 1)
               .onClick((): void => { this.toggleAllModules(); })

@@ -7,12 +7,15 @@ import {
   DIAGNOSTIC_MAX_EVENT_BYTES,
   DIAGNOSTIC_MAX_SESSION_REFS,
   DiagnosticEventLevel,
+  DiagnosticAppLifecycle,
   DiagnosticModuleId,
   DiagnosticNetworkFacts,
   DiagnosticOutcome,
   DiagnosticRuntimeFacts,
   DiagnosticStopReason,
   DiagnosticWindowFacts,
+  DiagnosticWindowOrientation,
+  DiagnosticWindowRequestPhase,
   copyDiagnosticNetworkFacts,
   copyDiagnosticRuntimeFacts,
   copyDiagnosticWindowFacts,
@@ -31,6 +34,12 @@ import {
 } from './DiagnosticCapturePolicy';
 
 export type DiagnosticCapturePhase = 'idle' | 'capturing' | 'readyToSave' | 'saving';
+
+/** Capture boundary notification used by live runtime samplers. */
+export type DiagnosticCaptureBoundary = 'started' | 'stopping';
+
+export type DiagnosticCaptureBoundaryListener =
+  (boundary: DiagnosticCaptureBoundary) => void;
 
 export type DiagnosticCaptureActionCode =
   'ok' |
@@ -122,6 +131,8 @@ export class DiagnosticCaptureRuntime {
   private approximateBytes: number = 0;
   private droppedEventCount: number = 0;
   private sessionIds: number[] = [];
+  private finalizing: boolean = false;
+  private boundaryListeners: DiagnosticCaptureBoundaryListener[] = [];
 
   constructor(clock: DiagnosticClock = new SystemDiagnosticClock()) {
     this.clock = clock;
@@ -156,10 +167,12 @@ export class DiagnosticCaptureRuntime {
       this.approximateBytes = 0;
       this.droppedEventCount = 0;
       this.sessionIds = [];
+      this.finalizing = false;
       this.phase = 'capturing';
       this.appendEventAt(uptime, 'core.app', 'capture_started',
         'started', 0, 0, 0, 0, this.selectedModules.length, 0,
         emptyDiagnosticRuntimeFacts());
+      this.notifyBoundary('started');
       return 'ok';
     } catch (_err) {
       this.resetCapture();
@@ -173,6 +186,20 @@ export class DiagnosticCaptureRuntime {
 
   captureIdForModule(moduleId: DiagnosticModuleId): string {
     return this.isModuleCapturing(moduleId) ? this.captureId : '';
+  }
+
+  /** Subscribe to start/stop boundaries without coupling the capture UI to samplers. */
+  onBoundary(listener: DiagnosticCaptureBoundaryListener): () => void {
+    if (this.boundaryListeners.indexOf(listener) < 0) {
+      this.boundaryListeners.push(listener);
+    }
+    let active: boolean = true;
+    return (): void => {
+      if (!active) { return; }
+      active = false;
+      const index: number = this.boundaryListeners.indexOf(listener);
+      if (index >= 0) { this.boundaryListeners.splice(index, 1); }
+    };
   }
 
   record(moduleId: DiagnosticModuleId, eventCode: string, outcome: DiagnosticOutcome,
@@ -211,11 +238,18 @@ export class DiagnosticCaptureRuntime {
         return false;
       }
       const uptime: number = this.safeClockInteger(this.clock.uptimeMs());
+      let eventUptime: number = uptime;
       if (uptime >= this.deadlineUptimeMs) {
-        this.expireAt(uptime);
-        return false;
+        if (!this.finalizing) {
+          this.expireAt(uptime);
+          return false;
+        }
+        // The stopping callback is the last chance to sample live state. Keep
+        // that snapshot inside the capture's monotonic boundary even if the
+        // callback runs a few milliseconds after the deadline.
+        eventUptime = this.deadlineUptimeMs;
       }
-      return this.appendEventAt(uptime, moduleId, eventCode, outcome,
+      return this.appendEventAt(eventUptime, moduleId, eventCode, outcome,
         safeCorrelation, safeGeneration, safeCode, safeDuration, safeCount, safeBytes,
         safeRuntime, safeNetwork, safeWindow);
     } catch (_err) {
@@ -228,16 +262,25 @@ export class DiagnosticCaptureRuntime {
     if (this.phase === 'idle') { return 'not_active'; }
     if (this.phase === 'saving') { return 'busy'; }
     if (this.phase === 'readyToSave') { return 'ok'; }
+    if (this.finalizing) { return 'busy'; }
     try {
       const uptime: number = this.safeClockInteger(this.clock.uptimeMs());
       if (uptime >= this.deadlineUptimeMs) {
         this.expireAt(uptime);
         return 'ok';
       }
-      const elapsed: number = Math.max(0, uptime - this.startedUptimeMs);
-      this.appendEventAt(uptime, 'core.app', 'capture_stopped',
-        'succeeded', 0, 0, 0, elapsed, this.events.length, this.approximateBytes,
-        emptyDiagnosticRuntimeFacts());
+      this.finalizing = true;
+      try {
+        this.notifyBoundary('stopping');
+        const elapsed: number = Math.max(0, uptime - this.startedUptimeMs);
+        this.appendEventAt(uptime, 'core.app', 'capture_stopped',
+          'succeeded', 0, 0, 0, elapsed, this.events.length, this.approximateBytes,
+          emptyDiagnosticRuntimeFacts());
+      } catch (_err) {
+        // A failed final sampler must not leave capture teardown half-open.
+      } finally {
+        this.finalizing = false;
+      }
       this.freeze('manual', uptime);
       return 'ok';
     } catch (_err) {
@@ -380,12 +423,20 @@ export class DiagnosticCaptureRuntime {
   }
 
   private expireAt(uptime: number): void {
-    if (this.phase !== 'capturing') { return; }
+    if (this.phase !== 'capturing' || this.finalizing) { return; }
+    this.finalizing = true;
     const eventUptime: number = Math.max(this.startedUptimeMs,
       Math.min(uptime, this.deadlineUptimeMs));
-    this.appendEventAt(eventUptime, 'core.app', 'capture_expired',
-      'timeout', 0, 0, 0, this.durationMinutes * 60 * 1000,
-      this.events.length, this.approximateBytes, emptyDiagnosticRuntimeFacts());
+    try {
+      this.notifyBoundary('stopping');
+      this.appendEventAt(eventUptime, 'core.app', 'capture_expired',
+        'timeout', 0, 0, 0, this.durationMinutes * 60 * 1000,
+        this.events.length, this.approximateBytes, emptyDiagnosticRuntimeFacts());
+    } catch (_err) {
+      // A failed final sampler must not leave capture teardown half-open.
+    } finally {
+      this.finalizing = false;
+    }
     this.freeze('deadline', eventUptime);
   }
 
@@ -449,6 +500,14 @@ export class DiagnosticCaptureRuntime {
     this.approximateBytes = 0;
     this.droppedEventCount = 0;
     this.sessionIds = [];
+    this.finalizing = false;
+  }
+
+  private notifyBoundary(boundary: DiagnosticCaptureBoundary): void {
+    const listeners: DiagnosticCaptureBoundaryListener[] = this.boundaryListeners.slice();
+    for (let index: number = 0; index < listeners.length; index++) {
+      try { listeners[index](boundary); } catch (_err) {}
+    }
   }
 }
 
@@ -491,6 +550,66 @@ export function recordDiagnosticWindowEvent(outcome: DiagnosticOutcome,
     return DiagnosticCaptureRuntime.getInstance().record(
       'core.app', 'window_orientation_request', outcome, correlationId, generation,
       code, durationMs, 0, 0, undefined, undefined, window);
+  } catch (_err) {
+    return false;
+  }
+}
+
+/** Record the current ability lifecycle without exposing ability/window IDs. */
+export function recordDiagnosticAppLifecycleEvent(outcome: DiagnosticOutcome,
+  lifecycle: DiagnosticAppLifecycle, generation: number = 0, code: number = 0): boolean {
+  try {
+    const window: DiagnosticWindowFacts = emptyDiagnosticWindowFacts();
+    window.appLifecycle = lifecycle;
+    window.windowGeneration = generation >= 0 && Number.isSafeInteger(generation) ? generation : 0;
+    return DiagnosticCaptureRuntime.getInstance().record(
+      'core.app', 'app_lifecycle', outcome, 0, generation >= 0 ? generation : 0,
+      code, 0, 0, 0, undefined, undefined, window);
+  } catch (_err) {
+    return false;
+  }
+}
+
+/** Record the post-WMS window state separately from the request trace. */
+export function recordDiagnosticWindowStateEvent(outcome: DiagnosticOutcome,
+  correlationId: number, generation: number, code: number,
+  durationMs: number, window: DiagnosticWindowFacts): boolean {
+  try {
+    return DiagnosticCaptureRuntime.getInstance().record(
+      'core.app', 'window_orientation_state', outcome, correlationId, generation,
+      code, durationMs, 0, 0, undefined, undefined, window);
+  } catch (_err) {
+    return false;
+  }
+}
+
+/** Compact producer for protocol pages that do not own the shared window helper. */
+export function recordDiagnosticWindowObservation(outcome: DiagnosticOutcome,
+  requestedOrientation: DiagnosticWindowOrientation,
+  appliedOrientation: DiagnosticWindowOrientation,
+  requestPhase: DiagnosticWindowRequestPhase,
+  generation: number, orientationApplied: boolean,
+  durationMs: number = 0): boolean {
+  try {
+    const window: DiagnosticWindowFacts = emptyDiagnosticWindowFacts();
+    window.requestedOrientation = requestedOrientation;
+    window.appliedOrientation = appliedOrientation;
+    window.requestPhase = requestPhase;
+    window.requestGeneration = generation >= 0 ? generation : 0;
+    window.orientationApplied = orientationApplied;
+    window.rotationSwitchControlled = requestedOrientation === 'auto_rotation_restricted' ||
+      requestedOrientation === 'auto_rotation_portrait_restricted' ||
+      requestedOrientation === 'auto_rotation_landscape_restricted' ||
+      requestedOrientation === 'auto_rotation_unspecified' ||
+      requestedOrientation === 'user_rotation_portrait' ||
+      requestedOrientation === 'user_rotation_landscape' ||
+      requestedOrientation === 'user_rotation_portrait_inverted' ||
+      requestedOrientation === 'user_rotation_landscape_inverted' ||
+      requestedOrientation === 'follow_desktop';
+    return DiagnosticCaptureRuntime.getInstance().record(
+      'core.app', 'window_orientation_state', outcome, 0,
+      generation >= 0 ? generation : 0, 0, durationMs,
+      orientationApplied ? 1 : 0, 0, undefined, undefined, window);
   } catch (_err) {
     return false;
   }

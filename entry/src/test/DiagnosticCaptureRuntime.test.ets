@@ -9,7 +9,9 @@ import {
   DiagnosticNetworkFacts,
   DiagnosticRuntimeFacts,
   DiagnosticWindowFacts,
-  diagnosticNetworkFactsForEndpoints
+  diagnosticNetworkFactsForEndpoints,
+  emptyDiagnosticProtocolFacts,
+  emptyDiagnosticResourceFacts
 } from '../main/ets/services/DiagnosticCapturePolicy';
 
 class FakeDiagnosticClock implements DiagnosticClock {
@@ -72,6 +74,16 @@ export default function diagnosticCaptureRuntimeTest(): void {
       expect(runtime.captureIdForModule('core.app')).assertEqual('');
     });
 
+    it('notifies_runtime_samplers_at_start_and_stop_boundaries', 0, (): void => {
+      const clock: FakeDiagnosticClock = new FakeDiagnosticClock();
+      const runtime: DiagnosticCaptureRuntime = new DiagnosticCaptureRuntime(clock);
+      const boundaries: string[] = [];
+      runtime.onBoundary((boundary): void => { boundaries.push(boundary); });
+      expect(runtime.start(3, ['connection.rdp'])).assertEqual('ok');
+      expect(runtime.stop()).assertEqual('ok');
+      expect(boundaries.join(',')).assertEqual('started,stopping');
+    });
+
     it('maps_numeric_session_ids_to_capture_local_references', 0, (): void => {
       const clock: FakeDiagnosticClock = new FakeDiagnosticClock();
       const runtime: DiagnosticCaptureRuntime = new DiagnosticCaptureRuntime(clock);
@@ -103,6 +115,23 @@ export default function diagnosticCaptureRuntimeTest(): void {
       expect(frozen.events[frozen.events.length - 1].eventCode).assertEqual('capture_expired');
     });
 
+    it('keeps_a_final_runtime_sample_before_deadline_freeze', 0, (): void => {
+      const clock: FakeDiagnosticClock = new FakeDiagnosticClock();
+      const runtime: DiagnosticCaptureRuntime = new DiagnosticCaptureRuntime(clock);
+      runtime.start(1, ['connection.vnc']);
+      runtime.onBoundary((boundary): void => {
+        if (boundary === 'stopping') {
+          runtime.record('connection.vnc', 'vnc_state_changed', 'state', 0, 0, 4);
+        }
+      });
+      clock.uptime += 60000;
+      expect(runtime.record('connection.vnc', 'vnc_state_changed', 'state')).assertFalse();
+      const frozen: FrozenDiagnosticCapture = runtime.frozenCapture() as FrozenDiagnosticCapture;
+      expect(frozen.events[frozen.events.length - 2].eventCode).assertEqual('vnc_state_changed');
+      expect(frozen.events[frozen.events.length - 2].elapsedMs).assertEqual(60000);
+      expect(frozen.events[frozen.events.length - 1].eventCode).assertEqual('capture_expired');
+    });
+
     it('rejects_unknown_events_and_invalid_numbers_without_throwing', 0, (): void => {
       const clock: FakeDiagnosticClock = new FakeDiagnosticClock();
       const runtime: DiagnosticCaptureRuntime = new DiagnosticCaptureRuntime(clock);
@@ -131,7 +160,8 @@ export default function diagnosticCaptureRuntimeTest(): void {
         rendererTransformValid: true, rendererTransformVersion: 2,
         rendererRotationQuarterTurns: 0, rendererFlipX: false, rendererFlipY: true,
         decoderGeneration: 3, rendererGeneration: 4, width: 1920, height: 1080,
-        frames: 30, dropped: 0, errors: 0, queueDepth: 1, latencyMs: 20
+        frames: 30, dropped: 0, errors: 0, queueDepth: 1, latencyMs: 20,
+        protocol: emptyDiagnosticProtocolFacts(), resources: emptyDiagnosticResourceFacts()
       };
       const network: DiagnosticNetworkFacts = diagnosticNetworkFactsForEndpoints(
         '2001:db8::8', 21115, 'relay.example.invalid', 21116);
@@ -155,7 +185,8 @@ export default function diagnosticCaptureRuntimeTest(): void {
           rendererTransformValid: true, rendererTransformVersion: 2,
           rendererRotationQuarterTurns: 0, rendererFlipX: false, rendererFlipY: true,
           decoderGeneration: 3, rendererGeneration: 4, width: 1920, height: 1080,
-          frames: 30, dropped: 0, errors: 0, queueDepth: 1, latencyMs: 20
+          frames: 30, dropped: 0, errors: 0, queueDepth: 1, latencyMs: 20,
+          protocol: emptyDiagnosticProtocolFacts(), resources: emptyDiagnosticResourceFacts()
         }, network)).assertFalse();
       runtime.stop();
       const frozen: FrozenDiagnosticCapture = runtime.frozenCapture() as FrozenDiagnosticCapture;
@@ -186,6 +217,36 @@ export default function diagnosticCaptureRuntimeTest(): void {
       const frozen: FrozenDiagnosticCapture = runtime.frozenCapture() as FrozenDiagnosticCapture;
       expect(frozen.events[1].window.orientationApplied).assertTrue();
       expect(frozen.events[1].window.requestGeneration).assertEqual(8);
+    });
+
+    it('captures_lifecycle_and_post_wms_state_as_core_events', 0, (): void => {
+      const clock: FakeDiagnosticClock = new FakeDiagnosticClock();
+      const runtime: DiagnosticCaptureRuntime = new DiagnosticCaptureRuntime(clock);
+      runtime.start(3);
+      const lifecycle: DiagnosticWindowFacts = {
+        requestedOrientation: 'unknown', appliedOrientation: 'unknown',
+        requestPhase: 'idle', appLifecycle: 'background',
+        requestGeneration: 0, windowGeneration: 4,
+        width: 0, height: 0, displayRotation: 1, isLandscape: false,
+        orientationApplied: false, rotationSwitchControlled: false
+      };
+      expect(runtime.record('core.app', 'app_lifecycle', 'state',
+        0, 4, 2, 0, 0, 0, undefined, undefined, lifecycle)).assertTrue();
+      const state: DiagnosticWindowFacts = {
+        requestedOrientation: 'unspecified', appliedOrientation: 'unspecified',
+        requestPhase: 'succeeded', appLifecycle: 'foreground',
+        requestGeneration: 5, windowGeneration: 4,
+        width: 1920, height: 1080, displayRotation: 0, isLandscape: true,
+        orientationApplied: false, rotationSwitchControlled: false
+      };
+      expect(runtime.record('core.app', 'window_orientation_state', 'succeeded',
+        0, 5, 0, 8, 0, 0, undefined, undefined, state)).assertTrue();
+      runtime.stop();
+      const frozen: FrozenDiagnosticCapture = runtime.frozenCapture() as FrozenDiagnosticCapture;
+      expect(frozen.events[1].eventCode).assertEqual('app_lifecycle');
+      expect(frozen.events[1].window.appLifecycle).assertEqual('background');
+      expect(frozen.events[2].eventCode).assertEqual('window_orientation_state');
+      expect(frozen.events[2].window.isLandscape).assertTrue();
     });
 
     it('caps_high_frequency_events_without_interrupting_the_capture', 0, (): void => {

@@ -1,6 +1,9 @@
 import { diagnosticDesktopRuntimeFacts } from '../services/DiagnosticRuntimeSnapshotPolicy';
 import { recordVideoOrientation } from '../services/VideoOrientationCapture';
-import { recordDiagnosticWindowEvent } from '../services/DiagnosticCaptureRuntime';
+import {
+  recordDiagnosticWindowEvent,
+  recordDiagnosticWindowStateEvent
+} from '../services/DiagnosticCaptureRuntime';
 import {
   DiagnosticAppLifecycle,
   DiagnosticWindowFacts,
@@ -15298,6 +15301,10 @@ struct RemoteDesktop {
     // reader can distinguish a stale request from a reused page.
     recordDiagnosticWindowEvent(outcome, this.sessionId > 0 ? this.sessionId : 0,
       requestGeneration, 0, durationMs, facts);
+    if (phase === 'succeeded' || phase === 'failed') {
+      recordDiagnosticWindowStateEvent(outcome, this.sessionId > 0 ? this.sessionId : 0,
+        requestGeneration, 0, durationMs, facts);
+    }
   }
 
   private async setPreferredOrientation(orientation: window.Orientation, label: string): Promise<void> {

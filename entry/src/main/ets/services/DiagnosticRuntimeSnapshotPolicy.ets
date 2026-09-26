@@ -12,7 +12,9 @@ import {
   DiagnosticRuntimeBackend,
   DiagnosticRuntimeCodec,
   DiagnosticRuntimeFacts,
-  DiagnosticRuntimePath
+  DiagnosticRuntimePath,
+  DiagnosticProtocolFacts,
+  emptyDiagnosticProtocolFacts
 } from './DiagnosticCapturePolicy';
 
 export type DiagnosticDesktopModule =
@@ -62,16 +64,25 @@ export class DiagnosticRuntimeSamplingLoop {
     this.cancelTimer();
   }
 
+  /**
+   * Sample every currently tracked session immediately.  The periodic timer
+   * is intentionally phase independent, so a short capture must not wait for
+   * the next five second tick before it gets its first/final snapshot.
+   */
+  sampleNow(): void {
+    const sessions: number[] = this.sessionIds.slice();
+    for (let index: number = 0; index < sessions.length; index++) {
+      if (this.sessionIds.indexOf(sessions[index]) < 0) { continue; }
+      try { this.sampler(sessions[index]); } catch (_err) {}
+    }
+  }
+
   private scheduleNext(): void {
     if (this.timerId >= 0 || this.sessionIds.length === 0) { return; }
     try {
       this.timerId = this.scheduler.schedule((): void => {
         this.timerId = -1;
-        const sessions: number[] = this.sessionIds.slice();
-        for (let index: number = 0; index < sessions.length; index++) {
-          if (this.sessionIds.indexOf(sessions[index]) < 0) { continue; }
-          try { this.sampler(sessions[index]); } catch (_err) {}
-        }
+        this.sampleNow();
         this.scheduleNext();
       }, DIAGNOSTIC_RUNTIME_SNAPSHOT_INTERVAL_MS);
     } catch (_err) {
@@ -115,6 +126,68 @@ function safeTransformMatrix(value: number[] | undefined,
     result.push(Math.round(value[index] * 1000000) / 1000000);
   }
   return result;
+}
+
+function protocolFactsFromDesktop(source: RustDeskDiagnosticsSnapshot): DiagnosticProtocolFacts {
+  const facts: DiagnosticProtocolFacts = emptyDiagnosticProtocolFacts();
+  facts.supported = source.supported === true;
+  facts.sessionActive = source.sessionActive === true;
+  facts.snapshotAvailable = source.protocolSnapshotAvailable === true;
+  facts.videoSeen = source.videoSeen === true;
+  facts.inputPermissionKnown = source.remoteInputPermissionKnown === true;
+  facts.inputAllowed = source.remoteInputAllowed === true;
+  facts.clipboardPermissionKnown = source.remoteClipboardPermissionKnown === true;
+  facts.clipboardAllowed = source.remoteClipboardAllowed === true;
+  facts.filePermissionKnown = source.remoteFilePermissionKnown === true;
+  facts.fileAllowed = source.remoteFileAllowed === true;
+  facts.targetBitrateKbps = safeCounter(source.targetBitrateKbps);
+  facts.requestedQuality = safeCounter(source.requestedImageQuality);
+  facts.effectiveQuality = safeCounter(source.effectiveImageQuality);
+  facts.sentQuality = safeCounter(source.sentImageQuality);
+  facts.qualityProfile = safeCounter(source.qualityProfile);
+  facts.qualityFps = safeCounter(source.qualityFps);
+  facts.qualityRequestedGeneration = safeCounter(source.qualityRequestedGeneration);
+  facts.qualityAppliedGeneration = safeCounter(source.qualityAppliedGeneration);
+  facts.qualityUpdateStatus = safeSignedInteger(source.qualityUpdateStatus);
+  facts.messages = safeCounter(source.videoMessages);
+  facts.receivedFrames = safeCounter(source.receivedFrames);
+  facts.keyframes = safeCounter(source.keyframes);
+  facts.receivedBytes = safeCounter(source.receivedBytes);
+  facts.audioFrames = safeCounter(source.audioFrames);
+  facts.cadenceGaps = safeCounter(source.cadenceGaps);
+  facts.maxCadenceGapMs = safeCounter(source.maxCadenceGapMs);
+  facts.testDelayCount = safeCounter(source.testDelayCount);
+  facts.receivedFps = safeCounter(source.receivedFps);
+  facts.displayFps = safeCounter(source.displayFps);
+  facts.decodeFps = safeCounter(source.decodeFps);
+  facts.bitrateKbps = safeCounter(source.bitrateKbps);
+  facts.lastFrameAgeMs = safeCounter(source.lastFrameAgeMs);
+  facts.lastPresentedFrameAgeMs = safeCounter(source.lastPresentedFrameAgeMs);
+  facts.decodeOk = safeCounter(source.decodeOk);
+  facts.decodeErrors = safeCounter(source.decodeErrors);
+  facts.decodeP50Us = safeCounter(source.decodeP50Us);
+  facts.decodeP95Us = safeCounter(source.decodeP95Us);
+  facts.decodeMaxUs = safeCounter(source.decodeMaxUs);
+  facts.presentedFrames = safeCounter(source.presentedFrames);
+  facts.presentationRejected = safeCounter(source.presentationRejected);
+  facts.lastDirtyX = safeCounter(source.lastDirtyX);
+  facts.lastDirtyY = safeCounter(source.lastDirtyY);
+  facts.lastDirtyWidth = safeCounter(source.lastDirtyWidth);
+  facts.lastDirtyHeight = safeCounter(source.lastDirtyHeight);
+  facts.requestedColorDepthCode = source.requestedColorDepth === 'rgb555' ? 1 :
+    (source.requestedColorDepth === 'rgb565' ? 2 :
+      (source.requestedColorDepth === 'rgb888' ? 3 : 0));
+  facts.effectiveColorDepth = safeCounter(source.effectiveColorDepth);
+  facts.inputEventsSent = safeCounter(source.inputEventsSent);
+  facts.inputEventsDropped = safeCounter(source.inputEventsDropped);
+  facts.presentationWindowSamples = safeCounter(source.presentationWindowSamples);
+  facts.presentationWindowMs = safeCounter(source.presentationWindowMs);
+  facts.renderP50Us = safeCounter(source.renderP50Us);
+  facts.renderP95Us = safeCounter(source.renderP95Us);
+  facts.renderMaxUs = safeCounter(source.renderMaxUs);
+  facts.queueMax = safeCounter(source.queueMax);
+  facts.droppedFrames = safeCounter(source.droppedFrames);
+  return facts;
 }
 
 function desktopBackend(value: string): DiagnosticRuntimeBackend {
@@ -243,12 +316,39 @@ export function diagnosticDesktopRuntimeFacts(moduleId: DiagnosticDesktopModule,
     ]),
     errors: safeCounter(source.decodeErrors),
     queueDepth: safeCounter(source.queueDepth),
-    latencyMs: safeCounter(source.latencyMs)
+    latencyMs: safeCounter(source.latencyMs),
+    protocol: protocolFactsFromDesktop(source),
+    resources: {
+      supported: false, cpuAvailable: false, cpuPercent: 0,
+      memoryAvailable: false, memoryBytes: 0, gpuAvailable: false,
+      gpuPercent: 0, sampledAtMs: 0
+    }
   };
 }
 
 export function diagnosticSshRuntimeFacts(
   source: SshTerminalDiagnosticsSnapshot): DiagnosticRuntimeFacts {
+  const protocol: DiagnosticProtocolFacts = emptyDiagnosticProtocolFacts();
+  protocol.supported = source.supported === true;
+  protocol.sessionActive = source.sessionActive === true;
+  protocol.snapshotAvailable = source.schemaVersion > 0;
+  protocol.inputEventsSent = safeCounter(source.inputEvents);
+  protocol.inputBytes = safeCounter(source.inputBytes);
+  protocol.messages = safeCounter(source.nativeEnqueueEvents);
+  protocol.writeBytes = safeCounter(source.writeBytes);
+  protocol.readBytes = safeCounter(source.remoteReadBytes);
+  protocol.callbackBytes = safeCounter(source.callbackAcceptedBytes);
+  protocol.inputEventsDropped = safeSum([source.inputLoss, source.inputDuplicate,
+    source.callbackQueueFull, source.callbackDeliveryErrors]);
+  protocol.inputQueueBytes = safeCounter(source.inputQueueBytes);
+  protocol.inputQueueMaxBytes = safeCounter(source.inputQueueMaxBytes);
+  protocol.inputReorder = safeCounter(source.inputReorder);
+  protocol.ownerStallEvents = safeCounter(source.ownerStallEvents);
+  protocol.coverageMask = safeCounter(source.coverageMask);
+  protocol.coverageComplete = source.coverageComplete === true;
+  protocol.lastInputSequence = safeCounter(source.lastInputSequence);
+  protocol.maxInputToWriteAttemptNs = safeCounter(source.maxInputToWriteAttemptNs);
+  protocol.maxInputToWriteCompleteNs = safeCounter(source.maxInputToWriteCompleteNs);
   return {
     state: source.sessionActive ? 'connected' :
       (source.supported ? 'disconnected' : 'unknown'),
@@ -267,7 +367,13 @@ export function diagnosticSshRuntimeFacts(
     dropped: safeSum([source.inputLoss, source.inputDuplicate, source.callbackQueueFull]),
     errors: safeSum([source.callbackDeliveryErrors, source.callbackClosed]),
     queueDepth: safeCounter(source.inputQueueDepth),
-    latencyMs: safeCounter(source.maxInputToWriteCompleteNs / 1000000)
+    latencyMs: safeCounter(source.maxInputToWriteCompleteNs / 1000000),
+    protocol: protocol,
+    resources: {
+      supported: false, cpuAvailable: false, cpuPercent: 0,
+      memoryAvailable: false, memoryBytes: 0, gpuAvailable: false,
+      gpuPercent: 0, sampledAtMs: 0
+    }
   };
 }
 
@@ -280,6 +386,19 @@ function moonlightCodec(value: string | undefined): DiagnosticRuntimeCodec {
 
 export function diagnosticMoonlightRuntimeFacts(
   source: MoonlightNativeStreamSnapshot): DiagnosticRuntimeFacts {
+  const protocol: DiagnosticProtocolFacts = emptyDiagnosticProtocolFacts();
+  protocol.supported = source.matched === true;
+  protocol.sessionActive = source.terminal !== true;
+  protocol.snapshotAvailable = true;
+  protocol.videoSeen = source.firstFrameReady === true;
+  protocol.receivedFrames = safeCounter(source.acceptedVideoFrames);
+  protocol.receivedBytes = safeCounter(source.acceptedVideoBytes);
+  protocol.presentedFrames = safeCounter(source.rendererPresentedFrames);
+  protocol.audioFrames = safeCounter(source.acceptedAudioPackets);
+  protocol.inputEventsDropped = safeCounter(source.rejectedInputEvents);
+  protocol.targetBitrateKbps = safeCounter(source.configuredBitrateKbps);
+  protocol.qualityFps = safeCounter(source.targetFps);
+  protocol.inputEventsSent = source.inputReady === true ? 1 : 0;
   const sampled: boolean = source.producerTransformSampled === true;
   const video = videoDiagnosticEvidence(source);
   video.decodedFrames = -1;
@@ -325,7 +444,13 @@ export function diagnosticMoonlightRuntimeFacts(
     ]),
     errors: safeCounter(source.decoderSurfaceUpdateFailures),
     queueDepth: safeCounter(source.decoderQueueDepth),
-    latencyMs: safeCounter(source.decoderCodecLatencyMs)
+    latencyMs: safeCounter(source.decoderCodecLatencyMs),
+    protocol: protocol,
+    resources: {
+      supported: false, cpuAvailable: false, cpuPercent: 0,
+      memoryAvailable: false, memoryBytes: 0, gpuAvailable: false,
+      gpuPercent: 0, sampledAtMs: 0
+    }
   };
 }
 
@@ -340,6 +465,8 @@ export function diagnosticRuntimeFactsSignature(facts: DiagnosticRuntimeFacts): 
     facts.rendererTransformVersion, facts.rendererRotationQuarterTurns,
     facts.rendererFlipX, facts.rendererFlipY, facts.decoderGeneration,
     facts.rendererGeneration, facts.width, facts.height,
+    facts.frames, facts.dropped, facts.errors, facts.queueDepth, facts.latencyMs,
+    JSON.stringify(facts.protocol), JSON.stringify(facts.resources),
     facts.video?.sentCodecPreference, facts.video?.codecOptionSendFailures,
     facts.video?.firstFrameCodec, facts.video?.codecChanges,
     JSON.stringify(facts.video?.decoderAttempts)

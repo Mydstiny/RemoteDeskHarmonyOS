@@ -138,6 +138,10 @@ export default function diagnosticRuntimeSnapshotPolicyTest(): void {
         expect(diagnosticDesktopRuntimeFacts(
           'connection.rustdesk', rotated).producerTransform).assertEqual('rotate_270');
         expect(facts.dropped).assertEqual(5);
+        expect(facts.protocol.receivedFrames).assertEqual(118);
+        expect(facts.protocol.decodeErrors).assertEqual(2);
+        expect(facts.protocol.renderP95Us).assertEqual(900);
+        expect(facts.protocol.droppedFrames).assertEqual(3);
       });
 
     it('maps_vnc_ssh_and_moonlight_to_fixed_categories_and_counters', 0, (): void => {
@@ -152,6 +156,9 @@ export default function diagnosticRuntimeSnapshotPolicyTest(): void {
       expect(sshFacts.backend).assertEqual('terminal');
       expect(sshFacts.frames).assertEqual(20);
       expect(sshFacts.latencyMs).assertEqual(3);
+      expect(sshFacts.protocol.inputBytes).assertEqual(30);
+      expect(sshFacts.protocol.writeBytes).assertEqual(29);
+      expect(sshFacts.protocol.coverageComplete).assertTrue();
       const moonlightFacts = diagnosticMoonlightRuntimeFacts(moonlightSnapshot());
       expect(moonlightFacts.backend).assertEqual('hardware');
       expect(moonlightFacts.codec).assertEqual('h265');
@@ -160,9 +167,11 @@ export default function diagnosticRuntimeSnapshotPolicyTest(): void {
       expect(moonlightFacts.appliedTransform).assertEqual('flip_y');
       expect(moonlightFacts.rendererFlipY).assertTrue();
       expect(moonlightFacts.dropped).assertEqual(7);
+      expect(moonlightFacts.protocol.receivedFrames).assertEqual(100);
+      expect(moonlightFacts.protocol.audioFrames).assertEqual(0);
     });
 
-    it('records_immediate_path_changes_but_throttles_moving_counters', 0, (): void => {
+    it('records_counter_changes_and_throttles_unchanged_snapshots', 0, (): void => {
       const gate: DiagnosticRuntimeSnapshotGate = new DiagnosticRuntimeSnapshotGate();
       const facts = diagnosticDesktopRuntimeFacts(
         'connection.rustdesk', desktopSnapshot());
@@ -170,7 +179,7 @@ export default function diagnosticRuntimeSnapshotPolicyTest(): void {
         .assertTrue();
       facts.frames += 1;
       expect(gate.shouldRecord('connection.rustdesk', 7, 'capture-1', facts, 1100))
-        .assertFalse();
+        .assertTrue();
       facts.width = 1600;
       expect(gate.shouldRecord('connection.rustdesk', 7, 'capture-1', facts, 1200))
         .assertTrue();
@@ -203,6 +212,20 @@ export default function diagnosticRuntimeSnapshotPolicyTest(): void {
         loop.clear();
         expect(scheduler.callbacks.size).assertEqual(0);
         expect(scheduler.cancelled.indexOf(3) >= 0).assertTrue();
+      });
+
+    it('can_sample_tracked_sessions_immediately_at_capture_boundaries', 0,
+      (): void => {
+        const scheduler: FakeRuntimeSamplingScheduler =
+          new FakeRuntimeSamplingScheduler();
+        const sampled: number[] = [];
+        const loop: DiagnosticRuntimeSamplingLoop = new DiagnosticRuntimeSamplingLoop(
+          scheduler, (sessionId: number): void => { sampled.push(sessionId); });
+        loop.track(21);
+        loop.sampleNow();
+        expect(sampled.join(',')).assertEqual('21');
+        // The existing periodic timer remains intact after an immediate sample.
+        expect(scheduler.callbacks.size).assertEqual(1);
       });
   });
 }

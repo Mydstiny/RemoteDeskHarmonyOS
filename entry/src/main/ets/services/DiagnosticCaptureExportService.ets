@@ -23,6 +23,8 @@ import {
   DiagnosticRuntimeBackend,
   DiagnosticRuntimeCodec,
   DiagnosticRuntimeFacts,
+  DiagnosticProtocolFacts,
+  DiagnosticResourceFacts,
   DiagnosticRuntimePath,
   DiagnosticRuntimeState,
   DiagnosticPeerPlatform,
@@ -39,6 +41,8 @@ import {
   diagnosticNetworkFactsAreValid,
   diagnosticOutcomeIsAllowed,
   diagnosticRuntimeFactsAreValid,
+  diagnosticProtocolFactsAreValid,
+  diagnosticResourceFactsAreValid,
   diagnosticSafeInteger,
   diagnosticWindowFactsAreValid,
   normalizeDiagnosticModules
@@ -78,6 +82,8 @@ export interface DiagnosticDocumentPort {
 
 interface DiagnosticManifestLine {
   deviceCategory: string;
+  deviceModel: string;
+  osVersion: string;
   sdkApiVersion: number;
   deviceAbi: string;
   kind: string;
@@ -292,6 +298,12 @@ function jsonNumber(source: Record<string, Object>, key: string): number | null 
   return diagnosticSafeInteger(value as number);
 }
 
+function jsonFiniteNumber(source: Record<string, Object>, key: string): number | null {
+  const value: Object = source[key];
+  if (typeof value !== 'number' || !Number.isFinite(value as number)) { return null; }
+  return value as number;
+}
+
 function jsonString(source: Record<string, Object>, key: string): string | null {
   const value: Object = source[key];
   return typeof value === 'string' ? value as string : null;
@@ -386,6 +398,142 @@ function jsonWindowFacts(value: Object): DiagnosticWindowFacts | null {
   return diagnosticWindowFactsAreValid(facts) ? facts : null;
 }
 
+const DIAGNOSTIC_PROTOCOL_BOOLEAN_FIELDS: string[] = [
+  'supported', 'sessionActive', 'snapshotAvailable', 'videoSeen',
+  'inputPermissionKnown', 'inputAllowed', 'clipboardPermissionKnown',
+  'clipboardAllowed', 'filePermissionKnown', 'fileAllowed', 'coverageComplete'
+];
+const DIAGNOSTIC_PROTOCOL_NUMBER_FIELDS: string[] = [
+  'targetBitrateKbps', 'requestedQuality', 'effectiveQuality', 'sentQuality',
+  'qualityProfile', 'qualityFps', 'qualityRequestedGeneration',
+  'qualityAppliedGeneration', 'qualityUpdateStatus', 'messages', 'receivedFrames',
+  'keyframes', 'receivedBytes', 'audioFrames', 'cadenceGaps', 'maxCadenceGapMs',
+  'testDelayCount', 'receivedFps', 'displayFps', 'decodeFps', 'bitrateKbps',
+  'lastFrameAgeMs', 'lastPresentedFrameAgeMs', 'decodeOk', 'decodeErrors',
+  'decodeP50Us', 'decodeP95Us', 'decodeMaxUs', 'presentedFrames',
+  'presentationRejected', 'lastDirtyX', 'lastDirtyY', 'lastDirtyWidth',
+  'lastDirtyHeight', 'requestedColorDepthCode', 'effectiveColorDepth',
+  'inputEventsSent', 'inputEventsDropped', 'presentationWindowSamples',
+  'presentationWindowMs', 'renderP50Us', 'renderP95Us', 'renderMaxUs',
+  'queueMax', 'droppedFrames', 'inputBytes', 'writeBytes', 'readBytes',
+  'callbackBytes', 'inputQueueBytes', 'inputQueueMaxBytes', 'inputReorder',
+  'ownerStallEvents', 'coverageMask', 'lastInputSequence',
+  'maxInputToWriteAttemptNs', 'maxInputToWriteCompleteNs'
+];
+
+function jsonProtocolFacts(value: Object): DiagnosticProtocolFacts | null {
+  if (typeof value !== 'object' || value === null) { return null; }
+  const source: Record<string, Object> = value as Record<string, Object>;
+  if (!objectHasExactKeys(source,
+    DIAGNOSTIC_PROTOCOL_BOOLEAN_FIELDS.concat(DIAGNOSTIC_PROTOCOL_NUMBER_FIELDS))) {
+    return null;
+  }
+  for (let index: number = 0; index < DIAGNOSTIC_PROTOCOL_BOOLEAN_FIELDS.length; index++) {
+    if (jsonBoolean(source, DIAGNOSTIC_PROTOCOL_BOOLEAN_FIELDS[index]) === null) { return null; }
+  }
+  for (let index: number = 0; index < DIAGNOSTIC_PROTOCOL_NUMBER_FIELDS.length; index++) {
+    const number: number | null = jsonNumber(source, DIAGNOSTIC_PROTOCOL_NUMBER_FIELDS[index]);
+    if (number === null || number < 0) { return null; }
+  }
+  const facts: DiagnosticProtocolFacts = {
+    supported: jsonBoolean(source, 'supported') === true,
+    sessionActive: jsonBoolean(source, 'sessionActive') === true,
+    snapshotAvailable: jsonBoolean(source, 'snapshotAvailable') === true,
+    videoSeen: jsonBoolean(source, 'videoSeen') === true,
+    inputPermissionKnown: jsonBoolean(source, 'inputPermissionKnown') === true,
+    inputAllowed: jsonBoolean(source, 'inputAllowed') === true,
+    clipboardPermissionKnown: jsonBoolean(source, 'clipboardPermissionKnown') === true,
+    clipboardAllowed: jsonBoolean(source, 'clipboardAllowed') === true,
+    filePermissionKnown: jsonBoolean(source, 'filePermissionKnown') === true,
+    fileAllowed: jsonBoolean(source, 'fileAllowed') === true,
+    targetBitrateKbps: jsonNumber(source, 'targetBitrateKbps') ?? 0,
+    requestedQuality: jsonNumber(source, 'requestedQuality') ?? 0,
+    effectiveQuality: jsonNumber(source, 'effectiveQuality') ?? 0,
+    sentQuality: jsonNumber(source, 'sentQuality') ?? 0,
+    qualityProfile: jsonNumber(source, 'qualityProfile') ?? 0,
+    qualityFps: jsonNumber(source, 'qualityFps') ?? 0,
+    qualityRequestedGeneration: jsonNumber(source, 'qualityRequestedGeneration') ?? 0,
+    qualityAppliedGeneration: jsonNumber(source, 'qualityAppliedGeneration') ?? 0,
+    qualityUpdateStatus: jsonNumber(source, 'qualityUpdateStatus') ?? 0,
+    messages: jsonNumber(source, 'messages') ?? 0,
+    receivedFrames: jsonNumber(source, 'receivedFrames') ?? 0,
+    keyframes: jsonNumber(source, 'keyframes') ?? 0,
+    receivedBytes: jsonNumber(source, 'receivedBytes') ?? 0,
+    audioFrames: jsonNumber(source, 'audioFrames') ?? 0,
+    cadenceGaps: jsonNumber(source, 'cadenceGaps') ?? 0,
+    maxCadenceGapMs: jsonNumber(source, 'maxCadenceGapMs') ?? 0,
+    testDelayCount: jsonNumber(source, 'testDelayCount') ?? 0,
+    receivedFps: jsonNumber(source, 'receivedFps') ?? 0,
+    displayFps: jsonNumber(source, 'displayFps') ?? 0,
+    decodeFps: jsonNumber(source, 'decodeFps') ?? 0,
+    bitrateKbps: jsonNumber(source, 'bitrateKbps') ?? 0,
+    lastFrameAgeMs: jsonNumber(source, 'lastFrameAgeMs') ?? 0,
+    lastPresentedFrameAgeMs: jsonNumber(source, 'lastPresentedFrameAgeMs') ?? 0,
+    decodeOk: jsonNumber(source, 'decodeOk') ?? 0,
+    decodeErrors: jsonNumber(source, 'decodeErrors') ?? 0,
+    decodeP50Us: jsonNumber(source, 'decodeP50Us') ?? 0,
+    decodeP95Us: jsonNumber(source, 'decodeP95Us') ?? 0,
+    decodeMaxUs: jsonNumber(source, 'decodeMaxUs') ?? 0,
+    presentedFrames: jsonNumber(source, 'presentedFrames') ?? 0,
+    presentationRejected: jsonNumber(source, 'presentationRejected') ?? 0,
+    lastDirtyX: jsonNumber(source, 'lastDirtyX') ?? 0,
+    lastDirtyY: jsonNumber(source, 'lastDirtyY') ?? 0,
+    lastDirtyWidth: jsonNumber(source, 'lastDirtyWidth') ?? 0,
+    lastDirtyHeight: jsonNumber(source, 'lastDirtyHeight') ?? 0,
+    requestedColorDepthCode: jsonNumber(source, 'requestedColorDepthCode') ?? 0,
+    effectiveColorDepth: jsonNumber(source, 'effectiveColorDepth') ?? 0,
+    inputEventsSent: jsonNumber(source, 'inputEventsSent') ?? 0,
+    inputEventsDropped: jsonNumber(source, 'inputEventsDropped') ?? 0,
+    presentationWindowSamples: jsonNumber(source, 'presentationWindowSamples') ?? 0,
+    presentationWindowMs: jsonNumber(source, 'presentationWindowMs') ?? 0,
+    renderP50Us: jsonNumber(source, 'renderP50Us') ?? 0,
+    renderP95Us: jsonNumber(source, 'renderP95Us') ?? 0,
+    renderMaxUs: jsonNumber(source, 'renderMaxUs') ?? 0,
+    queueMax: jsonNumber(source, 'queueMax') ?? 0,
+    droppedFrames: jsonNumber(source, 'droppedFrames') ?? 0,
+    inputBytes: jsonNumber(source, 'inputBytes') ?? 0,
+    writeBytes: jsonNumber(source, 'writeBytes') ?? 0,
+    readBytes: jsonNumber(source, 'readBytes') ?? 0,
+    callbackBytes: jsonNumber(source, 'callbackBytes') ?? 0,
+    inputQueueBytes: jsonNumber(source, 'inputQueueBytes') ?? 0,
+    inputQueueMaxBytes: jsonNumber(source, 'inputQueueMaxBytes') ?? 0,
+    inputReorder: jsonNumber(source, 'inputReorder') ?? 0,
+    ownerStallEvents: jsonNumber(source, 'ownerStallEvents') ?? 0,
+    coverageMask: jsonNumber(source, 'coverageMask') ?? 0,
+    coverageComplete: jsonBoolean(source, 'coverageComplete') === true,
+    lastInputSequence: jsonNumber(source, 'lastInputSequence') ?? 0,
+    maxInputToWriteAttemptNs: jsonNumber(source, 'maxInputToWriteAttemptNs') ?? 0,
+    maxInputToWriteCompleteNs: jsonNumber(source, 'maxInputToWriteCompleteNs') ?? 0
+  };
+  return diagnosticProtocolFactsAreValid(facts) ? facts : null;
+}
+
+function jsonResourceFacts(value: Object): DiagnosticResourceFacts | null {
+  if (typeof value !== 'object' || value === null) { return null; }
+  const source: Record<string, Object> = value as Record<string, Object>;
+  if (!objectHasExactKeys(source, [
+    'supported', 'cpuAvailable', 'cpuPercent', 'memoryAvailable', 'memoryBytes',
+    'gpuAvailable', 'gpuPercent', 'sampledAtMs'
+  ])) { return null; }
+  const supported: boolean | null = jsonBoolean(source, 'supported');
+  const cpuAvailable: boolean | null = jsonBoolean(source, 'cpuAvailable');
+  const memoryAvailable: boolean | null = jsonBoolean(source, 'memoryAvailable');
+  const gpuAvailable: boolean | null = jsonBoolean(source, 'gpuAvailable');
+  const cpuPercent: number | null = jsonFiniteNumber(source, 'cpuPercent');
+  const memoryBytes: number | null = jsonFiniteNumber(source, 'memoryBytes');
+  const gpuPercent: number | null = jsonFiniteNumber(source, 'gpuPercent');
+  const sampledAtMs: number | null = jsonFiniteNumber(source, 'sampledAtMs');
+  if (supported === null || cpuAvailable === null || memoryAvailable === null ||
+    gpuAvailable === null || cpuPercent === null || memoryBytes === null ||
+    gpuPercent === null || sampledAtMs === null) { return null; }
+  const facts: DiagnosticResourceFacts = {
+    supported: supported, cpuAvailable: cpuAvailable, cpuPercent: cpuPercent,
+    memoryAvailable: memoryAvailable, memoryBytes: memoryBytes,
+    gpuAvailable: gpuAvailable, gpuPercent: gpuPercent, sampledAtMs: sampledAtMs
+  };
+  return diagnosticResourceFactsAreValid(facts) ? facts : null;
+}
+
 function jsonRuntimeFacts(value: Object): DiagnosticRuntimeFacts | null {
   if (typeof value !== 'object' || value === null) { return null; }
   const source: Record<string, Object> = value as Record<string, Object>;
@@ -399,13 +547,16 @@ function jsonRuntimeFacts(value: Object): DiagnosticRuntimeFacts | null {
     'rendererTransformValid', 'rendererTransformVersion',
     'rendererRotationQuarterTurns', 'rendererFlipX', 'rendererFlipY',
     'decoderGeneration', 'rendererGeneration', 'width', 'height', 'frames',
-    'dropped', 'errors', 'queueDepth', 'latencyMs'
+    'dropped', 'errors', 'queueDepth', 'latencyMs', 'protocol', 'resources'
   ];
   if (source['video'] !== undefined) { fields.push('video'); }
   if (!objectHasExactKeys(source, fields)) { return null; }
   const video: VideoDiagnosticEvidence | null = source['video'] === undefined ? null :
     parseVideoDiagnosticEvidence(source['video']);
   if (source['video'] !== undefined && video === null) { return null; }
+  const protocol: DiagnosticProtocolFacts | null = jsonProtocolFacts(source['protocol']);
+  const resources: DiagnosticResourceFacts | null = jsonResourceFacts(source['resources']);
+  if (protocol === null || resources === null) { return null; }
   const state: string | null = jsonString(source, 'state');
   const backend: string | null = jsonString(source, 'backend');
   const codec: string | null = jsonString(source, 'codec');
@@ -486,7 +637,8 @@ function jsonRuntimeFacts(value: Object): DiagnosticRuntimeFacts | null {
     rendererFlipX: rendererFlipX, rendererFlipY: rendererFlipY,
     decoderGeneration: decoderGeneration, rendererGeneration: rendererGeneration,
     width: width, height: height, frames: frames, dropped: dropped,
-    errors: errors, queueDepth: queueDepth, latencyMs: latencyMs
+    errors: errors, queueDepth: queueDepth, latencyMs: latencyMs,
+    protocol: protocol, resources: resources
   };
   return diagnosticRuntimeFactsAreValid(facts) ? facts : null;
 }
@@ -513,6 +665,18 @@ function diagnosticDeviceAbi(): string {
     return value.length > 0 ? 'other' : 'unknown';
   } catch (_err) { return 'unknown'; }
 }
+function diagnosticDeviceModel(): string {
+  try {
+    const value: string = deviceInfo.productModel;
+    return safeMetadataToken(value, 64) ? value : 'unknown';
+  } catch (_err) { return 'unknown'; }
+}
+function diagnosticOsVersion(): string {
+  try {
+    const value: string = deviceInfo.osFullName;
+    return safeMetadataToken(value, 96) ? value : 'unknown';
+  } catch (_err) { return 'unknown'; }
+}
 function currentDiagnosticBuildId(): string {
   try {
     const nativeRevision: string = rdpnapi.VERSION.gitShortSha;
@@ -534,6 +698,7 @@ export function validateDiagnosticJsonl(text: string): boolean {
     if (!objectHasExactKeys(first, [
       'kind', 'schemaVersion', 'app', 'appVersion', 'captureId', 'durationMinutes',
       'appVersionCode', 'buildId', 'deviceCategory', 'sdkApiVersion', 'deviceAbi',
+      'deviceModel', 'osVersion',
       'selectedModules', 'startedWallTimeMs', 'endedWallTimeMs', 'stopReason',
       'redactionPolicyVersion'
     ]) || !objectHasExactKeys(last, [
@@ -545,11 +710,15 @@ export function validateDiagnosticJsonl(text: string): boolean {
       jsonNumber(last, 'schemaVersion') !== DIAGNOSTIC_CAPTURE_SCHEMA_VERSION ||
       jsonString(first, 'app') !== 'RemoteDesktop') { return false; }
     const category: string | null = jsonString(first, 'deviceCategory');
+    const deviceModel: string | null = jsonString(first, 'deviceModel');
+    const osVersion: string | null = jsonString(first, 'osVersion');
     const api: number | null = jsonNumber(first, 'sdkApiVersion');
     const abi: string | null = jsonString(first, 'deviceAbi');
     if (category === null || ['pc', 'phone', 'tablet', 'other', 'unknown'].indexOf(category) < 0 ||
       api === null || !Number.isSafeInteger(api) || api < 0 || api > 999 ||
-      abi === null || ['arm64', 'x86_64', 'other', 'unknown'].indexOf(abi) < 0) { return false; }
+      abi === null || ['arm64', 'x86_64', 'other', 'unknown'].indexOf(abi) < 0 ||
+      deviceModel === null || !safeMetadataToken(deviceModel, 64) ||
+      osVersion === null || !safeMetadataToken(osVersion, 96)) { return false; }
     const appVersion: string | null = jsonString(first, 'appVersion');
     const appVersionCode: number | null = jsonNumber(first, 'appVersionCode');
     const buildId: string | null = jsonString(first, 'buildId');
@@ -654,7 +823,8 @@ export function serializeDiagnosticCapture(
   const validCapture: FrozenDiagnosticCapture = capture as FrozenDiagnosticCapture;
   try {
     const manifest: DiagnosticManifestLine = {
-      deviceCategory: diagnosticDeviceCategory(), sdkApiVersion: diagnosticDeviceApi(),
+      deviceCategory: diagnosticDeviceCategory(), deviceModel: diagnosticDeviceModel(),
+      osVersion: diagnosticOsVersion(), sdkApiVersion: diagnosticDeviceApi(),
       deviceAbi: diagnosticDeviceAbi(),
       kind: 'manifest',
       schemaVersion: DIAGNOSTIC_CAPTURE_SCHEMA_VERSION,

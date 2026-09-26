@@ -51,6 +51,8 @@ import { inputDevice, KeyCode } from '@kit.InputKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { sshDiagnosticErrorCode } from
   '../services/ssh/observability/SshDiagnosticPolicy';
+import { recordDiagnosticWindowObservation } from '../services/DiagnosticCaptureRuntime';
+import { DiagnosticWindowOrientation } from '../services/DiagnosticCapturePolicy';
 import { HostSyncService } from '../services/HostSyncService';
 import { BoundedDocumentIo } from '../services/BoundedDocumentIo';
 import {
@@ -11487,18 +11489,32 @@ struct SshTerminal {
 
   private async setPreferredOrientation(orientation: window.Orientation, label: string,
     requestPageGeneration: number = -1): Promise<void> {
+    const startedAt: number = Date.now();
+    const generation: number = requestPageGeneration >= 0 ? requestPageGeneration : this.pageGeneration;
+    const requestedName: DiagnosticWindowOrientation = this.diagnosticOrientationName(orientation);
     try {
       if (requestPageGeneration >= 0 && !this.isPageGenerationActive(requestPageGeneration)) {
+        recordDiagnosticWindowObservation('skipped', requestedName, 'unknown', 'superseded',
+          generation, false, Math.max(0, Date.now() - startedAt));
         return;
       }
       const ctx = this.getUIContext().getHostContext();
-      if (!ctx) { return; }
+      if (!ctx) {
+        recordDiagnosticWindowObservation('failed', requestedName, 'unknown', 'failed',
+          generation, false, Math.max(0, Date.now() - startedAt));
+        this.scheduleSshOrientationRestoreRetry(orientation, label, generation);
+        return;
+      }
       const win: window.Window = await window.getLastWindow(ctx);
       if (requestPageGeneration >= 0 && !this.isPageGenerationActive(requestPageGeneration)) {
+        recordDiagnosticWindowObservation('skipped', requestedName, 'unknown', 'superseded',
+          generation, false, Math.max(0, Date.now() - startedAt));
         return;
       }
       await win.setPreferredOrientation(orientation);
       if (requestPageGeneration >= 0 && !this.isPageGenerationActive(requestPageGeneration)) {
+        recordDiagnosticWindowObservation('skipped', requestedName, 'unknown', 'superseded',
+          generation, false, Math.max(0, Date.now() - startedAt));
         return;
       }
       this.orientationApplied = orientation !== window.Orientation.UNSPECIFIED;
@@ -11508,13 +11524,45 @@ struct SshTerminal {
         this.isLandscape = false;
       }
       hilog.info(0x0000, 'SshTerminal', 'setPreferredOrientation(' + label + ') OK');
+      recordDiagnosticWindowObservation('succeeded', requestedName, requestedName,
+        'succeeded', generation, this.orientationApplied,
+        Math.max(0, Date.now() - startedAt));
       if (orientation !== window.Orientation.UNSPECIFIED && !this.isDesktopDevice) {
         void this.forceStatusBarDark();
       }
     } catch (err) {
       hilog.warn(0x0001, 'SshTerminal', 'setPreferredOrientation(' + label + ') failed code=' +
         sshDiagnosticErrorCode(err));
+      recordDiagnosticWindowObservation('failed', requestedName, 'unknown', 'failed',
+        generation, this.orientationApplied,
+        Math.max(0, Date.now() - startedAt));
+      this.scheduleSshOrientationRestoreRetry(orientation, label, generation);
     }
+  }
+
+  private scheduleSshOrientationRestoreRetry(orientation: window.Orientation,
+    label: string, generation: number): void {
+    if (orientation !== window.Orientation.UNSPECIFIED || label.indexOf('-RETRY') >= 0) {
+      return;
+    }
+    setTimeout((): void => {
+      if (this.pageGeneration === generation) {
+        void this.setPreferredOrientation(orientation, label + '-RETRY', generation);
+      }
+    }, 250);
+  }
+
+  private diagnosticOrientationName(orientation: window.Orientation): DiagnosticWindowOrientation {
+    if (orientation === window.Orientation.PORTRAIT) { return 'portrait'; }
+    if (orientation === window.Orientation.LANDSCAPE) { return 'landscape'; }
+    if (orientation === window.Orientation.AUTO_ROTATION) { return 'auto_rotation'; }
+    if (orientation === window.Orientation.AUTO_ROTATION_PORTRAIT) {
+      return 'auto_rotation_portrait';
+    }
+    if (orientation === window.Orientation.AUTO_ROTATION_LANDSCAPE) {
+      return 'auto_rotation_landscape';
+    }
+    return 'unspecified';
   }
 
   private async toggleSshOrientation(): Promise<void> {

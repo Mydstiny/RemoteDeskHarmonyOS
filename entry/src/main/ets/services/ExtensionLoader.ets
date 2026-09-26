@@ -96,11 +96,13 @@ import {
 import {
   DiagnosticNetworkFacts,
   DiagnosticOutcome,
+  DiagnosticResourceFacts,
   DiagnosticRuntimeFacts,
   diagnosticNetworkFactsForEndpoints,
   emptyDiagnosticNetworkFacts
 } from './DiagnosticCapturePolicy';
 import {
+  DiagnosticCaptureRuntime,
   diagnosticCaptureIdForModule,
   isDiagnosticModuleCapturing,
   recordDiagnosticEvent
@@ -283,6 +285,16 @@ export class ExtensionLoader implements RustDeskClipboardNative {
       diagnosticRuntimeScheduler, (sessionId: number): void => {
         this.sampleDiagnosticRuntimeForSession(sessionId);
       });
+    DiagnosticCaptureRuntime.getInstance().onBoundary((boundary): void => {
+      // A capture can start between two five-second timer ticks.  Sample
+      // immediately so a short capture still contains live session state.
+      // Clear the dedup gate before the stop boundary to force one final
+      // snapshot even when counters did not change since the last tick.
+      if (boundary === 'stopping') {
+        this.diagnosticRuntimeSnapshots.clear();
+      }
+      this.diagnosticRuntimeSamplingLoop.sampleNow();
+    });
   }
 
   private recordDiagnosticDesktopRuntime(sessionId: number,
@@ -296,6 +308,10 @@ export class ExtensionLoader implements RustDeskClipboardNative {
       const captureId: string = diagnosticCaptureIdForModule(desktopModule);
       const facts: DiagnosticRuntimeFacts =
         diagnosticDesktopRuntimeFacts(desktopModule, source, AppStorage.get<number>('rustdeskCodec') ?? 0);
+      if (moduleId === 'connection.rdp') {
+        this.mergeRdpRenderDiagnostics(sessionId, facts);
+      }
+      facts.resources = this.diagnosticResourceFacts();
       if (!this.diagnosticRuntimeSnapshots.shouldRecord(
         desktopModule, sessionId, captureId, facts, Date.now())) { return; }
       recordDiagnosticEvent(desktopModule,
@@ -317,6 +333,7 @@ export class ExtensionLoader implements RustDeskClipboardNative {
       if (moduleId !== 'connection.ssh_sftp') { return; }
       const captureId: string = diagnosticCaptureIdForModule(moduleId);
       const facts: DiagnosticRuntimeFacts = diagnosticSshRuntimeFacts(source);
+      facts.resources = this.diagnosticResourceFacts();
       if (!this.diagnosticRuntimeSnapshots.shouldRecord(
         moduleId, sessionId, captureId, facts, Date.now())) { return; }
       recordDiagnosticEvent(moduleId, 'ssh_runtime_snapshot', 'state', sessionId,
@@ -327,6 +344,63 @@ export class ExtensionLoader implements RustDeskClipboardNative {
         this.diagnosticSessionNetworks.get(sessionId));
     } catch (_err) {
       // Runtime capture must never affect terminal diagnostics.
+    }
+  }
+
+  private diagnosticResourceFacts(): DiagnosticResourceFacts {
+    try {
+      const source: LocalResourceStats = this.getLocalResourceStats(false);
+      const safePercent = (value: number): number =>
+        Number.isFinite(value) && value >= 0 && value <= 100 ? value : 0;
+      return {
+        supported: source.supported === true,
+        cpuAvailable: source.cpuAvailable === true,
+        cpuPercent: safePercent(source.cpuPercent),
+        memoryAvailable: source.memoryAvailable === true,
+        memoryBytes: Number.isSafeInteger(source.memoryBytes) && source.memoryBytes >= 0 ?
+          source.memoryBytes : 0,
+        gpuAvailable: source.gpuAvailable === true,
+        gpuPercent: safePercent(source.gpuPercent),
+        sampledAtMs: Number.isSafeInteger(source.sampledAtMs) && source.sampledAtMs >= 0 ?
+          source.sampledAtMs : 0
+      };
+    } catch (_err) {
+      return {
+        supported: false, cpuAvailable: false, cpuPercent: 0,
+        memoryAvailable: false, memoryBytes: 0, gpuAvailable: false,
+        gpuPercent: 0, sampledAtMs: 0
+      };
+    }
+  }
+
+  private mergeRdpRenderDiagnostics(sessionId: number, facts: DiagnosticRuntimeFacts): void {
+    try {
+      const stats: RdpRenderStats = this.getRdpRenderStats(sessionId);
+      const counter = (value: number): number =>
+        Number.isSafeInteger(value) && value >= 0 ? value : 0;
+      facts.protocol.receivedFrames = Math.max(facts.protocol.receivedFrames,
+        counter(stats.pumpSubmitted));
+      facts.protocol.receivedBytes = Math.max(facts.protocol.receivedBytes,
+        counter(stats.copiedBytes));
+      facts.protocol.presentedFrames = counter(stats.pumpRendered);
+      facts.protocol.presentationRejected = counter(stats.presentationRejected) +
+        counter(stats.surfaceDetachedRejections) + counter(stats.generationRejections);
+      facts.protocol.presentationWindowSamples = counter(stats.presentationWindowSamples);
+      facts.protocol.renderP50Us = counter(stats.drawP50Us);
+      facts.protocol.renderP95Us = counter(stats.drawP95Us);
+      facts.protocol.renderMaxUs = counter(stats.drawMaxUs);
+      facts.protocol.droppedFrames = counter(stats.skippedPaintCount) +
+        counter(stats.pumpReplaced) + counter(stats.pumpRejected);
+      facts.protocol.inputEventsSent = counter(stats.inputTextUnits);
+      facts.protocol.inputEventsDropped = counter(stats.inputDroppedMouseMoves) +
+        counter(stats.inputNonDisposableOverflow) + counter(stats.inputGeometryFenceDrops) +
+        counter(stats.inputPostFailures);
+      if (facts.width === 0) { facts.width = counter(stats.desktopWidth); }
+      if (facts.height === 0) { facts.height = counter(stats.desktopHeight); }
+      facts.queueDepth = counter(stats.inputQueueDepth);
+      facts.errors += counter(stats.desktopResizeFailures) + counter(stats.displayFailureCount);
+    } catch (_err) {
+      // RDP diagnostics are optional on sessions that have not created a native renderer.
     }
   }
 
@@ -565,14 +639,20 @@ export class ExtensionLoader implements RustDeskClipboardNative {
   // ====== 协议连接 ======
 
   connect(config: SessionConfig): number {
-    if (!RemoteSessionTransitionGate.getInstance()
-      .newSessionAllowed()) {
-      return -90;
-    }
     const diagnosticModule: DiagnosticConnectionModule | null =
       diagnosticConnectionModule(config.protocol);
     const diagnosticNetwork: DiagnosticNetworkFacts =
       diagnosticNetworkFactsForConfig(config);
+    if (!RemoteSessionTransitionGate.getInstance()
+      .newSessionAllowed()) {
+      // The transition gate rejects before native admission, so there is no
+      // normal request-start event to close. Preserve the rejection in the
+      // selected protocol module with the stable gate code.
+      this.recordDiagnosticConnection(
+        diagnosticModule, 'request', 'skipped', 0, 0, -90, diagnosticNetwork);
+      this.recordDiagnosticRoutes(config, 'skipped', 0, 0, -90);
+      return -90;
+    }
     this.recordDiagnosticConnection(
       diagnosticModule, 'request', 'started', 0, 0, 0, diagnosticNetwork);
     this.recordDiagnosticRoutes(config, 'started');
@@ -600,17 +680,20 @@ export class ExtensionLoader implements RustDeskClipboardNative {
   }
 
   connectSshAsync(config: SessionConfig, foreground: boolean = true): SshNativeConnectPromise {
+    const diagnosticModule: DiagnosticConnectionModule = 'connection.ssh_sftp';
+    const diagnosticNetwork: DiagnosticNetworkFacts =
+      diagnosticNetworkFactsForConfig(config);
     if (!RemoteSessionTransitionGate.getInstance()
       .newSessionAllowed()) {
+      this.recordDiagnosticConnection(
+        diagnosticModule, 'request', 'skipped', 0, 0, -90, diagnosticNetwork);
+      this.recordDiagnosticRoutes(config, 'skipped', 0, 0, -90);
       const blocked: SshNativeConnectPromise =
         Promise.resolve(-90) as SshNativeConnectPromise;
       blocked.sessionId = -1;
       blocked.generation = 0;
       return blocked;
     }
-    const diagnosticModule: DiagnosticConnectionModule = 'connection.ssh_sftp';
-    const diagnosticNetwork: DiagnosticNetworkFacts =
-      diagnosticNetworkFactsForConfig(config);
     this.recordDiagnosticConnection(
       diagnosticModule, 'request', 'started', 0, 0, 0, diagnosticNetwork);
     this.recordDiagnosticRoutes(config, 'started');
@@ -796,7 +879,9 @@ export class ExtensionLoader implements RustDeskClipboardNative {
   disconnectSshSessionWithReceipt(sessionId: number,
     identity: NativeDisconnectIdentity | null = null): NativeDisconnectSubmission {
     if (sessionId <= 0) {
-      return this.completedDisconnectSubmission();
+      const completed: NativeDisconnectSubmission = this.completedDisconnectSubmission();
+      this.recordDiagnosticDisconnectSubmission('connection.ssh_sftp', sessionId, 0, completed);
+      return completed;
     }
     const expected: NativeDisconnectIdentity | null = identity ??
       this.captureExplicitDisconnectIdentity(sessionId);
@@ -859,7 +944,10 @@ export class ExtensionLoader implements RustDeskClipboardNative {
     const hasNativeOwner: boolean = this.currentSessionId > 0 || this.rendererHandle > 0 ||
       this.decoderHandle > 0 || this.audioPlayerHandle > 0;
     if (!hasNativeOwner) {
-      return this.completedDisconnectSubmission();
+      const completed: NativeDisconnectSubmission = this.completedDisconnectSubmission();
+      this.recordDiagnosticDisconnectSubmission(
+        diagnosticModule, diagnosticSessionId, 0, completed);
+      return completed;
     }
     const expected: RemoteSessionExactDisconnectIdentity | null = identity ??
       this.captureDisconnectIdentity();
@@ -1871,20 +1959,37 @@ export class ExtensionLoader implements RustDeskClipboardNative {
   requestRdpDisplayLayout(sessionId: number,
     request: RdpDisplayLayoutRequest): RdpDisplayLayoutResult {
     try {
-      return rdpnapi.requestRdpDisplayLayout(sessionId, request) as RdpDisplayLayoutResult;
+      const result: RdpDisplayLayoutResult =
+        rdpnapi.requestRdpDisplayLayout(sessionId, request) as RdpDisplayLayoutResult;
+      recordDiagnosticEvent('connection.rdp', 'rdp_display_layout',
+        result.accepted ? 'succeeded' : 'failed', sessionId, 0,
+        result.accepted ? 0 : -1, 0, request.width, request.height,
+        undefined, this.diagnosticSessionNetworks.get(sessionId));
+      return result;
     } catch (err) {
       hilog.error(DOMAIN, TAG,
         '[ExtensionLoader] requestRdpDisplayLayout: ' + JSON.stringify(err));
+      recordDiagnosticEvent('connection.rdp', 'rdp_display_layout', 'failed',
+        sessionId, 0, -2, 0, request.width, request.height,
+        undefined, this.diagnosticSessionNetworks.get(sessionId));
       return { accepted: false, code: 'bridge_error', message: '动态分辨率请求失败' };
     }
   }
 
   cancelRdpDisplayLayout(sessionId: number): boolean {
     try {
-      return rdpnapi.cancelRdpDisplayLayout(sessionId) as boolean;
+      const cancelled: boolean = rdpnapi.cancelRdpDisplayLayout(sessionId) as boolean;
+      recordDiagnosticEvent('connection.rdp', 'rdp_display_layout',
+        cancelled ? 'cancelled' : 'skipped', sessionId, 0,
+        cancelled ? 0 : -1, 0, 0, 0, undefined,
+        this.diagnosticSessionNetworks.get(sessionId));
+      return cancelled;
     } catch (err) {
       hilog.warn(DOMAIN, TAG,
         '[ExtensionLoader] cancelRdpDisplayLayout: ' + JSON.stringify(err));
+      recordDiagnosticEvent('connection.rdp', 'rdp_display_layout', 'failed',
+        sessionId, 0, -2, 0, 0, 0, undefined,
+        this.diagnosticSessionNetworks.get(sessionId));
       return false;
     }
   }
@@ -2249,20 +2354,37 @@ export class ExtensionLoader implements RustDeskClipboardNative {
 
   beginRustDeskDisplaySwitch(sessionId: number, display: number): RustDeskDisplaySwitchRequest {
     try {
-      return rdpnapi.beginRustDeskDisplaySwitch(sessionId, display) as RustDeskDisplaySwitchRequest;
+      const result: RustDeskDisplaySwitchRequest =
+        rdpnapi.beginRustDeskDisplaySwitch(sessionId, display) as RustDeskDisplaySwitchRequest;
+      recordDiagnosticEvent('connection.rustdesk', 'rustdesk_display_switch',
+        result.accepted ? 'started' : 'failed', sessionId, result.generation,
+        result.accepted ? display : -1, 0, display, 0, undefined,
+        this.diagnosticSessionNetworks.get(sessionId));
+      return result;
     } catch (err) {
       hilog.warn(DOMAIN, TAG,
         '[ExtensionLoader] beginRustDeskDisplaySwitch unavailable: ' + JSON.stringify(err));
+      recordDiagnosticEvent('connection.rustdesk', 'rustdesk_display_switch', 'failed',
+        sessionId, 0, -2, 0, display, 0, undefined,
+        this.diagnosticSessionNetworks.get(sessionId));
       return { accepted: false, generation: 0 };
     }
   }
 
   switchRustDeskDisplay(sessionId: number, display: number): boolean {
     try {
-      return rdpnapi.switchRustDeskDisplay(sessionId, display) as boolean;
+      const switched: boolean = rdpnapi.switchRustDeskDisplay(sessionId, display) as boolean;
+      recordDiagnosticEvent('connection.rustdesk', 'rustdesk_display_switch',
+        switched ? 'succeeded' : 'failed', sessionId, 0,
+        switched ? display : -1, 0, display, 0, undefined,
+        this.diagnosticSessionNetworks.get(sessionId));
+      return switched;
     } catch (err) {
       hilog.warn(DOMAIN, TAG,
         '[ExtensionLoader] switchRustDeskDisplay unavailable: ' + JSON.stringify(err));
+      recordDiagnosticEvent('connection.rustdesk', 'rustdesk_display_switch', 'failed',
+        sessionId, 0, -2, 0, display, 0, undefined,
+        this.diagnosticSessionNetworks.get(sessionId));
       return false;
     }
   }
@@ -2270,10 +2392,19 @@ export class ExtensionLoader implements RustDeskClipboardNative {
   changeRustDeskDisplayResolution(sessionId: number, display: number, width: number,
     height: number): boolean {
     try {
-      return rdpnapi.changeRustDeskDisplayResolution(sessionId, display, width, height) as boolean;
+      const changed: boolean = rdpnapi.changeRustDeskDisplayResolution(
+        sessionId, display, width, height) as boolean;
+      recordDiagnosticEvent('connection.rustdesk', 'rustdesk_display_switch',
+        changed ? 'succeeded' : 'failed', sessionId, 0,
+        changed ? display : -1, 0, width, height, undefined,
+        this.diagnosticSessionNetworks.get(sessionId));
+      return changed;
     } catch (err) {
       hilog.warn(DOMAIN, TAG,
         '[ExtensionLoader] changeRustDeskDisplayResolution unavailable: ' + JSON.stringify(err));
+      recordDiagnosticEvent('connection.rustdesk', 'rustdesk_display_switch', 'failed',
+        sessionId, 0, -2, 0, width, height, undefined,
+        this.diagnosticSessionNetworks.get(sessionId));
       return false;
     }
   }

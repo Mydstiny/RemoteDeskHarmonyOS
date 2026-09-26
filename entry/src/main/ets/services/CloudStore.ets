@@ -948,14 +948,22 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
       await this.initPromise;
       return;
     }
-    recordDiagnosticEvent('data.local_store', 'local_store_init', 'started');
+    const initStartedAt: number = Date.now();
+    recordDiagnosticEvent('data.local_store', 'local_store_init', 'started',
+      0, this.currentScopeToken.generation);
     this.initPromise = this.openScopeStore(context, this.currentScopeToken);
     try {
       await this.initPromise;
       recordDiagnosticEvent('data.local_store', 'local_store_init',
         this.initialized && this.store !== null ? 'succeeded' : 'failed',
         0, this.currentScopeToken.generation,
-        this.initialized && this.store !== null ? 0 : -1);
+        this.initialized && this.store !== null ? 0 : -1,
+        Math.max(0, Date.now() - initStartedAt));
+    } catch (error) {
+      recordDiagnosticEvent('data.local_store', 'local_store_init', 'failed',
+        0, this.currentScopeToken.generation, -1,
+        Math.max(0, Date.now() - initStartedAt));
+      throw new Error(safeError(error));
     } finally {
       this.initPromise = null;
     }
@@ -970,9 +978,14 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
     platformProof: PlatformCloudIdentityProof =
       unavailablePlatformCloudIdentityProof(),
     preserveAccountCompatibilityStore: boolean = false): Promise<boolean> {
+    const rebindStartedAt: number = Date.now();
+    recordDiagnosticEvent('data.local_store', 'local_store_rebind', 'started',
+      0, token.generation);
     this.lastScopeRebindFailure = 'none';
     if (this.initialized &&
       accountScopeRebindSucceeded(token, this.currentScopeToken)) {
+      recordDiagnosticEvent('data.local_store', 'local_store_rebind', 'succeeded',
+        0, token.generation, 1, Math.max(0, Date.now() - rebindStartedAt));
       return true;
     }
     if (this.initPromise !== null) { await this.initPromise; }
@@ -980,10 +993,14 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
       this.lastScopeRebindFailure = 'transient';
       hilog.error(0x0001, 'CloudSync',
         '拒绝切换物理数据域：mutation gate 尚未关闭');
+      recordDiagnosticEvent('data.local_store', 'local_store_rebind', 'failed',
+        0, token.generation, -1, Math.max(0, Date.now() - rebindStartedAt));
       return false;
     }
     if (!(await this.closeCurrentStore())) {
       this.lastScopeRebindFailure = 'transient';
+      recordDiagnosticEvent('data.local_store', 'local_store_rebind', 'failed',
+        0, token.generation, -2, Math.max(0, Date.now() - rebindStartedAt));
       return false;
     }
     this.initPromise = this.openScopeStore(
@@ -991,11 +1008,19 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
       preserveAccountCompatibilityStore);
     try {
       await this.initPromise;
+    } catch (error) {
+      recordDiagnosticEvent('data.local_store', 'local_store_rebind', 'failed',
+        0, token.generation, -3, Math.max(0, Date.now() - rebindStartedAt));
+      throw new Error(safeError(error));
     } finally {
       this.initPromise = null;
     }
-    return this.initialized && this.store !== null &&
+    const rebound: boolean = this.initialized && this.store !== null &&
       accountScopeRebindSucceeded(token, this.currentScopeToken);
+    recordDiagnosticEvent('data.local_store', 'local_store_rebind',
+      rebound ? 'succeeded' : 'failed', 0, token.generation,
+      rebound ? 0 : -4, Math.max(0, Date.now() - rebindStartedAt));
+    return rebound;
   }
 
   currentScope(): AccountScopeToken {
@@ -4565,8 +4590,14 @@ try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
    * Any section failure aborts the artifact; an empty fallback is forbidden.
    */
   createPortableBackupSnapshot(): PortableBackupSnapshot {
+    const backupStartedAt: number = Date.now();
+    recordDiagnosticEvent('data.local_store', 'local_backup_export', 'started',
+      0, this.currentScopeToken.generation);
     if (!this.store || !portableBackupScopeLeaseAllowed(
       this.currentScopeToken, this.currentLease)) {
+      recordDiagnosticEvent('data.local_store', 'local_backup_export', 'failed',
+        0, this.currentScopeToken.generation, -1,
+        Math.max(0, Date.now() - backupStartedAt));
       throw new Error('portable backup requires an active local scope lease');
     }
     try {
@@ -4586,9 +4617,20 @@ try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
         localTables: this.exportAllLocalTableRows()
       };
       this.commitTrackedTransaction();
+      let rowCount: number = 0;
+      const tableNames: string[] = Object.keys(snapshot.tables);
+      for (let index: number = 0; index < tableNames.length; index++) {
+        rowCount += snapshot.tables[tableNames[index]].length;
+      }
+      recordDiagnosticEvent('data.local_store', 'local_backup_export', 'succeeded',
+        0, this.currentScopeToken.generation, snapshot.rdbSchemaVersion,
+        Math.max(0, Date.now() - backupStartedAt), rowCount);
       return snapshot;
     } catch (err) {
       try { this.rollbackTrackedTransaction(); } catch (_rollbackError) {}
+      recordDiagnosticEvent('data.local_store', 'local_backup_export', 'failed',
+        0, this.currentScopeToken.generation, -2,
+        Math.max(0, Date.now() - backupStartedAt));
       throw new Error(
         'portable backup snapshot failed — ' + safeError(err));
     }
@@ -5152,8 +5194,22 @@ try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
   async replaceAllTableRows(snapshot: Record<string, Array<Record<string, string>>>,
     extensions: Array<Record<string, string>> = [],
     localTables?: Record<string, Array<Record<string, string>>>): Promise<boolean> {
-    return await this.replaceAllTableRowsInternal(snapshot, extensions, null, null,
-      localTables, true, true);
+    const restoreStartedAt: number = Date.now();
+    recordDiagnosticEvent('data.local_store', 'local_backup_restore', 'started',
+      0, this.currentScopeToken.generation);
+    try {
+      const restored: boolean = await this.replaceAllTableRowsInternal(
+        snapshot, extensions, null, null, localTables, true, true);
+      recordDiagnosticEvent('data.local_store', 'local_backup_restore',
+        restored ? 'succeeded' : 'failed', 0, this.currentScopeToken.generation,
+        restored ? 0 : -1, Math.max(0, Date.now() - restoreStartedAt));
+      return restored;
+    } catch (error) {
+      recordDiagnosticEvent('data.local_store', 'local_backup_restore', 'failed',
+        0, this.currentScopeToken.generation, -2,
+        Math.max(0, Date.now() - restoreStartedAt));
+      throw new Error(safeError(error));
+    }
   }
 
   /** Manual cloud-download rollback restores every local state owner exactly. */
@@ -6390,7 +6446,15 @@ try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
 
   /** Atomic schema migration. RdbStore.version is the only schema truth. */
   private async createTables(): Promise<void> {
-    if (!this.store) { return; }
+    const schemaStartedAt: number = Date.now();
+    recordDiagnosticEvent('data.local_store', 'local_store_schema', 'started',
+      0, this.currentScopeToken.generation);
+    if (!this.store) {
+      recordDiagnosticEvent('data.local_store', 'local_store_schema', 'skipped',
+        0, this.currentScopeToken.generation, -1,
+        Math.max(0, Date.now() - schemaStartedAt));
+      return;
+    }
     const currentVersion: number = this.store.version;
     let moonlightCloudTableReady: boolean = false;
     let moonlightLocalTableReady: boolean = false;
@@ -6410,6 +6474,9 @@ try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
         '检测到更高版本数据结构 version=' +
         currentVersion.toString() +
         '；保留数据并以本地兼容模式打开');
+      recordDiagnosticEvent('data.local_store', 'local_store_schema', 'succeeded',
+        0, this.currentScopeToken.generation, currentVersion,
+        Math.max(0, Date.now() - schemaStartedAt));
       return;
     }
     // 平台约束（已真机验证）: OpenHarmony RDB 服务在 beginTransaction() 内执行
@@ -6888,10 +6955,17 @@ try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
         'Moonlight v5 schema incomplete; preserved owner-store version=' +
         currentVersion.toString());
     }
+    recordDiagnosticEvent('data.local_store', 'local_store_schema', 'succeeded',
+      0, this.currentScopeToken.generation,
+      this.store === null ? -1 : this.store.version,
+      Math.max(0, Date.now() - schemaStartedAt));
     } catch (err) {
       const detail: string = DataCrypto.errDetail(err);
       hilog.error(0x0001, 'CloudSync',
         'createTables failed at step[' + this.schemaStep + ']: ' + detail);
+      recordDiagnosticEvent('data.local_store', 'local_store_schema', 'failed',
+        0, this.currentScopeToken.generation, -1,
+        Math.max(0, Date.now() - schemaStartedAt));
       throw new Error('schema migration failed at step[' + this.schemaStep + ']: ' + detail);
     }
   }
