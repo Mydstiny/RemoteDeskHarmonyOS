@@ -82,7 +82,7 @@
 
 ## 6. M4 Knock/SFTP 传文件
 
-- [ ] M4.1 单文件、批量文件、零字节、中文/空格路径、重复文件名。
+- [ ] M4.1 单文件、批量文件（单批最多 16 个）、零字节、中文/空格路径、重复文件名。
 - [ ] M4.2 512 MiB 上限、64 KiB 分块、目标窗口/session/directory lease 正确。
 - [ ] M4.3 取消、超时、磁盘不足、断连、后台、无坐标均安全结束并清理暂存目录。
 - [ ] M4.4 RDP/SSH/SFTP 的目标路径和权限正确；混合目录拖入按规则整体拒绝。
@@ -143,6 +143,7 @@ libfido2/libcbor、CBOR 边界、双 ABI 和静态测试已 PASS；USB 硬件、
 - [ ] E13 `f37ecffe`/`b97808f5`：RustDesk 显式手机选择、A/B/A 帧队列、备份回滚和实际呈现身份。
 - [ ] E14 `460f2797`/`e5f17ad3d`/`36b03723b`/`6475244b0`：RustDesk 设置 checkmark、Windows/macOS wheel、Linux Apps/物理键映射、会话反馈。
 - [ ] E15 `001f18af9`/`f8d40d19b`：方向/视频诊断在断开、重连和失败时保留一致 producer/applied matrix 与 generation。
+- [ ] E16 `c4dd91a11`/`b49e2d543`：RDP 错误凭据、NLA/CredSSP、Gateway 和网络不可达分别验证；`0x20014` 不武断归因密码错误，只有严格服务端 ErrorInfo `0x10` 才显示 Windows DWM 分类。
 
 这些修正已有代码测试或独立复核；本节每一项仍必须在相关真机/远端场景中逐条确认。
 
