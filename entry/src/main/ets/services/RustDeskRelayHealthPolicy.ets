@@ -1,4 +1,21 @@
 import { RustDeskRelayConfig } from '../model/RustDeskRelayConfig';
+import { EndpointAddressResult, parseEndpointFields } from './EndpointAddressPolicy';
+
+/**
+ * Return the socket families that a hostname health probe must try.
+ *
+ * HarmonyOS' NetAddress defaults to AF_INET when `family` is omitted. That
+ * silently marks an AAAA-only relay as offline even though the native
+ * RustDesk connection path supports both families. Hostnames therefore try
+ * IPv6 first and fall back to IPv4; literals keep their declared family.
+ */
+export function rustDeskRelayHealthFamilies(host: string): number[] {
+  const parsed: EndpointAddressResult = parseEndpointFields(host, 1);
+  if (!parsed.ok) { return [2, 1]; }
+  if (parsed.endpoint.family === 'ipv6') { return [2]; }
+  if (parsed.endpoint.family === 'ipv4') { return [1]; }
+  return [2, 1];
+}
 
 /**
  * Create a fresh selected-relay object from the current list entry.

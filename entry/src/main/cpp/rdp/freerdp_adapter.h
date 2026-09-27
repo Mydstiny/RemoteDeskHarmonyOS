@@ -3,7 +3,8 @@
  *
  * 双路径架构:
  *   #ifdef USE_REAL_FREERDP — 真实 FreeRDP 3.x 客户端 (需交叉编译 libfreerdp3.a)
- *   #else                     — 手写 RDP 骨架 (当前可用, 仅 TCP/RDP Negotiation/MCS)
+ *   #else                     — 手写 RDP 骨架 (TCP/RDP Negotiation/MCS;
+ *                                endpoint uses the shared DNS/dual-stack connector)
  */
 
 #ifndef FREERDP_ADAPTER_H

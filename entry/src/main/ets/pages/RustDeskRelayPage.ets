@@ -19,7 +19,10 @@ import { RustDeskRelayConfig } from '../model/RustDeskRelayConfig';
 import { RustDeskProAccountState } from '../model/RustDeskProModels';
 import { HostSyncService } from '../services/HostSyncService';
 import { RustDeskProSyncService } from '../services/RustDeskProSyncService';
-import { snapshotSelectedRelay } from '../services/RustDeskRelayHealthPolicy';
+import {
+  rustDeskRelayHealthFamilies,
+  snapshotSelectedRelay
+} from '../services/RustDeskRelayHealthPolicy';
 import { Palette, buildDark, buildLight, AppTheme } from '../common/Theme';
 import { ResourceFabPicker } from '../components/resourceadd/ResourceFabPicker';
 import { RustDeskRelayImportService, RustDeskRelayImportResult } from '../services/RustDeskRelayImportService';
@@ -762,18 +765,28 @@ export struct RustDeskRelayPage {
   private async tcpTest(host: string, port: number): Promise<TcpTestResult> {
     const start = Date.now();
     const result: TcpTestResult = new TcpTestResult();
-    let tcp: socket.TCPSocket | null = null;
-    try {
-      tcp = socket.constructTCPSocketInstance();
-      const addr: socket.NetAddress = { address: host, port: port, family: 1 };
-      await tcp.connect({ address: addr, timeout: 5000 });
-      result.ok = true;
-      result.lat = Date.now() - start;
-    } catch (_e) {
-      result.ok = false;
-      result.lat = 0;
+    const families: number[] = rustDeskRelayHealthFamilies(host);
+    for (let index = 0; index < families.length; index++) {
+      let tcp: socket.TCPSocket | null = null;
+      try {
+        tcp = socket.constructTCPSocketInstance();
+        const addr: socket.NetAddress = {
+          address: host, port: port, family: families[index]
+        };
+        await tcp.connect({ address: addr, timeout: 5000 });
+        result.ok = true;
+        result.lat = Date.now() - start;
+        return result;
+      } catch (_e) {
+        // A hostname may have only one family or may have a black-holed
+        // first family. Continue to the next resolver family before marking
+        // the relay offline.
+      } finally {
+        try { tcp?.close(); } catch (_e2) { /* ignore */ }
+      }
     }
-    try { tcp?.close(); } catch (_e2) { /* ignore */ }
+    result.ok = false;
+    result.lat = 0;
     return result;
   }
 

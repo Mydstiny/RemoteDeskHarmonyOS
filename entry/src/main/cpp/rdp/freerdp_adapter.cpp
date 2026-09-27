@@ -9517,30 +9517,51 @@ struct FreeRdpAdapter::Impl {
 };
 
 // TCP 连接实现
+//
+// Keep the fallback path on the same resolver/Happy Eyeballs implementation
+// as the real FreeRDP path.  The old implementation created an AF_INET socket
+// and passed the input to inet_pton(), which made every DNS name (and every
+// IPv6 literal) fail before a packet was sent.
 static int rdpTcpConnect(const std::string& host, int port, int& sockFd) {
+    sockFd = -1;
     const std::string logHost = SafeLog::MaskHost(host);
-    sockFd = socket(AF_INET, SOCK_STREAM, 0);
-    if (sockFd < 0) {
-        OH_LOG_ERROR(LOG_APP, "[RDP] socket() failed: %{public}s", strerror(errno));
-        return -1;
+    if (host.empty() || port < 1 || port > 65535) {
+        OH_LOG_ERROR(LOG_APP, "[RDP] invalid TCP endpoint host=%{public}s port=%{public}d [E-RDP-TCP-ENDPOINT]",
+                     logHost.c_str(), port);
+        return -14;
     }
-    int flags = fcntl(sockFd, F_GETFL, 0);
-    fcntl(sockFd, F_SETFL, flags | O_NONBLOCK);
-    struct sockaddr_in addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(static_cast<uint16_t>(port));
-    if (inet_pton(AF_INET, host.c_str(), &addr.sin_addr) <= 0) {
-        OH_LOG_ERROR(LOG_APP, "[RDP] inet_pton failed: %{public}s", logHost.c_str());
-        close(sockFd); sockFd = -1; return -14;
+
+    remotedesk::net::ConnectOptions options;
+    options.deadline = std::chrono::steady_clock::now() +
+        std::chrono::seconds(10);
+    options.restoreBlocking = true;
+    remotedesk::net::ConnectResult connection;
+    const remotedesk::net::ResolveResult resolution =
+        remotedesk::net::ResolveAndConnectTcp(
+            host, std::to_string(port), options, connection);
+    if (resolution.status != remotedesk::net::ResolveStatus::Ready) {
+        OH_LOG_ERROR(LOG_APP,
+                     "[RDP] DNS stage failed host=%{public}s status=%{public}d gai=%{public}d [E-RDP-TCP-DNS]",
+                     logHost.c_str(), static_cast<int>(resolution.status),
+                     resolution.gaiError);
+        return resolution.status == remotedesk::net::ResolveStatus::TimedOut
+            ? -13 : -14;
     }
-    int ret = ::connect(sockFd, reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr));
-    if (ret < 0 && errno != EINPROGRESS) {
-        OH_LOG_ERROR(LOG_APP, "[RDP] connect() failed: %{public}s", strerror(errno));
-        close(sockFd); sockFd = -1; return -12;
+    if (connection.status != remotedesk::net::ConnectStatus::Connected ||
+        connection.descriptor < 0) {
+        OH_LOG_ERROR(LOG_APP,
+                     "[RDP] TCP stage failed host=%{public}s status=%{public}d errno=%{public}d [E-RDP-TCP-CONNECT]",
+                     logHost.c_str(), static_cast<int>(connection.status),
+                     connection.lastError);
+        return connection.status == remotedesk::net::ConnectStatus::TimedOut
+            ? -13 : -12;
     }
-    if (ret < 0) { usleep(100000); }
-    OH_LOG_INFO(LOG_APP, "[RDP] TCP connected to %{public}s:%{public}d fd=%{public}d", logHost.c_str(), port, sockFd);
+
+    sockFd = connection.descriptor;
+    OH_LOG_INFO(LOG_APP,
+                "[RDP] TCP connected host=%{public}s:%{public}d family=%{public}d address=%{public}s fd=%{public}d",
+                logHost.c_str(), port, connection.family,
+                connection.numericAddress.c_str(), sockFd);
     return 0;
 }
 
@@ -9723,7 +9744,15 @@ int FreeRdpAdapter::connectInternal(
     int ret;
 
     ret = rdpTcpConnect(route.targetHost, port, impl_->sockFd);
-    if (ret < 0) { impl_->setState(ConnectionState::ERROR, "TCP connection failed"); return ret; }
+    if (ret < 0) {
+        const char* message = ret == -13
+            ? "RDP TCP connection timed out [E-RDP-TCP-TIMEOUT]"
+            : (ret == -14
+                ? "RDP DNS/endpoint resolution failed [E-RDP-TCP-DNS]"
+                : "RDP TCP connection failed [E-RDP-TCP-CONNECT]");
+        impl_->setState(ConnectionState::ERROR, message);
+        return ret;
+    }
     ret = rdpSendX224ConnectionRequest(impl_->sockFd);
     if (ret < 0) { impl_->setState(ConnectionState::ERROR, "X.224 failed"); disconnectInternal(); return -22; }
     ret = rdpRecvX224ConnectionConfirm(impl_->sockFd);
