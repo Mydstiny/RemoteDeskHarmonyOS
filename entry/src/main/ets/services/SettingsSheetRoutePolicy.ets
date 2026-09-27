@@ -1,4 +1,10 @@
 export const SETTINGS_SHEET_PRO: number = 42;
+// Remote AI settings share HostListPage's leaf bindSheet with the other
+// protocol settings instead of opening a second page route.
+export const SETTINGS_SHEET_AI_HOSTS: number = 43;
+export const SETTINGS_SHEET_AI_DISPLAY: number = 44;
+export const SETTINGS_SHEET_AI_DATA: number = 45;
+export const SETTINGS_SHEET_AI_INSTALL: number = 46;
 export const SETTINGS_SHEET_NONE: number = 0;
 export const SETTINGS_SHEET_ACCOUNT: number = 1;
 export const SETTINGS_SHEET_ACCENT_COLOR: number = 2;
@@ -140,6 +146,14 @@ export function remotePinchZoomSettingsLeafSheetHeight(mode: number): number {
 
 export function sessionControlBarSettingsLeafSheetHeight(mode: number): number {
   return mode === SETTINGS_SHEET_SESSION_CONTROL_BAR ? 620 : 0;
+}
+
+export function aiSettingsLeafSheetHeight(mode: number): number {
+  if (mode === SETTINGS_SHEET_AI_HOSTS) { return 760; }
+  if (mode === SETTINGS_SHEET_AI_DISPLAY) { return 520; }
+  if (mode === SETTINGS_SHEET_AI_DATA) { return 520; }
+  if (mode === SETTINGS_SHEET_AI_INSTALL) { return 560; }
+  return 0;
 }
 
 export function virtualKeyboardSettingsRouteSpecs(): VirtualKeyboardSettingsRouteSpec[] {

@@ -128,7 +128,7 @@ const cases = [
   ['settings write failure restores displayed settings without changing another account', async () => {
     for (const changeAccount of [false, true]) {
       const state = authority(); let attempted;
-      const page = loadClass('entry/src/main/ets/pages/AiSettingsPage.ets', 'AiSettingsPage', {
+      const page = loadClass('entry/src/main/ets/pages/AiSettingsPage.ets', 'AiSettingsSurface', {
         ...models, AiAccess: { getInstance: () => state.access }, aiErrorText: value => value,
         AiLocalStore: { getInstance: () => ({ saveSettings: async (_account, next) => {
           attempted = next;
@@ -151,7 +151,7 @@ const cases = [
       if (failRead) throw Error('read failure');
       return { ...models.defaultAiSettings(), defaultBackend: 'dsh', textSize: 21 };
     }, hosts: async () => [], saveSettings: async (lease, next) => { writes.push({ lease, next }); } };
-    const page = loadClass('entry/src/main/ets/pages/AiSettingsPage.ets', 'AiSettingsPage', {
+    const page = loadClass('entry/src/main/ets/pages/AiSettingsPage.ets', 'AiSettingsSurface', {
       ...models, AiAccess: { getInstance: () => state.access }, AiLocalStore: { getInstance: () => store },
       getContext: () => ({}), aiErrorText: value => value
     });
@@ -298,6 +298,33 @@ const cases = [
       const badge = body.indexOf('ProBadge()');
       assert.ok(columns.length >= 3 && badge > columns[1] && badge < columns[2], 'ProBadge must stay in the host title column');
     }
+  }],
+  ['Pro AI picker order and settings leaf routes stay aligned with shared sheets', async () => {
+    const picker = read('entry/src/main/ets/components/hostadd/HostProtocolPicker.ets');
+    assert.ok(picker.indexOf("protocolOption('moonlight'") < picker.indexOf("protocolOption('ai'"));
+    assert.ok(picker.includes('ProBadge().margin({ right: 8 }).alignSelf(ItemAlign.Center)'));
+    const hosts = read('entry/src/main/ets/pages/HostListPage.ets');
+    assert.ok(hosts.indexOf('this.sidebarMoonlightTab()') < hosts.indexOf("this.sidebarTab('远程 AI · Pro'"));
+    const aiSettingsStart = hosts.indexOf("this.settingsAccordionHeader(SETTINGS_SECTION_AI");
+    const aiSettingsEnd = hosts.indexOf("this.settingsAccordionHeader(SETTINGS_SECTION_MOONLIGHT", aiSettingsStart);
+    const aiSettings = hosts.slice(aiSettingsStart, aiSettingsEnd);
+    for (const mode of ['SETTINGS_SHEET_AI_HOSTS', 'SETTINGS_SHEET_AI_DISPLAY', 'SETTINGS_SHEET_AI_DATA', 'SETTINGS_SHEET_AI_INSTALL']) {
+      assert.ok(aiSettings.includes('openSettingsLeafSheet(' + mode + ')'), 'Missing shared leaf route: ' + mode);
+    }
+    assert.ok(!aiSettings.includes("router.pushUrl({ url: 'pages/AiSettingsPage'"));
+    assert.ok(hosts.includes('AiSettingsSurface({') && hosts.includes('embedded: true'));
+    const routePolicy = read('entry/src/main/ets/services/SettingsSheetRoutePolicy.ets');
+    assert.ok(routePolicy.includes('SETTINGS_SHEET_AI_HOSTS')); assert.ok(routePolicy.includes('aiSettingsLeafSheetHeight'));
+    const settingsPage = read('entry/src/main/ets/pages/AiSettingsPage.ets');
+    assert.ok(settingsPage.includes('@Prop @Watch(\'onRequestedSectionChange\') requestedSection: string ='));
+    assert.ok(settingsPage.includes('@Prop embedded: boolean = false;'));
+    assert.ok(settingsPage.includes('if (this.embedded) { this.onClose(); } else { router.back(); }'));
+    assert.ok(settingsPage.includes('@State routeSection: string ='));
+    assert.ok(settingsPage.includes('aboutToAppear(): void {\n    this.routeSection = this.readRouteSection();'));
+    assert.ok(settingsPage.includes('onPageShow(): void {\n    this.routeSection = this.readRouteSection();'));
+    assert.ok(settingsPage.includes('AiSettingsSurface({ requestedSection: this.routeSection })'));
+    const editor = read('entry/src/main/ets/components/ai/AiHostEditor.ets');
+    assert.ok(editor.includes('ProBadge().alignSelf(ItemAlign.Center).margin({ right: 8 })'));
   }]
 ];
 (async () => {

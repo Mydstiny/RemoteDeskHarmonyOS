@@ -14,7 +14,7 @@ import { SshAuthenticatedHandoff } from '../services/ssh/auth/SshAuthenticatedHa
 import { ProAppRuntime } from '../services/pro/ProAppRuntime';
 import { ProPurchaseLifecycle } from '../services/pro/ProPurchaseLifecycle';
 import { ProPurchaseSheet } from '../components/ProPurchaseSheet';
-import { SETTINGS_SHEET_PRO } from '../services/SettingsSheetRoutePolicy';
+import { AiSettingsSurface } from './AiSettingsPage';
 /**
  * HostListPage v9 — 多端响应式 + 悬浮卡片 sheet + 滑动删除 + 官方图标按钮
  */
@@ -475,6 +475,11 @@ import {
 } from '../services/GripMonitorLifecyclePolicy';
 import {
   SETTINGS_SHEET_ACCOUNT,
+  SETTINGS_SHEET_AI_DATA,
+  SETTINGS_SHEET_AI_DISPLAY,
+  SETTINGS_SHEET_AI_HOSTS,
+  SETTINGS_SHEET_AI_INSTALL,
+  SETTINGS_SHEET_PRO,
   SETTINGS_SHEET_ACCENT_COLOR,
   SETTINGS_SHEET_DIAGNOSTIC_LOG,
   SETTINGS_SHEET_REMOTE_PINCH_ZOOM,
@@ -516,6 +521,7 @@ import {
   SETTINGS_SHEET_VIRTUAL_KEYBOARD_SHORTCUTS,
   SETTINGS_SHEET_WALLPAPER,
   SETTINGS_PANEL_DISMISS_TO_LEAF_OPEN_MS,
+  aiSettingsLeafSheetHeight,
   MoonlightSettingsRouteSpec,
   VirtualKeyboardSettingsSection,
   VirtualKeyboardSettingsRouteSpec,
@@ -12765,8 +12771,8 @@ struct HostListPage {
                   this.sidebarTab('SSH 终端', protocolIcon('ssh'), 2)
                   this.sidebarTab('VNC 主机', protocolIcon('vnc'), 3)
                 }
-                this.sidebarTab('远程 AI · Pro', protocolIcon('ai'), 8)
                 this.sidebarMoonlightTab()
+                this.sidebarTab('远程 AI · Pro', protocolIcon('ai'), 8)
                 this.sidebarTab('密钥保险库', protocolIcon('key_vault'), 4)
                 this.sidebarTab('2FA 验证器', protocolIcon('totp'), 5)
                 this.sidebarRelayTab('中继服务器', 6)
@@ -15334,6 +15340,18 @@ struct HostListPage {
     return moonlightSettingsRouteSpec(this.settingsLeafSheetMode) !== null;
   }
 
+  private isAiSettingsLeafSheet(): boolean {
+    return aiSettingsLeafSheetHeight(this.settingsLeafSheetMode) > 0;
+  }
+
+  private aiSettingsSectionForLeaf(): string {
+    if (this.settingsLeafSheetMode === SETTINGS_SHEET_AI_HOSTS) { return 'hosts'; }
+    if (this.settingsLeafSheetMode === SETTINGS_SHEET_AI_DISPLAY) { return 'display'; }
+    if (this.settingsLeafSheetMode === SETTINGS_SHEET_AI_DATA) { return 'data'; }
+    if (this.settingsLeafSheetMode === SETTINGS_SHEET_AI_INSTALL) { return 'install'; }
+    return '';
+  }
+
   private isVirtualKeyboardSettingsLeafSheet(): boolean {
     return isVirtualKeyboardSettingsMode(this.settingsLeafSheetMode);
   }
@@ -15384,6 +15402,10 @@ struct HostListPage {
     if (controlBarHeight > 0) { return controlBarHeight; }
     const moonlightHeight: number = moonlightSettingsLeafSheetHeight(this.settingsLeafSheetMode);
     if (moonlightHeight > 0) { return moonlightHeight; }
+    const aiHeight: number = aiSettingsLeafSheetHeight(this.settingsLeafSheetMode);
+    if (aiHeight > 0) {
+      return Math.min(aiHeight, Math.max(320, this.pageViewportHeight - 48));
+    }
     const vncHeight: number = vncSettingsLeafSheetHeight(this.settingsLeafSheetMode);
     return vncHeight > 0 ? vncHeight : SheetSize.FIT_CONTENT;
   }
@@ -15494,6 +15516,12 @@ struct HostListPage {
         },
         onDirtyChanged: (dirty: boolean): void => { this.moonlightSettingsLeafDirty = dirty; }
       })
+    } else if (this.isAiSettingsLeafSheet()) {
+      AiSettingsSurface({
+        requestedSection: this.aiSettingsSectionForLeaf(),
+        embedded: true,
+        onClose: (): void => { this.closeSettingsLeafSheet(); }
+      })
     } else if (this.settingsLeafSheetMode >= SETTINGS_SHEET_VNC_CONNECTION &&
       this.settingsLeafSheetMode <= SETTINGS_SHEET_VNC_CLIPBOARD) {
       VncSettingsSheet({
@@ -15585,7 +15613,7 @@ struct HostListPage {
       .alignItems(HorizontalAlign.Start)
       .layoutWeight(1)
 
-      if (section === SETTINGS_SECTION_AI) { ProBadge().margin({ right: 8 }).alignSelf(ItemAlign.Start) }
+      if (section === SETTINGS_SECTION_AI) { ProBadge().margin({ right: 8 }).alignSelf(ItemAlign.Center) }
       SymbolGlyph($r('sys.symbol.chevron_right'))
         .fontSize(18)
         .fontColor([this.pal().text3])
@@ -16524,16 +16552,16 @@ struct HostListPage {
           Column() {
             Column() {
               this.protocolActionRow(protocolIcon('ai'), '连接与配对', '主机管理、默认 AI 与配对',
-                (): void => { router.pushUrl({ url: 'pages/AiSettingsPage', params: { section: 'hosts' } }); })
+                (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_AI_HOSTS); })
               this.cardDivider()
               this.protocolActionRow(protocolIcon('ai'), '显示与恢复', '工具过程、文字大小与前台恢复',
-                (): void => { router.pushUrl({ url: 'pages/AiSettingsPage', params: { section: 'display' } }); })
+                (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_AI_DISPLAY); })
               this.cardDivider()
               this.protocolActionRow(protocolIcon('ai'), '本机数据管理', '配置导入导出与操作记录',
-                (): void => { router.pushUrl({ url: 'pages/AiSettingsPage', params: { section: 'data' } }); })
+                (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_AI_DATA); })
               this.cardDivider()
               this.protocolActionRow(protocolIcon('ai'), '电脑端安装', 'Codex 与 DSH 安装指引',
-                (): void => { router.pushUrl({ url: 'pages/AiSettingsPage', params: { section: 'install' } }); })
+                (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_AI_INSTALL); })
             }.borderRadius(24).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
               .border({ width: 0.5, color: this.pal().cardBorder })
           }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 20 })

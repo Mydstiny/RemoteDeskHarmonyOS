@@ -52,7 +52,7 @@ export struct HostProtocolPicker {
         Text(title).fontSize(16).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
         Text(subtitle).fontSize(12).fontColor(this.pal().text3).margin({ top: 3 })
       }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-      if (protocol === 'ai') { ProBadge().margin({ right: 8 }).alignSelf(ItemAlign.Start) }
+      if (protocol === 'ai') { ProBadge().margin({ right: 8 }).alignSelf(ItemAlign.Center) }
       if (state.enabled) {
         if (state.shellOnly) {
           Text(state.statusLabel)
@@ -94,11 +94,11 @@ export struct HostProtocolPicker {
         resolveHostProtocolPickerOption('ssh', true))
       this.protocolOption('vnc', 'VNC', '跨平台屏幕控制、直连与 UltraVNC Repeater',
         resolveHostProtocolPickerOption('vnc', true))
-      this.protocolOption('ai', '远程 AI', 'Codex 与 DSH 会话、审批和代码差异',
-        resolveHostProtocolPickerOption('ai', true))
       this.protocolOption('moonlight', 'Moonlight', '低延迟游戏与桌面串流',
         resolveHostProtocolPickerOption('moonlight',
           this.moonlightProtocolAvailable, this.moonlightFabEntryAvailable))
+      this.protocolOption('ai', '远程 AI', 'Codex 与 DSH 会话、审批和代码差异',
+        resolveHostProtocolPickerOption('ai', true))
       Row() {
         SymbolGlyph($r('sys.symbol.info_circle')).fontSize(16)
           .fontColor([this.accentColor]).margin({ top: 1 })

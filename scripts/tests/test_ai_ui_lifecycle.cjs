@@ -13,7 +13,7 @@ const ts = require(process.env.AI_TYPESCRIPT_PATH || 'typescript');
 const root = process.env.AI_REPO_ROOT || path.resolve(__dirname, '../..');
 const sourceHashes = new Map();
 
-function loadPage(name, mocks) {
+function loadPage(name, mocks, structName = name) {
   const file = path.join(root, 'entry/src/main/ets/pages', name + '.ets');
   const original = fs.readFileSync(file, 'utf8');
   const end = original.indexOf('  @Builder');
@@ -24,8 +24,8 @@ function loadPage(name, mocks) {
     .replace(/^@(Entry|Component)\s*$/gm, '')
     .replace(/@(?:StorageProp|StorageLink|Watch)\([^\n]*?\)\s*/g, '')
     .replace(/@(?:State|Prop|Link)\s+/g, '')
-    .replace('export struct ' + name, 'class ' + name);
-  source += '\nglobalThis.Page = ' + name + ';';
+    .replace('export struct ' + structName, 'class ' + structName);
+  source += '\nglobalThis.Page = ' + structName + ';';
   const context = vm.createContext({ Date, JSON, setTimeout, clearTimeout, ...mocks });
   vm.runInContext(ts.transpileModule(source, {
     compilerOptions: { target: ts.ScriptTarget.ES2021, module: ts.ModuleKind.None }
@@ -75,7 +75,7 @@ function settingsFixture({ deferredInitialize = false } = {}) {
     AiAccess: { getInstance: () => access },
     AiLocalStore: { getInstance: () => store },
     defaultAiSettings: defaults, getContext: () => ({}), aiErrorText: value => value
-  });
+  }, 'AiSettingsSurface');
   state.changeAccount = owner => {
     state.owner = owner;
     for (const callback of state.callbacks.slice()) callback();

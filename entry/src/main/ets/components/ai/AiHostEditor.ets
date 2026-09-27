@@ -175,11 +175,11 @@ export struct AiHostEditor {
   }
   build() {
     Column() {
-      Row({ space: 12 }) {
+      Row() {
         if (this.wizard() && (this.step === 2 || this.canReturnToProtocols)) {
           Button() { SymbolGlyph($r('sys.symbol.chevron_left')).fontSize(18).fontColor([this.pal().text2]) }
-            .width(AppUiMetrics.minTouchTarget).height(AppUiMetrics.minTouchTarget)
-            .borderRadius(AppUiMetrics.minTouchTarget / 2).padding(0).backgroundColor(this.pal().surface)
+            .width(36).height(36)
+            .borderRadius(18).padding(0).backgroundColor(this.pal().surface)
             .enabled(!this.busy && !this.defaultsPending).accessibilityText(this.step === 2 ? '返回主机信息' : '返回协议选择')
             .onClick((): void => { this.previousStep(); })
         }
@@ -189,7 +189,8 @@ export struct AiHostEditor {
           Text(this.wizard() ? (this.step === 1 ? '1/2  基础信息' : '2/2  配对与保存') : '主机信息与配对')
             .fontSize(12).fontFamily(AppConfig.fontFamily).fontColor(this.pal().text3)
         }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-        ProBadge().alignSelf(ItemAlign.Start)
+          .margin({ left: this.wizard() && (this.step === 2 || this.canReturnToProtocols) ? 12 : 0 })
+        ProBadge().alignSelf(ItemAlign.Center).margin({ right: 8 })
         Button() { SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor([this.pal().text2]) }
           .width(AppUiMetrics.minTouchTarget).height(AppUiMetrics.minTouchTarget)
           .borderRadius(AppUiMetrics.minTouchTarget / 2).padding(0).backgroundColor(this.pal().surface)
@@ -208,6 +209,7 @@ export struct AiHostEditor {
         if (this.error !== '') { Text(this.error).fontSize(13).fontFamily(AppConfig.fontFamily).fontColor(this.pal().danger).width('100%') }
         this.actions()
       }.width('100%')
-    }.width('100%').padding({ left: 20, right: 20, top: 20, bottom: 24 }).backgroundColor(this.pal().sheetBg)
+    }.width('100%').padding({ left: AppUiMetrics.sheetPadding, right: AppUiMetrics.sheetPadding,
+      top: 20, bottom: AppUiMetrics.sheetPadding }).backgroundColor(this.pal().sheetBg)
   }
 }

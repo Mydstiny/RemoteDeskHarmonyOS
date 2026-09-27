@@ -19,15 +19,19 @@ import { aiErrorText } from '../services/ai/AiWirePolicy';
 
 interface AiSettingsRouteParams { section?: string; }
 
-@Entry
 @Component
-export struct AiSettingsPage {
+export struct AiSettingsSurface {
   @StorageProp('hostAddMode') fabAddStyle: string = 'modern';
   @StorageProp('isDesktopDevice') isDesktopDevice: boolean = false;
   @StorageProp('currentBreakpoint') breakpoint: string = 'sm';
   @StorageProp('currentTheme') theme: string = 'light';
   @StorageProp('accentColor') accent: string = '#007DFF';
   @StorageProp('topRectHeight') topInset: number = 0;
+  // When hosted by HostListPage this surface is rendered inside its shared
+  // settings bindSheet. Route pages keep using router params as before.
+  @Prop @Watch('onRequestedSectionChange') requestedSection: string = '';
+  @Prop embedded: boolean = false;
+  onClose: () => void = (): void => {};
   @State settings: AiSettings = defaultAiSettings();
   @State section: string = '';
   private savedSettings: AiSettings | null = null;
@@ -48,9 +52,19 @@ export struct AiSettingsPage {
   private alive: boolean = false;
   private stop: () => void = (): void => {};
   private pal(): Palette { return this.theme === 'light' ? buildLight(this.accent) : buildDark(this.accent); }
+  private normalizedSection(value: string): string {
+    return ['hosts', 'display', 'data', 'install'].includes(value) ? value : '';
+  }
+  private onRequestedSectionChange(): void {
+    this.section = this.normalizedSection(this.requestedSection);
+  }
   onPageShow(): void {
+    if (this.requestedSection !== '') {
+      this.section = this.normalizedSection(this.requestedSection);
+      return;
+    }
     const params = router.getParams() as AiSettingsRouteParams;
-    this.section = ['hosts', 'display', 'data', 'install'].includes(params?.section ?? '') ? params.section as string : '';
+    this.section = this.normalizedSection(params?.section ?? '');
   }
   private sectionVisible(section: string): boolean { return this.section === '' || this.section === section; }
   private title(): string {
@@ -62,6 +76,9 @@ export struct AiSettingsPage {
   }
   async aboutToAppear(): Promise<void> {
     this.alive = true;
+    if (this.requestedSection !== '') {
+      this.section = this.normalizedSection(this.requestedSection);
+    }
     this.stop = AiAccess.getInstance().subscribe((): void => {
       this.accessText = AiAccess.getInstance().executable('codex') ? 'Pro 远程 AI 已开放' : 'Pro 实验功能 · 以 Pro 功能页开放状态为准';
       if (this.account !== null && !AiAccess.getInstance().current(this.account)) { this.hosts = []; this.settings = defaultAiSettings();
@@ -141,7 +158,9 @@ export struct AiSettingsPage {
       Row({ space: 12 }) {
         Button() { SymbolGlyph($r('sys.symbol.chevron_left')).fontSize(20).fontColor([this.pal().text]) }
           .width(44).height(44).padding(0).backgroundColor(Color.Transparent)
-          .accessibilityText('返回设置').onClick((): void => { router.back(); })
+          .accessibilityText('返回设置').onClick((): void => {
+            if (this.embedded) { this.onClose(); } else { router.back(); }
+          })
         Column({ space: 3 }) {
           Text(this.title()).fontSize(20).fontWeight(FontWeight.Bold).fontFamily(AppConfig.fontFamily).fontColor(this.pal().text)
           Text(this.accessText === '' ? 'Pro 远程 AI' : this.accessText).fontSize(12).fontFamily(AppConfig.fontFamily).fontColor(this.pal().text3)
@@ -240,5 +259,29 @@ export struct AiSettingsPage {
           }
         }
       })
+  }
+}
+
+@Entry
+@Component
+struct AiSettingsPage {
+  @State routeSection: string = '';
+  private normalizedSection(value: string): string {
+    return ['hosts', 'display', 'data', 'install'].includes(value) ? value : '';
+  }
+  private readRouteSection(): string {
+    const params = router.getParams() as AiSettingsRouteParams;
+    return this.normalizedSection(params?.section ?? '');
+  }
+  aboutToAppear(): void {
+    this.routeSection = this.readRouteSection();
+  }
+  onPageShow(): void {
+    this.routeSection = this.readRouteSection();
+  }
+  build() {
+    Column() {
+      AiSettingsSurface({ requestedSection: this.routeSection })
+    }.width('100%').height('100%')
   }
 }
