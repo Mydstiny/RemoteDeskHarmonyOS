@@ -10,6 +10,6 @@ export struct ProBadge {
       .linearGradient({ angle: 115, colors: [['#B9F3EA', 0], ['#CDC9FF', 0.35],
         ['#F4C8E5', 0.7], ['#F9E3B8', 1]] })
       .border({ width: 0.5, color: '#90FFFFFF' })
-      .accessibilityText('Pro 付费功能')
+      .accessibilityText('Pro 功能标识')
   }
 }

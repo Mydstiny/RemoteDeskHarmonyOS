@@ -277,6 +277,19 @@ const cases = [
     }
     assert.ok(source.includes("@StorageProp('hostAddMode')")); assert.ok(source.includes('height: SheetSize.FIT_CONTENT'));
     assert.ok(source.includes('keyboardAvoidMode: SheetKeyboardAvoidMode.TRANSLATE_AND_SCROLL'));
+  }],
+  ['Pro markers stay semantic, visible and revoked approval inputs stay disabled', async () => {
+    const badge = read('entry/src/main/ets/components/ProBadge.ets');
+    assert.ok(badge.includes("accessibilityText('Pro 功能标识')"));
+    const header = read('entry/src/main/ets/components/AppSheetHeader.ets');
+    assert.ok(header.includes('@Prop showProBadge: boolean = false;'));
+    const workspace = read(workspaceFile);
+    const headers = workspace.split('\n').filter(line => line.includes('AppSheetHeader({'));
+    assert.equal(headers.length, 4);
+    assert.equal(headers.filter(line => line.includes('showProBadge: true')).length, 4);
+    assert.ok(workspace.includes("enabled(!this.busy && this.allowed).accessibilityText(question.title)"));
+    const settings = read('entry/src/main/ets/pages/AiSettingsPage.ets');
+    assert.ok(settings.includes("this.accessText === '' ? 'Pro 远程 AI' : this.accessText"));
   }]
 ];
 (async () => {

@@ -1,6 +1,7 @@
 import { AppConfig, Palette, buildDark, buildLight } from '../common/Theme';
 import { AppUiMetrics } from '../common/AppUiMetrics';
 import { appUiButtonFill, appUiButtonText } from '../common/AppUiColorPolicy';
+import { ProBadge } from './ProBadge';
 
 // Free shared chrome. Uses APIs available on the retained API 23 installation target.
 @Component
@@ -12,6 +13,7 @@ export struct AppSheetHeader {
   @Prop closeLabel: string = '';
   @Prop actionLabel: string = '';
   @Prop actionEnabled: boolean = true;
+  @Prop showProBadge: boolean = false;
   @Prop horizontalPadding: number = 24;
   onClose: () => void = (): void => {};
   onAction: () => void = (): void => {};
@@ -30,6 +32,9 @@ export struct AppSheetHeader {
             .width('100%')
         }
       }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+      if (this.showProBadge) {
+        ProBadge()
+      }
       Button({ type: ButtonType.Normal }) {
         if (this.closeLabel.length > 0) {
           Text(this.closeLabel).fontSize(14).fontFamily(AppConfig.fontFamily).fontColor(this.pal().text2)

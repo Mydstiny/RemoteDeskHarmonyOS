@@ -144,7 +144,7 @@ export struct AiSettingsPage {
           .accessibilityText('返回设置').onClick((): void => { router.back(); })
         Column({ space: 3 }) {
           Text(this.title()).fontSize(20).fontWeight(FontWeight.Bold).fontFamily(AppConfig.fontFamily).fontColor(this.pal().text)
-          Text('远程 AI').fontSize(12).fontFamily(AppConfig.fontFamily).fontColor(this.pal().text3)
+          Text(this.accessText === '' ? 'Pro 远程 AI' : this.accessText).fontSize(12).fontFamily(AppConfig.fontFamily).fontColor(this.pal().text3)
         }.alignItems(HorizontalAlign.Start).layoutWeight(1)
         ProBadge()
       }.width('100%').padding({ left: 12, right: 24, top: 8, bottom: 8 })

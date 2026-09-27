@@ -298,7 +298,7 @@ export struct RemoteAiWorkspace {
   }
   @Builder private approvalSheet() {
     Column() {
-      AppSheetHeader({ title: '确认 AI 请求', onClose: (): void => { this.showApproval = false; } })
+      AppSheetHeader({ title: '确认 AI 请求', showProBadge: true, onClose: (): void => { this.showApproval = false; } })
       Scroll() {
         Column({ space: 14 }) {
           if (this.approval !== null) {
@@ -320,7 +320,7 @@ export struct RemoteAiWorkspace {
                     Text(question.descriptions[optionIndex]).fontSize(12).fontFamily(AppConfig.fontFamily).fontColor(this.pal().text2).width('100%')
                   }
                 })
-                TextInput({ text: question.text, placeholder: '补充回答' }).constraintSize({ minHeight: AppUiMetrics.minTouchTarget }).fontSize(14).fontFamily(AppConfig.fontFamily).enabled(!this.busy).accessibilityText(question.title).onChange((value: string): void => {
+                TextInput({ text: question.text, placeholder: '补充回答' }).constraintSize({ minHeight: AppUiMetrics.minTouchTarget }).fontSize(14).fontFamily(AppConfig.fontFamily).enabled(!this.busy && this.allowed).accessibilityText(question.title).onChange((value: string): void => {
                   if (this.busy || !this.allowed) { return; }
                   question.text = value;
                   if (!question.multiple && value.trim() !== '') { question.selected = []; }
@@ -354,7 +354,7 @@ export struct RemoteAiWorkspace {
   }
   @Builder private detailsSheet() {
     Column() {
-      AppSheetHeader({ title: '会话详情', onClose: (): void => { this.showDetails = false; } })
+      AppSheetHeader({ title: '会话详情', showProBadge: true, onClose: (): void => { this.showDetails = false; } })
       Flex({ direction: FlexDirection.Row, wrap: FlexWrap.Wrap, justifyContent: FlexAlign.SpaceBetween }) {
         AppSettingsChoiceButton({ label: '模型', isSelected: this.detailTab === 0, onSelect: (): void => { this.detailTab = 0; } })
           .width(this.pageWidth < 600 ? '48%' : '23%').margin({ bottom: 8 })
@@ -469,7 +469,7 @@ export struct RemoteAiWorkspace {
   }
   @Builder private sessionPickerSheet() {
     Column() {
-      AppSheetHeader({ title: '项目与会话', onClose: (): void => { this.showSessionPicker = false; } })
+      AppSheetHeader({ title: '项目与会话', showProBadge: true, onClose: (): void => { this.showSessionPicker = false; } })
       Scroll() { this.sessionSelectors() }.width('100%').layoutWeight(1).padding(AppUiMetrics.sheetPadding)
       if (this.error !== '') { Text(this.error).fontSize(13).fontFamily(AppConfig.fontFamily).fontColor(this.pal().danger).padding(AppUiMetrics.sheetPadding) }
     }.height('100%').width('100%').safeAreaPadding({ bottom: 16 }).backgroundColor(this.pal().sheetBg)
@@ -490,7 +490,7 @@ export struct RemoteAiWorkspace {
   }
   @Builder private workspace() {
     Column() {
-      AppSheetHeader({ title: this.title, subtitle: this.status, onClose: (): void => { void this.leave(); } })
+      AppSheetHeader({ title: this.title, subtitle: this.status, showProBadge: true, onClose: (): void => { void this.leave(); } })
       Row({ space: 8 }) {
         AiActionButton({ label: '项目与会话', isEnabled: !this.busy, onAction: (): void => { this.showSessionPicker = true; } }).layoutWeight(1)
         AiActionButton({ label: '重连', isEnabled: !this.busy, onAction: (): void => { void this.reconnect(); } }).layoutWeight(1)
