@@ -31,6 +31,7 @@ export struct AiSettingsSurface {
   // settings bindSheet. Route pages keep using router params as before.
   @Prop @Watch('onRequestedSectionChange') requestedSection: string = '';
   @Prop embedded: boolean = false;
+  @Prop viewportHeight: number = 720;
   onClose: () => void = (): void => {};
   @State settings: AiSettings = defaultAiSettings();
   @State section: string = '';
@@ -57,6 +58,9 @@ export struct AiSettingsSurface {
   }
   private onRequestedSectionChange(): void {
     this.section = this.normalizedSection(this.requestedSection);
+  }
+  private embeddedSheetMaxHeight(): number {
+    return Math.max(320, this.viewportHeight - 48);
   }
   onPageShow(): void {
     if (this.requestedSection !== '') {
@@ -242,8 +246,11 @@ export struct AiSettingsSurface {
           }
           if (this.error !== '') { Text(this.error).fontSize(13).fontFamily(AppConfig.fontFamily).fontColor(this.pal().danger).width('100%') }
         }.padding(AppUiMetrics.sheetPadding).width('100%').constraintSize({ maxWidth: 900 })
-      }.layoutWeight(1).width('100%').scrollBar(BarState.Auto)
-    }.height('100%').width('100%').padding({ top: this.topInset }).safeAreaPadding({ bottom: 16 }).backgroundColor(this.pal().sheetBg)
+      }.layoutWeight(this.embedded ? 0 : 1).width('100%')
+        .constraintSize({ maxHeight: this.embedded ? this.embeddedSheetMaxHeight() : 10000 })
+        .scrollBar(BarState.Auto).edgeEffect(EdgeEffect.Spring)
+    }.height(this.embedded ? 'auto' : '100%').width('100%').padding({ top: this.topInset })
+      .safeAreaPadding({ bottom: 16 }).backgroundColor(this.pal().sheetBg)
       .bindSheet($$this.showEditor, this.editor(), { height: SheetSize.FIT_CONTENT, showClose: false, dragBar: false,
         preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
         keyboardAvoidMode: SheetKeyboardAvoidMode.TRANSLATE_AND_SCROLL, backgroundColor: this.pal().sheetBg, blurStyle: BlurStyle.NONE,

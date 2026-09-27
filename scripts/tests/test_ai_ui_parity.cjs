@@ -305,6 +305,9 @@ const cases = [
     assert.ok(picker.includes('ProBadge().margin({ right: 8 }).alignSelf(ItemAlign.Center)'));
     const hosts = read('entry/src/main/ets/pages/HostListPage.ets');
     assert.ok(hosts.indexOf('this.sidebarMoonlightTab()') < hosts.indexOf("this.sidebarTab('远程 AI · Pro'"));
+    assert.ok(hosts.includes("if (card.type === 'ai') { ProBadge().margin({ right: 8 }).alignSelf(ItemAlign.Center) }"));
+    assert.ok(hosts.indexOf('this.moonlightGroupedPhoneGroup()') < hosts.indexOf("this.hostGroupedPhoneGroup('ai')"));
+    assert.ok(hosts.includes("else {\n            Blank()\n              .width(this.breakpoint === 'sm' ? 38 : 40)"));
     const aiSettingsStart = hosts.indexOf("this.settingsAccordionHeader(SETTINGS_SECTION_AI");
     const aiSettingsEnd = hosts.indexOf("this.settingsAccordionHeader(SETTINGS_SECTION_MOONLIGHT", aiSettingsStart);
     const aiSettings = hosts.slice(aiSettingsStart, aiSettingsEnd);
@@ -313,11 +316,16 @@ const cases = [
     }
     assert.ok(!aiSettings.includes("router.pushUrl({ url: 'pages/AiSettingsPage'"));
     assert.ok(hosts.includes('AiSettingsSurface({') && hosts.includes('embedded: true'));
+    assert.ok(hosts.includes('return SheetSize.FIT_CONTENT;'));
     const routePolicy = read('entry/src/main/ets/services/SettingsSheetRoutePolicy.ets');
     assert.ok(routePolicy.includes('SETTINGS_SHEET_AI_HOSTS')); assert.ok(routePolicy.includes('aiSettingsLeafSheetHeight'));
     const settingsPage = read('entry/src/main/ets/pages/AiSettingsPage.ets');
     assert.ok(settingsPage.includes('@Prop @Watch(\'onRequestedSectionChange\') requestedSection: string ='));
     assert.ok(settingsPage.includes('@Prop embedded: boolean = false;'));
+    assert.ok(settingsPage.includes('@Prop viewportHeight: number = 720;'));
+    assert.ok(settingsPage.includes('embeddedSheetMaxHeight()'));
+    assert.ok(settingsPage.includes("height(this.embedded ? 'auto' : '100%')"));
+    assert.ok(settingsPage.includes('layoutWeight(this.embedded ? 0 : 1)'));
     assert.ok(settingsPage.includes('if (this.embedded) { this.onClose(); } else { router.back(); }'));
     assert.ok(settingsPage.includes('@State routeSection: string ='));
     assert.ok(settingsPage.includes('aboutToAppear(): void {\n    this.routeSection = this.readRouteSection();'));
@@ -325,6 +333,8 @@ const cases = [
     assert.ok(settingsPage.includes('AiSettingsSurface({ requestedSection: this.routeSection })'));
     const editor = read('entry/src/main/ets/components/ai/AiHostEditor.ets');
     assert.ok(editor.includes('ProBadge().alignSelf(ItemAlign.Center).margin({ right: 8 })'));
+    assert.ok(editor.includes('@StorageProp(\'currentBreakpoint\') breakpoint: string = \'sm\';'));
+    assert.ok(editor.includes('Scroll() {') && editor.includes('constraintSize({ maxHeight: this.breakpoint === \'sm\' ? 520 : 560 })'));
   }]
 ];
 (async () => {

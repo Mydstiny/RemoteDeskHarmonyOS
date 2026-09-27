@@ -13388,7 +13388,7 @@ struct HostListPage {
             .fontColor(this.pal().text3).fontFamily(this.font()).margin({ top: 3 })
             .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
         }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: this.breakpoint === 'sm' ? 8 : 10 })
-        if (card.type === 'ai') { ProBadge().margin({ right: 8 }).alignSelf(ItemAlign.Start) }
+        if (card.type === 'ai') { ProBadge().margin({ right: 8 }).alignSelf(ItemAlign.Center) }
           SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(this.breakpoint === 'sm' ? 16 : 18)
           .fontColor([this.pal().text3])
           .rotate({ angle: this.expandedHostGroup === card.type ? 90 : 0 })
@@ -13542,7 +13542,7 @@ struct HostListPage {
             .backgroundColor(this.pal().surface).accessibilityText('检测在线状态')
             .enabled(!this.hostPresenceProbeBusyIds.has(host.id))
             .onClick((): void => { void this.probeHostConnectivity(host); })
-          } else if (host.protocol !== 'ai') {
+          } else {
             Blank()
               .width(this.breakpoint === 'sm' ? 38 : 40)
               .height(this.breakpoint === 'sm' ? 38 : 40)
@@ -13824,13 +13824,13 @@ struct HostListPage {
         this.hostGroupedPhoneGroup('rustdesk')
         this.hostGroupedPhoneGroup('ssh')
         this.hostGroupedPhoneGroup('vnc')
-        this.hostGroupedPhoneGroup('ai')
         this.moonlightGroupedPhoneGroup()
+        this.hostGroupedPhoneGroup('ai')
       } else {
         this.hostGroupedDesktopRow('rdp', 'rustdesk')
         this.hostGroupedDesktopRow('ssh', 'vnc')
-        this.hostGroupedPhoneGroup('ai')
         this.moonlightGroupedDesktopRow()
+        this.hostGroupedPhoneGroup('ai')
       }
     }
     .width('100%').padding({ top: 8 })
@@ -14552,7 +14552,7 @@ struct HostListPage {
             }
           }
         }.alignItems(HorizontalAlign.End).margin({ left: 6 })
-          .alignSelf(host.protocol === 'ai' ? ItemAlign.Start : ItemAlign.Center)
+          .alignSelf(ItemAlign.Center)
       }
       .width('100%').constraintSize({ minHeight: this.breakpoint === 'sm' ? 66 : 80 })
       .padding(this.breakpoint === 'sm' ? { left: 12, right: 14, top: 12, bottom: 12 } : 14)
@@ -15404,7 +15404,9 @@ struct HostListPage {
     if (moonlightHeight > 0) { return moonlightHeight; }
     const aiHeight: number = aiSettingsLeafSheetHeight(this.settingsLeafSheetMode);
     if (aiHeight > 0) {
-      return Math.min(aiHeight, Math.max(320, this.pageViewportHeight - 48));
+      // AI settings surface measures short sections intrinsically and caps
+      // long sections through its own viewport-aware Scroll.
+      return SheetSize.FIT_CONTENT;
     }
     const vncHeight: number = vncSettingsLeafSheetHeight(this.settingsLeafSheetMode);
     return vncHeight > 0 ? vncHeight : SheetSize.FIT_CONTENT;
@@ -15520,6 +15522,7 @@ struct HostListPage {
       AiSettingsSurface({
         requestedSection: this.aiSettingsSectionForLeaf(),
         embedded: true,
+        viewportHeight: this.pageViewportHeight,
         onClose: (): void => { this.closeSettingsLeafSheet(); }
       })
     } else if (this.settingsLeafSheetMode >= SETTINGS_SHEET_VNC_CONNECTION &&

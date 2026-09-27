@@ -16,6 +16,7 @@ import { aiErrorText } from '../../services/ai/AiWirePolicy';
 export struct AiHostEditor {
   @StorageProp('currentTheme') theme: string = 'light';
   @StorageProp('accentColor') accent: string = '#007DFF';
+  @StorageProp('currentBreakpoint') breakpoint: string = 'sm';
   @Prop host: AiHost | null = null;
   @Prop modern: boolean = true;
   @Prop canReturnToProtocols: boolean = false;
@@ -196,19 +197,27 @@ export struct AiHostEditor {
           .borderRadius(AppUiMetrics.minTouchTarget / 2).padding(0).backgroundColor(this.pal().surface)
           .accessibilityText('关闭远程 AI 编辑').onClick(this.onClose)
       }.width('100%').margin({ bottom: 18 })
-      // An intrinsic form lets the shared FIT_CONTENT sheet own scrolling and IME avoidance.
-      Column({ space: AppUiMetrics.sectionGap }) {
-        if (!this.wizard() || this.step === 1) { this.hostFields() }
-        if (!this.wizard() || this.step === 2) { this.pairingFields() }
-        Text('局域网连接 · RustDesk 中继将在后续版本开放')
-          .fontSize(12).fontFamily(AppConfig.fontFamily).fontColor(this.pal().text2).width('100%')
-        if (!this.allowed) {
-          Text('远程 AI 为 Pro 实验功能。可先保存配置，配对与控制以 Pro 功能页开放状态为准。')
-            .fontSize(13).fontFamily(AppConfig.fontFamily).fontColor(this.pal().text2).width('100%')
-        }
-        if (this.error !== '') { Text(this.error).fontSize(13).fontFamily(AppConfig.fontFamily).fontColor(this.pal().danger).width('100%') }
-        this.actions()
+      // Keep the editor adaptive on phone, Pad and PC: the sheet grows to the
+      // content when it fits, while longer forms scroll inside the viewport.
+      Scroll() {
+        Column({ space: AppUiMetrics.sectionGap }) {
+          if (!this.wizard() || this.step === 1) { this.hostFields() }
+          if (!this.wizard() || this.step === 2) { this.pairingFields() }
+          Text('局域网连接 · RustDesk 中继将在后续版本开放')
+            .fontSize(12).fontFamily(AppConfig.fontFamily).fontColor(this.pal().text2).width('100%')
+          if (!this.allowed) {
+            Text('远程 AI 为 Pro 实验功能。可先保存配置，配对与控制以 Pro 功能页开放状态为准。')
+              .fontSize(13).fontFamily(AppConfig.fontFamily).fontColor(this.pal().text2).width('100%')
+          }
+          if (this.error !== '') {
+            Text(this.error).fontSize(13).fontFamily(AppConfig.fontFamily)
+              .fontColor(this.pal().danger).width('100%')
+          }
+        }.width('100%')
       }.width('100%')
+        .constraintSize({ maxHeight: this.breakpoint === 'sm' ? 520 : 560 })
+        .scrollBar(BarState.Auto).edgeEffect(EdgeEffect.Spring)
+      this.actions()
     }.width('100%').padding({ left: AppUiMetrics.sheetPadding, right: AppUiMetrics.sheetPadding,
       top: 20, bottom: AppUiMetrics.sheetPadding }).backgroundColor(this.pal().sheetBg)
   }
