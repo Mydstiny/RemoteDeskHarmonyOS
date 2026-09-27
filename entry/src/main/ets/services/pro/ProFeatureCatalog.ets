@@ -54,7 +54,10 @@ function connectionShare(): ProFeature {
 }
 function remoteAi(id: string, title: string, description: string): ProFeature {
   const feature = planned(id, title, description);
-  feature.availability = 'experimental';
+  // The local LAN pairing/session path is shipped and guarded by the real
+  // entitlement, device, protocol, capability and transport checks. Keep
+  // RustDesk AI transport separately planned until its data channel exists.
+  feature.availability = 'available';
   feature.protocols = ['ai'];
   return feature;
 }

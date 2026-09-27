@@ -3,6 +3,7 @@ import { pasteboard } from '@kit.BasicServicesKit';
 import { LengthMetrics } from '@kit.ArkUI';
 import { AppConfig, Palette, buildDark, buildLight } from '../../common/Theme';
 import { AppSettingsChoiceButton } from '../AppSettingsChoiceButton';
+import { AiBackendChoiceCard } from './AiBackendChoiceCard';
 import { AiActionButton } from './AiActionButton';
 import { AiBackend } from '../../services/ai/AiModels';
 import { AiInstallMode, aiInstallRelease, aiInstallPrompt, aiInstallManualUrl } from '../../services/ai/AiHostInstallPolicy';
@@ -63,11 +64,11 @@ export struct AiHostInstallPanel {
   build() {
     Column({ space: 12 }) {
       Text('选择电脑端 AI').fontSize(14).fontFamily(AppConfig.fontFamily).fontColor(this.pal().text).width('100%')
-      Flex({ wrap: FlexWrap.Wrap, space: { main: LengthMetrics.vp(8), cross: LengthMetrics.vp(8) } }) {
-        AppSettingsChoiceButton({ label: 'Codex', isSelected: this.backend === 'codex',
-          onSelect: (): void => { this.selectBackend('codex'); } })
-        AppSettingsChoiceButton({ label: 'DSH', isSelected: this.backend === 'dsh',
-          onSelect: (): void => { this.selectBackend('dsh'); } })
+      Column({ space: 10 }) {
+        AiBackendChoiceCard({ backend: 'codex', title: 'Codex', subtitle: 'OpenAI Codex · 9443', isSelected: this.backend === 'codex',
+          onSelect: (): void => { this.selectBackend('codex'); } }).width('100%')
+        AiBackendChoiceCard({ backend: 'dsh', title: 'DSH', subtitle: 'DeepSeek Harness · 9444', isSelected: this.backend === 'dsh',
+          onSelect: (): void => { this.selectBackend('dsh'); } }).width('100%')
       }.width('100%')
       Text('插件 ' + aiInstallRelease(this.backend).version + ' · ' + aiInstallRelease(this.backend).engine)
         .fontSize(12).fontFamily(AppConfig.fontFamily).fontColor(this.pal().text2).width('100%')

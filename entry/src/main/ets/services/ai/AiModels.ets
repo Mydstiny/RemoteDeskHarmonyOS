@@ -97,7 +97,9 @@ export function aiHostError(host: AiHost): string {
   if (!aiIdValid(host.id) || !aiOwnerValid(host.owner)) { return '请先登录当前华为账号'; }
   if (host.label.trim().length === 0 || host.label.length > 100) { return '请输入 1–100 字的主机名称'; }
   if (host.backend !== 'codex' && host.backend !== 'dsh') { return '请选择 Codex 或 DSH'; }
-  if (host.transport !== 'lan') { return 'RustDesk 中继尚未开放'; }
+  if (host.transport !== 'lan' && host.transport !== 'rustdesk') { return '请选择局域网或 RustDesk 中继'; }
+  if (host.transport === 'lan' && host.relayHostId !== '') { return '局域网连接不应绑定 RustDesk 中继'; }
+  if (host.transport === 'rustdesk' && host.relayHostId.trim() === '') { return '请选择已配置的 RustDesk 中继'; }
   if (!parseEndpointHost(host.address, 'runtime').ok) { return '请输入有效的电脑 IP 或域名，不含协议和端口'; }
   if (!Number.isInteger(host.port) || host.port < 1 || host.port > 65535) { return '端口应为 1–65535'; }
   if (host.serverName !== '' && (!parseEndpointServerIdentity(host.serverName).ok ||

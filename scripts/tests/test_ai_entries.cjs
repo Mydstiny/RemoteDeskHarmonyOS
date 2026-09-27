@@ -22,7 +22,7 @@ for(let i=0;i<4;i++)assert.equal(filter.hostListProtocolForTab(i),['rdp','rustde
 console.log('PASS namespaced AI card appears in grouped, desktop AI filter, and Codex search; old tabs remain mapped');
 const picker=load('services/HostProtocolPickerPolicy');let selected='';picker.dispatchSelectedHostProtocol(picker.resolveHostProtocolPickerOption('ai',true),protocol=>selected=protocol);assert.equal(selected,'ai');
 const catalog=load('services/pro/ProFeatureCatalog').proFeatures();for(const id of ['pro.ai.workspace','pro.ai.codex','pro.ai.dsh']){
-  const item=catalog.find(item=>item.id===id);assert.equal(item.requiredEntitlementId,'pro.lifetime');assert.equal(item.availability,'experimental');assert.deepEqual(Array.from(item.protocols),['ai']);}
+  const item=catalog.find(item=>item.id===id);assert.equal(item.requiredEntitlementId,'pro.lifetime');assert.equal(item.availability,'available');assert.deepEqual(Array.from(item.protocols),['ai']);}
 assert.equal(catalog.find(item=>item.id==='pro.ai.rustdeskTransport').availability,'planned');
 const pages=JSON.parse(fs.readFileSync(path.join(root,'resources/base/profile/main_pages.json'),'utf8')).src;
 for(const route of ['pages/RemoteAiWorkspace','pages/AiSettingsPage']){assert.equal(pages.filter(page=>page===route).length,1);assert.ok(fs.existsSync(path.join(root,'ets',route+'.ets')));}

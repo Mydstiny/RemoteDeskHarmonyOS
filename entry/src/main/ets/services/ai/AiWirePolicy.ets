@@ -17,7 +17,13 @@ export function aiArray(value: Object | undefined | null): Object[] {
 }
 export function parseAiInvite(text: string, now: number = Date.now()): AiInvite {
   if (text.length > 70000) { throw new Error('AI_INVITE_INVALID'); }
-  const raw = aiRecord(JSON.parse(text));
+  let parsed: Object;
+  try {
+    parsed = JSON.parse(text) as Object;
+  } catch (_error) {
+    throw new Error('AI_INVITE_INVALID');
+  }
+  const raw = aiRecord(parsed);
   const keys = Object.keys(raw).sort().join(',');
   if (keys !== 'ca,code,expires,serverInstance') { throw new Error('AI_INVITE_INVALID'); }
   const invite: AiInvite = { ca: aiString(raw['ca']), code: aiString(raw['code']),

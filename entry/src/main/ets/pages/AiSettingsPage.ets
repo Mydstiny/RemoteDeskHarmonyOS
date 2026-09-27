@@ -7,7 +7,7 @@ import { router, promptAction } from '@kit.ArkUI';
 import { common } from '@kit.AbilityKit';
 import { AppConfig, Palette, buildDark, buildLight } from '../common/Theme';
 import { ProBadge } from '../components/ProBadge';
-import { AppSettingsChoiceButton } from '../components/AppSettingsChoiceButton';
+import { AiBackendChoiceCard } from '../components/ai/AiBackendChoiceCard';
 import { AiHostEditor } from '../components/ai/AiHostEditor';
 import { AiHostInstallPanel } from '../components/ai/AiHostInstallPanel';
 import { AiHostService } from '../services/ai/AiHostService';
@@ -84,7 +84,7 @@ export struct AiSettingsSurface {
       this.section = this.normalizedSection(this.requestedSection);
     }
     this.stop = AiAccess.getInstance().subscribe((): void => {
-      this.accessText = AiAccess.getInstance().executable('codex') ? 'Pro 远程 AI 已开放' : 'Pro 实验功能 · 以 Pro 功能页开放状态为准';
+      this.accessText = AiAccess.getInstance().executable('codex') ? 'Pro 远程 AI 已开放' : 'Pro 远程 AI 需要有效权益 · 请先完成购买或验证';
       if (this.account !== null && !AiAccess.getInstance().current(this.account)) { this.hosts = []; this.settings = defaultAiSettings();
         this.savedSettings = null; this.savedSettingsAccount = null; this.settingsReady = false; this.showEditor = false; this.editing = null;
         this.pendingConnect = ''; this.pendingAccount = null; this.editorAccount = null; this.editorGeneration++;
@@ -175,11 +175,11 @@ export struct AiSettingsSurface {
         Column({ space: AppUiMetrics.sectionGap }) {
           if (this.sectionVisible('hosts')) {
           this.sectionTitle('默认 AI', '仅影响新主机，已有连接保持原来的 AI。')
-          Row({ space: 8 }) {
-            AppSettingsChoiceButton({ label: 'Codex', isSelected: this.settings.defaultBackend === 'codex',
-              onSelect: (): void => { if (!this.busy && this.settingsReady) { this.settings.defaultBackend = 'codex'; this.save(); } } }).layoutWeight(1).enabled(!this.busy && this.settingsReady)
-            AppSettingsChoiceButton({ label: 'DSH', isSelected: this.settings.defaultBackend === 'dsh',
-              onSelect: (): void => { if (!this.busy && this.settingsReady) { this.settings.defaultBackend = 'dsh'; this.save(); } } }).layoutWeight(1).enabled(!this.busy && this.settingsReady)
+          Column({ space: 10 }) {
+            AiBackendChoiceCard({ backend: 'codex', title: 'Codex', subtitle: 'OpenAI Codex · 9443', isSelected: this.settings.defaultBackend === 'codex',
+              onSelect: (): void => { if (!this.busy && this.settingsReady) { this.settings.defaultBackend = 'codex'; this.save(); } } }).width('100%').enabled(!this.busy && this.settingsReady)
+            AiBackendChoiceCard({ backend: 'dsh', title: 'DSH', subtitle: 'DeepSeek Harness · 9444', isSelected: this.settings.defaultBackend === 'dsh',
+              onSelect: (): void => { if (!this.busy && this.settingsReady) { this.settings.defaultBackend = 'dsh'; this.save(); } } }).width('100%').enabled(!this.busy && this.settingsReady)
           }.width('100%')
           this.sectionTitle('主机与配对', '局域网连接 · RustDesk 中继将在后续版本开放')
           if (this.hosts.length === 0) {
@@ -249,7 +249,8 @@ export struct AiSettingsSurface {
       }.layoutWeight(this.embedded ? 0 : 1).width('100%')
         .constraintSize({ maxHeight: this.embedded ? this.embeddedSheetMaxHeight() : 10000 })
         .scrollBar(BarState.Auto).edgeEffect(EdgeEffect.Spring)
-    }.height(this.embedded ? 'auto' : '100%').width('100%').padding({ top: this.topInset })
+    }.height(this.embedded ? 'auto' : '100%').width('100%')
+      .padding({ top: this.embedded ? 0 : (this.topInset > 0 ? px2vp(this.topInset) : 0) })
       .safeAreaPadding({ bottom: 16 }).backgroundColor(this.pal().sheetBg)
       .bindSheet($$this.showEditor, this.editor(), { height: SheetSize.FIT_CONTENT, showClose: false, dragBar: false,
         preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
