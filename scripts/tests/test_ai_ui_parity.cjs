@@ -290,6 +290,14 @@ const cases = [
     assert.ok(workspace.includes("enabled(!this.busy && this.allowed).accessibilityText(question.title)"));
     const settings = read('entry/src/main/ets/pages/AiSettingsPage.ets');
     assert.ok(settings.includes("this.accessText === '' ? 'Pro 远程 AI' : this.accessText"));
+    const hosts = read('entry/src/main/ets/pages/HostListPage.ets');
+    for (const marker of ['@Builder hostGroupedHostCard(host: RemoteHost)', '@Builder flatRemoteHostListItem(host: RemoteHost)']) {
+      const start = hosts.indexOf(marker), end = hosts.indexOf('\n  @Builder', start + marker.length);
+      assert.ok(start >= 0 && end > start, 'Missing host card builder: ' + marker);
+      const body = hosts.slice(start, end), columns = [...body.matchAll(/Column\(\) \{/g)].map(match => match.index);
+      const badge = body.indexOf('ProBadge()');
+      assert.ok(columns.length >= 3 && badge > columns[1] && badge < columns[2], 'ProBadge must stay in the host title column');
+    }
   }]
 ];
 (async () => {
