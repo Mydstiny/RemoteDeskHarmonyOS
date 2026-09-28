@@ -1967,6 +1967,7 @@ struct HostListPage {
         this.aiEditingHost = null;
         this.aiSheetAccount = null;
         this.aiSheetGeneration++;
+        if (this.expandedHostGroup === 'ai') { this.expandedHostGroup = ''; }
         if (this.showAddSheet && this.activeHostAddProtocol() === 'ai') { this.requestAddSheetClose(); }
         if (this.curTab === 8) {
           this.curTab = 0;

@@ -36,6 +36,8 @@ assert.ok(hostSource.includes('filterHostGroupCardsByProVisibility'),
   'homepage grouped cards must pass through the shared Pro visibility policy');
 assert.ok(hostSource.includes("isHostGroupTypeVisibleByPro('ai'"),
   'homepage AI group renderer must be entitlement-gated');
+assert.ok(hostSource.includes("this.expandedHostGroup === 'ai'"),
+  'revocation must clear a stale expanded AI group');
 const sheet=hostSource.slice(hostSource.indexOf('@Builder hostAddSheetContent()'));
 const callback=sheet.slice(sheet.indexOf('onSelectProtocol: ')+18,sheet.indexOf(',\n        onClose:'));
 const callbackJs=ts.transpileModule('(function(){return '+callback+';});', {compilerOptions:{target:ts.ScriptTarget.ES2021}}).outputText;
