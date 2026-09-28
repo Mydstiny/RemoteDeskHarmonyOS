@@ -377,6 +377,9 @@ const cases = [
     assert.ok(settingsPage.includes('AiBackendChoiceCard({ backend: \'codex\''));
     assert.ok(read('entry/src/main/ets/components/ai/AiHostInstallPanel.ets').includes('AiBackendChoiceCard({ backend: \'codex\''));
     assert.ok(settingsPage.includes("padding({ top: this.embedded ? 0 : (this.topInset > 0 ? px2vp(this.topInset) : 0) })"));
+    const actionRow = read('entry/src/main/ets/components/AppSettingsActionRow.ets');
+    assert.ok(!actionRow.includes('Button({ type: ButtonType.Normal })'), 'Settings action rows must not use native rectangular Button clipping');
+    assert.ok(actionRow.includes('.borderRadius(20)') && actionRow.includes('.focusable(this.isEnabled)'), 'Settings action rows must retain rounded accessible hit targets');
   }]
 ];
 (async () => {
