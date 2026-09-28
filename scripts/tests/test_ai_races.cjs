@@ -21,7 +21,7 @@ function environment() {
     onTransitionActivity: f => { transitionListeners.push(f); f(transition); return () => {}; },
     onChange: f => {accountListeners.push(f); return () => {};} };
   const proRuntime = {runtime: {subscribe: f => {proListeners.push(f); f(); return () => {};},
-    decision: () => ({executable: pro})}, context: () => ({})};
+    decision: () => ({executable: pro, visible: pro})}, context: () => ({})};
   const store = {connection: async () => {const snapshot={host:{...storedHost},identity:{...identity}};identityHook();return snapshot;},
     retainOperation: async (_a, op) => retained.push(op), saveReceipt: async (_a, id, receipt) => savedReceipts.push({id,receipt})};
   const encode = value => new TextEncoder().encode(JSON.stringify(value)).buffer;

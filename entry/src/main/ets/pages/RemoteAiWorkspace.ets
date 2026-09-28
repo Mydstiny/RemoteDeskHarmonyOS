@@ -108,8 +108,9 @@ export struct RemoteAiWorkspace {
       if (!this.alive) { return; }
       if (this.pageAccount === null || !AiAccess.getInstance().current(this.pageAccount)) {
         this.controller.close(); this.controller.status = '账号已变化，请返回主机列表'; this.sync();
-      } else if (this.host !== null && !AiAccess.getInstance().executable(this.host.backend)) {
-        this.resetDrafts(); this.showDetails = false; this.showSessionPicker = false; this.allowed = false;
+      } else if (!AiAccess.getInstance().proVisible() ||
+        (this.host !== null && !AiAccess.getInstance().executable(this.host.backend))) {
+        this.resetDrafts(); this.showDetails = false; this.showSessionPicker = false; this.showApproval = false; this.allowed = false;
       }
     });
     this.inBackground = AppStorage.get<boolean>('remoteDesktopBgFlag') === true;
@@ -167,7 +168,8 @@ export struct RemoteAiWorkspace {
     }
   }
   private async reconnect(): Promise<void> {
-    const host = this.host; if (host === null) { return; }
+    const host = this.host;
+    if (host === null || !this.allowed || !AiAccess.getInstance().proVisible()) { return; }
     const resumeValid = this.resumeAccount !== null && AiAccess.getInstance().current(this.resumeAccount);
     const session = this.controller.sessionId || (resumeValid ? this.resumeSession : '');
     const project = this.controller.projectId || (resumeValid ? this.resumeProject : '');
@@ -214,7 +216,7 @@ export struct RemoteAiWorkspace {
     return settings;
   }
   private async send(steer: boolean): Promise<void> {
-    const text = this.draft.trim(); if (text === '') { return; }
+    const text = this.draft.trim(); if (text === '' || !this.allowed || !AiAccess.getInstance().proVisible()) { return; }
     await this.run(async (): Promise<void> => {
       const params: Record<string, Object> = aiParams(["text"], [text]);
       if (!steer) {
@@ -226,6 +228,7 @@ export struct RemoteAiWorkspace {
     });
   }
   private async attach(): Promise<void> {
+    if (!this.allowed || !AiAccess.getInstance().proVisible()) { return; }
     await this.run(async (): Promise<void> => {
       const client = this.controller.client; const project = this.projectId;
       if (client === null || this.attachments.length >= 4) { return; }
@@ -271,7 +274,8 @@ export struct RemoteAiWorkspace {
     this.showApproval = true;
   }
   private async answer(decision: string): Promise<void> {
-    const approval = this.approval; if (approval === null) { return; }
+    const approval = this.approval;
+    if (approval === null || !this.allowed || !AiAccess.getInstance().proVisible()) { return; }
     await this.run(async (): Promise<void> => {
       if (approval.expires <= Date.now()) { throw new Error('APPROVAL_STALE'); }
       const kind = aiString(approval.request['kind']);
@@ -441,14 +445,15 @@ export struct RemoteAiWorkspace {
     }.height('100%').width('100%').safeAreaPadding({ bottom: 16 }).backgroundColor(this.pal().sheetBg)
   }
   private async chooseProject(id: string): Promise<void> {
-    if (!this.projects.some((project: AiProject): boolean => project.id === id)) { return; }
+    if (!this.allowed || !AiAccess.getInstance().proVisible() || !this.projects.some((project: AiProject): boolean => project.id === id)) { return; }
     await this.run(async (): Promise<void> => { this.resetDrafts(); await this.controller.selectProject(id); });
   }
   private async chooseSession(id: string): Promise<void> {
-    if (!this.sessions.some((session: AiSession): boolean => session.id === id)) { return; }
+    if (!this.allowed || !AiAccess.getInstance().proVisible() || !this.sessions.some((session: AiSession): boolean => session.id === id)) { return; }
     await this.run(async (): Promise<void> => { this.resetDrafts(); await this.controller.selectSession(id); this.showSessionPicker = false; });
   }
   private async newSession(): Promise<void> {
+    if (!this.allowed || !AiAccess.getInstance().proVisible()) { return; }
     await this.run(async (): Promise<void> => { this.resetDrafts(); await this.controller.create('新会话'); this.showSessionPicker = false; });
   }
   @Builder private sessionSelectors() {
@@ -456,12 +461,12 @@ export struct RemoteAiWorkspace {
       Text('项目').fontSize(13).fontFamily(AppConfig.fontFamily).fontColor(this.pal().text2).width('100%')
       Select(this.projects.map((project: AiProject): SelectOption => ({ value: project.title })))
         .value(this.projects.find((project: AiProject): boolean => project.id === this.projectId)?.title ?? '选择项目')
-        .enabled(!this.busy).width('100%').accessibilityText('选择项目').onSelect((index: number): void => {
+        .enabled(!this.busy && this.allowed).width('100%').accessibilityText('选择项目').onSelect((index: number): void => {
           if (index >= 0 && index < this.projects.length) { void this.chooseProject(this.projects[index].id); }
         })
       Text('会话').fontSize(13).fontFamily(AppConfig.fontFamily).fontColor(this.pal().text2).width('100%')
       Select(this.sessions.map((session: AiSession): SelectOption => ({ value: (session.archived ? '已归档 · ' : '') + session.title })))
-        .value(this.sessionId === '' ? '选择会话' : this.title).enabled(!this.busy).width('100%').accessibilityText('选择会话')
+        .value(this.sessionId === '' ? '选择会话' : this.title).enabled(!this.busy && this.allowed).width('100%').accessibilityText('选择会话')
         .onSelect((index: number): void => { if (index >= 0 && index < this.sessions.length) { void this.chooseSession(this.sessions[index].id); } })
       AiActionButton({ label: '新建会话', primary: true, isEnabled: this.allowed && this.projectId !== '' && !this.busy,
         onAction: (): void => { void this.newSession(); } })
@@ -492,14 +497,14 @@ export struct RemoteAiWorkspace {
     Column() {
       AppSheetHeader({ title: this.title, subtitle: this.status, showProBadge: true, onClose: (): void => { void this.leave(); } })
       Row({ space: 8 }) {
-        AiActionButton({ label: '项目与会话', isEnabled: !this.busy, onAction: (): void => { this.showSessionPicker = true; } }).layoutWeight(1)
-        AiActionButton({ label: '重连', isEnabled: !this.busy, onAction: (): void => { void this.reconnect(); } }).layoutWeight(1)
-        AiActionButton({ label: '详情', onAction: (): void => { this.showDetails = true; } }).layoutWeight(1)
+        AiActionButton({ label: '项目与会话', isEnabled: this.allowed && !this.busy, onAction: (): void => { this.showSessionPicker = true; } }).layoutWeight(1)
+        AiActionButton({ label: '重连', isEnabled: this.allowed && !this.busy, onAction: (): void => { void this.reconnect(); } }).layoutWeight(1)
+        AiActionButton({ label: '详情', isEnabled: this.allowed, onAction: (): void => { this.showDetails = true; } }).layoutWeight(1)
       }.width('100%').padding({ left: AppUiMetrics.sheetPadding, right: AppUiMetrics.sheetPadding, bottom: 8 })
       if (this.error !== '') { Text(this.error).fontSize(13).fontFamily(AppConfig.fontFamily).fontColor(this.pal().danger).width('100%').padding(12) }
       List({ space: 12 }) {
         if (this.historyCursor !== '') {
-          ListItem() { AiActionButton({ label: '加载更早记录', isEnabled: !this.busy,
+          ListItem() { AiActionButton({ label: '加载更早记录', isEnabled: this.allowed && !this.busy,
             onAction: (): void => { void this.run(async (): Promise<void> => { await this.controller.snapshot(true); }); } }) }
         }
         if (this.items.length === 0) {

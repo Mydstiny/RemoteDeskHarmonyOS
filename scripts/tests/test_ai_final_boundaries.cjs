@@ -6,7 +6,7 @@ const base=require('node:path').resolve(__dirname, '../../entry/src/main/ets/ser
 function environment(){
   const modules=new Map(),subscribers=new Set();let executable=true,seq=0,connectHook;
   const account={owner:'fixtureOwner',generation:1,lifecycle:1};
-  const access={assertCurrent(){},executable:()=>executable,current:()=>true,subscribe(fn){subscribers.add(fn);fn();return()=>subscribers.delete(fn);}};
+  const access={assertCurrent(){},executable:()=>executable,proVisible:()=>executable,current:()=>true,subscribe(fn){subscribers.add(fn);fn();return()=>subscribers.delete(fn);}};
   let readHook=async method=>method==='project.list'?[{id:'project',title:'Project'}]:{data:[]};
   const client={host:{id:'fixtureHost',backend:'codex'},account,close(){},stopEvents(){},capability:()=>false,
     read:(method,params)=>readHook(method,params)};

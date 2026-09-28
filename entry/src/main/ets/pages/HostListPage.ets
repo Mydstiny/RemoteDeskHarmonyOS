@@ -839,6 +839,7 @@ const DESKTOP_MOONLIGHT_TAB = 7;
 @Component
 struct HostListPage {
   @State proStatusLabel: string = '免费版';
+  @State aiProVisible: boolean = false;
   private proUnsubscribe: (() => void) | null = null;
   @State hosts: RemoteHost[] = [];
   @State filteredHosts: RemoteHost[] = [];
@@ -1929,6 +1930,11 @@ struct HostListPage {
   private aiStopStore: () => void = (): void => {};
   private aiStopAccess: () => void = (): void => {};
   private async refreshAiHosts(): Promise<void> {
+    if (!AiAccess.getInstance().proVisible()) {
+      AiHostService.getInstance().clear();
+      if (this.pageActive) { this.refreshHostListView(true); }
+      return;
+    }
     await AiHostService.getInstance().refresh(getContext(this) as common.UIAbilityContext);
     if (this.pageActive) { this.refreshHostListView(true); }
   }
@@ -1949,7 +1955,25 @@ struct HostListPage {
 
   async aboutToAppear(): Promise<void> {
     this.aiStopStore = AiLocalStore.getInstance().subscribe((): void => { void this.refreshAiHosts(); });
-    this.aiStopAccess = AiAccess.getInstance().subscribe((): void => { AiHostService.getInstance().clear(); void this.refreshAiHosts(); });
+    this.aiStopAccess = AiAccess.getInstance().subscribe((): void => {
+      this.aiProVisible = AiAccess.getInstance().proVisible();
+      if (!this.aiProVisible) {
+        AiHostService.getInstance().clear();
+        this.activeFilterProto = '';
+        this.pendingAiConnectId = '';
+        this.pendingAiAccount = null;
+        this.aiEditingHost = null;
+        this.aiSheetAccount = null;
+        this.aiSheetGeneration++;
+        if (this.showAddSheet && this.activeHostAddProtocol() === 'ai') { this.requestAddSheetClose(); }
+        if (this.curTab === 8) {
+          this.curTab = 0;
+          this.hostPageTitle = 'RDP 远程主机';
+          this.updateHostFilter();
+        }
+      }
+      void this.refreshAiHosts();
+    });
     this.pageActive = true;
     this.proContinuationStop?.();
     this.proContinuationStop = ProContinuationService.getInstance().subscribe((): void => {
@@ -5562,7 +5586,7 @@ struct HostListPage {
       // account lease. Reload it on the same lifecycle/data-change cadence as
       // the RDP/RustDesk/SSH/VNC cards.
       this.refreshMoonlightDirectory();
-      await AiHostService.getInstance().refresh(getContext(this) as common.UIAbilityContext);
+      await this.refreshAiHosts();
       this.refreshHostListView();
       this.rdpCredentials = this.srv.getAllRdpCredentials();
       this.rdpCount = this.srv.getRdpCount();
@@ -10789,6 +10813,10 @@ struct HostListPage {
   // 编辑主机 (锁定状态需先鉴权)
   private async editHost(host: RemoteHost): Promise<void> {
     if (host.protocol === 'ai') {
+      if (!AiAccess.getInstance().proVisible()) {
+        promptAction.showToast({ message: '退款或撤销后，Pro 远程 AI 已暂停', duration: 2200 });
+        return;
+      }
       if (!this.pageActive || this.appInBackground) { return; }
       this.aiEditingHost = AiHostService.getInstance().find(aiHostId(host));
       if (this.aiEditingHost === null) { return; }
@@ -12772,7 +12800,7 @@ struct HostListPage {
                   this.sidebarTab('VNC 主机', protocolIcon('vnc'), 3)
                 }
                 this.sidebarMoonlightTab()
-                this.sidebarTab('远程 AI · Pro', protocolIcon('ai'), 8)
+                if (this.aiProVisible) { this.sidebarTab('远程 AI · Pro', protocolIcon('ai'), 8) }
                 this.sidebarTab('密钥保险库', protocolIcon('key_vault'), 4)
                 this.sidebarTab('2FA 验证器', protocolIcon('totp'), 5)
                 this.sidebarRelayTab('中继服务器', 6)
@@ -16547,6 +16575,7 @@ struct HostListPage {
         .clip(true)
         .animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
 
+        if (this.aiProVisible) {
         ListItem() {
           this.settingsAccordionHeader(SETTINGS_SECTION_AI, protocolIcon('ai'),
             '远程 AI', '连接与配对、显示、数据与电脑端安装')
@@ -16573,6 +16602,7 @@ struct HostListPage {
           .scale({ x: 1, y: this.settingsSectionExpanded(SETTINGS_SECTION_AI) ? 1 : 0.98 })
           .translate({ y: this.settingsSectionExpanded(SETTINGS_SECTION_AI) ? 0 : -8 })
           .clip(true).animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
+        }
 
         ListItem() {
           this.settingsAccordionHeader(SETTINGS_SECTION_MOONLIGHT, protocolIcon('moonlight'),

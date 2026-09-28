@@ -49,10 +49,12 @@ export class AiLocalStore {
     const access = AiAccess.getInstance();
     const operation = this.queue.then(async (): Promise<T> => {
       if (this.opening !== null) { await this.opening; }
+      if (!access.proVisible()) { throw new Error('AI_PRO_ACCESS_REQUIRED'); }
       access.assertCurrent(lease);
       const db = this.store;
       if (db === null) { throw new Error('AI_STORE_UNAVAILABLE'); }
       const result = await action(db);
+      if (!access.proVisible()) { throw new Error('AI_PRO_ACCESS_REQUIRED'); }
       access.assertCurrent(lease);
       return result;
     });
@@ -64,6 +66,7 @@ export class AiLocalStore {
     db.beginTransaction();
     try {
       await action();
+      if (!AiAccess.getInstance().proVisible()) { throw new Error('AI_PRO_ACCESS_REQUIRED'); }
       AiAccess.getInstance().assertCurrent(lease);
       db.commit();
     } catch (_error) { db.rollBack(); throw new Error('AI_STORE_WRITE_FAILED'); }

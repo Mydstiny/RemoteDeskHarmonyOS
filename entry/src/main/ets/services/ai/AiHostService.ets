@@ -25,15 +25,21 @@ export class AiHostService {
   clear(): void { this.revision++; this.hosts = []; }
   async refresh(context: common.Context): Promise<void> {
     const revision = ++this.revision;
+    if (!AiAccess.getInstance().proVisible()) { this.hosts = []; return; }
     try {
       const account = AiAccess.getInstance().capture();
       await AiLocalStore.getInstance().initialize(context);
       const hosts = await AiLocalStore.getInstance().hosts(account);
-      if (revision === this.revision && AiAccess.getInstance().current(account)) { this.hosts = hosts; }
+      if (revision === this.revision && AiAccess.getInstance().proVisible() && AiAccess.getInstance().current(account)) {
+        this.hosts = hosts;
+      } else if (revision === this.revision && !AiAccess.getInstance().proVisible()) {
+        this.hosts = [];
+      }
     } catch (_error) { if (revision === this.revision) { this.hosts = []; } }
   }
   list(): AiHost[] {
     try {
+      if (!AiAccess.getInstance().proVisible()) { return []; }
       const owner = AiAccess.getInstance().capture().owner;
       return this.hosts.filter((host: AiHost): boolean => host.owner === owner)
         .map((host: AiHost): AiHost => JSON.parse(JSON.stringify(host)) as AiHost);

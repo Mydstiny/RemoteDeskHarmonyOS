@@ -68,6 +68,7 @@ function authority() {
     current: lease => lease !== null && lease.owner === state.owner,
     assertCurrent: lease => { if (!access.current(lease)) throw Error('AI_ACCOUNT_CHANGED'); },
     executable: () => state.granted,
+    proVisible: () => state.granted,
     subscribe: cb => { state.callbacks.push(cb); cb(); return () => { state.callbacks = state.callbacks.filter(value => value !== cb); }; } };
   state.access = access; state.publish = () => { for (const cb of state.callbacks.slice()) cb(); }; return state;
 }
@@ -142,7 +143,7 @@ const cases = [
           throw Error('storage unavailable');
         } }) }
       });
-      page.alive = true; page.account = state.access.capture(); page.savedSettingsAccount = page.account;
+      page.alive = true; page.allowed = true; page.account = state.access.capture(); page.savedSettingsAccount = page.account;
       page.settingsReady = true; page.savedSettings = models.defaultAiSettings();
       page.settings = { ...models.defaultAiSettings(), textSize: 19, defaultBackend: 'dsh' }; page.save();
       for (let i = 0; i < 8; i++) await Promise.resolve();

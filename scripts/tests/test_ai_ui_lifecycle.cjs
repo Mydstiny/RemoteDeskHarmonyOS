@@ -48,6 +48,7 @@ function settingsFixture({ deferredInitialize = false } = {}) {
     capture: () => ({ owner: state.owner, generation: 1, lifecycle: 1 }),
     current: lease => lease !== null && lease.owner === state.owner,
     executable: () => true,
+    proVisible: () => true,
     subscribe: callback => {
       state.callbacks.push(callback); callback();
       return () => { state.callbacks = state.callbacks.filter(value => value !== callback); };
@@ -97,7 +98,7 @@ function workspaceFixture(reconnect, {
     off: () => { state.removed++; }
   };
   const access = { capture: () => account, current: lease => lease === account,
-    subscribe: callback => { callback(); return () => {}; }, executable: () => true,
+    subscribe: callback => { callback(); return () => {}; }, executable: () => true, proVisible: () => true,
     assertCurrent: lease => assert.equal(lease, account) };
   class Controller {
     constructor() {
@@ -105,7 +106,7 @@ function workspaceFixture(reconnect, {
     }
     close() { state.closes++; this.client = null; }
     async connect() {
-      state.connects++; state.connectEntered();
+      state.connects++; this.allowed = true; state.connectEntered();
       if (deferredConnect && state.connects === 1) await new Promise(resolve => { state.finishConnect = resolve; });
     }
     async release() {
@@ -134,6 +135,7 @@ function workspaceFixture(reconnect, {
     aiErrorText: value => value, aiStatusLabel: value => value, ...timers
   });
   state.page.sync = () => {};
+  state.page.allowed = true;
   return state;
 }
 

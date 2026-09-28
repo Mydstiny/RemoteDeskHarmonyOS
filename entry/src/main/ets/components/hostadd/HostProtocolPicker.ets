@@ -1,6 +1,7 @@
 import { ProBadge } from '../ProBadge';
 /** Protocol entry for the modern add-host wizard. */
 import { AppTheme, Palette, buildDark, buildLight } from '../../common/Theme';
+import { AiAccess } from '../../services/ai/AiAccess';
 import {
   ProtocolIconKey,
   protocolIcon,
@@ -25,6 +26,19 @@ export struct HostProtocolPicker {
   onSelect: (protocol: string) => void = (_protocol: string): void => {};
   onClose: () => void = (): void => {};
   @State moonlightIconFailed: boolean = false;
+  @State aiProVisible: boolean = false;
+  private stopAiAccess: (() => void) | null = null;
+
+  aboutToAppear(): void {
+    this.stopAiAccess = AiAccess.getInstance().subscribe((): void => {
+      this.aiProVisible = AiAccess.getInstance().proVisible();
+    });
+  }
+
+  aboutToDisappear(): void {
+    this.stopAiAccess?.();
+    this.stopAiAccess = null;
+  }
 
   private pal(): Palette {
     return this.theme === 'light' ? buildLight(this.accentColor) : buildDark(this.accentColor);
@@ -97,8 +111,10 @@ export struct HostProtocolPicker {
       this.protocolOption('moonlight', 'Moonlight', '低延迟游戏与桌面串流',
         resolveHostProtocolPickerOption('moonlight',
           this.moonlightProtocolAvailable, this.moonlightFabEntryAvailable))
-      this.protocolOption('ai', '远程 AI', 'Codex 与 DSH 会话、审批和代码差异',
-        resolveHostProtocolPickerOption('ai', true))
+      if (this.aiProVisible) {
+        this.protocolOption('ai', '远程 AI', 'Codex 与 DSH 会话、审批和代码差异',
+          resolveHostProtocolPickerOption('ai', true, false, true))
+      }
       Row() {
         SymbolGlyph($r('sys.symbol.info_circle')).fontSize(16)
           .fontColor([this.accentColor]).margin({ top: 1 })

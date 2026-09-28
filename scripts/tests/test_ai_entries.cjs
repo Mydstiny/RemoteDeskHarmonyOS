@@ -21,6 +21,10 @@ assert.equal(filter.visibleHostsForHostListMode([projected,rdp],'codex',false,'s
 for(let i=0;i<4;i++)assert.equal(filter.hostListProtocolForTab(i),['rdp','rustdesk','ssh','vnc'][i]);
 console.log('PASS namespaced AI card appears in grouped, desktop AI filter, and Codex search; old tabs remain mapped');
 const picker=load('services/HostProtocolPickerPolicy');let selected='';picker.dispatchSelectedHostProtocol(picker.resolveHostProtocolPickerOption('ai',true),protocol=>selected=protocol);assert.equal(selected,'ai');
+let blocked='';const blockedAi=picker.resolveHostProtocolPickerOption('ai',true,false,false);
+picker.dispatchSelectedHostProtocol(blockedAi,protocol=>blocked=protocol);
+assert.equal(blocked,'');assert.equal(blockedAi.statusLabel,'需要 Pro');
+console.log('PASS non-Pro AI picker is visible only as a blocked route and cannot dispatch');
 const catalog=load('services/pro/ProFeatureCatalog').proFeatures();for(const id of ['pro.ai.workspace','pro.ai.codex','pro.ai.dsh']){
   const item=catalog.find(item=>item.id===id);assert.equal(item.requiredEntitlementId,'pro.lifetime');assert.equal(item.availability,'available');assert.deepEqual(Array.from(item.protocols),['ai']);}
 assert.equal(catalog.find(item=>item.id==='pro.ai.rustdeskTransport').availability,'planned');

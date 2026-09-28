@@ -126,6 +126,9 @@ export struct AiHostEditor {
   }
   private nextStep(): void {
     if (this.busy || this.defaultsPending || this.inBackground) { return; }
+    if (!this.allowed || !AiAccess.getInstance().proVisible()) {
+      this.error = '远程 AI 需要有效 Pro 权益'; return;
+    }
     const next = this.draftHost(); if (next === null) { return; }
     this.error = aiHostError(next); if (this.error === '') { this.step = 2; }
   }
@@ -135,13 +138,13 @@ export struct AiHostEditor {
     else if (this.canReturnToProtocols) { this.invite = ''; this.inviteStatus = ''; this.editGeneration++; this.onBackToProtocols(); }
   }
   private selectBackend(backend: AiBackend): void {
-    if (this.busy || this.defaultsPending || this.backend === backend) { return; }
+    if (this.busy || this.defaultsPending || !AiAccess.getInstance().proVisible() || this.backend === backend) { return; }
     this.backend = backend; this.port = backend === 'codex' ? '9443' : '9444'; this.invite = ''; this.inviteStatus = ''; this.paired = false;
     this.stopLanScan();
     this.allowed = AiAccess.getInstance().executable(backend);
   }
   private selectTransport(transport: 'lan' | 'rustdesk'): void {
-    if (this.busy || this.defaultsPending || this.transport === transport) { return; }
+    if (this.busy || this.defaultsPending || !AiAccess.getInstance().proVisible() || this.transport === transport) { return; }
     this.transport = transport;
     if (transport !== 'lan') { this.stopLanScan(); }
     this.relayHostId = transport === 'lan' ? '' : this.relayHostId; this.paired = false;
@@ -150,7 +153,7 @@ export struct AiHostEditor {
     this.error = '';
   }
   private selectRelay(relayId: string): void {
-    if (this.busy || this.defaultsPending) { return; }
+    if (this.busy || this.defaultsPending || !this.allowed) { return; }
     this.relayHostId = relayId;
     this.error = '';
   }
@@ -175,7 +178,7 @@ export struct AiHostEditor {
     return '';
   }
   private startLanScan(): void {
-    if (this.lanScanning || this.transport !== 'lan' || this.inBackground || this.busy) { return; }
+    if (this.lanScanning || this.transport !== 'lan' || this.inBackground || this.busy || !this.allowed) { return; }
     const port: number = Number(this.port);
     if (!Number.isInteger(port) || port < 1 || port > 65535) { this.error = '请先填写有效的 Agent 端口'; return; }
     this.lanAgents = []; this.lanScanning = true; this.lanStatus = 'scanning'; this.error = '';
@@ -193,7 +196,7 @@ export struct AiHostEditor {
     });
   }
   private selectLanAgent(agent: DiscoveredAiAgent): void {
-    if (this.busy || this.lanScanning) { return; }
+    if (this.busy || this.lanScanning || !this.allowed || !AiAccess.getInstance().proVisible()) { return; }
     this.address = agent.host; this.port = agent.port.toString(); this.paired = false;
     if (this.label.trim() === '') { this.label = agent.displayName; }
     this.error = '';
@@ -224,6 +227,9 @@ export struct AiHostEditor {
     } catch (_error) { this.inviteStatus = '读取剪贴板失败，请长按输入框选择粘贴或手动输入'; }
   }
   private async save(connect: boolean): Promise<void> {
+    if (!this.allowed || !AiAccess.getInstance().proVisible()) {
+      this.error = '远程 AI 需要有效 Pro 权益'; return;
+    }
     if (this.busy || this.defaultsPending || !this.alive || this.inBackground || this.draft === null || this.account === null) { return; }
     const next = this.draftHost(); if (next === null) { return; }
     const invitation = this.invite.trim(), account = this.account, generation = this.editGeneration;
@@ -236,19 +242,33 @@ export struct AiHostEditor {
     try {
       AiAccess.getInstance().assertCurrent(account);
       await AiLocalStore.getInstance().initialize(getContext(this) as common.UIAbilityContext);
-      if (!this.alive || this.inBackground || generation !== this.editGeneration) { return; }
+      if (!this.alive || this.inBackground || generation !== this.editGeneration ||
+        !AiAccess.getInstance().proVisible() || !AiAccess.getInstance().executable(next.backend)) {
+        throw new Error('AI_PRO_ACCESS_REQUIRED');
+      }
       AiAccess.getInstance().assertCurrent(account);
       if (invitation !== '') {
         await AiBridgeClient.pair(next, invitation, 'HarmonyOS'); this.paired = true;
+        if (!AiAccess.getInstance().proVisible() || !AiAccess.getInstance().executable(next.backend)) {
+          throw new Error('AI_PRO_ACCESS_REQUIRED');
+        }
         connectRequested = connect && next.transport === 'lan';
       } else {
         await AiLocalStore.getInstance().saveHost(account, next);
+        if (!AiAccess.getInstance().proVisible() || !AiAccess.getInstance().executable(next.backend)) {
+          throw new Error('AI_PRO_ACCESS_REQUIRED');
+        }
         const stored = await AiLocalStore.getInstance().connection(account, next.id);
+        if (!AiAccess.getInstance().proVisible() || !AiAccess.getInstance().executable(next.backend)) {
+          throw new Error('AI_PRO_ACCESS_REQUIRED');
+        }
         this.paired = stored !== null && stored.identity !== null;
         connectRequested = connect && next.transport === 'lan' && this.paired;
       }
       this.invite = '';
-      if (this.alive && !this.inBackground && generation === this.editGeneration && AiAccess.getInstance().current(account)) {
+      if (this.alive && !this.inBackground && generation === this.editGeneration &&
+        AiAccess.getInstance().proVisible() && AiAccess.getInstance().executable(next.backend) &&
+        AiAccess.getInstance().current(account)) {
         this.onSaved(next.id, connectRequested);
       }
     } catch (error) { if (this.alive && generation === this.editGeneration) { this.error = aiErrorText((error as Error).message); } }
@@ -259,18 +279,18 @@ export struct AiHostEditor {
       .fontColor(this.pal().text).width('100%')
     Column({ space: 10 }) {
       AiBackendChoiceCard({ backend: 'codex', title: 'Codex', subtitle: 'OpenAI Codex · 9443', isSelected: this.backend === 'codex',
-        onSelect: (): void => { this.selectBackend('codex'); } }).width('100%').enabled(!this.busy && !this.defaultsPending)
+        onSelect: (): void => { this.selectBackend('codex'); } }).width('100%').enabled(!this.busy && !this.defaultsPending && this.allowed)
       AiBackendChoiceCard({ backend: 'dsh', title: 'DSH', subtitle: 'DeepSeek Harness · 9444', isSelected: this.backend === 'dsh',
-        onSelect: (): void => { this.selectBackend('dsh'); } }).width('100%').enabled(!this.busy && !this.defaultsPending)
+        onSelect: (): void => { this.selectBackend('dsh'); } }).width('100%').enabled(!this.busy && !this.defaultsPending && this.allowed)
     }.width('100%')
     Text('连接路径').fontSize(14).fontFamily(AppConfig.fontFamily).fontWeight(FontWeight.Medium)
       .fontColor(this.pal().text).width('100%')
     Column({ space: 10 }) {
       AiConnectionPathCard({ path: 'lan', title: '局域网', subtitle: '直接连接电脑端 AI Agent', status: '可用',
-        isSelected: this.transport === 'lan', isEnabled: !this.busy && !this.defaultsPending,
+        isSelected: this.transport === 'lan', isEnabled: !this.busy && !this.defaultsPending && this.allowed,
         onSelect: (): void => { this.selectTransport('lan'); } }).width('100%')
       AiConnectionPathCard({ path: 'rustdesk', title: 'RustDesk 中继', subtitle: '通过已配置的 RustDesk 中继转发', status: '绑定',
-        isSelected: this.transport === 'rustdesk', isEnabled: !this.busy && !this.defaultsPending,
+        isSelected: this.transport === 'rustdesk', isEnabled: !this.busy && !this.defaultsPending && this.allowed,
         onSelect: (): void => { this.selectTransport('rustdesk'); } }).width('100%')
     }.width('100%')
     if (this.transport === 'lan') {
@@ -280,7 +300,7 @@ export struct AiHostEditor {
         Text('只扫描当前私有网段的 ' + this.port + ' 端口；搜索结果仍需通过邀请完成 mTLS 配对。')
           .fontSize(12).fontFamily(AppConfig.fontFamily).fontColor(this.pal().text2).width('100%')
         AiActionButton({ label: this.lanScanning ? '正在搜索…' : '搜索局域网 Agent',
-          isEnabled: !this.busy && !this.defaultsPending && !this.lanScanning,
+          isEnabled: !this.busy && !this.defaultsPending && !this.lanScanning && this.allowed,
           onAction: (): void => { this.startLanScan(); } })
         if (this.lanStatusText() !== '') {
           Text(this.lanStatusText()).fontSize(12).fontFamily(AppConfig.fontFamily)
@@ -306,6 +326,7 @@ export struct AiHostEditor {
               style: BorderStyle.Solid })
             .focusable(true).accessibilityText('选择局域网 Agent ' + agent.displayName)
             .accessibilitySelected(this.address === agent.host && Number(this.port) === agent.port)
+            .enabled(this.allowed)
             .onClick((): void => { this.selectLanAgent(agent); })
         }, (agent: DiscoveredAiAgent): string => agent.stableId)
       }.width('100%').padding(14).backgroundColor(this.pal().card).borderRadius(16)
@@ -335,6 +356,7 @@ export struct AiHostEditor {
             .borderRadius(14).backgroundColor(this.pal().surface)
             .border({ width: this.relayHostId === relay.id ? 1.5 : 0.5,
               color: this.relayHostId === relay.id ? this.accent : this.pal().cardBorder, style: BorderStyle.Solid })
+            .opacity(this.allowed ? 1 : 0.55)
             .focusable(true).accessibilityText('选择中继 ' + relay.displayName())
             .accessibilitySelected(this.relayHostId === relay.id)
             .onClick((): void => { this.selectRelay(relay.id); })
@@ -343,16 +365,16 @@ export struct AiHostEditor {
       Text('绑定只保存中继关系；当前 AI 数据通道仍需后续 RustDesk 转发实现。')
         .fontSize(12).fontFamily(AppConfig.fontFamily).fontColor(this.pal().text2).width('100%')
     }
-    AiFormField({ title: '名称', value: this.label, hint: '办公室 AI 工作区', limit: 100, isEnabled: !this.busy && !this.defaultsPending,
+    AiFormField({ title: '名称', value: this.label, hint: '办公室 AI 工作区', limit: 100, isEnabled: !this.busy && !this.defaultsPending && this.allowed,
       onChange: (v: string): void => { this.label = v; } })
-    AiFormField({ title: '分组（可选）', value: this.groupId, hint: '工作或个人', limit: 100, isEnabled: !this.busy && !this.defaultsPending,
+    AiFormField({ title: '分组（可选）', value: this.groupId, hint: '工作或个人', limit: 100, isEnabled: !this.busy && !this.defaultsPending && this.allowed,
       onChange: (v: string): void => { this.groupId = v; } })
     AiFormField({ title: this.transport === 'lan' ? '电脑地址' : '电脑地址（中继目标）', value: this.address,
-      hint: this.transport === 'lan' ? '局域网 IP 或域名' : 'Agent 地址或已绑定目标地址', isEnabled: !this.busy && !this.defaultsPending,
+      hint: this.transport === 'lan' ? '局域网 IP 或域名' : 'Agent 地址或已绑定目标地址', isEnabled: !this.busy && !this.defaultsPending && this.allowed,
       onChange: (v: string): void => { this.address = v; } })
     AiFormField({ title: '端口', value: this.port, hint: this.backend === 'codex' ? '9443' : '9444',
-      limit: 5, inputType: InputType.Number, isEnabled: !this.busy && !this.defaultsPending, onChange: (v: string): void => { this.port = v; } })
-    AiFormField({ title: '证书服务器名称（可选）', value: this.serverName, hint: '默认使用电脑地址', isEnabled: !this.busy && !this.defaultsPending,
+      limit: 5, inputType: InputType.Number, isEnabled: !this.busy && !this.defaultsPending && this.allowed, onChange: (v: string): void => { this.port = v; } })
+    AiFormField({ title: '证书服务器名称（可选）', value: this.serverName, hint: '默认使用电脑地址', isEnabled: !this.busy && !this.defaultsPending && this.allowed,
       onChange: (v: string): void => { this.serverName = v; } })
   }
   @Builder private pairingFields() {
@@ -390,11 +412,11 @@ export struct AiHostEditor {
   }
   @Builder private actions() {
     if (this.wizard() && this.step === 1) {
-      AiActionButton({ label: '下一步：配对与保存', primary: true, isEnabled: !this.busy && !this.defaultsPending,
+      AiActionButton({ label: '下一步：配对与保存', primary: true, isEnabled: !this.busy && !this.defaultsPending && this.allowed,
         onAction: (): void => { this.nextStep(); } })
     } else {
       Row({ space: 10 }) {
-        AiActionButton({ label: '保存', isEnabled: !this.busy && !this.defaultsPending, onAction: (): void => { void this.save(false); } }).layoutWeight(1)
+        AiActionButton({ label: '保存', isEnabled: !this.busy && !this.defaultsPending && this.allowed, onAction: (): void => { void this.save(false); } }).layoutWeight(1)
         AiActionButton({ label: this.transport === 'rustdesk' ? '保存绑定' :
           (this.busy ? '处理中…' : (this.invite.trim() === '' && !this.paired ? '保存主机' : '保存并连接')), primary: true,
           isEnabled: !this.busy && !this.defaultsPending && this.allowed,

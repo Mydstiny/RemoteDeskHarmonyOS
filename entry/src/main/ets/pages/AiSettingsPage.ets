@@ -44,6 +44,7 @@ export struct AiSettingsSurface {
   @State showEditor: boolean = false;
   @State editing: AiHost | null = null;
   @State accessText: string = '';
+  @State allowed: boolean = false;
   private account: AiAccountLease | null = null;
   private pendingConnect: string = '';
   private pendingAccount: AiAccountLease | null = null;
@@ -51,6 +52,7 @@ export struct AiSettingsSurface {
   private editorAccount: AiAccountLease | null = null;
   private editorGeneration: number = 0;
   private alive: boolean = false;
+  private initialized: boolean = false;
   private stop: () => void = (): void => {};
   private pal(): Palette { return this.theme === 'light' ? buildLight(this.accent) : buildDark(this.accent); }
   private normalizedSection(value: string): string {
@@ -80,21 +82,42 @@ export struct AiSettingsSurface {
   }
   async aboutToAppear(): Promise<void> {
     this.alive = true;
+    this.initialized = false;
     if (this.requestedSection !== '') {
       this.section = this.normalizedSection(this.requestedSection);
     }
     this.stop = AiAccess.getInstance().subscribe((): void => {
-      this.accessText = AiAccess.getInstance().executable('codex') ? 'Pro 远程 AI 已开放' : 'Pro 远程 AI 需要有效权益 · 请先完成购买或验证';
-      if (this.account !== null && !AiAccess.getInstance().current(this.account)) { this.hosts = []; this.settings = defaultAiSettings();
+      const wasAllowed = this.allowed;
+      this.allowed = AiAccess.getInstance().proVisible();
+      this.accessText = this.allowed ? 'Pro 远程 AI 已开放' : 'Pro 远程 AI 需要有效权益 · 请先完成购买或验证';
+      const accountChanged = this.account !== null && !AiAccess.getInstance().current(this.account);
+      if (!this.allowed || accountChanged) { this.hosts = []; this.settings = defaultAiSettings();
         this.savedSettings = null; this.savedSettingsAccount = null; this.settingsReady = false; this.showEditor = false; this.editing = null;
-        this.pendingConnect = ''; this.pendingAccount = null; this.editorAccount = null; this.editorGeneration++;
-        this.pendingReload = true;
-        if (!this.busy) { this.pendingReload = false; void this.run(async (): Promise<void> => { await this.load(); }); } }
+        this.account = null; this.pendingConnect = ''; this.pendingAccount = null; this.editorAccount = null; this.editorGeneration++;
+        this.scheduleReload();
+      } else if (!wasAllowed && this.allowed && this.account !== null) {
+        this.scheduleReload();
+      }
     });
     await this.run(async (): Promise<void> => { await this.load(); });
+    this.initialized = true;
   }
-  aboutToDisappear(): void { this.alive = false; this.stop(); }
+  aboutToDisappear(): void { this.alive = false; this.initialized = false; this.stop(); }
+  private scheduleReload(): void {
+    if (!this.alive) { return; }
+    this.pendingReload = true;
+    if (this.initialized && !this.busy) {
+      this.pendingReload = false;
+      void this.run(async (): Promise<void> => { await this.load(); });
+    }
+  }
   private async load(): Promise<void> {
+    if (!AiAccess.getInstance().proVisible()) {
+      this.allowed = false; this.account = null; this.hosts = []; this.settings = defaultAiSettings();
+      this.savedSettings = null; this.savedSettingsAccount = null; this.settingsReady = false;
+      return;
+    }
+    this.allowed = true;
     const account = AiAccess.getInstance().capture();
     if (this.savedSettingsAccount === null || !AiAccess.getInstance().current(this.savedSettingsAccount)) {
       this.savedSettings = null; this.savedSettingsAccount = null; this.settingsReady = false;
@@ -116,16 +139,19 @@ export struct AiSettingsSurface {
   }
   private save(): void {
     const account = this.account;
-    if (account === null || this.busy || !this.settingsReady || this.savedSettings === null ||
+    if (!this.allowed || !AiAccess.getInstance().proVisible() || account === null || this.busy || !this.settingsReady || this.savedSettings === null ||
       this.savedSettingsAccount === null || !AiAccess.getInstance().current(this.savedSettingsAccount)) { return; }
     const previous = JSON.parse(JSON.stringify(this.savedSettings)) as AiSettings;
     const next = JSON.parse(JSON.stringify(this.settings)) as AiSettings;
     void this.run(async (): Promise<void> => {
       try {
         await AiLocalStore.getInstance().saveSettings(account, next);
-        if (this.alive && AiAccess.getInstance().current(account)) { this.savedSettings = next; this.savedSettingsAccount = account; }
+        if (!this.alive || !AiAccess.getInstance().proVisible() || !AiAccess.getInstance().current(account)) {
+          throw new Error('AI_PRO_ACCESS_REQUIRED');
+        }
+        this.savedSettings = next; this.savedSettingsAccount = account;
       } catch (error) {
-        if (this.alive && AiAccess.getInstance().current(account)) {
+        if (this.alive && AiAccess.getInstance().proVisible() && AiAccess.getInstance().current(account)) {
           this.settings = JSON.parse(JSON.stringify(previous)) as AiSettings;
         }
         throw error as Error;
@@ -133,7 +159,7 @@ export struct AiSettingsSurface {
     });
   }
   private openEditor(host: AiHost | null): void {
-    if (this.busy) { return; }
+    if (this.busy || !this.allowed) { this.error = '远程 AI 需要有效 Pro 权益'; return; }
     try {
       const account = AiAccess.getInstance().capture();
       if (host !== null && host.owner !== account.owner) { throw new Error('AI_ACCOUNT_CHANGED'); }
@@ -171,8 +197,17 @@ export struct AiSettingsSurface {
         }.alignItems(HorizontalAlign.Start).layoutWeight(1)
         ProBadge()
       }.width('100%').padding({ left: 12, right: 24, top: 8, bottom: 8 })
-      Scroll() {
-        Column({ space: AppUiMetrics.sectionGap }) {
+      if (!this.allowed) {
+        Column({ space: 12 }) {
+          Text('远程 AI 需要有效 Pro 权益').fontSize(18).fontWeight(FontWeight.Medium)
+            .fontFamily(AppConfig.fontFamily).fontColor(this.pal().text).width('100%')
+          Text('当前账号处于免费版、退款待确认或权益撤销状态。恢复有效 Pro 权益后，添加、配对、设置和会话控制会重新开放。')
+            .fontSize(13).fontFamily(AppConfig.fontFamily).fontColor(this.pal().text2)
+            .lineHeight(20).width('100%')
+        }.padding(AppUiMetrics.sheetPadding).width('100%').layoutWeight(1)
+      } else {
+        Scroll() {
+          Column({ space: AppUiMetrics.sectionGap }) {
           if (this.sectionVisible('hosts')) {
           this.sectionTitle('默认 AI', '仅影响新主机，已有连接保持原来的 AI。')
           Column({ space: 10 }) {
@@ -221,18 +256,18 @@ export struct AiSettingsSurface {
           }
           if (this.sectionVisible('data')) {
           this.sectionTitle('本机数据管理', '配置备份只包含主机地址和显示偏好，不含配对凭据、会话正文或操作内容。')
-          AppSettingsActionRow({ title: '导出 AI 配置', detail: '保存不含配对凭据的配置备份', isEnabled: !this.busy,
+          AppSettingsActionRow({ title: '导出 AI 配置', detail: '保存不含配对凭据的配置备份', isEnabled: !this.busy && this.allowed,
             onAction: (): void => {
               void this.run(async (): Promise<void> => { if (await AiDataTransfer.exportConfig()) { promptAction.showToast({ message: 'AI 配置已导出' }); } });
             } })
-          AppSettingsActionRow({ title: '导入 AI 配置', detail: '新增未配对主机，保留已有主机', isEnabled: !this.busy,
+          AppSettingsActionRow({ title: '导入 AI 配置', detail: '新增未配对主机，保留已有主机', isEnabled: !this.busy && this.allowed,
             onAction: (): void => {
               void this.run(async (): Promise<void> => {
                 const count = await AiDataTransfer.importConfig(); await this.load();
                 promptAction.showToast({ message: '已新增 ' + count + ' 个未配对主机' });
               });
             } })
-          AppSettingsActionRow({ title: '清理已确认操作记录', detail: '待确认操作继续保留，避免重复执行', isEnabled: !this.busy,
+          AppSettingsActionRow({ title: '清理已确认操作记录', detail: '待确认操作继续保留，避免重复执行', isEnabled: !this.busy && this.allowed,
             onAction: (): void => {
               void this.run(async (): Promise<void> => {
                 if (this.account !== null) { await AiLocalStore.getInstance().clearCompletedOperations(this.account); }
@@ -245,10 +280,11 @@ export struct AiSettingsSurface {
           AiHostInstallPanel()
           }
           if (this.error !== '') { Text(this.error).fontSize(13).fontFamily(AppConfig.fontFamily).fontColor(this.pal().danger).width('100%') }
-        }.padding(AppUiMetrics.sheetPadding).width('100%').constraintSize({ maxWidth: 900 })
-      }.layoutWeight(this.embedded ? 0 : 1).width('100%')
-        .constraintSize({ maxHeight: this.embedded ? this.embeddedSheetMaxHeight() : 10000 })
-        .scrollBar(BarState.Auto).edgeEffect(EdgeEffect.Spring)
+          }.padding(AppUiMetrics.sheetPadding).width('100%').constraintSize({ maxWidth: 900 })
+        }.layoutWeight(this.embedded ? 0 : 1).width('100%')
+          .constraintSize({ maxHeight: this.embedded ? this.embeddedSheetMaxHeight() : 10000 })
+          .scrollBar(BarState.Auto).edgeEffect(EdgeEffect.Spring)
+      }
     }.height(this.embedded ? 'auto' : '100%').width('100%')
       .padding({ top: this.embedded ? 0 : (this.topInset > 0 ? px2vp(this.topInset) : 0) })
       .safeAreaPadding({ bottom: 16 }).backgroundColor(this.pal().sheetBg)
