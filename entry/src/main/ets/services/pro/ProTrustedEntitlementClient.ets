@@ -82,12 +82,17 @@ export class ProTrustedEntitlementClient implements ProOrderVerifier {
     try {
       const denied = this.observed.get(lease.scope.owner);
       if (denied !== undefined && denied.signedStatus !== 'verified' && this.current(lease)) {
-        return this.observedFailure(lease.scope.owner, denied);
+        const result = this.observedFailure(lease.scope.owner, denied);
+        result.refundPending = await this.store.refundPending(lease.scope);
+        return result;
       }
       const now = this.clock.now();
       const cached = await this.store.read(lease.scope, now);
+      const refundPending = await this.store.refundPending(lease.scope);
       if (cached === null || cached.clockBlocked || !Number.isSafeInteger(now) || !this.current(lease)) {
-        return this.unavailable(lease.scope.owner);
+        const result = this.unavailable(lease.scope.owner);
+        result.refundPending = refundPending;
+        return result;
       }
       const snapshot = await this.signature.inspectCached(cached.signedEntitlement, lease.scope.owner, this.clock.now());
       if (!this.current(lease) || cached.revision !== snapshot.revision || cached.verifiedAt !== snapshot.verifiedAt) {
@@ -96,18 +101,21 @@ export class ProTrustedEntitlementClient implements ProOrderVerifier {
       const observed = this.observed.get(lease.scope.owner);
       if (observed !== undefined && (snapshot.revision < observed.revision ||
         (snapshot.revision === observed.revision && snapshot.signedStatus !== observed.signedStatus))) {
-        return this.observedFailure(lease.scope.owner, observed);
+        const result = this.observedFailure(lease.scope.owner, observed);
+        result.refundPending = refundPending;
+        return result;
       }
+      snapshot.result.refundPending = refundPending;
       snapshot.result.fromCache = true;
       snapshot.result.needsRevalidation = forceRevalidation || snapshot.result.status === 'unavailable' ||
         (snapshot.result.grant !== undefined && this.clock.now() >= snapshot.result.grant.revalidateAfter);
       return snapshot.result;
     } catch (_error) { return this.unavailable(lease.scope.owner); }
   }
-  private observedFailure(owner: string, snapshot: ProTrustedSnapshot): ProVerificationResult {
+  private observedFailure(owner: string, snapshot: ProTrustedSnapshot, refundPending: boolean = false): ProVerificationResult {
     if (snapshot.signedStatus === 'verified') { return this.unavailable(owner); }
     return { status: snapshot.signedStatus, owner, environment: this.configuration.environment,
-      fromCache: true, needsRevalidation: true };
+      fromCache: true, needsRevalidation: true, refundPending };
   }
   loadCached(owner: string, environment: ProEnvironment): Promise<ProVerificationResult> {
     const lease = this.lease();
@@ -152,6 +160,7 @@ export class ProTrustedEntitlementClient implements ProOrderVerifier {
         }
         verificationStage = 3;
         if (snapshot.signedStatus !== 'verified') { denial = snapshot; }
+        snapshot.result.refundPending = await this.store.refundPending(lease.scope);
         const previous: ProCachedRecord | null = await this.store.read(lease.scope, this.clock.now());
         if (previous !== null) {
           const old: ProTrustedSnapshot = await this.signature.inspectCached(previous.signedEntitlement, owner, this.clock.wallNow());
@@ -190,11 +199,13 @@ export class ProTrustedEntitlementClient implements ProOrderVerifier {
           if ((old !== undefined && denial.revision >= old.revision) || (old === undefined && this.observed.size < 64)) {
             this.observed.set(owner, denial);
           }
-          return this.observedFailure(owner, denial);
+          return this.observedFailure(owner, denial, denial.result.refundPending === true);
         }
         const observed = this.observed.get(owner);
         if (observed !== undefined && observed.signedStatus !== 'verified' && this.current(lease)) {
-          return this.observedFailure(owner, observed);
+          let refundPending = observed.result.refundPending === true;
+          try { refundPending = refundPending || await this.store.refundPending(lease.scope); } catch (_error) { /* fail closed in service */ }
+          return this.observedFailure(owner, observed, refundPending);
         }
         return this.cache(lease, true);
       } finally {

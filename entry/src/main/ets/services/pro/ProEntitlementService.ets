@@ -7,6 +7,7 @@ export interface ProVerificationResult {
   grant?: ProVerifiedGrant;
   fromCache?: boolean;
   needsRevalidation?: boolean;
+  refundPending?: boolean;
 }
 export interface ProOrderVerifier {
   verify(records: string[], owner: string, environment: ProEnvironment): Promise<ProVerificationResult>;
@@ -17,6 +18,7 @@ export interface ProEntitlementSnapshot {
   entitlementIds: string[];
   needsRevalidation: boolean;
   environment: ProEnvironment;
+  refundPending: boolean;
 }
 export interface ProReconciliationOutcome { current: boolean; online: boolean; active: boolean; }
 export class ProEntitlementService {
@@ -30,6 +32,7 @@ export class ProEntitlementService {
   private clockInvalidated: boolean = false;
   private lastObservedTime: number = 0;
   private verificationUnavailable: boolean = false;
+  private refundPending: boolean = false;
   private listeners: Array<() => void> = [];
   private verifier: ProOrderVerifier;
   private now: () => number;
@@ -50,6 +53,7 @@ export class ProEntitlementService {
     this.lastObservedTime = 0;
     this.revoked = false;
     this.verificationUnavailable = false;
+    this.refundPending = false;
     this.publish();
   }
   snapshot(): ProEntitlementSnapshot {
@@ -61,14 +65,14 @@ export class ProEntitlementService {
       if (Number.isFinite(now)) { this.lastObservedTime = Math.max(now, this.lastObservedTime); }
     }
     let state = proGrantState(this.grant, this.owner, this.environment, now);
-    if (this.grant !== null && this.clockInvalidated) { state = 'verificationRequired'; }
+    if (this.grant !== null && (this.clockInvalidated || this.refundPending)) { state = 'verificationRequired'; }
     if (this.grant === null) {
       state = this.revoked ? 'revoked' : this.verificationUnavailable ? 'verificationRequired' : 'free';
     }
     return { state, environment: this.environment,
       entitlementIds: state === 'active' && this.grant !== null ? this.grant.entitlementIds.slice() : [],
       needsRevalidation: this.verificationUnavailable || state === 'verificationRequired' ||
-        (this.grant !== null && now >= this.grant.revalidateAfter) };
+        this.refundPending || (this.grant !== null && now >= this.grant.revalidateAfter), refundPending: this.refundPending };
   }
   nextChangeAt(): number {
     if (this.grant === null || this.clockInvalidated) { return 0; }
@@ -80,6 +84,10 @@ export class ProEntitlementService {
     const next = this.nextChangeAt();
     const now = this.now();
     return next > 0 && Number.isFinite(now) ? Math.max(1, next - now) : 0;
+  }
+  markRefundPending(): void {
+    this.refundPending = true;
+    this.publish();
   }
   async restoreCached(): Promise<boolean> {
     if (this.owner.length === 0 || !this.verifier.loadCached) { return false; }
@@ -118,6 +126,10 @@ export class ProEntitlementService {
     // A later request still waiting for the server must not hide an observed
     // refund. Only an already accepted newer result supersedes this result.
     this.acceptedGeneration = generation;
+    // Once a refund has been submitted, an active, cached or unavailable
+    // result cannot clear the local fail-closed state. Only the signed
+    // revoked/noEntitlement branches below may release that fence.
+    if (result.refundPending === true) { this.refundPending = true; }
     if (result.status === 'verified') {
       const grant = result.grant;
       if (!grant || !proGrantMatches(grant, owner, environment, this.now()) || grant.usableUntil <= this.now()) {
@@ -135,6 +147,7 @@ export class ProEntitlementService {
       this.grant = null;
       this.revoked = result.status === 'revoked';
       this.verificationUnavailable = result.needsRevalidation === true;
+      if (result.fromCache !== true) { this.refundPending = false; }
     } else {
       this.verificationUnavailable = true;
     }

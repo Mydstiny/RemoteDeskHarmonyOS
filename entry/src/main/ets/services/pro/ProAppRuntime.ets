@@ -104,6 +104,7 @@ export class ProAppRuntime implements ProBillingBackend {
     const usable = !this.transitionActive && scope.kind === 'huawei_account' &&
       (scope.sessionState === 'bound' || scope.sessionState === 'ready' || scope.sessionState === 'offline');
     const owner = usable ? scope.ownerScopeId : '';
+    this.runtime.resetDebugMode();
     this.bridge.client?.bind(owner, scope.generation);
     this.entitlement.bindAccount(owner, this.environment, scope.generation);
     const key = owner + ':' + scope.generation.toString() + ':' + this.environment;
@@ -137,6 +138,11 @@ export class ProAppRuntime implements ProBillingBackend {
     const client = this.bridge.client;
     if (client === null) { return Promise.reject(new Error('Pro service unavailable')); }
     return client.pending(lease);
+  }
+  async markRefundPending(lease: ProClientLease): Promise<void> {
+    if (!this.current(lease)) { return; }
+    await this.store.markRefundPending(lease.scope);
+    if (this.current(lease)) { this.runtime.markRefundPending(); }
   }
   refundOrder(lease: ProClientLease, isCurrent: () => boolean): Promise<string> {
     const client = this.bridge.client;

@@ -10,6 +10,7 @@ export interface ProRuntimeSnapshot {
   mode: ProDebugMode;
   label: string;
   needsRevalidation: boolean;
+  refundPending: boolean;
 }
 export class ProRuntime {
   private debugMode: ProDebugMode = 'real';
@@ -19,13 +20,16 @@ export class ProRuntime {
   private entitlement: ProEntitlementService;
   constructor(entitlement: ProEntitlementService) {
     this.entitlement = entitlement;
-    this.stopEntitlement = entitlement.subscribe((): void => { this.publish(); });
+    this.stopEntitlement = entitlement.subscribe((): void => {
+      if (DEBUG && entitlement.snapshot().refundPending) { this.debugMode = 'real'; }
+      this.publish();
+    });
   }
   snapshot(): ProRuntimeSnapshot {
     const real: ProEntitlementSnapshot = this.entitlement.snapshot();
     let effectiveState = real.state;
     let mode: ProDebugMode = 'real';
-    if (DEBUG) {
+    if (DEBUG && !real.refundPending) {
       mode = this.debugMode;
       if (mode === 'pro') { effectiveState = 'active'; }
       if (mode === 'free') { effectiveState = 'free'; }
@@ -37,22 +41,27 @@ export class ProRuntime {
       if (mode === 'pro') { label = '模拟 Pro'; }
       if (mode === 'free') { label = '模拟免费'; }
     }
-    return { realState: real.state, effectiveState, mode, label, needsRevalidation: real.needsRevalidation };
+    return { realState: real.state, effectiveState, mode, label,
+      needsRevalidation: real.needsRevalidation, refundPending: real.refundPending };
   }
   setDebugMode(mode: ProDebugMode): void {
     // Both this write and the read/override in snapshot/decision are removed from Release bytecode.
     if (DEBUG) {
       if (mode !== 'real' && mode !== 'free' && mode !== 'pro') { return; }
+      if (this.entitlement.snapshot().refundPending && mode !== 'real') { return; }
       if (mode === this.debugMode) { return; }
       this.debugMode = mode;
       this.publish();
     }
   }
+  // Account/environment rebinding must not expose the previous Debug Pro
+  // override while the new scope restores its trusted entitlement.
+  resetDebugMode(): void { if (DEBUG) { this.debugMode = 'real'; } }
   decision(id: string, context: ProAccessContext): ProAccessDecision {
     const real = this.entitlement.snapshot();
     let state = real.state;
     let ids = real.entitlementIds;
-    if (DEBUG) {
+    if (DEBUG && !real.refundPending) {
       if (this.debugMode === 'pro') {
         state = 'active'; ids = [PRO_LIFETIME];
         const feature: ProFeature | undefined = proFeatures().find((item: ProFeature): boolean => item.id === id);
@@ -71,6 +80,10 @@ export class ProRuntime {
     const decision = this.decision(id, context);
     if (decision.executable) { action(); }
     return decision;
+  }
+  markRefundPending(): void {
+    if (DEBUG) { this.debugMode = 'real'; }
+    this.entitlement.markRefundPending();
   }
   refresh(): void { this.entitlement.refresh(); }
   subscribe(listener: () => void): () => void {

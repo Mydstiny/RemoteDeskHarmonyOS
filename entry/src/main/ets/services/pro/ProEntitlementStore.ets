@@ -16,6 +16,9 @@ export interface ProCachedRecord {
 export interface ProEntitlementStorePort {
   beginVerification(scope: ProStoreScope): Promise<boolean>;
   endVerification(scope: ProStoreScope, clear: boolean): Promise<void>;
+  markRefundPending(scope: ProStoreScope): Promise<void>;
+  clearRefundPending(scope: ProStoreScope): Promise<void>;
+  refundPending(scope: ProStoreScope): Promise<boolean>;
   read(scope: ProStoreScope, now: number): Promise<ProCachedRecord | null>;
   accept(scope: ProStoreScope, snapshot: ProTrustedSnapshot, observedAt: number, receipts: string[]): Promise<void>;
   retain(scope: ProStoreScope, receipts: string[]): Promise<void>;
@@ -36,6 +39,7 @@ function scopeKey(scope: ProStoreScope): string {
   }
   return hash(JSON.stringify([scope.owner, scope.environment, scope.applicationId, scope.productId]));
 }
+function refundFenceKey(key: string): string { return key + ':refund'; }
 function validTime(value: number): boolean { return Number.isSafeInteger(value) && value > 0; }
 
 // One process-wide encrypted local store, independent of CloudStore and E2EE.
@@ -115,7 +119,8 @@ export class ProEntitlementStore implements ProEntitlementStorePort {
       if (observed !== record.observedAt || blocked !== record.clockBlocked) {
         await store.executeSql('UPDATE pro_cache SET observed_at=?,clock_blocked=? WHERE scope=?', [observed, blocked ? 1 : 0, key]);
       }
-      const fence = await store.querySql('SELECT scope FROM pro_verifying WHERE scope=?', [key]);
+      const fence = await store.querySql('SELECT scope FROM pro_verifying WHERE scope=? OR scope=?',
+        [key, refundFenceKey(key)]);
       try { record.clockBlocked = blocked || fence.goToFirstRow(); } finally { fence.close(); }
       record.observedAt = observed;
       return record;
@@ -143,6 +148,25 @@ export class ProEntitlementStore implements ProEntitlementStorePort {
       finally { this.verifying.delete(key); }
     });
   }
+  markRefundPending(scope: ProStoreScope): Promise<void> {
+    const key = scopeKey(scope);
+    return this.serialize(async (store: relationalStore.RdbStore): Promise<void> => {
+      await store.executeSql('INSERT OR IGNORE INTO pro_verifying VALUES (?)', [refundFenceKey(key)]);
+    });
+  }
+  clearRefundPending(scope: ProStoreScope): Promise<void> {
+    const key = scopeKey(scope);
+    return this.serialize(async (store: relationalStore.RdbStore): Promise<void> => {
+      await store.executeSql('DELETE FROM pro_verifying WHERE scope=?', [refundFenceKey(key)]);
+    });
+  }
+  refundPending(scope: ProStoreScope): Promise<boolean> {
+    const key = scopeKey(scope);
+    return this.serialize(async (store: relationalStore.RdbStore): Promise<boolean> => {
+      const result = await store.querySql('SELECT scope FROM pro_verifying WHERE scope=?', [refundFenceKey(key)]);
+      try { return result.goToFirstRow(); } finally { result.close(); }
+    });
+  }
   accept(scope: ProStoreScope, snapshot: ProTrustedSnapshot, observedAt: number, receipts: string[]): Promise<void> {
     const key = scopeKey(scope);
     if (!validTime(observedAt) || snapshot.result.owner !== scope.owner || snapshot.result.environment !== scope.environment ||
@@ -158,6 +182,9 @@ export class ProEntitlementStore implements ProEntitlementStorePort {
         await store.executeSql('INSERT OR REPLACE INTO pro_cache VALUES (?,?,?,?,?,0)',
           [key, snapshot.signedEntitlement, snapshot.revision, snapshot.verifiedAt, observedAt]);
         await store.executeSql('DELETE FROM pro_verifying WHERE scope=?', [key]);
+        if (snapshot.signedStatus !== 'verified') {
+          await store.executeSql('DELETE FROM pro_verifying WHERE scope=?', [refundFenceKey(key)]);
+        }
         // A refund must survive even when removal of recovery receipts fails.
         // Positive grants retain the original all-or-nothing transaction.
         if (snapshot.signedStatus !== 'verified') { store.commit(); store.beginTransaction(); }

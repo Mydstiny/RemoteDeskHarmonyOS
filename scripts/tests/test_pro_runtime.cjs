@@ -91,6 +91,37 @@ test('debug synchronizes subscribers without changing real entitlement or planne
   stopA(); f.runtime.dispose(); assert.equal(f.timers.size, 0);
   const restarted = fixture(); assert.equal(restarted.runtime.snapshot().mode, 'real'); restarted.runtime.dispose();
 });
+test('refund pending disables Debug Pro overrides until a signed revocation arrives', async () => {
+  const f = fixture();
+  f.verifier.result = { status: 'verified', owner: 'a', environment: 'production', grant: f.grant };
+  await f.service.reconcile([]);
+  f.runtime.setDebugMode('pro');
+  assert.equal(f.runtime.decision('test.shipped', f.context).executable, true);
+
+  f.service.markRefundPending();
+  assert.equal(f.runtime.snapshot().mode, 'real');
+  assert.equal(f.runtime.snapshot().refundPending, true);
+  assert.equal(f.runtime.snapshot().effectiveState, 'verificationRequired');
+  assert.equal(f.runtime.decision('test.shipped', f.context).executable, false);
+  f.runtime.setDebugMode('pro');
+  assert.equal(f.runtime.snapshot().mode, 'real');
+
+  f.verifier.result = { status: 'verified', owner: 'a', environment: 'production', grant: f.grant,
+    fromCache: false, refundPending: false };
+  await f.service.reconcile([]);
+  assert.equal(f.runtime.snapshot().refundPending, true);
+  assert.equal(f.runtime.decision('test.shipped', f.context).executable, false);
+
+  f.verifier.result = { status: 'revoked', owner: 'a', environment: 'production' };
+  await f.service.reconcile([]);
+  assert.equal(f.runtime.snapshot().realState, 'revoked');
+  assert.equal(f.runtime.snapshot().refundPending, false);
+  assert.equal(f.runtime.decision('test.shipped', f.context).visible, false);
+  f.runtime.setDebugMode('pro');
+  f.runtime.resetDebugMode();
+  assert.equal(f.runtime.snapshot().mode, 'real');
+  f.runtime.dispose();
+});
 test('release runtime denies forced simulation at both setter and decision', () => {
   const f = fixture(false); f.runtime.setDebugMode('pro');
   // Fault injection proves the read side is guarded too, independent of setter visibility.

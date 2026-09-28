@@ -18,6 +18,7 @@ export interface ProBillingBackend {
   pending(lease: ProClientLease): Promise<string[]>;
   refundOrder(lease: ProClientLease, isCurrent: () => boolean): Promise<string>;
   reconcile(lease: ProClientLease, records: string[]): Promise<ProReconciliationOutcome>;
+  markRefundPending(lease: ProClientLease): Promise<void>;
 }
 export interface ProBillingProvider {
   product(context: common.UIAbilityContext, id: string): Promise<ProStoreProduct>;
@@ -212,6 +213,11 @@ export class HuaweiProBillingProvider implements ProBillingProvider {
     }
     if (orders.size !== 1) { throw new Error('Refund order not unique'); }
     if (!current()) { return { verified: false, records: 0 }; }
+    // Persist the fail-closed fence before invoking the vendor UI. A process
+    // exit after a successful refund request can therefore never resurrect a
+    // previously cached grant before the next signed reconciliation.
+    await this.backend.markRefundPending(lease);
+    if (!current()) { return { verified: false, records: 1 }; }
     await iap.createRefundRequest(context, Array.from(orders)[0]);
     if (!current()) { return { verified: false, records: 1 }; }
     return { verified: await this.reconcilePending(lease), records: 1 };

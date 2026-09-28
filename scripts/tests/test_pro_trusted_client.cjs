@@ -37,7 +37,11 @@ async function fixture(t, options = {}) {
     intent: (value, current) => client.intent(value, current), retain: (value, records) => client.retain(value, records),
     refundOrder: (value, current) => client.refundOrder(value, current),
     pending: value => client.pending(value), reconcile: (value, records) => client.current(value) ? service.reconcileResult(records) :
-      Promise.resolve({ current: false, online: false, active: false }) };
+      Promise.resolve({ current: false, online: false, active: false }),
+    markRefundPending: async value => {
+      await store.markRefundPending(value.scope);
+      if (client.current(value)) { service.markRefundPending(); }
+    } };
   return { ...host, store, clock, signer, transport, client, service, lease, backend, protocol: state, proPurchaseBatches,
     rebind(account, generation) { client.bind(account, generation); service.bindAccount(account, 'sandbox', generation); } };
 }
@@ -372,7 +376,7 @@ async function refundFixture(t, options = {}) {
   const { HuaweiProBillingProvider, proRefundError } = f.load('ProBillingService');
   return { ...f, calls, iap, proRefundError, provider: new HuaweiProBillingProvider(f.backend) };
 }
-test('sandbox refund opens only the unique matching native order; a successful UI does not locally revoke', async t => {
+test('sandbox refund opens only the unique matching native order; a successful UI fails closed until signed revocation', async t => {
   const f = await refundFixture(t);
   f.iap.queryPurchases = async (_context, query) => {
     assert.equal(query.queryType, 0, 'native history is queried before the authenticated server fallback');
@@ -382,17 +386,57 @@ test('sandbox refund opens only the unique matching native order; a successful U
       refundReceipt({ purchaseOrderId: 'revoked-order', purchaseOrderRevocationReasonCode: '0' })],
       continuationToken: query.continuationToken ? undefined : 'second-page' };
   };
+  f.iap.createRefundRequest = async (_context, id) => {
+    assert.equal(id, 'sandbox-order-1');
+    assert.equal(await f.store.refundPending(f.lease.scope), true);
+    f.calls.push(['refund', id]);
+  };
   const result = await f.provider.refund({}, config.productId, () => true);
   assert.deepEqual(f.calls, [['refund', 'sandbox-order-1']]);
-  assert.equal(result.verified, true); assert.equal(f.service.snapshot().state, 'active');
+  assert.equal(result.verified, false); assert.equal(f.service.snapshot().state, 'verificationRequired');
+  assert.equal(f.service.snapshot().refundPending, true);
+  assert.equal(await f.store.refundPending(f.lease.scope), true);
   assert.equal(f.protocol.calls.length, 1); assert.equal(f.protocol.calls[0].operation, 'reconcile');
+});
+test('refund refuses the vendor side effect when the durable fence cannot be written', async t => {
+  const f = await refundFixture(t);
+  f.state.beforeSql = sql => {
+    if (sql.startsWith('INSERT OR IGNORE INTO pro_verifying')) { throw new Error('disk full'); }
+  };
+  await assert.rejects(f.provider.refund({}, config.productId, () => true), /disk full/);
+  assert.equal(f.calls.some(call => call[0] === 'refund'), false);
+  assert.equal(f.protocol.calls.length, 0);
+  assert.equal(f.service.snapshot().refundPending, false);
+});
+test('refund pending marker survives restart and blocks cached or still-active server results', async t => {
+  const f = await refundFixture(t);
+  const result = await f.provider.refund({}, config.productId, () => true);
+  assert.equal(result.verified, false);
+  assert.equal(f.service.snapshot().state, 'verificationRequired');
+
+  const restarted = await restartedService(f);
+  await restarted.service.restoreCached();
+  assert.equal(restarted.service.snapshot().state, 'verificationRequired');
+  assert.equal(restarted.service.snapshot().refundPending, true);
+  assert.equal(await restarted.service.reconcile([], true), false);
+  assert.equal(restarted.service.snapshot().state, 'verificationRequired');
+  assert.equal(await restarted.store.refundPending(restarted.client.lease().scope), true);
+
+  f.protocol.revision = 2;
+  f.protocol.status = 'revoked';
+  f.state.now++;
+  assert.equal(await restarted.service.reconcile([], true), false);
+  assert.equal(restarted.service.snapshot().state, 'revoked');
+  assert.equal(restarted.service.snapshot().refundPending, false);
+  assert.equal(await restarted.store.refundPending(restarted.client.lease().scope), false);
 });
 test('refund returns the newly signed revocation, while vendor cancellation makes no entitlement decision', async t => {
   const f = await refundFixture(t); await f.service.reconcile([], true);
   f.iap.createRefundRequest = async () => { throw { code: 1001860000 }; };
   const before = f.protocol.calls.length;
   await assert.rejects(f.provider.refund({}, config.productId, () => true), error => error.code === 1001860000);
-  assert.equal(f.protocol.calls.length, before); assert.equal(f.service.snapshot().state, 'active');
+  assert.equal(f.protocol.calls.length, before); assert.equal(f.service.snapshot().state, 'verificationRequired');
+  assert.equal(f.service.snapshot().refundPending, true);
   f.iap.createRefundRequest = async () => { f.protocol.revision = 2; f.protocol.status = 'revoked'; f.state.now++; };
   assert.equal((await f.provider.refund({}, config.productId, () => true)).verified, false);
   assert.equal(f.service.snapshot().state, 'revoked');
@@ -456,11 +500,13 @@ function refundRoute(overrides = {}) {
   return JSON.stringify({ owner, applicationId: config.applicationId, productId: config.productId,
     environment: 'SANDBOX', purchaseOrderId: 'delivered-sandbox-order', ...overrides });
 }
-test('empty sandbox native history recovers a delivered order through the authenticated account route', async t => {
+test('empty sandbox native history routes a delivered order but still fails closed until signed revocation', async t => {
   const f = await refundFixture(t, { iap: { queryPurchases: async () => ({ purchaseDataList: [] }) } });
   const original = f.transport.post;
   f.transport.post = async (operation, body, current) => operation === 'refund-order' ? refundRoute() : original(operation, body, current);
-  assert.equal((await f.provider.refund({}, config.productId, () => true)).verified, true);
+  assert.equal((await f.provider.refund({}, config.productId, () => true)).verified, false);
+  assert.equal(f.service.snapshot().state, 'verificationRequired');
+  assert.equal(f.service.snapshot().refundPending, true);
   assert.deepEqual(f.calls, [['refund', 'delivered-sandbox-order']]);
   assert.equal(f.protocol.calls.length, 1); assert.equal(f.protocol.calls[0].operation, 'reconcile');
 });

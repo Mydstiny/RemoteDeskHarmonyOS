@@ -45,7 +45,7 @@ export struct ProPurchaseSheet {
       const snapshot = ProAppRuntime.getInstance().runtime.snapshot();
       this.proLabel = snapshot.label;
       this.debugMode = snapshot.mode;
-      this.purchased = snapshot.realState === 'active';
+      this.purchased = snapshot.effectiveState === 'active';
     });
   }
   aboutToDisappear(): void { this.live = false; this.generation++; this.unsubscribe?.(); this.unsubscribe = null; }
@@ -97,7 +97,9 @@ export struct ProPurchaseSheet {
         const outcome = await this.provider.refund(this.context(), this.productId, (): boolean =>
           this.live && generation === this.generation && ProPurchaseLifecycle.current(epoch));
         if (!this.live || generation !== this.generation || !ProPurchaseLifecycle.current(epoch)) { return; }
-        this.message = outcome.verified ? '退款页面已返回，服务端仍确认沙盒 Pro 有效；可稍后恢复购买同步状态。' :
+        const snapshot = ProAppRuntime.getInstance().runtime.snapshot();
+        this.message = snapshot.realState === 'revoked' ? '服务端已确认' + this.prefix() + 'Pro 权益撤销。' :
+          snapshot.refundPending ? '退款已提交，Pro 功能已暂停，等待服务端确认；请稍后恢复购买核验。' :
           '退款页面已返回，请使用恢复购买同步最新权益；退款结果以华为订单状态为准。';
         this.product = null;
         this.storePrice = '';
