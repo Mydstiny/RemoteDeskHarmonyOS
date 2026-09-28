@@ -32,6 +32,10 @@ const pages=JSON.parse(fs.readFileSync(path.join(root,'resources/base/profile/ma
 for(const route of ['pages/RemoteAiWorkspace','pages/AiSettingsPage']){assert.equal(pages.filter(page=>page===route).length,1);assert.ok(fs.existsSync(path.join(root,'ets',route+'.ets')));}
 console.log('PASS picker route, Pro declarations, deferred relay, and both page registrations are consistent');
 const hostSource=fs.readFileSync(path.join(root,'ets/pages/HostListPage.ets'),'utf8');
+assert.ok(hostSource.includes('filterHostGroupCardsByProVisibility'),
+  'homepage grouped cards must pass through the shared Pro visibility policy');
+assert.ok(hostSource.includes("isHostGroupTypeVisibleByPro('ai'"),
+  'homepage AI group renderer must be entitlement-gated');
 const sheet=hostSource.slice(hostSource.indexOf('@Builder hostAddSheetContent()'));
 const callback=sheet.slice(sheet.indexOf('onSelectProtocol: ')+18,sheet.indexOf(',\n        onClose:'));
 const callbackJs=ts.transpileModule('(function(){return '+callback+';});', {compilerOptions:{target:ts.ScriptTarget.ES2021}}).outputText;
