@@ -26,9 +26,26 @@ export const HOST_PRESENCE_PROBE_OFFLINE: string = 'probe_offline';
 export const HOST_PRESENCE_PROBE_UNKNOWN: string = 'probe_unknown';
 
 const HOST_GROUP_TYPES: HostGroupType[] = ['rdp', 'rustdesk', 'ssh', 'vnc', 'ai'];
+// Keep the Pro-backed host groups in one policy list. A group may remain in
+// the catalog policy for layout stability, but it must not reach the page
+// renderer unless its entitlement is currently visible.
+const PROTECTED_HOST_GROUP_TYPES: HostGroupType[] = ['ai'];
 
 export function hostGroupTypes(): HostGroupType[] {
   return HOST_GROUP_TYPES.slice();
+}
+
+export function filterHostGroupCardsByProVisibility(cards: HostGroupCardModel[],
+  visibleProTypes: HostGroupType[] = []): HostGroupCardModel[] {
+  return cards.filter((card: HostGroupCardModel): boolean => {
+    const protectedType: boolean = PROTECTED_HOST_GROUP_TYPES.indexOf(card.type) >= 0;
+    return !protectedType || visibleProTypes.indexOf(card.type) >= 0;
+  });
+}
+
+export function isHostGroupTypeVisibleByPro(type: HostGroupType,
+  visibleProTypes: HostGroupType[] = []): boolean {
+  return PROTECTED_HOST_GROUP_TYPES.indexOf(type) < 0 || visibleProTypes.indexOf(type) >= 0;
 }
 
 export function hostGroupTitle(type: HostGroupType): string {

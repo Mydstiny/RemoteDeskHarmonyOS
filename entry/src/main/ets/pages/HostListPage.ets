@@ -405,12 +405,14 @@ import {
 } from '../services/HostWorkspacePolicy';
 import {
   buildHostGroupCards,
+  filterHostGroupCardsByProVisibility,
   HOST_PRESENCE_PROBE_OFFLINE,
   HOST_PRESENCE_PROBE_PENDING,
   HOST_PRESENCE_PROBE_UNKNOWN,
   hostGroupColumnsForBreakpoint,
   hostGroupTitle,
   hostGroupTypeForHost,
+  isHostGroupTypeVisibleByPro,
   hostIdentifier,
   hostIdentifierLabel,
   hostPresenceLabel,
@@ -13170,7 +13172,9 @@ struct HostListPage {
   private hostGroupCardsSnapshot(): HostGroupCardModel[] {
     const displayHosts: RemoteHost[] = this.filteredHosts.map((host: RemoteHost): RemoteHost =>
       this.hostWithPresenceOverride(host));
-    return buildHostGroupCards(displayHosts, Date.now(), this.activeRemoteHostId);
+    const cards: HostGroupCardModel[] = buildHostGroupCards(displayHosts, Date.now(), this.activeRemoteHostId);
+    const visibleProTypes: HostGroupType[] = this.aiProVisible ? ['ai'] : [];
+    return filterHostGroupCardsByProVisibility(cards, visibleProTypes);
   }
 
   private hostWithPresenceOverride(host: RemoteHost): RemoteHost {
@@ -13853,12 +13857,16 @@ struct HostListPage {
         this.hostGroupedPhoneGroup('ssh')
         this.hostGroupedPhoneGroup('vnc')
         this.moonlightGroupedPhoneGroup()
-        this.hostGroupedPhoneGroup('ai')
+        if (isHostGroupTypeVisibleByPro('ai', this.aiProVisible ? ['ai'] : [])) {
+          this.hostGroupedPhoneGroup('ai')
+        }
       } else {
         this.hostGroupedDesktopRow('rdp', 'rustdesk')
         this.hostGroupedDesktopRow('ssh', 'vnc')
         this.moonlightGroupedDesktopRow()
-        this.hostGroupedPhoneGroup('ai')
+        if (isHostGroupTypeVisibleByPro('ai', this.aiProVisible ? ['ai'] : [])) {
+          this.hostGroupedPhoneGroup('ai')
+        }
       }
     }
     .width('100%').padding({ top: 8 })
