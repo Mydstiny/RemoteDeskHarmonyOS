@@ -7,15 +7,17 @@ import { router, promptAction } from '@kit.ArkUI';
 import { common } from '@kit.AbilityKit';
 import { AppConfig, Palette, buildDark, buildLight } from '../common/Theme';
 import { ProBadge } from '../components/ProBadge';
+import { ProFeatureGate } from '../components/ProFeatureGate';
 import { AiBackendChoiceCard } from '../components/ai/AiBackendChoiceCard';
 import { AiHostEditor } from '../components/ai/AiHostEditor';
 import { AiHostInstallPanel } from '../components/ai/AiHostInstallPanel';
 import { AiHostService } from '../services/ai/AiHostService';
-import { AiHost, AiSettings, defaultAiSettings } from '../services/ai/AiModels';
+import { AiBackend, AiHost, AiSettings, defaultAiSettings } from '../services/ai/AiModels';
 import { AiAccess, AiAccountLease } from '../services/ai/AiAccess';
 import { AiLocalStore } from '../services/ai/AiLocalStore';
 import { AiDataTransfer } from '../services/ai/AiDataTransfer';
 import { aiErrorText } from '../services/ai/AiWirePolicy';
+import { ProAppRuntime } from '../services/pro/ProAppRuntime';
 
 interface AiSettingsRouteParams { section?: string; }
 
@@ -73,6 +75,7 @@ export struct AiSettingsSurface {
     this.section = this.normalizedSection(params?.section ?? '');
   }
   private sectionVisible(section: string): boolean { return this.section === '' || this.section === section; }
+  private backendFeature(backend: AiBackend): string { return 'pro.ai.' + backend; }
   private title(): string {
     if (this.section === 'hosts') { return '连接与配对'; }
     if (this.section === 'display') { return '显示与恢复'; }
@@ -95,7 +98,7 @@ export struct AiSettingsSurface {
         this.savedSettings = null; this.savedSettingsAccount = null; this.settingsReady = false; this.showEditor = false; this.editing = null;
         this.account = null; this.pendingConnect = ''; this.pendingAccount = null; this.editorAccount = null; this.editorGeneration++;
         this.scheduleReload();
-      } else if (!wasAllowed && this.allowed && this.account !== null) {
+      } else if (!wasAllowed && this.allowed && this.initialized) {
         this.scheduleReload();
       }
     });
@@ -141,6 +144,9 @@ export struct AiSettingsSurface {
     const account = this.account;
     if (!this.allowed || !AiAccess.getInstance().proVisible() || account === null || this.busy || !this.settingsReady || this.savedSettings === null ||
       this.savedSettingsAccount === null || !AiAccess.getInstance().current(this.savedSettingsAccount)) { return; }
+    if (!AiAccess.getInstance().executable(this.settings.defaultBackend)) {
+      this.error = '当前默认 AI 后端已隐藏或暂不可用'; return;
+    }
     const previous = JSON.parse(JSON.stringify(this.savedSettings)) as AiSettings;
     const next = JSON.parse(JSON.stringify(this.settings)) as AiSettings;
     void this.run(async (): Promise<void> => {
@@ -211,10 +217,14 @@ export struct AiSettingsSurface {
           if (this.sectionVisible('hosts')) {
           this.sectionTitle('默认 AI', '仅影响新主机，已有连接保持原来的 AI。')
           Column({ space: 10 }) {
-            AiBackendChoiceCard({ backend: 'codex', title: 'Codex', subtitle: 'OpenAI Codex · 9443', isSelected: this.settings.defaultBackend === 'codex',
-              onSelect: (): void => { if (!this.busy && this.settingsReady) { this.settings.defaultBackend = 'codex'; this.save(); } } }).width('100%').enabled(!this.busy && this.settingsReady)
-            AiBackendChoiceCard({ backend: 'dsh', title: 'DSH', subtitle: 'DeepSeek Harness · 9444', isSelected: this.settings.defaultBackend === 'dsh',
-              onSelect: (): void => { if (!this.busy && this.settingsReady) { this.settings.defaultBackend = 'dsh'; this.save(); } } }).width('100%').enabled(!this.busy && this.settingsReady)
+            ProFeatureGate({ featureId: this.backendFeature('codex'), context: ProAppRuntime.getInstance().context('ai'), content: (): void => {
+              AiBackendChoiceCard({ backend: 'codex', title: 'Codex', subtitle: 'OpenAI Codex · 9443', isSelected: this.settings.defaultBackend === 'codex',
+                onSelect: (): void => { if (!this.busy && this.settingsReady) { this.settings.defaultBackend = 'codex'; this.save(); } } }).width('100%').enabled(!this.busy && this.settingsReady)
+            } })
+            ProFeatureGate({ featureId: this.backendFeature('dsh'), context: ProAppRuntime.getInstance().context('ai'), content: (): void => {
+              AiBackendChoiceCard({ backend: 'dsh', title: 'DSH', subtitle: 'DeepSeek Harness · 9444', isSelected: this.settings.defaultBackend === 'dsh',
+                onSelect: (): void => { if (!this.busy && this.settingsReady) { this.settings.defaultBackend = 'dsh'; this.save(); } } }).width('100%').enabled(!this.busy && this.settingsReady)
+            } })
           }.width('100%')
           this.sectionTitle('主机与配对', '局域网连接 · RustDesk 中继将在后续版本开放')
           if (this.hosts.length === 0) {
@@ -222,9 +232,11 @@ export struct AiSettingsSurface {
               .fontSize(13).fontFamily(AppConfig.fontFamily).fontColor(this.pal().text2).width('100%')
           }
           ForEach(this.hosts, (host: AiHost): void => {
-            AppSettingsActionRow({ icon: protocolIcon('ai'), title: host.label,
-              detail: (host.backend === 'codex' ? 'Codex' : 'DSH') + ' · ' + host.address + ':' + host.port + ' · 编辑与配对',
-              isEnabled: !this.busy, onAction: (): void => { this.openEditor(host); } })
+            ProFeatureGate({ featureId: this.backendFeature(host.backend), context: ProAppRuntime.getInstance().context('ai'), content: (): void => {
+              AppSettingsActionRow({ icon: protocolIcon('ai'), title: host.label,
+                detail: (host.backend === 'codex' ? 'Codex' : 'DSH') + ' · ' + host.address + ':' + host.port + ' · 编辑与配对',
+                isEnabled: !this.busy, onAction: (): void => { this.openEditor(host); } })
+            } })
           }, (host: AiHost): string => host.id + ':' + host.revision.toString())
           AppSettingsActionRow({ icon: protocolIcon('ai'), title: '添加主机', detail: '沿用当前经典／全新添加偏好',
             isEnabled: !this.busy, onAction: (): void => { this.openEditor(null); } })

@@ -279,9 +279,11 @@ export struct AiHostEditor {
       .fontColor(this.pal().text).width('100%')
     Column({ space: 10 }) {
       AiBackendChoiceCard({ backend: 'codex', title: 'Codex', subtitle: 'OpenAI Codex · 9443', isSelected: this.backend === 'codex',
-        onSelect: (): void => { this.selectBackend('codex'); } }).width('100%').enabled(!this.busy && !this.defaultsPending && this.allowed)
+        onSelect: (): void => { this.selectBackend('codex'); } }).width('100%').enabled(!this.busy && !this.defaultsPending &&
+          AiAccess.getInstance().executable('codex'))
       AiBackendChoiceCard({ backend: 'dsh', title: 'DSH', subtitle: 'DeepSeek Harness · 9444', isSelected: this.backend === 'dsh',
-        onSelect: (): void => { this.selectBackend('dsh'); } }).width('100%').enabled(!this.busy && !this.defaultsPending && this.allowed)
+        onSelect: (): void => { this.selectBackend('dsh'); } }).width('100%').enabled(!this.busy && !this.defaultsPending &&
+          AiAccess.getInstance().executable('dsh'))
     }.width('100%')
     Text('连接路径').fontSize(14).fontFamily(AppConfig.fontFamily).fontWeight(FontWeight.Medium)
       .fontColor(this.pal().text).width('100%')

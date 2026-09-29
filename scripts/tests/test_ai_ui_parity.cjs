@@ -365,6 +365,8 @@ const cases = [
     const routeCard = read('entry/src/main/ets/components/ai/AiConnectionPathCard.ets');
     assert.ok(routeCard.includes('.height(68)') && routeCard.includes('.borderRadius(16)'));
     assert.ok(editor.includes('AiBackendChoiceCard({ backend: \'codex\''));
+    assert.ok(editor.includes("AiAccess.getInstance().executable('codex')"));
+    assert.ok(editor.includes("AiAccess.getInstance().executable('dsh')"));
     assert.ok(editor.includes('AiConnectionPathCard({ path: \'lan\''));
     assert.ok(editor.includes('AiConnectionPathCard({ path: \'rustdesk\''));
     assert.ok(editor.includes('选择 RustDesk 中继'));

@@ -43,12 +43,13 @@ function until(promise, label) {
 
 function settingsFixture({ deferredInitialize = false } = {}) {
   const state = { owner: 'A', callbacks: [], hostReads: 0, initializations: 0 };
+  state.proVisible = true;
   state.entered = new Promise(resolve => { state.initializeEntered = resolve; });
   const access = {
     capture: () => ({ owner: state.owner, generation: 1, lifecycle: 1 }),
     current: lease => lease !== null && lease.owner === state.owner,
     executable: () => true,
-    proVisible: () => true,
+    proVisible: () => state.proVisible,
     subscribe: callback => {
       state.callbacks.push(callback); callback();
       return () => { state.callbacks = state.callbacks.filter(value => value !== callback); };
@@ -79,6 +80,10 @@ function settingsFixture({ deferredInitialize = false } = {}) {
   }, 'AiSettingsSurface');
   state.changeAccount = owner => {
     state.owner = owner;
+    for (const callback of state.callbacks.slice()) callback();
+  };
+  state.setProVisible = value => {
+    state.proVisible = value;
     for (const callback of state.callbacks.slice()) callback();
   };
   return state;
@@ -158,6 +163,20 @@ const cases = [
     await until(appearing, 'initial settings account handoff'); await flush();
     assert.equal(state.page.account?.owner, 'B');
     assert.equal(state.page.hosts.length, 1); assert.equal(state.page.hosts[0].owner, 'B');
+    state.page.aboutToDisappear();
+  }],
+  ['settings feature visibility restores the same page after being re-enabled', async () => {
+    const state = settingsFixture();
+    await until(state.page.aboutToAppear(), 'settings visibility appearance');
+    assert.equal(state.page.allowed, true);
+    assert.equal(state.page.hosts.length, 1);
+    state.setProVisible(false); await flush();
+    assert.equal(state.page.allowed, false);
+    assert.equal(state.page.account, null);
+    state.setProVisible(true); await flush();
+    assert.equal(state.page.allowed, true);
+    assert.equal(state.page.account?.owner, 'A');
+    assert.equal(state.page.hosts.length, 1);
     state.page.aboutToDisappear();
   }],
   ['stored auto-reconnect false is honored during pending first connection', async () => {
