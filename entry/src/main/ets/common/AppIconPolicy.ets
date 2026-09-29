@@ -13,7 +13,10 @@ export const APP_ICON_PRESETS: AppIconPreset[] = [
   { name: 'rd_transparent', label: '透明底版' },
   { name: 'rd_night', label: '深空' },
   { name: 'rd_sky', label: '晴空' },
-  { name: 'rd_aurora', label: '幻彩' }
+  { name: 'rd_aurora', label: '幻彩' },
+  { name: 'rd_line', label: '线框' },
+  { name: 'rd_duo', label: '双屏' },
+  { name: 'rd_glass', label: '玻璃' }
 ];
 export function knownAppIcon(name: string): boolean {
   return APP_ICON_PRESETS.some((preset: AppIconPreset): boolean => preset.name === name);

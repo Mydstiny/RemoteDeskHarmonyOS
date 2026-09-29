@@ -213,7 +213,7 @@ test('real account transitions isolate Pro before their first await and through 
 function iconFixture(debug = true) {
   const f = fixture(debug); let selected = ''; let queries = 0; const applied = [];
   const { ProAppIconController } = f.load('entry/src/main/ets/services/pro/ProAppIconController.ets');
-  const icons = () => ['rd_white', 'rd_transparent', 'rd_night', 'rd_sky', 'rd_aurora']
+  const icons = () => ['rd_white', 'rd_transparent', 'rd_night', 'rd_sky', 'rd_aurora', 'rd_line', 'rd_duo', 'rd_glass']
     .map(name => ({ name, enabled: selected === name }));
   const provider = { supported: () => true, query: async () => { queries++; return icons(); },
     apply: async name => { applied.push(name); selected = name; } };
@@ -241,14 +241,15 @@ test('every preset in the picker is a registered alternate icon and unknown name
   const fs = require('node:fs');
   const manifest = fs.readFileSync(require('node:path').join(__dirname, '../../AppScope/app.json5'), 'utf8');
   const registered = [...manifest.matchAll(/"name": "(rd_[a-z]+)", "icon": "\$media:([a-z_]+)"/g)];
-  assert.deepEqual(registered.map(match => match[1]), ['rd_white', 'rd_transparent', 'rd_night', 'rd_sky', 'rd_aurora']);
+  assert.deepEqual(registered.map(match => match[1]),
+    ['rd_white', 'rd_transparent', 'rd_night', 'rd_sky', 'rd_aurora', 'rd_line', 'rd_duo', 'rd_glass']);
   for (const [, , resource] of registered) {
     const layered = JSON.parse(fs.readFileSync(require('node:path').join(__dirname,
       '../../AppScope/resources/base/media/' + resource + '.json'), 'utf8'))['layered-image'];
     assert.ok(layered.background && layered.foreground, resource + ' must be a layered icon like the default');
   }
   const f = iconFixture(); f.runtime.setDebugMode('pro');
-  for (const name of ['rd_night', 'rd_sky', 'rd_aurora']) {
+  for (const name of ['rd_night', 'rd_sky', 'rd_aurora', 'rd_line', 'rd_duo', 'rd_glass']) {
     assert.equal(await f.controller.select(name, () => true), true);
     assert.equal(f.controller.snapshot().currentName, name);
   }
