@@ -222,6 +222,9 @@ export struct RemoteSessionTopBar {
       this.actions.onUnsupported(actionId, availability.reason);
       return;
     }
+    if (actionId === 'fileTransfer') {
+      this.closeMenus();
+    }
     action();
   }
 
@@ -781,7 +784,9 @@ export struct RemoteSessionTopBar {
           this.menuItem('发送剪贴板按键', 'toggleClipboard', (): void => {
             this.actions.onToggleClipboard(!this.clipboardEnabled);
           }, this.clipboardEnabled)
-          this.menuItem('传输文件', 'fileTransfer', (): void => { this.actions.onOpenFileTransfer(); })
+          this.menuItem('传输文件', 'fileTransfer', (): void => {
+            this.runAction('fileTransfer', (): void => { this.actions.onOpenFileTransfer(); });
+          })
           this.menuItem('插入 Ctrl + Alt + Del', 'ctrlAltDel', (): void => { this.actions.onCtrlAltDel(); })
           this.menuItem('刷新画面', 'refreshFrame', (): void => { this.actions.onRefreshFrame(); })
           if (this.protocol === 'rustdesk') {
