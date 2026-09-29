@@ -1,5 +1,6 @@
 import { ProAccessContext } from '../services/pro/ProAccessPolicy';
 import { ProAppRuntime } from '../services/pro/ProAppRuntime';
+import { ProFeatureVisibility } from '../services/pro/ProFeatureVisibility';
 // UI binding only. Every business action must also call runtime.run/decision with current context.
 @Component
 export struct ProFeatureGate {
@@ -14,7 +15,8 @@ export struct ProFeatureGate {
   }
   aboutToDisappear(): void { this.unsubscribe?.(); this.unsubscribe = null; }
   private visible(_revision: number): boolean {
-    return ProAppRuntime.getInstance().runtime.decision(this.featureId, this.context).visible;
+    return ProFeatureVisibility.getInstance().isVisible(this.featureId) &&
+      ProAppRuntime.getInstance().runtime.decision(this.featureId, this.context).visible;
   }
   build() {
     if (this.visible(this.revision)) { this.content(); }

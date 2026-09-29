@@ -46,6 +46,7 @@ export const SETTINGS_SHEET_REMOTE_WHEEL_DIRECTION: number = 38;
 export const SETTINGS_SHEET_REMOTE_PINCH_ZOOM: number = 39;
 export const SETTINGS_SHEET_SESSION_CONTROL_BAR: number = 40;
 export const SETTINGS_SHEET_HARMONY_SHORTCUT_BLOCKING: number = 41;
+export const SETTINGS_SHEET_APP_ICON: number = 47;
 
 export const SETTINGS_PANEL_DISMISS_TO_LEAF_OPEN_MS: number = 360;
 

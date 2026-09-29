@@ -12,8 +12,10 @@ import { ProContinuationService } from '../services/pro/ProContinuationService';
 import { SshConnectionPreflightSheet } from '../components/SshConnectionPreflightSheet';
 import { SshAuthenticatedHandoff } from '../services/ssh/auth/SshAuthenticatedHandoff';
 import { ProAppRuntime } from '../services/pro/ProAppRuntime';
+import { ProFeatureVisibility } from '../services/pro/ProFeatureVisibility';
 import { ProPurchaseLifecycle } from '../services/pro/ProPurchaseLifecycle';
 import { ProPurchaseSheet } from '../components/ProPurchaseSheet';
+import { ProAppIconPanel } from '../components/ProAppIconPanel';
 import { AiSettingsSurface } from './AiSettingsPage';
 /**
  * HostListPage v9 — 多端响应式 + 悬浮卡片 sheet + 滑动删除 + 官方图标按钮
@@ -482,6 +484,7 @@ import {
   SETTINGS_SHEET_AI_HOSTS,
   SETTINGS_SHEET_AI_INSTALL,
   SETTINGS_SHEET_PRO,
+  SETTINGS_SHEET_APP_ICON,
   SETTINGS_SHEET_ACCENT_COLOR,
   SETTINGS_SHEET_DIAGNOSTIC_LOG,
   SETTINGS_SHEET_REMOTE_PINCH_ZOOM,
@@ -1956,6 +1959,7 @@ struct HostListPage {
   }
 
   async aboutToAppear(): Promise<void> {
+    ProFeatureVisibility.getInstance().load(getContext(this) as common.UIAbilityContext);
     this.aiStopStore = AiLocalStore.getInstance().subscribe((): void => { void this.refreshAiHosts(); });
     this.aiStopAccess = AiAccess.getInstance().subscribe((): void => {
       this.aiProVisible = AiAccess.getInstance().proVisible();
@@ -4322,7 +4326,7 @@ struct HostListPage {
   }
 
   private closeSettingsLeafSheet(): void {
-    if (this.settingsLeafSheetMode === SETTINGS_SHEET_PRO) { ProPurchaseLifecycle.dismiss(); }
+    if (this.settingsLeafSheetMode === SETTINGS_SHEET_PRO || this.settingsLeafSheetMode === SETTINGS_SHEET_APP_ICON) { ProPurchaseLifecycle.dismiss(); }
     const sheetWasVisible: boolean = this.showSettingsLeafSheet;
     this.clearPendingSettingsLeafOpen();
     if (sheetWasVisible) {
@@ -4372,7 +4376,7 @@ struct HostListPage {
   }
 
   private handleSettingsLeafWillDismiss(action: DismissSheetAction): void {
-    if (this.settingsLeafSheetMode === SETTINGS_SHEET_PRO) { ProPurchaseLifecycle.dismiss(); }
+    if (this.settingsLeafSheetMode === SETTINGS_SHEET_PRO || this.settingsLeafSheetMode === SETTINGS_SHEET_APP_ICON) { ProPurchaseLifecycle.dismiss(); }
     if (!this.settingsLeafHasUnsavedChanges()) {
       action.dismiss();
       return;
@@ -15408,6 +15412,7 @@ struct HostListPage {
 
   private settingsLeafSheetHeight(): SheetSize | number {
     if (this.settingsLeafSheetMode === SETTINGS_SHEET_PRO) { return Math.min(820, Math.max(320, this.pageViewportHeight - 48)); }
+    if (this.settingsLeafSheetMode === SETTINGS_SHEET_APP_ICON) { return SheetSize.FIT_CONTENT; }
     if (this.settingsLeafSheetMode === SETTINGS_SHEET_POPUP && this.popupSheetMode === 1 &&
       this.aboutSheetMode === 3) {
       return SheetSize.LARGE;
@@ -15466,6 +15471,9 @@ struct HostListPage {
   @Builder settingsLeafSheet() {
     if (this.settingsLeafSheetMode === SETTINGS_SHEET_PRO) {
       ProPurchaseSheet({ onClose: (): void => { this.closeSettingsLeafSheet(); } })
+    } else if (this.settingsLeafSheetMode === SETTINGS_SHEET_APP_ICON) {
+      ProAppIconPanel({ isOpen: (): boolean => this.showSettingsLeafSheet &&
+        this.settingsLeafSheetMode === SETTINGS_SHEET_APP_ICON })
     } else if (this.settingsLeafSheetMode === SETTINGS_SHEET_ACCOUNT) {
       this.accountSheet()
     } else if (this.settingsLeafSheetMode === SETTINGS_SHEET_ACCENT_COLOR) {
@@ -15763,7 +15771,7 @@ struct HostListPage {
 
         ListItem() {
           this.settingsAccordionHeader(SETTINGS_SECTION_APPEARANCE, $r('sys.symbol.paintpalette_fill'),
-            '个性化', '主题色、深色模式、壁纸与光晕')
+            '个性化', '主题色、深色模式、壁纸、光晕与应用图标')
         }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 10 })
 
         // --- 个性化卡片 ---
@@ -15781,6 +15789,16 @@ struct HostListPage {
                 Text(' >').fontSize(14).fontColor(this.pal().text3).margin({ left: 6 })
               }.width('100%').height(60).padding({ left: 16, right: 16 })
               .onClick(() => { this.openSettingsLeafSheet(SETTINGS_SHEET_ACCENT_COLOR); })
+              this.cardDivider()
+              Row() {
+                Row() { SymbolGlyph($r('sys.symbol.square_and_pencil')).fontSize(22).fontColor([this.pal().text]) }
+                  .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
+                Text('应用图标').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
+                  .fontColor(this.pal().text).fontFamily(this.font()).layoutWeight(1).margin({ left: 4 })
+                ProBadge().margin({ right: 4 })
+                Text(' >').fontSize(14).fontColor(this.pal().text3).margin({ left: 4 })
+              }.width('100%').height(60).padding({ left: 16, right: 16 })
+                .onClick((): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_APP_ICON); })
               this.cardDivider()
               // 深色模式(含跟随系统)
               Column() {

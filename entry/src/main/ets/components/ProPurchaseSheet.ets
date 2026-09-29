@@ -1,6 +1,7 @@
 import { ProBadge } from './ProBadge';
 import { DEBUG } from 'BuildProfile';
-import { ProAppIconPanel } from './ProAppIconPanel';
+import { ProFeatureVisibilityPanel } from './ProFeatureVisibilityPanel';
+import { ProFeatureVisibility } from '../services/pro/ProFeatureVisibility';
 import { ProUsbFidoProbePanel } from './ProUsbFidoProbePanel';
 import { ProAppRuntime } from '../services/pro/ProAppRuntime';
 import { ProDebugMode } from '../services/pro/ProRuntime';
@@ -39,6 +40,7 @@ export struct ProPurchaseSheet {
   aboutToAppear(): void {
     this.live = true;
     this.testing = ProAppRuntime.getInstance().sandboxSelected();
+    ProFeatureVisibilityPanel.prepare(getContext(this) as common.UIAbilityContext);
     this.syncBilling();
     this.unsubscribe = ProAppRuntime.getInstance().runtime.subscribe((): void => {
       this.syncBilling();
@@ -166,8 +168,9 @@ export struct ProPurchaseSheet {
             Text(this.proLabel).fontSize(13).fontColor(this.accent)
             Text('一次购买 · 不自动续费').fontSize(12).fontColor(this.accent)
           }.width('100%').padding({ top: 16, bottom: 18 })
-          ProAppIconPanel({ isOpen: (): boolean => this.live })
-          ForEach(proFeatures().filter((item: ProFeature): boolean => item.requiredEntitlementId.length > 0),
+          ProFeatureVisibilityPanel({ isOpen: (): boolean => this.live })
+          ForEach(proFeatures().filter((item: ProFeature): boolean => item.requiredEntitlementId.length > 0 &&
+              ProFeatureVisibility.getInstance().isVisible(item.id)),
             (feature: ProFeature, index: number): void => { this.featureCard(feature, index) },
             (feature: ProFeature): string => feature.id)
           Text('核心功能一直免费').fontSize(15).fontWeight(FontWeight.Medium).fontColor(this.pal().text)

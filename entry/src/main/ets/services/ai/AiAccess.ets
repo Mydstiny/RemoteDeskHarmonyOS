@@ -1,6 +1,7 @@
 import { AccountSessionCoordinator } from '../AccountSessionCoordinator';
 import { AccountScopeToken } from '../AccountScopePolicy';
 import { ProAppRuntime } from '../pro/ProAppRuntime';
+import { ProFeatureVisibility } from '../pro/ProFeatureVisibility';
 import { AiBackend, aiOwnerValid } from './AiModels';
 import { AiLifecycle } from './AiLifecycle';
 
@@ -44,7 +45,9 @@ export class AiAccess {
   executable(backend: AiBackend): boolean {
     try { this.capture(); } catch (_error) { return false; }
     const pro = ProAppRuntime.getInstance();
-    return pro.runtime.decision('pro.ai.workspace', pro.context('ai')).executable &&
+    return ProFeatureVisibility.getInstance().isVisible('pro.ai.workspace') &&
+      ProFeatureVisibility.getInstance().isVisible('pro.ai.' + backend) &&
+      pro.runtime.decision('pro.ai.workspace', pro.context('ai')).executable &&
       pro.runtime.decision('pro.ai.' + backend, pro.context('ai')).executable;
   }
   /**
@@ -55,7 +58,8 @@ export class AiAccess {
    */
   proVisible(): boolean {
     const pro = ProAppRuntime.getInstance();
-    return pro.runtime.decision('pro.ai.workspace', pro.context('ai')).visible;
+    return ProFeatureVisibility.getInstance().isVisible('pro.ai.workspace') &&
+      pro.runtime.decision('pro.ai.workspace', pro.context('ai')).visible;
   }
   assertExecute(lease: AiAccountLease, backend: AiBackend): void {
     this.assertCurrent(lease);
