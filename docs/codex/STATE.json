@@ -4,7 +4,7 @@
   "branch": "codex/pro-purchase-foundation",
   "base": "8edc187868e94ed41634e8a6c4c4c072e3a48679",
   "head": "7ae9aff4f",
-  "phase": "Full acceptance: steps 1-3 PASS; step 4 M4 knock transfer READY (remote AI deferred)",
+  "phase": "Full acceptance: steps 1-3 PASS; step 4 external (no PC); step 5 M5 continuation READY",
   "status": "in-progress",
   "next": "Acceptance step 4: M4 knock transfer phone -> HarmonyOS PC SFTP; then M5 share/continuation, M7 remainder.",
   "blockers": [
@@ -1963,7 +1963,8 @@
       "1.1.6 Release coming-soon presentation for Pro entries (currently hidden; purchase button reads Pro 即将推出)",
       "1.1.6 release notes content"
     ],
-    "step4": "READY M4 knock transfer"
+    "step4": "EXTERNAL no HarmonyOS PC device (2026-09-29); M4.1-M4.6 NOT RUN",
+    "step5": "READY M5 phone/Pad same-account direct SSH continuation; knock share external (App Link domain unset)"
   },
   "appVersion": {
     "versionName": "1.1.6",
