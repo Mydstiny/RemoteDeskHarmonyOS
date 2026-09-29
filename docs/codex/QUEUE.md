@@ -4,7 +4,7 @@ Updated: 2026-09-29 Asia/Shanghai
 
 ## Now
 
-- Full acceptance step 3 (READY): remote AI Codex/DSH A1-A13 plus AI-related U5/U7/U8 per [checklist](plans/2026-09-27-full-acceptance-checklist.md). Steps 1 (public UI) and 2 (Pro purchase/auth/Debug tri-state P1-P8, D1-D8) PASS by user device confirmation; step-2 fix commits a671b0726..4490192c3 still need independent review. P11 offline NOT RUN.
+- Full acceptance step 3 (READY): M3 preset app icon + Pro feature visibility/personalization panel per [checklist](plans/2026-09-27-full-acceptance-checklist.md); then M4 knock transfer, M5 share/continuation, M7 remainder. Remote AI A1-A13 deferred by user. Step-2 fix review PASS (a545277b6..01713b8e8).
 
 - Feedback repair checkpoint: accept exact system shortcuts, bidirectional files/file-station drag, repeated buttons, Pad reverse landscape and PC hardware inversion on devices. [Scope](archive/2026-09/2026-09-23-feedback-repair-checkpoint.md). No target was available at that checkpoint; a target is now connected but not yet used for acceptance. Broad system key capture and PC inversion remain unresolved.
 

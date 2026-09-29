@@ -3,10 +3,10 @@
   "task": "pro-purchase-foundation",
   "branch": "codex/pro-purchase-foundation",
   "base": "8edc187868e94ed41634e8a6c4c4c072e3a48679",
-  "head": "4490192c3",
-  "phase": "Full acceptance: step 1 public UI and step 2 Pro purchase/auth/Debug tri-state PASS by user device confirmation; step 3 remote AI READY",
+  "head": "01713b8e8",
+  "phase": "Full acceptance: steps 1-2 PASS; step-2 fix review PASS; step 3 M3 app icon + Pro visibility READY (remote AI deferred)",
   "status": "in-progress",
-  "next": "Run acceptance step 3: remote AI Codex/DSH A1-A13 plus U5/U7/U8; independently review step-2 fix commits a671b0726..4490192c3; P11 offline, M3-M7 device and production prerequisites remain open.",
+  "next": "Acceptance step 3: M3 preset app icon + Pro feature visibility panel on device; then M4 knock transfer, M5 share/continuation, M7 remainder; remote AI deferred.",
   "blockers": [
     "Pad backup and Debug migration complete; same-account sandbox restore PASS without another payment. Remaining offline/cross-account and full protocol/device matrix remain open.",
     "M3/U0-U4 device matrix and M4 PC real Share Kit/SFTP file-integrity acceptance remain unverified.",
@@ -1941,15 +1941,26 @@
       "5b0b93ce1",
       "4490192c3"
     ],
-    "step2FixReview": "NOT RUN; no independent review receipt for the fix commits",
+    "step2FixReview": "PASS receipt pro-step2-fixes-review-01713b8e8-2026-09-29; fixes a545277b6,7ab9d5df8,2f5eb7e75,61ed1f4b4,01713b8e8",
     "notCovered": {
       "P9": "prior 2026-09-19 server evidence",
       "P10": "prior 2026-09-19 manual worker evidence",
       "P11": "NOT RUN",
       "P12": "external dependency"
     },
-    "step3": "READY remote AI A1-A13 plus U5/U7/U8",
+    "step3": "READY M3 app icon + Pro feature visibility/personalization (U3/U5/U8 for these pages)",
     "recordGates": "testCompile BUILD SUCCESSFUL in 1 s 278 ms; signed assembleHap BUILD SUCCESSFUL in 1 min 14 s 373 ms, SignHap 2 s 599 ms; both exit 0; Light/diff PASS",
-    "workingTreeCleanup": "User reverted .d.ts reorder and macos_env.sh external-cache default; build leftovers removed/quarantined; .gitignore ignores .remotedesk-build-cache/. Gates testCompile 1m8s422, assembleHap 1m3s579, Light/diff PASS"
+    "workingTreeCleanup": "User reverted .d.ts reorder and macos_env.sh external-cache default; build leftovers removed/quarantined; .gitignore ignores .remotedesk-build-cache/. Gates testCompile 1m8s422, assembleHap 1m3s579, Light/diff PASS",
+    "order": [
+      "step4 M4 knock transfer",
+      "step5 M5 share/continuation",
+      "step6 M7 remainder: P11 offline, refund-hold regression",
+      "later remote AI A1-A13",
+      "M6 deferred",
+      "production external"
+    ],
+    "openDecisions": [
+      "433c76ac7 remote AI availability available in Release"
+    ]
   }
 }
