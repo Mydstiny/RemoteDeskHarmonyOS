@@ -131,7 +131,7 @@ export class ProEntitlementService {
     this.acceptedGeneration = generation;
     // Once a refund has been submitted, a cached or unavailable result cannot
     // clear the local fail-closed state. Signed revoked/noEntitlement results
-    // release it, and so does a fresh grant after the store's hold expired.
+    // release it, and so does a fresh grant after the store's signed hold.
     if (result.refundPending === true) { this.refundPending = true; }
     if (result.status === 'verified') {
       const grant = result.grant;
