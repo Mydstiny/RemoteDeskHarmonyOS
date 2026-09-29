@@ -6,8 +6,11 @@
     "versionName": "1.1.6",
     "icon": "$media:layered_image",
     "alternateIcons": [
-      { "name": "rd_white", "icon": "$media:rd_logo_white" },
-      { "name": "rd_transparent", "icon": "$media:rd_logo_transparent" }
+      { "name": "rd_white", "icon": "$media:icon_rd_white" },
+      { "name": "rd_transparent", "icon": "$media:icon_rd_clear" },
+      { "name": "rd_night", "icon": "$media:icon_rd_night" },
+      { "name": "rd_sky", "icon": "$media:icon_rd_sky" },
+      { "name": "rd_aurora", "icon": "$media:icon_rd_aurora" }
     ],
     "label": "$string:app_name",
     "cloudStructuredDataSyncEnabled": true,

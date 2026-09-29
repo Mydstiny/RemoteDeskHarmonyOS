@@ -1,0 +1,157 @@
+// Generates the preset application icons as layered images plus picker previews.
+// Usage (from the repository root): swift scripts/generate_app_icons.swift
+//
+// Every alternate icon uses the same layered-image format as the default icon, so
+// the launcher masks all choices identically. The only input is the RD logo on a
+// transparent 1024x1024 canvas (AppScope/resources/base/media/icon_rd_logo_color.png).
+import CoreGraphics
+import Foundation
+import ImageIO
+import UniformTypeIdentifiers
+
+let appMedia = "AppScope/resources/base/media"
+let entryMedia = "entry/src/main/resources/base/media"
+let size = 1024
+let previewSize = 256
+// Matches the default background's corner radius (224 of 1024).
+let cornerRatio: CGFloat = 224.0 / 1024.0
+
+func load(_ path: String) -> CGImage {
+  guard let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: path) as CFURL, nil),
+        let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
+    fatalError("Cannot read \(path)")
+  }
+  return image
+}
+
+func canvas(_ side: Int) -> CGContext {
+  guard let context = CGContext(data: nil, width: side, height: side, bitsPerComponent: 8, bytesPerRow: 0,
+    space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else {
+    fatalError("Cannot create canvas")
+  }
+  context.interpolationQuality = .high
+  return context
+}
+
+func save(_ context: CGContext, _ path: String) {
+  guard let image = context.makeImage(),
+        let destination = CGImageDestinationCreateWithURL(URL(fileURLWithPath: path) as CFURL,
+          UTType.png.identifier as CFString, 1, nil) else { fatalError("Cannot write \(path)") }
+  CGImageDestinationAddImage(destination, image, nil)
+  if !CGImageDestinationFinalize(destination) { fatalError("Cannot finalize \(path)") }
+  print("wrote \(path)")
+}
+
+func color(_ hex: UInt32, _ alpha: CGFloat = 1) -> CGColor {
+  CGColor(srgbRed: CGFloat((hex >> 16) & 0xFF) / 255, green: CGFloat((hex >> 8) & 0xFF) / 255,
+    blue: CGFloat(hex & 0xFF) / 255, alpha: alpha)
+}
+
+// Angle follows the CSS/ArkUI convention: 0 points up, 90 points right.
+func linear(_ context: CGContext, _ stops: [(UInt32, CGFloat)], angle: CGFloat) {
+  let side = CGFloat(context.width)
+  let radians = (angle - 90) * .pi / 180
+  let half = side / 2
+  let reach = abs(cos(radians)) * half + abs(sin(radians)) * half
+  // CoreGraphics' origin is bottom-left, so the y component is inverted.
+  let dx = cos(radians) * reach, dy = -sin(radians) * reach
+  let gradient = CGGradient(colorsSpace: CGColorSpace(name: CGColorSpace.sRGB)!,
+    colors: stops.map { color($0.0) } as CFArray, locations: stops.map { $0.1 })!
+  context.drawLinearGradient(gradient, start: CGPoint(x: half - dx, y: half - dy),
+    end: CGPoint(x: half + dx, y: half + dy), options: [.drawsBeforeStartLocation, .drawsAfterEndLocation])
+}
+
+// x/y are fractions measured from the top-left corner.
+func glow(_ context: CGContext, x: CGFloat, y: CGFloat, radius: CGFloat, _ hex: UInt32, _ alpha: CGFloat) {
+  let side = CGFloat(context.width)
+  let center = CGPoint(x: x * side, y: (1 - y) * side)
+  let gradient = CGGradient(colorsSpace: CGColorSpace(name: CGColorSpace.sRGB)!,
+    colors: [color(hex, alpha), color(hex, 0)] as CFArray, locations: [0, 1])!
+  context.drawRadialGradient(gradient, startCenter: center, startRadius: 0, endCenter: center,
+    endRadius: radius * side, options: [])
+}
+
+func whiteLogo(_ logo: CGImage) -> CGImage {
+  let context = canvas(size)
+  let rect = CGRect(x: 0, y: 0, width: size, height: size)
+  context.draw(logo, in: rect)
+  context.setBlendMode(.sourceIn)
+  context.setFillColor(color(0xFFFFFF))
+  context.fill(rect)
+  return context.makeImage()!
+}
+
+func foreground(_ logo: CGImage, shadow: Bool) -> CGContext {
+  let context = canvas(size)
+  if shadow {
+    context.setShadow(offset: CGSize(width: 0, height: -14), blur: 40, color: color(0x001A4D, 0.28))
+  }
+  context.draw(logo, in: CGRect(x: 0, y: 0, width: size, height: size))
+  return context
+}
+
+struct Preset {
+  let name: String          // system alternate icon name (app.json5)
+  let resource: String      // layered-image resource base name
+  let foreground: String    // foreground layer resource
+  let background: (CGContext) -> Void
+}
+
+let logo = load("\(appMedia)/icon_rd_logo_color.png")
+let white = whiteLogo(logo)
+save(foreground(white, shadow: true), "\(appMedia)/icon_rd_logo_white.png")
+
+let presets: [Preset] = [
+  Preset(name: "rd_white", resource: "icon_rd_white", foreground: "icon_rd_logo_color") { context in
+    context.setFillColor(color(0xFFFFFF)); context.fill(CGRect(x: 0, y: 0, width: size, height: size))
+  },
+  // An empty background layer: the launcher shows only the logo.
+  Preset(name: "rd_transparent", resource: "icon_rd_clear", foreground: "icon_rd_logo_color") { _ in },
+  Preset(name: "rd_night", resource: "icon_rd_night", foreground: "icon_rd_logo_color") { context in
+    linear(context, [(0x1C3264, 0), (0x0B1430, 0.6), (0x060A18, 1)], angle: 180)
+    glow(context, x: 0.28, y: 0.2, radius: 0.62, 0x2F7BFF, 0.42)
+    glow(context, x: 0.82, y: 0.9, radius: 0.5, 0x6A4DFF, 0.18)
+  },
+  Preset(name: "rd_sky", resource: "icon_rd_sky", foreground: "icon_rd_logo_white") { context in
+    linear(context, [(0x7FD0FF, 0), (0x2E8BFF, 0.55), (0x0A56F0, 1)], angle: 145)
+    glow(context, x: 0.22, y: 0.14, radius: 0.55, 0xFFFFFF, 0.32)
+  },
+  // The Pro badge's iridescent stops (ProBadge.ets) with the original blue logo.
+  Preset(name: "rd_aurora", resource: "icon_rd_aurora", foreground: "icon_rd_logo_color") { context in
+    linear(context, [(0xB9F3EA, 0), (0xCDC9FF, 0.35), (0xF4C8E5, 0.7), (0xF9E3B8, 1)], angle: 115)
+    glow(context, x: 0.3, y: 0.18, radius: 0.6, 0xFFFFFF, 0.45)
+  }
+]
+
+func rounded(_ context: CGContext) {
+  let side = CGFloat(context.width)
+  let radius = side * cornerRatio
+  context.addPath(CGPath(roundedRect: CGRect(x: 0, y: 0, width: side, height: side),
+    cornerWidth: radius, cornerHeight: radius, transform: nil))
+  context.clip()
+}
+
+for preset in presets {
+  let background = canvas(size)
+  preset.background(background)
+  save(background, "\(appMedia)/\(preset.resource)_bg.png")
+  let layered = "{\n  \"layered-image\":\n  {\n    \"background\" : \"$media:\(preset.resource)_bg\",\n" +
+    "    \"foreground\" : \"$media:\(preset.foreground)\"\n  }\n}\n"
+  try! layered.write(toFile: "\(appMedia)/\(preset.resource).json", atomically: true, encoding: .utf8)
+  print("wrote \(appMedia)/\(preset.resource).json")
+
+  let preview = canvas(previewSize)
+  let rect = CGRect(x: 0, y: 0, width: previewSize, height: previewSize)
+  rounded(preview)
+  preview.draw(background.makeImage()!, in: rect)
+  preview.draw(load("\(appMedia)/\(preset.foreground).png"), in: rect)
+  save(preview, "\(entryMedia)/icon_preview_\(preset.name).png")
+}
+
+// The default icon: the #007DFF background (background.svg) plus its full-bleed foreground.
+let preview = canvas(previewSize)
+let rect = CGRect(x: 0, y: 0, width: previewSize, height: previewSize)
+rounded(preview)
+preview.setFillColor(color(0x007DFF)); preview.fill(rect)
+preview.draw(load("\(appMedia)/foreground.png"), in: rect)
+save(preview, "\(entryMedia)/icon_preview_default.png")

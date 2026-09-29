@@ -5,6 +5,7 @@ import { ProAppIcons } from '../services/pro/ProAppIcons';
 import { ProAppIconSnapshot } from '../services/pro/ProAppIconController';
 import { ProPurchaseLifecycle } from '../services/pro/ProPurchaseLifecycle';
 import { ProFeatureGate } from './ProFeatureGate';
+import { APP_ICON_PRESETS, AppIconPreset, appIconLabel } from '../common/AppIconPolicy';
 
 @Component
 export struct ProAppIconPanel {
@@ -38,36 +39,48 @@ export struct ProAppIconPanel {
   }
   private name(): string {
     if (!this.state.loaded) { return '暂未确认'; }
-    if (this.state.currentName === '') { return '默认图标'; }
-    if (this.state.currentName === 'rd_white') { return '白底版'; }
-    if (this.state.currentName === 'rd_transparent') { return '透明底版'; }
-    return '其他预设';
+    return this.state.currentName === '' ? '默认图标' : appIconLabel(this.state.currentName);
   }
-  @Builder private option(name: string, label: string, icon: Resource) {
-    Button({ type: ButtonType.Normal }) {
-      Column({ space: 8 }) {
-        Image(icon).width(64).height(64).objectFit(ImageFit.Contain).borderRadius(14)
-        Text(label).fontSize(13).fontColor(this.pal().text).maxLines(2)
-        if (this.state.loaded && this.state.currentName === name) {
-          Text('使用中').fontSize(11).fontColor(this.accent)
-        }
-      }.width('100%').padding({ top: 12, bottom: 12, left: 4, right: 4 })
+  // Pre-composed previews: the layered launcher icons are not plain bitmaps for Image.
+  private preview(name: string): Resource {
+    if (name === 'rd_white') { return $r('app.media.icon_preview_rd_white'); }
+    if (name === 'rd_transparent') { return $r('app.media.icon_preview_rd_transparent'); }
+    if (name === 'rd_night') { return $r('app.media.icon_preview_rd_night'); }
+    if (name === 'rd_sky') { return $r('app.media.icon_preview_rd_sky'); }
+    if (name === 'rd_aurora') { return $r('app.media.icon_preview_rd_aurora'); }
+    return $r('app.media.icon_preview_default');
+  }
+  private rows(): AppIconPreset[][] {
+    const rows: AppIconPreset[][] = [];
+    for (let index = 0; index < APP_ICON_PRESETS.length; index += 3) { rows.push(APP_ICON_PRESETS.slice(index, index + 3)); }
+    return rows;
+  }
+  private current(name: string): boolean { return this.state.loaded && this.state.currentName === name; }
+  // A Column card: Button(Normal) ignored the corner radius on device.
+  @Builder private option(preset: AppIconPreset) {
+    Column({ space: 8 }) {
+      Image(this.preview(preset.name)).width(56).height(56).objectFit(ImageFit.Contain)
+      Text(preset.label).fontSize(13).fontColor(this.pal().text).maxLines(1)
+      Text(this.current(preset.name) ? '使用中' : ' ').fontSize(11).fontColor(this.accent)
     }
-    .layoutWeight(1).borderRadius(16).backgroundColor(this.pal().surface)
-    .border({ width: this.state.loaded && this.state.currentName === name ? 1.5 : 0.5,
-      color: this.state.loaded && this.state.currentName === name ? this.accent : this.pal().cardBorder })
-    .enabled(!this.state.busy).accessibilityText(label +
-      (this.state.loaded && this.state.currentName === name ? '，使用中' : '，应用此图标'))
-    .onClick((): void => { this.select(name); })
+    .layoutWeight(1).padding({ top: 12, bottom: 10, left: 4, right: 4 })
+    .borderRadius(16).clip(true).backgroundColor(this.pal().surface)
+    .border({ width: this.current(preset.name) ? 1.5 : 0.5,
+      color: this.current(preset.name) ? this.accent : this.pal().cardBorder })
+    .opacity(this.state.busy ? 0.6 : 1).enabled(!this.state.busy)
+    .clickEffect({ level: ClickEffectLevel.LIGHT }).focusable(true)
+    .accessibilityText(preset.label + (this.current(preset.name) ? '，使用中' : '，应用此图标'))
+    .onClick((): void => { this.select(preset.name); })
   }
   @Builder private presets() {
-    Column({ space: 10 }) {
+    Column({ space: 8 }) {
       Text(this.proLabel).fontSize(12).fontColor(this.accent).width('100%')
-      Row({ space: 8 }) {
-        this.option('', '默认', $r('app.media.layered_image'))
-        this.option('rd_white', '白底版', $r('app.media.rd_logo_white'))
-        this.option('rd_transparent', '透明底版', $r('app.media.rd_logo_transparent'))
-      }.width('100%').alignItems(VerticalAlign.Top)
+      ForEach(this.rows(), (row: AppIconPreset[]): void => {
+        Row({ space: 8 }) {
+          ForEach(row, (preset: AppIconPreset): void => { this.option(preset); },
+            (preset: AppIconPreset): string => preset.name === '' ? 'default' : preset.name)
+        }.width('100%').alignItems(VerticalAlign.Top)
+      }, (row: AppIconPreset[]): string => row.map((preset: AppIconPreset): string => preset.name).join('|'))
     }.width('100%')
   }
   build() {
