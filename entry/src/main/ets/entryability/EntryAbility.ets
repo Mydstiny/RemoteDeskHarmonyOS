@@ -3,6 +3,7 @@ import { ProContinuationService, PRO_CONTINUATION_PARAM,
 import { ProConnectionShareReceiver } from '../services/pro/ProConnectionShareReceiver';
 import { ProConnectionShareSender } from '../services/pro/ProConnectionShareSender';
 import { ProAppRuntime } from '../services/pro/ProAppRuntime';
+import { ProFeatureVisibility } from '../services/pro/ProFeatureVisibility';
 /**
  * EntryAbility.ets — 应用入口 UIAbility
  *
@@ -221,6 +222,7 @@ export default class EntryAbility extends UIAbility {
 
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     ProAppRuntime.getInstance();
+    ProFeatureVisibility.getInstance().load(this.context as common.UIAbilityContext);
     ProContinuationService.getInstance().initializeMission(this.context);
     if (!this.acceptProContinuationWant(want, launchParam)) { return; }
     this.acceptProConnectionShareWant(want, launchParam);

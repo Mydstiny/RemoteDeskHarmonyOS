@@ -16,6 +16,7 @@ import { ProFeatureVisibility } from '../services/pro/ProFeatureVisibility';
 import { ProPurchaseLifecycle } from '../services/pro/ProPurchaseLifecycle';
 import { ProPurchaseSheet } from '../components/ProPurchaseSheet';
 import { ProAppIconPanel } from '../components/ProAppIconPanel';
+import { ProAppIcons } from '../services/pro/ProAppIcons';
 import { AiSettingsSurface } from './AiSettingsPage';
 /**
  * HostListPage v9 — 多端响应式 + 悬浮卡片 sheet + 滑动删除 + 官方图标按钮
@@ -845,7 +846,10 @@ const DESKTOP_MOONLIGHT_TAB = 7;
 struct HostListPage {
   @State proStatusLabel: string = '免费版';
   @State aiProVisible: boolean = false;
+  @State appIconProVisible: boolean = true;
+  @State appIconSupported: boolean = false;
   private proUnsubscribe: (() => void) | null = null;
+  private proVisibilityUnsubscribe: (() => void) | null = null;
   @State hosts: RemoteHost[] = [];
   @State filteredHosts: RemoteHost[] = [];
   @State rdpCredentials: RdpCredential[] = [];
@@ -1959,7 +1963,14 @@ struct HostListPage {
   }
 
   async aboutToAppear(): Promise<void> {
-    ProFeatureVisibility.getInstance().load(getContext(this) as common.UIAbilityContext);
+    const proVisibility = ProFeatureVisibility.getInstance();
+    proVisibility.load(getContext(this) as common.UIAbilityContext);
+    this.appIconProVisible = proVisibility.isVisible('pro.personalization.appIcon');
+    this.appIconSupported = ProAppIcons.getInstance().snapshot().supported;
+    this.proVisibilityUnsubscribe?.();
+    this.proVisibilityUnsubscribe = proVisibility.subscribe((): void => {
+      this.appIconProVisible = proVisibility.isVisible('pro.personalization.appIcon');
+    });
     this.aiStopStore = AiLocalStore.getInstance().subscribe((): void => { void this.refreshAiHosts(); });
     this.aiStopAccess = AiAccess.getInstance().subscribe((): void => {
       this.aiProVisible = AiAccess.getInstance().proVisible();
@@ -5296,6 +5307,7 @@ struct HostListPage {
 
   aboutToDisappear(): void {
     this.aiStopStore(); this.aiStopAccess();
+    this.proVisibilityUnsubscribe?.(); this.proVisibilityUnsubscribe = null;
     this.proContinuationStop?.(); this.proContinuationStop = null;
     this.proConnectionShareStop?.(); this.proConnectionShareStop = null;
     this.clearProConnectionShareDraft();
@@ -15790,16 +15802,18 @@ struct HostListPage {
               }.width('100%').height(60).padding({ left: 16, right: 16 })
               .onClick(() => { this.openSettingsLeafSheet(SETTINGS_SHEET_ACCENT_COLOR); })
               this.cardDivider()
-              Row() {
-                Row() { SymbolGlyph($r('sys.symbol.square_and_pencil')).fontSize(22).fontColor([this.pal().text]) }
-                  .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
-                Text('应用图标').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
-                  .fontColor(this.pal().text).fontFamily(this.font()).layoutWeight(1).margin({ left: 4 })
-                ProBadge().margin({ right: 4 })
-                Text(' >').fontSize(14).fontColor(this.pal().text3).margin({ left: 4 })
-              }.width('100%').height(60).padding({ left: 16, right: 16 })
-                .onClick((): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_APP_ICON); })
-              this.cardDivider()
+              if (this.appIconProVisible && this.appIconSupported) {
+                Row() {
+                  Row() { SymbolGlyph($r('sys.symbol.square_and_pencil')).fontSize(22).fontColor([this.pal().text]) }
+                    .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
+                  Text('应用图标').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
+                    .fontColor(this.pal().text).fontFamily(this.font()).layoutWeight(1).margin({ left: 4 })
+                  ProBadge().margin({ right: 4 })
+                  Text(' >').fontSize(14).fontColor(this.pal().text3).margin({ left: 4 })
+                }.width('100%').height(60).padding({ left: 16, right: 16 })
+                  .onClick((): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_APP_ICON); })
+                this.cardDivider()
+              }
               // 深色模式(含跟随系统)
               Column() {
                 Row() {

@@ -9,7 +9,8 @@ const owner = 'owner-' + 'a'.repeat(64);
 const tick = () => new Promise(r => setImmediate(r));
 function environment() {
   const modules = new Map(), transitionListeners = [], accountListeners = [], proListeners = [];
-  let pro = true, transition = false, seq = 0, dnsResolve, delayedDns = false;
+  let pro = true, featureVisible = true, transition = false, seq = 0, dnsResolve, delayedDns = false;
+  const featureListeners = [];
   const scope = { kind: 'huawei_account', ownerScopeId: owner, generation: 1, sessionState: 'ready' };
   const host = { id: 'fixtureHost', owner, revision: 1, label: 'Original', backend: 'codex',
     address: 'host.test', port: 9443, serverName: '', groupId: '', sortOrder: 0,
@@ -28,6 +29,10 @@ function environment() {
   const mocks = {
     '../AccountSessionCoordinator': {AccountSessionCoordinator: {getInstance: () => account}},
     '../pro/ProAppRuntime': {ProAppRuntime: {getInstance: () => proRuntime}},
+    '../pro/ProFeatureVisibility': {ProFeatureVisibility: {getInstance: () => ({
+      isVisible: () => featureVisible,
+      subscribe: listener => { featureListeners.push(listener); listener(); return () => {}; }
+    })}},
     '../EndpointAddressPolicy': {parseEndpointHost: value => ({ok: true, endpoint: {family: value.includes('.test') ? 'hostname' : 'ipv4'}}), parseEndpointServerIdentity: () => ({ok: true})},
     './AiLocalStore': {AiLocalStore: {getInstance: () => store}},
     '@kit.ArkTS': {util: {TextEncoder: class {encodeInto(text) {return new TextEncoder().encode(text);}},
@@ -58,12 +63,19 @@ function environment() {
     editDuringIdentity() {identityHook=()=>{storedHost={...storedHost,revision:2,label:'Edited'};load('AiLifecycle').AiLifecycle.closeHost(host.id);};},
     delayDns() {delayedDns=true;}, get dnsPending() {return typeof dnsResolve === 'function';},
     releaseDns() {dnsResolve([{address:'127.0.0.1'}]);},
+    setFeatureVisible(value) { featureVisible = value; featureListeners.forEach(listener => listener()); },
     transitionCycle() {transition=true;transitionListeners.forEach(f=>f(true));transition=false;transitionListeners.forEach(f=>f(false));}
   };
 }
 (async () => {
   {
     const e=environment(), access=e.load('AiAccess').AiAccess.getInstance(), lease=access.capture();
+    assert.equal(access.proVisible(), true);
+    assert.equal(access.executable('codex'), true);
+    e.setFeatureVisible(false);
+    assert.equal(access.proVisible(), false);
+    assert.equal(access.executable('codex'), false);
+    e.setFeatureVisible(true);
     e.load('AiLifecycle').AiLifecycle.invalidateAll();
     assert.equal(access.current(lease),false);
     const lease2=access.capture();e.transitionCycle(); assert.equal(access.current(lease2),false);

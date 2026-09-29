@@ -71,8 +71,11 @@ test('purchase sheet observes delayed backend readiness without discarding a loa
   let ready = false, listener, active = false, productCalls = 0;
   const runtime = { sandboxSelected: () => false, billingProductId: () => 'fixture.pro', billingAvailable: () => ready,
     runtime: { subscribe(cb) { listener = cb; cb(); return () => {}; },
-      snapshot: () => ({ realState: active ? 'active' : 'free', label: active ? 'Pro' : '免费版', mode: 'real' }) } };
+      snapshot: () => ({ realState: active ? 'active' : 'free', effectiveState: active ? 'active' : 'free',
+        label: active ? 'Pro' : '免费版', mode: 'real' }) } };
   const context = vm.createContext({ DEBUG: false, ProAppRuntime: { getInstance: () => runtime },
+    ProFeatureVisibility: { getInstance: () => ({ load: () => {}, subscribe: cb => { cb(); return () => {}; }, isVisible: () => true }) },
+    ProFeatureVisibilityPanel: { prepare: () => {} },
     HuaweiProBillingProvider: class { async product() { productCalls++; return { id: 'fixture.pro', price: '¥1', name: 'Fixture' }; } },
     ProPurchaseCoordinator: { enter: () => true, leave: () => {} },
     ProPurchaseLifecycle: { capture: () => 1, current: () => true }, getContext: () => ({}) });

@@ -26,7 +26,9 @@ export struct ProPurchaseSheet {
   @State purchased: boolean = false;
   @State proLabel: string = '免费版';
   @State debugMode: ProDebugMode = 'real';
+  @State visibilityRevision: number = 0;
   private unsubscribe: (() => void) | null = null;
+  private visibilityUnsubscribe: (() => void) | null = null;
   @State productId: string = '';
   @State storePrice: string = '';
   @State storeName: string = '';
@@ -40,6 +42,9 @@ export struct ProPurchaseSheet {
   aboutToAppear(): void {
     this.live = true;
     this.testing = ProAppRuntime.getInstance().sandboxSelected();
+    const visibility = ProFeatureVisibility.getInstance();
+    visibility.load(getContext(this) as common.UIAbilityContext);
+    this.visibilityUnsubscribe = visibility.subscribe((): void => { this.visibilityRevision++; });
     ProFeatureVisibilityPanel.prepare(getContext(this) as common.UIAbilityContext);
     this.syncBilling();
     this.unsubscribe = ProAppRuntime.getInstance().runtime.subscribe((): void => {
@@ -50,7 +55,11 @@ export struct ProPurchaseSheet {
       this.purchased = snapshot.effectiveState === 'active';
     });
   }
-  aboutToDisappear(): void { this.live = false; this.generation++; this.unsubscribe?.(); this.unsubscribe = null; }
+  aboutToDisappear(): void {
+    this.live = false; this.generation++;
+    this.unsubscribe?.(); this.unsubscribe = null;
+    this.visibilityUnsubscribe?.(); this.visibilityUnsubscribe = null;
+  }
   private pal(): Palette { return this.theme === 'light' ? buildLight(this.accent) : buildDark(this.accent); }
   private context(): common.UIAbilityContext { return getContext(this) as common.UIAbilityContext; }
 
@@ -147,6 +156,11 @@ export struct ProPurchaseSheet {
     .border({ width: 0.5, color: this.pal().cardBorder })
   }
 
+  private visibleFeatures(_revision: number): ProFeature[] {
+    return proFeatures().filter((item: ProFeature): boolean => item.requiredEntitlementId.length > 0 &&
+      ProFeatureVisibility.getInstance().isVisible(item.id));
+  }
+
   build() {
     Column() {
       Row() {
@@ -169,8 +183,7 @@ export struct ProPurchaseSheet {
             Text('一次购买 · 不自动续费').fontSize(12).fontColor(this.accent)
           }.width('100%').padding({ top: 16, bottom: 18 })
           ProFeatureVisibilityPanel({ isOpen: (): boolean => this.live })
-          ForEach(proFeatures().filter((item: ProFeature): boolean => item.requiredEntitlementId.length > 0 &&
-              ProFeatureVisibility.getInstance().isVisible(item.id)),
+          ForEach(this.visibleFeatures(this.visibilityRevision),
             (feature: ProFeature, index: number): void => { this.featureCard(feature, index) },
             (feature: ProFeature): string => feature.id)
           Text('核心功能一直免费').fontSize(15).fontWeight(FontWeight.Medium).fontColor(this.pal().text)

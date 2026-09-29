@@ -11,6 +11,7 @@ export struct ProFeatureVisibilityPanel {
   @State revision: number = 0;
   @State values: ProFeature[] = [];
   private contextValue: common.UIAbilityContext | null = null;
+  private visibilityUnsubscribe: (() => void) | null = null;
   live: boolean = false;
   isOpen: () => boolean = (): boolean => true;
 
@@ -20,20 +21,27 @@ export struct ProFeatureVisibilityPanel {
 
   aboutToAppear(): void {
     this.live = true;
-    this.values = ProFeatureVisibility.getInstance().proCatalog();
     this.contextValue = getContext(this) as common.UIAbilityContext;
-    ProFeatureVisibility.getInstance().load(this.contextValue);
+    const visibility = ProFeatureVisibility.getInstance();
+    visibility.load(this.contextValue);
+    this.values = visibility.proCatalog();
+    this.visibilityUnsubscribe = visibility.subscribe((): void => {
+      this.values = visibility.proCatalog();
+      this.revision++;
+    });
   }
 
-  aboutToDisappear(): void { this.live = false; this.contextValue = null; }
+  aboutToDisappear(): void {
+    this.live = false;
+    this.visibilityUnsubscribe?.(); this.visibilityUnsubscribe = null;
+    this.contextValue = null;
+  }
 
   private pal(): Palette { return this.theme === 'light' ? buildLight(this.accent) : buildDark(this.accent); }
 
   private toggle(feature: ProFeature, visible: boolean): void {
     if (!this.live || this.contextValue === null) { return; }
-    if (ProFeatureVisibility.getInstance().setVisible(this.contextValue, feature.id, visible)) {
-      this.revision++;
-    }
+    ProFeatureVisibility.getInstance().setVisible(this.contextValue, feature.id, visible);
   }
 
   build() {

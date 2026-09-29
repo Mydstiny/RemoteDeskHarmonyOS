@@ -16,6 +16,7 @@ const mocks={
   '../EndpointAddressPolicy':{parseEndpointHost:()=>({ok:true}),parseEndpointServerIdentity:()=>({ok:true})},
   '../AccountSessionCoordinator':{AccountSessionCoordinator:{getInstance:()=>account}},
   '../pro/ProAppRuntime':{ProAppRuntime:{getInstance:()=>({runtime:{subscribe:f=>{proListeners.push(f);f();return()=>{};},decision:()=>({executable:true})},context:()=>({})})}},
+  '../pro/ProFeatureVisibility':{ProFeatureVisibility:{getInstance:()=>({isVisible:()=>true,subscribe:f=>{f();return()=>{};}})}},
   '@kit.CoreFileKit':{picker:{DocumentViewPicker:class{async select(){return['fixtureUri'];}}},fileIo:{OpenMode:{READ_ONLY:0},openSync:()=>({fd:1}),statSync:()=>({size:bytes.length}),readSync:(_fd,buffer)=>{new Uint8Array(buffer).set(bytes);return bytes.length;},closeSync(){}}},
   '@kit.ArkTS':{util:{TextDecoder:{create:()=>({decodeToString:data=>new TextDecoder().decode(data)})}}},
   './AiTransport':{AiTransport:{drain:()=>new Promise(resolve=>{resolveDrain=resolve;})},aiRandomId:()=> 'fixture'+(++seq)},

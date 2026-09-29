@@ -20,6 +20,7 @@ export class AiAccess {
     });
     account.onChange((_scope: AccountScopeToken): void => { this.publish(); });
     ProAppRuntime.getInstance().runtime.subscribe((): void => { this.publish(); });
+    ProFeatureVisibility.getInstance().subscribe((): void => { this.publish(); });
   }
   static getInstance(): AiAccess {
     if (!AiAccess.instance) { AiAccess.instance = new AiAccess(); }

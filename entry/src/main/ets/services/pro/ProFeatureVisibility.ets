@@ -9,6 +9,7 @@ export class ProFeatureVisibility {
   private static instance: ProFeatureVisibility | null = null;
   private values: Record<string, boolean> = {};
   private loaded: boolean = false;
+  private listeners: Array<() => void> = [];
 
   static getInstance(): ProFeatureVisibility {
     if (ProFeatureVisibility.instance === null) {
@@ -33,9 +34,12 @@ export class ProFeatureVisibility {
       this.values = {};
     }
     this.loaded = true;
+    this.publish();
   }
 
-  isVisible(id: string): boolean { return this.values[id] !== false; }
+  // Fail closed before the app has loaded preferences. Once loaded, missing
+  // ids are visible so newly catalogued Pro features remain discoverable.
+  isVisible(id: string): boolean { return this.loaded && this.values[id] !== false; }
 
   setVisible(context: common.UIAbilityContext, id: string, visible: boolean): boolean {
     this.load(context);
@@ -46,6 +50,7 @@ export class ProFeatureVisibility {
         context, { name: 'RemoteDesktopAppPrefs' });
       prefs.putSync(PRO_FEATURE_VISIBILITY_KEY, JSON.stringify(this.values));
       prefs.flushSync();
+      this.publish();
       return true;
     } catch (_error) {
       this.values[id] = previous === undefined ? true : previous;
@@ -55,5 +60,19 @@ export class ProFeatureVisibility {
 
   proCatalog(): ProFeature[] {
     return proFeatures().filter((feature: ProFeature): boolean => feature.requiredEntitlementId.length > 0);
+  }
+
+  subscribe(listener: () => void): () => void {
+    this.listeners.push(listener);
+    listener();
+    return (): void => {
+      this.listeners = this.listeners.filter((item: () => void): boolean => item !== listener);
+    };
+  }
+
+  private publish(): void {
+    this.listeners.slice().forEach((listener: () => void): void => {
+      try { listener(); } catch (_error) { /* A closing surface cannot block other owners. */ }
+    });
   }
 }
