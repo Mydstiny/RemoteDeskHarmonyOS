@@ -1,6 +1,5 @@
 import { ProBadge } from '../components/ProBadge';
 import { ProFeatureManagerPanel } from '../components/ProFeatureManagerPanel';
-import { DEBUG } from 'BuildProfile';
 import { AiHostEditor } from '../components/ai/AiHostEditor';
 import { AiHostService, projectAiHost, aiHostId } from '../services/ai/AiHostService';
 import { AiHost } from '../services/ai/AiModels';
@@ -851,6 +850,7 @@ struct HostListPage {
   @State proStatusLabel: string = '免费版';
   @State aiProVisible: boolean = false;
   @State appIconProVisible: boolean = true;
+  @State proManagerVisible: boolean = false;
   @State appIconSupported: boolean = false;
   private proUnsubscribe: (() => void) | null = null;
   private proVisibilityUnsubscribe: (() => void) | null = null;
@@ -1980,7 +1980,9 @@ struct HostListPage {
     proVisibility.load(getContext(this) as common.UIAbilityContext);
     this.refreshAppIconEntry();
     this.proVisibilityUnsubscribe?.();
-    const stopEntries = ProEntries.subscribe((): void => { this.refreshAppIconEntry(); });
+    const stopEntries = ProEntries.subscribe((): void => {
+      this.refreshAppIconEntry(); this.proManagerVisible = ProEntries.proActive();
+    });
     const stopIcons = ProAppIcons.getInstance().subscribe((): void => { this.refreshAppIconEntry(); });
     this.proVisibilityUnsubscribe = (): void => { stopEntries(); stopIcons(); };
     if (this.appIconSupported) { void ProAppIcons.getInstance().refresh(); }
@@ -16631,51 +16633,6 @@ struct HostListPage {
         .clip(true)
         .animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
 
-        // Testing tool: every Pro feature with its live status and display switch (Debug builds only).
-        if (DEBUG) {
-        ListItem() {
-          this.settingsAccordionHeader(SETTINGS_SECTION_PRO, $r('sys.symbol.star'),
-            'Pro 功能', '全部 Pro 功能的状态与显示管理')
-        }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 10 })
-        ListItem() {
-          Column() {
-            if (this.settingsSectionExpanded(SETTINGS_SECTION_PRO)) { ProFeatureManagerPanel() }
-          }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 20 })
-        }.constraintSize({ maxHeight: this.settingsSectionExpanded(SETTINGS_SECTION_PRO) ? 3000 : 0 })
-          .opacity(this.settingsSectionExpanded(SETTINGS_SECTION_PRO) ? 1 : 0)
-          .translate({ y: this.settingsSectionExpanded(SETTINGS_SECTION_PRO) ? 0 : -8 })
-          .clip(true).animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
-        }
-
-        if (this.aiProVisible) {
-        ListItem() {
-          this.settingsAccordionHeader(SETTINGS_SECTION_AI, protocolIcon('ai'),
-            '远程 AI', '连接与配对、显示、数据与电脑端安装')
-        }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 10 })
-        ListItem() {
-          Column() {
-            Column() {
-              this.protocolActionRow(protocolIcon('ai'), '连接与配对', '主机管理、默认 AI 与配对',
-                (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_AI_HOSTS); })
-              this.cardDivider()
-              this.protocolActionRow(protocolIcon('ai'), '显示与恢复', '工具过程、文字大小与前台恢复',
-                (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_AI_DISPLAY); })
-              this.cardDivider()
-              this.protocolActionRow(protocolIcon('ai'), '本机数据管理', '配置导入导出与操作记录',
-                (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_AI_DATA); })
-              this.cardDivider()
-              this.protocolActionRow(protocolIcon('ai'), '电脑端安装', 'Codex 与 DSH 安装指引',
-                (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_AI_INSTALL); })
-            }.borderRadius(24).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
-              .border({ width: 0.5, color: this.pal().cardBorder })
-          }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 20 })
-        }.constraintSize({ maxHeight: this.settingsSectionExpanded(SETTINGS_SECTION_AI) ? 400 : 0 })
-          .opacity(this.settingsSectionExpanded(SETTINGS_SECTION_AI) ? 1 : 0)
-          .scale({ x: 1, y: this.settingsSectionExpanded(SETTINGS_SECTION_AI) ? 1 : 0.98 })
-          .translate({ y: this.settingsSectionExpanded(SETTINGS_SECTION_AI) ? 0 : -8 })
-          .clip(true).animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
-        }
-
         ListItem() {
           this.settingsAccordionHeader(SETTINGS_SECTION_MOONLIGHT, protocolIcon('moonlight'),
             'Moonlight', '串流画面、音频、控制与本地安全设置', false, true)
@@ -16727,6 +16684,51 @@ struct HostListPage {
         .translate({ y: this.settingsSectionExpanded(SETTINGS_SECTION_MOONLIGHT) ? 0 : -8 })
         .clip(true)
         .animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
+
+        if (this.aiProVisible) {
+        ListItem() {
+          this.settingsAccordionHeader(SETTINGS_SECTION_AI, protocolIcon('ai'),
+            '远程 AI', '连接与配对、显示、数据与电脑端安装')
+        }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 10 })
+        ListItem() {
+          Column() {
+            Column() {
+              this.protocolActionRow(protocolIcon('ai'), '连接与配对', '主机管理、默认 AI 与配对',
+                (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_AI_HOSTS); })
+              this.cardDivider()
+              this.protocolActionRow(protocolIcon('ai'), '显示与恢复', '工具过程、文字大小与前台恢复',
+                (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_AI_DISPLAY); })
+              this.cardDivider()
+              this.protocolActionRow(protocolIcon('ai'), '本机数据管理', '配置导入导出与操作记录',
+                (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_AI_DATA); })
+              this.cardDivider()
+              this.protocolActionRow(protocolIcon('ai'), '电脑端安装', 'Codex 与 DSH 安装指引',
+                (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_AI_INSTALL); })
+            }.borderRadius(24).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
+              .border({ width: 0.5, color: this.pal().cardBorder })
+          }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 20 })
+        }.constraintSize({ maxHeight: this.settingsSectionExpanded(SETTINGS_SECTION_AI) ? 400 : 0 })
+          .opacity(this.settingsSectionExpanded(SETTINGS_SECTION_AI) ? 1 : 0)
+          .scale({ x: 1, y: this.settingsSectionExpanded(SETTINGS_SECTION_AI) ? 1 : 0.98 })
+          .translate({ y: this.settingsSectionExpanded(SETTINGS_SECTION_AI) ? 0 : -8 })
+          .clip(true).animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
+        }
+
+        // Every Pro feature with its live status and display switch; shown while Pro is active.
+        if (this.proManagerVisible) {
+        ListItem() {
+          this.settingsAccordionHeader(SETTINGS_SECTION_PRO, $r('sys.symbol.star'),
+            'Pro 功能', '全部 Pro 功能的状态与显示管理')
+        }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 10 })
+        ListItem() {
+          Column() {
+            if (this.settingsSectionExpanded(SETTINGS_SECTION_PRO)) { ProFeatureManagerPanel() }
+          }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 20 })
+        }.constraintSize({ maxHeight: this.settingsSectionExpanded(SETTINGS_SECTION_PRO) ? 3000 : 0 })
+          .opacity(this.settingsSectionExpanded(SETTINGS_SECTION_PRO) ? 1 : 0)
+          .translate({ y: this.settingsSectionExpanded(SETTINGS_SECTION_PRO) ? 0 : -8 })
+          .clip(true).animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
+        }
 
         ListItem() {
           this.settingsAccordionHeader(SETTINGS_SECTION_SECURITY, $r('sys.symbol.lock_shield_fill'),

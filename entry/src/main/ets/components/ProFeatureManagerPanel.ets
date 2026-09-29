@@ -12,7 +12,7 @@ import { ProDebugMode, ProRuntimeSnapshot } from '../services/pro/ProRuntime';
 
 const DEBUG_MODES: ProDebugMode[] = ['real', 'free', 'pro'];
 
-/** Every catalogued Pro feature with its live status and an individual display switch. */
+/** Every catalogued Pro feature with its live status and an individual display switch (shown while Pro is active). */
 @Component
 export struct ProFeatureManagerPanel {
   @StorageProp('currentTheme') theme: string = 'light';

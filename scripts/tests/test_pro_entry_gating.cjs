@@ -21,7 +21,7 @@ const rawAllowed = new Map([
   ['services/pro/ProEntries.ets', 'defines visible() = display choice AND entitlement decision'],
   ['services/pro/ProFeatureVisibility.ets', 'the display-choice store itself'],
   ['components/ProFeatureVisibilityPanel.ets', 'edits the display choice for every catalog feature'],
-  ['components/ProFeatureManagerPanel.ets', 'Debug management list: edits display choices and shows the decision separately'],
+  ['components/ProFeatureManagerPanel.ets', 'Pro management list (shown only while Pro is active): edits display choices, shows the decision separately'],
   ['components/ProPurchaseSheet.ets', 'purchase list describes features the user does not own yet'],
   ['services/ai/AiAccess.ets', 'proVisible()/executable() combine it with runtime.decision']
 ]);
@@ -71,6 +71,12 @@ for (const [file, text] of sources) {
 const host = sources.get('pages/HostListPage.ets');
 assert.match(host, /this\.appIconProVisible = ProEntries\.visible\(id\) \|\|\s*\(ProEntries\.shown\(id\) && icons\.loaded && icons\.currentName !== ''\)/);
 assert.match(host, /if \(this\.appIconProVisible && this\.appIconSupported\) \{[\s\S]{0,600}ProBadge\(\)/);
-assert.match(host, /if \(DEBUG\) \{\s*ListItem\(\) \{\s*this\.settingsAccordionHeader\(SETTINGS_SECTION_PRO/);
+assert.match(host, /if \(this\.proManagerVisible\) \{\s*ListItem\(\) \{\s*this\.settingsAccordionHeader\(SETTINGS_SECTION_PRO/);
+assert.match(host, /this\.proManagerVisible = ProEntries\.proActive\(\)/);
+assert.match(entries, /static proActive\(\): boolean \{\s*return ProAppRuntime\.getInstance\(\)\.runtime\.snapshot\(\)\.effectiveState === 'active';/);
+// Settings order: protocol sections, then remote AI and Pro management, then security.
+const order = ['SETTINGS_SECTION_VNC', 'SETTINGS_SECTION_MOONLIGHT', 'SETTINGS_SECTION_AI', 'SETTINGS_SECTION_PRO', 'SETTINGS_SECTION_SECURITY']
+  .map(name => host.indexOf('this.settingsAccordionHeader(' + name));
+assert.ok(order.every((index, i) => index > 0 && (i === 0 || index > order[i - 1])), 'settings section order changed');
 assert.match(host, /this\.aiProVisible\) \{\s*ListItem\(\) \{\s*this\.settingsAccordionHeader\(SETTINGS_SECTION_AI/);
 console.log('PASS Pro entry points follow the entitlement through ProEntries and every Pro badge is registered');

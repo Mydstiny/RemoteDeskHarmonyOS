@@ -24,6 +24,11 @@ export class ProEntries {
     return ProFeatureVisibility.getInstance().isVisible(featureId);
   }
 
+  /** Pro is active for this account (in Debug this includes the simulated Pro view). */
+  static proActive(): boolean {
+    return ProAppRuntime.getInstance().runtime.snapshot().effectiveState === 'active';
+  }
+
   /** Fires on entitlement and on display-choice changes. */
   static subscribe(listener: () => void): () => void {
     const stopRuntime = ProAppRuntime.getInstance().runtime.subscribe(listener);
