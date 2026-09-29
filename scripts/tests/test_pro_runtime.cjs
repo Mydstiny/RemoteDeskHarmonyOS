@@ -213,7 +213,7 @@ test('real account transitions isolate Pro before their first await and through 
 function iconFixture(debug = true) {
   const f = fixture(debug); let selected = ''; let queries = 0; const applied = [];
   const { ProAppIconController } = f.load('entry/src/main/ets/services/pro/ProAppIconController.ets');
-  const icons = () => ['rd_white', 'rd_transparent', 'rd_night', 'rd_sky', 'rd_aurora', 'rd_vivid', 'rd_soft']
+  const icons = () => ['rd_white', 'rd_transparent', 'rd_night', 'rd_sky', 'rd_aurora', 'rd_vivid', 'rd_soft', 'rd_vivid_night', 'rd_vivid_ocean', 'rd_vivid_aurora']
     .map(name => ({ name, enabled: selected === name }));
   const provider = { supported: () => true, query: async () => { queries++; return icons(); },
     apply: async name => { applied.push(name); selected = name; } };
@@ -240,16 +240,16 @@ test('real icon feature hides for free users and rejects direct calls; default r
 test('every preset in the picker is a registered alternate icon and unknown names are rejected', async () => {
   const fs = require('node:fs');
   const manifest = fs.readFileSync(require('node:path').join(__dirname, '../../AppScope/app.json5'), 'utf8');
-  const registered = [...manifest.matchAll(/"name": "(rd_[a-z]+)", "icon": "\$media:([a-z_]+)"/g)];
+  const registered = [...manifest.matchAll(/"name": "(rd_[a-z_]+)", "icon": "\$media:([a-z_]+)"/g)];
   assert.deepEqual(registered.map(match => match[1]),
-    ['rd_white', 'rd_transparent', 'rd_night', 'rd_sky', 'rd_aurora', 'rd_vivid', 'rd_soft']);
+    ['rd_white', 'rd_transparent', 'rd_night', 'rd_sky', 'rd_aurora', 'rd_vivid', 'rd_soft', 'rd_vivid_night', 'rd_vivid_ocean', 'rd_vivid_aurora']);
   for (const [, , resource] of registered) {
     const layered = JSON.parse(fs.readFileSync(require('node:path').join(__dirname,
       '../../AppScope/resources/base/media/' + resource + '.json'), 'utf8'))['layered-image'];
     assert.ok(layered.background && layered.foreground, resource + ' must be a layered icon like the default');
   }
   const f = iconFixture(); f.runtime.setDebugMode('pro');
-  for (const name of ['rd_night', 'rd_sky', 'rd_aurora', 'rd_vivid', 'rd_soft']) {
+  for (const name of ['rd_night', 'rd_sky', 'rd_aurora', 'rd_vivid', 'rd_soft', 'rd_vivid_night', 'rd_vivid_ocean', 'rd_vivid_aurora']) {
     assert.equal(await f.controller.select(name, () => true), true);
     assert.equal(f.controller.snapshot().currentName, name);
   }

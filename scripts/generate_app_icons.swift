@@ -99,44 +99,44 @@ struct Preset {
   var drawForeground: ((CGContext) -> Void)? = nil  // original artwork written to `foreground`
 }
 
-// Supplied artwork (design/app-icons, not packaged): a logo on a white canvas. White is keyed
-// to transparency with anti-aliased edges un-mixed from white, the logo is cropped to its
-// bounds and fitted into the icon safe zone.
-func extractLogo(_ path: String, maxWidth: CGFloat = 640, maxHeight: CGFloat = 560) -> (CGContext) -> Void {
+// Supplied artwork (design/app-icons, not packaged): a logo on a white canvas.
+func flattened(_ path: String) -> CGContext {
+  let source = load(path)
+  let raw = canvas(source.width)  // sources are square
+  // Transparent source pixels read as the white canvas they were designed on.
+  raw.setFillColor(color(0xFFFFFF)); raw.fill(CGRect(x: 0, y: 0, width: raw.width, height: raw.height))
+  raw.draw(source, in: CGRect(x: 0, y: 0, width: raw.width, height: raw.height))
+  return raw
+}
+
+// The supplied image exactly as designed, only resized to the icon canvas.
+func originalArtwork(_ path: String) -> (CGContext) -> Void {
   return { context in
-    let source = load(path)
-    let width = source.width, height = source.height
-    let raw = canvas(width)  // sources are square
-    // Flatten onto white first: transparent source pixels must key out like the white canvas.
-    raw.setFillColor(color(0xFFFFFF)); raw.fill(CGRect(x: 0, y: 0, width: width, height: height))
-    raw.draw(source, in: CGRect(x: 0, y: 0, width: width, height: height))
-    let pixels = raw.data!.bindMemory(to: UInt8.self, capacity: width * height * 4)
-    let stride = raw.bytesPerRow
-    var minX = width, minY = height, maxX = -1, maxY = -1
-    for y in 0..<height {
-      for x in 0..<width {
-        let i = y * stride + x * 4
+    context.draw(flattened(path).makeImage()!, in: CGRect(x: 0, y: 0, width: size, height: size))
+  }
+}
+
+// The supplied logo in its original position and scale, with the white canvas keyed to
+// transparency (anti-aliased edges un-mixed from white), optionally filled white.
+func keyedArtwork(_ path: String, white: Bool = false) -> (CGContext) -> Void {
+  return { context in
+    let raw = flattened(path)
+    let pixels = raw.data!.bindMemory(to: UInt8.self, capacity: raw.bytesPerRow * raw.height)
+    for y in 0..<raw.height {
+      for x in 0..<raw.width {
+        let i = y * raw.bytesPerRow + x * 4
         let r = CGFloat(pixels[i]), g = CGFloat(pixels[i + 1]), b = CGFloat(pixels[i + 2])
         // Distance from white; 245+ is background, 185- is fully logo.
         let alpha = max(0, min(1, (245 - min(r, g, b)) / 60))
-        if alpha <= 0 {
-          pixels[i] = 0; pixels[i + 1] = 0; pixels[i + 2] = 0; pixels[i + 3] = 0; continue
-        }
-        // Un-mix the white edge, then store premultiplied.
         func channel(_ value: CGFloat) -> UInt8 {
-          UInt8(max(0, min(255, (value - (1 - alpha) * 255) / alpha)) * alpha)
+          white ? UInt8(255 * alpha) : UInt8(max(0, min(255, (value - (1 - alpha) * 255) / max(alpha, 0.001))) * alpha)
         }
         pixels[i] = channel(r); pixels[i + 1] = channel(g); pixels[i + 2] = channel(b)
         pixels[i + 3] = UInt8(alpha * 255)
-        if alpha > 0.5 { minX = min(minX, x); maxX = max(maxX, x); minY = min(minY, y); maxY = max(maxY, y) }
       }
     }
-    // Bitmap rows run top-down; CGImage cropping uses the same orientation.
-    let bounds = CGRect(x: minX, y: minY, width: maxX - minX + 1, height: maxY - minY + 1)
-    let logo = raw.makeImage()!.cropping(to: bounds)!
-    let scale = min(maxWidth / bounds.width, maxHeight / bounds.height)
-    let w = bounds.width * scale, h = bounds.height * scale
-    context.draw(logo, in: CGRect(x: (CGFloat(size) - w) / 2, y: (CGFloat(size) - h) / 2, width: w, height: h))
+    if white { context.setShadow(offset: CGSize(width: 0, height: -14), blur: 40, color: color(0x001A4D, 0.28)) }
+    context.draw(raw.makeImage()!, in: CGRect(x: 0, y: 0, width: size, height: size))
   }
 }
 
@@ -169,9 +169,22 @@ let presets: [Preset] = [
     glow(context, x: 0.3, y: 0.18, radius: 0.6, 0xFFFFFF, 0.45)
   },
   Preset(name: "rd_vivid", resource: "icon_rd_vivid", foreground: "icon_rd_vivid_fg",
-    background: whiteBackground, drawForeground: extractLogo("design/app-icons/rd_vivid.png")),
+    background: whiteBackground, drawForeground: originalArtwork("design/app-icons/rd_vivid.png")),
   Preset(name: "rd_soft", resource: "icon_rd_soft", foreground: "icon_rd_soft_fg",
-    background: whiteBackground, drawForeground: extractLogo("design/app-icons/rd_soft.png"))
+    background: whiteBackground, drawForeground: originalArtwork("design/app-icons/rd_soft.png")),
+  Preset(name: "rd_vivid_night", resource: "icon_rd_vivid_night", foreground: "icon_rd_vivid_keyed", background: { context in
+    linear(context, [(0x17264F, 0), (0x0A1128, 0.6), (0x05081A, 1)], angle: 180)
+    glow(context, x: 0.8, y: 0.2, radius: 0.55, 0x1FC8FF, 0.32)
+    glow(context, x: 0.15, y: 0.85, radius: 0.5, 0x2F5BFF, 0.3)
+  }, drawForeground: keyedArtwork("design/app-icons/rd_vivid.png")),
+  Preset(name: "rd_vivid_ocean", resource: "icon_rd_vivid_ocean", foreground: "icon_rd_vivid_keyed_white", background: { context in
+    linear(context, [(0x22D3F5, 0), (0x1C8BFF, 0.5), (0x0B4FE6, 1)], angle: 145)
+    glow(context, x: 0.8, y: 0.15, radius: 0.5, 0xFFFFFF, 0.25)
+  }, drawForeground: keyedArtwork("design/app-icons/rd_vivid.png", white: true)),
+  Preset(name: "rd_vivid_aurora", resource: "icon_rd_vivid_aurora", foreground: "icon_rd_vivid_keyed", background: { context in
+    linear(context, [(0xB9F3EA, 0), (0xCDC9FF, 0.35), (0xF4C8E5, 0.7), (0xF9E3B8, 1)], angle: 115)
+    glow(context, x: 0.3, y: 0.18, radius: 0.6, 0xFFFFFF, 0.45)
+  }, drawForeground: keyedArtwork("design/app-icons/rd_vivid.png"))
 ]
 
 func rounded(_ context: CGContext) {

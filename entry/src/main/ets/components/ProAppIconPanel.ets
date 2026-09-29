@@ -50,6 +50,9 @@ export struct ProAppIconPanel {
     if (name === 'rd_aurora') { return $r('app.media.icon_preview_rd_aurora'); }
     if (name === 'rd_vivid') { return $r('app.media.icon_preview_rd_vivid'); }
     if (name === 'rd_soft') { return $r('app.media.icon_preview_rd_soft'); }
+    if (name === 'rd_vivid_night') { return $r('app.media.icon_preview_rd_vivid_night'); }
+    if (name === 'rd_vivid_ocean') { return $r('app.media.icon_preview_rd_vivid_ocean'); }
+    if (name === 'rd_vivid_aurora') { return $r('app.media.icon_preview_rd_vivid_aurora'); }
     return $r('app.media.icon_preview_default');
   }
   private rows(): AppIconPreset[][] {

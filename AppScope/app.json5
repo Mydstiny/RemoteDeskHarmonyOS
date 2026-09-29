@@ -12,7 +12,10 @@
       { "name": "rd_sky", "icon": "$media:icon_rd_sky" },
       { "name": "rd_aurora", "icon": "$media:icon_rd_aurora" },
       { "name": "rd_vivid", "icon": "$media:icon_rd_vivid" },
-      { "name": "rd_soft", "icon": "$media:icon_rd_soft" }
+      { "name": "rd_soft", "icon": "$media:icon_rd_soft" },
+      { "name": "rd_vivid_night", "icon": "$media:icon_rd_vivid_night" },
+      { "name": "rd_vivid_ocean", "icon": "$media:icon_rd_vivid_ocean" },
+      { "name": "rd_vivid_aurora", "icon": "$media:icon_rd_vivid_aurora" }
     ],
     "label": "$string:app_name",
     "cloudStructuredDataSyncEnabled": true,
