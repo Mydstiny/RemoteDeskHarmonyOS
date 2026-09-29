@@ -21,6 +21,7 @@ const rawAllowed = new Map([
   ['services/pro/ProEntries.ets', 'defines visible() = display choice AND entitlement decision'],
   ['services/pro/ProFeatureVisibility.ets', 'the display-choice store itself'],
   ['components/ProFeatureVisibilityPanel.ets', 'edits the display choice for every catalog feature'],
+  ['components/ProFeatureManagerPanel.ets', 'Debug management list: edits display choices and shows the decision separately'],
   ['components/ProPurchaseSheet.ets', 'purchase list describes features the user does not own yet'],
   ['services/ai/AiAccess.ets', 'proVisible()/executable() combine it with runtime.decision']
 ]);
@@ -70,5 +71,6 @@ for (const [file, text] of sources) {
 const host = sources.get('pages/HostListPage.ets');
 assert.match(host, /this\.appIconProVisible = ProEntries\.visible\(id\) \|\|\s*\(ProEntries\.shown\(id\) && icons\.loaded && icons\.currentName !== ''\)/);
 assert.match(host, /if \(this\.appIconProVisible && this\.appIconSupported\) \{[\s\S]{0,600}ProBadge\(\)/);
+assert.match(host, /if \(DEBUG\) \{\s*ListItem\(\) \{\s*this\.settingsAccordionHeader\(SETTINGS_SECTION_PRO/);
 assert.match(host, /this\.aiProVisible\) \{\s*ListItem\(\) \{\s*this\.settingsAccordionHeader\(SETTINGS_SECTION_AI/);
 console.log('PASS Pro entry points follow the entitlement through ProEntries and every Pro badge is registered');

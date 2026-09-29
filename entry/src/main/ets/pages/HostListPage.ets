@@ -1,4 +1,6 @@
 import { ProBadge } from '../components/ProBadge';
+import { ProFeatureManagerPanel } from '../components/ProFeatureManagerPanel';
+import { DEBUG } from 'BuildProfile';
 import { AiHostEditor } from '../components/ai/AiHostEditor';
 import { AiHostService, projectAiHost, aiHostId } from '../services/ai/AiHostService';
 import { AiHost } from '../services/ai/AiModels';
@@ -602,6 +604,7 @@ import {
   SETTINGS_SECTION_SSH,
   SETTINGS_SECTION_VNC,
   SETTINGS_SECTION_AI,
+  SETTINGS_SECTION_PRO,
   SETTINGS_SECTION_SECURITY,
   SETTINGS_SECTION_TUTORIAL,
   SETTINGS_RDP_SWITCH_ROW_COUNT,
@@ -15683,7 +15686,9 @@ struct HostListPage {
       .alignItems(HorizontalAlign.Start)
       .layoutWeight(1)
 
-      if (section === SETTINGS_SECTION_AI) { ProBadge().margin({ right: 8 }).alignSelf(ItemAlign.Center) }
+      if (section === SETTINGS_SECTION_AI || section === SETTINGS_SECTION_PRO) {
+        ProBadge().margin({ right: 8 }).alignSelf(ItemAlign.Center)
+      }
       SymbolGlyph($r('sys.symbol.chevron_right'))
         .fontSize(18)
         .fontColor([this.pal().text3])
@@ -16625,6 +16630,22 @@ struct HostListPage {
         .translate({ y: this.settingsSectionExpanded(SETTINGS_SECTION_VNC) ? 0 : -8 })
         .clip(true)
         .animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
+
+        // Testing tool: every Pro feature with its live status and display switch (Debug builds only).
+        if (DEBUG) {
+        ListItem() {
+          this.settingsAccordionHeader(SETTINGS_SECTION_PRO, $r('sys.symbol.star'),
+            'Pro 功能', '全部 Pro 功能的状态与显示管理')
+        }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 10 })
+        ListItem() {
+          Column() {
+            if (this.settingsSectionExpanded(SETTINGS_SECTION_PRO)) { ProFeatureManagerPanel() }
+          }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 20 })
+        }.constraintSize({ maxHeight: this.settingsSectionExpanded(SETTINGS_SECTION_PRO) ? 3000 : 0 })
+          .opacity(this.settingsSectionExpanded(SETTINGS_SECTION_PRO) ? 1 : 0)
+          .translate({ y: this.settingsSectionExpanded(SETTINGS_SECTION_PRO) ? 0 : -8 })
+          .clip(true).animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
+        }
 
         if (this.aiProVisible) {
         ListItem() {
