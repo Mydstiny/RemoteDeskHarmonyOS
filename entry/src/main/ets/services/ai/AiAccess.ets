@@ -51,6 +51,11 @@ export class AiAccess {
       pro.runtime.decision('pro.ai.workspace', pro.context('ai')).executable &&
       pro.runtime.decision('pro.ai.' + backend, pro.context('ai')).executable;
   }
+  /** The RustDesk relay data channel stays closed until its catalog entry ships. */
+  relayTransportAvailable(): boolean {
+    const pro = ProAppRuntime.getInstance();
+    return pro.runtime.decision('pro.ai.rustdeskTransport', pro.context('ai')).executable;
+  }
   /**
    * UI admission for the whole remote-AI surface.  Keep this separate from
    * executable(), which also requires a bound Huawei account and a concrete

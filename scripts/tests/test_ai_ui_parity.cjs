@@ -63,12 +63,13 @@ async function bounded(promise) {
   finally { clearTimeout(timer); }
 }
 function authority() {
-  const state = { owner: 'owner-' + 'a'.repeat(64), granted: true, callbacks: [] };
+  const state = { owner: 'owner-' + 'a'.repeat(64), granted: true, relay: false, callbacks: [] };
   const access = { capture: () => ({ owner: state.owner, generation: 1, lifecycle: 1 }),
     current: lease => lease !== null && lease.owner === state.owner,
     assertCurrent: lease => { if (!access.current(lease)) throw Error('AI_ACCOUNT_CHANGED'); },
     executable: () => state.granted,
     proVisible: () => state.granted,
+    relayTransportAvailable: () => state.relay,
     subscribe: cb => { state.callbacks.push(cb); cb(); return () => { state.callbacks = state.callbacks.filter(value => value !== cb); }; } };
   state.access = access; state.publish = () => { for (const cb of state.callbacks.slice()) cb(); }; return state;
 }
@@ -217,8 +218,18 @@ const cases = [
     assert.equal(page.backend, 'codex'); assert.equal(page.step, 1); assert.equal(state.pairs.length + state.saves.length, 0);
     page.busy = false; page.selectBackend('dsh'); assert.equal(page.port, '9444'); assert.equal(page.invite, ''); page.aboutToDisappear();
   }],
-  ['relay route requires a configured RustDesk binding and persists the selected route', async () => {
+  ['closed RustDesk relay cannot be selected, and an existing relay binding cannot be saved again', async () => {
     const state = await editor(), page = state.page;
+    page.selectTransport('rustdesk'); assert.equal(page.transport, 'lan');
+    page.transport = 'rustdesk'; page.relayHostId = 'relay-1'; page.nextStep();
+    assert.equal(page.step, 1); assert.equal(page.error, 'RustDesk 中继暂未开放，请改用局域网连接');
+    await page.save(false); assert.equal(state.saves.length, 0);
+    assert.equal(page.error, 'RustDesk 中继暂未开放，请改用局域网连接');
+    page.selectTransport('lan'); assert.equal(page.transport, 'lan'); assert.equal(page.relayHostId, '');
+    page.aboutToDisappear();
+  }],
+  ['relay route requires a configured RustDesk binding and persists the selected route', async () => {
+    const state = await editor(), page = state.page; state.relay = true;
     page.selectTransport('rustdesk'); page.nextStep();
     assert.equal(page.step, 1); assert.equal(page.error, '请选择已配置的 RustDesk 中继');
     page.relays = [{ id: 'relay-1', displayName: () => 'relay.example.com', relayServer: 'relay.example.com', relayPort: 21117 }];

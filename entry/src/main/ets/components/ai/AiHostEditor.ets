@@ -130,7 +130,7 @@ export struct AiHostEditor {
       this.error = '远程 AI 需要有效 Pro 权益'; return;
     }
     const next = this.draftHost(); if (next === null) { return; }
-    this.error = aiHostError(next); if (this.error === '') { this.step = 2; }
+    this.error = this.hostError(next); if (this.error === '') { this.step = 2; }
   }
   private previousStep(): void {
     if (this.busy) { return; } this.error = '';
@@ -143,8 +143,18 @@ export struct AiHostEditor {
     this.stopLanScan();
     this.allowed = AiAccess.getInstance().executable(backend);
   }
+  // Existing relay bindings stay stored and valid; they only cannot be saved again until the relay opens.
+  private relayClosedError(host: AiHost): string {
+    return host.transport === 'rustdesk' && !AiAccess.getInstance().relayTransportAvailable() ?
+      'RustDesk 中继暂未开放，请改用局域网连接' : '';
+  }
+  private hostError(host: AiHost): string {
+    const closed = this.relayClosedError(host);
+    return closed !== '' ? closed : aiHostError(host);
+  }
   private selectTransport(transport: 'lan' | 'rustdesk'): void {
     if (this.busy || this.defaultsPending || !AiAccess.getInstance().proVisible() || this.transport === transport) { return; }
+    if (transport === 'rustdesk' && !AiAccess.getInstance().relayTransportAvailable()) { return; }
     this.transport = transport;
     if (transport !== 'lan') { this.stopLanScan(); }
     this.relayHostId = transport === 'lan' ? '' : this.relayHostId; this.paired = false;
@@ -233,7 +243,7 @@ export struct AiHostEditor {
     if (this.busy || this.defaultsPending || !this.alive || this.inBackground || this.draft === null || this.account === null) { return; }
     const next = this.draftHost(); if (next === null) { return; }
     const invitation = this.invite.trim(), account = this.account, generation = this.editGeneration;
-    this.error = aiHostError(next); if (this.error !== '') { return; }
+    this.error = this.hostError(next); if (this.error !== '') { return; }
     if (invitation !== '' && next.transport !== 'lan') {
       this.error = 'RustDesk 中继暂不支持 AI 配对，请先保存绑定'; return;
     }
@@ -291,8 +301,10 @@ export struct AiHostEditor {
       AiConnectionPathCard({ path: 'lan', title: '局域网', subtitle: '直接连接电脑端 AI Agent', status: '可用',
         isSelected: this.transport === 'lan', isEnabled: !this.busy && !this.defaultsPending && this.allowed,
         onSelect: (): void => { this.selectTransport('lan'); } }).width('100%')
-      AiConnectionPathCard({ path: 'rustdesk', title: 'RustDesk 中继', subtitle: '通过已配置的 RustDesk 中继转发', status: '绑定',
-        isSelected: this.transport === 'rustdesk', isEnabled: !this.busy && !this.defaultsPending && this.allowed,
+      AiConnectionPathCard({ path: 'rustdesk', title: 'RustDesk 中继', subtitle: '通过已配置的 RustDesk 中继转发',
+        status: AiAccess.getInstance().relayTransportAvailable() ? '绑定' : '即将支持',
+        isSelected: this.transport === 'rustdesk', isEnabled: !this.busy && !this.defaultsPending && this.allowed &&
+          AiAccess.getInstance().relayTransportAvailable(),
         onSelect: (): void => { this.selectTransport('rustdesk'); } }).width('100%')
     }.width('100%')
     if (this.transport === 'lan') {
