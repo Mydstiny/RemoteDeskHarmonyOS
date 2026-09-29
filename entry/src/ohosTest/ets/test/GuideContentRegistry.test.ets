@@ -37,12 +37,14 @@ export default function guideContentRegistryTest(): void {
 
     it('covers_current_features_and_the_complete_release', 0, (): void => {
       const guide: GuideContentPage[] = firstInstallGuidePages();
-      const release: ReleaseNotePage[] = pagesForReleasedVersion(CURRENT_RELEASE_VERSION);
+      // 1.1.6 notes are pending; the latest complete release remains 1.1.5.1.
+      expect(pagesForReleasedVersion(CURRENT_RELEASE_VERSION).length).assertEqual(0);
+      expect(currentReleasePageCount()).assertEqual(0);
+      const release: ReleaseNotePage[] = pagesForReleasedVersion('1.1.5.1');
       expect(containsGuidePage(guide, 'welcome-five-protocols')).assertTrue();
       expect(containsGuidePage(guide, 'session-toolkit')).assertTrue();
       expect(containsGuidePage(guide, 'data-recovery-and-help')).assertTrue();
       expect(release.length).assertEqual(14);
-      expect(currentReleasePageCount()).assertEqual(release.length);
       expect(release.length <= 14).assertTrue();
       expect(containsReleasePage(release, 'release-1-1-5-1')).assertTrue();
       expect(containsReleasePage(release, 'release-flip-fallback-diagnostics')).assertTrue();

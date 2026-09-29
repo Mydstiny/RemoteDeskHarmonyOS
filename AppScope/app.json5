@@ -2,8 +2,8 @@
   "app": {
     "bundleName": "com.example.remotedesktop",
     "vendor": "example",
-    "versionCode": 1001006,
-    "versionName": "1.1.5.1",
+    "versionCode": 1001007,
+    "versionName": "1.1.6",
     "icon": "$media:layered_image",
     "alternateIcons": [
       { "name": "rd_white", "icon": "$media:rd_logo_white" },

@@ -1,5 +1,5 @@
-export const CURRENT_RELEASE_VERSION: string = '1.1.5.1';
-export const CURRENT_RELEASE_VERSION_CODE: number = 1001006;
+export const CURRENT_RELEASE_VERSION: string = '1.1.6';
+export const CURRENT_RELEASE_VERSION_CODE: number = 1001007;
 
 export interface ReleaseNotePage {
   id: string;
@@ -10,6 +10,7 @@ export interface ReleaseNotePage {
 
 export function pagesForReleasedVersion(version: string): ReleaseNotePage[] {
   if (version === CURRENT_RELEASE_VERSION) { return currentReleasePages(); }
+  if (version === '1.1.5.1') { return release1151Pages(); }
   if (version === '1.1.5') { return release115Pages(); }
   if (version === '1.1.4') { return release114Pages(); }
   if (version === '1.1.3') { return release113Pages(); }
@@ -20,7 +21,13 @@ export function currentReleasePageCount(): number {
   return currentReleasePages().length;
 }
 
+// 1.1.6 notes are still being written. Without pages the startup swiper is
+// skipped and settings shows that the notes are pending.
 function currentReleasePages(): ReleaseNotePage[] {
+  return [];
+}
+
+function release1151Pages(): ReleaseNotePage[] {
   return [
     {
       id: 'release-1-1-5-1',

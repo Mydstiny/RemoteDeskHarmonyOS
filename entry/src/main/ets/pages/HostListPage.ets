@@ -16891,9 +16891,10 @@ struct HostListPage {
               .fontFamily(this.font()).padding({ left: 8, bottom: 8 })
             Column() {
               this.cardActionRow($r('app.media.icon_info'), '本版本更新日志',
-                CURRENT_RELEASE_VERSION + ' · 查看全部 ' +
-                  currentReleasePageCount().toString() + ' 项功能与修复',
+                currentReleasePageCount() > 0 ? CURRENT_RELEASE_VERSION + ' · 查看全部 ' +
+                  currentReleasePageCount().toString() + ' 项功能与修复' : CURRENT_RELEASE_VERSION + ' · 更新说明待发布',
                 (): void => {
+                  if (currentReleasePageCount() === 0) { return; }
                   this.openSettingsLeafSheet(SETTINGS_SHEET_POPUP, (): void => {
                     this.aboutSheetMode = 4;
                     this.popupSheetMode = 1;

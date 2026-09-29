@@ -1960,7 +1960,14 @@
       "production external"
     ],
     "openDecisions": [
-      "433c76ac7 remote AI availability available in Release"
+      "1.1.6 Release coming-soon presentation for Pro entries (currently hidden; purchase button reads Pro 即将推出)",
+      "1.1.6 release notes content"
     ]
+  },
+  "appVersion": {
+    "versionName": "1.1.6",
+    "versionCode": 1001007,
+    "releaseNotes": "pending",
+    "releasePlan": "1.1.6 Release shows Pro and sandbox testing as coming soon (敬请期待) and closed; Pro completes in 1.2.0"
   }
 }

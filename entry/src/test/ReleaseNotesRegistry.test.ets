@@ -12,10 +12,15 @@ function containsPage(pages: ReleaseNotePage[], id: string): boolean {
 
 export default function releaseNotesRegistryTest(): void {
   describe('ReleaseNotesRegistry', (): void => {
-    it('describes_the_current_1_1_5_1_release_in_exactly_fourteen_pages', 0, (): void => {
-      const pages: ReleaseNotePage[] = pagesForReleasedVersion(CURRENT_RELEASE_VERSION);
+    it('keeps_the_1_1_6_notes_pending_so_no_update_swiper_is_shown', 0, (): void => {
+      expect(CURRENT_RELEASE_VERSION).assertEqual('1.1.6');
+      expect(pagesForReleasedVersion(CURRENT_RELEASE_VERSION).length).assertEqual(0);
+      expect(currentReleasePageCount()).assertEqual(0);
+    });
+
+    it('keeps_the_1_1_5_1_release_in_exactly_fourteen_pages', 0, (): void => {
+      const pages: ReleaseNotePage[] = pagesForReleasedVersion('1.1.5.1');
       expect(pages.length).assertEqual(14);
-      expect(currentReleasePageCount()).assertEqual(pages.length);
       expect(pages.length <= 14).assertTrue();
       expect(containsPage(pages, 'release-1-1-5-1')).assertTrue();
       expect(containsPage(pages, 'release-flip-fallback-diagnostics')).assertTrue();
@@ -40,7 +45,7 @@ export default function releaseNotesRegistryTest(): void {
       let currentVersionPages: number = 0;
       pages.forEach((page: ReleaseNotePage): void => {
         const content: string = page.title + page.desc;
-        if (content.indexOf(CURRENT_RELEASE_VERSION) >= 0) { currentVersionPages += 1; }
+        if (content.indexOf('1.1.5.1') >= 0) { currentVersionPages += 1; }
       });
       expect(currentVersionPages).assertEqual(1);
     });
@@ -77,7 +82,7 @@ export default function releaseNotesRegistryTest(): void {
     });
 
     it('does_not_advertise_unverified_or_removed_features', 0, (): void => {
-      const pages: ReleaseNotePage[] = pagesForReleasedVersion(CURRENT_RELEASE_VERSION);
+      const pages: ReleaseNotePage[] = pagesForReleasedVersion('1.1.5.1');
       pages.forEach((page: ReleaseNotePage): void => {
         const content = page.title + page.desc;
         expect(content.indexOf('收藏')).assertEqual(-1);
