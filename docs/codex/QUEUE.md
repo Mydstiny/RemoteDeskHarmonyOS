@@ -1,8 +1,14 @@
 # RemoteDesk Queue
 
-Updated: 2026-09-19 Asia/Shanghai
+Updated: 2026-09-29 Asia/Shanghai
 
 ## Now
+
+- Full acceptance step 3 (READY): remote AI Codex/DSH A1-A13 plus AI-related U5/U7/U8 per [checklist](plans/2026-09-27-full-acceptance-checklist.md). Steps 1 (public UI) and 2 (Pro purchase/auth/Debug tri-state P1-P8, D1-D8) PASS by user device confirmation; step-2 fix commits a671b0726..4490192c3 still need independent review. P11 offline NOT RUN.
+
+- Feedback repair checkpoint: accept exact system shortcuts, bidirectional files/file-station drag, repeated buttons, Pad reverse landscape and PC hardware inversion on devices. [Scope](archive/2026-09/2026-09-23-feedback-repair-checkpoint.md). No target was available at that checkpoint; a target is now connected but not yet used for acceptance. Broad system key capture and PC inversion remain unresolved.
+
+- RustDesk UI feedback follow-up: commit `460f2797` and four-file independent review PASS; host gates pass for stale menu checkmarks, keyboard-linked wheel direction and stuck toolbar Tips. Verify the reported Phone/Pad UI on device; a connected HDC target has not yet been used.
 
 - Current Pad increment: Pro badges + AI card/add/edit/settings parity, gated production wiring and Release default-denial checker independently PASS. Authorized full backup/Debug migration and same-account signed sandbox restore PASS; restart/repeated restore/live settings summary and basic AI device UI checks PASS; remaining actual AI pairing/session and full matrix open. [Evidence](archive/2026-09/2026-09-19-pro-ai-pad-functional.md). Production configuration and worker timer remain off.
 

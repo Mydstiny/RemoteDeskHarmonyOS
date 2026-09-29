@@ -3,10 +3,10 @@
   "task": "pro-purchase-foundation",
   "branch": "codex/pro-purchase-foundation",
   "base": "8edc187868e94ed41634e8a6c4c4c072e3a48679",
-  "head": "d665c2f82f2ecd2d4a3b0f29e699f1969f4ab13e",
-  "phase": "Pad full-backup migration, same-account sandbox Pro restore and restart passed; AI parity and live entitlement summary fixes independently reviewed",
+  "head": "4490192c3",
+  "phase": "Full acceptance: step 1 public UI and step 2 Pro purchase/auth/Debug tri-state PASS by user device confirmation; step 3 remote AI READY",
   "status": "in-progress",
-  "next": "Complete remaining offline/cross-account, real AI pairing/session and M3-M7 device acceptance; notification/version and production prerequisites remain open.",
+  "next": "Run acceptance step 3: remote AI Codex/DSH A1-A13 plus U5/U7/U8; independently review step-2 fix commits a671b0726..4490192c3; P11 offline, M3-M7 device and production prerequisites remain open.",
   "blockers": [
     "Pad backup and Debug migration complete; same-account sandbox restore PASS without another payment. Remaining offline/cross-account and full protocol/device matrix remain open.",
     "M3/U0-U4 device matrix and M4 PC real Share Kit/SFTP file-integrity acceptance remain unverified.",
@@ -83,6 +83,7 @@
       "entry/src/main/ets/components/RemoteWheelDirectionSettingsSheet.ets",
       "entry/src/main/ets/components/RemotePinchZoomSettingsSheet.ets",
       "entry/src/main/ets/components/RemoteSessionControlBarSettingsSheet.ets",
+      "entry/src/main/ets/components/RemoteSessionTopBar.ets",
       "entry/src/main/ets/components/SecretVisibilitySettingsSheet.ets",
       "entry/src/main/ets/components/DiagnosticCaptureSettingsSheet.ets",
       "entry/src/main/ets/components/AppSettingsActionRow.ets",
@@ -92,6 +93,7 @@
       "entry/src/main/ets/components/VncSessionToolbar.ets",
       "entry/src/main/ets/components/moonlight/MoonlightSessionToolbar.ets",
       "entry/src/main/ets/services/RemoteSessionTopBarPolicy.ets",
+      "entry/src/main/ets/services/RemoteWheelPreferencePolicy.ets",
       "entry/src/main/ets/components/ColorPickerSheet.ets",
       "entry/src/main/ets/components/AppSettingsChoiceButton.ets",
       "entry/src/main/ets/entryability/RemoteSessionAbility.ets",
@@ -231,7 +233,7 @@
     "device": "PASS actual refund/revoke/restart/repeated restore; preserve-data 3e099221 Debug install and explicit server-confirmed revoked message verified in real mode",
     "progressRecordGates": "PASS compile5s192; signed assembleHap5s675 Sign879ms; Light/diff PASS"
   },
-  "updated": "2026-09-19 Asia/Shanghai",
+  "updated": "2026-09-29 Asia/Shanghai",
   "roadmapPaths": [
     "docs/codex/plans/2026-09-06-pro-product-roadmap.md",
     "docs/codex/plans/2026-09-07-pro-remote-ai-workspace.md"
@@ -1896,5 +1898,63 @@
     ],
     "padUi": "PASS badges including classic top-right; classic/grouped DSH endpoints; modern two-step add/full edit;4settings routes;two consecutive edits update text and revision immediately;test host removed and grouped preference restored. Actual pairing/session not tested.",
     "recordGates": "compile4s791/signed5s778; Light/diffPASS"
+  },
+  "feedbackRepairCheckpoint": {
+    "date": "2026-09-23",
+    "status": "implemented-awaiting-device-acceptance",
+    "baseHead": "21dfb8811",
+    "evidence": "docs/codex/archive/2026-09/2026-09-23-feedback-repair-checkpoint.md",
+    "next": "Complete exact system-key and PC hardware-decoder device evidence; run bidirectional-file and Pad/device matrix. Preserve the active Pro task.",
+    "reviewTasks": [
+      "/root/audit_controls",
+      "/root/audit_shortcut"
+    ],
+    "validation": "Host 34 feedback + 26 PC file + 13 RustDesk + 42 video + 11 continuous clipboard PASS; final testCompile and assembleHap PASS; Light and diff PASS.",
+    "head": "6475244b"
+  },
+  "rustDeskUiFeedbackFollowup": {
+    "date": "2026-09-23",
+    "status": "implemented-awaiting-device-acceptance",
+    "reportedVersion": "1.1.5.1",
+    "scope": [
+      "RemoteSessionTopBar menu toggle re-render",
+      "RustDesk wheel direction follows the selected remote keyboard layout by default, with manual override",
+      "Remove session-toolbar Tips overlay"
+    ],
+    "validation": "default@OhosTestCompileArkTS exit 0; assembleHap BUILD SUCCESSFUL in 1 min 39 s 363 ms; Light compliance passed; git diff --check passed.",
+    "deviceAcceptance": "NOT RUN; one HDC target is connected, but no install or interaction was performed in this checkpoint.",
+    "reviewTaskId": "/root/review_feedback_fixes",
+    "reviewResult": "PASS; four-file committed scope reviewed independently with no blocking findings."
+  },
+  "fullAcceptance": {
+    "date": "2026-09-29",
+    "checklist": "docs/codex/plans/2026-09-27-full-acceptance-checklist.md",
+    "step1": "PASS public UI/layout baseline; user device confirmation 2026-09-28",
+    "step2": "PASS P1-P8 and D1-D8; user device confirmation 2026-09-29",
+    "step2Fixes": [
+      "a671b0726",
+      "c8b7b9ac0",
+      "9d07841e8",
+      "1b6b31eea",
+      "f40e89471",
+      "f8aa8ee69",
+      "5b0b93ce1",
+      "4490192c3"
+    ],
+    "step2FixReview": "NOT RUN; no independent review receipt for the fix commits",
+    "notCovered": {
+      "P9": "prior 2026-09-19 server evidence",
+      "P10": "prior 2026-09-19 manual worker evidence",
+      "P11": "NOT RUN",
+      "P12": "external dependency"
+    },
+    "step3": "READY remote AI A1-A13 plus U5/U7/U8",
+    "uncommittedOutsideScope": [
+      "scripts/macos_env.sh",
+      ".gitignore",
+      "entry/src/main/cpp/types/librdpnapi/index.d.ts",
+      "entry/src/main/ets/types/rdpnapi.d.ts"
+    ],
+    "recordGates": "testCompile BUILD SUCCESSFUL in 1 s 278 ms; signed assembleHap BUILD SUCCESSFUL in 1 min 14 s 373 ms, SignHap 2 s 599 ms; both exit 0; Light/diff PASS"
   }
 }
