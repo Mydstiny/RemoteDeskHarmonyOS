@@ -3,10 +3,10 @@
   "task": "pro-purchase-foundation",
   "branch": "codex/pro-purchase-foundation",
   "base": "8edc187868e94ed41634e8a6c4c4c072e3a48679",
-  "head": "01713b8e8",
-  "phase": "Full acceptance: steps 1-2 PASS; step-2 fix review PASS; step 3 M3 app icon + Pro visibility READY (remote AI deferred)",
+  "head": "7ae9aff4f",
+  "phase": "Full acceptance: steps 1-3 PASS; step 4 M4 knock transfer READY (remote AI deferred)",
   "status": "in-progress",
-  "next": "Acceptance step 3: M3 preset app icon + Pro feature visibility panel on device; then M4 knock transfer, M5 share/continuation, M7 remainder; remote AI deferred.",
+  "next": "Acceptance step 4: M4 knock transfer phone -> HarmonyOS PC SFTP; then M5 share/continuation, M7 remainder.",
   "blockers": [
     "Pad backup and Debug migration complete; same-account sandbox restore PASS without another payment. Remaining offline/cross-account and full protocol/device matrix remain open.",
     "M3/U0-U4 device matrix and M4 PC real Share Kit/SFTP file-integrity acceptance remain unverified.",
@@ -1948,7 +1948,7 @@
       "P11": "NOT RUN",
       "P12": "external dependency"
     },
-    "step3": "READY M3 app icon + Pro feature visibility/personalization (U3/U5/U8 for these pages)",
+    "step3": "PASS 2026-09-29 user device confirmation; fixes f011e7bc9,8b5661f1,535434b91,7ae9aff4f",
     "recordGates": "testCompile BUILD SUCCESSFUL in 1 s 278 ms; signed assembleHap BUILD SUCCESSFUL in 1 min 14 s 373 ms, SignHap 2 s 599 ms; both exit 0; Light/diff PASS",
     "workingTreeCleanup": "User reverted .d.ts reorder and macos_env.sh external-cache default; build leftovers removed/quarantined; .gitignore ignores .remotedesk-build-cache/. Gates testCompile 1m8s422, assembleHap 1m3s579, Light/diff PASS",
     "order": [
@@ -1962,7 +1962,8 @@
     "openDecisions": [
       "1.1.6 Release coming-soon presentation for Pro entries (currently hidden; purchase button reads Pro 即将推出)",
       "1.1.6 release notes content"
-    ]
+    ],
+    "step4": "READY M4 knock transfer"
   },
   "appVersion": {
     "versionName": "1.1.6",
