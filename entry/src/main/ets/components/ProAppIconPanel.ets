@@ -48,9 +48,8 @@ export struct ProAppIconPanel {
     if (name === 'rd_night') { return $r('app.media.icon_preview_rd_night'); }
     if (name === 'rd_sky') { return $r('app.media.icon_preview_rd_sky'); }
     if (name === 'rd_aurora') { return $r('app.media.icon_preview_rd_aurora'); }
-    if (name === 'rd_line') { return $r('app.media.icon_preview_rd_line'); }
-    if (name === 'rd_duo') { return $r('app.media.icon_preview_rd_duo'); }
-    if (name === 'rd_glass') { return $r('app.media.icon_preview_rd_glass'); }
+    if (name === 'rd_vivid') { return $r('app.media.icon_preview_rd_vivid'); }
+    if (name === 'rd_soft') { return $r('app.media.icon_preview_rd_soft'); }
     return $r('app.media.icon_preview_default');
   }
   private rows(): AppIconPreset[][] {

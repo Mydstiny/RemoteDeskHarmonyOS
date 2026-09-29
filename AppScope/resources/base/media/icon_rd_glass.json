@@ -1,7 +1,0 @@
-{
-  "layered-image":
-  {
-    "background" : "$media:icon_rd_glass_bg",
-    "foreground" : "$media:icon_rd_glass_fg"
-  }
-}

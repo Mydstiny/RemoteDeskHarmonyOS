@@ -2,8 +2,9 @@
 // Usage (from the repository root): swift scripts/generate_app_icons.swift
 //
 // Every alternate icon uses the same layered-image format as the default icon, so
-// the launcher masks all choices identically. The only input is the RD logo on a
-// transparent 1024x1024 canvas (AppScope/resources/base/media/icon_rd_logo_color.png).
+// the launcher masks all choices identically. Inputs are the RD logo on a transparent
+// 1024x1024 canvas (AppScope/resources/base/media/icon_rd_logo_color.png) and supplied
+// logo artwork on white (design/app-icons/*.png).
 import CoreGraphics
 import Foundation
 import ImageIO
@@ -98,78 +99,49 @@ struct Preset {
   var drawForeground: ((CGContext) -> Void)? = nil  // original artwork written to `foreground`
 }
 
-// Top-left origin helpers for the original artwork (1024 canvas, key shapes inside the safe zone).
-func topLeft(_ context: CGContext) {
-  context.translateBy(x: 0, y: CGFloat(context.height)); context.scaleBy(x: 1, y: -1)
-}
-
-func roundedRect(_ rect: CGRect, _ radius: CGFloat) -> CGPath {
-  CGPath(roundedRect: rect, cornerWidth: radius, cornerHeight: radius, transform: nil)
-}
-
-// A pointer arrow whose tip is at `tip`, `scale` 1 is about 400 px tall.
-func cursor(tip: CGPoint, scale: CGFloat) -> CGPath {
-  let points: [(CGFloat, CGFloat)] = [(0, 0), (0, 400), (100, 305), (172, 452), (236, 422),
-    (164, 280), (292, 280)]
-  let path = CGMutablePath()
-  path.addLines(between: points.map { CGPoint(x: tip.x + $0.0 * scale, y: tip.y + $0.1 * scale) })
-  path.closeSubpath()
-  return path
-}
-
-// Line art: a monoline remote screen with signal arcs.
-func drawLine(_ context: CGContext) {
-  topLeft(context)
-  context.setStrokeColor(color(0xFFFFFF)); context.setLineWidth(40)
-  context.setLineCap(.round); context.setLineJoin(.round)
-  context.addPath(roundedRect(CGRect(x: 232, y: 262, width: 560, height: 400), 72)); context.strokePath()
-  context.move(to: CGPoint(x: 512, y: 662)); context.addLine(to: CGPoint(x: 512, y: 752))
-  context.move(to: CGPoint(x: 392, y: 772)); context.addLine(to: CGPoint(x: 632, y: 772)); context.strokePath()
-  let center = CGPoint(x: 512, y: 560)
-  context.setStrokeColor(color(0x7FF3E4))
-  for radius in [92.0, 176.0] as [CGFloat] {
-    context.addArc(center: center, radius: radius, startAngle: .pi * 1.25, endAngle: .pi * 1.75, clockwise: false)
-    context.strokePath()
+// Supplied artwork (design/app-icons, not packaged): a logo on a white canvas. White is keyed
+// to transparency with anti-aliased edges un-mixed from white, the logo is cropped to its
+// bounds and fitted into the icon safe zone.
+func extractLogo(_ path: String, maxWidth: CGFloat = 640, maxHeight: CGFloat = 560) -> (CGContext) -> Void {
+  return { context in
+    let source = load(path)
+    let width = source.width, height = source.height
+    let raw = canvas(width)  // sources are square
+    // Flatten onto white first: transparent source pixels must key out like the white canvas.
+    raw.setFillColor(color(0xFFFFFF)); raw.fill(CGRect(x: 0, y: 0, width: width, height: height))
+    raw.draw(source, in: CGRect(x: 0, y: 0, width: width, height: height))
+    let pixels = raw.data!.bindMemory(to: UInt8.self, capacity: width * height * 4)
+    let stride = raw.bytesPerRow
+    var minX = width, minY = height, maxX = -1, maxY = -1
+    for y in 0..<height {
+      for x in 0..<width {
+        let i = y * stride + x * 4
+        let r = CGFloat(pixels[i]), g = CGFloat(pixels[i + 1]), b = CGFloat(pixels[i + 2])
+        // Distance from white; 245+ is background, 185- is fully logo.
+        let alpha = max(0, min(1, (245 - min(r, g, b)) / 60))
+        if alpha <= 0 {
+          pixels[i] = 0; pixels[i + 1] = 0; pixels[i + 2] = 0; pixels[i + 3] = 0; continue
+        }
+        // Un-mix the white edge, then store premultiplied.
+        func channel(_ value: CGFloat) -> UInt8 {
+          UInt8(max(0, min(255, (value - (1 - alpha) * 255) / alpha)) * alpha)
+        }
+        pixels[i] = channel(r); pixels[i + 1] = channel(g); pixels[i + 2] = channel(b)
+        pixels[i + 3] = UInt8(alpha * 255)
+        if alpha > 0.5 { minX = min(minX, x); maxX = max(maxX, x); minY = min(minY, y); maxY = max(maxY, y) }
+      }
+    }
+    // Bitmap rows run top-down; CGImage cropping uses the same orientation.
+    let bounds = CGRect(x: minX, y: minY, width: maxX - minX + 1, height: maxY - minY + 1)
+    let logo = raw.makeImage()!.cropping(to: bounds)!
+    let scale = min(maxWidth / bounds.width, maxHeight / bounds.height)
+    let w = bounds.width * scale, h = bounds.height * scale
+    context.draw(logo, in: CGRect(x: (CGFloat(size) - w) / 2, y: (CGFloat(size) - h) / 2, width: w, height: h))
   }
-  context.setFillColor(color(0x7FF3E4))
-  context.fillEllipse(in: CGRect(x: center.x - 30, y: center.y - 30, width: 60, height: 60))
 }
 
-// Flat geometric: two overlapping devices with a cursor.
-func drawDuo(_ context: CGContext) {
-  topLeft(context)
-  let back = roundedRect(CGRect(x: 214, y: 226, width: 420, height: 420), 96)
-  let front = roundedRect(CGRect(x: 390, y: 402, width: 420, height: 420), 96)
-  context.addPath(back); context.setFillColor(color(0x4338CA)); context.fillPath()
-  context.addPath(front); context.setFillColor(color(0xFF6F59)); context.fillPath()
-  context.saveGState()
-  context.addPath(back); context.clip()
-  context.addPath(front); context.setFillColor(color(0x2A1B5E)); context.fillPath()
-  context.restoreGState()
-  context.addPath(cursor(tip: CGPoint(x: 560, y: 548), scale: 0.62))
-  context.setFillColor(color(0xFFFFFF)); context.fillPath()
-}
-
-// Glassmorphism: a frosted card with a glowing pointer.
-func drawGlass(_ context: CGContext) {
-  topLeft(context)
-  let card = roundedRect(CGRect(x: 252, y: 252, width: 520, height: 520), 132)
-  context.saveGState()
-  context.setShadow(offset: CGSize(width: 0, height: 24), blur: 60, color: color(0x1B0B5A, 0.35))
-  context.addPath(card); context.setFillColor(color(0xFFFFFF, 0.18)); context.fillPath()
-  context.restoreGState()
-  context.saveGState()
-  context.addPath(card); context.clip()
-  let sheen = CGGradient(colorsSpace: CGColorSpace(name: CGColorSpace.sRGB)!,
-    colors: [color(0xFFFFFF, 0.42), color(0xFFFFFF, 0.04)] as CFArray, locations: [0, 1])!
-  context.drawLinearGradient(sheen, start: CGPoint(x: 300, y: 252), end: CGPoint(x: 700, y: 772), options: [])
-  context.restoreGState()
-  context.addPath(card); context.setStrokeColor(color(0xFFFFFF, 0.65)); context.setLineWidth(6); context.strokePath()
-  context.saveGState()
-  context.setShadow(offset: .zero, blur: 48, color: color(0xFFFFFF, 0.9))
-  context.addPath(cursor(tip: CGPoint(x: 424, y: 356), scale: 0.78))
-  context.setFillColor(color(0xFFFFFF)); context.fillPath()
-  context.restoreGState()
+func whiteBackground(_ context: CGContext) {
+  context.setFillColor(color(0xFFFFFF)); context.fill(CGRect(x: 0, y: 0, width: size, height: size))
 }
 
 let logo = load("\(appMedia)/icon_rd_logo_color.png")
@@ -196,18 +168,10 @@ let presets: [Preset] = [
     linear(context, [(0xB9F3EA, 0), (0xCDC9FF, 0.35), (0xF4C8E5, 0.7), (0xF9E3B8, 1)], angle: 115)
     glow(context, x: 0.3, y: 0.18, radius: 0.6, 0xFFFFFF, 0.45)
   },
-  Preset(name: "rd_line", resource: "icon_rd_line", foreground: "icon_rd_line_fg", background: { context in
-    linear(context, [(0x0B3A4A, 0), (0x0C5C66, 0.6), (0x0E7C74, 1)], angle: 160)
-    glow(context, x: 0.5, y: 0.55, radius: 0.5, 0x3FE0C8, 0.25)
-  }, drawForeground: drawLine),
-  Preset(name: "rd_duo", resource: "icon_rd_duo", foreground: "icon_rd_duo_fg", background: { context in
-    context.setFillColor(color(0xF6EFE6)); context.fill(CGRect(x: 0, y: 0, width: size, height: size))
-  }, drawForeground: drawDuo),
-  Preset(name: "rd_glass", resource: "icon_rd_glass", foreground: "icon_rd_glass_fg", background: { context in
-    linear(context, [(0x7B5CFF, 0), (0x3D7BFF, 0.55), (0x22D1E0, 1)], angle: 150)
-    glow(context, x: 0.78, y: 0.22, radius: 0.5, 0xFF7AD9, 0.6)
-    glow(context, x: 0.18, y: 0.85, radius: 0.45, 0x7CF5FF, 0.5)
-  }, drawForeground: drawGlass)
+  Preset(name: "rd_vivid", resource: "icon_rd_vivid", foreground: "icon_rd_vivid_fg",
+    background: whiteBackground, drawForeground: extractLogo("design/app-icons/rd_vivid.png")),
+  Preset(name: "rd_soft", resource: "icon_rd_soft", foreground: "icon_rd_soft_fg",
+    background: whiteBackground, drawForeground: extractLogo("design/app-icons/rd_soft.png"))
 ]
 
 func rounded(_ context: CGContext) {
