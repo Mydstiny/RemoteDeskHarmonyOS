@@ -1971,5 +1971,8 @@
     "versionCode": 1001007,
     "releaseNotes": "pending",
     "releasePlan": "1.1.6 Release shows Pro and sandbox testing as coming soon (敬请期待) and closed; Pro completes in 1.2.0"
-  }
+  },
+  "futurePlans": [
+    "RustDesk and VNC same-account continuation (user request 2026-09-29); UI currently states RDP and direct SSH only"
+  ]
 }

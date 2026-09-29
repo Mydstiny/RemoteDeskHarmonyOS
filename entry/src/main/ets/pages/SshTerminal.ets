@@ -4,7 +4,7 @@ import { ProConnectionShareControls } from '../components/ProConnectionShareCont
 import { ProConnectionShareSender } from '../services/pro/ProConnectionShareSender';
 import { ProConnectionShareReceiver } from '../services/pro/ProConnectionShareReceiver';
 import { proConnectionShareBase } from '../services/pro/ProConnectionShareConfiguration';
-import { ProContinuationService } from '../services/pro/ProContinuationService';
+import { ProContinuationService, proContinuationFailureText } from '../services/pro/ProContinuationService';
 import { ProConnectionDescription } from '../services/pro/ProConnectionEnvelope';
 import { describeProSshConnection } from '../services/pro/ProConnectionHostAdapter';
 import { SshAuthenticatedHandoff } from '../services/ssh/auth/SshAuthenticatedHandoff';
@@ -8750,7 +8750,7 @@ struct SshTerminal {
         close: (): void => { this.closeSessionAndBack(); }
       });
       promptAction.showToast({ message: prepared ? '接续已准备，本端会话保持连接' :
-        '无法准备接续，请检查同账号、Pro 和协同权限', duration: 2400 });
+        proContinuationFailureText(ProContinuationService.getInstance().lastPrepareFailure()), duration: 2400 });
     } catch (_error) { promptAction.showToast({ message: '系统接续暂不可用', duration: 2200 }); }
   }
 

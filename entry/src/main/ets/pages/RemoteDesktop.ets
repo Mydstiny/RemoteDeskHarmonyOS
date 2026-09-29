@@ -20,7 +20,7 @@ import { pasteboard } from '@kit.BasicServicesKit';
 import { image } from '@kit.ImageKit';
 import { HostSyncService } from '../services/HostSyncService';
 import { CloudStore } from '../services/CloudStore';
-import { ProContinuationService } from '../services/pro/ProContinuationService';
+import { ProContinuationService, proContinuationFailureText } from '../services/pro/ProContinuationService';
 import { ProConnectionDescription } from '../services/pro/ProConnectionEnvelope';
 import { describeProRdpConnection } from '../services/pro/ProConnectionHostAdapter';
 import { ProRdpConnectionIdentity, describeProRdpConnectionIdentity,
@@ -14040,7 +14040,7 @@ struct RemoteDesktop {
       });
       preparing = !prepared;
       promptAction.showToast({ message: prepared ? 'RDP 接续已准备，本端会话保持连接' :
-        '无法准备接续，请检查同账号、Pro 和协同权限', duration: 2400 });
+        proContinuationFailureText(ProContinuationService.getInstance().lastPrepareFailure()), duration: 2400 });
     } catch (_error) { promptAction.showToast({ message: '系统接续暂不可用', duration: 2200 }); }
   }
 

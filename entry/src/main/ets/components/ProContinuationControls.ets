@@ -32,6 +32,10 @@ export struct ProContinuationControls {
       Button(this.status === '' ? '准备同账号接续' : '重新准备接续')
         .width('100%').constraintSize({ minHeight: 44 }).fontSize(14)
         .backgroundColor(Color.Transparent).fontColor(this.accent).onClick(this.onPrepare)
+      if (this.status === '') {
+        Text('目前仅支持 RDP 和直连 SSH；RustDesk 与 VNC 计划后续支持。')
+          .fontSize(12).fontColor(this.pal().text3).width('100%')
+      }
       if (this.status !== '') {
         Text(this.status).fontSize(12).fontColor(this.pal().text2).width('100%')
         if (this.canClose) {

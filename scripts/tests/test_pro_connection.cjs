@@ -35,6 +35,8 @@ function fixture() {
           return { authResults: [state.permission ? 0 : -1] };
         }
       }) } },
+    '@kit.PerformanceAnalysisKit': { hilog: { info() {}, warn() {}, error() {} } },
+    '@kit.BasicServicesKit': {},
     '@kit.CryptoArchitectureKit': { cryptoFramework: { createRandom: () => ({
       generateRandomSync: n => ({ data: new Uint8Array(crypto.randomBytes(n)) })
     }) } },

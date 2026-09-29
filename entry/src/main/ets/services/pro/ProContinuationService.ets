@@ -1,5 +1,7 @@
 import { AbilityConstant, common, wantConstant, abilityAccessCtrl, Permissions } from '@kit.AbilityKit';
 import { cryptoFramework } from '@kit.CryptoArchitectureKit';
+import { hilog } from '@kit.PerformanceAnalysisKit';
+import { BusinessError } from '@kit.BasicServicesKit';
 import { AccountSessionCoordinator } from '../AccountSessionCoordinator';
 import { HostSyncService } from '../HostSyncService';
 import { RemoteHost } from '../../model/RemoteHost';
@@ -17,6 +19,19 @@ export const PRO_CONTINUATION_LIBRARY_PARAM: string = 'remotedesk.pro.connection
 export const PRO_CONTINUATION_FEATURE: string = 'pro.connection.continuation';
 const SYNC_PERMISSION: Permissions = 'ohos.permission.DISTRIBUTED_DATASYNC';
 const DATA_OBJECT_CAPABILITY: string = 'SystemCapability.DistributedDataManager.DataObject.DistributedObject';
+/** Why the last preparation did not activate the system continuation entry. */
+export type ProContinuationPrepareFailure = '' | 'ability' | 'pro' | 'source' | 'host' | 'account' | 'permission' |
+  'changed' | 'mission';
+/** User-facing explanation for a preparation failure; never includes host or account details. */
+export function proContinuationFailureText(reason: ProContinuationPrepareFailure): string {
+  if (reason === 'pro') { return '无法准备接续：需要 Pro（实验功能需 Debug 模拟 Pro），且当前设备和协议受支持'; }
+  if (reason === 'host') { return '无法准备接续：此主机不属于当前登录账号，或已被修改，请重新打开主机'; }
+  if (reason === 'account') { return '无法准备接续：请先登录华为账号'; }
+  if (reason === 'permission') { return '无法准备接续：需要允许"多设备协同"权限'; }
+  if (reason === 'mission') { return '无法准备接续：系统拒绝开启接续，请确认系统"接续"开关已打开'; }
+  if (reason === 'source' || reason === 'changed') { return '无法准备接续：会话、页面或账号已变化，请重试'; }
+  return '无法准备接续：当前窗口不支持接续';
+}
 export interface ProContinuationSource {
   windowId: number;
   describe: () => ProConnectionDescription | null;
@@ -53,6 +68,7 @@ export class ProContinuationService {
   private source: ProContinuationSource | null = null;
   private sourceContext: common.UIAbilityContext | null = null;
   private sourceOwner: string = '';
+  private prepareFailure: ProContinuationPrepareFailure = '';
   private sourceAccountGeneration: number = 0;
   private sourceTransaction: ProConnectionTransaction | null = null;
   private sourceChannel: ProContinuationReceiptChannel = new ProContinuationReceiptChannel();
@@ -159,19 +175,31 @@ export class ProContinuationService {
     } catch (_error) { channel.close(); return false; }
     finally { if (timer !== -1) { clearTimeout(timer); } }
   }
+  lastPrepareFailure(): ProContinuationPrepareFailure { return this.prepareFailure; }
+  private rejectPrepare(reason: ProContinuationPrepareFailure): boolean {
+    this.prepareFailure = reason;
+    hilog.warn(0x0001, 'ProContinuation', 'prepare rejected reason=%{public}s', reason);
+    return false;
+  }
   async prepare(context: common.UIAbilityContext, source: ProContinuationSource): Promise<boolean> {
     this.cancelSource();
+    this.prepareFailure = '';
+    const protocol = source.describe()?.protocol ?? '';
     if (['EntryAbility', 'RemoteSessionAbility'].indexOf(context.abilityInfo.name) < 0 ||
-        !this.allowed(source.describe()?.protocol ?? '') || !source.isCurrent() ||
-        !this.descriptionAllowed(source.describe(), context) || !Number.isInteger(source.windowId) || source.windowId <= 0) { return false; }
+        !Number.isInteger(source.windowId) || source.windowId <= 0) { return this.rejectPrepare('ability'); }
+    if (!this.allowed(protocol)) { return this.rejectPrepare('pro'); }
+    if (!source.isCurrent()) { return this.rejectPrepare('source'); }
+    if (!this.descriptionAllowed(source.describe(), context)) { return this.rejectPrepare('host'); }
     const scope = AccountSessionCoordinator.getInstance().currentScope();
-    if (scope.kind !== 'huawei_account' || !/^owner-[a-f0-9]{64}$/.test(scope.ownerScopeId)) { return false; }
+    if (scope.kind !== 'huawei_account' || !/^owner-[a-f0-9]{64}$/.test(scope.ownerScopeId)) { return this.rejectPrepare('account'); }
     const generation = this.sourceGeneration;
-    if (!await this.permission(context) || generation !== this.sourceGeneration ||
-        !this.allowed(source.describe()?.protocol ?? '') ||
+    if (!await this.permission(context)) {
+      return generation === this.sourceGeneration ? this.rejectPrepare('permission') : false;
+    }
+    if (generation !== this.sourceGeneration || !this.allowed(protocol) ||
         !source.isCurrent() || !this.descriptionAllowed(source.describe(), context) ||
         AccountSessionCoordinator.getInstance().currentScope().generation !== scope.generation) {
-      return false;
+      return this.rejectPrepare('changed');
     }
     this.source = source; this.sourceContext = context; this.sourceOwner = scope.ownerScopeId;
     this.sourceAccountGeneration = scope.generation;
@@ -181,11 +209,17 @@ export class ProContinuationService {
       await this.setMission(context, AbilityConstant.ContinueState.ACTIVE);
       if (generation !== this.sourceGeneration || !this.sourceCurrent()) {
         if (generation === this.sourceGeneration) { this.cancelSource(source.windowId); }
-        return false;
+        return this.rejectPrepare('changed');
       }
+      hilog.info(0x0001, 'ProContinuation', 'prepare active protocol=%{public}s ttlMs=%{public}d', protocol, PRO_CONNECTION_TTL_MS);
       this.sourceMessage = '已准备接续，请在 2 分钟内从另一台同账号设备的系统入口继续';
       this.publish(); return true;
-    } catch (_error) { if (generation === this.sourceGeneration) { this.cancelSource(); } return false; }
+    } catch (error) {
+      hilog.warn(0x0001, 'ProContinuation', 'setMissionContinueState failed code=%{public}d',
+        (error as BusinessError).code ?? -1);
+      if (generation === this.sourceGeneration) { this.cancelSource(); }
+      return this.rejectPrepare('mission');
+    }
   }
   async onContinue(windowId: number, parameters: Record<string, Object>): Promise<AbilityConstant.OnContinueResult> {
     const source = this.source; const context = this.sourceContext;

@@ -53,6 +53,7 @@ Updated: 2026-09-29 Asia/Shanghai
 
 ## Later
 
+0. RustDesk and VNC same-account continuation (user request 2026-09-29): extend the M5 whitelist model with recoverable RustDesk ID/relay/display and VNC endpoint/repeater/TLS/view fields, receiver re-authentication, host regressions and cross-device acceptance. [M5 plan](plans/2026-09-07-pro-m5-connection-continuation.md). Current UI states continuation supports RDP and direct SSH only.
 1. Add a controllable Moonlight ProductStreaming accepted-to-active synchronous terminal barrier regression.
 2. Extend network diagnostics from configured/candidate IP family facts to the resolver's actual winning family, owner and sanitized fallback stage.
 3. Add real-RDB fault injection, app-clone acceptance and the remaining Android RustDesk orientation/settings acceptance.

@@ -17,6 +17,8 @@
 
 ## 后续 M5 增量与外部前提
 
+- 用户决定（2026-09-29）：RustDesk 与 VNC 远程桌面接续列入后续升级计划。当前界面与目录描述明确"目前仅支持 RDP 和直连 SSH"。实现时沿用同一白名单连接模型与接收端重新鉴权：RustDesk 仅传 ID/中继引用、显示名称与可恢复的显示器/画质选择，不传密码、一次性口令或会话令牌；VNC 仅传端点、Repeater/TLS 配置引用与视图缩放。两者都需先实现各自可恢复视图的读取/校验与接收端协议能力检查，并补充 host 回归和真实跨设备验收。
+
 - Share Kit 的 knockShare / HYPERLINK + 官方 App Linking 需要已配置的关联域名；本路径没有 KNOCK_COLLABORATION 权限要求。API26 ServiceInteraction 的 KNOCK 消息通道属于另一条能力路径，其签名准入和 phone 声明不能混用，也不能从 windowId 推断 PC 准入。
 - 关联域名和真实 fragment 投递仍待确认。不得编造公网邀请服务或加入未授权凭据传输；分享内容本身不授予接收者 Pro。
 - PC 官方同账号接续、RDP 视图及其他协议按各自可恢复状态补充适配，不能把直连 SSH 增量当作全部 M5。

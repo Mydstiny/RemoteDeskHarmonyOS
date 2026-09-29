@@ -252,14 +252,15 @@ function pageFixture() {
     complete(which,host,actual){if(!state.allowed)return false;state.completed.push({which,actual});return true;},
     cancelIncoming(which){state.cancelled.push(which);if(which===state.incomingId)state.incomingId='';},
     async prepare(context,source){state.source=source;if(state.prepareWait)await state.prepareWait;
-      return state.allowed && source.isCurrent();}};
+      return state.allowed && source.isCurrent();},
+    lastPrepareFailure:()=>'changed'};
   const hostValue=host({userId:state.scope.ownerScopeId});
   f.store.remember(hostValue.id,owner,identity());
   const page=productionPage({...viewPolicy,...canvasPolicy,
     describeProRdpConnection:(h,i,v)=>({protocol:'rdp',label:'Work',host:h.host,port:h.port,
       username:i.username,hostReference:h.id,rdpIdentity:i,view:v}),
     sameProRdpConnectionIdentity:policy.sameProRdpConnectionIdentity,
-    ProRdpSessionIdentityStore:{getInstance:()=>f.store},ProContinuationService:{getInstance:()=>service},
+    ProRdpSessionIdentityStore:{getInstance:()=>f.store},ProContinuationService:{getInstance:()=>service},proContinuationFailureText:r=>'无法准备接续：'+r,
     normalizeRdpSessionControlMode:x=>Math.max(0,Math.min(2,Math.floor(x))),
     getContext:()=>({}),window:{findWindow:()=>({getWindowProperties:()=>({id:9})})},
     promptAction:{showToast:message=>state.toasts.push(message)},setTimeout:fn=>state.timers.push(fn)});
