@@ -39,7 +39,7 @@ async function fixture(t, options = {}) {
     pending: value => client.pending(value), reconcile: (value, records) => client.current(value) ? service.reconcileResult(records) :
       Promise.resolve({ current: false, online: false, active: false }),
     markRefundPending: async value => {
-      await store.markRefundPending(value.scope);
+      await store.markRefundPending(value.scope, clock.now());
       if (client.current(value)) { service.markRefundPending(); }
     } };
   return { ...host, store, clock, signer, transport, client, service, lease, backend, protocol: state, proPurchaseBatches,
@@ -401,7 +401,7 @@ test('sandbox refund opens only the unique matching native order; a successful U
 test('refund refuses the vendor side effect when the durable fence cannot be written', async t => {
   const f = await refundFixture(t);
   f.state.beforeSql = sql => {
-    if (sql.startsWith('INSERT OR IGNORE INTO pro_verifying')) { throw new Error('disk full'); }
+    if (sql.startsWith('INSERT INTO pro_verifying')) { throw new Error('disk full'); }
   };
   await assert.rejects(f.provider.refund({}, config.productId, () => true), /disk full/);
   assert.equal(f.calls.some(call => call[0] === 'refund'), false);
@@ -440,6 +440,65 @@ test('refund returns the newly signed revocation, while vendor cancellation make
   f.iap.createRefundRequest = async () => { f.protocol.revision = 2; f.protocol.status = 'revoked'; f.state.now++; };
   assert.equal((await f.provider.refund({}, config.productId, () => true)).verified, false);
   assert.equal(f.service.snapshot().state, 'revoked');
+});
+const refundHold = 10 * 60 * 1000;
+function advance(f, ms) { f.state.now += ms; f.state.uptime += ms; }
+test('a cancelled or declined refund releases only after a fresh signed grant outlives the hold', async t => {
+  const f = await refundFixture(t); await f.service.reconcile([], true);
+  f.iap.createRefundRequest = async () => { throw { code: 1001860000 }; };
+  await assert.rejects(f.provider.refund({}, config.productId, () => true), error => error.code === 1001860000);
+  advance(f, refundHold - 1000);
+  assert.equal(await f.service.reconcile([], true), false);
+  assert.equal(f.service.snapshot().state, 'verificationRequired');
+  assert.equal(await f.store.refundPending(f.lease.scope), true);
+
+  const restarted = await restartedService(f);
+  await restarted.service.restoreCached();
+  assert.equal(restarted.service.snapshot().state, 'verificationRequired', 'cache never releases the fence');
+  advance(f, 2000);
+  await restarted.service.restoreCached();
+  assert.equal(restarted.service.snapshot().state, 'verificationRequired', 'elapsed time alone never releases it');
+  assert.equal(await restarted.service.reconcile([], true), true);
+  assert.equal(restarted.service.snapshot().state, 'active');
+  assert.equal(restarted.service.snapshot().refundPending, false);
+  assert.equal(await restarted.store.refundPending(restarted.client.lease().scope), false);
+});
+test('a fence written without a time is released by the next fresh signed grant but not by cache', async t => {
+  const f = await refundFixture(t); await f.service.reconcile([], true);
+  await f.store.markRefundPending(f.lease.scope, f.clock.now());
+  f.database.prepare("UPDATE pro_verifying SET scope = substr(scope, 1, instr(scope, ':refund') + 6) WHERE scope LIKE '%:refund:%'").run();
+  assert.equal(f.database.prepare("SELECT COUNT(*) AS count FROM pro_verifying WHERE scope LIKE '%:refund'").get().count, 1);
+  const restarted = await restartedService(f);
+  await restarted.service.restoreCached();
+  assert.equal(restarted.service.snapshot().state, 'verificationRequired');
+  advance(f, 1000);
+  assert.equal(await restarted.service.reconcile([], true), true);
+  assert.equal(restarted.service.snapshot().state, 'active');
+  assert.equal(await restarted.store.refundPending(restarted.client.lease().scope), false);
+});
+test('an unreadable fence time never releases without a signed revocation', async t => {
+  const f = await refundFixture(t); await f.service.reconcile([], true);
+  await f.store.markRefundPending(f.lease.scope, Number.NaN);
+  advance(f, refundHold * 10);
+  assert.equal(await f.service.reconcile([], true), false);
+  assert.equal(f.service.snapshot().state, 'verificationRequired');
+  assert.equal(await f.store.refundPending(f.lease.scope), true);
+});
+test('a grant requested before the refund mark cannot clear the new in-memory fence', async t => {
+  const f = await refundFixture(t); await f.service.reconcile([], true);
+  advance(f, refundHold);
+  let release; let arrived; const started = new Promise(resolve => { arrived = resolve; });
+  const original = f.protocol.override;
+  f.protocol.override = call => new Promise(resolve => { arrived(); release = () => resolve(JSON.stringify({
+    signedEntitlement: f.signer.sign({ status: 'verified', revision: 1 }, owner, f.state.now, call.input.challenge),
+    pendingDelivery: false })); });
+  const pending = f.service.reconcile([], true); await started;
+  await f.backend.markRefundPending(f.lease);
+  f.protocol.override = original;
+  release(); await pending;
+  assert.equal(f.service.snapshot().refundPending, true);
+  assert.equal(f.service.snapshot().state, 'verificationRequired');
+  assert.equal(await f.store.refundPending(f.lease.scope), true);
 });
 test('refund fails closed for wrong application/environment/type, malformed, absent or ambiguous orders', async t => {
   const cases = [[], [refundReceipt(), refundReceipt({ purchaseOrderId: 'second-order' })], ['bad-json'],

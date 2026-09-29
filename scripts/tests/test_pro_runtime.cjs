@@ -106,8 +106,15 @@ test('refund pending disables Debug Pro overrides until a signed revocation arri
   f.runtime.setDebugMode('pro');
   assert.equal(f.runtime.snapshot().mode, 'real');
 
+  // The store still holds the fence: a fresh grant reports it and stays locked.
   f.verifier.result = { status: 'verified', owner: 'a', environment: 'production', grant: f.grant,
-    fromCache: false, refundPending: false };
+    fromCache: false, refundPending: true };
+  await f.service.reconcile([]);
+  assert.equal(f.runtime.snapshot().refundPending, true);
+  assert.equal(f.runtime.decision('test.shipped', f.context).executable, false);
+  // A cached result never releases it, even when the store fence is gone.
+  f.verifier.result = { status: 'verified', owner: 'a', environment: 'production', grant: f.grant,
+    fromCache: true, refundPending: false };
   await f.service.reconcile([]);
   assert.equal(f.runtime.snapshot().refundPending, true);
   assert.equal(f.runtime.decision('test.shipped', f.context).executable, false);
@@ -120,6 +127,16 @@ test('refund pending disables Debug Pro overrides until a signed revocation arri
   f.runtime.setDebugMode('pro');
   f.runtime.resetDebugMode();
   assert.equal(f.runtime.snapshot().mode, 'real');
+
+  // After the store hold expires, a fresh grant requested after the mark releases the lock.
+  f.verifier.result = { status: 'verified', owner: 'a', environment: 'production', grant: f.grant };
+  await f.service.reconcile([]);
+  f.service.markRefundPending();
+  f.verifier.result = { status: 'verified', owner: 'a', environment: 'production', grant: f.grant,
+    fromCache: false, refundPending: false };
+  await f.service.reconcile([]);
+  assert.equal(f.runtime.snapshot().refundPending, false);
+  assert.equal(f.runtime.decision('test.shipped', f.context).executable, true);
   f.runtime.dispose();
 });
 test('release runtime denies forced simulation at both setter and decision', () => {

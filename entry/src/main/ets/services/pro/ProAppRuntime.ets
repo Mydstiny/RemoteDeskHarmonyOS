@@ -141,7 +141,7 @@ export class ProAppRuntime implements ProBillingBackend {
   }
   async markRefundPending(lease: ProClientLease): Promise<void> {
     if (!this.current(lease)) { return; }
-    await this.store.markRefundPending(lease.scope);
+    await this.store.markRefundPending(lease.scope, this.clock.now());
     if (this.current(lease)) { this.runtime.markRefundPending(); }
   }
   refundOrder(lease: ProClientLease, isCurrent: () => boolean): Promise<string> {

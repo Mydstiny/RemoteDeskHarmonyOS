@@ -33,6 +33,7 @@ export class ProEntitlementService {
   private lastObservedTime: number = 0;
   private verificationUnavailable: boolean = false;
   private refundPending: boolean = false;
+  private refundMarkGeneration: number = 0;
   private listeners: Array<() => void> = [];
   private verifier: ProOrderVerifier;
   private now: () => number;
@@ -87,6 +88,8 @@ export class ProEntitlementService {
   }
   markRefundPending(): void {
     this.refundPending = true;
+    // Requests already in flight read the store before this mark.
+    this.refundMarkGeneration = this.generation;
     this.publish();
   }
   async restoreCached(): Promise<boolean> {
@@ -126,9 +129,9 @@ export class ProEntitlementService {
     // A later request still waiting for the server must not hide an observed
     // refund. Only an already accepted newer result supersedes this result.
     this.acceptedGeneration = generation;
-    // Once a refund has been submitted, an active, cached or unavailable
-    // result cannot clear the local fail-closed state. Only the signed
-    // revoked/noEntitlement branches below may release that fence.
+    // Once a refund has been submitted, a cached or unavailable result cannot
+    // clear the local fail-closed state. Signed revoked/noEntitlement results
+    // release it, and so does a fresh grant after the store's hold expired.
     if (result.refundPending === true) { this.refundPending = true; }
     if (result.status === 'verified') {
       const grant = result.grant;
@@ -139,6 +142,9 @@ export class ProEntitlementService {
           verifiedAt: grant.verifiedAt, revalidateAfter: grant.revalidateAfter, usableUntil: grant.usableUntil,
           entitlementIds: grant.entitlementIds.slice() };
         if (result.fromCache !== true) { this.clockInvalidated = false; }
+        if (result.fromCache !== true && result.refundPending === false && generation > this.refundMarkGeneration) {
+          this.refundPending = false;
+        }
         this.lastObservedTime = result.fromCache === true ? Math.max(this.now(), this.lastObservedTime) : this.now();
         this.revoked = false;
         this.verificationUnavailable = result.needsRevalidation === true;

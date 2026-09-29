@@ -182,6 +182,9 @@ export class ProTrustedEntitlementClient implements ProOrderVerifier {
         verificationStage = 4;
         await this.store.accept(lease.scope, snapshot, this.clock.wallNow(), copied);
         if (!this.current(lease)) { return this.unavailable(owner); }
+        // accept() may have released an expired refund fence for an active grant.
+        snapshot.result.refundPending = await this.store.refundPending(lease.scope);
+        if (!this.current(lease)) { return this.unavailable(owner); }
         this.clock.resetAfterOnlineVerification();
         snapshot.result.fromCache = false;
         return snapshot.result;

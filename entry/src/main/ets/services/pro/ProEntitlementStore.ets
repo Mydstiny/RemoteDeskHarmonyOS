@@ -16,7 +16,7 @@ export interface ProCachedRecord {
 export interface ProEntitlementStorePort {
   beginVerification(scope: ProStoreScope): Promise<boolean>;
   endVerification(scope: ProStoreScope, clear: boolean): Promise<void>;
-  markRefundPending(scope: ProStoreScope): Promise<void>;
+  markRefundPending(scope: ProStoreScope, markedAt: number): Promise<void>;
   clearRefundPending(scope: ProStoreScope): Promise<void>;
   refundPending(scope: ProStoreScope): Promise<boolean>;
   read(scope: ProStoreScope, now: number): Promise<ProCachedRecord | null>;
@@ -40,6 +40,18 @@ function scopeKey(scope: ProStoreScope): string {
   return hash(JSON.stringify([scope.owner, scope.environment, scope.applicationId, scope.productId]));
 }
 function refundFenceKey(key: string): string { return key + ':refund'; }
+// Scope keys are hex digests, so the LIKE pattern has no wildcard collisions.
+function refundFencePattern(key: string): string { return refundFenceKey(key) + ':%'; }
+// A refund request may still complete after the vendor UI reports an error, so
+// only a fresh signed grant issued this long after the request may release it.
+export const PRO_REFUND_FENCE_HOLD_MS: number = 10 * 60 * 1000;
+// Fences written before the hold existed carry no time and release on the next
+// fresh signed grant; an unreadable time never releases without revocation.
+function refundFenceTime(key: string, row: string): number {
+  if (row === refundFenceKey(key)) { return 0; }
+  const value = Number(row.substring(refundFenceKey(key).length + 1));
+  return Number.isSafeInteger(value) && value >= 0 ? value : Number.MAX_SAFE_INTEGER;
+}
 function validTime(value: number): boolean { return Number.isSafeInteger(value) && value > 0; }
 
 // One process-wide encrypted local store, independent of CloudStore and E2EE.
@@ -119,8 +131,8 @@ export class ProEntitlementStore implements ProEntitlementStorePort {
       if (observed !== record.observedAt || blocked !== record.clockBlocked) {
         await store.executeSql('UPDATE pro_cache SET observed_at=?,clock_blocked=? WHERE scope=?', [observed, blocked ? 1 : 0, key]);
       }
-      const fence = await store.querySql('SELECT scope FROM pro_verifying WHERE scope=? OR scope=?',
-        [key, refundFenceKey(key)]);
+      const fence = await store.querySql('SELECT scope FROM pro_verifying WHERE scope=? OR scope=? OR scope LIKE ?',
+        [key, refundFenceKey(key), refundFencePattern(key)]);
       try { record.clockBlocked = blocked || fence.goToFirstRow(); } finally { fence.close(); }
       record.observedAt = observed;
       return record;
@@ -148,22 +160,30 @@ export class ProEntitlementStore implements ProEntitlementStorePort {
       finally { this.verifying.delete(key); }
     });
   }
-  markRefundPending(scope: ProStoreScope): Promise<void> {
+  markRefundPending(scope: ProStoreScope, markedAt: number): Promise<void> {
     const key = scopeKey(scope);
+    const time = validTime(markedAt) ? markedAt : Number.MAX_SAFE_INTEGER;
     return this.serialize(async (store: relationalStore.RdbStore): Promise<void> => {
-      await store.executeSql('INSERT OR IGNORE INTO pro_verifying VALUES (?)', [refundFenceKey(key)]);
+      // The latest request defines the hold; replacement is atomic so a failure keeps the older fence.
+      store.beginTransaction();
+      try {
+        await store.executeSql('DELETE FROM pro_verifying WHERE scope=? OR scope LIKE ?', [refundFenceKey(key), refundFencePattern(key)]);
+        await store.executeSql('INSERT INTO pro_verifying VALUES (?)', [refundFenceKey(key) + ':' + time.toString()]);
+        store.commit();
+      } catch (error) { store.rollBack(); throw error as Error; }
     });
   }
   clearRefundPending(scope: ProStoreScope): Promise<void> {
     const key = scopeKey(scope);
     return this.serialize(async (store: relationalStore.RdbStore): Promise<void> => {
-      await store.executeSql('DELETE FROM pro_verifying WHERE scope=?', [refundFenceKey(key)]);
+      await store.executeSql('DELETE FROM pro_verifying WHERE scope=? OR scope LIKE ?', [refundFenceKey(key), refundFencePattern(key)]);
     });
   }
   refundPending(scope: ProStoreScope): Promise<boolean> {
     const key = scopeKey(scope);
     return this.serialize(async (store: relationalStore.RdbStore): Promise<boolean> => {
-      const result = await store.querySql('SELECT scope FROM pro_verifying WHERE scope=?', [refundFenceKey(key)]);
+      const result = await store.querySql('SELECT scope FROM pro_verifying WHERE scope=? OR scope LIKE ?',
+        [refundFenceKey(key), refundFencePattern(key)]);
       try { return result.goToFirstRow(); } finally { result.close(); }
     });
   }
@@ -183,7 +203,20 @@ export class ProEntitlementStore implements ProEntitlementStorePort {
           [key, snapshot.signedEntitlement, snapshot.revision, snapshot.verifiedAt, observedAt]);
         await store.executeSql('DELETE FROM pro_verifying WHERE scope=?', [key]);
         if (snapshot.signedStatus !== 'verified') {
-          await store.executeSql('DELETE FROM pro_verifying WHERE scope=?', [refundFenceKey(key)]);
+          await store.executeSql('DELETE FROM pro_verifying WHERE scope=? OR scope LIKE ?', [refundFenceKey(key), refundFencePattern(key)]);
+        } else {
+          // Only fresh signed results reach accept(); an active order long after
+          // the request proves the refund was cancelled or declined.
+          const fences = await store.querySql('SELECT scope FROM pro_verifying WHERE scope=? OR scope LIKE ?',
+            [refundFenceKey(key), refundFencePattern(key)]);
+          const released: string[] = [];
+          try {
+            while (fences.goToNextRow()) {
+              const row = fences.getString(0);
+              if (snapshot.verifiedAt - refundFenceTime(key, row) >= PRO_REFUND_FENCE_HOLD_MS) { released.push(row); }
+            }
+          } finally { fences.close(); }
+          for (const row of released) { await store.executeSql('DELETE FROM pro_verifying WHERE scope=?', [row]); }
         }
         // A refund must survive even when removal of recovery receipts fails.
         // Positive grants retain the original all-or-nothing transaction.
