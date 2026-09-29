@@ -1,5 +1,6 @@
 .hvigor
 /.remotedesk-build-quarantine/
+/.remotedesk-build-cache/
 **/build/
 **/.cxx/
 node_modules/

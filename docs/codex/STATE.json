@@ -1949,12 +1949,7 @@
       "P12": "external dependency"
     },
     "step3": "READY remote AI A1-A13 plus U5/U7/U8",
-    "uncommittedOutsideScope": [
-      "scripts/macos_env.sh",
-      ".gitignore",
-      "entry/src/main/cpp/types/librdpnapi/index.d.ts",
-      "entry/src/main/ets/types/rdpnapi.d.ts"
-    ],
-    "recordGates": "testCompile BUILD SUCCESSFUL in 1 s 278 ms; signed assembleHap BUILD SUCCESSFUL in 1 min 14 s 373 ms, SignHap 2 s 599 ms; both exit 0; Light/diff PASS"
+    "recordGates": "testCompile BUILD SUCCESSFUL in 1 s 278 ms; signed assembleHap BUILD SUCCESSFUL in 1 min 14 s 373 ms, SignHap 2 s 599 ms; both exit 0; Light/diff PASS",
+    "workingTreeCleanup": "User reverted .d.ts reorder and macos_env.sh external-cache default; build leftovers removed/quarantined; .gitignore ignores .remotedesk-build-cache/. Gates testCompile 1m8s422, assembleHap 1m3s579, Light/diff PASS"
   }
 }
