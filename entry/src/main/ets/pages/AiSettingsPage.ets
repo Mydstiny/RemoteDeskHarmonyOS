@@ -144,8 +144,11 @@ export struct AiSettingsSurface {
     const account = this.account;
     if (!this.allowed || !AiAccess.getInstance().proVisible() || account === null || this.busy || !this.settingsReady || this.savedSettings === null ||
       this.savedSettingsAccount === null || !AiAccess.getInstance().current(this.savedSettingsAccount)) { return; }
-    if (!AiAccess.getInstance().executable(this.settings.defaultBackend)) {
-      this.error = '当前默认 AI 后端已隐藏或暂不可用'; return;
+    // Only a new default must be usable; a hidden unchanged default must not block other settings.
+    if (this.settings.defaultBackend !== this.savedSettings.defaultBackend &&
+      !AiAccess.getInstance().executable(this.settings.defaultBackend)) {
+      this.settings = JSON.parse(JSON.stringify(this.savedSettings)) as AiSettings;
+      this.error = '所选默认 AI 后端已隐藏或暂不可用'; return;
     }
     const previous = JSON.parse(JSON.stringify(this.savedSettings)) as AiSettings;
     const next = JSON.parse(JSON.stringify(this.settings)) as AiSettings;

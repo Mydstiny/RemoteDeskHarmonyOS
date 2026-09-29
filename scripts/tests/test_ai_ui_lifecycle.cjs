@@ -42,20 +42,20 @@ function until(promise, label) {
 }
 
 function settingsFixture({ deferredInitialize = false } = {}) {
-  const state = { owner: 'A', callbacks: [], hostReads: 0, initializations: 0 };
+  const state = { owner: 'A', callbacks: [], hostReads: 0, initializations: 0, saves: [], hidden: new Set() };
   state.proVisible = true;
   state.entered = new Promise(resolve => { state.initializeEntered = resolve; });
   const access = {
     capture: () => ({ owner: state.owner, generation: 1, lifecycle: 1 }),
     current: lease => lease !== null && lease.owner === state.owner,
-    executable: () => true,
+    executable: backend => !state.hidden.has(backend),
     proVisible: () => state.proVisible,
     subscribe: callback => {
       state.callbacks.push(callback); callback();
       return () => { state.callbacks = state.callbacks.filter(value => value !== callback); };
     }
   };
-  const defaults = () => ({ showExecution: true, reconnectOnForeground: false, textSize: 15 });
+  const defaults = () => ({ showExecution: true, reconnectOnForeground: false, textSize: 15, defaultBackend: 'codex' });
   const store = {
     initialize: async () => {
       state.initializations++;
@@ -71,7 +71,8 @@ function settingsFixture({ deferredInitialize = false } = {}) {
     hosts: async lease => {
       if (!access.current(lease)) throw new Error('AI_ACCOUNT_CHANGED');
       state.hostReads++; return [{ id: state.owner + '-host', owner: state.owner }];
-    }
+    },
+    saveSettings: async (_lease, settings) => { state.saves.push(JSON.parse(JSON.stringify(settings))); }
   };
   state.page = loadPage('AiSettingsPage', {
     AiAccess: { getInstance: () => access },
@@ -177,6 +178,20 @@ const cases = [
     assert.equal(state.page.allowed, true);
     assert.equal(state.page.account?.owner, 'A');
     assert.equal(state.page.hosts.length, 1);
+    state.page.aboutToDisappear();
+  }],
+  ['a hidden unchanged default backend does not block other settings, but a hidden new default is rolled back', async () => {
+    const state = settingsFixture();
+    await until(state.page.aboutToAppear(), 'settings backend visibility appearance');
+    state.hidden.add('codex');
+    state.page.settings.showExecution = false; state.page.save(); await flush();
+    assert.equal(state.page.error, ''); assert.equal(state.saves.length, 1);
+    assert.equal(state.saves[0].showExecution, false); assert.equal(state.saves[0].defaultBackend, 'codex');
+    state.hidden.add('dsh');
+    state.page.settings.defaultBackend = 'dsh'; state.page.save(); await flush();
+    assert.equal(state.saves.length, 1);
+    assert.equal(state.page.error, '所选默认 AI 后端已隐藏或暂不可用');
+    assert.equal(state.page.settings.defaultBackend, 'codex'); assert.equal(state.page.settings.showExecution, false);
     state.page.aboutToDisappear();
   }],
   ['stored auto-reconnect false is honored during pending first connection', async () => {
