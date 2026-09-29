@@ -1,4 +1,5 @@
 import proAccessPolicyTest from './ProAccessPolicy.test';
+import rustDeskRelayHealthPolicyTest from './RustDeskRelayHealthPolicy.test';
 import localUnitTest from './LocalUnit.test';
 import endpointAddressPolicyTest from './EndpointAddressPolicy.test';
 import cloudStoreTest from './CloudStore.test';
@@ -540,4 +541,5 @@ export default function testsuite() {
   diagnosticCaptureExportServiceTest();
   diagnosticRuntimeSnapshotPolicyTest();
   appCloneContextTest();
+  rustDeskRelayHealthPolicyTest();
 }

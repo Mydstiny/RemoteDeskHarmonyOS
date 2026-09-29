@@ -20,7 +20,7 @@ import { RustDeskProAccountState } from '../model/RustDeskProModels';
 import { HostSyncService } from '../services/HostSyncService';
 import { RustDeskProSyncService } from '../services/RustDeskProSyncService';
 import {
-  rustDeskRelayHealthFamilies,
+  rustDeskRelayHealthAddress, rustDeskRelayHealthFamilies,
   snapshotSelectedRelay
 } from '../services/RustDeskRelayHealthPolicy';
 import { Palette, buildDark, buildLight, AppTheme } from '../common/Theme';
@@ -763,15 +763,17 @@ export struct RustDeskRelayPage {
 
   // TCP socket 连通性测试
   private async tcpTest(host: string, port: number): Promise<TcpTestResult> {
-    const start = Date.now();
     const result: TcpTestResult = new TcpTestResult();
     const families: number[] = rustDeskRelayHealthFamilies(host);
+    const address: string = rustDeskRelayHealthAddress(host);
     for (let index = 0; index < families.length; index++) {
       let tcp: socket.TCPSocket | null = null;
+      // Latency covers only the attempt that connected, not an earlier family's timeout.
+      const start = Date.now();
       try {
         tcp = socket.constructTCPSocketInstance();
         const addr: socket.NetAddress = {
-          address: host, port: port, family: families[index]
+          address: address, port: port, family: families[index]
         };
         await tcp.connect({ address: addr, timeout: 5000 });
         result.ok = true;

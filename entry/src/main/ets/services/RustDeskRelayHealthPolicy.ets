@@ -1,5 +1,5 @@
 import { RustDeskRelayConfig } from '../model/RustDeskRelayConfig';
-import { EndpointAddressResult, parseEndpointFields } from './EndpointAddressPolicy';
+import { EndpointAddressResult, endpointTransportHost, parseEndpointFields } from './EndpointAddressPolicy';
 
 /**
  * Return the socket families that a hostname health probe must try.
@@ -15,6 +15,12 @@ export function rustDeskRelayHealthFamilies(host: string): number[] {
   if (parsed.endpoint.family === 'ipv6') { return [2]; }
   if (parsed.endpoint.family === 'ipv4') { return [1]; }
   return [2, 1];
+}
+
+/** Socket address for a stored relay host: brackets removed, IPv6 scope kept. */
+export function rustDeskRelayHealthAddress(host: string): string {
+  const parsed: EndpointAddressResult = parseEndpointFields(host, 1);
+  return parsed.ok ? endpointTransportHost(parsed.endpoint) : host;
 }
 
 /**

@@ -6,6 +6,7 @@ import {
   RemoteSessionWindowRecord
 } from '../services/RemoteSessionWindowCoordinator';
 import { ProContinuationService, PRO_CONTINUATION_PARAM } from '../services/pro/ProContinuationService';
+import { ProFeatureVisibility } from '../services/pro/ProFeatureVisibility';
 import { recordDiagnosticAppLifecycleEvent } from '../services/DiagnosticCaptureRuntime';
 
 const DOMAIN: number = 0x0025;
@@ -32,6 +33,8 @@ export default class RemoteSessionAbility extends UIAbility {
   private diagnosticLifecycleGeneration: number = 0;
 
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
+    // A continuation can cold-start this ability without EntryAbility; Pro gates fail closed until loaded.
+    ProFeatureVisibility.getInstance().load(this.context);
     ProContinuationService.getInstance().initializeMission(this.context);
     if (launchParam.launchReason === AbilityConstant.LaunchReason.CONTINUATION) {
       this.acceptContinuationWant(want);
