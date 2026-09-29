@@ -7733,9 +7733,32 @@ napi_value NapiSetRustDeskImageQuality(napi_env env, napi_callback_info info) {
     auto it = g_sessionRegistry.find(sessionId);
     const std::shared_ptr<SessionContext> session =
         it == g_sessionRegistry.end() ? nullptr : it->second;
-    if (quality >= 0 && quality <= 2 && IsSessionCallbackActive(session)) {
+    const char* rejection = "unknown";
+    if (quality < 0 || quality > 2) {
+        rejection = "invalid-quality";
+    } else if (!session) {
+        rejection = "session-not-found";
+    } else if (!IsSessionCallbackActive(session)) {
+        rejection = "session-owner-inactive";
+    } else {
         const std::shared_ptr<RustDeskBridge> bridge = GetRustDeskAdapter(session);
-        accepted = bridge != nullptr && bridge->setImageQuality(quality);
+        if (!bridge) {
+            rejection = "bridge-unavailable";
+        } else {
+            accepted = bridge->setImageQuality(quality);
+            if (!accepted) {
+                rejection = "ffi-control-rejected";
+            }
+        }
+    }
+    if (accepted) {
+        OH_LOG_INFO(LOG_APP,
+            "[ExtLoader] RustDesk image quality accepted session=%{public}d quality=%{public}d",
+            sessionId, quality);
+    } else {
+        OH_LOG_WARN(LOG_APP,
+            "[ExtLoader] RustDesk image quality rejected session=%{public}d quality=%{public}d reason=%{public}s",
+            sessionId, quality, rejection);
     }
     napi_value result;
     napi_get_boolean(env, accepted, &result);

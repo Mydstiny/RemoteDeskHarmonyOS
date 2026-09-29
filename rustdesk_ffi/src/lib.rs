@@ -685,6 +685,7 @@ fn relay_fallback_port_from_config(value: c_int) -> u16 {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ResolvedStreamParams {
+    profile: RustDeskProfile,
     preferred_codec: i32,
     image_quality: i32,
     effective_fps: u32,
@@ -693,7 +694,20 @@ struct ResolvedStreamParams {
 }
 
 fn resolve_stream_params_for_config(config: &RustDeskConfig) -> ResolvedStreamParams {
-    let profile_params = ProfileParams::from_profile(config.profile);
+    // The HarmonyOS quality selector is also the normal stream profile
+    // selector. Keep explicit non-Balanced profiles authoritative for native
+    // callers, while mapping the bridge's default Balanced profile to the
+    // three user-facing quality tiers.
+    let profile = if config.profile == RustDeskProfile::Balanced {
+        match config.image_quality {
+            0 => RustDeskProfile::Stable,
+            2 => RustDeskProfile::Performance,
+            _ => RustDeskProfile::Balanced,
+        }
+    } else {
+        config.profile
+    };
+    let profile_params = ProfileParams::from_profile(profile);
     let preferred_codec = if config.codec != 0 {
         config.codec
     } else {
@@ -716,10 +730,11 @@ fn resolve_stream_params_for_config(config: &RustDeskConfig) -> ResolvedStreamPa
     if matches!(preferred_codec, 1 | 3) && config.fps <= 0 {
         effective_fps = effective_fps.min(45);
     }
-    if matches!(config.profile, RustDeskProfile::Stable) && config.fps <= 0 {
+    if matches!(profile, RustDeskProfile::Stable) && config.fps <= 0 {
         effective_fps = effective_fps.min(30);
     }
     ResolvedStreamParams {
+        profile,
         preferred_codec,
         image_quality,
         effective_fps,
@@ -2239,7 +2254,7 @@ fn rustdesk_connect_impl(
                 raw_quality: config.image_quality,
                 effective_quality: image_quality,
                 sent_quality: -1,
-                profile: config.profile as i32,
+                profile: stream_params.profile as i32,
                 fps: effective_fps,
                 update_status: 1,
                 ..RustDeskQualityState::default()
@@ -5916,7 +5931,7 @@ mod tests {
     }
 
     #[test]
-    fn explicit_best_quality_overrides_balanced_profile_without_changing_fps() {
+    fn best_quality_selects_performance_profile_without_overriding_explicit_codec() {
         let cfg = RustDeskConfig {
             host: std::ptr::null(),
             port: 21116,
@@ -5941,11 +5956,42 @@ mod tests {
 
         let params = resolve_stream_params_for_config(&cfg);
 
-        assert_eq!(params.preferred_codec, 4);
+        assert_eq!(params.profile, RustDeskProfile::Performance);
+        assert_eq!(params.preferred_codec, 0);
         assert_eq!(params.image_quality, 2);
         assert_eq!(params.effective_fps, 60);
         assert_eq!(params.req_width, 742);
         assert_eq!(params.req_height, 1600);
+    }
+
+    #[test]
+    fn fast_quality_selects_stable_profile() {
+        let cfg = RustDeskConfig {
+            host: std::ptr::null(),
+            port: 21116,
+            key: std::ptr::null(),
+            username: std::ptr::null(),
+            password: std::ptr::null(),
+            width: 0,
+            height: 0,
+            codec: 0,
+            image_quality: 0,
+            privacy_mode: false,
+            audio_enabled: true,
+            profile: RustDeskProfile::Balanced,
+            fps: 0,
+            direct_connection: false,
+            auth_mode: 0,
+            key_mode: 1,
+            token: std::ptr::null(),
+            connection_id: 0,
+            relay_fallback_port: DEFAULT_RELAY_PORT as c_int,
+        };
+        let params = resolve_stream_params_for_config(&cfg);
+        assert_eq!(params.profile, RustDeskProfile::Stable);
+        assert_eq!(params.preferred_codec, 4);
+        assert_eq!(params.effective_fps, 30);
+        assert_eq!(params.req_width, 1280);
     }
 
     #[test]

@@ -963,6 +963,14 @@ static uint64_t rdSteadyNowMs() {
         Clock::now().time_since_epoch()).count());
 }
 
+static int rdRustDeskProfileForQuality(int quality) {
+    switch (quality) {
+        case 0: return 0; // Stable: speed first
+        case 2: return 2; // Performance: quality first
+        default: return 1; // Balanced
+    }
+}
+
 enum class RustDeskFfiOutboundLane {
     Input,
     Clipboard,
@@ -3655,8 +3663,9 @@ int RustDeskBridge::connectInternal(
             ffiCfg.imageQuality = cfg.rdImageQuality;
             ffiCfg.privacyMode = cfg.rdPrivacyMode;
             ffiCfg.audioEnabled = cfg.rdAudioEnabled;
-            // T-121: Default to Balanced profile, allow override
-            ffiCfg.profile  = 1; // Balanced
+            // The ArkTS quality selector is also the normal stream profile
+            // selector. An explicit codec preference still wins below.
+            ffiCfg.profile  = rdRustDeskProfileForQuality(cfg.rdImageQuality);
             ffiCfg.fps      = 0; // From profile
             ffiCfg.auth_mode = (cfg.rdAuthMode == 1) ? 1 : 0;
             ffiCfg.key_mode = cfg.rdServerKeyMode;
