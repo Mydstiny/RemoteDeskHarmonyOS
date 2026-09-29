@@ -1,0 +1,74 @@
+// Every Pro entry point must follow the entitlement, not only the user's display choice.
+// A new ProBadge or Pro entry fails this test until it is gated through ProEntries.visible
+// (or ProFeatureGate / AiAccess.proVisible, which apply the same rule) and registered below.
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+
+const root = path.join(__dirname, '../../entry/src/main/ets');
+function files(dir) {
+  return fs.readdirSync(dir, { withFileTypes: true }).flatMap(entry => {
+    const full = path.join(dir, entry.name);
+    return entry.isDirectory() ? files(full) : entry.name.endsWith('.ets') ? [full] : [];
+  });
+}
+const sources = new Map(files(root).map(file => [path.relative(root, file).split(path.sep).join('/'), fs.readFileSync(file, 'utf8')]));
+const count = (text, pattern) => (text.match(pattern) || []).length;
+
+// 1. The display toggle alone is never an entitlement check.
+const rawVisibility = /ProFeatureVisibility\.getInstance\(\)\.isVisible\(|\bproVisibility\.isVisible\(/g;
+const rawAllowed = new Map([
+  ['services/pro/ProEntries.ets', 'defines visible() = display choice AND entitlement decision'],
+  ['services/pro/ProFeatureVisibility.ets', 'the display-choice store itself'],
+  ['components/ProFeatureVisibilityPanel.ets', 'edits the display choice for every catalog feature'],
+  ['components/ProPurchaseSheet.ets', 'purchase list describes features the user does not own yet'],
+  ['services/ai/AiAccess.ets', 'proVisible()/executable() combine it with runtime.decision']
+]);
+for (const [file, text] of sources) {
+  if (count(text, rawVisibility) > 0) {
+    assert.ok(rawAllowed.has(file), `${file}: use ProEntries.visible(featureId) instead of the display toggle alone`);
+  }
+}
+for (const file of rawAllowed.keys()) assert.ok(sources.has(file), `allowlisted ${file} no longer exists`);
+const entries = sources.get('services/pro/ProEntries.ets');
+assert.match(entries, /ProEntries\.shown\(featureId\) &&\s*ProAppRuntime\.getInstance\(\)\.runtime\.decision\(featureId, context\)\.visible/);
+assert.match(sources.get('components/ProFeatureGate.ets'), /ProEntries\.visible\(this\.featureId, this\.context\)/);
+assert.match(sources.get('services/ai/AiAccess.ets'),
+  /proVisible\(\): boolean \{[\s\S]*?isVisible\('pro\.ai\.workspace'\) &&\s*pro\.runtime\.decision\('pro\.ai\.workspace', pro\.context\('ai'\)\)\.visible/);
+
+// 2. Every Pro badge is a registered, gated entry.
+const badges = new Map([
+  ['components/ProConnectionShareControls.ets', [1, /ProFeatureGate\(\{ featureId: 'pro\.connection\.knockShare'/]],
+  ['components/ProContinuationControls.ets', [1, /ProFeatureGate\(\{ featureId: 'pro\.connection\.continuation'/]],
+  ['components/ProAppIconPanel.ets', [1, /ProFeatureGate\(\{ featureId: 'pro\.personalization\.appIcon'/]],
+  ['components/ProPurchaseSheet.ets', [1, /purchase/i]],
+  ['components/ProFeatureVisibilityPanel.ets', [1, /ProFeatureVisibility/]],
+  ['components/AppSheetHeader.ets', [1, /if \(this\.showProBadge\)/]],
+  ['components/hostadd/HostProtocolPicker.ets', [1, /aiProVisible = AiAccess\.getInstance\(\)\.proVisible\(\)/]],
+  ['components/ai/AiHostEditor.ets', [1, /AiAccess\.getInstance\(\)\.proVisible\(\)/]],
+  ['pages/AiSettingsPage.ets', [1, /allowed = AiAccess\.getInstance\(\)\.proVisible\(\)/]],
+  ['pages/SshTerminal.ets', [1, /ProFeatureGate\(\{ featureId: 'pro\.file\.knockTransfer'/]],
+  // AI cards/section (4) follow aiProVisible; the app-icon row follows ProEntries.
+  ['pages/HostListPage.ets', [5, /aiProVisible = AiAccess\.getInstance\(\)\.proVisible\(\)/]]
+]);
+for (const [file, text] of sources) {
+  if (file === 'components/ProBadge.ets') continue;  // the badge component itself
+  const found = count(text, /\bProBadge\(\)/g);
+  if (found === 0) continue;
+  assert.ok(badges.has(file), `${file}: new Pro entry — gate it with ProEntries.visible/ProFeatureGate and register it here`);
+  const [expected, gate] = badges.get(file);
+  assert.equal(found, expected, `${file}: Pro badge count changed; gate and re-register each entry`);
+  assert.match(text, gate, `${file}: registered gate is missing`);
+}
+// Header badges only appear on AI workspace sheets, which close when AI access is revoked.
+for (const [file, text] of sources) {
+  if (file === 'components/AppSheetHeader.ets' || !/showProBadge: true/.test(text)) continue;
+  assert.equal(file, 'pages/RemoteAiWorkspace.ets', `${file}: Pro sheet header needs a registered gate`);
+}
+
+// 3. Regression: the settings app-icon row follows the entitlement.
+const host = sources.get('pages/HostListPage.ets');
+assert.match(host, /this\.appIconProVisible = ProEntries\.visible\(id\) \|\|\s*\(ProEntries\.shown\(id\) && icons\.loaded && icons\.currentName !== ''\)/);
+assert.match(host, /if \(this\.appIconProVisible && this\.appIconSupported\) \{[\s\S]{0,600}ProBadge\(\)/);
+assert.match(host, /this\.aiProVisible\) \{\s*ListItem\(\) \{\s*this\.settingsAccordionHeader\(SETTINGS_SECTION_AI/);
+console.log('PASS Pro entry points follow the entitlement through ProEntries and every Pro badge is registered');

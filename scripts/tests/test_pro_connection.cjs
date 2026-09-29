@@ -217,6 +217,10 @@ function fixture() {
         if (id === '../services/pro/ProContinuationService') return {
           ProContinuationService: { getInstance: () => service }, PRO_CONTINUATION_PARAM
         };
+        // A continuation cold start loads Pro display choices before any gate renders.
+        if (id === '../services/pro/ProFeatureVisibility') return {
+          ProFeatureVisibility: { getInstance: () => ({ load() { state.proVisibilityLoads = (state.proVisibilityLoads ?? 0) + 1; } }) }
+        };
         return {};
       }
     }, { filename: file });
@@ -593,6 +597,7 @@ test('normal independent-window Wants cannot ingest continuation data or activat
     pageStack: false, sourceExit: false, sessionWindowId: 'foreign-record' } }, { launchReason: 0 });
   assert.equal(f.service.snapshot().incoming, false);
   assert.deepEqual(remote.events, [['activate', 'foreign-record'], ['terminate']]);
+  assert.equal(f.state.proVisibilityLoads, 1);
 });
 test('multiton continuation synchronously restores only a validated offer and bypasses local record activation', async () => {
   const f = fixture(); const remote = f.sessionAbility(), envelope = f.envelope();

@@ -5,6 +5,7 @@ import { ProAppIcons } from '../services/pro/ProAppIcons';
 import { ProAppIconSnapshot } from '../services/pro/ProAppIconController';
 import { ProPurchaseLifecycle } from '../services/pro/ProPurchaseLifecycle';
 import { ProFeatureGate } from './ProFeatureGate';
+import { ProEntries } from '../services/pro/ProEntries';
 import { APP_ICON_PRESETS, AppIconPreset, appIconLabel } from '../common/AppIconPolicy';
 
 @Component
@@ -13,6 +14,7 @@ export struct ProAppIconPanel {
   @StorageProp('accentColor') accent: string = '#007DFF';
   @State state: ProAppIconSnapshot = ProAppIcons.getInstance().snapshot();
   @State proLabel: string = '';
+  @State entitled: boolean = ProEntries.visible('pro.personalization.appIcon');
   private live: boolean = false;
   isOpen: () => boolean = (): boolean => true;
   private stopIcons: (() => void) | null = null;
@@ -23,8 +25,9 @@ export struct ProAppIconPanel {
     this.stopIcons = ProAppIcons.getInstance().subscribe((): void => {
       this.state = ProAppIcons.getInstance().snapshot();
     });
-    this.stopRuntime = ProAppRuntime.getInstance().runtime.subscribe((): void => {
+    this.stopRuntime = ProEntries.subscribe((): void => {
       this.proLabel = ProAppRuntime.getInstance().runtime.snapshot().label;
+      this.entitled = ProEntries.visible('pro.personalization.appIcon');
     });
     ProAppIcons.getInstance().refresh();
   }
@@ -97,6 +100,10 @@ export struct ProAppIconPanel {
         }.width('100%')
         Text('当前：' + this.name()).fontSize(13).fontColor(this.pal().text2).width('100%')
         ProFeatureGate({ featureId: 'pro.personalization.appIcon', content: (): void => { this.presets(); } })
+        if (!this.entitled) {
+          Text('预设图标需要有效的 Pro 权益。当前图标会保留，你可以随时恢复默认图标。')
+            .fontSize(13).fontColor(this.pal().text2).width('100%')
+        }
         if (!this.state.loaded || this.state.currentName !== '') {
           Button('恢复默认图标').fontSize(13).fontColor(this.accent).backgroundColor(this.pal().surface)
             .constraintSize({ minHeight: 44 }).enabled(!this.state.busy)

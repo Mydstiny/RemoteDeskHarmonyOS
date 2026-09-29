@@ -13,6 +13,7 @@ import { SshConnectionPreflightSheet } from '../components/SshConnectionPrefligh
 import { SshAuthenticatedHandoff } from '../services/ssh/auth/SshAuthenticatedHandoff';
 import { ProAppRuntime } from '../services/pro/ProAppRuntime';
 import { ProFeatureVisibility } from '../services/pro/ProFeatureVisibility';
+import { ProEntries } from '../services/pro/ProEntries';
 import { ProPurchaseLifecycle } from '../services/pro/ProPurchaseLifecycle';
 import { ProPurchaseSheet } from '../components/ProPurchaseSheet';
 import { ProAppIconPanel } from '../components/ProAppIconPanel';
@@ -1962,15 +1963,24 @@ struct HostListPage {
     } catch (_error) { promptAction.showToast({ message: '删除 AI 主机失败，请重试', duration: 2200 }); }
   }
 
+  // Entitled users pick presets. After a revocation a non-default icon keeps the entry,
+  // whose panel then offers only the free restore of the default icon.
+  private refreshAppIconEntry(): void {
+    const id = 'pro.personalization.appIcon';
+    const icons = ProAppIcons.getInstance().snapshot();
+    this.appIconSupported = icons.supported;
+    this.appIconProVisible = ProEntries.visible(id) || (ProEntries.shown(id) && icons.loaded && icons.currentName !== '');
+  }
+
   async aboutToAppear(): Promise<void> {
     const proVisibility = ProFeatureVisibility.getInstance();
     proVisibility.load(getContext(this) as common.UIAbilityContext);
-    this.appIconProVisible = proVisibility.isVisible('pro.personalization.appIcon');
-    this.appIconSupported = ProAppIcons.getInstance().snapshot().supported;
+    this.refreshAppIconEntry();
     this.proVisibilityUnsubscribe?.();
-    this.proVisibilityUnsubscribe = proVisibility.subscribe((): void => {
-      this.appIconProVisible = proVisibility.isVisible('pro.personalization.appIcon');
-    });
+    const stopEntries = ProEntries.subscribe((): void => { this.refreshAppIconEntry(); });
+    const stopIcons = ProAppIcons.getInstance().subscribe((): void => { this.refreshAppIconEntry(); });
+    this.proVisibilityUnsubscribe = (): void => { stopEntries(); stopIcons(); };
+    if (this.appIconSupported) { void ProAppIcons.getInstance().refresh(); }
     this.aiStopStore = AiLocalStore.getInstance().subscribe((): void => { void this.refreshAiHosts(); });
     this.aiStopAccess = AiAccess.getInstance().subscribe((): void => {
       this.aiProVisible = AiAccess.getInstance().proVisible();
