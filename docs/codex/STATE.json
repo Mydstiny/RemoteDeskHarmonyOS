@@ -18,7 +18,7 @@
     "status": "implemented-independent-review-pass-device-acceptance-pending",
     "reviewTaskId": "/root/review_rdp_file_toolbar",
     "reviewResult": "PASS; no remaining findings",
-    "validation": "Focused transfer tests 37 + RDP direct-touch 18 PASS; default@OhosTestCompileArkTS 14.278 s PASS; signed assembleHap 19.698 s PASS; git diff --check PASS; native lightweight link blocked by omitted pre-existing RDP transfer symbols"
+    "validation": "Focused transfer tests 37 + RDP direct-touch 18 PASS; default@OhosTestCompileArkTS 9.419 s PASS; signed assembleHap 15.490 s PASS; git diff --check PASS; native lightweight link blocked by omitted pre-existing RDP transfer symbols"
   },
   "next": "Acceptance step 4: M4 knock transfer phone -> HarmonyOS PC SFTP; then real M5 RustDesk/VNC cross-device acceptance and M7 remainder.",
   "blockers": [
