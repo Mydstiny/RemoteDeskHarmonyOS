@@ -29,6 +29,7 @@ export struct DiagnosticCaptureSettingsSheet {
 
   @State selectedDurationMinutes: number = DIAGNOSTIC_DEFAULT_DURATION_MINUTES;
   @State selectedModules: DiagnosticModuleId[] = ['core.app'];
+  @State fullLogEnabled: boolean = false;
   @State phase: DiagnosticCapturePhase = 'idle';
   @State captureId: string = '';
   @State remainingSeconds: number = 0;
@@ -75,6 +76,7 @@ export struct DiagnosticCaptureSettingsSheet {
     this.droppedEventCount = status.droppedEventCount;
     this.approximateBytes = status.approximateBytes;
     this.stopReason = status.stopReason;
+    this.fullLogEnabled = status.fullLog;
     if (loadActiveSelection && status.phase !== 'idle') {
       this.selectedDurationMinutes = status.durationMinutes;
       this.selectedModules = status.selectedModules.slice();
@@ -106,7 +108,7 @@ export struct DiagnosticCaptureSettingsSheet {
   }
 
   private toggleAllModules(): void {
-    if (this.optionsLocked()) { return; }
+    if (this.optionsLocked() || this.fullLogEnabled) { return; }
     this.selectedModules = this.allModulesSelected() ?
       ['core.app'] : diagnosticAllModules();
   }
@@ -128,8 +130,9 @@ export struct DiagnosticCaptureSettingsSheet {
     }
     const dropped: string = this.droppedEventCount > 0 ?
       ' · 已丢弃 ' + this.droppedEventCount.toString() + ' 条' : '';
+    const profile: string = this.fullLogEnabled ? ' · 全量模式' : '';
     return this.eventCount.toString() + ' 条事件 · ' +
-      this.formatBytes(this.approximateBytes) + dropped;
+      this.formatBytes(this.approximateBytes) + profile + dropped;
   }
 
   private formatRemaining(seconds: number): string {
@@ -146,7 +149,8 @@ export struct DiagnosticCaptureSettingsSheet {
   }
 
   private startCapture(): void {
-    const code = this.runtime.start(this.selectedDurationMinutes, this.selectedModules);
+    const code = this.runtime.start(this.selectedDurationMinutes, this.selectedModules,
+      this.fullLogEnabled);
     this.message = code === 'ok' ? '日志抓取已开始，请离开设置复现问题。' :
       code === 'already_active' ? '已有一项抓取正在进行。' :
         code === 'invalid_duration' ? '请选择有效的抓取时长。' : '无法启动日志抓取。';
@@ -306,13 +310,31 @@ export struct DiagnosticCaptureSettingsSheet {
               .onClick((): void => { this.toggleAllModules(); })
           }.width('100%').margin({ top: 12, bottom: 8 })
 
+          Row() {
+            Column() {
+              Text('全量日志').fontSize(14).fontWeight(FontWeight.Medium)
+                .fontColor(this.pal().text).fontFamily(this.font())
+              Text('一次抓取全部诊断模组、连接前置、路由和运行态事件；建议复现连接失败时开启。')
+                .fontSize(12).lineHeight(18).fontColor(this.pal().text2)
+                .fontFamily(this.font()).margin({ top: 3 })
+            }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+            Toggle({ type: ToggleType.Switch, isOn: this.fullLogEnabled })
+              .selectedColor(this.accentColor)
+              .enabled(!this.optionsLocked())
+              .onChange((enabled: boolean): void => {
+                this.fullLogEnabled = enabled;
+                if (enabled) { this.selectedModules = diagnosticAllModules(); }
+              })
+          }.width('100%').padding({ left: 14, right: 14, top: 12, bottom: 12 })
+            .borderRadius(16).backgroundColor(this.pal().surface)
+
           Column() {
             ForEach(this.moduleSpecs, (spec: DiagnosticModuleSpec, index: number) => {
               Row() {
                 Checkbox({ name: 'diagnostic-' + spec.id, group: 'diagnostic-modules' })
                   .select(this.moduleSelected(spec.id))
                   .selectedColor(this.accentColor)
-                  .enabled(!this.optionsLocked() && !spec.alwaysEnabled)
+                  .enabled(!this.optionsLocked() && !this.fullLogEnabled && !spec.alwaysEnabled)
                   .onChange((selected: boolean): void => { this.toggleModule(spec.id, selected); })
                 Text(spec.label).fontSize(14).fontColor(this.pal().text)
                   .fontFamily(this.font()).margin({ left: 10 }).layoutWeight(1)
@@ -332,7 +354,7 @@ export struct DiagnosticCaptureSettingsSheet {
           Column() {
             Text('隐私说明').fontSize(13).fontWeight(FontWeight.Medium)
               .fontColor(this.pal().text).fontFamily(this.font())
-            Text('只记录固定状态码和数值指标，不包含密码、密钥正文、主机地址、终端内容、文件路径、剪贴板、屏幕或数据库内容。应用进程被系统终止时，未保存日志会丢失。')
+            Text('全量模式只扩大结构化诊断覆盖范围，仍不包含密码、密钥正文、主机地址、终端内容、文件路径、剪贴板、屏幕或数据库内容。应用进程被系统终止时，未保存日志会丢失。')
               .fontSize(12).lineHeight(19).fontColor(this.pal().text2)
               .fontFamily(this.font()).margin({ top: 6 })
           }

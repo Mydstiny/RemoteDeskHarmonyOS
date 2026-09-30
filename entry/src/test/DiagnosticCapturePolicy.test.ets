@@ -29,7 +29,7 @@ export default function diagnosticCapturePolicyTest(): void {
     it('accepts_only_the_six_fixed_one_to_thirty_minute_options', 0, (): void => {
       expect(diagnosticDurationOptions().join(',')).assertEqual('1,3,5,10,15,30');
       expect(DIAGNOSTIC_DEFAULT_DURATION_MINUTES).assertEqual(10);
-      expect(DIAGNOSTIC_CAPTURE_SCHEMA_VERSION).assertEqual(7);
+      expect(DIAGNOSTIC_CAPTURE_SCHEMA_VERSION).assertEqual(8);
       expect(DIAGNOSTIC_REDACTION_POLICY_VERSION).assertEqual(3);
       expect(diagnosticDurationIsAllowed(1)).assertTrue();
       expect(diagnosticDurationIsAllowed(30)).assertTrue();
@@ -58,6 +58,7 @@ export default function diagnosticCapturePolicyTest(): void {
       expect(diagnosticEventIsAllowed('connection.rdp', 'rdp_runtime_snapshot')).assertTrue();
       expect(diagnosticEventIsAllowed('connection.rdp', 'rdp_display_layout')).assertTrue();
       expect(diagnosticEventIsAllowed('connection.rustdesk', 'rustdesk_runtime_snapshot')).assertTrue();
+      expect(diagnosticEventIsAllowed('connection.rustdesk', 'rustdesk_preflight')).assertTrue();
       expect(diagnosticEventIsAllowed('connection.rustdesk', 'rustdesk_display_switch')).assertTrue();
       expect(diagnosticEventIsAllowed('connection.ssh_sftp', 'ssh_runtime_snapshot')).assertTrue();
       expect(diagnosticEventIsAllowed('connection.vnc', 'vnc_runtime_snapshot')).assertTrue();

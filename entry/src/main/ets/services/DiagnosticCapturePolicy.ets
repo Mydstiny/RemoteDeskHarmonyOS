@@ -242,7 +242,11 @@ export interface DiagnosticEventSpec {
   eventCode: string;
 }
 
-export const DIAGNOSTIC_CAPTURE_SCHEMA_VERSION: number = 7;
+/** A capture profile is part of the exported contract, not a UI-only flag. */
+export type DiagnosticCaptureProfile = 'selected' | 'full';
+
+export const DIAGNOSTIC_CAPTURE_SCHEMA_VERSION: number = 8;
+export const DIAGNOSTIC_EVENT_CATALOG_VERSION: number = 1;
 export const DIAGNOSTIC_REDACTION_POLICY_VERSION: number = 3;
 export const DIAGNOSTIC_DEFAULT_DURATION_MINUTES: number = 10;
 export const DIAGNOSTIC_MAX_EVENTS: number = 10000;
@@ -287,6 +291,7 @@ const DIAGNOSTIC_EVENTS: DiagnosticEventSpec[] = [
   { moduleId: 'connection.rdp', eventCode: 'rdp_disconnect' },
 
   { moduleId: 'connection.rustdesk', eventCode: 'rustdesk_presence' },
+  { moduleId: 'connection.rustdesk', eventCode: 'rustdesk_preflight' },
   { moduleId: 'connection.rustdesk', eventCode: 'rustdesk_connection_request' },
   { moduleId: 'connection.rustdesk', eventCode: 'rustdesk_state_changed' },
   { moduleId: 'connection.rustdesk', eventCode: 'rustdesk_two_factor' },
@@ -382,6 +387,10 @@ export function normalizeDiagnosticModules(moduleIds: string[]): DiagnosticModul
 export function diagnosticAllModules(): DiagnosticModuleId[] {
   return normalizeDiagnosticModules(DIAGNOSTIC_MODULES.map(
     (spec: DiagnosticModuleSpec): string => spec.id));
+}
+
+export function diagnosticEventCatalogSize(): number {
+  return DIAGNOSTIC_EVENTS.length;
 }
 
 export function diagnosticEventIsAllowed(moduleId: DiagnosticModuleId, eventCode: string): boolean {

@@ -104,6 +104,7 @@ import {
 import {
   DiagnosticCaptureRuntime,
   diagnosticCaptureIdForModule,
+  isDiagnosticFullLogEnabled,
   isDiagnosticModuleCapturing,
   recordDiagnosticEvent
 } from './DiagnosticCaptureRuntime';
@@ -113,6 +114,8 @@ import {
   DiagnosticRuntimeSamplingLoop,
   DiagnosticRuntimeSamplingScheduler,
   DiagnosticRuntimeSnapshotGate,
+  DIAGNOSTIC_FULL_RUNTIME_SNAPSHOT_INTERVAL_MS,
+  DIAGNOSTIC_RUNTIME_SNAPSHOT_INTERVAL_MS,
   diagnosticDesktopRuntimeEventCode,
   diagnosticDesktopRuntimeFacts,
   diagnosticSshRuntimeFacts
@@ -284,7 +287,7 @@ export class ExtensionLoader implements RustDeskClipboardNative {
     this.diagnosticRuntimeSamplingLoop = new DiagnosticRuntimeSamplingLoop(
       diagnosticRuntimeScheduler, (sessionId: number): void => {
         this.sampleDiagnosticRuntimeForSession(sessionId);
-      });
+      }, (): number => this.diagnosticRuntimeIntervalMs());
     DiagnosticCaptureRuntime.getInstance().onBoundary((boundary): void => {
       // A capture can start between two five-second timer ticks.  Sample
       // immediately so a short capture still contains live session state.
@@ -295,6 +298,11 @@ export class ExtensionLoader implements RustDeskClipboardNative {
       }
       this.diagnosticRuntimeSamplingLoop.sampleNow();
     });
+  }
+
+  private diagnosticRuntimeIntervalMs(): number {
+    return isDiagnosticFullLogEnabled() ? DIAGNOSTIC_FULL_RUNTIME_SNAPSHOT_INTERVAL_MS :
+      DIAGNOSTIC_RUNTIME_SNAPSHOT_INTERVAL_MS;
   }
 
   private recordDiagnosticDesktopRuntime(sessionId: number,
@@ -313,7 +321,8 @@ export class ExtensionLoader implements RustDeskClipboardNative {
       }
       facts.resources = this.diagnosticResourceFacts();
       if (!this.diagnosticRuntimeSnapshots.shouldRecord(
-        desktopModule, sessionId, captureId, facts, Date.now())) { return; }
+        desktopModule, sessionId, captureId, facts, Date.now(),
+        this.diagnosticRuntimeIntervalMs())) { return; }
       recordDiagnosticEvent(desktopModule,
         diagnosticDesktopRuntimeEventCode(desktopModule), 'state', sessionId, 0,
         source.codec, facts.latencyMs, facts.frames,
@@ -335,7 +344,8 @@ export class ExtensionLoader implements RustDeskClipboardNative {
       const facts: DiagnosticRuntimeFacts = diagnosticSshRuntimeFacts(source);
       facts.resources = this.diagnosticResourceFacts();
       if (!this.diagnosticRuntimeSnapshots.shouldRecord(
-        moduleId, sessionId, captureId, facts, Date.now())) { return; }
+        moduleId, sessionId, captureId, facts, Date.now(),
+        this.diagnosticRuntimeIntervalMs())) { return; }
       recordDiagnosticEvent(moduleId, 'ssh_runtime_snapshot', 'state', sessionId,
         source.sessionGeneration > 0 ? source.sessionGeneration : 0, 0,
         facts.latencyMs, facts.frames,

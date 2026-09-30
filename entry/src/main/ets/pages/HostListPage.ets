@@ -725,6 +725,7 @@ import {
 } from '../services/ReleaseNotesRegistry';
 import { AboutSettingsSheet } from '../components/AboutSettingsSheet';
 import { DiagnosticCaptureSettingsSheet } from '../components/DiagnosticCaptureSettingsSheet';
+import { recordDiagnosticEvent } from '../services/DiagnosticCaptureRuntime';
 import { FeedbackSettingsSheet } from '../components/FeedbackSettingsSheet';
 import { VirtualKeyboardSettingsSheet } from '../components/VirtualKeyboardSettingsSheet';
 import {
@@ -10766,6 +10767,8 @@ struct HostListPage {
   private cancelRustDeskProTwoFactor(): void {
     const disconnectIdentity: NativeDisconnectIdentity | null =
       this.rustDeskProDisconnectIdentity;
+    this.recordRustDeskPreflightEvent('cancelled', this.rustDeskProPreflightGeneration, -100,
+      disconnectIdentity === null ? 0 : disconnectIdentity.sessionId);
     this.rustDeskProPreflightGeneration += 1;
     if (disconnectIdentity !== null) {
       this.submitRustDeskProExactDisconnect(disconnectIdentity);
@@ -10798,6 +10801,32 @@ struct HostListPage {
     this.rustDeskProTwoFactorInput = '';
     this.rustDeskProTwoFactorError = '';
     this.rustDeskProTwoFactorSubmitting = true;
+  }
+
+  /** Keep RustDesk preflight failures searchable without exporting free text. */
+  private recordRustDeskPreflightEvent(outcome: 'started' | 'succeeded' | 'failed' | 'cancelled',
+    generation: number, code: number = 0, sessionId: number = 0): void {
+    try {
+      recordDiagnosticEvent('connection.rustdesk', 'rustdesk_preflight', outcome,
+        sessionId > 0 ? sessionId : 0, generation > 0 ? generation : 0, code);
+    } catch (_err) {}
+  }
+
+  private rustDeskPreflightDiagnosticCode(detail: string): number {
+    const marker: string = 'E-RUSTDESK-PREFLIGHT-';
+    const start: number = detail.indexOf(marker);
+    if (start >= 0) {
+      const tail: string = detail.substring(start + marker.length);
+      let digits: string = '';
+      for (let index: number = 0; index < tail.length; index++) {
+        const ch: string = tail[index];
+        if (ch < '0' || ch > '9') { break; }
+        digits += ch;
+      }
+      const parsed: number = Number(digits);
+      if (Number.isSafeInteger(parsed) && parsed > 0) { return -parsed; }
+    }
+    return -1;
   }
 
   private async confirmRustDeskProPreflight(): Promise<void> {
@@ -10847,9 +10876,11 @@ struct HostListPage {
       return;
     }
     const generation: number = ++this.rustDeskProPreflightGeneration;
+    this.recordRustDeskPreflightEvent('started', generation);
     const accountScopeReady: boolean = await AccountSessionCoordinator.getInstance().init(
       getContext(this) as common.Context);
     if (!accountScopeReady) {
+      this.recordRustDeskPreflightEvent('failed', generation, -10);
       this.rustDeskProPreflightState = RustDeskProPreflightState.ERROR;
       this.rustDeskProPreflightError = '账号数据域初始化失败，无法安全保留后台会话。';
       return;
@@ -10930,12 +10961,14 @@ struct HostListPage {
       const startedAt: number = Date.now();
       while (Date.now() - startedAt < timeoutMs) {
         if (generation !== this.rustDeskProPreflightGeneration) {
+          this.recordRustDeskPreflightEvent('cancelled', generation, -100, sid);
           this.submitRustDeskProExactDisconnect(preflightDisconnectIdentity);
           return;
         }
         const activeConnectionScope = AccountSessionCoordinator.getInstance().currentScope();
         if (activeConnectionScope.ownerScopeId !== connectionScope.ownerScopeId ||
           activeConnectionScope.generation !== connectionScope.generation) {
+          this.recordRustDeskPreflightEvent('cancelled', generation, -101, sid);
           this.submitRustDeskProExactDisconnect(preflightDisconnectIdentity);
           return;
         }
@@ -10984,6 +11017,7 @@ struct HostListPage {
           this.lastSheetDismissAtMs = Date.now();
           this.showRustDeskProPreflight = false;
           this.showRemoteHostSheet = false;
+          this.recordRustDeskPreflightEvent('succeeded', generation, 2, sid);
           if (remoteSessionExactDisconnectIdentityEquals(
             this.rustDeskProDisconnectIdentity, preflightDisconnectIdentity)) {
             this.rustDeskProDisconnectIdentity = null;
@@ -11009,10 +11043,16 @@ struct HostListPage {
       if (preflightDisconnectIdentity !== null) {
         this.submitRustDeskProExactDisconnect(preflightDisconnectIdentity);
       }
-      if (generation !== this.rustDeskProPreflightGeneration) { return; }
+      if (generation !== this.rustDeskProPreflightGeneration) {
+        this.recordRustDeskPreflightEvent('cancelled', generation, -100,
+          preflightDisconnectIdentity === null ? 0 : preflightDisconnectIdentity.sessionId);
+        return;
+      }
       const failureScope = AccountSessionCoordinator.getInstance().currentScope();
       if (failureScope.ownerScopeId !== connectionScope.ownerScopeId ||
         failureScope.generation !== connectionScope.generation) {
+        this.recordRustDeskPreflightEvent('cancelled', generation, -101,
+          preflightDisconnectIdentity === null ? 0 : preflightDisconnectIdentity.sessionId);
         return;
       }
       this.rustDeskProTwoFactorActive = false;
@@ -11025,6 +11065,9 @@ struct HostListPage {
       this.rustDeskProTwoFactorSelectedEntryId = '';
       this.rustDeskProPreflightState = RustDeskProPreflightState.ERROR;
       const detail: string = err instanceof Error ? err.message : JSON.stringify(err);
+      this.recordRustDeskPreflightEvent('failed', generation,
+        this.rustDeskPreflightDiagnosticCode(detail),
+        preflightDisconnectIdentity === null ? 0 : preflightDisconnectIdentity.sessionId);
       let kind: RustDeskProNativeErrorKind = classifyRustDeskProNativeError(detail);
       if (kind === 'unknown' && host.rustdeskAuthMode === 'request_approval' &&
         detail.indexOf('等待远端批准超时') >= 0) {

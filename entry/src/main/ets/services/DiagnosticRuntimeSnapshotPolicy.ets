@@ -27,22 +27,30 @@ interface DiagnosticRuntimeObservation {
 }
 
 export const DIAGNOSTIC_RUNTIME_SNAPSHOT_INTERVAL_MS: number = 5000;
+/** Full captures trade a bounded amount of storage for finer failure timing. */
+export const DIAGNOSTIC_FULL_RUNTIME_SNAPSHOT_INTERVAL_MS: number = 1000;
 
 export interface DiagnosticRuntimeSamplingScheduler {
   schedule(callback: () => void, delayMs: number): number;
   cancel(timerId: number): void;
 }
 
+export type DiagnosticRuntimeSamplingIntervalProvider = () => number;
+
 export class DiagnosticRuntimeSamplingLoop {
   private readonly scheduler: DiagnosticRuntimeSamplingScheduler;
   private readonly sampler: (sessionId: number) => void;
+  private readonly intervalProvider: DiagnosticRuntimeSamplingIntervalProvider;
   private sessionIds: number[] = [];
   private timerId: number = -1;
 
   constructor(scheduler: DiagnosticRuntimeSamplingScheduler,
-    sampler: (sessionId: number) => void) {
+    sampler: (sessionId: number) => void,
+    intervalProvider: DiagnosticRuntimeSamplingIntervalProvider =
+      (): number => DIAGNOSTIC_RUNTIME_SNAPSHOT_INTERVAL_MS) {
     this.scheduler = scheduler;
     this.sampler = sampler;
+    this.intervalProvider = intervalProvider;
   }
 
   track(sessionId: number): void {
@@ -84,7 +92,7 @@ export class DiagnosticRuntimeSamplingLoop {
         this.timerId = -1;
         this.sampleNow();
         this.scheduleNext();
-      }, DIAGNOSTIC_RUNTIME_SNAPSHOT_INTERVAL_MS);
+      }, this.safeIntervalMs());
     } catch (_err) {
       this.timerId = -1;
     }
@@ -94,6 +102,16 @@ export class DiagnosticRuntimeSamplingLoop {
     if (this.timerId < 0) { return; }
     try { this.scheduler.cancel(this.timerId); } catch (_err) {}
     this.timerId = -1;
+  }
+
+  private safeIntervalMs(): number {
+    try {
+      const value: number = this.intervalProvider();
+      return Number.isSafeInteger(value) && value > 0 ? value :
+        DIAGNOSTIC_RUNTIME_SNAPSHOT_INTERVAL_MS;
+    } catch (_err) {
+      return DIAGNOSTIC_RUNTIME_SNAPSHOT_INTERVAL_MS;
+    }
   }
 }
 
@@ -478,7 +496,8 @@ export class DiagnosticRuntimeSnapshotGate {
     new Map<string, DiagnosticRuntimeObservation>();
 
   shouldRecord(moduleId: DiagnosticModuleId, sessionId: number, captureId: string,
-    facts: DiagnosticRuntimeFacts, nowMs: number): boolean {
+    facts: DiagnosticRuntimeFacts, nowMs: number,
+    intervalMs: number = DIAGNOSTIC_RUNTIME_SNAPSHOT_INTERVAL_MS): boolean {
     const key: string = moduleId + ':' + sessionId.toString();
     if (captureId.length === 0 || sessionId <= 0 || !Number.isFinite(nowMs) || nowMs < 0) {
       this.observations.delete(key);
@@ -486,9 +505,11 @@ export class DiagnosticRuntimeSnapshotGate {
     }
     const signature: string = diagnosticRuntimeFactsSignature(facts);
     const previous: DiagnosticRuntimeObservation | undefined = this.observations.get(key);
+    const safeInterval: number = Number.isSafeInteger(intervalMs) && intervalMs > 0 ?
+      intervalMs : DIAGNOSTIC_RUNTIME_SNAPSHOT_INTERVAL_MS;
     const due: boolean = previous === undefined || previous.captureId !== captureId ||
       previous.signature !== signature || nowMs < previous.recordedAtMs ||
-      nowMs - previous.recordedAtMs >= DIAGNOSTIC_RUNTIME_SNAPSHOT_INTERVAL_MS;
+      nowMs - previous.recordedAtMs >= safeInterval;
     if (!due) { return false; }
     this.observations.set(key, {
       captureId: captureId, signature: signature, recordedAtMs: Math.floor(nowMs)

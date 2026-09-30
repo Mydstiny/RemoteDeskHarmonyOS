@@ -11,12 +11,14 @@ import {
 } from './ReleaseNotesRegistry';
 import {
   DIAGNOSTIC_CAPTURE_SCHEMA_VERSION,
+  DIAGNOSTIC_EVENT_CATALOG_VERSION,
   DIAGNOSTIC_MAX_CAPTURE_BYTES,
   DIAGNOSTIC_MAX_EVENTS,
   DIAGNOSTIC_MAX_EXPORT_BYTES,
   DIAGNOSTIC_MAX_SESSION_REFS,
   DIAGNOSTIC_REDACTION_POLICY_VERSION,
   DiagnosticAddressFamily,
+  DiagnosticCaptureProfile,
   DiagnosticModuleId,
   DiagnosticNetworkFacts,
   DiagnosticOutcome,
@@ -35,6 +37,8 @@ import {
   DiagnosticWindowRequestPhase,
   DiagnosticAppLifecycle,
   diagnosticDurationIsAllowed,
+  diagnosticAllModules,
+  diagnosticEventCatalogSize,
   diagnosticEventIsAllowed,
   diagnosticLevelForOutcome,
   diagnosticModuleIsKnown,
@@ -94,6 +98,9 @@ interface DiagnosticManifestLine {
   buildId: string;
   captureId: string;
   durationMinutes: number;
+  profile: DiagnosticCaptureProfile;
+  fullLog: boolean;
+  eventCatalogVersion: number;
   selectedModules: DiagnosticModuleId[];
   startedWallTimeMs: number;
   endedWallTimeMs: number;
@@ -129,6 +136,11 @@ interface DiagnosticSummaryLine {
   droppedEventCount: number;
   approximateCaptureBytes: number;
   serializedBytes: number;
+  profile: DiagnosticCaptureProfile;
+  fullLog: boolean;
+  eventCatalogVersion: number;
+  expectedModuleCount: number;
+  expectedEventCount: number;
   moduleEventCounts: Record<string, number>;
 }
 
@@ -276,6 +288,11 @@ export function validateFrozenDiagnosticCapture(capture: FrozenDiagnosticCapture
     diagnosticSafeInteger(capture.droppedEventCount) === null || capture.droppedEventCount < 0 ||
     diagnosticSafeInteger(capture.approximateBytes) === null || capture.approximateBytes <= 0 ||
     capture.approximateBytes > DIAGNOSTIC_MAX_CAPTURE_BYTES) {
+    return false;
+  }
+  if ((capture.profile !== 'selected' && capture.profile !== 'full') ||
+    capture.fullLog !== (capture.profile === 'full') ||
+    (capture.fullLog && capture.selectedModules.join(',') !== diagnosticAllModules().join(','))) {
     return false;
   }
   let computedBytes: number = 0;
@@ -699,11 +716,14 @@ export function validateDiagnosticJsonl(text: string): boolean {
       'kind', 'schemaVersion', 'app', 'appVersion', 'captureId', 'durationMinutes',
       'appVersionCode', 'buildId', 'deviceCategory', 'sdkApiVersion', 'deviceAbi',
       'deviceModel', 'osVersion',
+      'profile', 'fullLog', 'eventCatalogVersion',
       'selectedModules', 'startedWallTimeMs', 'endedWallTimeMs', 'stopReason',
       'redactionPolicyVersion'
     ]) || !objectHasExactKeys(last, [
       'kind', 'schemaVersion', 'eventCount', 'droppedEventCount',
-      'approximateCaptureBytes', 'serializedBytes', 'moduleEventCounts'
+      'approximateCaptureBytes', 'serializedBytes', 'profile', 'fullLog',
+      'eventCatalogVersion', 'expectedModuleCount', 'expectedEventCount',
+      'moduleEventCounts'
     ])) { return false; }
     if (jsonString(first, 'kind') !== 'manifest' || jsonString(last, 'kind') !== 'summary' ||
       jsonNumber(first, 'schemaVersion') !== DIAGNOSTIC_CAPTURE_SCHEMA_VERSION ||
@@ -724,14 +744,20 @@ export function validateDiagnosticJsonl(text: string): boolean {
     const buildId: string | null = jsonString(first, 'buildId');
     const captureId: string | null = jsonString(first, 'captureId');
     const stopReason: string | null = jsonString(first, 'stopReason');
+    const profile: string | null = jsonString(first, 'profile');
+    const fullLog: boolean | null = jsonBoolean(first, 'fullLog');
+    const eventCatalogVersion: number | null = jsonNumber(first, 'eventCatalogVersion');
     const selectedValue: Object = first['selectedModules'];
     if (appVersion === null || !safeMetadataToken(appVersion, 64) ||
       appVersionCode === null || appVersionCode <= 0 || buildId === null ||
       !safeMetadataToken(buildId, 96) || captureId === null ||
       !captureIdIsValid(captureId) || (stopReason !== 'manual' && stopReason !== 'deadline') ||
+      (profile !== 'selected' && profile !== 'full') || fullLog === null ||
+      fullLog !== (profile === 'full') || eventCatalogVersion !== DIAGNOSTIC_EVENT_CATALOG_VERSION ||
       !Array.isArray(selectedValue)) { return false; }
     const selectedModules: DiagnosticModuleId[] = selectedValue as DiagnosticModuleId[];
-    if (!selectedModulesAreValid(selectedModules)) { return false; }
+    if (!selectedModulesAreValid(selectedModules) ||
+      (fullLog && selectedModules.join(',') !== diagnosticAllModules().join(','))) { return false; }
     const started: number | null = jsonNumber(first, 'startedWallTimeMs');
     const ended: number | null = jsonNumber(first, 'endedWallTimeMs');
     const duration: number | null = jsonNumber(first, 'durationMinutes');
@@ -782,13 +808,24 @@ export function validateDiagnosticJsonl(text: string): boolean {
     const approximate: number | null = jsonNumber(last, 'approximateCaptureBytes');
     const declaredBytes: number | null = jsonNumber(last, 'serializedBytes');
     const eventCount: number | null = jsonNumber(last, 'eventCount');
+    const summaryProfile: string | null = jsonString(last, 'profile');
+    const summaryFullLog: boolean | null = jsonBoolean(last, 'fullLog');
+    const summaryCatalogVersion: number | null = jsonNumber(last, 'eventCatalogVersion');
+    const expectedModuleCount: number | null = jsonNumber(last, 'expectedModuleCount');
+    const expectedEventCount: number | null = jsonNumber(last, 'expectedEventCount');
     if (dropped === null || approximate === null || declaredBytes === null || eventCount === null ||
-      eventCount !== events.length || declaredBytes !== new util.TextEncoder().encode(text).length) {
+      eventCount !== events.length || declaredBytes !== new util.TextEncoder().encode(text).length ||
+      summaryProfile !== profile || summaryFullLog !== fullLog ||
+      summaryCatalogVersion !== DIAGNOSTIC_EVENT_CATALOG_VERSION ||
+      expectedModuleCount !== selectedModules.length ||
+      expectedEventCount !== diagnosticEventCatalogSize()) {
       return false;
     }
     const reconstructed: FrozenDiagnosticCapture = {
       captureId: captureId,
       durationMinutes: duration,
+      profile: profile as DiagnosticCaptureProfile,
+      fullLog: fullLog,
       selectedModules: selectedModules,
       startedWallTimeMs: started,
       endedWallTimeMs: ended,
@@ -834,6 +871,9 @@ export function serializeDiagnosticCapture(
       buildId: currentDiagnosticBuildId(),
       captureId: validCapture.captureId,
       durationMinutes: validCapture.durationMinutes,
+      profile: validCapture.profile,
+      fullLog: validCapture.fullLog,
+      eventCatalogVersion: DIAGNOSTIC_EVENT_CATALOG_VERSION,
       selectedModules: validCapture.selectedModules.slice(),
       startedWallTimeMs: validCapture.startedWallTimeMs,
       endedWallTimeMs: validCapture.endedWallTimeMs,
@@ -852,6 +892,11 @@ export function serializeDiagnosticCapture(
       droppedEventCount: validCapture.droppedEventCount,
       approximateCaptureBytes: validCapture.approximateBytes,
       serializedBytes: 0,
+      profile: validCapture.profile,
+      fullLog: validCapture.fullLog,
+      eventCatalogVersion: DIAGNOSTIC_EVENT_CATALOG_VERSION,
+      expectedModuleCount: validCapture.selectedModules.length,
+      expectedEventCount: diagnosticEventCatalogSize(),
       moduleEventCounts: counts
     };
     lines.push(JSON.stringify(summaryWithoutSize));
@@ -866,6 +911,11 @@ export function serializeDiagnosticCapture(
         droppedEventCount: validCapture.droppedEventCount,
         approximateCaptureBytes: validCapture.approximateBytes,
         serializedBytes: declaredSize,
+        profile: validCapture.profile,
+        fullLog: validCapture.fullLog,
+        eventCatalogVersion: DIAGNOSTIC_EVENT_CATALOG_VERSION,
+        expectedModuleCount: validCapture.selectedModules.length,
+        expectedEventCount: diagnosticEventCatalogSize(),
         moduleEventCounts: counts
       };
       lines[lines.length - 1] = JSON.stringify(summary);
@@ -882,6 +932,11 @@ export function serializeDiagnosticCapture(
         droppedEventCount: validCapture.droppedEventCount,
         approximateCaptureBytes: validCapture.approximateBytes,
         serializedBytes: bytes.length,
+        profile: validCapture.profile,
+        fullLog: validCapture.fullLog,
+        eventCatalogVersion: DIAGNOSTIC_EVENT_CATALOG_VERSION,
+        expectedModuleCount: validCapture.selectedModules.length,
+        expectedEventCount: diagnosticEventCatalogSize(),
         moduleEventCounts: counts
       };
       lines[lines.length - 1] = JSON.stringify(finalSummary);

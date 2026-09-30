@@ -93,7 +93,7 @@ export default function diagnosticCaptureExportServiceTest(): void {
       const summary: Record<string, Object> =
         JSON.parse(lines[lines.length - 1]) as Record<string, Object>;
       expect(manifest['kind'] as string).assertEqual('manifest');
-      expect(manifest['schemaVersion'] as number).assertEqual(7);
+      expect(manifest['schemaVersion'] as number).assertEqual(8);
       expect(manifest['appVersionCode'] as number).assertEqual(1001007);
       expect((manifest['buildId'] as string).startsWith('1.1.6+')).assertTrue();
       expect(summary['kind'] as string).assertEqual('summary');
@@ -103,6 +103,28 @@ export default function diagnosticCaptureExportServiceTest(): void {
       expect(event['window'] !== undefined).assertTrue();
       expect((event['window'] as Record<string, Object>)['requestPhase'] as string)
         .assertEqual('idle');
+    });
+
+    it('exports_full_mode_with_catalog_and_coverage_metadata', 0, (): void => {
+      const clock: ExportFakeClock = new ExportFakeClock();
+      const runtime: DiagnosticCaptureRuntime = new DiagnosticCaptureRuntime(clock);
+      runtime.start(3, ['connection.rustdesk'], true);
+      runtime.record('connection.rustdesk', 'rustdesk_preflight', 'failed', 0, 3, -2);
+      runtime.stop();
+      const result: DiagnosticSerializationResult =
+        serializeDiagnosticCapture(runtime.frozenCapture());
+      expect(result.ok).assertTrue();
+      const lines: string[] = result.text.substring(0, result.text.length - 1).split('\n');
+      const manifest: Record<string, Object> = JSON.parse(lines[0]) as Record<string, Object>;
+      const summary: Record<string, Object> =
+        JSON.parse(lines[lines.length - 1]) as Record<string, Object>;
+      expect(manifest['profile'] as string).assertEqual('full');
+      expect(manifest['fullLog'] as boolean).assertTrue();
+      expect((manifest['selectedModules'] as Object[]).length).assertEqual(10);
+      expect(summary['fullLog'] as boolean).assertTrue();
+      expect(summary['expectedModuleCount'] as number).assertEqual(10);
+      expect((summary['expectedEventCount'] as number) > 60).assertTrue();
+      expect(result.text.indexOf('"code":-2') >= 0).assertTrue();
     });
 
     it('round_trips_fractional_resource_percentages', 0, (): void => {

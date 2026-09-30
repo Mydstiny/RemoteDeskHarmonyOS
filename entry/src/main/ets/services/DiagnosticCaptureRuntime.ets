@@ -2,6 +2,7 @@ import systemDateTime from '@ohos.systemDateTime';
 import { util } from '@kit.ArkTS';
 import {
   DIAGNOSTIC_DEFAULT_DURATION_MINUTES,
+  DiagnosticCaptureProfile,
   DIAGNOSTIC_MAX_CAPTURE_BYTES,
   DIAGNOSTIC_MAX_EVENTS,
   DIAGNOSTIC_MAX_EVENT_BYTES,
@@ -30,6 +31,7 @@ import {
   emptyDiagnosticRuntimeFacts,
   emptyDiagnosticWindowFacts,
   diagnosticWindowFactsAreValid,
+  diagnosticAllModules,
   normalizeDiagnosticModules
 } from './DiagnosticCapturePolicy';
 
@@ -79,6 +81,8 @@ export interface DiagnosticCaptureStatus {
   phase: DiagnosticCapturePhase;
   captureId: string;
   durationMinutes: number;
+  profile: DiagnosticCaptureProfile;
+  fullLog: boolean;
   selectedModules: DiagnosticModuleId[];
   startedWallTimeMs: number;
   deadlineWallTimeMs: number;
@@ -93,6 +97,8 @@ export interface DiagnosticCaptureStatus {
 export interface FrozenDiagnosticCapture {
   captureId: string;
   durationMinutes: number;
+  profile: DiagnosticCaptureProfile;
+  fullLog: boolean;
   selectedModules: DiagnosticModuleId[];
   startedWallTimeMs: number;
   endedWallTimeMs: number;
@@ -120,6 +126,8 @@ export class DiagnosticCaptureRuntime {
   private captureOrdinal: number = 0;
   private captureId: string = '';
   private durationMinutes: number = DIAGNOSTIC_DEFAULT_DURATION_MINUTES;
+  private profile: DiagnosticCaptureProfile = 'selected';
+  private fullLog: boolean = false;
   private selectedModules: DiagnosticModuleId[] = ['core.app'];
   private startedUptimeMs: number = 0;
   private deadlineUptimeMs: number = 0;
@@ -146,7 +154,7 @@ export class DiagnosticCaptureRuntime {
   }
 
   start(durationMinutes: number,
-    moduleIds: string[] = ['core.app']): DiagnosticCaptureActionCode {
+    moduleIds: string[] = ['core.app'], fullLog: boolean = false): DiagnosticCaptureActionCode {
     if (!diagnosticDurationIsAllowed(durationMinutes)) { return 'invalid_duration'; }
     if (this.phase !== 'idle') { return 'already_active'; }
     try {
@@ -156,7 +164,10 @@ export class DiagnosticCaptureRuntime {
       this.captureOrdinal += 1;
       this.captureId = 'capture-' + this.captureOrdinal.toString();
       this.durationMinutes = durationMinutes;
-      this.selectedModules = normalizeDiagnosticModules(moduleIds);
+      this.fullLog = fullLog === true;
+      this.profile = this.fullLog ? 'full' : 'selected';
+      this.selectedModules = this.fullLog ? diagnosticAllModules() :
+        normalizeDiagnosticModules(moduleIds);
       this.startedUptimeMs = uptime;
       this.deadlineUptimeMs = uptime + durationMinutes * 60 * 1000;
       this.startedWallTimeMs = wallTime;
@@ -182,6 +193,11 @@ export class DiagnosticCaptureRuntime {
 
   isModuleCapturing(moduleId: DiagnosticModuleId): boolean {
     return this.phase === 'capturing' && this.selectedModules.indexOf(moduleId) >= 0;
+  }
+
+  /** Full mode is intentionally observable by samplers, while remaining read-only. */
+  isFullLogEnabled(): boolean {
+    return this.phase === 'capturing' && this.fullLog;
   }
 
   captureIdForModule(moduleId: DiagnosticModuleId): string {
@@ -304,6 +320,8 @@ export class DiagnosticCaptureRuntime {
       phase: this.phase,
       captureId: this.captureId,
       durationMinutes: this.durationMinutes,
+      profile: this.profile,
+      fullLog: this.fullLog,
       selectedModules: this.selectedModules.slice(),
       startedWallTimeMs: this.startedWallTimeMs,
       deadlineWallTimeMs: this.startedWallTimeMs > 0 ?
@@ -323,6 +341,8 @@ export class DiagnosticCaptureRuntime {
     return {
       captureId: this.captureId,
       durationMinutes: this.durationMinutes,
+      profile: this.profile,
+      fullLog: this.fullLog,
       selectedModules: this.selectedModules.slice(),
       startedWallTimeMs: this.startedWallTimeMs,
       endedWallTimeMs: this.endedWallTimeMs,
@@ -489,6 +509,8 @@ export class DiagnosticCaptureRuntime {
     this.phase = 'idle';
     this.captureId = '';
     this.durationMinutes = DIAGNOSTIC_DEFAULT_DURATION_MINUTES;
+    this.profile = 'selected';
+    this.fullLog = false;
     this.selectedModules = ['core.app'];
     this.startedUptimeMs = 0;
     this.deadlineUptimeMs = 0;
@@ -514,6 +536,14 @@ export class DiagnosticCaptureRuntime {
 export function isDiagnosticModuleCapturing(moduleId: DiagnosticModuleId): boolean {
   try {
     return DiagnosticCaptureRuntime.getInstance().isModuleCapturing(moduleId);
+  } catch (_err) {
+    return false;
+  }
+}
+
+export function isDiagnosticFullLogEnabled(): boolean {
+  try {
+    return DiagnosticCaptureRuntime.getInstance().isFullLogEnabled();
   } catch (_err) {
     return false;
   }
