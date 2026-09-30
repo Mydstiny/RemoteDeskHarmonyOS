@@ -114,7 +114,7 @@ export function proFeatureProgress(id: string): string {
     case 'pro.ai.rustdeskTransport': return '规划中 · 等待 RustDesk 数据通道';
     case 'pro.security.webauthnRedirect': return '开发中 · USB 安全密钥能力探测通过，待硬件与 RDP 验证';
     case 'pro.security.phonePasskey': return '可行性研究中';
-    case 'pro.personalization': return '开发中 · 自定义组合键已转为 Pro，SSH 终端皮肤开发中';
+    case 'pro.personalization': return '已开发 · 自定义组合键与 SSH 终端皮肤待实机验收';
     case 'pro.workspaces': return '实验中 · 工作区与布局基础能力已开放（Debug Pro）';
     case 'pro.hostManagement': return '实验中 · 分组与安全批量策略已开放（Debug Pro）';
     default: return '';
