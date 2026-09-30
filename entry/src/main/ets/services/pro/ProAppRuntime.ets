@@ -56,6 +56,8 @@ export class ProAppRuntime implements ProBillingBackend {
         if (configuration !== null) {
           this.sandboxClient = new ProTrustedEntitlementClient(configuration.trust, this.store,
             new ProCloudTransport(configuration, context), this.clock);
+          // Debug builds test against the payment sandbox by default; the purchase sheet can still switch back.
+          this.environment = 'sandbox';
         }
       }
       const production = proBackendConfiguration('production');
