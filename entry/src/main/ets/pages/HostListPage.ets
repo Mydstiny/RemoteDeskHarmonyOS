@@ -1,6 +1,6 @@
 import { ProBadge } from '../components/ProBadge';
-import { ProFeatureDetailPanel, ProStatusPanel } from '../components/ProFeatureManagerPanel';
-import { proFeatureCurrentStatus, proStateText } from '../services/pro/ProFeatureStatusReader';
+import { ProFeatureDetailPanel } from '../components/ProFeatureManagerPanel';
+import { proFeatureCurrentStatus } from '../services/pro/ProFeatureStatusReader';
 import { ProFeature } from '../services/pro/ProFeatureCatalog';
 import { AiHostEditor } from '../components/ai/AiHostEditor';
 import { AiHostService, projectAiHost, aiHostId } from '../services/ai/AiHostService';
@@ -17,7 +17,6 @@ import { resolveProContinuationHost } from '../services/pro/ProConnectionHostAda
 import { SshConnectionPreflightSheet } from '../components/SshConnectionPreflightSheet';
 import { SshAuthenticatedHandoff } from '../services/ssh/auth/SshAuthenticatedHandoff';
 import { ProAppRuntime } from '../services/pro/ProAppRuntime';
-import { ProRuntimeSnapshot } from '../services/pro/ProRuntime';
 import { ProFeatureVisibility } from '../services/pro/ProFeatureVisibility';
 import { ProEntries } from '../services/pro/ProEntries';
 import { ProPurchaseLifecycle } from '../services/pro/ProPurchaseLifecycle';
@@ -500,7 +499,6 @@ import {
   SETTINGS_SHEET_PRO,
   SETTINGS_SHEET_APP_ICON,
   SETTINGS_SHEET_PRO_FEATURE,
-  SETTINGS_SHEET_PRO_STATUS,
   SETTINGS_SHEET_ACCENT_COLOR,
   SETTINGS_SHEET_DIAGNOSTIC_LOG,
   SETTINGS_SHEET_REMOTE_PINCH_ZOOM,
@@ -1987,7 +1985,6 @@ struct HostListPage {
     } catch (_error) { promptAction.showToast({ message: '删除 AI 主机失败，请重试', duration: 2200 }); }
   }
 
-  private proRuntimeSnapshot(_revision: number): ProRuntimeSnapshot { return ProAppRuntime.getInstance().runtime.snapshot(); }
   private proCatalogFeatures(_revision: number): ProFeature[] { return ProFeatureVisibility.getInstance().proCatalog(); }
   private proFeatureIcon(id: string): Resource {
     if (id === 'pro.personalization.appIcon') { return $r('sys.symbol.square_and_pencil'); }
@@ -15631,8 +15628,8 @@ struct HostListPage {
 
   private settingsLeafSheetHeight(): SheetSize | number {
     if (this.settingsLeafSheetMode === SETTINGS_SHEET_PRO) { return Math.min(820, Math.max(320, this.pageViewportHeight - 48)); }
-    if (this.settingsLeafSheetMode === SETTINGS_SHEET_APP_ICON || this.settingsLeafSheetMode === SETTINGS_SHEET_PRO_FEATURE ||
-      this.settingsLeafSheetMode === SETTINGS_SHEET_PRO_STATUS) { return SheetSize.FIT_CONTENT; }
+    if (this.settingsLeafSheetMode === SETTINGS_SHEET_APP_ICON ||
+      this.settingsLeafSheetMode === SETTINGS_SHEET_PRO_FEATURE) { return SheetSize.FIT_CONTENT; }
     if (this.settingsLeafSheetMode === SETTINGS_SHEET_POPUP && this.popupSheetMode === 1 &&
       this.aboutSheetMode === 3) {
       return SheetSize.LARGE;
@@ -15691,8 +15688,6 @@ struct HostListPage {
   @Builder settingsLeafSheet() {
     if (this.settingsLeafSheetMode === SETTINGS_SHEET_PRO) {
       ProPurchaseSheet({ onClose: (): void => { this.closeSettingsLeafSheet(); } })
-    } else if (this.settingsLeafSheetMode === SETTINGS_SHEET_PRO_STATUS) {
-      ProStatusPanel()
     } else if (this.settingsLeafSheetMode === SETTINGS_SHEET_PRO_FEATURE) {
       ProFeatureDetailPanel({ featureId: this.selectedProFeatureId })
     } else if (this.settingsLeafSheetMode === SETTINGS_SHEET_APP_ICON) {
@@ -16925,11 +16920,8 @@ struct HostListPage {
         ListItem() {
           Column() {
             Column() {
-              this.protocolActionRow($r('sys.symbol.star'), 'Pro 状态',
-                proStateText(this.proRuntimeSnapshot(this.proFeatureRevision)),
-                (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_PRO_STATUS); })
-              ForEach(this.proCatalogFeatures(this.proFeatureRevision), (feature: ProFeature): void => {
-                this.cardDivider()
+              ForEach(this.proCatalogFeatures(this.proFeatureRevision), (feature: ProFeature, index: number): void => {
+                if (index > 0) { this.cardDivider() }
                 this.protocolActionRow(this.proFeatureIcon(feature.id), feature.title,
                   proFeatureCurrentStatus(feature).label + ' · ' + proFeatureCurrentStatus(feature).detail,
                   (): void => { this.selectedProFeatureId = feature.id; this.openSettingsLeafSheet(SETTINGS_SHEET_PRO_FEATURE); })

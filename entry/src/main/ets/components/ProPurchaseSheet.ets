@@ -1,7 +1,5 @@
 import { ProBadge } from './ProBadge';
 import { DEBUG } from 'BuildProfile';
-import { ProFeatureVisibilityPanel } from './ProFeatureVisibilityPanel';
-import { ProFeatureVisibility } from '../services/pro/ProFeatureVisibility';
 import { ProUsbFidoProbePanel } from './ProUsbFidoProbePanel';
 import { ProAppRuntime } from '../services/pro/ProAppRuntime';
 import { ProDebugMode } from '../services/pro/ProRuntime';
@@ -9,7 +7,7 @@ import { ProPurchaseLifecycle } from '../services/pro/ProPurchaseLifecycle';
 import { common } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { Palette, buildDark, buildLight } from '../common/Theme';
-import { ProFeature, proFeatures } from '../services/pro/ProFeatureCatalog';
+import { ProFeature, proFeatureProgress, proFeatures } from '../services/pro/ProFeatureCatalog';
 import {
   HuaweiProBillingProvider, ProStoreProduct, ProPurchaseCoordinator,
   PRO_LAUNCH_PRICE, PRO_REGULAR_PRICE, proBillingError, proRefundError
@@ -26,9 +24,7 @@ export struct ProPurchaseSheet {
   @State purchased: boolean = false;
   @State proLabel: string = '免费版';
   @State debugMode: ProDebugMode = 'real';
-  @State visibilityRevision: number = 0;
   private unsubscribe: (() => void) | null = null;
-  private visibilityUnsubscribe: (() => void) | null = null;
   @State productId: string = '';
   @State storePrice: string = '';
   @State storeName: string = '';
@@ -42,10 +38,6 @@ export struct ProPurchaseSheet {
   aboutToAppear(): void {
     this.live = true;
     this.testing = ProAppRuntime.getInstance().sandboxSelected();
-    const visibility = ProFeatureVisibility.getInstance();
-    visibility.load(getContext(this) as common.UIAbilityContext);
-    this.visibilityUnsubscribe = visibility.subscribe((): void => { this.visibilityRevision++; });
-    ProFeatureVisibilityPanel.prepare(getContext(this) as common.UIAbilityContext);
     this.syncBilling();
     this.unsubscribe = ProAppRuntime.getInstance().runtime.subscribe((): void => {
       this.syncBilling();
@@ -58,7 +50,6 @@ export struct ProPurchaseSheet {
   aboutToDisappear(): void {
     this.live = false; this.generation++;
     this.unsubscribe?.(); this.unsubscribe = null;
-    this.visibilityUnsubscribe?.(); this.visibilityUnsubscribe = null;
   }
   private pal(): Palette { return this.theme === 'light' ? buildLight(this.accent) : buildDark(this.accent); }
   private context(): common.UIAbilityContext { return getContext(this) as common.UIAbilityContext; }
@@ -145,10 +136,10 @@ export struct ProPurchaseSheet {
           Text(feature.title).fontSize(16).fontWeight(FontWeight.Medium).fontColor(this.pal().text).layoutWeight(1)
           ProBadge()
         }.width('100%')
-        if (feature.availability !== 'available') {
-          Text(feature.availability === 'planned' ? '规划中' : feature.availability === 'experimental' ?
-            '验证中' : feature.availability === 'disabled' ? '暂不可用' : 'Pro').fontSize(10).fontColor(this.pal().text2)
-            .padding({ left: 7, right: 7, top: 3, bottom: 3 }).backgroundColor(this.pal().surface).borderRadius(6)
+        if (proFeatureProgress(feature.id).length > 0) {
+          Text(proFeatureProgress(feature.id)).fontSize(11).lineHeight(16)
+            .fontColor(feature.availability === 'planned' ? this.pal().text2 : this.accent)
+            .padding({ left: 8, right: 8, top: 4, bottom: 4 }).backgroundColor(this.pal().surface).borderRadius(8)
         }
         Text(feature.description).fontSize(13).fontColor(this.pal().text2).lineHeight(20).width('100%')
       }.layoutWeight(1).alignItems(HorizontalAlign.Start)
@@ -156,9 +147,9 @@ export struct ProPurchaseSheet {
     .border({ width: 0.5, color: this.pal().cardBorder })
   }
 
-  private visibleFeatures(_revision: number): ProFeature[] {
-    return proFeatures().filter((item: ProFeature): boolean => item.requiredEntitlementId.length > 0 &&
-      ProFeatureVisibility.getInstance().isVisible(item.id));
+  // Every Pro feature is introduced here; the display switches live in 设置 > Pro 功能.
+  private proCatalog(): ProFeature[] {
+    return proFeatures().filter((item: ProFeature): boolean => item.requiredEntitlementId.length > 0);
   }
 
   build() {
@@ -182,8 +173,7 @@ export struct ProPurchaseSheet {
             Text(this.proLabel).fontSize(13).fontColor(this.accent)
             Text('一次购买 · 不自动续费').fontSize(12).fontColor(this.accent)
           }.width('100%').padding({ top: 16, bottom: 18 })
-          ProFeatureVisibilityPanel({ isOpen: (): boolean => this.live })
-          ForEach(this.visibleFeatures(this.visibilityRevision),
+          ForEach(this.proCatalog(),
             (feature: ProFeature, index: number): void => { this.featureCard(feature, index) },
             (feature: ProFeature): string => feature.id)
           Text('核心功能一直免费').fontSize(15).fontWeight(FontWeight.Medium).fontColor(this.pal().text)

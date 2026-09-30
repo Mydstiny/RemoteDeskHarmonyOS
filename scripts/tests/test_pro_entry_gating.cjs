@@ -49,8 +49,8 @@ const badges = new Map([
   ['components/ai/AiHostEditor.ets', [1, /AiAccess\.getInstance\(\)\.proVisible\(\)/]],
   ['pages/AiSettingsPage.ets', [1, /allowed = AiAccess\.getInstance\(\)\.proVisible\(\)/]],
   ['pages/SshTerminal.ets', [1, /ProFeatureGate\(\{ featureId: 'pro\.file\.knockTransfer'/]],
-  // Status and per-feature sheets open only from the Pro 功能 section, which requires an active Pro.
-  ['components/ProFeatureManagerPanel.ets', [2, /export struct ProFeatureDetailPanel/]],
+  // Per-feature sheets open only from the Pro 功能 section, which requires an active Pro.
+  ['components/ProFeatureManagerPanel.ets', [1, /export struct ProFeatureDetailPanel/]],
   // AI cards/section (4) follow aiProVisible; the app-icon row follows ProEntries.
   ['pages/HostListPage.ets', [5, /aiProVisible = AiAccess\.getInstance\(\)\.proVisible\(\)/]]
 ]);

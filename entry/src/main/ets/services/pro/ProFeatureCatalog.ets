@@ -82,6 +82,26 @@ export function proFeatures(): ProFeature[] {
     planned('pro.security.phonePasskey', '手机通行密钥', '探索使用华为手机完成远端支持的认证。')
   ];
 }
+/** Where each feature stands in development and device acceptance; shown on the Pro page. */
+export function proFeatureProgress(id: string): string {
+  switch (id) {
+    case 'pro.personalization.appIcon': return '已完成 · 手机实机验收通过';
+    case 'pro.connection.continuation': return '已完成 · 手机与平板实机验收通过（SSH、RDP、RustDesk、VNC）；PC 待验证';
+    case 'pro.file.knockTransfer': return '已开发 · 等待鸿蒙 PC 实机验证';
+    case 'pro.connection.knockShare': return '已开发 · 等待应用链接域名配置后验证';
+    case 'pro.ai.workspace':
+    case 'pro.ai.codex':
+    case 'pro.ai.dsh': return '已开发（局域网连接） · 实机验收暂缓';
+    case 'pro.ai.rustdeskTransport': return '规划中 · 等待 RustDesk 数据通道';
+    case 'pro.security.webauthnRedirect': return '开发中 · USB 安全密钥能力探测通过，待硬件与 RDP 验证';
+    case 'pro.security.phonePasskey': return '可行性研究中';
+    case 'pro.workspaces':
+    case 'pro.hostManagement':
+    case 'pro.personalization': return '规划中 · 尚未开始开发';
+    default: return '';
+  }
+}
+
 export function proDevice(type: string): ProDevice {
   if (type === 'phone') { return 'phone'; }
   if (type === 'tablet') { return 'tablet'; }

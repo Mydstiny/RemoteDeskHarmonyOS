@@ -1,63 +1,15 @@
 import { common } from '@kit.AbilityKit';
-import { DEBUG } from 'BuildProfile';
 import { AppConfig, Palette, buildDark, buildLight } from '../common/Theme';
-import { AppSettingsChoiceButton } from './AppSettingsChoiceButton';
 import { ProBadge } from './ProBadge';
-import { ProAppRuntime } from '../services/pro/ProAppRuntime';
 import { ProEntries } from '../services/pro/ProEntries';
 import { ProFeature } from '../services/pro/ProFeatureCatalog';
 import { ProFeatureStatus, proFeatureScope } from '../services/pro/ProFeatureStatus';
-import { proFeatureCurrentStatus, proStateText } from '../services/pro/ProFeatureStatusReader';
+import { proFeatureCurrentStatus } from '../services/pro/ProFeatureStatusReader';
 import { ProFeatureVisibility } from '../services/pro/ProFeatureVisibility';
-import { ProDebugMode, ProRuntimeSnapshot } from '../services/pro/ProRuntime';
 import { PRO_CONTINUATION_PROTOCOLS, ProContinuationCredentialMode, ProContinuationPreferences,
   ProContinuationSettings, proContinuationProtocolLabel } from '../services/pro/ProContinuationPreferences';
 import { ProConnectionProtocol } from '../services/pro/ProConnectionEnvelope';
 import { PRO_CONTINUATION_FEATURE, ProContinuationService } from '../services/pro/ProContinuationService';
-
-const DEBUG_MODES: ProDebugMode[] = ['real', 'free', 'pro'];
-
-/** Settings sheet: the account's Pro state and, in Debug, the entitlement simulation. */
-@Component
-export struct ProStatusPanel {
-  @StorageProp('currentTheme') theme: string = 'light';
-  @StorageProp('accentColor') accent: string = '#007DFF';
-  @State revision: number = 0;
-  private stop: (() => void) | null = null;
-  aboutToAppear(): void { this.stop = ProEntries.subscribe((): void => { this.revision++; }); }
-  aboutToDisappear(): void { this.stop?.(); this.stop = null; }
-  private pal(): Palette { return this.theme === 'light' ? buildLight(this.accent) : buildDark(this.accent); }
-  private runtime(_revision: number): ProRuntimeSnapshot { return ProAppRuntime.getInstance().runtime.snapshot(); }
-  private modeLabel(mode: ProDebugMode): string {
-    return mode === 'real' ? '跟随真实' : mode === 'free' ? '模拟免费' : '模拟 Pro';
-  }
-  build() {
-    Column({ space: 14 }) {
-      Row() {
-        Text('Pro 状态').fontSize(20).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
-          .fontFamily(AppConfig.fontFamily).layoutWeight(1)
-        ProBadge()
-      }.width('100%')
-      Row() {
-        Text('当前').fontSize(14).fontColor(this.pal().text2).fontFamily(AppConfig.fontFamily).layoutWeight(1)
-        Text(proStateText(this.runtime(this.revision))).fontSize(14).fontColor(this.accent).fontFamily(AppConfig.fontFamily)
-      }.width('100%').padding(16).backgroundColor(this.pal().card).borderRadius(16)
-      if (DEBUG) {
-        Column({ space: 10 }) {
-          Text('开发者调试 · 权益模拟').fontSize(14).fontColor(this.pal().text).fontFamily(AppConfig.fontFamily).width('100%')
-          Row({ space: 8 }) {
-            ForEach(DEBUG_MODES, (mode: ProDebugMode): void => {
-              AppSettingsChoiceButton({ label: this.modeLabel(mode), isSelected: this.runtime(this.revision).mode === mode,
-                onSelect: (): void => { ProAppRuntime.getInstance().runtime.setDebugMode(mode); } }).layoutWeight(1)
-            }, (mode: ProDebugMode): string => mode)
-          }.width('100%')
-          Text('仅当前运行有效，重启后恢复跟随真实。切到模拟免费后，本栏目会随 Pro 一起隐藏，可在 Pro 页面切回。')
-            .fontSize(12).fontColor(this.pal().text3).fontFamily(AppConfig.fontFamily).lineHeight(18).width('100%')
-        }.width('100%').padding(16).backgroundColor(this.pal().card).borderRadius(16)
-      }
-    }.width('100%').padding({ left: 20, right: 20, top: 20, bottom: 28 })
-  }
-}
 
 /** Settings sheet for one Pro feature: live status, scope, display switch and its own options. */
 @Component
