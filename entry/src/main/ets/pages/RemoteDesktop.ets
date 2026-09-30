@@ -23033,7 +23033,7 @@ struct RemoteDesktop {
         .fontSize(13).fontColor(this.pal().text2).width('100%')
       Column({ space: 12 }) {
         Row({ space: 12 }) {
-          Text('↑').fontSize(30).fontWeight(FontWeight.Bold).fontColor(this.accentColor)
+          SymbolGlyph($r('sys.symbol.arrow_up')).fontSize(30).fontColor([this.accentColor])
           Column({ space: 3 }) {
             Text('本机发送').fontSize(16).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
             Text(this.fileTransferModeDescription('send')).fontSize(12).fontColor(this.pal().text2)
@@ -23043,7 +23043,7 @@ struct RemoteDesktop {
             .onClick((): void => { this.enterFileTransferPanelMode('send'); })
         }.width('100%').padding(12).backgroundColor(this.pal().card).borderRadius(14)
         Row({ space: 12 }) {
-          Text('↓').fontSize(30).fontWeight(FontWeight.Bold).fontColor(this.accentColor)
+          SymbolGlyph($r('sys.symbol.arrow_down')).fontSize(30).fontColor([this.accentColor])
           Column({ space: 3 }) {
             Text('远端发送').fontSize(16).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
             Text(this.fileTransferModeDescription('receive')).fontSize(12).fontColor(this.pal().text2)
