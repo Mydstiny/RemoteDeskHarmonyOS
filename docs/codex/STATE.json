@@ -3,7 +3,7 @@
   "task": "pro-purchase-foundation",
   "branch": "codex/pro-purchase-foundation",
   "base": "8edc187868e94ed41634e8a6c4c4c072e3a48679",
-  "head": "7ae9aff4f",
+  "head": "f06bcf6204c721bc32471d436c62395c90041084",
   "phase": "Full acceptance: steps 1-3 PASS; step 4 external (no PC); step 5 M5 continuation READY",
   "status": "in-progress",
   "next": "Acceptance step 4: M4 knock transfer phone -> HarmonyOS PC SFTP; then M5 share/continuation, M7 remainder.",
@@ -11,7 +11,8 @@
     "Pad backup and Debug migration complete; same-account sandbox restore PASS without another payment. Remaining offline/cross-account and full protocol/device matrix remain open.",
     "M3/U0-U4 device matrix and M4 PC real Share Kit/SFTP file-integrity acceptance remain unverified.",
     "M5 Share Kit App Linking domain, association and actual fragment delivery remain unverified; ServiceInteraction ACL is a separate path. M6 USB/RDP authenticator and phone-passkey RP/origin proof remain pending.",
-    "Sandbox core device flow passed. Numeric-version publication, notification endpoint and formal merchant/product release remain open; worker timer disabled."
+    "Sandbox core device flow passed. Numeric-version publication, notification endpoint and formal merchant/product release remain open; worker timer disabled.",
+    "RDP domain preflight bypass checkpoint f06bcf620: testCompile and signed assembleHap pass; optional ohosTest task 00306054 is unavailable; real hostname/device certificate acceptance remains open."
   ],
   "planPaths": [
     "docs/codex/plans/2026-09-06-pro-purchase-foundation.md",
@@ -99,6 +100,14 @@
       "entry/src/main/ets/entryability/RemoteSessionAbility.ets",
       "entry/src/main/ets/pages/RemoteSessionWindowBootstrap.ets",
       "entry/src/main/ets/pages/RemoteDesktop.ets",
+      "entry/src/main/cpp/extensions/extension_loader_napi.cpp",
+      "entry/src/main/cpp/extensions/protocol_adapter.h",
+      "entry/src/main/cpp/rdp/freerdp_adapter.cpp",
+      "entry/src/main/cpp/types/librdpnapi/index.d.ts",
+      "entry/src/main/ets/services/RdpCertificatePreflightPolicy.ets",
+      "entry/src/main/ets/services/SettingsAccordionPolicy.ets",
+      "entry/src/test/RdpCertificatePreflightPolicy.test.ets",
+      "entry/src/test/SettingsAccordionPolicy.test.ets",
       "entry/src/main/cpp/render/gl_renderer.h",
       "entry/src/main/cpp/render/gl_renderer.cpp",
       "entry/src/main/ets/types/rdpnapi.d.ts",

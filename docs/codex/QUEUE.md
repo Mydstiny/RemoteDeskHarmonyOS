@@ -4,6 +4,8 @@ Updated: 2026-09-29 Asia/Shanghai
 
 ## Now
 
+- RDP domain connection repair: guarded “跳过连接前证书预检” switch is committed in `f06bcf620`; validate the direct hostname path and live certificate behavior on a real endpoint.
+
 - Full acceptance step 3 (READY): M3 preset app icon + Pro feature visibility/personalization panel per [checklist](plans/2026-09-27-full-acceptance-checklist.md); then M4 knock transfer, M5 share/continuation, M7 remainder. Remote AI A1-A13 deferred by user. Step-2 fix review PASS (a545277b6..01713b8e8).
 
 - Feedback repair checkpoint: accept exact system shortcuts, bidirectional files/file-station drag, repeated buttons, Pad reverse landscape and PC hardware inversion on devices. [Scope](archive/2026-09/2026-09-23-feedback-repair-checkpoint.md). No target was available at that checkpoint; a target is now connected but not yet used for acceptance. Broad system key capture and PC inversion remain unresolved.
