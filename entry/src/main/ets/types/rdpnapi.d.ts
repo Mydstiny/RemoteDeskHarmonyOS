@@ -1060,6 +1060,8 @@ export interface SessionConfig {
   rdpAllowUntrustedRoot?: boolean;
   rdpAllowHostMismatch?: boolean;
   rdpCertificateAllowUnpinnedOnce?: boolean;
+  /** Skip independent preflight; live callback accepts an unpinned peer only via strict PKI validation. */
+  rdpVerifyCertificateOnConnect?: boolean;
   rdpAllowStandardSecurityOnce?: boolean;
   /** Explicit direct TLS compatibility mode. Default false; never enables Standard RDP Security. */
   rdpTlsWithoutNla?: boolean;

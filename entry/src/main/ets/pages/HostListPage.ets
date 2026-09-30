@@ -276,6 +276,7 @@ import {
   rdpCertificateLegacyProbeStage,
   rdpCertificateEffectiveRiskFlags,
   rdpCertificatePreflightAllowsRealConnection,
+  rdpCertificatePreflightSkipAllowed,
   rdpCertificateRoutePreflightAllowsRealConnection,
   rdpCertificateValidityState,
   rdpCertificateRiskSummary,
@@ -1288,6 +1289,7 @@ struct HostListPage {
   @StorageLink('rdpControlMode') rdpControlMode: number = 0; // 0=触控板, 1=直接触控, 2=键鼠
   @StorageLink('rdpAuthIdentityMode') rdpAuthIdentityMode: number = 1; // 0=MicrosoftAccount\\邮箱, 1=域+邮箱, 2=裸邮箱, 3=.\\AzureAD\\邮箱, 4=AzureAD域
   @StorageLink('rdpTlsWithoutNla') rdpTlsWithoutNla: boolean = false;
+  @StorageLink('rdpSkipCertificatePreflight') rdpSkipCertificatePreflight: boolean = false;
   @State sheetPwdMode: number = 0; // 0=一次性密码, 1=永久密码
   @State sheetRustdeskAuthMode: string = 'password'; // password | request_approval
   @State sheetRustdeskDirectEnabled: boolean = false; // per-host 直连开关
@@ -2255,6 +2257,8 @@ struct HostListPage {
       const savedRdpClipboardEnabled: boolean = prefs.getSync('rdpClipboardEnabled', true) as boolean;
       const savedRdpShowDiagnostics: boolean = prefs.getSync('rdpShowDiagnostics', false) as boolean;
       const savedRdpTlsWithoutNla: boolean = prefs.getSync('rdpTlsWithoutNla', false) as boolean;
+      const savedRdpSkipCertificatePreflight: boolean =
+        prefs.getSync('rdpSkipCertificatePreflight', false) as boolean;
       const rdpDriveDefaultVersion: number = prefs.getSync('rdpDriveDefaultVersion', 0) as number;
       const hasSavedRdpDriveEnabled: boolean = prefs.hasSync('rdpDriveEnabled');
       let savedRdpDriveEnabled: boolean = prefs.getSync('rdpDriveEnabled', true) as boolean;
@@ -2359,6 +2363,7 @@ struct HostListPage {
       this.rdpControlMode = this.clampRdpControlMode(savedRdpControlMode);
       this.rdpAuthIdentityMode = this.clampRdpAuthIdentityMode(savedRdpAuthIdentityMode);
       this.rdpTlsWithoutNla = savedRdpTlsWithoutNla;
+      this.rdpSkipCertificatePreflight = savedRdpSkipCertificatePreflight;
       AppStorage.setOrCreate('totpLocked', savedLock);
       AppStorage.setOrCreate('rustdeskImageQuality', this.rustdeskImageQuality);
       AppStorage.setOrCreate('rustdeskCodec', this.rustdeskCodec);
@@ -2402,6 +2407,7 @@ struct HostListPage {
       AppStorage.setOrCreate('rdpControlMode', this.rdpControlMode);
       AppStorage.setOrCreate('rdpAuthIdentityMode', this.rdpAuthIdentityMode);
       AppStorage.setOrCreate('rdpTlsWithoutNla', this.rdpTlsWithoutNla);
+      AppStorage.setOrCreate('rdpSkipCertificatePreflight', this.rdpSkipCertificatePreflight);
     } catch (_err) { /* ignore */ }
     // The home page is a core path.  Loading it must not await an optional
     // permission dialog or sensor service.
@@ -7083,6 +7089,14 @@ struct HostListPage {
     this.rdpGatewayPreflightOneTimeAllowHostMismatch = false;
     this.rdpGatewayPreflightOneTimeAllowTimeAnomaly = false;
     this.rdpGatewayPreflightOneTimeRouteIdentity = '';
+    if (rdpCertificatePreflightSkipAllowed(
+      this.rdpSkipCertificatePreflight, this.rdpCertificateRouteMode(host))) {
+      this.showRdpCertificatePreflight = false;
+      hilog.info(0x0001, 'HostList',
+        'RDP certificate preflight skipped; live certificate verification retained');
+      this.doRdpCertificateRoute(host, undefined, false, true);
+      return;
+    }
     this.showRdpCertificatePreflight = shouldShowRdpCertificateProbeSheetBeforeProbe(
       host.rdpCertificateTrustMode,
       host.rdpCertificateFingerprintSha256,
@@ -8177,7 +8191,7 @@ struct HostListPage {
   }
 
   private doRdpCertificateRoute(host: RemoteHost, oneTimeResult?: RdpPreflightResult,
-    userApprovedAdvisory: boolean = false): void {
+    userApprovedAdvisory: boolean = false, skipPreflight: boolean = false): void {
     if (this.rdpCertificateClosing) {
       return;
     }
@@ -8195,6 +8209,10 @@ struct HostListPage {
     params['hostId'] = host.id;
     params['rdpCredentialOwnerScopeId'] = host.userId;
     params['rdpConnectionAttemptGeneration'] = this.rdpCertificateAttemptGeneration;
+    if (rdpCertificatePreflightSkipAllowed(skipPreflight, this.rdpCertificateRouteMode(host))) {
+      params['rdpVerifyCertificateOnConnect'] = true;
+      params['rdpVerifyCertificateRouteIdentity'] = rdpRouteIdentity(host);
+    }
     if (diagnosticResult) {
       const target = diagnosticResult.targetCertificate;
       const gateway = diagnosticResult.gatewayCertificate;
@@ -12409,6 +12427,27 @@ struct HostListPage {
     this.persistPref('rdpShowDiagnostics', this.rdpShowDiagnostics);
   }
 
+  private saveRdpSkipCertificatePreflight(on: boolean): void {
+    if (!on) {
+      this.rdpSkipCertificatePreflight = false;
+      this.persistPref('rdpSkipCertificatePreflight', false);
+      return;
+    }
+    promptAction.showDialog({
+      title: '跳过连接前证书预检？',
+      message: '仅跳过独立的连接前探测，直连 RDP 仍会在真实握手时验证证书链、主机名、指纹（如已保存）和有效期。此开关不能绕过证书安全校验；RD Gateway 不受影响。',
+      buttons: [
+        { text: '取消', color: this.pal().text2 },
+        { text: '仍然启用', color: this.accentColor }
+      ]
+    }).then((result: Object): void => {
+      const value: Record<string, number> = result as Record<string, number>;
+      if (value['index'] !== 1) { return; }
+      this.rdpSkipCertificatePreflight = true;
+      this.persistPref('rdpSkipCertificatePreflight', true);
+    }).catch((_err: Error): void => { });
+  }
+
   private saveRdpTlsWithoutNla(on: boolean): void {
     if (!on) {
       this.rdpTlsWithoutNla = false;
@@ -16437,6 +16476,11 @@ struct HostListPage {
               this.rdpControlModeRow()
               this.cardDivider()
               this.rdpAuthIdentityModeRow()
+              this.cardDivider()
+              this.rustdeskSwitchRow($r('app.media.icon_info'), '跳过连接前证书预检',
+                '仅直连 RDP；连接时仍核验证书，未知或异常证书需返回信任管理确认',
+                this.rdpSkipCertificatePreflight,
+                (on: boolean): void => { this.saveRdpSkipCertificatePreflight(on); }, true)
               this.cardDivider()
               this.rustdeskSwitchRow($r('app.media.icon_info'), 'TLS 兼容登录',
                 '仅用于已取消强制 NLA 的 Windows；直连密码登录，安全性低于 NLA',

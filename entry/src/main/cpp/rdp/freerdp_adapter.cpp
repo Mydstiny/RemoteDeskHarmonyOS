@@ -4179,6 +4179,7 @@ DWORD FreeRdpAdapter::evaluateCertificate(const char* host, UINT16 port,
     bool allowUntrustedRoot = false;
     bool allowUnpinnedOnce = false;
     bool allowTimeAnomalyOnce = false;
+    bool verifyCertificateOnConnect = false;
     std::string endpointMode;
     {
         std::lock_guard<std::mutex> lock(impl_->configMutex);
@@ -4194,6 +4195,8 @@ DWORD FreeRdpAdapter::evaluateCertificate(const char* host, UINT16 port,
         allowUnpinnedOnce = gatewayCertificate
             ? impl_->config.rdpGatewayCertificateAllowUnpinnedOnce
             : impl_->config.rdpCertificateAllowUnpinnedOnce;
+        verifyCertificateOnConnect = !gatewayCertificate &&
+            impl_->config.rdpVerifyCertificateOnConnect;
         allowTimeAnomalyOnce = gatewayCertificate
             ? impl_->config.rdpGatewayCertificateAllowTimeAnomalyOnce
             : impl_->config.rdpCertificateAllowTimeAnomalyOnce;
@@ -4212,6 +4215,10 @@ DWORD FreeRdpAdapter::evaluateCertificate(const char* host, UINT16 port,
         (flags & VERIFY_CERT_FLAG_REDIRECT) != 0;
     RdpEndpointMode configuredMode = RdpEndpointMode::DirectRdp;
     const bool routeModeKnown = RdpGatewayPolicy::parseEndpointMode(endpointMode, configuredMode);
+    const bool strictLiveVerification = verifyCertificateOnConnect && !gatewayCertificate &&
+        routeModeKnown && (configuredMode == RdpEndpointMode::DirectRdp ||
+            configuredMode == RdpEndpointMode::TransparentTcpRdp) &&
+        expectedFingerprint.empty();
     if (gatewayCertificate && (!routeModeKnown ||
         configuredMode != RdpEndpointMode::MicrosoftRdGateway)) {
         OH_LOG_ERROR(LOG_APP,
@@ -4286,8 +4293,10 @@ DWORD FreeRdpAdapter::evaluateCertificate(const char* host, UINT16 port,
     // present: the user is explicitly choosing to evaluate the live callback
     // certificate once rather than silently accepting the old pin.
     const bool unpinnedOnceForCurrentRoute = allowUnpinnedOnce;
-    const bool fingerprintOk = RdpCertificatePolicy::FingerprintMatches(
-        expectedFingerprint, fingerprint) || unpinnedOnceForCurrentRoute;
+    const bool fingerprintOk = (strictLiveVerification &&
+        !RdpCertificatePolicy::NormalizeFingerprint(fingerprint).empty()) ||
+        RdpCertificatePolicy::FingerprintMatches(expectedFingerprint, fingerprint) ||
+        unpinnedOnceForCurrentRoute;
     const bool hostOk = !hostMismatch || allowHostMismatch || unpinnedOnceForCurrentRoute;
     const bool rootTrusted = rootTrustedFromPem(pemData, pemLength);
     const bool rootOk = rootTrusted || allowUntrustedRoot || unpinnedOnceForCurrentRoute;

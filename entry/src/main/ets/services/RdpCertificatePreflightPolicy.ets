@@ -23,6 +23,19 @@ export const RDP_CERTIFICATE_LEGACY_IMPLICIT_TRUST_MODE: number = 1;
 export const RDP_CERTIFICATE_EXPLICIT_TRUST_MODE: number = 2;
 
 /**
+ * The diagnostic bypass is limited to direct TCP RDP routes. Gateway routes
+ * have two independently verified TLS identities and keep route preflight.
+ * The live FreeRDP certificate callback remains active when this is enabled;
+ * this helper only decides whether the ArkUI preflight sheet may be skipped.
+ */
+export function rdpCertificatePreflightSkipAllowed(
+  requested: boolean, endpointMode: string
+): boolean {
+  return requested && (endpointMode === 'direct_rdp' ||
+    endpointMode === 'transparent_tcp_rdp');
+}
+
+/**
  * 证书预检使用独立 TLS probe，而真实 FreeRDP 连接有自己的 endpoint/resolver 路径。
  * 预检只报告观察结果。DNS/TCP/明确的连接超时仍然是传输失败；其余证书、TLS
  * 元数据或协议兼容性结果都交给真实连接和用户的明确选择处理。

@@ -22,6 +22,7 @@ import {
   rdpCertificateLegacyProbeStage,
   rdpCertificatePreflightAllowsRealConnection,
   rdpCertificateRoutePreflightAllowsRealConnection,
+  rdpCertificatePreflightSkipAllowed,
   shouldRouteRdpCertificateAfterSheetDisappear,
   shouldShowRdpCertificateProbeSheetBeforeProbe,
   shouldEnableStandardRdpSecurityOnce,
@@ -332,6 +333,13 @@ export default function rdpCertificatePreflightPolicyTest() {
         'TLS_PROBE_RESET')).assertEqual(0);
       expect(rdpCertificateEffectiveRiskFlags(
         ['TARGET_CERTIFICATE_RISK'], ['UNTRUSTED_ROOT']).length).assertEqual(2);
+    });
+
+    it('limits_preflight_skip_to_direct_rdp_routes', 0, (): void => {
+      expect(rdpCertificatePreflightSkipAllowed(true, 'direct_rdp')).assertTrue();
+      expect(rdpCertificatePreflightSkipAllowed(true, 'transparent_tcp_rdp')).assertTrue();
+      expect(rdpCertificatePreflightSkipAllowed(true, 'microsoft_rd_gateway')).assertFalse();
+      expect(rdpCertificatePreflightSkipAllowed(false, 'direct_rdp')).assertFalse();
     });
 
     it('standard_security_requires_an_explicit_continue_once', 0, (): void => {

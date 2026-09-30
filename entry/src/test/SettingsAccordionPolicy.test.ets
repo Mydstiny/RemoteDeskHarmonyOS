@@ -77,12 +77,12 @@ export default function settingsAccordionPolicyTest() {
     });
 
     it('rdp_accordion_height_contains_stacked_phone_rows_and_bottom_spacing', 0, (): void => {
-      expect(SETTINGS_RDP_SWITCH_ROW_COUNT).assertEqual(5);
-      expect(settingsRdpExpandedMaxHeight('sm')).assertEqual(1005);
-      expect(settingsRdpExpandedMaxHeight('md')).assertEqual(893);
-      expect(settingsRdpExpandedMaxHeight('lg')).assertEqual(893);
-      expect(settingsRdpExpandedMaxHeight('xl')).assertEqual(1005);
-      expect(settingsRdpExpandedMaxHeight('sm', 6) > settingsRdpExpandedMaxHeight('sm')).assertTrue();
+      expect(SETTINGS_RDP_SWITCH_ROW_COUNT).assertEqual(6);
+      expect(settingsRdpExpandedMaxHeight('sm')).assertEqual(1070);
+      expect(settingsRdpExpandedMaxHeight('md')).assertEqual(958);
+      expect(settingsRdpExpandedMaxHeight('lg')).assertEqual(958);
+      expect(settingsRdpExpandedMaxHeight('xl')).assertEqual(1070);
+      expect(settingsRdpExpandedMaxHeight('sm', 7) > settingsRdpExpandedMaxHeight('sm')).assertTrue();
     });
 
     it('security_accordion_height_tracks_the_secret_visibility_action_row', 0, (): void => {

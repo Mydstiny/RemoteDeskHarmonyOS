@@ -20,7 +20,7 @@ export const SETTINGS_SECTION_RATING: string = 'rating';
 
 export const SETTINGS_VNC_ACTION_ROW_COUNT: number = 11;
 export const SETTINGS_MOONLIGHT_ACTION_ROW_COUNT: number = 7;
-export const SETTINGS_RDP_SWITCH_ROW_COUNT: number = 5;
+export const SETTINGS_RDP_SWITCH_ROW_COUNT: number = 6;
 export const SETTINGS_SECURITY_ACTION_ROW_COUNT: number = 5;
 const SETTINGS_VNC_ACTION_ROW_HEIGHT_VP: number = 62;
 const SETTINGS_VNC_ACTION_DIVIDER_HEIGHT_VP: number = 0.5;

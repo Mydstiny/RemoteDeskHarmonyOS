@@ -133,6 +133,7 @@ import {
 } from '../services/VncModelPolicy';
 import {
   rdpCertificateRouteIsCurrent,
+  rdpCertificatePreflightSkipAllowed,
   shouldUseRdpTlsWithoutNla
 } from '../services/RdpCertificatePreflightPolicy';
 import { vncGatewayAvailability } from '../services/VncGatewayProtocolPolicy';
@@ -1359,6 +1360,7 @@ struct RemoteDesktop {
   // Runtime-only DNS fallback candidate. The configured hostname remains the
   // RDP/TLS identity and this value is cleared on session teardown.
   private rdpTransportHostOverride: string = '';
+  private rdpVerifyCertificateOnConnectRouteIdentity: string = '';
   private pendingVncHost: VncHostView | null = null;
   // Set only by the RustDesk Pro preflight handoff. It is consumed after the
   // first renderer/decoder pair is installed and is never inferred from a
@@ -8748,6 +8750,20 @@ struct RemoteDesktop {
       'RDP DNS fallback transport host staged candidate=' + maskHost(this.rdpTransportHostOverride));
   }
 
+  private stageRdpLiveCertificateVerification(
+    host: RemoteHost, routeParams: Record<string, Object>
+  ): void {
+    this.rdpVerifyCertificateOnConnectRouteIdentity = '';
+    const routeIdentity: string =
+      (routeParams['rdpVerifyCertificateRouteIdentity'] as string) || '';
+    if (host.protocol === 'rdp' && this.rdpCredentialRouteAttemptGeneration > 0 &&
+      routeIdentity === rdpRouteIdentity(host) && rdpCertificatePreflightSkipAllowed(
+        routeParams['rdpVerifyCertificateOnConnect'] === true,
+        normalizeRdpEndpointMode(host.rdpEndpointMode, host.gatewayHost))) {
+      this.rdpVerifyCertificateOnConnectRouteIdentity = routeIdentity;
+    }
+  }
+
   private clearRdpCredentialRouteBinding(): void {
     this.rdpCredentialRouteHostId = '';
     this.rdpCredentialRouteOwnerId = '';
@@ -9418,6 +9434,7 @@ struct RemoteDesktop {
           let resolvedHost: RemoteHost = this.hostWithResolvedCredential(host);
           resolvedHost = this.hostWithRdpOneTimeCertificate(resolvedHost, p);
           this.stageRdpTransportHostOverride(resolvedHost, p);
+          this.stageRdpLiveCertificateVerification(resolvedHost, p);
           const restoring: boolean = this.prepareRegistryRestore(host);
           if (rdpSessionCredentialRequiredForNewConnection(resolvedHost, restoring)) {
             const scope = AccountSessionCoordinator.getInstance().currentScope();
@@ -14278,6 +14295,7 @@ struct RemoteDesktop {
       let rdpTargetAllowUntrustedRoot: boolean = false;
       let rdpTargetAllowHostMismatch: boolean = false;
       let rdpTargetAllowUnpinnedOnce: boolean = false;
+      let rdpVerifyCertificateOnConnect: boolean = false;
       let rdpAllowStandardSecurityOnce: boolean = false;
       let rdpTlsWithoutNla: boolean = false;
       let rdpTargetAllowTimeAnomalyOnce: boolean = false;
@@ -14292,6 +14310,9 @@ struct RemoteDesktop {
           routeMode,
           normalizeRdpAuthMode(host.rdpAuthMode));
         const routeIdentity: string = rdpRouteIdentity(host);
+        rdpVerifyCertificateOnConnect = rdpCertificatePreflightSkipAllowed(
+          this.rdpVerifyCertificateOnConnectRouteIdentity === routeIdentity,
+          routeMode);
         const transientRouteMatches: boolean = rdpCertificateRouteIsCurrent(
           this.rdpCertificateTransientRouteIdentity, routeIdentity);
         const targetIdentityMatches: boolean = rdpCertificateRouteIsCurrent(
@@ -14326,7 +14347,8 @@ struct RemoteDesktop {
             rdpAllowStandardSecurityOnce;
           const gatewayDecisionAvailable: boolean = routeMode !== 'microsoft_rd_gateway' ||
             rdpGatewayAllowUnpinnedOnce;
-          if (targetDecisionAvailable && gatewayDecisionAvailable) {
+          if ((targetDecisionAvailable && gatewayDecisionAvailable) ||
+            rdpVerifyCertificateOnConnect) {
             // The user explicitly chose Continue Once after an inconclusive
             // preflight. Keep the real callback authoritative; it may still
             // reject malformed PEM, an unsupported route, or a changed pin.
@@ -14693,6 +14715,7 @@ struct RemoteDesktop {
         rdpAllowUntrustedRoot: rdpTargetAllowUntrustedRoot,
         rdpAllowHostMismatch: rdpTargetAllowHostMismatch,
         rdpCertificateAllowUnpinnedOnce: rdpTargetAllowUnpinnedOnce,
+        rdpVerifyCertificateOnConnect: rdpVerifyCertificateOnConnect,
         rdpAllowStandardSecurityOnce: rdpAllowStandardSecurityOnce,
         rdpTlsWithoutNla: rdpTlsWithoutNla,
         rdpCertificateAllowTimeAnomalyOnce: rdpTargetAllowTimeAnomalyOnce,
@@ -15598,6 +15621,7 @@ struct RemoteDesktop {
     }
     this.clearRdpCredentialRouteBinding();
     this.rdpTransportHostOverride = '';
+    this.rdpVerifyCertificateOnConnectRouteIdentity = '';
     // VNC passwords are connection-scoped memory only. The native session has
     // already received its copy; never retain the transient value across a
     // page/session teardown.
