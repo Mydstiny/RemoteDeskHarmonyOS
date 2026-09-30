@@ -504,6 +504,8 @@ export const VERSION: SessionVersionInfo;
   export function getRustDeskDiagnostics(sessionId: number): RustDeskDiagnosticsSnapshot;
   export function replayPendingRustDeskFrame(sessionId: number): boolean;
   export function getRustDeskDisplayCapabilities(sessionId: number): RustDeskDisplayCapabilities;
+  export function getVncDisplayCapabilities(sessionId: number): VncDisplayCapabilities;
+  export function switchVncDisplay(sessionId: number, monitor: number): boolean;
   export function attachRustDeskMultiCanvasPreview(sessionId: number, display: number,
     surfaceId: string, surfaceWidth: number, surfaceHeight: number, sourceWidth: number,
     sourceHeight: number, codec: number, visualFlipX?: boolean,
@@ -1040,6 +1042,12 @@ export interface RustDeskDisplayInfo {
   cursorEmbedded: boolean;
   name: string;
   resolutions: RustDeskDisplayResolution[];
+}
+
+export interface VncDisplayCapabilities {
+  supported: boolean;
+  mode: 'serverSelection' | 'unsupported';
+  monitorCount: number;
 }
 
 export interface RustDeskDisplayCapabilities {
