@@ -23,6 +23,7 @@ import {
   rdpCertificatePreflightAllowsRealConnection,
   rdpCertificateRoutePreflightAllowsRealConnection,
   rdpCertificatePreflightSkipAllowed,
+  rdpCertificatePreflightBypassHintAllowed,
   shouldRouteRdpCertificateAfterSheetDisappear,
   shouldShowRdpCertificateProbeSheetBeforeProbe,
   shouldEnableStandardRdpSecurityOnce,
@@ -340,6 +341,21 @@ export default function rdpCertificatePreflightPolicyTest() {
       expect(rdpCertificatePreflightSkipAllowed(true, 'transparent_tcp_rdp')).assertTrue();
       expect(rdpCertificatePreflightSkipAllowed(true, 'microsoft_rd_gateway')).assertFalse();
       expect(rdpCertificatePreflightSkipAllowed(false, 'direct_rdp')).assertFalse();
+    });
+
+    it('offers_direct_bypass_hint_only_when_target_certificate_is_unavailable', 0, (): void => {
+      expect(rdpCertificatePreflightBypassHintAllowed(
+        false, 'direct_rdp', 'transportFailed', 'E-RDP-TARGET-DNS', false)).assertTrue();
+      expect(rdpCertificatePreflightBypassHintAllowed(
+        false, 'transparent_tcp_rdp', 'unavailable', 'E-RDP-PREFLIGHT-EXCEPTION', false))
+        .assertTrue();
+      expect(rdpCertificatePreflightBypassHintAllowed(
+        false, 'direct_rdp', 'unavailable', 'E-RDP-TARGET-CERT', true)).assertFalse();
+      expect(rdpCertificatePreflightBypassHintAllowed(
+        false, 'microsoft_rd_gateway', 'transportFailed', 'E-RDP-TARGET-DNS', false))
+        .assertFalse();
+      expect(rdpCertificatePreflightBypassHintAllowed(
+        true, 'direct_rdp', 'transportFailed', 'E-RDP-TARGET-DNS', false)).assertFalse();
     });
 
     it('standard_security_requires_an_explicit_continue_once', 0, (): void => {

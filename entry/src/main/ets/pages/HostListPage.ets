@@ -278,6 +278,7 @@ import {
   rdpCertificateEffectiveRiskFlags,
   rdpCertificatePreflightAllowsRealConnection,
   rdpCertificatePreflightSkipAllowed,
+  rdpCertificatePreflightBypassHintAllowed,
   rdpCertificateRoutePreflightAllowsRealConnection,
   rdpCertificateValidityState,
   rdpCertificateRiskSummary,
@@ -7608,6 +7609,34 @@ struct HostListPage {
     const liveHost: RemoteHost | undefined = this.srv.getHost(host.id);
     return rdpCertificateRouteIsCurrent(result.routeIdentity, expectedRoute) &&
       liveHost !== undefined && rdpRouteIdentity(liveHost) === expectedRoute;
+  }
+
+  private rdpCertificateBypassHintVisible(): boolean {
+    const host: RemoteHost | undefined = this.getRdpCertificateHost();
+    const result: RdpPreflightResult | null = this.rdpCertificateRouteResult;
+    return host !== undefined && result !== null &&
+      rdpCertificatePreflightBypassHintAllowed(
+        this.rdpSkipCertificatePreflight,
+        this.rdpCertificateRouteMode(host),
+        result.preflightStatus,
+        result.errorCode,
+        result.targetCertificate.present);
+  }
+
+  private doRdpCertificatePreflightBypassOnce(): void {
+    const host: RemoteHost | undefined = this.getRdpCertificateHost();
+    const result: RdpPreflightResult | null = this.rdpCertificateRouteResult;
+    if (host === undefined || result === null || !this.rdpCertificateBypassHintVisible()) {
+      return;
+    }
+    if (!this.rdpCertificateResultMatchesLiveRoute(host, result)) {
+      this.rejectStaleRdpCertificateResult();
+      return;
+    }
+    // Skip only this independent probe. The route is still bound to the
+    // current host/attempt and RemoteDesktop keeps the live certificate
+    // callback enabled for the actual FreeRDP handshake.
+    this.doRdpCertificateRoute(host, undefined, false, true);
   }
 
   private rdpGatewayConfirmationPending(result: RdpPreflightResult | null =
@@ -17302,6 +17331,24 @@ struct HostListPage {
         if (this.rdpCertificateShowDetails) {
           this.rdpCertificateInfoCard()
         }
+      }
+      if (this.rdpCertificateBypassHintVisible()) {
+        Column() {
+          Text('如果 Windows mstsc 可以连接，而这里只在获取远端证书或解析地址阶段失败，可先尝试直接建立一次 RDP 连接。')
+            .fontSize(13).fontColor(this.pal().text2).fontFamily(this.font())
+            .lineHeight(20).width('100%')
+          Text('本次连接仍会在真实 RDP 握手中校验证书。也可在“设置 → Windows RDP”开启“跳过连接前证书预检”；仅直连 RDP 可用，RD Gateway 不适用。')
+            .fontSize(12).fontColor(this.pal().text3).fontFamily(this.font())
+            .lineHeight(18).width('100%').margin({ top: 6 })
+          Button('本次直接尝试')
+            .fontSize(14).height(40).width('100%')
+            .backgroundColor(this.accentColor).fontColor('#FFFFFF').borderRadius(10)
+            .margin({ top: 10 })
+            .onClick(() => { this.doRdpCertificatePreflightBypassOnce(); })
+        }
+        .width('100%').padding(12)
+        .backgroundColor(this.pal().surface).borderRadius(10)
+        .margin({ top: 16 })
       }
       this.rdpCertificateButtonsContent()
     }
