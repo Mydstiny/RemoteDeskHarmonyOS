@@ -2,14 +2,21 @@ import { AccountSessionCoordinator } from '../services/AccountSessionCoordinator
 import { common } from '@kit.AbilityKit';
 import { ManagedTransferTaskService } from '../services/ManagedTransferTaskService';
 import { ManagedTransferRecord, managedTransferTerminal } from '../services/ManagedTransferTaskPolicy';
+import { Palette, buildDark, buildLight } from '../common/Theme';
 
 @Component
 export struct FileTransferTaskList {
   @Prop accountScopeId: string = '';
   @Prop hostId: string = '';
+  @StorageLink('currentTheme') theme: string = 'light';
+  @StorageLink('accentColor') accentColor: string = '#007DFF';
   @State private records: ManagedTransferRecord[] = [];
   private unsubscribe: (() => void) | null = null;
   private accountUnsubscribe: (() => void) | null = null;
+
+  private pal(): Palette {
+    return this.theme === 'light' ? buildLight(this.accentColor) : buildDark(this.accentColor);
+  }
 
   aboutToAppear(): void {
     const service: ManagedTransferTaskService = ManagedTransferTaskService.getInstance();
@@ -49,26 +56,28 @@ export struct FileTransferTaskList {
 
   build() {
     Column({ space: 10 }) {
-      Text('任务记录').fontSize(16).fontWeight(FontWeight.Medium).width('100%')
+      Text('任务记录').fontSize(16).fontWeight(FontWeight.Medium)
+        .fontColor(this.pal().text).width('100%')
       if (this.records.length === 0) {
-        Text('暂无文件任务').fontSize(13).fontColor('#777777').width('100%')
+        Text('暂无文件任务').fontSize(13).fontColor(this.pal().text2).width('100%')
       }
       ForEach(this.records, (record: ManagedTransferRecord) => {
         Column({ space: 6 }) {
           Row({ space: 8 }) {
-            Text(record.fileName).fontSize(14).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).layoutWeight(1)
+            Text(record.fileName).fontSize(14).fontColor(this.pal().text)
+              .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).layoutWeight(1)
             if (!managedTransferTerminal(record.stage) && record.stage !== 'commitUnknown' && record.stage !== 'paused') {
               Button('取消').fontSize(12).height(28).onClick((): void => {
                 ManagedTransferTaskService.getInstance().cancel(this.accountScopeId, record.taskId, record.attemptId);
               })
             }
           }.width('100%')
-          Text(this.description(record)).fontSize(12).fontColor('#777777').width('100%')
+          Text(this.description(record)).fontSize(12).fontColor(this.pal().text2).width('100%')
           if (!managedTransferTerminal(record.stage) && record.totalBytes > 0) {
             Progress({ value: Math.min(100, Math.floor(Math.max(record.sentBytes, record.writtenBytes) * 100 / record.totalBytes)), total: 100, type: ProgressType.Linear })
               .width('100%')
           }
-        }.padding(10).width('100%').borderRadius(10).backgroundColor('#0A808080')
+        }.padding(10).width('100%').borderRadius(10).backgroundColor(this.pal().card)
       }, (record: ManagedTransferRecord): string => record.taskId + ':' + record.attemptId.toString())
     }.width('100%')
   }

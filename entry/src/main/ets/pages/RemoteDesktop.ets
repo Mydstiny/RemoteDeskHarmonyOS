@@ -1875,6 +1875,11 @@ struct RemoteDesktop {
     return this.theme === 'light' ? buildLight(this.accentColor) : buildDark(this.accentColor);
   }
 
+  /** File-transfer paths use an opaque muted color so separators stay readable in both themes. */
+  private fileTransferSeparatorColor(): string {
+    return this.theme === 'light' ? '#707078' : '#A4A4AE';
+  }
+
   private registerInputDeviceWatcher(): void {
     if (this.inputDeviceListenerRegistered) { return; }
     try {
@@ -5537,6 +5542,7 @@ struct RemoteDesktop {
 
   private handleRdpToolbarAction(action: RdpToolbarAction): void {
     if (action === 'control') { this.toggleRdpControlCenter(); return; }
+    if (action === 'fileTransfer') { this.openFileTransferPanel(); return; }
     if (action === 'resetCanvas') { this.resetCanvasTransformFromMenu(); return; }
     if (action === 'keyboard') { this.openRdpKeyboard(); return; }
     if (action === 'shortcuts') { this.openRdpShortcutPanel(); return; }
@@ -18893,7 +18899,7 @@ struct RemoteDesktop {
     }
     const lease: RemoteTransferLease | null = this.captureTransferLease();
     if (lease === null) {
-      promptAction.showToast({ message: 'RustDesk 文件会话尚未就绪，请重新连接后重试', duration: 2200 });
+      promptAction.showToast({ message: '文件会话尚未就绪，请重新连接后重试', duration: 2200 });
       return;
     }
     const capability = this.currentSessionCapabilities().fileUpload;
@@ -18971,53 +18977,37 @@ struct RemoteDesktop {
     const generation: number = ++this.transferDirectoryRequestGeneration;
     this.remoteTransferBrowserBusy = true;
     this.remoteTransferBrowserMessage = '正在读取远端目录';
-    const id: number = this.loader.requestSessionRemoteDirectory(lease.sessionId, lease.nativeGeneration, path);
-    if (id <= 0) {
-      hilog.warn(RD_DOMAIN, RD_TAG, 'RustDesk remote directory request rejected session=' +
-        lease.sessionId.toString() + ' generation=' + lease.nativeGeneration.toString() +
-        ' path=' + path);
-      this.remoteTransferBrowserBusy = false; this.remoteTransferBrowserMessage = '远端目录请求未获准，请检查文件传输权限或重新连接';
-      return;
-    }
-    let terminal: boolean = false;
-    const deadline: number = Date.now() + 120000;
+    const client: RustDeskTransferClient = this.transferControlClient(lease, (): boolean =>
+      generation === this.transferDirectoryRequestGeneration && this.transferLeaseIsCurrent(lease) &&
+        this.showFileTransferPanel);
     try {
-      while (Date.now() < deadline && generation === this.transferDirectoryRequestGeneration &&
-        this.transferLeaseIsCurrent(lease) && this.showFileTransferPanel) {
-        const status: SessionTransferStatus = this.loader.getSessionFileTransfer(lease.sessionId, lease.nativeGeneration, id);
-        if (status.transferId !== id) { this.remoteTransferBrowserMessage = '目录请求已失效'; return; }
-        this.observeTransferAuthentication(lease, this.loader.getSessionTransferAuthentication(lease.sessionId, lease.nativeGeneration, id));
-        if (status.rustdeskTransferState === 6 || status.rustdeskTransferState === 3) {
-          terminal = true;
-          const directory = this.loader.getSessionRemoteDirectory(lease.sessionId, lease.nativeGeneration, id);
-          if (!remoteTransferPathIsAbsolute(directory.path)) {
-            this.remoteTransferBrowserMessage = '远端未返回可用目录，请输入绝对目录后重试'; return;
-          }
-          this.remoteTransferDirectory = directory.path;
-          this.remoteTransferPathInput = directory.path;
-          this.remoteTransferEntries = directory.entries.filter((entry: SessionRemoteFileEntry): boolean =>
-            remoteTransferEntryPath(directory.path, entry.name, entry.type).length > 0 &&
-              (entry.type === 0 || entry.type === 3 || entry.type === 4)).sort(
-                (left: SessionRemoteFileEntry, right: SessionRemoteFileEntry): number => {
-                  const leftRank: number = left.type === 4 ? 1 : 0;
-                  const rightRank: number = right.type === 4 ? 1 : 0;
-                  if (leftRank !== rightRank) { return leftRank - rightRank; }
-                  return left.name.localeCompare(right.name);
-                });
-          this.remoteTransferBrowserMessage = this.fileTransferPanelMode === 'receive' ?
-            '当前目录已打开；点击文件接收，点击文件夹继续浏览' :
-            '当前目录可作为发送目标；点击文件夹继续浏览';
-          return;
-        }
-        if (status.rustdeskTransferState === 4 || status.rustdeskTransferState === 5) {
-          terminal = true; this.remoteTransferBrowserMessage = '目录读取未完成，请检查文件会话授权'; return;
-        }
-        await this.yieldUi(250);
+      const directory: SessionRemoteDirectory | null = await client.list(path);
+      if (generation !== this.transferDirectoryRequestGeneration || !this.transferLeaseIsCurrent(lease)) {
+        return;
       }
-      this.remoteTransferBrowserMessage = '目录读取已停止';
+      if (directory === null) {
+        this.remoteTransferBrowserMessage = '目录读取未完成，请检查文件会话授权后刷新重试';
+        return;
+      }
+      if (!remoteTransferPathIsAbsolute(directory.path)) {
+        this.remoteTransferBrowserMessage = '远端未返回可用目录，请输入绝对目录后重试';
+        return;
+      }
+      this.remoteTransferDirectory = directory.path;
+      this.remoteTransferPathInput = directory.path;
+      this.remoteTransferEntries = directory.entries.filter((entry: SessionRemoteFileEntry): boolean =>
+        remoteTransferEntryPath(directory.path, entry.name, entry.type).length > 0 &&
+          (entry.type === 0 || entry.type === 3 || entry.type === 4)).sort(
+            (left: SessionRemoteFileEntry, right: SessionRemoteFileEntry): number => {
+              const leftRank: number = left.type === 4 ? 1 : 0;
+              const rightRank: number = right.type === 4 ? 1 : 0;
+              if (leftRank !== rightRank) { return leftRank - rightRank; }
+              return left.name.localeCompare(right.name);
+            });
+      this.remoteTransferBrowserMessage = this.fileTransferPanelMode === 'receive' ?
+        '当前目录已打开；点击文件接收，点击文件夹继续浏览' :
+        '当前目录可作为发送目标；点击文件夹继续浏览';
     } finally {
-      if (!terminal) { terminal = (await this.cancelAndDrainNativeTransfer(lease, id)) !== null; }
-      if (terminal) { this.releaseNativeTransfer(lease, id); }
       if (generation === this.transferDirectoryRequestGeneration) { this.remoteTransferBrowserBusy = false; }
     }
   }
@@ -22942,10 +22932,13 @@ struct RemoteDesktop {
       Column({ space: 14 }) {
         Row({ space: 8 }) {
           if (this.fileTransferPanelMode !== 'chooser') {
-            Button('‹')
-              .fontSize(22)
-              .width(42)
-              .height(42)
+            Button() { SymbolGlyph($r('sys.symbol.chevron_left')).fontSize(20).fontColor([this.pal().text]) }
+              .width(44)
+              .height(44)
+              .padding(0)
+              .borderRadius(0)
+              .backgroundColor(Color.Transparent)
+              .accessibilityText('返回文件传输方式')
               .onClick((): void => { this.fileTransferPanelMode = 'chooser'; })
           }
           Column() {
@@ -23008,6 +23001,7 @@ struct RemoteDesktop {
         TextInput({ text: this.transferAuthSecret,
           placeholder: this.transferAuth.kind === 2 ? '动态验证码' : '本次文件会话密码' })
           .type(InputType.Password).maxLength(1024).height(42)
+          .fontColor(this.pal().text).placeholderColor(this.pal().text3)
           .onChange((value: string): void => { this.transferAuthSecret = value; })
         Button('提交').width('100%').height(42).enabled(this.transferAuth.state === 1)
           .onClick((): void => { this.submitTransferAuthentication(this.transferAuth.kind); })
@@ -23036,26 +23030,26 @@ struct RemoteDesktop {
       Text('先选方向，再进入对应的发送或接收界面；传输过程中可随时返回。')
         .fontSize(13).fontColor(this.pal().text2).width('100%')
       Column({ space: 12 }) {
-        Column({ space: 8 }) {
-          SymbolGlyph($r('sys.symbol.arrow_up_left')).fontSize(26).fontColor([this.accentColor])
-          Text('本机发送').fontSize(16).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
-          Text(this.fileTransferModeDescription('send')).fontSize(12).fontColor(this.pal().text2)
-            .maxLines(3).textOverflow({ overflow: TextOverflow.Ellipsis }).width('100%')
-          Button('开始发送').width('100%').height(42)
-            .enabled(this.fileTransferModeEnabled('send'))
+        Row({ space: 12 }) {
+          Text('↑').fontSize(30).fontWeight(FontWeight.Bold).fontColor(this.accentColor)
+          Column({ space: 3 }) {
+            Text('本机发送').fontSize(16).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
+            Text(this.fileTransferModeDescription('send')).fontSize(12).fontColor(this.pal().text2)
+              .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis }).width('100%')
+          }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+          Button('开始发送').height(42).enabled(this.fileTransferModeEnabled('send'))
             .onClick((): void => { this.enterFileTransferPanelMode('send'); })
-        }.width('100%').padding(14).backgroundColor(this.pal().card).borderRadius(14)
-          .alignItems(HorizontalAlign.Start)
-        Column({ space: 8 }) {
-          SymbolGlyph($r('sys.symbol.arrow_up_left')).fontSize(26).fontColor([this.accentColor])
-          Text('远端发送').fontSize(16).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
-          Text(this.fileTransferModeDescription('receive')).fontSize(12).fontColor(this.pal().text2)
-            .maxLines(3).textOverflow({ overflow: TextOverflow.Ellipsis }).width('100%')
-          Button('开始接收').width('100%').height(42)
-            .enabled(this.fileTransferModeEnabled('receive'))
+        }.width('100%').padding(12).backgroundColor(this.pal().card).borderRadius(14)
+        Row({ space: 12 }) {
+          Text('↓').fontSize(30).fontWeight(FontWeight.Bold).fontColor(this.accentColor)
+          Column({ space: 3 }) {
+            Text('远端发送').fontSize(16).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
+            Text(this.fileTransferModeDescription('receive')).fontSize(12).fontColor(this.pal().text2)
+              .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis }).width('100%')
+          }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+          Button('开始接收').height(42).enabled(this.fileTransferModeEnabled('receive'))
             .onClick((): void => { this.enterFileTransferPanelMode('receive'); })
-        }.width('100%').padding(14).backgroundColor(this.pal().card).borderRadius(14)
-          .alignItems(HorizontalAlign.Start)
+        }.width('100%').padding(12).backgroundColor(this.pal().card).borderRadius(14)
       }.width('100%')
     }.width('100%').constraintSize({ maxWidth: 720 })
   }
@@ -23087,6 +23081,17 @@ struct RemoteDesktop {
       }
       if (this.currentProtocolName() === 'rustdesk') {
         this.rustDeskRemoteBrowserPanel(false)
+        Row({ space: 8 }) {
+          Text('发送目标：' + (this.remoteTransferDirectory.length > 0 ?
+            this.remoteTransferDirectory : '正在读取远端目录…'))
+            .fontSize(12).fontColor(this.pal().text2).layoutWeight(1)
+            .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
+          Button('选择此文件夹').height(40)
+            .enabled(!this.remoteTransferBrowserBusy && this.remoteTransferDirectory.length > 0)
+            .onClick((): void => {
+              this.remoteTransferBrowserMessage = '已选择当前文件夹作为发送目标';
+            })
+        }.width('100%').padding(10).backgroundColor(this.pal().card).borderRadius(10)
       } else {
         Text('远端将通过当前会话读取你选择的文件；如需接收远端内容，请返回选择“远端发送”。')
           .fontSize(13).fontColor(this.pal().text2).width('100%')
@@ -23113,13 +23118,13 @@ struct RemoteDesktop {
               this.transferAllowOverwrite = checked;
               if (checked) { this.transferRenameOnConflict = false; }
             })
-          Text('允许覆盖同名文件').fontSize(13).layoutWeight(1)
+          Text('允许覆盖同名文件').fontSize(13).fontColor(this.pal().text).layoutWeight(1)
           Checkbox().select(this.transferRenameOnConflict)
             .onChange((checked: boolean): void => {
               this.transferRenameOnConflict = checked;
               if (checked) { this.transferAllowOverwrite = false; }
             })
-          Text('自动重命名').fontSize(13)
+          Text('自动重命名').fontSize(13).fontColor(this.pal().text)
         }.width('100%')
       }
       if (this.fileTransferBusy || this.fileTransferStatus.length > 0) {
@@ -23147,6 +23152,7 @@ struct RemoteDesktop {
       Row({ space: 8 }) {
         TextInput({ text: this.remoteTransferPathInput, placeholder: '输入远端绝对路径' })
           .layoutWeight(1).height(42)
+          .fontColor(this.pal().text).placeholderColor(this.pal().text3)
           .onChange((value: string): void => { this.remoteTransferPathInput = value; })
         Button('打开').height(42).enabled(!this.remoteTransferBrowserBusy)
           .onClick((): void => { void this.browseRemoteTransferDirectory(this.remoteTransferPathInput); })
@@ -23156,10 +23162,13 @@ struct RemoteDesktop {
           Row({ space: 2 }) {
             ForEach(this.remoteTransferBreadcrumbs(), (crumb: RemoteTransferBreadcrumb, index: number) => {
               if (index > 0) {
-                Text('›').fontSize(14).fontColor(this.pal().text2).margin({ left: 2, right: 2 })
+                Text('/').fontSize(12).fontColor(this.fileTransferSeparatorColor()).margin({ left: 3, right: 3 })
               }
               Button(crumb.label)
-                .fontSize(12).height(32).backgroundColor(index === this.remoteTransferBreadcrumbs().length - 1 ?
+                .fontSize(12).height(32)
+                .fontColor(index === this.remoteTransferBreadcrumbs().length - 1 ?
+                  this.pal().text : this.accentColor)
+                .backgroundColor(index === this.remoteTransferBreadcrumbs().length - 1 ?
                   this.pal().card : Color.Transparent)
                 .enabled(!this.remoteTransferBrowserBusy && index !== this.remoteTransferBreadcrumbs().length - 1)
                 .onClick((): void => { void this.browseRemoteTransferDirectory(crumb.path); })
@@ -23171,18 +23180,30 @@ struct RemoteDesktop {
         (receiving ? '选择远端文件接收，点击文件夹继续浏览' : '点击文件夹进入，当前目录作为发送目标'))
         .fontSize(12).fontColor(this.pal().text2).width('100%')
       Row({ space: 8 }) {
+        Button('上一级').layoutWeight(1).height(38)
+          .enabled(!this.remoteTransferBrowserBusy && this.transferPanelLease !== null &&
+            parentRemoteTransferPath(this.remoteTransferDirectory) !== this.remoteTransferDirectory)
+          .onClick((): void => {
+            void this.browseRemoteTransferDirectory(parentRemoteTransferPath(this.remoteTransferDirectory));
+          })
         Button('刷新').layoutWeight(1).height(38)
-          .enabled(!this.remoteTransferBrowserBusy && this.remoteTransferDirectory.length > 0)
-          .onClick((): void => { void this.browseRemoteTransferDirectory(this.remoteTransferDirectory); })
-        if (!receiving) {
+          .enabled(!this.remoteTransferBrowserBusy && this.transferPanelLease !== null)
+          .onClick((): void => {
+            void this.browseRemoteTransferDirectory(this.remoteTransferDirectory.length > 0 ?
+              this.remoteTransferDirectory : this.remoteTransferPathInput);
+          })
+      }.width('100%')
+      if (!receiving) {
+        Row({ space: 8 }) {
           TextInput({ text: this.transferNewDirectoryName, placeholder: '新建文件夹' })
-            .layoutWeight(2).height(38)
+            .layoutWeight(1).height(38)
+            .fontColor(this.pal().text).placeholderColor(this.pal().text3)
             .onChange((value: string): void => { this.transferNewDirectoryName = value; })
           Button('创建').height(38)
             .enabled(!this.remoteTransferBrowserBusy && this.remoteTransferDirectory.length > 0)
             .onClick((): void => { void this.createRemoteTransferDirectory(); })
-        }
-      }.width('100%')
+        }.width('100%')
+      }
       Column({ space: 2 }) {
         if (this.remoteTransferEntries.length === 0) {
           Text(this.remoteTransferBrowserBusy ? '正在读取当前目录…' : '当前目录为空，或没有可显示的内容')
@@ -23201,7 +23222,7 @@ struct RemoteDesktop {
                 .fontSize(11).fontColor(this.pal().text2).width('100%')
             }.alignItems(HorizontalAlign.Start).layoutWeight(1)
             if (entry.type === 0 || entry.type === 3) {
-              Text('›').fontSize(24).fontColor(this.pal().text2)
+              Text('进入').fontSize(12).fontColor(this.accentColor)
             } else if (receiving) {
               Button('接收').fontSize(12).height(34)
                 .enabled(!this.remoteTransferBrowserBusy && !this.fileTransferBusy)
@@ -23240,7 +23261,8 @@ struct RemoteDesktop {
               .onClick((): void => { void this.receiveRdpClipboardEntries(this.rdpReceiveOffer.entries); })
             ForEach(this.rdpReceiveOffer.entries, (entry: SessionRdpClipboardFileEntry) => {
               Row({ space: 8 }) {
-                Text(entry.relativeName).fontSize(13).maxLines(2).layoutWeight(1)
+                Text(entry.relativeName).fontSize(13).fontColor(this.pal().text)
+                  .maxLines(2).layoutWeight(1)
                 Button('接收').fontSize(12)
                   .onClick((): void => { void this.receiveRdpClipboardEntries([entry]); })
               }.width('100%').padding({ top: 8, bottom: 8 })
@@ -23255,7 +23277,8 @@ struct RemoteDesktop {
           ForEach(this.rdpSharedDrive.entries, (fact: SessionRdpReceivedFileFact) => {
             Row({ space: 8 }) {
               Text(fact.relativePath + (fact.remoteClosed && !fact.uncertain ? '' : '（可能仍在写入）'))
-                .fontSize(13).maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis }).layoutWeight(1)
+                .fontSize(13).fontColor(this.pal().text)
+                .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis }).layoutWeight(1)
               Button('提取副本').fontSize(12)
                 .enabled(fact.remoteClosed && fact.activeHandles === 0 && !fact.uncertain)
                 .onClick((): void => { void this.freezeRdpSharedFile(fact); })
@@ -23277,7 +23300,7 @@ struct RemoteDesktop {
           .fontColor(this.pal().text).width('100%')
         ForEach(this.receivedTransferArtifacts, (artifact: TransferArtifact) => {
           Row({ space: 8 }) {
-            Text(artifact.relativePath || artifact.name).fontSize(13).maxLines(2)
+            Text(artifact.relativePath || artifact.name).fontSize(13).fontColor(this.pal().text).maxLines(2)
               .textOverflow({ overflow: TextOverflow.Ellipsis }).layoutWeight(1)
             if (artifact.directory === true) {
               Button('整目录另存').fontSize(12)
@@ -23302,7 +23325,7 @@ struct RemoteDesktop {
       ForEach(this.legacyTransferCaches, (item: LegacyTransferCacheSummary) => {
         Row({ space: 8 }) {
           Text(item.name + ' · ' + item.fileCount.toString() + ' 个文件').fontSize(12)
-            .layoutWeight(1)
+            .fontColor(this.pal().text2).layoutWeight(1)
           Button('导入').fontSize(12).enabled(item.available)
             .onClick((): void => { void this.recoverLegacyTransferCache(item); })
         }.width('100%')
@@ -23311,7 +23334,7 @@ struct RemoteDesktop {
         Row({ space: 8 }) {
           Text((batch.purpose === 'received' ? '接收副本 ' : '发送副本 ') + batch.fileCount.toString() +
             ' 个文件' + (batch.published ? ' · 剪贴板正在提供' : batch.held ? ' · 任务仍持有' :
-            batch.unknown ? ' · 归属待核实' : '')).fontSize(12).layoutWeight(1)
+            batch.unknown ? ' · 归属待核实' : '')).fontSize(12).fontColor(this.pal().text2).layoutWeight(1)
           Button('清理').fontSize(12).enabled(batch.canCleanup)
             .onClick((): void => { void this.cleanupTransferCacheBatch(batch); })
         }.width('100%').padding({ top: 4, bottom: 4 })
@@ -23389,8 +23412,9 @@ struct RemoteDesktop {
       return;
     }
     this.fileTransferPanelMode = mode;
-    if (mode === 'receive' && this.currentProtocolName() === 'rustdesk' &&
-      this.remoteTransferDirectory.length === 0 && !this.remoteTransferBrowserBusy) {
+    if (this.currentProtocolName() === 'rustdesk' &&
+      (this.remoteTransferDirectory.length === 0 || this.remoteTransferEntries.length === 0) &&
+      !this.remoteTransferBrowserBusy) {
       void this.browseRemoteTransferDirectory('');
     }
   }

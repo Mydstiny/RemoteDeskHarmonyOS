@@ -23,7 +23,7 @@ import {
   RDP_SESSION_CONTROL_ACCENT_SOFT
 } from '../../services/RdpSessionSidebarPolicy';
 
-export type RdpToolbarAction = 'control' | 'keyboard' | 'shortcuts' |
+export type RdpToolbarAction = 'control' | 'fileTransfer' | 'keyboard' | 'shortcuts' |
   'ctrlAltDel' | 'resetCanvas' | 'refresh' | 'diagnostics' | 'disconnect';
 
 interface RdpToolbarItem {
@@ -61,6 +61,7 @@ export struct RdpSessionToolbar {
   private items(): Array<RdpToolbarItem> {
     const items: Array<RdpToolbarItem> = [
       { action: 'control', label: 'RDP 控制', dangerous: false },
+      { action: 'fileTransfer', label: '文件', dangerous: false },
       { action: 'keyboard', label: '键盘', dangerous: false },
       { action: 'shortcuts', label: '组合键', dangerous: false },
       { action: 'ctrlAltDel', label: '安全键', dangerous: false },
@@ -84,6 +85,7 @@ export struct RdpSessionToolbar {
 
   private icon(action: RdpToolbarAction): Resource {
     if (action === 'control') { return $r('sys.symbol.display'); }
+    if (action === 'fileTransfer') { return $r('sys.symbol.folder'); }
     if (action === 'resetCanvas') { return $r('sys.symbol.display'); }
     if (action === 'keyboard' || action === 'shortcuts') { return $r('sys.symbol.keyboard'); }
     if (action === 'ctrlAltDel') { return $r('sys.symbol.exclamationmark_triangle'); }
