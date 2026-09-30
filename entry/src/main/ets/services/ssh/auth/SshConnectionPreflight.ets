@@ -6,6 +6,7 @@ import { HostSyncService } from '../../HostSyncService';
 import { KeyVaultService } from '../../KeyVaultService';
 import { ProContinuationCredentialHandoff, ProContinuationSecret } from '../../pro/ProContinuationCredentials';
 import { RemoteHost } from '../../../model/RemoteHost';
+import { SshKey } from '../../../model/SshKey';
 import { SshProxyProfileStore } from '../../SshProxyProfileStore';
 import { resolveSshProxyRuntimePlan, SshProxyRuntimePlan } from '../../SshProxyRuntimePolicy';
 import { sshHostKeyRouteBinding, sshHostKeyPinsForRoute } from '../../SshHostKeyTrustPolicy';
@@ -15,9 +16,15 @@ import { persistSshHostKeyTrust } from './SshHostKeyTrustWriter';
 import { SshAuthenticatedHandoff } from './SshAuthenticatedHandoff';
 import { SshOperationRouteSecretService } from '../../SshOperationRouteSecretService';
 
+/** A vault key the user may pick when this device has no key saved for the host. */
+export interface SshCredentialKeyOption { id: string; label: string; fingerprint: string; }
+/** keyId selects a vault key; otherwise password is used. Both empty means cancelled. */
+export interface SshCredentialChoice { keyId: string; password: string; }
+
 export interface SshPreflightInteraction {
   active: () => boolean;
   secret: (title: string, label: string) => Promise<string>;
+  credential: (label: string, keys: SshCredentialKeyOption[]) => Promise<SshCredentialChoice>;
   prompt: (request: SshAuthPromptRequest | null) => void;
   cancelled: () => void;
 }
@@ -106,6 +113,21 @@ export class SshConnectionPreflight {
     return value;
   }
 
+  private async credential(label: string): Promise<SshCredentialChoice> {
+    const keys: SshCredentialKeyOption[] = KeyVaultService.getInstance().getAllSshKeys()
+      .filter((key: SshKey): boolean => key.privateKey.length > 0)
+      .map((key: SshKey): SshCredentialKeyOption => ({ id: key.id, label: key.label || key.comment || 'SSH 密钥',
+        fingerprint: key.fingerprint }));
+    const choice: SshCredentialChoice = await this.interaction.credential(label, keys);
+    if (!this.current() || (choice.keyId.length === 0 && choice.password.length === 0)) {
+      throw new Error('已取消 SSH 鉴权');
+    }
+    if (choice.keyId.length > 0 && keys.every((key: SshCredentialKeyOption): boolean => key.id !== choice.keyId)) {
+      throw new Error('所选私钥不可用');
+    }
+    return choice;
+  }
+
   private async keyPassphrase(key: string, saved: string, label: string): Promise<string> {
     const info = this.loader.inspectSshPrivateKey(key, saved);
     if (info.ok && (!info.encrypted || saved.length > 0)) { return info.encrypted ? saved : ''; }
@@ -176,7 +198,15 @@ export class SshConnectionPreflight {
         useKey = false; password = handed.password;
       }
       if (useKey && key.length === 0) {
-        throw new Error('本设备没有这台主机的 SSH 私钥：请在本设备导入密钥，或在源设备的 Pro 功能 > 同账号接续中开启“随接续传输”');
+        // This device lacks the host's key (for example a continued session): ask for this connection only.
+        const choice: SshCredentialChoice = await this.credential(host.username + '@' + host.host);
+        if (choice.keyId.length > 0) {
+          key = KeyVaultService.getInstance().getSshKey(choice.keyId)?.privateKey || '';
+          storedPassphrase = '';
+          if (key.length === 0) { throw new Error('所选私钥不可用'); }
+        } else {
+          useKey = false; password = choice.password;
+        }
       }
       const passphrase: string = useKey ? await this.keyPassphrase(key, storedPassphrase, '目标主机') : '';
       if (useKey) { password = ''; }

@@ -8728,7 +8728,8 @@ struct SshTerminal {
   private maybeAutoArmProContinuation(): void {
     if (this.proContinuationArming || this.terminalClosing) { return; }
     const service = ProContinuationService.getInstance();
-    const auto = ProContinuationPreferences.getInstance().settings().auto;
+    const auto = ProContinuationPreferences.getInstance().settings().auto &&
+      ProContinuationPreferences.getInstance().protocolEnabled('ssh');
     const armed = service.armed(this.proContinuationWindowId);
     if (!auto && armed && this.proContinuationPersistent) {
       service.cancelSource(this.proContinuationWindowId); this.proContinuationPersistent = false; return;

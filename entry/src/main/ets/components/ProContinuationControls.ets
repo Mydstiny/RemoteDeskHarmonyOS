@@ -3,7 +3,7 @@ import { common } from '@kit.AbilityKit';
 import { window, LengthMetrics } from '@kit.ArkUI';
 import { Palette, buildDark, buildLight } from '../common/Theme';
 import { ProFeatureGate } from './ProFeatureGate';
-import { ProContinuationPreferences } from '../services/pro/ProContinuationPreferences';
+import { ProContinuationPreferences, proContinuationProtocolLabel } from '../services/pro/ProContinuationPreferences';
 import { ProContinuationService, proContinuationContext, ProContinuationSnapshot } from '../services/pro/ProContinuationService';
 import { RemoteHost } from '../model/RemoteHost';
 
@@ -16,6 +16,7 @@ export struct ProContinuationControls {
   @State status: string = '';
   @State canClose: boolean = false;
   @State auto: boolean = true;
+  @State protocolOn: boolean = true;
   private windowId: number = 0;
   private stopPreferences: (() => void) | null = null;
   private stop: (() => void) | null = null;
@@ -24,6 +25,7 @@ export struct ProContinuationControls {
     try { this.windowId = window.findWindow(this.getUIContext().getWindowName()).getWindowProperties().id; } catch (_error) {}
     this.stopPreferences = ProContinuationPreferences.getInstance().subscribe((): void => {
       this.auto = ProContinuationPreferences.getInstance().settings().auto;
+      this.protocolOn = ProContinuationPreferences.getInstance().protocolEnabled(this.protocol);
     });
     this.stop = ProContinuationService.getInstance().subscribe((): void => {
       const state = ProContinuationService.getInstance().snapshot();
@@ -53,17 +55,21 @@ export struct ProContinuationControls {
     .width('100%').constraintSize({ minHeight: 52 }).padding({ left: 14, right: 12, top: 6, bottom: 6 })
     .onClick(action).accessibilityText(title + (detail.length > 0 ? '，' + detail : ''))
   }
+  private autoProtocol(): boolean { return this.protocol !== 'rdp'; }
+  private detail(): string {
+    if (!this.protocolOn) { return proContinuationProtocolLabel(this.protocol) + ' 接续已关闭 · 可在设置 > Pro 功能 > 同账号接续中开启'; }
+    if (this.status !== '') { return this.status; }
+    return this.auto && this.autoProtocol() ? '连接后自动开启 · 点按重新开启或授予协同权限' : '点按后 2 分钟内在同账号设备继续';
+  }
   @Builder private controls() {
     Column() {
-      this.menuRow('同账号接续', this.status !== '' ? this.status : (this.auto && this.protocol === 'ssh' ?
-        '连接后自动开启 · 点按重新开启或授予协同权限' : '点按后 2 分钟内在同账号设备继续') + ' · 支持直连 SSH、RDP、RustDesk、VNC',
-        true, this.onPrepare)
+      this.menuRow('同账号接续', this.detail(), true, this.onPrepare)
       if (this.status !== '') {
         if (this.canClose) {
           this.menuRow('结束本端会话', '目标设备已就绪', false,
             (): void => { ProContinuationService.getInstance().closeConfirmedSource(this.windowId); })
         }
-        if (!(this.auto && this.protocol === 'ssh')) {
+        if (!(this.auto && this.autoProtocol())) {
           this.menuRow('取消接续准备', '', false,
             (): void => { ProContinuationService.getInstance().cancelSource(this.windowId); })
         }
@@ -108,7 +114,7 @@ export struct ProIncomingContinuationCard {
   build() {
     if (this.state.incoming) {
       Column({ space: 8 }) {
-        Text(this.state.incomingProtocol === 'rdp' ? '继续另一台设备的 RDP 会话' : '继续另一台设备的 SSH 会话')
+        Text('继续另一台设备的 ' + proContinuationProtocolLabel(this.state.incomingProtocol) + ' 会话')
           .fontSize(16).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
         Text(this.state.incomingLabel).fontSize(14).fontColor(this.pal().text).maxLines(2)
         Text(this.state.incomingEndpoint).fontSize(12).fontColor(this.pal().text2).maxLines(3)

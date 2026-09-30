@@ -579,6 +579,29 @@ test('opt-in credential transfer rides a separate continuation parameter, never 
       .take(ce2.connection.hostReference, ce2.owner), null);
   } finally { prefs.value.credentialMode = 'manual'; }
 });
+test('a protocol switched off in settings neither continues from nor is accepted on this device', async () => {
+  const f = fixture(); const dir = 'entry/src/main/ets/services/pro/';
+  const prefsModule = f.load(dir + 'ProContinuationPreferences.ets');
+  const prefs = prefsModule.ProContinuationPreferences.getInstance();
+  assert.deepEqual([...prefs.settings().protocols], ['ssh', 'rdp', 'rustdesk', 'vnc'], 'all protocols on by default');
+  prefs.value.protocols = ['rdp', 'rustdesk', 'vnc'];
+  try {
+    assert.equal(await f.service.prepare(f.context, f.offer()), false);
+    assert.equal(f.service.lastPrepareFailure(), 'disabled');
+    const t = fixture(); const te = t.envelope();
+    t.load(dir + 'ProContinuationPreferences.ets').ProContinuationPreferences.getInstance().value.protocols = ['rdp'];
+    assert.equal(t.service.ingest(JSON.stringify(te)), true);
+    assert.equal(await t.service.accept(t.context), null);
+    assert.match(t.service.snapshot().incomingMessage, /关闭 SSH 接续/);
+    t.load(dir + 'ProContinuationPreferences.ets').ProContinuationPreferences.getInstance().value.protocols =
+      ['ssh', 'rdp', 'rustdesk', 'vnc'];
+    // Switched off after arming: the platform's continue callback is refused.
+    prefs.value.protocols = ['ssh', 'rdp', 'rustdesk', 'vnc'];
+    assert.equal(await f.service.prepare(f.context, f.offer()), true);
+    prefs.value.protocols = [];
+    assert.equal(await f.service.onContinue(9, {}), 1);
+  } finally { prefs.value.protocols = ['ssh', 'rdp', 'rustdesk', 'vnc']; }
+});
 test('RustDesk and VNC continue as V3 reconnect-only transfers of the same synced host', async () => {
   for (const kind of ['rustdesk', 'vnc']) {
     const f = fixture();

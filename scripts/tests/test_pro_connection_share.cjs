@@ -80,6 +80,10 @@ function fixture() {
         } }) } };
         if (id.endsWith('/AccountSessionCoordinator')) return { AccountSessionCoordinator: { getInstance: () => account } };
         if (id.endsWith('/HostSyncService')) return { HostSyncService: { getInstance: () => hostService } };
+        // Share covers SSH only; the RustDesk/VNC stores are never consulted here.
+        if (id.endsWith('/VncHostService')) return { VncHostService: { getInstance: () => ({ find: () => null, isReady: () => false }) } };
+        if (id.endsWith('/VncGatewayService')) return { VncGatewayService: { getInstance: () => ({ find: () => null }) } };
+        if (id.endsWith('/VncHostListProjectionPolicy')) return { vncHostRecordIdFromUiId: () => '', projectVncHost: () => null };
         if (id === './ProAppRuntime') return { ProAppRuntime: { getInstance: () => ({ runtime,
           context: () => ({ protocol: 'ssh', capabilities: [] }) }) } };
         if (id === './ProConnectionShareConfiguration') return { proConnectionShareBase: () => state.base };

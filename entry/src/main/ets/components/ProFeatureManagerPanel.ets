@@ -10,8 +10,9 @@ import { ProFeatureStatus, proFeatureScope } from '../services/pro/ProFeatureSta
 import { proFeatureCurrentStatus, proStateText } from '../services/pro/ProFeatureStatusReader';
 import { ProFeatureVisibility } from '../services/pro/ProFeatureVisibility';
 import { ProDebugMode, ProRuntimeSnapshot } from '../services/pro/ProRuntime';
-import { ProContinuationCredentialMode, ProContinuationPreferences,
-  ProContinuationSettings } from '../services/pro/ProContinuationPreferences';
+import { PRO_CONTINUATION_PROTOCOLS, ProContinuationCredentialMode, ProContinuationPreferences,
+  ProContinuationSettings, proContinuationProtocolLabel } from '../services/pro/ProContinuationPreferences';
+import { ProConnectionProtocol } from '../services/pro/ProConnectionEnvelope';
 import { PRO_CONTINUATION_FEATURE } from '../services/pro/ProContinuationService';
 
 const DEBUG_MODES: ProDebugMode[] = ['real', 'free', 'pro'];
@@ -95,9 +96,97 @@ export struct ProFeatureDetailPanel {
     if (status !== null && status.tone === 'experimental') { return '#B26A00'; }
     return this.pal().text3;
   }
-  private updateContinuation(auto: boolean, mode: ProContinuationCredentialMode): void {
+  private updateContinuation(next: ProContinuationSettings): void {
     if (this.contextValue === null) { return; }
-    ProContinuationPreferences.getInstance().update(this.contextValue, { auto, credentialMode: mode });
+    ProContinuationPreferences.getInstance().update(this.contextValue, next);
+  }
+  private withAuto(auto: boolean): ProContinuationSettings {
+    return { auto, credentialMode: this.continuation.credentialMode, protocols: this.continuation.protocols };
+  }
+  private withMode(mode: ProContinuationCredentialMode): ProContinuationSettings {
+    return { auto: this.continuation.auto, credentialMode: mode, protocols: this.continuation.protocols };
+  }
+  private withProtocol(protocol: ProConnectionProtocol, on: boolean): ProContinuationSettings {
+    const protocols = PRO_CONTINUATION_PROTOCOLS.filter((item: ProConnectionProtocol): boolean =>
+      item === protocol ? on : this.continuation.protocols.indexOf(item) >= 0);
+    return { auto: this.continuation.auto, credentialMode: this.continuation.credentialMode, protocols };
+  }
+  private protocolDetail(protocol: ProConnectionProtocol): string {
+    if (protocol === 'ssh') { return '连接后自动开启，恢复当前终端或文件目录'; }
+    if (protocol === 'rdp') { return '在会话菜单中手动准备，恢复显示器、缩放与视图位置'; }
+    return '连接后自动开启，在目标设备重新连接同一台主机';
+  }
+  /** #AARRGGBB tint of the accent for the selected option card. */
+  private accentTint(alpha: string): string {
+    return /^#[0-9A-Fa-f]{6}$/.test(this.accent) ? '#' + alpha + this.accent.substring(1) : this.accent;
+  }
+  @Builder private sectionTitle(title: string) {
+    Text(title).fontSize(13).fontColor(this.pal().text2).fontFamily(AppConfig.fontFamily).width('100%')
+      .padding({ left: 4 })
+  }
+  @Builder private credentialOption(mode: ProContinuationCredentialMode, icon: Resource, title: string, detail: string) {
+    Row({ space: 12 }) {
+      Stack() {
+        SymbolGlyph(icon).fontSize(18)
+          .fontColor([this.continuation.credentialMode === mode ? Color.White : this.accent])
+      }.width(36).height(36).borderRadius(18)
+      .backgroundColor(this.continuation.credentialMode === mode ? this.accent : this.accentTint('1F'))
+      Column({ space: 3 }) {
+        Text(title).fontSize(15).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
+          .fontFamily(AppConfig.fontFamily).width('100%')
+        Text(detail).fontSize(12).fontColor(this.pal().text3).fontFamily(AppConfig.fontFamily).lineHeight(17).width('100%')
+      }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+      SymbolGlyph(this.continuation.credentialMode === mode ? $r('sys.symbol.checkmark_circle_fill') : $r('sys.symbol.circle'))
+        .fontSize(20).fontColor([this.continuation.credentialMode === mode ? this.accent : this.pal().text3])
+    }
+    .width('100%').padding(14).borderRadius(16)
+    .backgroundColor(this.continuation.credentialMode === mode ? this.accentTint('14') : this.pal().card)
+    .border({ width: this.continuation.credentialMode === mode ? 1.5 : 1,
+      color: this.continuation.credentialMode === mode ? this.accent : this.pal().cardBorder })
+    .onClick((): void => { this.updateContinuation(this.withMode(mode)); })
+    .accessibilityText(title + '，' + detail)
+    .accessibilityChecked(this.continuation.credentialMode === mode)
+  }
+  @Builder private continuationOptions() {
+    Column() {
+      this.switchRow('Pro 下自动开启接续', '连上下方开启的协议后自动允许在同账号设备继续；关闭后需在会话菜单中手动准备',
+        this.continuation.auto, (on: boolean): void => { this.updateContinuation(this.withAuto(on)); })
+    }.width('100%').backgroundColor(this.pal().card).borderRadius(16)
+    Column({ space: 8 }) {
+      this.sectionTitle('允许接续的协议')
+      Column() {
+        ForEach(PRO_CONTINUATION_PROTOCOLS, (protocol: ProConnectionProtocol, index: number): void => {
+          if (index > 0) { Divider().strokeWidth(0.5).color(this.pal().cardBorder).margin({ left: 16, right: 16 }) }
+          this.switchRow(proContinuationProtocolLabel(protocol), this.protocolDetail(protocol),
+            this.continuation.protocols.indexOf(protocol) >= 0,
+            (on: boolean): void => { this.updateContinuation(this.withProtocol(protocol, on)); })
+        }, (protocol: ProConnectionProtocol): string => protocol + ':' +
+          (this.continuation.protocols.indexOf(protocol) >= 0 ? '1' : '0'))
+      }.width('100%').backgroundColor(this.pal().card).borderRadius(16)
+      Text('关闭的协议在本设备既不会发起接续，也不会接收来自其他设备的接续。')
+        .fontSize(12).fontColor(this.pal().text3).fontFamily(AppConfig.fontFamily).lineHeight(17).width('100%')
+        .padding({ left: 4, right: 4 })
+    }.width('100%')
+    Column({ space: 10 }) {
+      this.sectionTitle('接续时的密码与密钥')
+      this.credentialOption('manual', $r('sys.symbol.keyboard'), '在目标设备输入（默认）',
+        '目标设备使用自己保存的凭据；没有保存时弹窗让你输入密码或选择本机密钥')
+      this.credentialOption('transfer', $r('sys.symbol.key_fill'), '随接续传输',
+        '把本机保存的密码或私钥一次性交给目标设备，免去再次输入（目前用于 SSH）')
+      if (this.continuation.credentialMode === 'transfer') {
+        Row({ space: 10 }) {
+          SymbolGlyph($r('sys.symbol.exclamationmark_triangle_fill')).fontSize(16).fontColor(['#B26A00'])
+          Text('风险提示：接续时，本设备会把这台主机保存的密码或私钥经系统分布式通道加密发送给同账号的目标设备，只用于那一次连接、不写入目标设备，最长保留 2 分钟。若同账号的其他设备丢失或被他人使用，对方可能借接续获得这台主机的访问凭据。请只在自己信任的设备间开启；私钥口令未保存时仍需在目标设备输入。')
+            .fontSize(12).fontColor('#B26A00').fontFamily(AppConfig.fontFamily).lineHeight(18).layoutWeight(1)
+        }.width('100%').padding(12).borderRadius(12).backgroundColor('#1FB26A00').alignItems(VerticalAlign.Top)
+      } else {
+        Row({ space: 10 }) {
+          SymbolGlyph($r('sys.symbol.lock_shield_fill')).fontSize(16).fontColor([this.accent])
+          Text('密码和私钥不会离开本设备。')
+            .fontSize(12).fontColor(this.pal().text2).fontFamily(AppConfig.fontFamily).lineHeight(18).layoutWeight(1)
+        }.width('100%').padding(12).borderRadius(12).backgroundColor(this.accentTint('14'))
+      }
+    }.width('100%')
   }
   @Builder private switchRow(title: string, detail: string, isOn: boolean, onChange: (on: boolean) => void) {
     Row({ space: 12 }) {
@@ -110,28 +199,8 @@ export struct ProFeatureDetailPanel {
       Toggle({ type: ToggleType.Switch, isOn }).selectedColor(this.accent).accessibilityText(title).onChange(onChange)
     }.width('100%').padding(16)
   }
-  @Builder private continuationOptions() {
-    Column() {
-      this.switchRow('Pro 下自动开启接续', '连上直连 SSH、RustDesk 或 VNC 后自动允许在同账号设备继续；关闭后需在会话菜单中手动准备',
-        this.continuation.auto, (on: boolean): void => { this.updateContinuation(on, this.continuation.credentialMode); })
-      Divider().strokeWidth(0.5).color(this.pal().cardBorder).margin({ left: 16, right: 16 })
-      Column({ space: 10 }) {
-        Text('接续时的密码与密钥').fontSize(15).fontColor(this.pal().text).fontFamily(AppConfig.fontFamily).width('100%')
-        Row({ space: 8 }) {
-          AppSettingsChoiceButton({ label: '自己输入（默认）', isSelected: this.continuation.credentialMode === 'manual',
-            onSelect: (): void => { this.updateContinuation(this.continuation.auto, 'manual'); } }).layoutWeight(1)
-          AppSettingsChoiceButton({ label: '随接续传输', isSelected: this.continuation.credentialMode === 'transfer',
-            onSelect: (): void => { this.updateContinuation(this.continuation.auto, 'transfer'); } }).layoutWeight(1)
-        }.width('100%')
-        Text(this.continuation.credentialMode === 'manual' ?
-          '目标设备使用它自己保存的密码或密钥；没有保存时由你在目标设备输入。密码和私钥不会离开本设备。' :
-          '风险提示：你接续时，本设备会把这台主机保存的密码或私钥经系统分布式通道加密发送给同账号的目标设备，只用于那一次连接、不写入目标设备，最长保留 2 分钟。若同账号的其他设备丢失或被他人使用，对方可能借接续获得这台主机的访问凭据。请只在自己信任的设备间开启；私钥口令未保存时仍需在目标设备输入。')
-          .fontSize(12).fontColor(this.continuation.credentialMode === 'manual' ? this.pal().text3 : '#B26A00')
-          .fontFamily(AppConfig.fontFamily).lineHeight(18).width('100%')
-      }.width('100%').padding(16)
-    }.width('100%').backgroundColor(this.pal().card).borderRadius(16)
-  }
   build() {
+    Scroll() {
     Column({ space: 14 }) {
       if (this.feature(this.revision) !== undefined) {
         Row() {
@@ -163,5 +232,6 @@ export struct ProFeatureDetailPanel {
         Text('此功能已不在目录中').fontSize(14).fontColor(this.pal().text2).fontFamily(AppConfig.fontFamily)
       }
     }.width('100%').padding({ left: 20, right: 20, top: 20, bottom: 28 })
+    }.width('100%').scrollBar(BarState.Off).edgeEffect(EdgeEffect.Spring, { alwaysEnabled: false })
   }
 }

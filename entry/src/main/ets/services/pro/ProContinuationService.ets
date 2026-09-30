@@ -15,7 +15,7 @@ import { ProConnectionTransaction } from './ProConnectionTransaction';
 import { ProContinuationReceiptChannel } from './ProContinuationReceiptChannel';
 import { ProContinuationCredentialHandoff, ProContinuationSecret,
   validProContinuationSecret } from './ProContinuationCredentials';
-import { ProContinuationPreferences } from './ProContinuationPreferences';
+import { ProContinuationPreferences, proContinuationProtocolLabel } from './ProContinuationPreferences';
 
 export const PRO_CONTINUATION_PARAM: string = 'remotedesk.pro.connection.v1';
 /** Opt-in secret, a separate Want parameter so the whitelisted envelope never carries it. */
@@ -26,13 +26,14 @@ const SYNC_PERMISSION: Permissions = 'ohos.permission.DISTRIBUTED_DATASYNC';
 const DATA_OBJECT_CAPABILITY: string = 'SystemCapability.DistributedDataManager.DataObject.DistributedObject';
 /** Why the last preparation did not activate the system continuation entry. */
 export type ProContinuationPrepareFailure = '' | 'ability' | 'pro' | 'source' | 'host' | 'account' | 'permission' |
-  'changed' | 'mission';
+  'changed' | 'mission' | 'disabled';
 /** User-facing explanation for a preparation failure; never includes host or account details. */
 export function proContinuationFailureText(reason: ProContinuationPrepareFailure): string {
   if (reason === 'pro') { return '无法准备接续：需要有效的 Pro，且当前设备和协议受支持'; }
   if (reason === 'host') { return '无法准备接续：此主机不属于当前登录账号，或已被修改，请重新打开主机'; }
   if (reason === 'account') { return '无法准备接续：请先登录华为账号'; }
   if (reason === 'permission') { return '无法准备接续：需要允许"多设备协同"权限'; }
+  if (reason === 'disabled') { return '此协议的接续已在 Pro 功能 > 同账号接续中关闭'; }
   if (reason === 'mission') { return '无法准备接续：系统拒绝开启接续，请确认系统"接续"开关已打开'; }
   if (reason === 'source' || reason === 'changed') { return '无法准备接续：会话、页面或账号已变化，请重试'; }
   return '无法准备接续：当前窗口不支持接续';
@@ -204,6 +205,8 @@ export class ProContinuationService {
     if (['EntryAbility', 'RemoteSessionAbility'].indexOf(context.abilityInfo.name) < 0 ||
         !Number.isInteger(source.windowId) || source.windowId <= 0) { return this.rejectPrepare('ability'); }
     if (!this.allowed(protocol)) { return this.rejectPrepare('pro'); }
+    ProContinuationPreferences.getInstance().load(context);
+    if (!ProContinuationPreferences.getInstance().protocolEnabled(protocol)) { return this.rejectPrepare('disabled'); }
     if (!source.isCurrent()) { return this.rejectPrepare('source'); }
     if (!this.descriptionAllowed(source.describe(), context)) { return this.rejectPrepare('host'); }
     const scope = AccountSessionCoordinator.getInstance().currentScope();
@@ -246,7 +249,9 @@ export class ProContinuationService {
     if (source === null || context === null || source.windowId !== windowId || !this.sourceCurrent() ||
         this.sourceTransaction !== null) { return AbilityConstant.OnContinueResult.REJECT; }
     const description = source.describe();
-    if (description === null) { return AbilityConstant.OnContinueResult.REJECT; }
+    if (description === null || !ProContinuationPreferences.getInstance().protocolEnabled(description.protocol)) {
+      return AbilityConstant.OnContinueResult.REJECT;
+    }
     const generation = this.sourceGeneration;
     const now = Date.now();
     const envelope: ProConnectionEnvelope = { version: description.protocol === 'rdp' ? 2 :
@@ -325,6 +330,12 @@ export class ProContinuationService {
     if (!this.allowed(envelope.connection.protocol)) {
       hilog.warn(0x0001, 'ProContinuation', 'accept rejected reason=pro');
       this.targetMessage = '接续失败：本设备需要有效的 Pro'; this.publish(); return null;
+    }
+    ProContinuationPreferences.getInstance().load(context);
+    if (!ProContinuationPreferences.getInstance().protocolEnabled(envelope.connection.protocol)) {
+      hilog.warn(0x0001, 'ProContinuation', 'accept rejected reason=disabled');
+      this.targetMessage = '接续失败：本设备已在 Pro 功能 > 同账号接续中关闭 ' +
+        proContinuationProtocolLabel(envelope.connection.protocol) + ' 接续'; this.publish(); return null;
     }
     if (scope.kind !== 'huawei_account' || scope.ownerScopeId !== envelope.owner) {
       hilog.warn(0x0001, 'ProContinuation', 'accept rejected reason=account kind=%{public}s', scope.kind);
