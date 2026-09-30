@@ -51,8 +51,9 @@ function fixture() {
       // A target-side credential object sees what the source offered (the platform would sync it).
       if ('secret' in fields && fields.secret === '' && state.remoteSecret) fields = { ...fields, secret: state.remoteSecret };
       const object = { ...fields, calls: [], callback: null,
-        on(event, callback) { assert.equal(event, 'change'); this.callback = callback; },
+        on(event, callback) { assert.ok(event === 'change' || event === 'status'); this.callback = callback; },
         off(event, callback) { assert.equal(callback, this.callback); this.callback = null; },
+        async save(device) { this.savedTo = device; }, async revokeSave() { this.revoked = true; },
         async setSessionId(id) {
           this.calls.push(id);
           if (id && state.joinWait) await state.joinWait.promise;
@@ -438,6 +439,11 @@ test('repeated incoming envelopes are not queued or replayed after cancellation'
   const f = fixture(); const serialized = JSON.stringify(f.envelope());
   assert.equal(f.service.ingest(serialized), true); assert.equal(f.service.ingest(serialized), false);
   f.service.cancelIncoming(); assert.equal(f.service.ingest(serialized), false);
+  // A new transfer after a failed or still pending one replaces it instead of reporting busy.
+  const first = f.envelope(); first.transferId = '1'.repeat(32); first.channelId = 'rd_' + '2'.repeat(32);
+  const second = f.envelope(); second.transferId = '3'.repeat(32); second.channelId = 'rd_' + '4'.repeat(32);
+  assert.equal(f.service.ingest(JSON.stringify(first)), true); assert.equal(f.service.ingest(JSON.stringify(second)), true);
+  assert.equal(f.service.incomingId(), second.transferId);
 });
 test('target reconnect uses only matching existing same-account host and restores by transaction id', async () => {
   const f = fixture(); const e = f.envelope(); f.service.ingest(JSON.stringify(e));
@@ -534,23 +540,22 @@ test('opt-in credential transfer uses a derived session, never the envelope, and
   const creds = f.load(dir + 'ProContinuationCredentials.ets');
   const secret = { kind: 'key', password: '', privateKeyPem: '-----BEGIN OPENSSH PRIVATE KEY-----\nabc', passphrase: 'pp' };
   const offer = f.offer(); offer.secret = () => secret;
-  await f.service.prepare(f.context, offer); let params = {};
+  await f.service.prepare(f.context, offer); let params = { targetDevice: 'pad-network-id' };
   assert.equal(await f.service.onContinue(9, params), 0);
   assert.equal(f.state.objects.some(o => 'secret' in o), false, 'manual mode offers nothing');
   f.service.cancelSource(); prefs.value.credentialMode = 'transfer';
   try {
-    await f.service.prepare(f.context, offer); params = {};
+    await f.service.prepare(f.context, offer); params = { targetDevice: 'pad-network-id' };
     assert.equal(await f.service.onContinue(9, params), 0);
     const e = JSON.parse(params[f.key]);
     assert.equal(params[f.key].includes('PRIVATE KEY'), false); assert.equal(params[f.key].includes('pp'), false);
     const offered = f.state.objects.find(o => 'secret' in o);
     const session = creds.proContinuationCredentialSession(e.channelId);
     assert.equal(offered.calls.at(-1), session); assert.notEqual(session, e.channelId);
-    assert.equal(offered.secret, '', 'nothing is on the session before the target asks');
-    offered.request = 'rd_' + '0'.repeat(32); offered.emit(session); assert.equal(offered.secret, '', 'a foreign request is ignored');
-    offered.request = session; offered.emit(session);
+    assert.equal(offered.savedTo, 'pad-network-id', 'saved only for the continuation target');
     assert.equal(offered.secret, JSON.stringify(secret));
     f.service.cancelSource(); assert.equal(offered.secret, '', 'cancelling wipes the offered secret');
+    assert.equal(offered.revoked, true, 'cancelling revokes the saved copy');
     // Target: receives the synced value, deposits it for this host only, one use.
     const t = fixture(); t.state.remoteSecret = JSON.stringify(secret); const te = t.envelope();
     t.service.ingest(JSON.stringify(te)); assert.ok(await t.service.accept(t.context));

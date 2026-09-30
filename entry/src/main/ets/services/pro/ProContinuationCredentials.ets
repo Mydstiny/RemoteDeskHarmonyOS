@@ -48,15 +48,18 @@ export function proContinuationCredentialSession(channelId: string): string {
   return 'rd_' + hex.substring(0, 32);
 }
 
-// Handshake: both sides join first; the target writes `request`, the source then writes `secret`,
-// the target marks `taken`. Writes after both joined synchronize reliably (unlike a value written
-// before the peer joined), and the secret exists on the session only between request and taken.
-interface CredentialFields { secret: string; request: string; taken: string; }
-interface CredentialObject extends distributedDataObject.DataObject { secret: string; request: string; taken: string; }
+// Official continuation data path: live object sync between the two devices is not available
+// during continuation (the target sees no collaboration peer), so the source saves the object for
+// the continuation target inside onContinue and the target restores it when it joins the session.
+// The source revokes the save when the transfer expires or is cancelled; the target reads once,
+// wipes its copy and leaves the session.
+interface CredentialFields { secret: string; }
+interface CredentialObject extends distributedDataObject.DataObject { secret: string; }
 
 export class ProContinuationCredentialChannel {
   private object: CredentialObject | null = null;
-  private change: ((session: string, fields: string[]) => void) | null = null;
+  private status: ((session: string, networkId: string, status: string) => void) | null = null;
+  private saved: boolean = false;
   private timer: number = -1;
   private generation: number = 0;
 
@@ -65,41 +68,37 @@ export class ProContinuationCredentialChannel {
       canIUse('SystemCapability.DistributedDataManager.DataObject.DistributedObject');
   }
 
-  /** Source: keeps the secret available until the target takes it or the transfer expires. */
-  async offer(context: common.Context, session: string, secret: ProContinuationSecret, expiresAt: number): Promise<boolean> {
+  /** Source: saves the secret for the continuation target device until the transfer expires. */
+  async offer(context: common.Context, session: string, secret: ProContinuationSecret, expiresAt: number,
+    targetDevice: string): Promise<boolean> {
     this.close();
-    if (!this.valid(session, expiresAt) || validProContinuationSecret(secret) === null) { return false; }
+    if (!this.valid(session, expiresAt) || validProContinuationSecret(secret) === null ||
+        targetDevice.length === 0 || targetDevice.length > 256) { return false; }
     const generation = this.generation;
-    const payload: string = JSON.stringify(secret);
-    const fields: CredentialFields = { secret: '', request: '', taken: '' };
+    const fields: CredentialFields = { secret: JSON.stringify(secret) };
     let object: CredentialObject;
     try { object = distributedDataObject.create(context, fields) as CredentialObject; } catch (_error) { return false; }
-    let sent = false;
-    const change = (sessionId: string, _fields: string[]): void => {
-      if (generation !== this.generation || sessionId !== session || Date.now() >= expiresAt) { return; }
-      try {
-        if (object.taken === session) { this.close(); return; }
-        if (!sent && object.request === session) { sent = true; object.secret = payload; }
-      } catch (_error) { this.close(); }
-    };
-    this.object = object; this.change = change;
+    this.object = object;
     try {
-      object.on('change', change);
       this.timer = setTimeout((): void => { if (generation === this.generation) { this.close(); } }, expiresAt - Date.now());
       await object.setSessionId(session);
-      return generation === this.generation;
+      if (generation !== this.generation) { return false; }
+      await object.save(targetDevice);
+      if (generation !== this.generation) { return false; }
+      this.saved = true;
+      return true;
     } catch (_error) {
       if (generation === this.generation) { this.close(); }
       return false;
     }
   }
 
-  /** Target: takes the offered secret once, waiting briefly for the object to synchronize. */
+  /** Target: restores the saved secret once, waiting briefly for the restore to complete. */
   async receive(context: common.Context, session: string, expiresAt: number, waitMs: number): Promise<ProContinuationSecret | null> {
     this.close();
     if (!this.valid(session, expiresAt)) { return null; }
     const generation = this.generation;
-    const fields: CredentialFields = { secret: '', request: '', taken: '' };
+    const fields: CredentialFields = { secret: '' };
     let object: CredentialObject;
     try { object = distributedDataObject.create(context, fields) as CredentialObject; } catch (_error) { return null; }
     this.object = object;
@@ -108,10 +107,7 @@ export class ProContinuationCredentialChannel {
       const finish = (value: ProContinuationSecret | null): void => {
         if (settled) { return; }
         settled = true;
-        if (value !== null) {
-          try { object.taken = session; } catch (_error) { /* the source still clears on expiry */ }
-          setTimeout((): void => { if (generation === this.generation) { this.close(); } }, 1500);
-        } else if (generation === this.generation) { this.close(); }
+        if (generation === this.generation) { this.close(); }
         resolve(value);
       };
       const read = (): void => {
@@ -122,15 +118,15 @@ export class ProContinuationCredentialChannel {
           }
         } catch (_error) { finish(null); }
       };
-      const change = (sessionId: string, _fields: string[]): void => { if (sessionId === session) { read(); } };
-      this.change = change;
-      try { object.on('change', change); } catch (_error) { finish(null); return; }
-      this.timer = setTimeout((): void => { finish(null); }, Math.max(0, Math.min(waitMs, expiresAt - Date.now())));
+      const status = (sessionId: string, _networkId: string, value: string): void => {
+        if (sessionId === session && value === 'restored') { read(); }
+      };
+      this.status = status;
+      try { object.on('status', status); } catch (_error) { finish(null); return; }
+      this.timer = setTimeout((): void => { read(); finish(null); }, Math.max(0, Math.min(waitMs, expiresAt - Date.now())));
       object.setSessionId(session).then((): void => {
         read();
-        if (settled) { return; }
-        try { object.request = session; } catch (_error) { finish(null); return; }
-        if (waitMs <= 0) { read(); finish(null); }
+        if (waitMs <= 0) { finish(null); }
       }).catch((): void => { finish(null); });
     });
   }
@@ -138,11 +134,12 @@ export class ProContinuationCredentialChannel {
   close(): void {
     this.generation++;
     if (this.timer !== -1) { clearTimeout(this.timer); this.timer = -1; }
-    const object = this.object; const change = this.change;
-    this.object = null; this.change = null;
+    const object = this.object; const status = this.status; const saved = this.saved;
+    this.object = null; this.status = null; this.saved = false;
     if (object === null) { return; }
     try { object.secret = ''; } catch (_error) { /* best effort wipe before leaving the session */ }
-    try { if (change !== null) { object.off('change', change); } } catch (_error) {}
+    if (saved) { try { void object.revokeSave().catch((): void => {}); } catch (_error) {} }
+    try { if (status !== null) { object.off('status', status); } } catch (_error) {}
     try { void object.setSessionId('').catch((): void => {}); } catch (_error) {}
   }
 }

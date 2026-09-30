@@ -280,8 +280,9 @@ export class ProContinuationService {
     if (ProContinuationPreferences.getInstance().settings().credentialMode === 'transfer' && source.secret !== undefined) {
       const secret = source.secret();
       if (secret !== null) {
+        const target = parameters['targetDevice'];
         const offered = await this.sourceCredentials.offer(context, proContinuationCredentialSession(envelope.channelId),
-          secret, envelope.expiresAt);
+          secret, envelope.expiresAt, typeof target === 'string' ? target : '');
         hilog.info(0x0001, 'ProContinuation', 'credential offered=%{public}s kind=%{public}s', offered ? 'true' : 'false',
           secret.kind);
         if (generation !== this.sourceGeneration || !this.sourceCurrent()) {
@@ -304,7 +305,9 @@ export class ProContinuationService {
     const now = Date.now();
     this.seen.forEach((expires: number, id: string): void => { if (expires <= now) { this.seen.delete(id); } });
     if (envelope === null || envelope.purpose !== 'continuation' ||
-        this.target !== null || this.seen.has(envelope.transferId) || this.seen.size >= 64) { return false; }
+        this.seen.has(envelope.transferId) || this.seen.size >= 64) { return false; }
+    // A newer continuation from the user replaces an older one still pending or failed.
+    if (this.target !== null) { this.cancelIncoming(); }
     this.seen.set(envelope.transferId, envelope.expiresAt);
     this.target = new ProConnectionTransaction(envelope);
     this.targetMessage = envelope.connection.protocol === 'rdp'
