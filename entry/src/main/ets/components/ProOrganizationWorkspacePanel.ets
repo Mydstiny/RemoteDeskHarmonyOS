@@ -4,6 +4,7 @@ import { HostGroupDefinition } from '../services/pro/org/HostOrganizationPolicy'
 import { HostOrganizationStore } from '../services/pro/org/HostOrganizationStore';
 import { Workspace } from '../services/pro/workspace/WorkspacePolicy';
 import { WorkspaceStore } from '../services/pro/workspace/WorkspaceStore';
+import { ProWorkspaceEditorPanel } from './ProWorkspaceEditorPanel';
 import { buildDark, buildLight, Palette } from '../common/Theme';
 
 /** Compact home surface for the two new Pro capabilities; editors build on the same stores. */
@@ -16,6 +17,7 @@ export struct ProOrganizationWorkspacePanel {
   @State revision: number = 0;
   @State groups: HostGroupDefinition[] = [];
   @State workspaces: Workspace[] = [];
+  @State editingWorkspace: Workspace | null = null;
   private stopGroups: (() => void) | null = null;
   private stopWorkspaces: (() => void) | null = null;
 
@@ -39,6 +41,7 @@ export struct ProOrganizationWorkspacePanel {
     const now: number = Date.now();
     WorkspaceStore.getInstance().save({ schemaVersion: 1, id: 'workspace-' + now.toString(36), name: '新工作区', color: this.accentColor, icon: 'desktop', order: this.workspaces.length, entries: [], layout: 'split', updatedAt: now });
   }
+  private editWorkspace(workspace: Workspace): void { this.editingWorkspace = workspace; }
   build() {
     Column({ space: 10 }) {
       if (ProEntries.visible('pro.hostManagement')) {
@@ -66,12 +69,20 @@ export struct ProOrganizationWorkspacePanel {
             Column({ space: 4 }) {
               Text(workspace.name).fontSize(13).fontColor(this.pal().text).maxLines(1)
               Text(workspace.entries.length.toString() + ' 个会话 · ' + (workspace.layout || '自定义')).fontSize(11).fontColor(this.pal().text3)
-              Button('打开').fontSize(11).height(28).width('100%').borderRadius(14).backgroundColor(this.accentColor).fontColor(Color.White)
-                .onClick((): void => { this.onOpen(workspace); })
+              Row({ space: 6 }) {
+                Button('编辑').fontSize(11).height(28).layoutWeight(1).borderRadius(14).backgroundColor(this.pal().surface).fontColor(this.accentColor)
+                  .onClick((): void => { this.editWorkspace(workspace); })
+                Button('打开').fontSize(11).height(28).layoutWeight(1).borderRadius(14).backgroundColor(this.accentColor).fontColor(Color.White)
+                  .onClick((): void => { this.onOpen(workspace); })
+              }.width('100%')
             }.width(142).padding(10).borderRadius(16).backgroundColor(this.pal().card)
           }, (workspace: Workspace): string => workspace.id)
           if (this.workspaces.length === 0) { Text('保存常用会话组合，支持布局恢复').fontSize(12).fontColor(this.pal().text3) }
         }.width('100%')
+      }
+      if (this.editingWorkspace !== null) {
+        ProWorkspaceEditorPanel({ workspace: this.editingWorkspace as Workspace, hosts: this.hosts,
+          onClose: (): void => { this.editingWorkspace = null; } })
       }
     }.width('100%').padding({ left: 16, right: 16, top: 10, bottom: 6 }).borderRadius(20).backgroundColor(this.pal().card)
   }

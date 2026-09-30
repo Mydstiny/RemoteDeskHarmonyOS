@@ -4,7 +4,7 @@ Updated: 2026-09-30 Asia/Shanghai
 
 ## Now
 
-- Pro 工作区与高级主机管理：W0/H1/S1/S2 基础实现已提交准备；继续 H2 分组胶囊/H3 批量操作/H4 导入导出/S3 编辑器/S4 当前会话捕获，并完成设备验收。
+- Pro 工作区与高级主机管理：W0/H1/S1/S2/S3 基础实现已提交准备；继续 H2 分组胶囊/H3 批量操作/H4 导入导出/S3 编辑器/S4 当前会话捕获，并完成设备验收。
 
 - RDP domain connection repair: guarded “跳过连接前证书预检” switch is committed in `f06bcf620`; `b17d8d90` adds a one-time direct-attempt hint when target certificate preflight fails; validate the direct hostname path and live certificate behavior on a real endpoint.
 
