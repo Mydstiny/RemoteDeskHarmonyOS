@@ -3,22 +3,22 @@
   "task": "pro-purchase-foundation",
   "branch": "codex/pro-purchase-foundation",
   "base": "8edc187868e94ed41634e8a6c4c4c072e3a48679",
-  "head": "00644b216",
-  "phase": "Full acceptance: steps 1-3 PASS; step 4 external (no PC); step 5 M5 RustDesk/VNC continuation code PASS; RDP file-transfer toolbar and control-center selection increments device acceptance pending",
+  "head": "6e0c657c",
+  "phase": "Full acceptance active; RDP file-transfer receive/status increment 96366fa6 + 6e0c657c independently reviewed PASS; device/cross-device acceptance pending",
   "status": "in-progress",
   "latestIncrement": {
     "date": "2026-09-30",
-    "commit": "9ff7eecb",
-    "parentCommit": "7cc752b8",
+    "commit": "6e0c657c",
+    "parentCommit": "96366fa6",
     "scope": [
-      "entry/src/main/ets/components/rdp/RdpSessionToolbar.ets",
       "entry/src/main/ets/pages/RemoteDesktop.ets",
-      "entry/src/main/ets/components/FileTransferTaskList.ets"
+      "entry/src/main/ets/services/RemoteSessionCapabilityPolicy.ets",
+      "entry/src/test/RemoteSessionCapabilityPolicy.test.ets"
     ],
     "status": "implemented-independent-review-pass-device-acceptance-pending",
     "reviewTaskId": "/root/review_rdp_file_toolbar",
     "reviewResult": "PASS; no remaining findings",
-    "validation": "Focused transfer tests 37+5+6 PASS; default@OhosTestCompileArkTS 22.753 s PASS; signed assembleHap 26.875 s PASS; git diff --check PASS"
+    "validation": "Focused transfer tests 37 + RDP direct-touch 18 PASS; default@OhosTestCompileArkTS 14.278 s PASS; signed assembleHap 19.698 s PASS; git diff --check PASS; native lightweight link blocked by omitted pre-existing RDP transfer symbols"
   },
   "next": "Acceptance step 4: M4 knock transfer phone -> HarmonyOS PC SFTP; then real M5 RustDesk/VNC cross-device acceptance and M7 remainder.",
   "blockers": [
