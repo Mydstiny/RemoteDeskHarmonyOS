@@ -4,7 +4,7 @@ Updated: 2026-09-30 Asia/Shanghai
 
 ## Now
 
-- RDP domain connection repair: guarded “跳过连接前证书预检” switch is committed in `f06bcf620`; validate the direct hostname path and live certificate behavior on a real endpoint.
+- RDP domain connection repair: guarded “跳过连接前证书预检” switch is committed in `f06bcf620`; `b17d8d90` adds a one-time direct-attempt hint when target certificate preflight fails; validate the direct hostname path and live certificate behavior on a real endpoint.
 
 - Full acceptance step 3 (READY): M3 preset app icon + Pro feature visibility/personalization panel per [checklist](plans/2026-09-27-full-acceptance-checklist.md); then M4 knock transfer, M5 share/continuation, M7 remainder. Remote AI A1-A13 deferred by user. Step-2 fix review PASS (a545277b6..01713b8e8).
 
