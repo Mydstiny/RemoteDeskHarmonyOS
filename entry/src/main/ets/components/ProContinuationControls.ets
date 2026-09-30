@@ -85,18 +85,12 @@ export struct ProIncomingContinuationCard {
   private stop: (() => void) | null = null;
   private live: boolean = false;
   private pal(): Palette { return this.theme === 'light' ? buildLight(this.accent) : buildDark(this.accent); }
-  // Tapping the system continuation entry is the user's consent, so each incoming transfer is
-  // accepted once automatically; a failure keeps the card with its reason and a retry.
-  private autoAcceptedId: string = '';
+  // HostListPage accepts each incoming transfer once automatically; this card shows the progress,
+  // the failure reason and a retry.
   aboutToAppear(): void {
     this.live = true;
     this.stop = ProContinuationService.getInstance().subscribe((): void => {
       this.state = ProContinuationService.getInstance().snapshot();
-      const id = ProContinuationService.getInstance().incomingId();
-      if (this.state.incomingCanAccept && id !== '' && id !== this.autoAcceptedId && !this.busy) {
-        this.autoAcceptedId = id;
-        setTimeout((): void => { if (this.live) { void this.accept(); } }, 0);
-      }
     });
   }
   aboutToDisappear(): void { this.live = false; this.stop?.(); this.stop = null; }

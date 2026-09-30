@@ -4,6 +4,7 @@ import { AccountScopeToken } from '../../AccountScopePolicy';
 import { ExtensionLoader, SshNativeConnectPromise } from '../../ExtensionLoader';
 import { HostSyncService } from '../../HostSyncService';
 import { KeyVaultService } from '../../KeyVaultService';
+import { ProContinuationCredentialHandoff, ProContinuationSecret } from '../../pro/ProContinuationCredentials';
 import { RemoteHost } from '../../../model/RemoteHost';
 import { SshProxyProfileStore } from '../../SshProxyProfileStore';
 import { resolveSshProxyRuntimePlan, SshProxyRuntimePlan } from '../../SshProxyRuntimePolicy';
@@ -164,10 +165,19 @@ export class SshConnectionPreflight {
       if (host.sshKeyId.length > 0) {
         key = KeyVaultService.getInstance().getSshKey(host.sshKeyId)?.privateKey || '';
       }
-      const useKey: boolean = host.sshUseKey;
+      let useKey: boolean = host.sshUseKey;
+      let storedPassphrase: string = host.sshKeyPassphrase;
+      let password: string = host.password;
+      // A continuation the source user chose to hand credentials to: this connection only, never stored.
+      const handed: ProContinuationSecret | null = ProContinuationCredentialHandoff.getInstance().take(host.id, host.userId);
+      if (handed !== null && handed.kind === 'key') {
+        useKey = true; key = handed.privateKeyPem; storedPassphrase = handed.passphrase; password = '';
+      } else if (handed !== null) {
+        useKey = false; password = handed.password;
+      }
       if (useKey && key.length === 0) { throw new Error('SSH 私钥不存在或不可用'); }
-      const passphrase: string = useKey ? await this.keyPassphrase(key, host.sshKeyPassphrase, '目标主机') : '';
-      const password: string = useKey ? '' : host.password;
+      const passphrase: string = useKey ? await this.keyPassphrase(key, storedPassphrase, '目标主机') : '';
+      if (useKey) { password = ''; }
       let proxyPassword: string = '';
       if (plan.proxyAuthRequired && (plan.route.type === 'http_connect' || plan.route.type === 'socks5')) {
         proxyPassword = await this.secret('代理认证', plan.proxyUsername + ' 的代理密码');

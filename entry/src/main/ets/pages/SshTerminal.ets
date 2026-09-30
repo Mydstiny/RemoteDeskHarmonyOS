@@ -6,6 +6,7 @@ import { ProConnectionShareReceiver } from '../services/pro/ProConnectionShareRe
 import { proConnectionShareBase } from '../services/pro/ProConnectionShareConfiguration';
 import { ProContinuationService, proContinuationFailureText } from '../services/pro/ProContinuationService';
 import { ProContinuationPreferences } from '../services/pro/ProContinuationPreferences';
+import { ProContinuationSecret, validProContinuationSecret } from '../services/pro/ProContinuationCredentials';
 import { ProEntries } from '../services/pro/ProEntries';
 import { ProConnectionDescription } from '../services/pro/ProConnectionEnvelope';
 import { describeProSshConnection } from '../services/pro/ProConnectionHostAdapter';
@@ -8776,6 +8777,20 @@ struct SshTerminal {
       getContext(this) as common.UIAbilityContext);
   }
 
+  // Only this host's stored credential; read when the other device continues and the user opted in.
+  private proContinuationSecret(hostId: string): ProContinuationSecret | null {
+    const host = HostSyncService.getInstance().getHost(hostId);
+    if (host === undefined || host.id !== this.hostId) { return null; }
+    if (host.sshUseKey) {
+      const key: string = host.sshKeyId.length > 0 ?
+        (KeyVaultService.getInstance().getSshKey(host.sshKeyId)?.privateKey || '') : host.sshKeyData;
+      return key.length > 0 ? validProContinuationSecret({ kind: 'key', password: '', privateKeyPem: key,
+        passphrase: host.sshKeyPassphrase } as ProContinuationSecret) : null;
+    }
+    return host.password.length > 0 ? validProContinuationSecret({ kind: 'password', password: host.password,
+      privateKeyPem: '', passphrase: '' } as ProContinuationSecret) : null;
+  }
+
   private async armProContinuation(persistent: boolean, requestPermission: boolean): Promise<boolean> {
     const host = HostSyncService.getInstance().getHost(this.hostId);
     if (host === undefined || !this.connected || this.terminalClosing) { return false; }
@@ -8792,7 +8807,8 @@ struct SshTerminal {
         windowId: this.proContinuationWindowId,
         describe: (): ProConnectionDescription | null => this.hostId === hostId ? this.proContinuationDescribe() : null,
         isCurrent: (): boolean => this.proContinuationSessionCurrent(page, binding, session, sessionGeneration, hostId),
-        close: (): void => { this.closeSessionAndBack(); }
+        close: (): void => { this.closeSessionAndBack(); },
+        secret: (): ProContinuationSecret | null => this.proContinuationSecret(hostId)
       }, persistent, requestPermission);
       this.proContinuationPersistent = prepared && persistent;
       return prepared;

@@ -13,6 +13,9 @@ import { matchesProConnectionHost } from './ProConnectionHostAdapter';
 import { ProRdpConnectionIdentity, sameProRdpConnectionIdentity } from './ProRdpConnectionIdentity';
 import { ProConnectionTransaction } from './ProConnectionTransaction';
 import { ProContinuationReceiptChannel } from './ProContinuationReceiptChannel';
+import { ProContinuationCredentialChannel, ProContinuationCredentialHandoff, ProContinuationSecret,
+  proContinuationCredentialSession } from './ProContinuationCredentials';
+import { ProContinuationPreferences } from './ProContinuationPreferences';
 
 export const PRO_CONTINUATION_PARAM: string = 'remotedesk.pro.connection.v1';
 export const PRO_CONTINUATION_LIBRARY_PARAM: string = 'remotedesk.pro.connection.library';
@@ -37,6 +40,8 @@ export interface ProContinuationSource {
   describe: () => ProConnectionDescription | null;
   isCurrent: () => boolean;
   close: () => void;
+  /** Stored secret for this session; offered only when the user enabled credential transfer. */
+  secret?: () => ProContinuationSecret | null;
 }
 export interface ProContinuationSnapshot {
   incoming: boolean;
@@ -72,6 +77,7 @@ export class ProContinuationService {
   private sourceAccountGeneration: number = 0;
   private sourceTransaction: ProConnectionTransaction | null = null;
   private sourceChannel: ProContinuationReceiptChannel = new ProContinuationReceiptChannel();
+  private sourceCredentials: ProContinuationCredentialChannel = new ProContinuationCredentialChannel();
   private sourceGeneration: number = 0;
   private sourceTimer: number = -1;
   private sourceMessage: string = '';
@@ -80,6 +86,9 @@ export class ProContinuationService {
   private target: ProConnectionTransaction | null = null;
   private targetContext: common.UIAbilityContext | null = null;
   private targetChannel: ProContinuationReceiptChannel = new ProContinuationReceiptChannel();
+  private targetCredentials: ProContinuationCredentialChannel = new ProContinuationCredentialChannel();
+  /** How long the target waits for an opted-in secret to synchronize. */
+  credentialWaitMs: number = 2000;
   private targetAccountGeneration: number = 0;
   private targetGeneration: number = 0;
   private targetTimer: number = -1;
@@ -267,6 +276,21 @@ export class ProContinuationService {
       if (generation === this.sourceGeneration) { this.cancelSource(); }
       return AbilityConstant.OnContinueResult.REJECT;
     }
+    // Opt-in only: the secret never enters the envelope; it waits on its own derived session.
+    if (ProContinuationPreferences.getInstance().settings().credentialMode === 'transfer' && source.secret !== undefined) {
+      const secret = source.secret();
+      if (secret !== null) {
+        const offered = await this.sourceCredentials.offer(context, proContinuationCredentialSession(envelope.channelId),
+          secret, envelope.expiresAt);
+        hilog.info(0x0001, 'ProContinuation', 'credential offered=%{public}s kind=%{public}s', offered ? 'true' : 'false',
+          secret.kind);
+        if (generation !== this.sourceGeneration || !this.sourceCurrent()) {
+          this.sourceCredentials.close();
+          if (generation === this.sourceGeneration) { this.cancelSource(); }
+          return AbilityConstant.OnContinueResult.REJECT;
+        }
+      }
+    }
     parameters[PRO_CONTINUATION_PARAM] = serialized;
     parameters[wantConstant.Params.SUPPORT_CONTINUE_PAGE_STACK_KEY] = false;
     parameters[wantConstant.Params.SUPPORT_CONTINUE_SOURCE_EXIT_KEY] = false;
@@ -275,6 +299,8 @@ export class ProContinuationService {
   }
   ingest(serialized: string): boolean {
     const envelope = parseProConnectionEnvelope(serialized);
+    hilog.info(0x0001, 'ProContinuation', 'ingest valid=%{public}s busy=%{public}s', envelope !== null ? 'true' : 'false',
+      this.target !== null ? 'true' : 'false');
     const now = Date.now();
     this.seen.forEach((expires: number, id: string): void => { if (expires <= now) { this.seen.delete(id); } });
     if (envelope === null || envelope.purpose !== 'continuation' ||
@@ -291,16 +317,31 @@ export class ProContinuationService {
     const target = this.target; const envelope = target?.envelope();
     if (target === null || envelope === undefined || envelope === null || target.state() !== 'offered') { return null; }
     const scope = AccountSessionCoordinator.getInstance().currentScope();
-    if (!this.allowed(envelope.connection.protocol) || scope.kind !== 'huawei_account' || scope.ownerScopeId !== envelope.owner) {
-      this.targetMessage = '请使用同一华为账号，并在本设备独立激活可用的 Pro 接续能力'; this.publish(); return null;
+    if (!this.allowed(envelope.connection.protocol)) {
+      hilog.warn(0x0001, 'ProContinuation', 'accept rejected reason=pro');
+      this.targetMessage = '接续失败：本设备需要有效的 Pro'; this.publish(); return null;
+    }
+    if (scope.kind !== 'huawei_account' || scope.ownerScopeId !== envelope.owner) {
+      hilog.warn(0x0001, 'ProContinuation', 'accept rejected reason=account kind=%{public}s', scope.kind);
+      this.targetMessage = '接续失败：请在两台设备登录同一华为账号'; this.publish(); return null;
     }
     const host = HostSyncService.getInstance().getHost(envelope.connection.hostReference);
     if (!HostSyncService.getInstance().isReady() || host === undefined || host.userId !== scope.ownerScopeId ||
         !matchesProConnectionHost(envelope.connection, host, context)) {
-      this.targetMessage = '本设备还没有对应的同账号主机配置，或端点已变化；请先同步并核对'; this.publish(); return null;
+      const reason = !HostSyncService.getInstance().isReady() ? 'store' : host === undefined ? 'missing' :
+        host.userId !== scope.ownerScopeId ? 'owner' : 'endpoint';
+      hilog.warn(0x0001, 'ProContinuation', 'accept rejected reason=host-%{public}s', reason);
+      this.targetMessage = reason === 'missing' ? '接续失败：本设备没有这台主机，请先开启云同步或在本设备添加' :
+        reason === 'endpoint' ? '接续失败：本设备上这台主机的地址、端口或用户名与源设备不一致' :
+        '接续失败：主机数据尚未就绪或不属于当前账号，请稍后重试'; this.publish(); return null;
     }
     const generation = this.targetGeneration;
-    if (!await this.permission(context) || generation !== this.targetGeneration || this.target !== target ||
+    if (!await this.permission(context)) {
+      hilog.warn(0x0001, 'ProContinuation', 'accept rejected reason=permission');
+      if (generation === this.targetGeneration) { this.targetMessage = '接续失败：需要允许"多设备协同"权限'; this.publish(); }
+      return null;
+    }
+    if (generation !== this.targetGeneration || this.target !== target ||
         AccountSessionCoordinator.getInstance().currentScope().generation !== scope.generation ||
         !this.descriptionAllowed(envelope.connection, context) ||
         !target.begin(scope.ownerScopeId, this.allowed(envelope.connection.protocol), true)) { return null; }
@@ -315,8 +356,19 @@ export class ProContinuationService {
     if (!joined || generation !== this.targetGeneration || this.target !== target ||
         AccountSessionCoordinator.getInstance().currentScope().generation !== scope.generation ||
         !this.allowed(envelope.connection.protocol)) {
+      hilog.warn(0x0001, 'ProContinuation', 'accept rejected reason=channel joined=%{public}s', joined ? 'true' : 'false');
       if (generation === this.targetGeneration) { this.cancelIncoming(); } return null;
     }
+    if (envelope.connection.protocol === 'ssh') {
+      const secret = await this.targetCredentials.receive(context, proContinuationCredentialSession(envelope.channelId),
+        envelope.expiresAt, this.credentialWaitMs);
+      if (generation !== this.targetGeneration || this.target !== target) { return null; }
+      if (secret !== null) {
+        ProContinuationCredentialHandoff.getInstance().deposit(envelope.connection.hostReference, envelope.owner, secret);
+      }
+      hilog.info(0x0001, 'ProContinuation', 'accept credential received=%{public}s', secret !== null ? 'true' : 'false');
+    }
+    hilog.info(0x0001, 'ProContinuation', 'accept connecting protocol=%{public}s', envelope.connection.protocol);
     const currentHost = HostSyncService.getInstance().getHost(envelope.connection.hostReference);
     if (currentHost === undefined || currentHost.userId !== envelope.owner ||
         this.restoreView(envelope.transferId, currentHost) === null) { this.cancelIncoming(); return null; }
@@ -354,6 +406,7 @@ export class ProContinuationService {
   cancelIncoming(expectedId: string = ''): void {
     if (expectedId !== '' && this.incomingId() !== expectedId) { return; }
     this.targetGeneration++; this.target?.cancel(); this.target = null; this.targetChannel.close();
+    this.targetCredentials.close();
     this.targetContext = null;
     if (this.targetTimer !== -1) { clearTimeout(this.targetTimer); this.targetTimer = -1; }
     this.targetMessage = ''; this.publish();
@@ -361,6 +414,7 @@ export class ProContinuationService {
   cancelSource(windowId: number = 0): void {
     if (windowId > 0 && this.source?.windowId !== windowId) { return; }
     this.sourceGeneration++; this.sourceTransaction?.cancel(); this.sourceTransaction = null; this.sourceChannel.close();
+    this.sourceCredentials.close();
     if (this.sourceTimer !== -1) { clearTimeout(this.sourceTimer); this.sourceTimer = -1; }
     const context = this.sourceContext;
     this.source = null; this.sourceContext = null; this.sourceMessage = ''; this.sourceDeadline = 0;

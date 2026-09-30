@@ -370,7 +370,7 @@ export default class EntryAbility extends UIAbility {
     } else {
       try {
         this.windowStage?.getMainWindowSync().getUIContext().getPromptAction().showToast({
-          message: '收到同账号接续请求，请在主机列表确认', duration: 3000
+          message: '收到同账号接续请求，正在自动连接', duration: 2000
         });
       } catch (_error) { /* The incoming card remains available in the host library. */ }
     }

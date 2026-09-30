@@ -38,13 +38,18 @@ function fixture() {
       }) } },
     '@kit.PerformanceAnalysisKit': { hilog: { info() {}, warn() {}, error() {} } },
     '@kit.BasicServicesKit': {},
-    '@kit.CryptoArchitectureKit': { cryptoFramework: { createRandom: () => ({
+    '@kit.ArkTS': { util: { TextEncoder: class { encodeInto(text) { return new Uint8Array(Buffer.from(text)); } } } },
+    '@kit.CryptoArchitectureKit': { cryptoFramework: { createMd: () => { const hash = crypto.createHash('sha256');
+      return { updateSync: input => hash.update(Buffer.from(input.data)), digestSync: () => ({ data: new Uint8Array(hash.digest()) }) }; },
+      createRandom: () => ({
       generateRandomSync: n => ({ data: new Uint8Array(crypto.randomBytes(n)) })
     }) } },
     '@kit.ArkData': { preferences: { getPreferencesSync: () => ({ getSync() {
       if (!state.profileReadable) throw new Error('unreadable'); return state.profileRaw;
     } }) }, distributedDataObject: { create: (_context, fields) => {
       if (state.createError) throw new Error('platform create failed');
+      // A target-side credential object sees what the source offered (the platform would sync it).
+      if ('secret' in fields && fields.secret === '' && state.remoteSecret) fields = { ...fields, secret: state.remoteSecret };
       const object = { ...fields, calls: [], callback: null,
         on(event, callback) { assert.equal(event, 'change'); this.callback = callback; },
         off(event, callback) { assert.equal(callback, this.callback); this.callback = null; },
@@ -98,7 +103,7 @@ function fixture() {
   const { ProContinuationReceiptChannel } = load(dir + 'ProContinuationReceiptChannel.ets');
   const { ProContinuationService, PRO_CONTINUATION_PARAM, PRO_CONTINUATION_LIBRARY_PARAM } =
     load(dir + 'ProContinuationService.ets');
-  const service = ProContinuationService.getInstance();
+  const service = ProContinuationService.getInstance(); service.credentialWaitMs = 0;
   const envelope = () => ({ version: 1, purpose: 'continuation', transferId: 'b'.repeat(32),
     channelId: 'rd_' + 'c'.repeat(32), owner: state.scope.ownerScopeId, createdAt: state.now,
     expiresAt: state.now + 120000, connection: adapter.describeProSshConnection(state.host, 'files', '/home/alice/work', context) });
@@ -272,7 +277,7 @@ function fixture() {
     }
     return { ability, events, stage, bootstrap };
   }
-  return { state, context, policy, adapter, service, envelope, offer, ProConnectionTransaction,
+  return { state, context, policy, adapter, service, envelope, offer, ProConnectionTransaction, load,
     ProContinuationReceiptChannel, entryAbility, sessionAbility, proxyProfile, terminal,
     rdpPolicy: load(dir + 'ProRdpConnectionIdentity.ets'),
     key: PRO_CONTINUATION_PARAM, libraryKey: PRO_CONTINUATION_LIBRARY_PARAM };
@@ -469,7 +474,7 @@ test('bounded old join expiry cannot close a newly prepared source channel', asy
   const oldTimeout = [...f.state.timers.values()].find(x => x.delay === 2500).callback;
   f.service.cancelSource(); f.state.joinWait = null; await f.service.prepare(f.context, f.offer());
   assert.equal(await f.service.onContinue(9, {}), 0); oldTimeout(); assert.equal(await old, 1);
-  assert.notEqual(f.state.objects[1].calls.at(-1), ''); wait.resolve(); await settle();
+  assert.notEqual(f.state.objects.filter(o => 'receipt' in o)[1].calls.at(-1), ''); wait.resolve(); await settle();
 });
 
 test('canonical direct profiles override legacy fields; corrupt or unreadable profiles never imply direct', () => {
@@ -523,6 +528,37 @@ test('always-on Pro continuation never prompts, stays armed and carries the dire
   assert.equal(page.proContinuationDescribe().view.sshPane, 'terminal');
   assert.equal(f.state.permissionRequests ?? 0, 0);
 });
+test('opt-in credential transfer uses a derived session, never the envelope, and is taken once for one host', async () => {
+  const f = fixture(); const dir = 'entry/src/main/ets/services/pro/';
+  const prefs = f.load(dir + 'ProContinuationPreferences.ets').ProContinuationPreferences.getInstance();
+  const creds = f.load(dir + 'ProContinuationCredentials.ets');
+  const secret = { kind: 'key', password: '', privateKeyPem: '-----BEGIN OPENSSH PRIVATE KEY-----\nabc', passphrase: 'pp' };
+  const offer = f.offer(); offer.secret = () => secret;
+  await f.service.prepare(f.context, offer); let params = {};
+  assert.equal(await f.service.onContinue(9, params), 0);
+  assert.equal(f.state.objects.some(o => 'secret' in o), false, 'manual mode offers nothing');
+  f.service.cancelSource(); prefs.value.credentialMode = 'transfer';
+  try {
+    await f.service.prepare(f.context, offer); params = {};
+    assert.equal(await f.service.onContinue(9, params), 0);
+    const e = JSON.parse(params[f.key]);
+    assert.equal(params[f.key].includes('PRIVATE KEY'), false); assert.equal(params[f.key].includes('pp'), false);
+    const offered = f.state.objects.find(o => 'secret' in o);
+    assert.equal(offered.calls.at(-1), creds.proContinuationCredentialSession(e.channelId));
+    assert.notEqual(offered.calls.at(-1), e.channelId);
+    assert.equal(offered.secret, JSON.stringify(secret));
+    f.service.cancelSource(); assert.equal(offered.secret, '', 'cancelling wipes the offered secret');
+    // Target: receives the synced value, deposits it for this host only, one use.
+    const t = fixture(); t.state.remoteSecret = JSON.stringify(secret); const te = t.envelope();
+    t.service.ingest(JSON.stringify(te)); assert.ok(await t.service.accept(t.context));
+    const handoff = t.load(dir + 'ProContinuationCredentials.ets').ProContinuationCredentialHandoff.getInstance();
+    assert.equal(handoff.take('other-host', te.owner), null);
+    assert.equal(JSON.stringify(handoff.take(te.connection.hostReference, te.owner)), JSON.stringify(secret));
+    assert.equal(handoff.take(te.connection.hostReference, te.owner), null);
+    assert.equal(creds.validProContinuationSecret({ ...secret, extra: 1 }), null);
+    assert.equal(creds.validProContinuationSecret({ kind: 'key', password: 'x', privateKeyPem: secret.privateKeyPem, passphrase: '' }), null);
+  } finally { prefs.value.credentialMode = 'manual'; }
+});
 test('actual source page binds native generation and CONNECTED before accepting an old close receipt', async () => {
   for (const mutation of [f => { f.state.nativeGeneration++; }, f => { f.state.nativeState = 1; }]) {
     const f = fixture(); const page = f.terminal(); await page.prepareProContinuation();
@@ -566,7 +602,7 @@ test('old target page failure cannot cancel a replacement incoming transaction',
   const replacement = f.envelope(); replacement.transferId = 'd'.repeat(32); replacement.channelId = 'rd_' + 'e'.repeat(32);
   assert.equal(f.service.ingest(JSON.stringify(replacement)), true); assert.ok(await f.service.accept(f.context));
   wait.resolve(); await restoring;
-  assert.equal(f.service.incomingId(), replacement.transferId); assert.notEqual(f.state.objects[1].calls.at(-1), '');
+  assert.equal(f.service.incomingId(), replacement.transferId); assert.notEqual(f.state.objects.filter(o => 'receipt' in o)[1].calls.at(-1), '');
   f.service.cancelIncoming(e.transferId); assert.equal(f.service.incomingId(), replacement.transferId);
 });
 test('transition cancels pending target acceptance and ready channels before account mutation', async () => {

@@ -1,5 +1,7 @@
 import { ProBadge } from '../components/ProBadge';
-import { ProFeatureManagerPanel } from '../components/ProFeatureManagerPanel';
+import { ProFeatureDetailPanel, ProStatusPanel } from '../components/ProFeatureManagerPanel';
+import { proFeatureCurrentStatus, proStateText } from '../services/pro/ProFeatureStatusReader';
+import { ProFeature } from '../services/pro/ProFeatureCatalog';
 import { AiHostEditor } from '../components/ai/AiHostEditor';
 import { AiHostService, projectAiHost, aiHostId } from '../services/ai/AiHostService';
 import { AiHost } from '../services/ai/AiModels';
@@ -13,6 +15,7 @@ import { ProContinuationService } from '../services/pro/ProContinuationService';
 import { SshConnectionPreflightSheet } from '../components/SshConnectionPreflightSheet';
 import { SshAuthenticatedHandoff } from '../services/ssh/auth/SshAuthenticatedHandoff';
 import { ProAppRuntime } from '../services/pro/ProAppRuntime';
+import { ProRuntimeSnapshot } from '../services/pro/ProRuntime';
 import { ProFeatureVisibility } from '../services/pro/ProFeatureVisibility';
 import { ProEntries } from '../services/pro/ProEntries';
 import { ProPurchaseLifecycle } from '../services/pro/ProPurchaseLifecycle';
@@ -488,6 +491,8 @@ import {
   SETTINGS_SHEET_AI_INSTALL,
   SETTINGS_SHEET_PRO,
   SETTINGS_SHEET_APP_ICON,
+  SETTINGS_SHEET_PRO_FEATURE,
+  SETTINGS_SHEET_PRO_STATUS,
   SETTINGS_SHEET_ACCENT_COLOR,
   SETTINGS_SHEET_DIAGNOSTIC_LOG,
   SETTINGS_SHEET_REMOTE_PINCH_ZOOM,
@@ -851,6 +856,8 @@ struct HostListPage {
   @State aiProVisible: boolean = false;
   @State appIconProVisible: boolean = true;
   @State proManagerVisible: boolean = false;
+  @State proFeatureRevision: number = 0;
+  @State selectedProFeatureId: string = '';
   @State appIconSupported: boolean = false;
   private proUnsubscribe: (() => void) | null = null;
   private proVisibilityUnsubscribe: (() => void) | null = null;
@@ -1927,6 +1934,7 @@ struct HostListPage {
   }
 
   @State proIncomingContinuationVisible: boolean = false;
+  private proContinuationAutoAcceptedId: string = '';
   private proContinuationStop: (() => void) | null = null;
   private proContinuationAttemptId: string = '';
   @State proIncomingConnectionShareVisible: boolean = false;
@@ -1966,6 +1974,17 @@ struct HostListPage {
     } catch (_error) { promptAction.showToast({ message: '删除 AI 主机失败，请重试', duration: 2200 }); }
   }
 
+  private proRuntimeSnapshot(_revision: number): ProRuntimeSnapshot { return ProAppRuntime.getInstance().runtime.snapshot(); }
+  private proCatalogFeatures(_revision: number): ProFeature[] { return ProFeatureVisibility.getInstance().proCatalog(); }
+  private proFeatureIcon(id: string): Resource {
+    if (id === 'pro.personalization.appIcon') { return $r('sys.symbol.square_and_pencil'); }
+    if (id.startsWith('pro.ai.')) { return protocolIcon('ai'); }
+    if (id === 'pro.connection.continuation' || id === 'pro.connection.knockShare') { return $r('sys.symbol.desktop_fill'); }
+    if (id === 'pro.file.knockTransfer') { return $r('sys.symbol.doc_plaintext'); }
+    if (id.startsWith('pro.security.')) { return $r('sys.symbol.lock_shield_fill'); }
+    return $r('sys.symbol.star');
+  }
+
   // Entitled users pick presets. After a revocation a non-default icon keeps the entry,
   // whose panel then offers only the free restore of the default icon.
   private refreshAppIconEntry(): void {
@@ -1981,7 +2000,7 @@ struct HostListPage {
     this.refreshAppIconEntry();
     this.proVisibilityUnsubscribe?.();
     const stopEntries = ProEntries.subscribe((): void => {
-      this.refreshAppIconEntry(); this.proManagerVisible = ProEntries.proActive();
+      this.refreshAppIconEntry(); this.proManagerVisible = ProEntries.proActive(); this.proFeatureRevision++;
     });
     const stopIcons = ProAppIcons.getInstance().subscribe((): void => { this.refreshAppIconEntry(); });
     this.proVisibilityUnsubscribe = (): void => { stopEntries(); stopIcons(); };
@@ -2010,7 +2029,14 @@ struct HostListPage {
     this.pageActive = true;
     this.proContinuationStop?.();
     this.proContinuationStop = ProContinuationService.getInstance().subscribe((): void => {
-      this.proIncomingContinuationVisible = ProContinuationService.getInstance().snapshot().incoming;
+      const service = ProContinuationService.getInstance();
+      const snapshot = service.snapshot();
+      this.proIncomingContinuationVisible = snapshot.incoming;
+      const id = service.incomingId();
+      if (snapshot.incomingCanAccept && id !== '' && id !== this.proContinuationAutoAcceptedId) {
+        this.proContinuationAutoAcceptedId = id;
+        setTimeout((): void => { void this.autoAcceptProContinuation(id, 0); }, 0);
+      }
     });
     this.proConnectionShareStop?.();
     this.proConnectionShareStop = ProConnectionShareReceiver.getInstance().subscribe((): void => {
@@ -6681,6 +6707,22 @@ struct HostListPage {
           registry, termination, requestId);
       }, 250);
     });
+  }
+
+  // Tapping the system continuation entry is the user's consent: accept each incoming transfer once,
+  // whichever tab is open. A hot start delivers the Want before foreground, so wait for it briefly.
+  // Failures stay on the host-list card with their reason and a retry.
+  private async autoAcceptProContinuation(id: string, attempt: number): Promise<void> {
+    const service = ProContinuationService.getInstance();
+    if (service.incomingId() !== id || !service.snapshot().incomingCanAccept) { return; }
+    if (!this.pageActive || this.appInBackground) {
+      if (attempt < 20) { setTimeout((): void => { void this.autoAcceptProContinuation(id, attempt + 1); }, 250); }
+      return;
+    }
+    const host = await service.accept(getContext(this) as common.UIAbilityContext);
+    if (host === null) { return; }
+    if (service.incomingId() !== id || !this.pageActive || this.appInBackground) { service.cancelIncoming(id); return; }
+    void this.connectToHost(host, id);
   }
 
   private async connectToHost(host: RemoteHost, continuationId: string = '', shareId: string = ''): Promise<void> {
@@ -13870,14 +13912,21 @@ struct HostListPage {
     }.width('100%').margin({ bottom: 10 })
   }
 
-  @Builder moonlightGroupedDesktopRow() {
+  // Tablet/PC rows pair two cards; the remote-AI card shares Moonlight's row so every group
+  // card keeps the same width and grid position.
+  @Builder moonlightGroupedDesktopRow(withAi: boolean) {
     Column() {
       Row() {
         this.moonlightGroupTypeCard()
         Blank().width(10)
-        Blank().layoutWeight(1)
+        if (withAi) {
+          this.hostGroupTypeCard(this.hostGroupCardForType('ai'))
+        } else {
+          Blank().layoutWeight(1)
+        }
       }.width('100%').height(this.hostGroupCardHeight()).alignItems(VerticalAlign.Top)
       this.moonlightGroupedDetailPanel()
+      if (withAi) { this.hostGroupedDetailPanel(this.hostGroupCardForType('ai')) }
     }.width('100%').margin({ bottom: 10 })
   }
 
@@ -13895,10 +13944,7 @@ struct HostListPage {
       } else {
         this.hostGroupedDesktopRow('rdp', 'rustdesk')
         this.hostGroupedDesktopRow('ssh', 'vnc')
-        this.moonlightGroupedDesktopRow()
-        if (isHostGroupTypeVisibleByPro('ai', this.aiProVisible ? ['ai'] : [])) {
-          this.hostGroupedPhoneGroup('ai')
-        }
+        this.moonlightGroupedDesktopRow(isHostGroupTypeVisibleByPro('ai', this.aiProVisible ? ['ai'] : []))
       }
     }
     .width('100%').padding({ top: 8 })
@@ -15439,7 +15485,8 @@ struct HostListPage {
 
   private settingsLeafSheetHeight(): SheetSize | number {
     if (this.settingsLeafSheetMode === SETTINGS_SHEET_PRO) { return Math.min(820, Math.max(320, this.pageViewportHeight - 48)); }
-    if (this.settingsLeafSheetMode === SETTINGS_SHEET_APP_ICON) { return SheetSize.FIT_CONTENT; }
+    if (this.settingsLeafSheetMode === SETTINGS_SHEET_APP_ICON || this.settingsLeafSheetMode === SETTINGS_SHEET_PRO_FEATURE ||
+      this.settingsLeafSheetMode === SETTINGS_SHEET_PRO_STATUS) { return SheetSize.FIT_CONTENT; }
     if (this.settingsLeafSheetMode === SETTINGS_SHEET_POPUP && this.popupSheetMode === 1 &&
       this.aboutSheetMode === 3) {
       return SheetSize.LARGE;
@@ -15498,6 +15545,10 @@ struct HostListPage {
   @Builder settingsLeafSheet() {
     if (this.settingsLeafSheetMode === SETTINGS_SHEET_PRO) {
       ProPurchaseSheet({ onClose: (): void => { this.closeSettingsLeafSheet(); } })
+    } else if (this.settingsLeafSheetMode === SETTINGS_SHEET_PRO_STATUS) {
+      ProStatusPanel()
+    } else if (this.settingsLeafSheetMode === SETTINGS_SHEET_PRO_FEATURE) {
+      ProFeatureDetailPanel({ featureId: this.selectedProFeatureId })
     } else if (this.settingsLeafSheetMode === SETTINGS_SHEET_APP_ICON) {
       ProAppIconPanel({ isOpen: (): boolean => this.showSettingsLeafSheet &&
         this.settingsLeafSheetMode === SETTINGS_SHEET_APP_ICON })
@@ -16722,9 +16773,20 @@ struct HostListPage {
         }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 10 })
         ListItem() {
           Column() {
-            if (this.settingsSectionExpanded(SETTINGS_SECTION_PRO)) { ProFeatureManagerPanel() }
+            Column() {
+              this.protocolActionRow($r('sys.symbol.star'), 'Pro 状态',
+                proStateText(this.proRuntimeSnapshot(this.proFeatureRevision)),
+                (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_PRO_STATUS); })
+              ForEach(this.proCatalogFeatures(this.proFeatureRevision), (feature: ProFeature): void => {
+                this.cardDivider()
+                this.protocolActionRow(this.proFeatureIcon(feature.id), feature.title,
+                  proFeatureCurrentStatus(feature).label + ' · ' + proFeatureCurrentStatus(feature).detail,
+                  (): void => { this.selectedProFeatureId = feature.id; this.openSettingsLeafSheet(SETTINGS_SHEET_PRO_FEATURE); })
+              }, (feature: ProFeature): string => feature.id + ':' + this.proFeatureRevision.toString())
+            }.borderRadius(24).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
+              .border({ width: 0.5, color: this.pal().cardBorder })
           }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 20 })
-        }.constraintSize({ maxHeight: this.settingsSectionExpanded(SETTINGS_SECTION_PRO) ? 3000 : 0 })
+        }.constraintSize({ maxHeight: this.settingsSectionExpanded(SETTINGS_SECTION_PRO) ? 1600 : 0 })
           .opacity(this.settingsSectionExpanded(SETTINGS_SECTION_PRO) ? 1 : 0)
           .translate({ y: this.settingsSectionExpanded(SETTINGS_SECTION_PRO) ? 0 : -8 })
           .clip(true).animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })

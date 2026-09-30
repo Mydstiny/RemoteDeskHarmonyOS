@@ -343,9 +343,13 @@ const cases = [
     assert.ok(hosts.indexOf('this.sidebarMoonlightTab()') < hosts.indexOf("this.sidebarTab('远程 AI · Pro'"));
     assert.ok(hosts.includes("if (card.type === 'ai') { ProBadge().margin({ right: 8 }).alignSelf(ItemAlign.Center) }"));
     assert.ok(hosts.indexOf('this.moonlightGroupedPhoneGroup()') < hosts.indexOf("this.hostGroupedPhoneGroup('ai')"));
+    // Tablet/PC: the AI group card shares Moonlight's row instead of a full-width phone row.
+    assert.ok(hosts.includes("this.moonlightGroupedDesktopRow(isHostGroupTypeVisibleByPro('ai', this.aiProVisible ? ['ai'] : []))"));
+    assert.ok(/if \(withAi\) \{\s*this\.hostGroupTypeCard\(this\.hostGroupCardForType\('ai'\)\)/.test(hosts));
+    assert.equal(hosts.split("this.hostGroupedPhoneGroup('ai')").length - 1, 1, 'AI phone row only in the sm layout');
     assert.ok(hosts.includes("else {\n            Blank()\n              .width(this.breakpoint === 'sm' ? 38 : 40)"));
     const aiSettingsStart = hosts.indexOf("this.settingsAccordionHeader(SETTINGS_SECTION_AI");
-    const aiSettingsEnd = hosts.indexOf("this.settingsAccordionHeader(SETTINGS_SECTION_MOONLIGHT", aiSettingsStart);
+    const aiSettingsEnd = hosts.indexOf("this.settingsAccordionHeader(SETTINGS_SECTION_PRO", aiSettingsStart);
     const aiSettings = hosts.slice(aiSettingsStart, aiSettingsEnd);
     for (const mode of ['SETTINGS_SHEET_AI_HOSTS', 'SETTINGS_SHEET_AI_DISPLAY', 'SETTINGS_SHEET_AI_DATA', 'SETTINGS_SHEET_AI_INSTALL']) {
       assert.ok(aiSettings.includes('openSettingsLeafSheet(' + mode + ')'), 'Missing shared leaf route: ' + mode);

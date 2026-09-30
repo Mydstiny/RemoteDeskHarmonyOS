@@ -49,6 +49,8 @@ const badges = new Map([
   ['components/ai/AiHostEditor.ets', [1, /AiAccess\.getInstance\(\)\.proVisible\(\)/]],
   ['pages/AiSettingsPage.ets', [1, /allowed = AiAccess\.getInstance\(\)\.proVisible\(\)/]],
   ['pages/SshTerminal.ets', [1, /ProFeatureGate\(\{ featureId: 'pro\.file\.knockTransfer'/]],
+  // Status and per-feature sheets open only from the Pro 功能 section, which requires an active Pro.
+  ['components/ProFeatureManagerPanel.ets', [2, /export struct ProFeatureDetailPanel/]],
   // AI cards/section (4) follow aiProVisible; the app-icon row follows ProEntries.
   ['pages/HostListPage.ets', [5, /aiProVisible = AiAccess\.getInstance\(\)\.proVisible\(\)/]]
 ]);
@@ -71,6 +73,8 @@ for (const [file, text] of sources) {
 const host = sources.get('pages/HostListPage.ets');
 assert.match(host, /this\.appIconProVisible = ProEntries\.visible\(id\) \|\|\s*\(ProEntries\.shown\(id\) && icons\.loaded && icons\.currentName !== ''\)/);
 assert.match(host, /if \(this\.appIconProVisible && this\.appIconSupported\) \{[\s\S]{0,600}ProBadge\(\)/);
+assert.match(host, /this\.openSettingsLeafSheet\(SETTINGS_SHEET_PRO_FEATURE\)/);
+assert.equal(host.indexOf('ProFeatureDetailPanel({') > host.indexOf('SETTINGS_SHEET_PRO_FEATURE) {'), true);
 assert.match(host, /if \(this\.proManagerVisible\) \{\s*ListItem\(\) \{\s*this\.settingsAccordionHeader\(SETTINGS_SECTION_PRO/);
 assert.match(host, /this\.proManagerVisible = ProEntries\.proActive\(\)/);
 assert.match(entries, /static proActive\(\): boolean \{\s*return ProAppRuntime\.getInstance\(\)\.runtime\.snapshot\(\)\.effectiveState === 'active';/);
