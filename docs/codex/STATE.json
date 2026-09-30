@@ -3,14 +3,15 @@
   "task": "pro-purchase-foundation",
   "branch": "codex/pro-purchase-foundation",
   "base": "8edc187868e94ed41634e8a6c4c4c072e3a48679",
-  "head": "f06bcf6204c721bc32471d436c62395c90041084",
-  "phase": "Full acceptance: steps 1-3 PASS; step 4 external (no PC); step 5 M5 continuation READY",
+  "head": "090be14115d70460b98d81cd70b44577d53d5ade",
+  "phase": "Full acceptance: steps 1-3 PASS; step 4 external (no PC); step 5 M5 RustDesk/VNC continuation code PASS, device acceptance pending",
   "status": "in-progress",
-  "next": "Acceptance step 4: M4 knock transfer phone -> HarmonyOS PC SFTP; then M5 share/continuation, M7 remainder.",
+  "next": "Acceptance step 4: M4 knock transfer phone -> HarmonyOS PC SFTP; then real M5 RustDesk/VNC cross-device acceptance and M7 remainder.",
   "blockers": [
     "Pad backup and Debug migration complete; same-account sandbox restore PASS without another payment. Remaining offline/cross-account and full protocol/device matrix remain open.",
     "M3/U0-U4 device matrix and M4 PC real Share Kit/SFTP file-integrity acceptance remain unverified.",
     "M5 Share Kit App Linking domain, association and actual fragment delivery remain unverified; ServiceInteraction ACL is a separate path. M6 USB/RDP authenticator and phone-passkey RP/origin proof remain pending.",
+    "M5 RustDesk/VNC continuation commit 090be1411 passes focused tests and both mandatory Hvigor gates; real cross-device/device protocol acceptance remains unverified and aggregate review has no matching PASS receipt.",
     "Sandbox core device flow passed. Numeric-version publication, notification endpoint and formal merchant/product release remain open; worker timer disabled.",
     "RDP domain preflight bypass checkpoint f06bcf620: testCompile and signed assembleHap pass; optional ohosTest task 00306054 is unavailable; real hostname/device certificate acceptance remains open."
   ],
@@ -1973,7 +1974,7 @@
       "1.1.6 release notes content"
     ],
     "step4": "EXTERNAL no HarmonyOS PC device (2026-09-29); M4.1-M4.6 NOT RUN",
-    "step5": "READY M5 phone/Pad same-account direct SSH continuation; knock share external (App Link domain unset)"
+    "step5": "PASS code checkpoint 090be1411 for RustDesk/VNC same-account continuation; focused tests and mandatory Hvigor gates pass; real cross-device/device acceptance pending; knock share external (App Link domain unset)"
   },
   "appVersion": {
     "versionName": "1.1.6",
@@ -1981,7 +1982,5 @@
     "releaseNotes": "pending",
     "releasePlan": "1.1.6 Release shows Pro and sandbox testing as coming soon (敬请期待) and closed; Pro completes in 1.2.0"
   },
-  "futurePlans": [
-    "RustDesk and VNC same-account continuation (user request 2026-09-29); UI currently states RDP and direct SSH only"
-  ]
+  "futurePlans": []
 }

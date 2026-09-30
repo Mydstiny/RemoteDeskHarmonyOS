@@ -1,6 +1,6 @@
 # RemoteDesk Queue
 
-Updated: 2026-09-29 Asia/Shanghai
+Updated: 2026-09-30 Asia/Shanghai
 
 ## Now
 
@@ -48,6 +48,8 @@ Updated: 2026-09-29 Asia/Shanghai
 
 - M5 SSH Share Kit eca8f8aa, PC SSH 3fc4a578 and RDP 35e38224 + 13413239 independently PASS. RDP paired-fence finding closed. Real App Link/fragment, Windows and Phone/Pad/PC cross-device acceptance remain open.
 
+- M5 RustDesk/VNC continuation checkpoint `090be1411`: focused route/account/receiver/native-ready checks PASS; real RustDesk/VNC cross-device acceptance remains open and aggregate review is still `REVIEW_REQUIRED` pending a matching receipt.
+
 0. Pro M5/M6/M7: proceed with connection sharing/official continuation, USB FIDO2 and phone-passkey feasibility, then trusted production purchase/restore/offline/refunds. ACL/App Linking and backend configuration are not confirmed; production checkout and unaccepted features remain disabled.
 
 1. Triage any consolidated device findings against the committed item boundary; use the schema-v5 generation/matrix chain for flip issues, verify RustDesk H.265 with `preflight config=H265`, `ffiCfg codec=5(H265)` and actual frame `codec=1`, and use the new RDP `source`/`code` classification to identify the original intermittent-disconnect source. Preserve the exact protocol, device type, window mode, decoder and reproduction sequence.
@@ -55,7 +57,6 @@ Updated: 2026-09-29 Asia/Shanghai
 
 ## Later
 
-0. RustDesk and VNC same-account continuation (user request 2026-09-29): extend the M5 whitelist model with recoverable RustDesk ID/relay/display and VNC endpoint/repeater/TLS/view fields, receiver re-authentication, host regressions and cross-device acceptance. [M5 plan](plans/2026-09-07-pro-m5-connection-continuation.md). Current UI states continuation supports RDP and direct SSH only.
-1. Add a controllable Moonlight ProductStreaming accepted-to-active synchronous terminal barrier regression.
-2. Extend network diagnostics from configured/candidate IP family facts to the resolver's actual winning family, owner and sanitized fallback stage.
-3. Add real-RDB fault injection, app-clone acceptance and the remaining Android RustDesk orientation/settings acceptance.
+0. Add a controllable Moonlight ProductStreaming accepted-to-active synchronous terminal barrier regression.
+1. Extend network diagnostics from configured/candidate IP family facts to the resolver's actual winning family, owner and sanitized fallback stage.
+2. Add real-RDB fault injection, app-clone acceptance and the remaining Android RustDesk orientation/settings acceptance.
