@@ -114,10 +114,10 @@ test('platform availability checks every step (macOS lacks F21-F24)', () => {
 
 const k = load('entry/src/main/ets/services/ssh/skin/SshSkinPolicy.ets');
 
-test('built-in skins: 12 complete, valid palettes with matching chrome', () => {
+test('built-in skins: 28 complete, valid palettes with matching chrome', () => {
   const skins = k.sshBuiltInSkins();
-  assert.equal(skins.length, 12);
-  assert.equal(new Set(skins.map(s => s.id)).size, 12);
+  assert.equal(skins.length, 28);
+  assert.equal(new Set(skins.map(s => s.id)).size, 28);
   for (const skin of skins) {
     assert.equal(skin.terminal.palette.length, 16, skin.id);
     for (const c of [skin.terminal.background, skin.terminal.foreground, skin.terminal.cursor, skin.terminal.selection,
@@ -128,6 +128,13 @@ test('built-in skins: 12 complete, valid palettes with matching chrome', () => {
   }
   assert.equal(skins.find(s => s.id === 'solarized-light').dark, false);
   assert.equal(skins.find(s => s.id === 'dracula').dark, true);
+});
+
+test('bar and key text stay readable (>= 4.5:1) on every built-in skin', () => {
+  for (const skin of k.sshBuiltInSkins()) {
+    assert.ok(k.sshSkinContrast(skin.chrome.barText, skin.chrome.bar) >= 4.5, skin.id + ' bar text');
+    assert.ok(k.sshSkinContrast(skin.chrome.keyText, skin.chrome.keyBar) >= 4.5, skin.id + ' key text');
+  }
 });
 
 test('auto chrome follows the terminal: lighter bars on dark skins, darker on light ones', () => {
@@ -190,6 +197,29 @@ test('bundled fonts are shipped with their OFL licenses', () => {
   }
   const html = fs.readFileSync(path.join(root, 'entry/src/main/resources/rawfile/ssh-terminal/index.html'), 'utf8');
   for (const font of k.SSH_SKIN_FONTS.filter(f => f.bundled)) assert.ok(html.includes(`./fonts/${font.id}-latin-400-normal.woff2`), font.id);
+});
+
+test('Pro badge flow: stops are ordered, bounded and continuous across phases and the loop seam', () => {
+  const stops = load('entry/src/main/ets/services/pro/ProBadgeFlowPolicy.ets').proBadgeFlowStops;
+  const rgb = h => [1, 3, 5].map(i => parseInt(h.substr(i, 2), 16));
+  const colorAt = (list, x) => {
+    for (let i = 1; i < list.length; i++) if (x <= list[i][1]) {
+      const [c0, p0] = list[i - 1], [c1, p1] = list[i]; const t = p1 === p0 ? 0 : (x - p0) / (p1 - p0);
+      return rgb(c0).map((v, j) => v + (rgb(c1)[j] - v) * t);
+    }
+    return rgb(list[list.length - 1][0]);
+  };
+  let worst = 0;
+  for (let f = 0; f <= 400; f++) {
+    const a = stops(f / 400), b = stops(((f + 1) / 400) % 1);
+    assert.equal(a[0][1], 0); assert.equal(a[a.length - 1][1], 1);
+    for (let i = 1; i < a.length; i++) assert.ok(a[i][1] >= a[i - 1][1]);
+    for (let x = 0; x <= 1; x += 0.05) {
+      const ca = colorAt(a, x), cb = colorAt(b, x);
+      worst = Math.max(worst, ...ca.map((v, j) => Math.abs(v - cb[j])));
+    }
+  }
+  assert.ok(worst < 12, 'adjacent frames differ by at most a few levels, including 1 -> 0: ' + worst);
 });
 
 console.log(passed + ' personalization checks passed');

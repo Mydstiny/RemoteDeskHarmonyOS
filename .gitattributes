@@ -3,3 +3,4 @@ patches/**/*.patch text eol=lf whitespace=-blank-at-eol,-blank-at-eof,-space-bef
 entry/src/main/cpp/moonlight/upstream/moonlight-common-c/** -text whitespace=-blank-at-eol,-blank-at-eof,-space-before-tab,cr-at-eol
 server/pro-entitlement/agc/pkix/licenses/** -text whitespace=-blank-at-eof
 libs/fido2-ohos/** -text whitespace=-blank-at-eol,-blank-at-eof,-space-before-tab,cr-at-eol
+entry/src/main/resources/rawfile/ssh-terminal/fonts/** -text whitespace=-blank-at-eol,-blank-at-eof,-space-before-tab,cr-at-eol

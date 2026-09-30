@@ -5,7 +5,8 @@
  */
 
 export type SshSkinFontId = 'system' | 'noto-sans-mono' | 'jetbrains-mono' | 'fira-code' |
-  'source-code-pro' | 'ibm-plex-mono';
+  'source-code-pro' | 'ibm-plex-mono' | 'cascadia-code' | 'roboto-mono' | 'inconsolata' | 'victor-mono' |
+  'fira-mono' | 'geist-mono' | 'space-mono' | 'red-hat-mono' | 'martian-mono' | 'anonymous-pro' | 'commit-mono';
 
 export interface SshSkinFont {
   id: SshSkinFontId;
@@ -63,7 +64,18 @@ export const SSH_SKIN_FONTS: SshSkinFont[] = [
   { id: 'source-code-pro', label: 'Source Code Pro', css: '"Source Code Pro", monospace', arkui: 'Source Code Pro',
     bundled: true },
   { id: 'ibm-plex-mono', label: 'IBM Plex Mono', css: '"IBM Plex Mono", monospace', arkui: 'IBM Plex Mono',
-    bundled: true }
+    bundled: true },
+  { id: 'cascadia-code', label: 'Cascadia Code', css: '"Cascadia Code", monospace', arkui: 'Cascadia Code', bundled: true },
+  { id: 'roboto-mono', label: 'Roboto Mono', css: '"Roboto Mono", monospace', arkui: 'Roboto Mono', bundled: true },
+  { id: 'inconsolata', label: 'Inconsolata', css: '"Inconsolata", monospace', arkui: 'Inconsolata', bundled: true },
+  { id: 'victor-mono', label: 'Victor Mono', css: '"Victor Mono", monospace', arkui: 'Victor Mono', bundled: true },
+  { id: 'fira-mono', label: 'Fira Mono', css: '"Fira Mono", monospace', arkui: 'Fira Mono', bundled: true },
+  { id: 'geist-mono', label: 'Geist Mono', css: '"Geist Mono", monospace', arkui: 'Geist Mono', bundled: true },
+  { id: 'space-mono', label: 'Space Mono', css: '"Space Mono", monospace', arkui: 'Space Mono', bundled: true },
+  { id: 'red-hat-mono', label: 'Red Hat Mono', css: '"Red Hat Mono", monospace', arkui: 'Red Hat Mono', bundled: true },
+  { id: 'martian-mono', label: 'Martian Mono', css: '"Martian Mono", monospace', arkui: 'Martian Mono', bundled: true },
+  { id: 'anonymous-pro', label: 'Anonymous Pro', css: '"Anonymous Pro", monospace', arkui: 'Anonymous Pro', bundled: true },
+  { id: 'commit-mono', label: 'Commit Mono', css: '"Commit Mono", monospace', arkui: 'Commit Mono', bundled: true }
 ];
 
 const HEX: RegExp = /^#[0-9A-Fa-f]{6}$/;
@@ -118,17 +130,30 @@ export function sshSkinContrast(a: string, b: string): number {
 }
 
 /** Chrome colors that match a terminal: bars a step away from its background, text from its foreground. */
+/**
+ * Text for bars and keys: a near-neutral color lightly tinted by the terminal foreground,
+ * falling back to pure white/black when it would not reach 4.5:1 against the surface.
+ */
+export function sshSkinReadableText(surface: string, tint: string): string {
+  const dark: boolean = sshSkinLuminance(surface) < 0.5;
+  const tinted: string = sshSkinMix(dark ? '#F2F4F7' : '#1F2328', tint, 0.14);
+  return sshSkinContrast(tinted, surface) >= 4.5 ? tinted : (dark ? '#FFFFFF' : '#000000');
+}
+
 export function sshSkinAutoChrome(terminal: SshSkinTerminalColors, accent: string): SshSkinChromeColors {
   const dark: boolean = sshSkinLuminance(terminal.background) < 0.5;
   const lift: string = dark ? '#FFFFFF' : '#000000';
+  const bar: string = sshSkinMix(terminal.background, lift, dark ? 0.07 : 0.05);
+  const keyBar: string = sshSkinMix(terminal.background, lift, dark ? 0.05 : 0.035);
+  const barText: string = sshSkinReadableText(bar, terminal.foreground);
   return {
-    bar: sshSkinMix(terminal.background, lift, dark ? 0.06 : 0.04),
-    barText: terminal.foreground,
-    barTextDim: sshSkinAlpha(terminal.foreground, 0.62),
-    chip: sshSkinAlpha(terminal.foreground, 0.1),
-    keyBar: sshSkinMix(terminal.background, lift, dark ? 0.04 : 0.03),
-    key: sshSkinAlpha(terminal.foreground, dark ? 0.1 : 0.08),
-    keyText: terminal.foreground,
+    bar,
+    barText,
+    barTextDim: sshSkinAlpha(barText, 0.7),
+    chip: sshSkinAlpha(barText, dark ? 0.12 : 0.08),
+    keyBar,
+    key: sshSkinAlpha(barText, dark ? 0.12 : 0.08),
+    keyText: sshSkinReadableText(keyBar, terminal.foreground),
     accent,
     divider: sshSkinAlpha(terminal.foreground, 0.12),
     sheet: sshSkinMix(terminal.background, lift, dark ? 0.09 : 0.02)
@@ -181,7 +206,55 @@ export function sshBuiltInSkins(): SshSkin[] {
         '#57606A', '#A40E26', '#1A7F37', '#633C01', '#218BFF', '#A475F9', '#3192AA', '#8C959F'], '#0969DA'),
     builtIn('material-ocean', 'Material Ocean', 'jetbrains-mono', '#0F111A', '#8F93A2', '#FFCC00', '#1F2233',
       ['#546E7A', '#FF5370', '#C3E88D', '#FFCB6B', '#82AAFF', '#C792EA', '#89DDFF', '#FFFFFF',
-        '#546E7A', '#FF5370', '#C3E88D', '#FFCB6B', '#82AAFF', '#C792EA', '#89DDFF', '#FFFFFF'], '#80CBC4')
+        '#546E7A', '#FF5370', '#C3E88D', '#FFCB6B', '#82AAFF', '#C792EA', '#89DDFF', '#FFFFFF'], '#80CBC4'),
+    builtIn('tomorrow-night', 'Tomorrow Night', 'roboto-mono', '#1D1F21', '#C5C8C6', '#C5C8C6', '#373B41',
+      ['#1D1F21', '#CC6666', '#B5BD68', '#F0C674', '#81A2BE', '#B294BB', '#8ABEB7', '#C5C8C6',
+        '#969896', '#CC6666', '#B5BD68', '#F0C674', '#81A2BE', '#B294BB', '#8ABEB7', '#FFFFFF'], '#81A2BE'),
+    builtIn('tomorrow', 'Tomorrow', 'roboto-mono', '#FFFFFF', '#4D4D4C', '#4D4D4C', '#D6D6D6',
+      ['#000000', '#C82829', '#718C00', '#EAB700', '#4271AE', '#8959A8', '#3E999F', '#FFFFFF',
+        '#8E908C', '#C82829', '#718C00', '#EAB700', '#4271AE', '#8959A8', '#3E999F', '#FFFFFF'], '#4271AE'),
+    builtIn('ayu-dark', 'Ayu Dark', 'fira-mono', '#0A0E14', '#B3B1AD', '#E6B450', '#273747',
+      ['#01060E', '#EA6C73', '#91B362', '#F9AF4F', '#53BDFA', '#FAE994', '#90E1C6', '#C7C7C7',
+        '#686868', '#F07178', '#C2D94C', '#FFB454', '#59C2FF', '#FFEE99', '#95E6CB', '#FFFFFF'], '#E6B450'),
+    builtIn('ayu-light', 'Ayu Light', 'fira-mono', '#FAFAFA', '#5C6166', '#FF9940', '#D1E4F4',
+      ['#000000', '#F07171', '#86B300', '#F2AE49', '#399EE6', '#A37ACC', '#4CBF99', '#FFFFFF',
+        '#828C99', '#F07171', '#86B300', '#F2AE49', '#399EE6', '#A37ACC', '#4CBF99', '#FFFFFF'], '#FF9940'),
+    builtIn('everforest-dark', 'Everforest', 'victor-mono', '#2D353B', '#D3C6AA', '#D3C6AA', '#475258',
+      ['#475258', '#E67E80', '#A7C080', '#DBBC7F', '#7FBBB3', '#D699B6', '#83C092', '#D3C6AA',
+        '#475258', '#E67E80', '#A7C080', '#DBBC7F', '#7FBBB3', '#D699B6', '#83C092', '#D3C6AA'], '#A7C080'),
+    builtIn('rose-pine', 'Rosé Pine', 'geist-mono', '#191724', '#E0DEF4', '#E0DEF4', '#403D52',
+      ['#26233A', '#EB6F92', '#31748F', '#F6C177', '#9CCFD8', '#C4A7E7', '#EBBCBA', '#E0DEF4',
+        '#6E6A86', '#EB6F92', '#31748F', '#F6C177', '#9CCFD8', '#C4A7E7', '#EBBCBA', '#E0DEF4'], '#C4A7E7'),
+    builtIn('rose-pine-dawn', 'Rosé Pine Dawn', 'geist-mono', '#FAF4ED', '#575279', '#575279', '#DFDAD9',
+      ['#F2E9E1', '#B4637A', '#286983', '#EA9D34', '#56949F', '#907AA9', '#D7827E', '#575279',
+        '#9893A5', '#B4637A', '#286983', '#EA9D34', '#56949F', '#907AA9', '#D7827E', '#575279'], '#907AA9'),
+    builtIn('kanagawa', 'Kanagawa', 'commit-mono', '#1F1F28', '#DCD7BA', '#C8C093', '#2D4F67',
+      ['#16161D', '#C34043', '#76946A', '#C0A36E', '#7E9CD8', '#957FB8', '#6A9589', '#C8C093',
+        '#727169', '#E82424', '#98BB6C', '#E6C384', '#7FB4CA', '#938AA9', '#7AA89F', '#DCD7BA'], '#7E9CD8'),
+    builtIn('night-owl', 'Night Owl', 'cascadia-code', '#011627', '#D6DEEB', '#80A4C2', '#1D3B53',
+      ['#011627', '#EF5350', '#22DA6E', '#C5E478', '#82AAFF', '#C792EA', '#21C7A8', '#FFFFFF',
+        '#575656', '#EF5350', '#22DA6E', '#FFEB95', '#82AAFF', '#C792EA', '#7FDBCA', '#FFFFFF'], '#82AAFF'),
+    builtIn('palenight', 'Palenight', 'cascadia-code', '#292D3E', '#A6ACCD', '#FFCC00', '#3C435E',
+      ['#292D3E', '#F07178', '#C3E88D', '#FFCB6B', '#82AAFF', '#C792EA', '#89DDFF', '#D0D0D0',
+        '#434758', '#FF8B92', '#DDFFA7', '#FFE585', '#9CC4FF', '#E1ACFF', '#A3F7FF', '#FFFFFF'], '#C792EA'),
+    builtIn('gruvbox-light', 'Gruvbox Light', 'ibm-plex-mono', '#FBF1C7', '#3C3836', '#3C3836', '#EBDBB2',
+      ['#FBF1C7', '#CC241D', '#98971A', '#D79921', '#458588', '#B16286', '#689D6A', '#7C6F64',
+        '#928374', '#9D0006', '#79740E', '#B57614', '#076678', '#8F3F71', '#427B58', '#3C3836'], '#D65D0E'),
+    builtIn('catppuccin-latte', 'Catppuccin Latte', 'fira-code', '#EFF1F5', '#4C4F69', '#DC8A78', '#ACB0BE',
+      ['#5C5F77', '#D20F39', '#40A02B', '#DF8E1D', '#1E66F5', '#EA76CB', '#179299', '#ACB0BE',
+        '#6C6F85', '#D20F39', '#40A02B', '#DF8E1D', '#1E66F5', '#EA76CB', '#179299', '#BCC0CC'], '#8839EF'),
+    builtIn('synthwave', 'Synthwave', 'space-mono', '#262335', '#E4E1EB', '#FF7EDB', '#463465',
+      ['#262335', '#FE4450', '#72F1B8', '#FEDE5D', '#03EDF9', '#FF7EDB', '#03EDF9', '#FFFFFF',
+        '#614D85', '#FE4450', '#72F1B8', '#F97E72', '#03EDF9', '#FF7EDB', '#03EDF9', '#FFFFFF'], '#FF7EDB'),
+    builtIn('cobalt2', 'Cobalt2', 'red-hat-mono', '#193549', '#FFFFFF', '#FFC600', '#0050A4',
+      ['#000000', '#FF0000', '#38DE21', '#FFE50A', '#1460D2', '#FF005D', '#00BBBB', '#BBBBBB',
+        '#555555', '#F40E17', '#3BD01D', '#EDC809', '#5555FF', '#FF55FF', '#6AE3FA', '#FFFFFF'], '#FFC600'),
+    builtIn('horizon', 'Horizon', 'martian-mono', '#1C1E26', '#D5D8DA', '#E95678', '#2E303E',
+      ['#16161C', '#E95678', '#29D398', '#FAB795', '#26BBD9', '#EE64AC', '#59E1E3', '#D5D8DA',
+        '#5B5858', '#EC6A88', '#3FDAA4', '#FBC3A7', '#3FC4DE', '#F075B5', '#6BE4E6', '#FFFFFF'], '#E95678'),
+    builtIn('retro-amber', '复古琥珀', 'anonymous-pro', '#1A1206', '#FFB000', '#FFB000', '#4A3300',
+      ['#1A1206', '#FF6A00', '#FFB000', '#FFCC4D', '#E09000', '#FF8A3D', '#FFC266', '#FFD699',
+        '#5C4214', '#FF8533', '#FFC233', '#FFE08A', '#F0A800', '#FFA366', '#FFD48F', '#FFEBC2'], '#FFB000')
   ];
 }
 

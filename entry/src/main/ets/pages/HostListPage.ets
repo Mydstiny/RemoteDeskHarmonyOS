@@ -15663,7 +15663,9 @@ struct HostListPage {
   }
 
   private settingsLeafSheetHeight(): SheetSize | number {
-    if (this.settingsLeafSheetMode === SETTINGS_SHEET_SSH_SKIN) { return SheetSize.LARGE; }
+    if (this.settingsLeafSheetMode === SETTINGS_SHEET_SSH_SKIN) {
+      return Math.min(900, Math.max(360, this.pageViewportHeight - 48));
+    }
     if (this.settingsLeafSheetMode === SETTINGS_SHEET_PRO) { return Math.min(820, Math.max(320, this.pageViewportHeight - 48)); }
     if (this.settingsLeafSheetMode === SETTINGS_SHEET_APP_ICON ||
       this.settingsLeafSheetMode === SETTINGS_SHEET_PRO_FEATURE ||

@@ -18964,7 +18964,7 @@ struct SshTerminal {
   private SshHeaderMenuButton() {
           Button() {
             Text('更多').fontSize(11).fontWeight(FontWeight.Medium)
-              .fontColor('rgba(242,244,247,0.88)')
+              .fontColor(this.chromeText(0.92))
           }
           .width(60).height(40).padding(0)
           .borderRadius(20)
@@ -19062,25 +19062,25 @@ struct SshTerminal {
       Row() {
         if (this.isDesktopDevice) {
           Row() {
-            Text('←').fontSize(18).fontColor('#E6E6E6').margin({ right: 6 })
-            Text('返回').fontSize(14).fontColor('#E6E6E6')
+            Text('←').fontSize(18).fontColor(this.chromeText(0.9)).margin({ right: 6 })
+            Text('返回').fontSize(14).fontColor(this.chromeText(0.9))
           }
           .height(36).padding({ left: 12, right: 14 })
           .borderRadius(18)
-          .backgroundColor(this.backHover ? 'rgba(255,255,255,0.14)' : 'rgba(255,255,255,0.05)')
+          .backgroundColor(this.backHover ? this.chromeText(0.16) : this.chromeChipBg())
           .onHover((isHover: boolean): void => { this.backHover = isHover; })
           .onClick((): void => { this.closeSessionAndBack(); })
         } else {
-          Text('<').fontSize(20).fontColor('#E6E6E6')
+          Text('<').fontSize(20).fontColor(this.chromeText(0.9))
             .width(40).height(40).textAlign(TextAlign.Center)
             .borderRadius(20)
-            .backgroundColor('rgba(255,255,255,0.06)')
+            .backgroundColor(this.chromeChipBg())
             .onClick((): void => { this.closeSessionAndBack(); })
         }
         Column() {
-          Text(this.hostLabel).fontSize(15).fontWeight(FontWeight.Medium).fontColor('#F2F4F7')
+          Text(this.hostLabel).fontSize(15).fontWeight(FontWeight.Medium).fontColor(this.chromeText(1))
             .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-          Text(this.userAtHost).fontSize(11).fontColor(this.chromeText(0.58))
+          Text(this.userAtHost).fontSize(11).fontColor(this.chromeText(0.66))
             .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
         }.alignItems(HorizontalAlign.Start)
           .layoutWeight(this.sshTabsInline() ? 0 : 1)

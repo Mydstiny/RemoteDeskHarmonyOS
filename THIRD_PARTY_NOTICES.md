@@ -37,7 +37,7 @@ source and license files before redistribution.
 <!-- TOTP_BRAND_NOTICE_END -->
 
 <!-- SSH_TERMINAL_FONTS_NOTICE_BEGIN -->
-| SSH terminal fonts | JetBrains Mono, Fira Code, Source Code Pro, IBM Plex Mono via `@fontsource/*@5.3.0` (Latin, 400/700 woff2, unmodified); see `docs/compliance/SSH_TERMINAL_FONTS_PROVENANCE.md` | OFL-1.1; per-family copyright notices in `entry/src/main/resources/rawfile/ssh-terminal/fonts/*-LICENSE.txt` | Pro SSH terminal skins in the local xterm WebView |
+| SSH terminal fonts | JetBrains Mono, Fira Code, Source Code Pro, IBM Plex Mono, Cascadia Code, Roboto Mono, Inconsolata, Victor Mono, Fira Mono, Geist Mono, Space Mono, Red Hat Mono, Martian Mono, Anonymous Pro, Commit Mono via `@fontsource/*@5.3.0` (Latin, 400/700 woff2, unmodified); see `docs/compliance/SSH_TERMINAL_FONTS_PROVENANCE.md` | OFL-1.1; per-family copyright notices in `entry/src/main/resources/rawfile/ssh-terminal/fonts/*-LICENSE.txt` | Pro SSH terminal skins in the local xterm WebView |
 <!-- SSH_TERMINAL_FONTS_NOTICE_END -->
 
 Artifact hashes are generated in `docs/compliance/THIRD_PARTY_ARTIFACTS.sha256`.

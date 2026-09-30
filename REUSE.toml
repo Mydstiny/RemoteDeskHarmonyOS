@@ -27,5 +27,5 @@ SPDX-License-Identifier = "LicenseRef-ThirdParty"
 [[annotations]]
 path = "entry/src/main/resources/rawfile/ssh-terminal/fonts/**"
 precedence = "override"
-SPDX-FileCopyrightText = "JetBrains Mono, Fira Code, Source Code Pro and IBM Plex Mono project authors; see the bundled *-LICENSE.txt files"
+SPDX-FileCopyrightText = "Authors of the bundled OFL monospace fonts; see docs/compliance/SSH_TERMINAL_FONTS_PROVENANCE.md and the bundled *-LICENSE.txt files"
 SPDX-License-Identifier = "OFL-1.1"

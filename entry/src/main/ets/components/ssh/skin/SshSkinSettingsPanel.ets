@@ -65,10 +65,19 @@ export struct SshSkinSettingsPanel {
   @State paletteIndex: number = 0;
   @State hexDraft: string = '';
   @State tab: number = 0;
+  // Live sheet width: 2 cards per row on phones, 3 on narrow Pad/split windows, 4 on wide windows.
+  @State panelWidth: number = 360;
   private sequence: number = 0;
 
   aboutToAppear(): void { SshSkinStore.getInstance().load(this.context()); }
   private context(): common.Context { return getContext(this) as common.Context; }
+  private columns(): number { return this.panelWidth >= 760 ? 4 : this.panelWidth >= 500 ? 3 : 2; }
+  private cardWidth(): string {
+    const gap: number = 10;
+    const width: number = Math.max(120, (Math.min(this.panelWidth, 960) - 40 - gap * (this.columns() - 1)) / this.columns());
+    return Math.floor(width).toString() + 'vp';
+  }
+  private previewHeight(): number { return this.columns() >= 4 ? 92 : 86; }
   private pal(): Palette { return this.theme === 'light' ? buildLight(this.accent) : buildDark(this.accent); }
   private settings(_revision: number): SshSkinSettings { return SshSkinStore.getInstance().snapshot(); }
   private allSkins(revision: number): SshSkin[] { return sshBuiltInSkins().concat(this.settings(revision).custom); }
@@ -243,7 +252,7 @@ export struct SshSkinSettingsPanel {
 
   @Builder private skinCard(skin: SshSkin, selected: boolean) {
     Column({ space: 6 }) {
-      this.miniTerminal(skin, 86)
+      this.miniTerminal(skin, this.previewHeight())
       Row({ space: 4 }) {
         Column({ space: 1 }) {
           Text(skin.name).fontSize(12).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
@@ -301,13 +310,13 @@ export struct SshSkinSettingsPanel {
         Flex({ wrap: FlexWrap.Wrap, space: { main: LengthMetrics.vp(10), cross: LengthMetrics.vp(10) } }) {
           ForEach(this.allSkins(this.revision), (skin: SshSkin): void => {
             Column() { this.skinCard(skin, this.settings(this.revision).globalSkinId === skin.id) }
-              .width('47%')
+              .width(this.cardWidth())
           }, (skin: SshSkin): string => skin.id + ':' + this.revision.toString())
           Column({ space: 6 }) {
             SymbolGlyph($r('sys.symbol.plus')).fontSize(24).fontColor([this.accent])
             Text('新建皮肤').fontSize(12).fontColor(this.accent)
             Text('从当前皮肤复制').fontSize(10).fontColor(this.pal().text3)
-          }.width('47%').height(128).justifyContent(FlexAlign.Center).borderRadius(14)
+          }.width(this.cardWidth()).height(this.previewHeight() + 42).justifyContent(FlexAlign.Center).borderRadius(14)
           .border({ width: 1, color: this.accent, style: BorderStyle.Dashed })
           .onClick((): void => {
             const current: SshSkin | null = sshSkinById(this.settings(this.revision),
@@ -409,6 +418,19 @@ export struct SshSkinSettingsPanel {
         Button('保存').fontSize(13).fontColor(Color.White).backgroundColor(this.accent).height(32)
           .onClick((): void => { this.saveEditing(); })
       }.width('100%')
+      if (this.columns() >= 4) {
+        Row({ space: 20 }) {
+          Column({ space: 12 }) { this.editorPreview(skin) }.width('38%')
+          Column({ space: 12 }) { this.editorControls(skin) }.layoutWeight(1)
+        }.width('100%').alignItems(VerticalAlign.Top)
+      } else {
+        this.editorPreview(skin)
+        this.editorControls(skin)
+      }
+    }.width('100%')
+  }
+
+  @Builder private editorPreview(skin: SshSkin) {
       this.miniTerminal(skin, 150)
       if (sshSkinContrast(skin.terminal.foreground, skin.terminal.background) < 3) {
         Text('文字与背景对比度偏低（' + sshSkinContrast(skin.terminal.foreground, skin.terminal.background).toFixed(1) +
@@ -418,6 +440,9 @@ export struct SshSkinSettingsPanel {
         .backgroundColor(this.pal().card).borderRadius(10)
         .onChange((value: string): void => { this.setName(value); })
 
+  }
+
+  @Builder private editorControls(skin: SshSkin) {
       this.sectionTitle('终端', '点选要修改的颜色，再从下方色板选择或输入色值')
       Flex({ wrap: FlexWrap.Wrap }) {
         ForEach(TERMINAL_ROWS, (row: SkinColorRow): void => {
@@ -474,7 +499,6 @@ export struct SshSkinSettingsPanel {
             .onClick((): void => { this.setFont(font.id); })
         }, (font: SshSkinFont): string => font.id)
       }.width('100%')
-    }.width('100%')
   }
 
   /** Chrome colors may carry alpha (#AARRGGBB); the editor shows and edits the opaque color. */
@@ -500,7 +524,12 @@ export struct SshSkinSettingsPanel {
         } else {
           this.gallery()
         }
-      }.width('100%').padding({ left: 20, right: 20, top: 20, bottom: 32 })
+      }.width('100%').constraintSize({ maxWidth: 960 }).padding({ left: 20, right: 20, top: 20, bottom: 32 })
     }.width('100%').height('100%').scrollBar(BarState.Off).edgeEffect(EdgeEffect.Spring)
+    .align(Alignment.Top)
+    .onAreaChange((_old: Area, next: Area): void => {
+      const width: number = Number(next.width);
+      if (Number.isFinite(width) && width > 0 && Math.abs(width - this.panelWidth) >= 1) { this.panelWidth = width; }
+    })
   }
 }

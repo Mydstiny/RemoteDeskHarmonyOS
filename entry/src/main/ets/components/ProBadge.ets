@@ -1,6 +1,7 @@
 import { common } from '@kit.AbilityKit';
 import { preferences } from '@kit.ArkData';
 import { AppConfig } from '../common/Theme';
+import { proBadgeFlowStops } from '../services/pro/ProBadgeFlowPolicy';
 
 const PRO_BADGE_PREFS_KEY: string = 'proBadgeV1';
 const PRO_BADGE_FLOW: string = 'proBadgeFlow';
@@ -37,10 +38,31 @@ export class ProBadgePreferences {
   }
 }
 
-// One seamless period of the iridescent colors; the strip holds two periods and slides by one.
-const FLOW_PERIOD: number = 64;
-const FLOW_COLORS: Array<[ResourceColor, number]> = [['#B9F3EA', 0], ['#CDC9FF', 0.125], ['#F4C8E5', 0.25],
-  ['#F9E3B8', 0.375], ['#B9F3EA', 0.5], ['#CDC9FF', 0.625], ['#F4C8E5', 0.75], ['#F9E3B8', 0.875], ['#B9F3EA', 1]];
+const FLOW_PERIOD_MS: number = 2800;
+const FLOW_FRAME_MS: number = 33;
+const PRO_BADGE_PHASE: string = 'proBadgePhase';
+
+/** One shared frame clock for every visible flowing badge. */
+class ProBadgeFlowClock {
+  private static users: number = 0;
+  private static timer: number = -1;
+
+  static acquire(): void {
+    ProBadgeFlowClock.users++;
+    if (ProBadgeFlowClock.timer !== -1) { return; }
+    ProBadgeFlowClock.timer = setInterval((): void => {
+      AppStorage.setOrCreate(PRO_BADGE_PHASE, (Date.now() % FLOW_PERIOD_MS) / FLOW_PERIOD_MS);
+    }, FLOW_FRAME_MS);
+  }
+
+  static release(): void {
+    ProBadgeFlowClock.users = Math.max(0, ProBadgeFlowClock.users - 1);
+    if (ProBadgeFlowClock.users === 0 && ProBadgeFlowClock.timer !== -1) {
+      clearInterval(ProBadgeFlowClock.timer);
+      ProBadgeFlowClock.timer = -1;
+    }
+  }
+}
 
 /**
  * Product marker only; never grants access or represents a payment status on its own.
@@ -50,33 +72,34 @@ const FLOW_COLORS: Array<[ResourceColor, number]> = [['#B9F3EA', 0], ['#CDC9FF',
 @Component
 export struct ProBadge {
   @Prop large: boolean = false;
-  @StorageProp('proBadgeFlow') @Watch('onFlowChange') flow: boolean = true;
-  @StorageProp('proBadgeVisible') visible: boolean = true;
-  @State shift: number = 0;
+  @StorageProp('proBadgeFlow') @Watch('syncClock') flow: boolean = true;
+  @StorageProp('proBadgeVisible') @Watch('syncClock') visible: boolean = true;
+  @StorageProp('proBadgePhase') phase: number = 0;
+  private ticking: boolean = false;
 
-  aboutToAppear(): void { ProBadgePreferences.load(getContext(this)); }
-  // Turning the flow back on restarts the loop from its first frame.
-  onFlowChange(): void {
-    if (!this.flow) { return; }
-    this.shift = 0;
-    setTimeout((): void => { this.shift = -FLOW_PERIOD; }, 16);
+  aboutToAppear(): void {
+    ProBadgePreferences.load(getContext(this));
+    this.syncClock();
+  }
+
+  aboutToDisappear(): void {
+    if (this.ticking) { ProBadgeFlowClock.release(); this.ticking = false; }
+  }
+
+  syncClock(): void {
+    const wanted: boolean = this.flow && this.visible;
+    if (wanted && !this.ticking) { ProBadgeFlowClock.acquire(); this.ticking = true; }
+    if (!wanted && this.ticking) { ProBadgeFlowClock.release(); this.ticking = false; }
   }
 
   build() {
     if (this.visible) {
-      Stack({ alignContent: Alignment.Start }) {
-        Row().width(FLOW_PERIOD * 2).height('100%')
-          .linearGradient({ angle: 90, colors: FLOW_COLORS })
-          .translate({ x: this.flow ? this.shift : -FLOW_PERIOD / 4 })
-          .animation(this.flow ? { duration: 2600, curve: Curve.Linear, iterations: -1, playMode: PlayMode.Normal } :
-            { duration: 0 })
-        Text('Pro').fontSize(this.large ? 13 : 10).fontWeight(FontWeight.Bold).fontFamily(AppConfig.fontFamily)
-          .fontColor('#29223F').maxLines(1).width('100%').textAlign(TextAlign.Center)
-      }
-      .width(this.large ? 46 : 32).height(this.large ? 24 : 18).borderRadius(this.large ? 9 : 7).clip(true)
-      .border({ width: 0.5, color: '#90FFFFFF' })
-      .onAppear((): void => { this.shift = -FLOW_PERIOD; })
-      .accessibilityText('Pro 功能标识')
+      Text('Pro').fontSize(this.large ? 13 : 10).fontWeight(FontWeight.Bold).fontFamily(AppConfig.fontFamily)
+        .fontColor('#29223F').maxLines(1).textAlign(TextAlign.Center)
+        .width(this.large ? 46 : 32).height(this.large ? 24 : 18).borderRadius(this.large ? 9 : 7)
+        .linearGradient({ angle: 90, colors: proBadgeFlowStops(this.flow ? this.phase : 0.08) })
+        .border({ width: 0.5, color: '#90FFFFFF' })
+        .accessibilityText('Pro 功能标识')
     }
   }
 }
