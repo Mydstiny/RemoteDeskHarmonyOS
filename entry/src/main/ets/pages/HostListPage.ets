@@ -7,7 +7,6 @@ import { AiHostService, projectAiHost, aiHostId } from '../services/ai/AiHostSer
 import { AiHost } from '../services/ai/AiModels';
 import { AiAccess, AiAccountLease } from '../services/ai/AiAccess';
 import { AiLocalStore } from '../services/ai/AiLocalStore';
-import { ProIncomingContinuationCard } from '../components/ProContinuationControls';
 import { ProIncomingConnectionShareCard } from '../components/ProConnectionShareControls';
 import { ProConnectionShareReceiver } from '../services/pro/ProConnectionShareReceiver';
 import { SshAddBasicFields } from '../common/SshAddBasicFields';
@@ -1947,7 +1946,6 @@ struct HostListPage {
     return false;
   }
 
-  @State proIncomingContinuationVisible: boolean = false;
   private proContinuationAutoAcceptedId: string = '';
   private proContinuationStop: (() => void) | null = null;
   private proContinuationAttemptId: string = '';
@@ -2045,7 +2043,6 @@ struct HostListPage {
     this.proContinuationStop = ProContinuationService.getInstance().subscribe((): void => {
       const service = ProContinuationService.getInstance();
       const snapshot = service.snapshot();
-      this.proIncomingContinuationVisible = snapshot.incoming;
       const id = service.incomingId();
       if (snapshot.incomingCanAccept && id !== '' && id !== this.proContinuationAutoAcceptedId) {
         this.proContinuationAutoAcceptedId = id;
@@ -6732,7 +6729,7 @@ struct HostListPage {
 
   // Tapping the system continuation entry is the user's consent: accept each incoming transfer once,
   // whichever tab is open. A hot start delivers the Want before foreground, so wait for it briefly.
-  // Failures stay on the host-list card with their reason and a retry.
+  // No card: a failure is shown once as a toast and the transfer is dropped; continue again from the source.
   private async autoAcceptProContinuation(id: string, attempt: number): Promise<void> {
     const service = ProContinuationService.getInstance();
     if (service.incomingId() !== id || !service.snapshot().incomingCanAccept) { return; }
@@ -6741,7 +6738,13 @@ struct HostListPage {
       return;
     }
     const host = await service.accept(getContext(this) as common.UIAbilityContext);
-    if (host === null) { return; }
+    if (host === null) {
+      if (service.incomingId() !== id) { return; }
+      const reason = service.snapshot().incomingMessage;
+      promptAction.showToast({ message: reason.length > 0 ? reason : '接续失败，请在源设备重新接续', duration: 3000 });
+      service.cancelIncoming(id);
+      return;
+    }
     if (service.incomingId() !== id || !this.pageActive || this.appInBackground) { service.cancelIncoming(id); return; }
     await this.connectToProContinuationHost(host, id);
   }
@@ -14897,16 +14900,6 @@ struct HostListPage {
         List({ space: 8 }) {
           // 顶栏占位: 跟随真实系统避让区, 与渐变玻璃层高度一致
           ListItem() { Column().height(this.hostTopBarHeight() + 8) }
-          if (this.proIncomingContinuationVisible) {
-            ListItem() {
-              ProIncomingContinuationCard({
-                onConnect: (host: RemoteHost, transferId: string): void => {
-                  if (this.pageActive && !this.appInBackground) { void this.connectToProContinuationHost(host, transferId); }
-                  else { ProContinuationService.getInstance().cancelIncoming(); }
-                }
-              })
-            }
-          }
           if (this.proIncomingConnectionShareVisible) {
             ListItem() {
               ProIncomingConnectionShareCard({ onImport: (id: string): void => { this.openProConnectionShareImport(id); } })
