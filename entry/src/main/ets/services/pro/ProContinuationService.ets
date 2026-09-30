@@ -13,11 +13,13 @@ import { matchesProConnectionHost } from './ProConnectionHostAdapter';
 import { ProRdpConnectionIdentity, sameProRdpConnectionIdentity } from './ProRdpConnectionIdentity';
 import { ProConnectionTransaction } from './ProConnectionTransaction';
 import { ProContinuationReceiptChannel } from './ProContinuationReceiptChannel';
-import { ProContinuationCredentialChannel, ProContinuationCredentialHandoff, ProContinuationSecret,
-  proContinuationCredentialSession } from './ProContinuationCredentials';
+import { ProContinuationCredentialHandoff, ProContinuationSecret,
+  validProContinuationSecret } from './ProContinuationCredentials';
 import { ProContinuationPreferences } from './ProContinuationPreferences';
 
 export const PRO_CONTINUATION_PARAM: string = 'remotedesk.pro.connection.v1';
+/** Opt-in secret, a separate Want parameter so the whitelisted envelope never carries it. */
+export const PRO_CONTINUATION_SECRET_PARAM: string = 'remotedesk.pro.connection.secret.v1';
 export const PRO_CONTINUATION_LIBRARY_PARAM: string = 'remotedesk.pro.connection.library';
 export const PRO_CONTINUATION_FEATURE: string = 'pro.connection.continuation';
 const SYNC_PERMISSION: Permissions = 'ohos.permission.DISTRIBUTED_DATASYNC';
@@ -77,7 +79,6 @@ export class ProContinuationService {
   private sourceAccountGeneration: number = 0;
   private sourceTransaction: ProConnectionTransaction | null = null;
   private sourceChannel: ProContinuationReceiptChannel = new ProContinuationReceiptChannel();
-  private sourceCredentials: ProContinuationCredentialChannel = new ProContinuationCredentialChannel();
   private sourceGeneration: number = 0;
   private sourceTimer: number = -1;
   private sourceMessage: string = '';
@@ -86,9 +87,7 @@ export class ProContinuationService {
   private target: ProConnectionTransaction | null = null;
   private targetContext: common.UIAbilityContext | null = null;
   private targetChannel: ProContinuationReceiptChannel = new ProContinuationReceiptChannel();
-  private targetCredentials: ProContinuationCredentialChannel = new ProContinuationCredentialChannel();
-  /** How long the target waits for an opted-in secret to synchronize. */
-  credentialWaitMs: number = 5000;
+  private targetSecret: ProContinuationSecret | null = null;
   private targetAccountGeneration: number = 0;
   private targetGeneration: number = 0;
   private targetTimer: number = -1;
@@ -276,21 +275,14 @@ export class ProContinuationService {
       if (generation === this.sourceGeneration) { this.cancelSource(); }
       return AbilityConstant.OnContinueResult.REJECT;
     }
-    // Opt-in only: the secret never enters the envelope; it waits on its own derived session.
+    // Opt-in only: the platform's authenticated same-account continuation transport carries the
+    // secret as its own Want parameter (never inside the whitelisted envelope). Data-object sync
+    // is unavailable between the devices during continuation, so it cannot carry it.
     if (ProContinuationPreferences.getInstance().settings().credentialMode === 'transfer' && source.secret !== undefined) {
       const secret = source.secret();
-      if (secret !== null) {
-        const target = parameters['targetDevice'];
-        const offered = await this.sourceCredentials.offer(context, proContinuationCredentialSession(envelope.channelId),
-          secret, envelope.expiresAt, typeof target === 'string' ? target : '');
-        hilog.info(0x0001, 'ProContinuation', 'credential offered=%{public}s kind=%{public}s', offered ? 'true' : 'false',
-          secret.kind);
-        if (generation !== this.sourceGeneration || !this.sourceCurrent()) {
-          this.sourceCredentials.close();
-          if (generation === this.sourceGeneration) { this.cancelSource(); }
-          return AbilityConstant.OnContinueResult.REJECT;
-        }
-      }
+      if (secret !== null) { parameters[PRO_CONTINUATION_SECRET_PARAM] = JSON.stringify(secret); }
+      hilog.info(0x0001, 'ProContinuation', 'credential attached=%{public}s kind=%{public}s', secret !== null ? 'true' : 'false',
+        secret?.kind ?? 'none');
     }
     parameters[PRO_CONTINUATION_PARAM] = serialized;
     parameters[wantConstant.Params.SUPPORT_CONTINUE_PAGE_STACK_KEY] = false;
@@ -298,7 +290,7 @@ export class ProContinuationService {
     this.sourceMessage = '正在等待目标确认与连接；本端会话继续保留'; this.publish();
     return AbilityConstant.OnContinueResult.AGREE;
   }
-  ingest(serialized: string): boolean {
+  ingest(serialized: string, secretValue: Object | null = null): boolean {
     const envelope = parseProConnectionEnvelope(serialized);
     hilog.info(0x0001, 'ProContinuation', 'ingest valid=%{public}s busy=%{public}s', envelope !== null ? 'true' : 'false',
       this.target !== null ? 'true' : 'false');
@@ -308,8 +300,14 @@ export class ProContinuationService {
         this.seen.has(envelope.transferId) || this.seen.size >= 64) { return false; }
     // A newer continuation from the user replaces an older one still pending or failed.
     if (this.target !== null) { this.cancelIncoming(); }
+    let secret: ProContinuationSecret | null = null;
+    if (typeof secretValue === 'string' && secretValue.length <= 40000) {
+      try { secret = validProContinuationSecret(JSON.parse(secretValue) as Object); } catch (_error) { secret = null; }
+    }
     this.seen.set(envelope.transferId, envelope.expiresAt);
     this.target = new ProConnectionTransaction(envelope);
+    this.targetSecret = envelope.connection.protocol === 'ssh' ? secret : null;
+    hilog.info(0x0001, 'ProContinuation', 'ingest credential=%{public}s', this.targetSecret !== null ? 'true' : 'false');
     this.targetMessage = envelope.connection.protocol === 'rdp'
       ? '正在自动接续：使用本设备保存的凭据连接，恢复缩放、平移和输入模式。'
       : '正在自动接续：使用本设备保存的凭据连接并恢复目录。普通终端进程和未完成传输不会迁移。';
@@ -362,15 +360,12 @@ export class ProContinuationService {
       hilog.warn(0x0001, 'ProContinuation', 'accept rejected reason=channel joined=%{public}s', joined ? 'true' : 'false');
       if (generation === this.targetGeneration) { this.cancelIncoming(); } return null;
     }
-    if (envelope.connection.protocol === 'ssh') {
-      const secret = await this.targetCredentials.receive(context, proContinuationCredentialSession(envelope.channelId),
-        envelope.expiresAt, this.credentialWaitMs);
-      if (generation !== this.targetGeneration || this.target !== target) { return null; }
-      if (secret !== null) {
-        ProContinuationCredentialHandoff.getInstance().deposit(envelope.connection.hostReference, envelope.owner, secret);
-      }
-      hilog.info(0x0001, 'ProContinuation', 'accept credential received=%{public}s', secret !== null ? 'true' : 'false');
+    // Moved into the one-shot, host-bound handoff only once every account/host/Pro check passed.
+    const secret = this.targetSecret; this.targetSecret = null;
+    if (secret !== null) {
+      ProContinuationCredentialHandoff.getInstance().deposit(envelope.connection.hostReference, envelope.owner, secret);
     }
+    hilog.info(0x0001, 'ProContinuation', 'accept credential received=%{public}s', secret !== null ? 'true' : 'false');
     hilog.info(0x0001, 'ProContinuation', 'accept connecting protocol=%{public}s', envelope.connection.protocol);
     const currentHost = HostSyncService.getInstance().getHost(envelope.connection.hostReference);
     if (currentHost === undefined || currentHost.userId !== envelope.owner ||
@@ -409,7 +404,7 @@ export class ProContinuationService {
   cancelIncoming(expectedId: string = ''): void {
     if (expectedId !== '' && this.incomingId() !== expectedId) { return; }
     this.targetGeneration++; this.target?.cancel(); this.target = null; this.targetChannel.close();
-    this.targetCredentials.close();
+    this.targetSecret = null;
     this.targetContext = null;
     if (this.targetTimer !== -1) { clearTimeout(this.targetTimer); this.targetTimer = -1; }
     this.targetMessage = ''; this.publish();
@@ -417,7 +412,6 @@ export class ProContinuationService {
   cancelSource(windowId: number = 0): void {
     if (windowId > 0 && this.source?.windowId !== windowId) { return; }
     this.sourceGeneration++; this.sourceTransaction?.cancel(); this.sourceTransaction = null; this.sourceChannel.close();
-    this.sourceCredentials.close();
     if (this.sourceTimer !== -1) { clearTimeout(this.sourceTimer); this.sourceTimer = -1; }
     const context = this.sourceContext;
     this.source = null; this.sourceContext = null; this.sourceMessage = ''; this.sourceDeadline = 0;

@@ -1,4 +1,4 @@
-import { ProContinuationService, PRO_CONTINUATION_PARAM,
+import { ProContinuationService, PRO_CONTINUATION_PARAM, PRO_CONTINUATION_SECRET_PARAM,
   PRO_CONTINUATION_LIBRARY_PARAM } from '../services/pro/ProContinuationService';
 import { ProConnectionShareReceiver } from '../services/pro/ProConnectionShareReceiver';
 import { ProConnectionShareSender } from '../services/pro/ProConnectionShareSender';
@@ -352,7 +352,7 @@ export default class EntryAbility extends UIAbility {
     const stack: Object | undefined = want.parameters?.[wantConstant.Params.SUPPORT_CONTINUE_PAGE_STACK_KEY];
     const sourceExit: Object | undefined = want.parameters?.[wantConstant.Params.SUPPORT_CONTINUE_SOURCE_EXIT_KEY];
     if (stack !== false || sourceExit !== false || typeof value !== 'string' ||
-        !ProContinuationService.getInstance().ingest(value)) {
+        !ProContinuationService.getInstance().ingest(value, want.parameters?.[PRO_CONTINUATION_SECRET_PARAM] ?? null)) {
       // A rejected cold migration must not instantiate a foreign Router stack.
       // An already open target retains its existing UI and free connections.
       if (this.windowStage === null) { void this.context.terminateSelf().catch((): void => {}); }

@@ -104,7 +104,7 @@ function fixture() {
   const { ProContinuationReceiptChannel } = load(dir + 'ProContinuationReceiptChannel.ets');
   const { ProContinuationService, PRO_CONTINUATION_PARAM, PRO_CONTINUATION_LIBRARY_PARAM } =
     load(dir + 'ProContinuationService.ets');
-  const service = ProContinuationService.getInstance(); service.credentialWaitMs = 0;
+  const service = ProContinuationService.getInstance();
   const envelope = () => ({ version: 1, purpose: 'continuation', transferId: 'b'.repeat(32),
     channelId: 'rd_' + 'c'.repeat(32), owner: state.scope.ownerScopeId, createdAt: state.now,
     expiresAt: state.now + 120000, connection: adapter.describeProSshConnection(state.host, 'files', '/home/alice/work', context) });
@@ -534,37 +534,37 @@ test('always-on Pro continuation never prompts, stays armed and carries the dire
   assert.equal(page.proContinuationDescribe().view.sshPane, 'terminal');
   assert.equal(f.state.permissionRequests ?? 0, 0);
 });
-test('opt-in credential transfer uses a derived session, never the envelope, and is taken once for one host', async () => {
+test('opt-in credential transfer rides a separate continuation parameter, never the envelope, and is used once', async () => {
   const f = fixture(); const dir = 'entry/src/main/ets/services/pro/';
   const prefs = f.load(dir + 'ProContinuationPreferences.ets').ProContinuationPreferences.getInstance();
-  const creds = f.load(dir + 'ProContinuationCredentials.ets');
+  const secretKey = f.load(dir + 'ProContinuationService.ets').PRO_CONTINUATION_SECRET_PARAM;
   const secret = { kind: 'key', password: '', privateKeyPem: '-----BEGIN OPENSSH PRIVATE KEY-----\nabc', passphrase: 'pp' };
   const offer = f.offer(); offer.secret = () => secret;
-  await f.service.prepare(f.context, offer); let params = { targetDevice: 'pad-network-id' };
+  await f.service.prepare(f.context, offer); let params = {};
   assert.equal(await f.service.onContinue(9, params), 0);
-  assert.equal(f.state.objects.some(o => 'secret' in o), false, 'manual mode offers nothing');
+  assert.equal(secretKey in params, false, 'manual mode attaches nothing');
   f.service.cancelSource(); prefs.value.credentialMode = 'transfer';
   try {
-    await f.service.prepare(f.context, offer); params = { targetDevice: 'pad-network-id' };
+    await f.service.prepare(f.context, offer); params = {};
     assert.equal(await f.service.onContinue(9, params), 0);
-    const e = JSON.parse(params[f.key]);
-    assert.equal(params[f.key].includes('PRIVATE KEY'), false); assert.equal(params[f.key].includes('pp'), false);
-    const offered = f.state.objects.find(o => 'secret' in o);
-    const session = creds.proContinuationCredentialSession(e.channelId);
-    assert.equal(offered.calls.at(-1), session); assert.notEqual(session, e.channelId);
-    assert.equal(offered.savedTo, 'pad-network-id', 'saved only for the continuation target');
-    assert.equal(offered.secret, JSON.stringify(secret));
-    f.service.cancelSource(); assert.equal(offered.secret, '', 'cancelling wipes the offered secret');
-    assert.equal(offered.revoked, true, 'cancelling revokes the saved copy');
-    // Target: receives the synced value, deposits it for this host only, one use.
-    const t = fixture(); t.state.remoteSecret = JSON.stringify(secret); const te = t.envelope();
-    t.service.ingest(JSON.stringify(te)); assert.ok(await t.service.accept(t.context));
+    assert.equal(params[f.key].includes('PRIVATE KEY'), false, 'the envelope never carries it');
+    assert.equal(params[secretKey], JSON.stringify(secret));
+    // Target: validated at ingest, moved to the one-shot host-bound handoff only after accept.
+    const t = fixture(); const te = t.envelope();
     const handoff = t.load(dir + 'ProContinuationCredentials.ets').ProContinuationCredentialHandoff.getInstance();
+    assert.equal(t.service.ingest(JSON.stringify(te), params[secretKey]), true);
+    assert.equal(handoff.take(te.connection.hostReference, te.owner), null, 'nothing before accept');
+    assert.ok(await t.service.accept(t.context));
     assert.equal(handoff.take('other-host', te.owner), null);
     assert.equal(JSON.stringify(handoff.take(te.connection.hostReference, te.owner)), JSON.stringify(secret));
-    assert.equal(handoff.take(te.connection.hostReference, te.owner), null);
-    assert.equal(creds.validProContinuationSecret({ ...secret, extra: 1 }), null);
-    assert.equal(creds.validProContinuationSecret({ kind: 'key', password: 'x', privateKeyPem: secret.privateKeyPem, passphrase: '' }), null);
+    assert.equal(handoff.take(te.connection.hostReference, te.owner), null, 'one use');
+    // A cancelled or malformed secret never reaches the handoff.
+    const c = fixture(); const ce = c.envelope();
+    c.service.ingest(JSON.stringify(ce), params[secretKey]); c.service.cancelIncoming();
+    const ce2 = c.envelope(); ce2.transferId = '5'.repeat(32); ce2.channelId = 'rd_' + '6'.repeat(32);
+    c.service.ingest(JSON.stringify(ce2), JSON.stringify({ ...secret, extra: 1 })); assert.ok(await c.service.accept(c.context));
+    assert.equal(c.load(dir + 'ProContinuationCredentials.ets').ProContinuationCredentialHandoff.getInstance()
+      .take(ce2.connection.hostReference, ce2.owner), null);
   } finally { prefs.value.credentialMode = 'manual'; }
 });
 test('actual source page binds native generation and CONNECTED before accepting an old close receipt', async () => {
