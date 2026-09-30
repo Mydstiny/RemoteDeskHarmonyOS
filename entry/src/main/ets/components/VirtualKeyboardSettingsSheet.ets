@@ -1,5 +1,5 @@
 import { common } from '@kit.AbilityKit';
-import { promptAction } from '@kit.ArkUI';
+import { LengthMetrics, promptAction } from '@kit.ArkUI';
 import {
   RemoteCustomShortcut,
   RemoteCustomShortcutKeyGroup,
@@ -13,8 +13,17 @@ import {
   remoteCustomShortcutKeyAvailableOnPlatform,
   remoteCustomShortcutLabelForPlatform,
   removeRemoteCustomShortcut,
-  upsertRemoteCustomShortcut
+  moveRemoteCustomShortcut,
+  upsertRemoteCustomShortcutSteps,
+  remoteCustomShortcutSteps,
+  remoteCustomShortcutStepsLabel,
+  remoteCustomShortcutDisplayName,
+  REMOTE_CUSTOM_SHORTCUT_GROUPS,
+  REMOTE_CUSTOM_SHORTCUT_MAX_STEPS,
+  REMOTE_CUSTOM_SHORTCUT_NAME_MAX
 } from '../services/RemoteCustomShortcutPolicy';
+import { ProEntries } from '../services/pro/ProEntries';
+import { PRO_PERSONALIZATION_FEATURE } from '../services/pro/ProFeatureCatalog';
 import {
   normalizeRemoteShortcutPlatform,
   RemoteKeyboardPreferences,
@@ -62,6 +71,12 @@ export struct VirtualKeyboardSettingsSheet {
   @State private modifierCodes: Array<number> = [];
   @State private actionGroup: RemoteCustomShortcutKeyGroup = 'letters';
   @State private actionKeyCode: number = 2017;
+  // Completed steps of the sequence being edited; the modifier/key pickers edit step `activeStep`.
+  @State private draftSteps: Array<Array<number>> = [];
+  @State private activeStep: number = 0;
+  @State private draftName: string = '';
+  @State private recording: boolean = false;
+  private recordModifiers: Array<number> = [];
   @State private viewportWidth: number = 360;
   @State private viewportHeight: number = 640;
   @State private harmonyShortcutBlocking: HarmonyShortcutBlockingPreferences =
@@ -264,13 +279,31 @@ export struct VirtualKeyboardSettingsSheet {
     return result;
   }
 
+  /** All steps with the step under edit replaced by the live picker state. */
+  private allDraftSteps(): Array<Array<number>> {
+    const steps: Array<Array<number>> = this.draftSteps.map((step: Array<number>): Array<number> => step.slice(0));
+    if (this.activeStep >= steps.length) { steps.push(this.draftKeyCodes()); } else { steps[this.activeStep] = this.draftKeyCodes(); }
+    return steps;
+  }
+
   private visibleCustomShortcuts(): Array<RemoteCustomShortcut> {
     return this.customShortcuts.filter((shortcut: RemoteCustomShortcut): boolean =>
       remoteCustomShortcutAvailableOnPlatform(shortcut, this.platform()));
   }
 
   private draftLabel(): string {
-    return remoteCustomShortcutLabelForPlatform(this.draftKeyCodes(), this.platform());
+    return remoteCustomShortcutStepsLabel(this.allDraftSteps(), this.platform());
+  }
+
+  private stepLabel(index: number): string {
+    const steps: Array<Array<number>> = this.allDraftSteps();
+    return index < steps.length ? remoteCustomShortcutLabelForPlatform(steps[index], this.platform()) : '';
+  }
+
+  private stepIndexes(): Array<number> {
+    const result: Array<number> = [];
+    for (let index: number = 0; index < this.allDraftSteps().length; index++) { result.push(index); }
+    return result;
   }
 
   private groupLabel(group: RemoteCustomShortcutKeyGroup): string {
@@ -279,6 +312,8 @@ export struct VirtualKeyboardSettingsSheet {
     if (group === 'symbols') { return '符号'; }
     if (group === 'functions') { return 'F 键'; }
     if (group === 'directions') { return '方向'; }
+    if (group === 'system') { return '系统键'; }
+    if (group === 'numpad') { return '小键盘'; }
     return '导航';
   }
 
@@ -309,48 +344,132 @@ export struct VirtualKeyboardSettingsSheet {
     return result;
   }
 
+  private loadPicker(step: Array<number>): void {
+    this.modifierCodes = step.slice(0, Math.max(0, step.length - 1));
+    this.actionKeyCode = step.length === 0 ? 2017 : step[step.length - 1];
+    this.actionGroup = remoteCustomShortcutKeyGroupForKeyCode(this.actionKeyCode);
+  }
+
   private beginEditor(shortcut: RemoteCustomShortcut | null = null): void {
     this.editorVisible = true;
     this.onCustomEditorVisibleChange(true);
     this.editingId = shortcut === null ? '' : shortcut.id;
-    this.modifierCodes = shortcut === null ? [] :
-      shortcut.keyCodes.slice(0, Math.max(0, shortcut.keyCodes.length - 1));
-    this.actionKeyCode = shortcut === null || shortcut.keyCodes.length === 0 ?
-      2017 : shortcut.keyCodes[shortcut.keyCodes.length - 1];
-    this.actionGroup = remoteCustomShortcutKeyGroupForKeyCode(this.actionKeyCode);
+    this.draftName = shortcut === null ? '' : (shortcut.name ?? '');
+    const steps: Array<Array<number>> = shortcut === null ? [[2072, 2017]] : remoteCustomShortcutSteps(shortcut);
+    this.draftSteps = steps;
+    this.activeStep = 0;
+    this.recording = false;
+    this.loadPicker(steps[0]);
+  }
+
+  /** Switch the picker to another step, keeping the edits of the current one. */
+  private selectStep(index: number): void {
+    const steps: Array<Array<number>> = this.allDraftSteps();
+    this.draftSteps = steps;
+    this.activeStep = Math.max(0, Math.min(index, steps.length - 1));
+    this.loadPicker(steps[this.activeStep]);
+  }
+
+  private addStep(): void {
+    const steps: Array<Array<number>> = this.allDraftSteps();
+    if (steps.length >= REMOTE_CUSTOM_SHORTCUT_MAX_STEPS) { return; }
+    steps.push([2072, 2017]);
+    this.draftSteps = steps;
+    this.activeStep = steps.length - 1;
+    this.loadPicker(steps[this.activeStep]);
+  }
+
+  private removeStep(index: number): void {
+    const steps: Array<Array<number>> = this.allDraftSteps();
+    if (steps.length <= 1) { return; }
+    steps.splice(index, 1);
+    this.draftSteps = steps;
+    this.activeStep = Math.min(this.activeStep, steps.length - 1);
+    this.loadPicker(steps[this.activeStep]);
   }
 
   private closeEditor(): void {
     this.editorVisible = false;
     this.onCustomEditorVisibleChange(false);
     this.editingId = '';
+    this.draftName = '';
+    this.draftSteps = [];
+    this.activeStep = 0;
+    this.recording = false;
     this.modifierCodes = [];
     this.actionGroup = 'letters';
     this.actionKeyCode = 2017;
+  }
+
+  private persist(next: Array<RemoteCustomShortcut>): boolean {
+    if (!this.service.saveCustomShortcuts(next, getContext(this) as common.Context)) {
+      promptAction.showToast({ message: '自定义组合键保存失败', duration: 2000 });
+      return false;
+    }
+    this.customShortcuts = next;
+    return true;
   }
 
   private saveCustomShortcut(): void {
     const id: string = this.editingId.length > 0 ? this.editingId :
       'shortcut-settings-' + Date.now().toString() + '-' + (++this.customSequence).toString();
     const update: RemoteCustomShortcutUpdate =
-      upsertRemoteCustomShortcut(this.customShortcuts, id, this.draftKeyCodes());
+      upsertRemoteCustomShortcutSteps(this.customShortcuts, id, this.draftName, this.allDraftSteps());
     if (!update.accepted) {
       promptAction.showToast({ message: update.reason, duration: 1800 });
       return;
     }
-    if (!this.service.saveCustomShortcuts(update.shortcuts, getContext(this) as common.Context)) {
-      promptAction.showToast({ message: '自定义组合键保存失败', duration: 2000 });
-      return;
-    }
-    this.customShortcuts = update.shortcuts;
-    this.closeEditor();
+    if (this.persist(update.shortcuts)) { this.closeEditor(); }
   }
 
-  private deleteCustomShortcut(id: string): void {
-    const next: Array<RemoteCustomShortcut> = removeRemoteCustomShortcut(this.customShortcuts, id);
-    if (this.service.saveCustomShortcuts(next, getContext(this) as common.Context)) {
-      this.customShortcuts = next;
+  private canAddShortcut(): boolean { return this.customShortcuts.length < 32; }
+
+  private moveCustomShortcut(id: string, delta: number): void {
+    this.persist(moveRemoteCustomShortcut(this.customShortcuts, id, delta));
+  }
+
+  /** Opens a copy in the editor as a new entry; an unchanged sequence would be rejected as a duplicate. */
+  private duplicateCustomShortcut(shortcut: RemoteCustomShortcut): void {
+    this.beginEditor(shortcut);
+    this.editingId = '';
+    const base: string = (shortcut.name ?? '').length > 0 ? (shortcut.name ?? '') : '副本';
+    this.draftName = base.slice(0, REMOTE_CUSTOM_SHORTCUT_NAME_MAX - 2) + ' 2';
+  }
+
+  private deleteCustomShortcut(shortcut: RemoteCustomShortcut): void {
+    this.getUIContext().getPromptAction().showDialog({
+      title: '删除组合键',
+      message: '删除「' + remoteCustomShortcutDisplayName(shortcut, this.platform()) + '」？此操作不可撤销。',
+      buttons: [{ text: '取消', color: this.text2() }, { text: '删除', color: this.danger() }]
+    }).then((result): void => {
+      if (result.index === 1) { this.persist(removeRemoteCustomShortcut(this.customShortcuts, shortcut.id)); }
+    }).catch((): void => {});
+  }
+
+  /** Physical keyboard recording: modifiers are collected, the first other key completes the step. */
+  private recordKey(event: KeyEvent): boolean {
+    if (!this.recording) { return false; }
+    const code: number = event.keyCode === 2073 ? 2072 : event.keyCode === 2046 ? 2045 :
+      event.keyCode === 2048 ? 2047 : event.keyCode === 2077 ? 2076 : event.keyCode;
+    const modifier: boolean = code === 2072 || code === 2045 || code === 2047 || code === 2076;
+    if (event.type === KeyType.Down) {
+      if (modifier) {
+        if (this.recordModifiers.indexOf(code) < 0) { this.recordModifiers.push(code); }
+        return true;
+      }
+      const group: RemoteCustomShortcutKeyGroup = remoteCustomShortcutKeyGroupForKeyCode(code);
+      const known: boolean = remoteCustomShortcutKeyOptions(group, this.platform())
+        .some((option: RemoteCustomShortcutKeyOption): boolean => option.keyCode === code);
+      if (known) {
+        this.modifierCodes = this.recordModifiers.slice(0);
+        this.actionKeyCode = code;
+        this.actionGroup = group;
+        this.recording = false;
+      }
+      return true;
     }
+    if (modifier) { this.recordModifiers = this.recordModifiers.filter((item: number): boolean => item !== code); }
+    return true;
   }
 
   @Builder
@@ -498,14 +617,38 @@ export struct VirtualKeyboardSettingsSheet {
   }
 
   @Builder
+  private stepChip(index: number) {
+    Row({ space: 4 }) {
+      Text((index + 1).toString()).fontSize(9).fontWeight(FontWeight.Bold)
+        .fontColor(index === this.activeStep ? this.accentColor : '#FFFFFF')
+        .width(16).height(16).textAlign(TextAlign.Center).borderRadius(8)
+        .backgroundColor(index === this.activeStep ? '#FFFFFF' : this.text2())
+      Text(this.stepLabel(index)).fontSize(10).maxLines(1)
+        .fontColor(index === this.activeStep ? '#FFFFFF' : this.text())
+      if (this.allDraftSteps().length > 1) {
+        SymbolGlyph($r('sys.symbol.xmark')).fontSize(10)
+          .fontColor([index === this.activeStep ? '#FFFFFF' : this.text2()])
+          .onClick((): void => { this.removeStep(index); })
+      }
+    }.height(30).padding({ left: 6, right: 8 }).borderRadius(15)
+      .backgroundColor(index === this.activeStep ? this.accentColor : this.card())
+      .border({ width: 0.5, color: this.cardStroke() })
+      .onClick((): void => { this.selectStep(index); })
+  }
+
+  @Builder
   private customEditor() {
-    Column({ space: 8 }) {
+    Column({ space: 10 }) {
       Row() {
         Text(this.editingId.length > 0 ? '编辑组合键' : '新建组合键')
-          .fontSize(13).fontWeight(FontWeight.Bold).fontColor(this.text()).layoutWeight(1)
-        Button('取消').height(32).fontSize(10).backgroundColor(Color.Transparent)
+          .fontSize(14).fontWeight(FontWeight.Bold).fontColor(this.text()).layoutWeight(1)
+        Button('取消').height(32).fontSize(11).backgroundColor(Color.Transparent)
           .fontColor(this.text2()).onClick((): void => { this.closeEditor(); })
       }.width('100%')
+      TextInput({ text: this.draftName, placeholder: '名称（可选，例如「全部保存」）' })
+        .height(38).fontSize(12).maxLength(REMOTE_CUSTOM_SHORTCUT_NAME_MAX)
+        .backgroundColor(this.card()).borderRadius(10)
+        .onChange((value: string): void => { this.draftName = value; })
       if (this.contentLayout().stackPrimaryActions) {
         Column({ space: 6 }) {
           Row() { this.editorPlatformChoice('windows', 'Windows · Ctrl') }.width('100%')
@@ -517,6 +660,18 @@ export struct VirtualKeyboardSettingsSheet {
           this.editorPlatformChoice('macos', 'macOS · Cmd')
         }.width('100%')
       }
+      Text('按键序列 · 依次发送，最多 ' + REMOTE_CUSTOM_SHORTCUT_MAX_STEPS.toString() + ' 步')
+        .fontSize(10).fontColor(this.text2()).width('100%')
+      Flex({ wrap: FlexWrap.Wrap, space: { main: LengthMetrics.vp(6), cross: LengthMetrics.vp(6) } }) {
+        ForEach(this.stepIndexes(), (index: number): void => { this.stepChip(index) },
+          (index: number): string => index.toString() + ':' + this.stepLabel(index) + ':' + this.activeStep.toString())
+        if (this.allDraftSteps().length < REMOTE_CUSTOM_SHORTCUT_MAX_STEPS) {
+          Text('＋ 下一步').fontSize(10).fontColor(this.accentColor).height(30)
+            .padding({ left: 10, right: 10 }).borderRadius(15)
+            .border({ width: 1, color: this.accentColor, style: BorderStyle.Dashed })
+            .onClick((): void => { this.addStep(); })
+        }
+      }.width('100%')
       Row({ space: 5 }) {
         if (this.platform() === 'macos') {
           this.modifierChoice('Cmd', 2076)
@@ -531,31 +686,49 @@ export struct VirtualKeyboardSettingsSheet {
         }
       }.width('100%')
       Row({ space: 4 }) {
-        this.groupChoice('letters')
-        this.groupChoice('digits')
-        this.groupChoice('symbols')
-        this.groupChoice('functions')
-        this.groupChoice('directions')
-        this.groupChoice('navigation')
+        ForEach(REMOTE_CUSTOM_SHORTCUT_GROUPS.slice(0, 4), (group: RemoteCustomShortcutKeyGroup): void => {
+          this.groupChoice(group)
+        }, (group: RemoteCustomShortcutKeyGroup): string => group)
+      }.width('100%')
+      Row({ space: 4 }) {
+        ForEach(REMOTE_CUSTOM_SHORTCUT_GROUPS.slice(4), (group: RemoteCustomShortcutKeyGroup): void => {
+          this.groupChoice(group)
+        }, (group: RemoteCustomShortcutKeyGroup): string => group)
       }.width('100%')
       Column({ space: this.customEditorLayout().itemGap }) {
         ForEach(this.customActionRows(),
           (row: Array<RemoteCustomShortcutKeyOption>): void => { this.customActionRow(row) },
           (row: Array<RemoteCustomShortcutKeyOption>): string => row[0].keyCode.toString())
       }.width('100%')
-      Row() {
-        Text(this.draftLabel().length > 0 ? this.draftLabel() : '请选择修饰键和主键')
-          .fontSize(11).fontColor(this.draftLabel().length > 0 ? this.text() : this.danger())
-          .layoutWeight(1).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-        Button('保存').height(34).fontSize(11).borderRadius(9)
-          .backgroundColor(this.draftLabel().length > 0 ? this.accentColor : this.card())
-          .fontColor(this.draftLabel().length > 0 ? '#FFFFFF' : this.text2())
-          .enabled(this.draftLabel().length > 0)
-          .onClick((): void => { this.saveCustomShortcut(); })
-      }.width('100%')
+      Button(this.recording ? '请在实体键盘上按下组合…（点此取消）' : '用实体键盘录制本步')
+        .width('100%').height(36).fontSize(11).borderRadius(10)
+        .backgroundColor(this.recording ? this.accentSoft() : this.card())
+        .fontColor(this.recording ? this.accentColor : this.text())
+        .onClick((): void => { this.recordModifiers = []; this.recording = !this.recording; })
+        .onKeyEvent((event: KeyEvent): void => { if (this.recordKey(event)) { event.stopPropagation(); } })
+      Column({ space: 4 }) {
+        Text(this.draftName.trim().length > 0 ? this.draftName.trim() : '预览').fontSize(10).fontColor(this.text2())
+          .width('100%')
+        Text(this.draftLabel().length > 0 ? this.draftLabel() :
+          '当前步骤不完整：字母、数字和符号需要至少一个修饰键')
+          .fontSize(13).fontWeight(FontWeight.Medium)
+          .fontColor(this.draftLabel().length > 0 ? this.text() : this.danger()).width('100%')
+      }.width('100%').padding(10).borderRadius(10).backgroundColor(this.accentSoft())
+      Button('保存').width('100%').height(40).fontSize(13).borderRadius(12)
+        .backgroundColor(this.draftLabel().length > 0 ? this.accentColor : this.card())
+        .fontColor(this.draftLabel().length > 0 ? '#FFFFFF' : this.text2())
+        .enabled(this.draftLabel().length > 0)
+        .onClick((): void => { this.saveCustomShortcut(); })
     }.width('100%').padding(this.customEditorLayout().cardPadding)
-      .borderRadius(14).backgroundColor(this.card())
+      .borderRadius(16).backgroundColor(this.card())
       .border({ width: 0.5, color: this.cardStroke() })
+  }
+
+  @Builder
+  private listIcon(symbol: Resource, label: string, color: ResourceColor, enabled: boolean, action: () => void) {
+    Button() { SymbolGlyph(symbol).fontSize(15).fontColor([color]) }
+      .width(32).height(32).padding(0).backgroundColor(Color.Transparent)
+      .enabled(enabled).opacity(enabled ? 1 : 0.3).accessibilityText(label).onClick(action)
   }
 
   @Builder
@@ -574,17 +747,33 @@ export struct VirtualKeyboardSettingsSheet {
           .width('100%').height(58).fontSize(11).textAlign(TextAlign.Center)
           .fontColor(this.text2()).backgroundColor(this.card()).borderRadius(12)
       } else {
-        ForEach(this.visibleCustomShortcuts(), (shortcut: RemoteCustomShortcut): void => {
-          Row() {
-            Text(remoteCustomShortcutLabelForPlatform(shortcut.keyCodes, this.platform()))
-              .fontSize(12).fontColor(this.text()).layoutWeight(1)
-            Button('编辑').height(32).fontSize(10).backgroundColor(Color.Transparent)
-              .fontColor(this.accentColor).onClick((): void => { this.beginEditor(shortcut); })
-            Button('删除').height(32).fontSize(10).backgroundColor(Color.Transparent)
-              .fontColor(this.danger()).onClick((): void => { this.deleteCustomShortcut(shortcut.id); })
-          }.width('100%').padding({ left: 14, right: 6, top: 6, bottom: 6 })
+        ForEach(this.visibleCustomShortcuts(), (shortcut: RemoteCustomShortcut, index: number): void => {
+          Row({ space: 2 }) {
+            Column({ space: 2 }) {
+              Text(remoteCustomShortcutDisplayName(shortcut, this.platform()))
+                .fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.text()).maxLines(1)
+                .textOverflow({ overflow: TextOverflow.Ellipsis })
+              if ((shortcut.name ?? '').length > 0 || remoteCustomShortcutSteps(shortcut).length > 1) {
+                Text(remoteCustomShortcutStepsLabel(remoteCustomShortcutSteps(shortcut), this.platform()))
+                  .fontSize(10).fontColor(this.text2()).maxLines(1)
+                  .textOverflow({ overflow: TextOverflow.Ellipsis })
+              }
+            }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+            this.listIcon($r('sys.symbol.chevron_up'), '上移', this.text2(), index > 0,
+              (): void => { this.moveCustomShortcut(shortcut.id, -1); })
+            this.listIcon($r('sys.symbol.chevron_down'), '下移', this.text2(),
+              index < this.visibleCustomShortcuts().length - 1,
+              (): void => { this.moveCustomShortcut(shortcut.id, 1); })
+            this.listIcon($r('sys.symbol.rectangle_on_rectangle'), '复制', this.text2(),
+              this.canAddShortcut(), (): void => { this.duplicateCustomShortcut(shortcut); })
+            this.listIcon($r('sys.symbol.square_and_pencil'), '编辑', this.accentColor, true,
+              (): void => { this.beginEditor(shortcut); })
+            this.listIcon($r('sys.symbol.ohos_trash'), '删除', this.danger(), true,
+              (): void => { this.deleteCustomShortcut(shortcut); })
+          }.width('100%').padding({ left: 14, right: 4, top: 8, bottom: 8 }).borderRadius(12)
             .backgroundColor(this.card()).border({ width: 0.5, color: this.cardStroke() })
-        }, (shortcut: RemoteCustomShortcut): string => shortcut.id)
+        }, (shortcut: RemoteCustomShortcut, index: number): string =>
+          shortcut.id + ':' + index.toString() + ':' + (shortcut.name ?? '') + ':' + shortcut.label)
       }
     }.width('100%')
   }
@@ -747,7 +936,7 @@ export struct VirtualKeyboardSettingsSheet {
   private customShortcutContent() {
     this.pageHero('custom', '可复用组合键')
     this.sectionTitle('自定义组合键',
-      '支持修饰键与字母、数字、符号、F 键、方向键及导航键。')
+      '可命名、排序，支持最多 4 步的按键序列；系统键、功能键、导航键和小键盘可单独使用。')
     this.infoRow('当前标签平台', this.platform() === 'macos' ? 'macOS' : 'Windows')
     Column().height(8)
     if (this.editorVisible) { this.customEditor() } else { this.customShortcutList() }
@@ -842,7 +1031,12 @@ export struct VirtualKeyboardSettingsSheet {
     } else if (this.requestedSection === 'functions') {
       this.functionPanelContent()
     } else if (this.requestedSection === 'custom') {
-      this.customShortcutContent()
+      if (ProEntries.visible(PRO_PERSONALIZATION_FEATURE)) {
+        this.customShortcutContent()
+      } else {
+        Text('自定义组合键是 Pro 个性化方案的一部分；已保存的组合键会保留，开通 Pro 后恢复。')
+          .fontSize(13).fontColor(this.text2()).lineHeight(20).width('100%').padding(16)
+      }
     } else if (this.requestedSection === 'harmonyShortcuts') {
       this.harmonyShortcutBlockingContent()
     } else {

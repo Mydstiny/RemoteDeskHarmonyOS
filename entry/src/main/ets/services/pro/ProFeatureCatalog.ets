@@ -1,4 +1,5 @@
 export const PRO_LIFETIME: string = 'pro.lifetime';
+export const PRO_PERSONALIZATION_FEATURE: string = 'pro.personalization';
 export type ProAvailability = 'available' | 'planned' | 'experimental' | 'disabled';
 export type ProDevice = 'phone' | 'tablet' | 'pc' | 'unknown';
 export interface ProFeature {
@@ -52,6 +53,12 @@ function connectionShare(): ProFeature {
   feature.capabilities = ['SystemCapability.Collaboration.HarmonyShare'];
   return feature;
 }
+function personalization(): ProFeature {
+  const feature = planned(PRO_PERSONALIZATION_FEATURE, '个性化方案',
+    '自定义组合键（命名、按键序列、系统键与小键盘）与 SSH 终端皮肤：字体、配色、功能键栏和顶栏成套切换，也可以自由搭配。');
+  feature.availability = 'experimental';
+  return feature;
+}
 function remoteAi(id: string, title: string, description: string): ProFeature {
   const feature = planned(id, title, description);
   // The local LAN pairing/session path is shipped and guarded by the real
@@ -69,7 +76,7 @@ export function proFeatures(): ProFeature[] {
       devices: [], protocols: [], capabilities: [], permissions: [], serverAuthorized: false },
     planned('pro.workspaces', '工作区与布局', '保存常用会话组合，让每次开工更从容。'),
     planned('pro.hostManagement', '高级主机管理', '智能分组与批量配置，减少重复操作。'),
-    planned('pro.personalization', '个性化方案', '多套工具栏、快捷键与外观方案。'),
+    personalization(),
     remoteAi('pro.ai.workspace', '远程 AI 工作台', '在自己的电脑上运行 AI，查看执行过程、批准操作并恢复会话。'),
     remoteAi('pro.ai.codex', 'Codex 远程控制', '连接电脑端 Codex 插件，使用原生会话、审批与文件差异。'),
     remoteAi('pro.ai.dsh', 'DSH 远程控制', '连接电脑端 DSH 插件，使用已配置的模型与原生工具。'),
@@ -95,9 +102,9 @@ export function proFeatureProgress(id: string): string {
     case 'pro.ai.rustdeskTransport': return '规划中 · 等待 RustDesk 数据通道';
     case 'pro.security.webauthnRedirect': return '开发中 · USB 安全密钥能力探测通过，待硬件与 RDP 验证';
     case 'pro.security.phonePasskey': return '可行性研究中';
+    case 'pro.personalization': return '开发中 · 自定义组合键已转为 Pro，SSH 终端皮肤开发中';
     case 'pro.workspaces':
-    case 'pro.hostManagement':
-    case 'pro.personalization': return '规划中 · 尚未开始开发';
+    case 'pro.hostManagement': return '规划中 · 已完成实施计划';
     default: return '';
   }
 }

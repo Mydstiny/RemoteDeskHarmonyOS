@@ -1,7 +1,7 @@
 import { ProBadge } from '../components/ProBadge';
 import { ProBadgeSettingsPanel, ProFeatureDetailPanel } from '../components/ProFeatureManagerPanel';
 import { proFeatureCurrentStatus } from '../services/pro/ProFeatureStatusReader';
-import { ProFeature } from '../services/pro/ProFeatureCatalog';
+import { PRO_PERSONALIZATION_FEATURE, ProFeature } from '../services/pro/ProFeatureCatalog';
 import { AiHostEditor } from '../components/ai/AiHostEditor';
 import { AiHostService, projectAiHost, aiHostId } from '../services/ai/AiHostService';
 import { AiHost } from '../services/ai/AiModels';
@@ -869,6 +869,7 @@ struct HostListPage {
   @State aiProVisible: boolean = false;
   @State appIconProVisible: boolean = true;
   @State proManagerVisible: boolean = false;
+  @State personalizationProVisible: boolean = false;
   @StorageProp('proBadgeFlow') proBadgeFlow: boolean = true;
   @StorageProp('proBadgeVisible') proBadgeVisible: boolean = true;
   @State proFeatureRevision: number = 0;
@@ -2006,6 +2007,7 @@ struct HostListPage {
     const icons = ProAppIcons.getInstance().snapshot();
     this.appIconSupported = icons.supported;
     this.appIconProVisible = ProEntries.visible(id) || (ProEntries.shown(id) && icons.loaded && icons.currentName !== '');
+    this.personalizationProVisible = ProEntries.visible(PRO_PERSONALIZATION_FEATURE);
   }
 
   async aboutToAppear(): Promise<void> {
@@ -16498,10 +16500,23 @@ struct HostListPage {
               this.protocolActionRow($r('sys.symbol.lock_shield_fill'), '屏蔽鸿蒙快捷键',
                 'PC 默认打开；打开后屏蔽并发送远端，关闭后由鸿蒙处理',
                 (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_HARMONY_SHORTCUT_BLOCKING); })
-              this.cardDivider()
-              this.cardActionRow($r('app.media.icon_palette'), '自定义组合键',
-                '创建、编辑与删除跨连接复用的快捷键',
-                (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_VIRTUAL_KEYBOARD_CUSTOM); })
+              // Pro 个性化方案: custom key combinations; presets above stay free.
+              if (this.personalizationProVisible) {
+                this.cardDivider()
+                Row() {
+                  Row() { SymbolGlyph($r('sys.symbol.keyboard')).fontSize(20).fontColor([this.pal().text]) }
+                    .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
+                  Column({ space: 2 }) {
+                    Text('自定义组合键').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
+                      .fontColor(this.pal().text).fontFamily(this.font())
+                    Text('命名、按键序列、系统键与小键盘，跨连接复用').fontSize(11).fontColor(this.pal().text3)
+                      .fontFamily(this.font()).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+                  }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
+                  ProBadge().margin({ right: 4 })
+                  Text(' >').fontSize(14).fontColor(this.pal().text3).margin({ left: 4 })
+                }.width('100%').height(64).padding({ left: 16, right: 16 })
+                  .onClick((): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_VIRTUAL_KEYBOARD_CUSTOM); })
+              }
             }.borderRadius(24).backgroundColor(this.pal().card)
               .backgroundBlurStyle(BlurStyle.Regular)
               .shadow({ radius: 16, color: 'rgba(0,0,0,0.04)', offsetY: 4 })

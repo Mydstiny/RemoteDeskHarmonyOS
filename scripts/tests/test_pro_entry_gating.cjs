@@ -53,7 +53,7 @@ const badges = new Map([
   ['components/ProFeatureManagerPanel.ets', [2, /export struct ProBadgeSettingsPanel/]],
   // AI cards/section (4) follow aiProVisible; the app-icon row follows ProEntries; the account card
   // marker follows ProEntries.proActive().
-  ['pages/HostListPage.ets', [6, /aiProVisible = AiAccess\.getInstance\(\)\.proVisible\(\)/]]
+  ['pages/HostListPage.ets', [7, /aiProVisible = AiAccess\.getInstance\(\)\.proVisible\(\)/]]
 ]);
 for (const [file, text] of sources) {
   if (file === 'components/ProBadge.ets') continue;  // the badge component itself
@@ -86,4 +86,12 @@ assert.ok(order.every((index, i) => index > 0 && (i === 0 || index > order[i - 1
 assert.match(host, /this\.aiProVisible\) \{\s*ListItem\(\) \{\s*this\.settingsAccordionHeader\(SETTINGS_SECTION_AI/);
 // 4. The account card and sheet show the Pro marker only while the account's Pro is active.
 assert.equal(count(host, /if \(this\.proManagerVisible && !this\.appCloneLocalOnly\) \{\s*ProBadge\(/g), 2);
+// 5. Custom key combinations belong to Pro 个性化方案 in settings, the session panel and the editor.
+assert.match(host, /if \(this\.personalizationProVisible\) \{[\s\S]{0,900}ProBadge\(\)[\s\S]{0,300}SETTINGS_SHEET_VIRTUAL_KEYBOARD_CUSTOM/);
+assert.match(host, /this\.personalizationProVisible = ProEntries\.visible\(PRO_PERSONALIZATION_FEATURE\)/);
+const panel = sources.get('components/RemoteModifierPanel.ets');
+assert.match(panel, /if \(this\.proCustomShortcuts\) \{\s*this\.SectionChoice\('custom'/);
+assert.match(panel, /this\.proCustomShortcuts = ProEntries\.visible\(PRO_PERSONALIZATION_FEATURE\)/);
+assert.match(sources.get('components/VirtualKeyboardSettingsSheet.ets'),
+  /requestedSection === 'custom'\) \{\s*if \(ProEntries\.visible\(PRO_PERSONALIZATION_FEATURE\)\)/);
 console.log('PASS Pro entry points follow the entitlement through ProEntries and every Pro badge is registered');
