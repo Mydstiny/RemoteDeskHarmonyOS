@@ -11,6 +11,7 @@ import { ProIncomingConnectionShareCard } from '../components/ProConnectionShare
 import { ProConnectionShareReceiver } from '../services/pro/ProConnectionShareReceiver';
 import { SshAddBasicFields } from '../common/SshAddBasicFields';
 import { ProContinuationService } from '../services/pro/ProContinuationService';
+import { ProContinuationCredentialHandoff } from '../services/pro/ProContinuationCredentials';
 import { proReconnectOnlyProtocol } from '../services/pro/ProConnectionEnvelope';
 import { resolveProContinuationHost } from '../services/pro/ProConnectionHostAdapter';
 import { SshConnectionPreflightSheet } from '../components/SshConnectionPreflightSheet';
@@ -6733,9 +6734,10 @@ struct HostListPage {
   private async autoAcceptProContinuation(id: string, attempt: number): Promise<void> {
     const service = ProContinuationService.getInstance();
     if (service.incomingId() !== id || !service.snapshot().incomingCanAccept) { return; }
-    if (!this.pageActive || this.appInBackground) {
-      if (attempt < 20) { setTimeout((): void => { void this.autoAcceptProContinuation(id, attempt + 1); }, 250); }
-      return;
+    // A cold start delivers the Want before foreground and before the Pro entitlement is restored.
+    if (!this.pageActive || this.appInBackground || !ProEntries.proActive()) {
+      if (attempt < 40) { setTimeout((): void => { void this.autoAcceptProContinuation(id, attempt + 1); }, 250); return; }
+      if (!this.pageActive || this.appInBackground) { return; }
     }
     const host = await service.accept(getContext(this) as common.UIAbilityContext);
     if (host === null) {
@@ -6918,6 +6920,14 @@ struct HostListPage {
       return;
     }
     RdpSessionCredentialHandoff.getInstance().clear(host.userId, host.id);
+    // A continuation whose source opted into 随接续传输 skips the prompt for this connection only.
+    const handed = ProContinuationCredentialHandoff.getInstance().take(host.id, host.userId);
+    if (handed !== null && handed.kind === 'password' && (handed.username ?? '') !== '' &&
+      RdpSessionCredentialHandoff.getInstance().put(host.userId, host.id, handed.username ?? '', handed.password,
+        routeIdentity, scope.ownerScopeId.trim(), scope.generation, attemptGeneration)) {
+      this.openRdpCertificatePreflight(host, attemptGeneration);
+      return;
+    }
     this.rdpSessionCredentialHostId = host.id;
     this.rdpSessionCredentialHostLabel = host.label;
     this.rdpSessionCredentialUsername = '';
@@ -8836,6 +8846,13 @@ struct HostListPage {
     this.vncCredentialRetryHostId = '';
     this.vncCredentialRetryReplaceSavedHostId = '';
     const state: VncCredentialPreflightState = this.vncHosts.passwordStateFor(host.id).state;
+    // A continuation whose source opted into 随接续传输: this connection only, never stored.
+    const handed = forcePrompt ? null :
+      ProContinuationCredentialHandoff.getInstance().take(vncHostUiId(host.id), host.userId);
+    if (handed !== null && handed.kind === 'password') {
+      VncSessionCredentialHandoff.getInstance().put(host.userId, host.id, handed.password,
+        this.vncCredentialEndpointBinding, this.vncCredentialOwnerScopeId, this.vncCredentialAccountGeneration);
+    }
     const transientAvailable: boolean = VncSessionCredentialHandoff.getInstance().bind(
       host.userId, host.id, this.vncCredentialEndpointBinding,
       this.vncCredentialOwnerScopeId, this.vncCredentialAccountGeneration);

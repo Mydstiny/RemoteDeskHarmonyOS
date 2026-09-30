@@ -21,6 +21,8 @@ import { image } from '@kit.ImageKit';
 import { HostSyncService } from '../services/HostSyncService';
 import { CloudStore } from '../services/CloudStore';
 import { ProContinuationService, proContinuationFailureText } from '../services/pro/ProContinuationService';
+import { ProContinuationCredentialHandoff, ProContinuationSecret,
+  validProContinuationSecret } from '../services/pro/ProContinuationCredentials';
 import { ProConnectionDescription, proReconnectOnlyProtocol } from '../services/pro/ProConnectionEnvelope';
 import { describeProRdpConnection, describeProRemoteConnection,
   resolveProContinuationHost } from '../services/pro/ProConnectionHostAdapter';
@@ -2879,7 +2881,27 @@ struct RemoteDesktop {
     this.rustDeskAuthDismissReason = 'none';
     this.rustDeskAuthBackPending = false;
     this.rustDeskAuthPendingStart = false;
+    // A continuation whose source opted into 随接续传输 fills the device password for this
+    // connection only and confirms it, so the target does not ask again.
+    const handed = ProContinuationCredentialHandoff.getInstance().take(host.id, host.userId);
+    const continued: boolean = handed !== null && handed.kind === 'password';
+    if (continued && handed !== null) {
+      this.rustDeskAuthChoice = 'password';
+      this.rustDeskAuthPasswordInput = handed.password;
+      this.rustDeskAuthKeepsStoredPassword = false;
+      this.rustDeskAuthPasswordFromStoredProjection = false;
+      this.rustDeskAuthPasswordConfigured = true;
+      this.rustDeskAuthRememberPassword = false;
+    }
     this.showRustDeskAuthSheet = true;
+    if (continued) {
+      setTimeout((): void => {
+        if (this.showRustDeskAuthSheet && !this.rustDeskAuthSheetClosing && this.pendingHost?.id === host.id) {
+          this.confirmRustDeskAuthChoice();
+        }
+      }, 350);
+      return;
+    }
     setTimeout((): void => { this.focusRustDeskAuthPassword(); }, 120);
   }
 
@@ -12665,6 +12687,15 @@ struct RemoteDesktop {
       host.rdpCredentialId === '') {
       return host;
     }
+    // A continuation whose source opted into 随接续传输: this connection only, never stored.
+    const handed = ProContinuationCredentialHandoff.getInstance().take(host.id, host.userId);
+    if (handed !== null && handed.kind === 'password' && (handed.username ?? '') !== '') {
+      const continued: RemoteHost = host.runtimeClone();
+      continued.username = handed.username ?? '';
+      continued.password = handed.password;
+      hilog.info(RD_DOMAIN, RD_TAG, 'RDP credential from continuation hostIdHash=' + hashForLog(host.id));
+      return continued;
+    }
     const credential: RdpCredential | undefined = this.srv.getRdpCredential(host.rdpCredentialId);
     if (!credential) {
       hilog.warn(RD_DOMAIN, RD_TAG, 'RDP credential not found: ' + host.rdpCredentialId);
@@ -14160,6 +14191,7 @@ struct RemoteDesktop {
         },
         isCurrent: (): boolean => this.connected && !this.cleanupStarted && this.pendingHost?.id === hostId &&
           this.sessionId === session,
+        secret: (): ProContinuationSecret | null => this.proRemoteContinuationSecret(hostId),
         close: (): void => { this.disconnectAndCleanup('pro-remote-continuation'); this.goBack(); }
       }, true, false);
     } catch (_error) {
@@ -14293,6 +14325,35 @@ struct RemoteDesktop {
   }
 
   /**
+   * Opt-in 随接续传输: only this host's saved credential, read when the other device
+   * continues. Passwords typed for one session are never retained for it.
+   */
+  private proRemoteContinuationSecret(hostId: string): ProContinuationSecret | null {
+    const host = this.pendingHost;
+    if (host === null || host.id !== hostId) { return null; }
+    let password: string = '';
+    let username: string = '';
+    if (host.protocol === 'vnc') {
+      const view = this.pendingVncHost;
+      password = view === null ? '' : this.vncHosts.passwordFor(view.id);
+    } else if (host.protocol === 'rustdesk') {
+      password = this.srv.getHost(hostId)?.password ?? '';
+    } else if (host.protocol === 'rdp') {
+      const live = this.srv.getHost(hostId);
+      if (live === undefined || normalizeRdpAuthMode(live.rdpAuthMode) !== 'password' || live.rdpCredentialId === '') {
+        return null;
+      }
+      const credential = this.srv.getRdpCredential(live.rdpCredentialId);
+      // An unreadable (still encrypted) value is never sent.
+      if (credential === undefined || credential.password.startsWith('1:')) { return null; }
+      password = credential.password; username = credential.username;
+    }
+    if (password.length === 0) { return null; }
+    return validProContinuationSecret({ kind: 'password', password, privateKeyPem: '', passphrase: '',
+      username } as ProContinuationSecret);
+  }
+
+  /**
    * Always-on RDP arming. The view is read when the other device continues, so the
    * target restores whatever the user is looking at then (the requested transform,
    * without waiting for it to be presented as the manual action does).
@@ -14319,6 +14380,7 @@ struct RemoteDesktop {
         },
         isCurrent: (): boolean => this.connected && !this.cleanupStarted && this.proRdpNativeCurrent(hostId, owner) &&
           ProRdpSessionIdentityStore.getInstance().get(hostId, owner) !== null,
+        secret: (): ProContinuationSecret | null => this.proRemoteContinuationSecret(hostId),
         close: (): void => { this.disconnectAndCleanup('pro-rdp-continuation'); this.goBack(); }
       }, true, false);
     } catch (_error) {
@@ -14361,6 +14423,7 @@ struct RemoteDesktop {
           this.proRdpPresentationCurrent(host.id, owner, epoch, renderer)) &&
           this.proRdpNativeCurrent(host.id, owner) && this.proRdpViewKey() === key &&
           ProRdpSessionIdentityStore.getInstance().get(host.id, owner) !== null,
+        secret: (): ProContinuationSecret | null => this.proRemoteContinuationSecret(host.id),
         close: (): void => { this.disconnectAndCleanup('pro-rdp-continuation'); this.goBack(); }
       });
       preparing = !prepared;

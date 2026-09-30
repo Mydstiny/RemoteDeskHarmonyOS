@@ -10,26 +10,32 @@ export interface ProContinuationSecret {
   password: string;
   privateKeyPem: string;
   passphrase: string;
+  /** RDP carries its Windows account with the password; empty for the other protocols. */
+  username?: string;
 }
 const PASSWORD_MAX: number = 1024;
 const KEY_MAX: number = 32768;
+const USERNAME_MAX: number = 256;
 
 export function validProContinuationSecret(value: Object | null | undefined): ProContinuationSecret | null {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) { return null; }
   const keys: string[] = Object.keys(value);
-  if (keys.length !== 4 || ['kind', 'password', 'privateKeyPem', 'passphrase'].some((key: string): boolean =>
-    keys.indexOf(key) < 0)) { return null; }
+  const base: string[] = ['kind', 'password', 'privateKeyPem', 'passphrase'];
+  if (base.some((key: string): boolean => keys.indexOf(key) < 0) ||
+      keys.some((key: string): boolean => base.indexOf(key) < 0 && key !== 'username')) { return null; }
   const secret = value as ProContinuationSecret;
+  const username: string = keys.indexOf('username') >= 0 ? (secret.username as string) : '';
+  if (typeof username !== 'string' || username.length > USERNAME_MAX) { return null; }
   if (typeof secret.password !== 'string' || typeof secret.privateKeyPem !== 'string' ||
       typeof secret.passphrase !== 'string' || secret.password.length > PASSWORD_MAX ||
       secret.privateKeyPem.length > KEY_MAX || secret.passphrase.length > PASSWORD_MAX) { return null; }
   if (secret.kind === 'password') {
     return secret.password.length > 0 && secret.privateKeyPem === '' && secret.passphrase === '' ?
-      { kind: 'password', password: secret.password, privateKeyPem: '', passphrase: '' } : null;
+      { kind: 'password', password: secret.password, privateKeyPem: '', passphrase: '', username } : null;
   }
   if (secret.kind === 'key') {
     return secret.privateKeyPem.includes('PRIVATE KEY') && secret.password === '' ?
-      { kind: 'key', password: '', privateKeyPem: secret.privateKeyPem, passphrase: secret.passphrase } : null;
+      { kind: 'key', password: '', privateKeyPem: secret.privateKeyPem, passphrase: secret.passphrase, username: '' } : null;
   }
   return null;
 }

@@ -190,7 +190,7 @@ export struct ProFeatureDetailPanel {
       this.credentialOption('manual', $r('sys.symbol.keyboard'), '在目标设备输入（默认）',
         '目标设备使用自己保存的凭据；没有保存时弹窗让你输入密码或选择本机密钥')
       this.credentialOption('transfer', $r('sys.symbol.key_fill'), '随接续传输',
-        '把本机保存的密码或私钥一次性交给目标设备，免去再次输入（目前用于 SSH）')
+        '把这台主机在本机保存的密码或私钥一次性交给目标设备，免去再次输入；适用于 SSH、RDP、RustDesk、VNC')
       if (this.continuation.credentialMode === 'transfer') {
         Row({ space: 10 }) {
           SymbolGlyph($r('sys.symbol.exclamationmark_triangle_fill')).fontSize(16).fontColor(['#B26A00'])

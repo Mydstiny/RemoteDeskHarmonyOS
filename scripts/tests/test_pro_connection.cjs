@@ -568,7 +568,7 @@ test('opt-in credential transfer rides a separate continuation parameter, never 
     assert.equal(handoff.take(te.connection.hostReference, te.owner), null, 'nothing before accept');
     assert.ok(await t.service.accept(t.context));
     assert.equal(handoff.take('other-host', te.owner), null);
-    assert.equal(JSON.stringify(handoff.take(te.connection.hostReference, te.owner)), JSON.stringify(secret));
+    assert.equal(JSON.stringify(handoff.take(te.connection.hostReference, te.owner)), JSON.stringify({ ...secret, username: '' }));
     assert.equal(handoff.take(te.connection.hostReference, te.owner), null, 'one use');
     // A cancelled or malformed secret never reaches the handoff.
     const c = fixture(); const ce = c.envelope();
@@ -578,6 +578,17 @@ test('opt-in credential transfer rides a separate continuation parameter, never 
     assert.equal(c.load(dir + 'ProContinuationCredentials.ets').ProContinuationCredentialHandoff.getInstance()
       .take(ce2.connection.hostReference, ce2.owner), null);
   } finally { prefs.value.credentialMode = 'manual'; }
+});
+test('a transferred RDP password keeps its Windows account; unknown or oversized fields fail closed', () => {
+  const f = fixture();
+  const { validProContinuationSecret } = f.load('entry/src/main/ets/services/pro/ProContinuationCredentials.ets');
+  const rdp = { kind: 'password', password: 'pw', privateKeyPem: '', passphrase: '', username: 'WORK\\alice' };
+  assert.equal(JSON.stringify(validProContinuationSecret(rdp)), JSON.stringify(rdp));
+  assert.equal(validProContinuationSecret({ ...rdp, domain: 'x' }), null);
+  assert.equal(validProContinuationSecret({ ...rdp, username: 'a'.repeat(257) }), null);
+  assert.equal(validProContinuationSecret({ ...rdp, username: 7 }), null);
+  const vnc = { kind: 'password', password: 'pw', privateKeyPem: '', passphrase: '' };
+  assert.equal(validProContinuationSecret(vnc).username, '');
 });
 test('a protocol switched off in settings neither continues from nor is accepted on this device', async () => {
   const f = fixture(); const dir = 'entry/src/main/ets/services/pro/';
