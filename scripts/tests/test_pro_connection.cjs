@@ -31,6 +31,7 @@ function fixture() {
       abilityAccessCtrl: { GrantStatus: { PERMISSION_GRANTED: 0 }, createAtManager: () => ({
         checkAccessToken: async () => state.permission ? 0 : -1,
         requestPermissionsFromUser: async () => {
+          state.permissionRequests = (state.permissionRequests ?? 0) + 1;
           if (state.permissionWait) await state.permissionWait.promise;
           return { authResults: [state.permission ? 0 : -1] };
         }
@@ -111,7 +112,8 @@ function fixture() {
   function terminal() {
     const file = path.join(root, 'entry/src/main/ets/pages/SshTerminal.ets');
     const original = fs.readFileSync(file, 'utf8');
-    const names = ['proContinuationSessionCurrent', 'prepareProContinuation', 'restoreProContinuation', 'onProContinuationPaneChange'];
+    const names = ['proContinuationSessionCurrent', 'prepareProContinuation', 'proContinuationDescribe',
+      'armProContinuation', 'restoreProContinuation', 'onProContinuationPaneChange'];
     const methods = names.map(name => {
       const start = original.search(new RegExp(`  private (?:async )?${name}\\(`));
       assert.ok(start >= 0, 'actual page method exists: ' + name);
@@ -128,6 +130,7 @@ function fixture() {
     const module = { exports: {} };
     vm.runInNewContext(compiled, { module, SSH_STATE_CONNECTED: 2,
       ProContinuationService: { getInstance: () => service },
+      ProContinuationPreferences: { getInstance: () => ({ settings: () => ({ auto: state.autoContinuation ?? false, credentialMode: 'manual' }) }) },
       HostSyncService: { getInstance: () => ({ getHost: id => state.host?.id === id ? state.host : undefined }) },
       describeProSshConnection: adapter.describeProSshConnection, getContext: () => context,
       promptAction: { showToast() {} }, window: { findWindow: () => ({ getWindowProperties: () => ({ id: 9 }) }) }
@@ -505,6 +508,20 @@ test('target completion re-reads current hosts and profiles instead of trusting 
     assert.equal(f.service.restoreView(e.transferId, captured), null);
     assert.equal(f.service.complete(e.transferId, captured), false); assert.equal(f.state.objects[0].receipt, '');
   }
+});
+test('always-on Pro continuation never prompts, stays armed and carries the directory current at continue time', async () => {
+  const f = fixture(); const page = f.terminal(); f.state.permission = false;
+  assert.equal(await page.armProContinuation(true, false), false);
+  assert.equal(f.service.lastPrepareFailure(), 'permission'); assert.equal(f.state.permissionRequests ?? 0, 0);
+  f.state.permission = true;
+  assert.equal(await page.armProContinuation(true, false), true); assert.equal(f.service.armed(9), true);
+  assert.match(f.service.snapshot().sourceMessage, /已开启/);
+  page.sftpPath = '/home/alice/other';
+  const params = {}; assert.equal(await f.service.onContinue(9, params), 0);
+  assert.equal(JSON.parse(params[f.key]).connection.view.sshDirectory, '/home/alice/other');
+  page.showSftpPanel = false; page.onProContinuationPaneChange();
+  assert.equal(page.proContinuationDescribe().view.sshPane, 'terminal');
+  assert.equal(f.state.permissionRequests ?? 0, 0);
 });
 test('actual source page binds native generation and CONNECTED before accepting an old close receipt', async () => {
   for (const mutation of [f => { f.state.nativeGeneration++; }, f => { f.state.nativeState = 1; }]) {

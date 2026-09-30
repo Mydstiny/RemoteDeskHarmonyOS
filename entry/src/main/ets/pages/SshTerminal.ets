@@ -5,6 +5,8 @@ import { ProConnectionShareSender } from '../services/pro/ProConnectionShareSend
 import { ProConnectionShareReceiver } from '../services/pro/ProConnectionShareReceiver';
 import { proConnectionShareBase } from '../services/pro/ProConnectionShareConfiguration';
 import { ProContinuationService, proContinuationFailureText } from '../services/pro/ProContinuationService';
+import { ProContinuationPreferences } from '../services/pro/ProContinuationPreferences';
+import { ProEntries } from '../services/pro/ProEntries';
 import { ProConnectionDescription } from '../services/pro/ProConnectionEnvelope';
 import { describeProSshConnection } from '../services/pro/ProConnectionHostAdapter';
 import { SshAuthenticatedHandoff } from '../services/ssh/auth/SshAuthenticatedHandoff';
@@ -1000,6 +1002,10 @@ struct SshTerminal {
   private sftpDropAdapter: SshSftpDropAdapter = new SshSftpDropAdapter();
   private proConnectionTransferId: string = '';
   private proContinuationWindowId: number = 0;
+  private proContinuationAutoStop: (() => void) | null = null;
+  private proContinuationArming: boolean = false;
+  private proContinuationPersistent: boolean = false;
+  private proContinuationAutoRetryAt: number = 0;
   private proContinuationRestoreRunning: boolean = false;
   private proConnectionShareWindowId: number = 0;
   private proConnectionShareEpoch: number = 0;
@@ -8703,7 +8709,33 @@ struct SshTerminal {
     this.stopSftpKnock();
     if (!this.connected && this.proContinuationWindowId > 0) {
       ProContinuationService.getInstance().cancelSource(this.proContinuationWindowId);
+      this.proContinuationPersistent = false;
     }
+    if (this.connected) { this.proContinuationAutoRetryAt = 0; this.startProContinuationAuto(); }
+  }
+
+  // Always-on Pro continuation: armed while connected, re-armed after a transfer or state change.
+  private startProContinuationAuto(): void {
+    if (this.proContinuationAutoStop !== null) { this.maybeAutoArmProContinuation(); return; }
+    ProContinuationPreferences.getInstance().load(getContext(this) as common.UIAbilityContext);
+    const stopPreferences = ProContinuationPreferences.getInstance().subscribe((): void => { this.maybeAutoArmProContinuation(); });
+    const stopEntries = ProEntries.subscribe((): void => { this.maybeAutoArmProContinuation(); });
+    const stopService = ProContinuationService.getInstance().subscribe((): void => { this.maybeAutoArmProContinuation(); });
+    this.proContinuationAutoStop = (): void => { stopPreferences(); stopEntries(); stopService(); };
+  }
+
+  private maybeAutoArmProContinuation(): void {
+    if (this.proContinuationArming || this.terminalClosing) { return; }
+    const service = ProContinuationService.getInstance();
+    const auto = ProContinuationPreferences.getInstance().settings().auto;
+    const armed = service.armed(this.proContinuationWindowId);
+    if (!auto && armed && this.proContinuationPersistent) {
+      service.cancelSource(this.proContinuationWindowId); this.proContinuationPersistent = false; return;
+    }
+    if (!auto || !this.connected || armed || Date.now() < this.proContinuationAutoRetryAt) { return; }
+    void this.armProContinuation(true, false).then((ok: boolean): void => {
+      if (!ok) { this.proContinuationAutoRetryAt = Date.now() + 30000; }
+    });
   }
 
   private proContinuationPaneEpoch: number = 0;
@@ -8721,37 +8753,52 @@ struct SshTerminal {
       this.loader.getSshTerminalDiagnostics(session).sessionGeneration === generation;
   }
 
+  // Menu action: arms with the current always-on preference and may request the permission.
   private async prepareProContinuation(): Promise<void> {
     this.showSshHeaderActionPopup = false;
-    const host = HostSyncService.getInstance().getHost(this.hostId);
-    if (host === undefined || !this.connected || this.terminalClosing) { return; }
-    const page = this.pageGeneration; const binding = this.sshBindingGeneration;
-    const session = this.sessionId; const hostId = this.hostId;
-    const sessionGeneration = this.sshSessionGeneration;
-    if (!this.proContinuationSessionCurrent(page, binding, session, sessionGeneration, hostId)) { return; }
-    const pane = this.showSftpPanel ? 'files' : 'terminal';
-    const directory = this.sftpPath.startsWith('/') ? this.sftpPath : '';
-    if (pane === 'files' && directory === '') {
-      promptAction.showToast({ message: '请先在 SFTP 中选择绝对目录，再准备接续', duration: 2200 }); return;
-    }
-    const context = getContext(this) as common.UIAbilityContext;
-    const description = describeProSshConnection(host, pane, directory, context);
-    if (description === null) {
+    if (!this.connected || this.terminalClosing) { return; }
+    if (this.proContinuationDescribe() === null) {
       promptAction.showToast({ message: '本轮接续仅支持直连 SSH；代理配置暂未开放', duration: 2200 }); return;
     }
     try {
-      const win = window.findWindow(this.getUIContext().getWindowName());
-      this.proContinuationWindowId = win.getWindowProperties().id;
-      const prepared = await ProContinuationService.getInstance().prepare(context, {
-        windowId: this.proContinuationWindowId,
-        describe: (): ProConnectionDescription | null => description,
-        isCurrent: (): boolean => this.proContinuationSessionCurrent(page, binding, session, sessionGeneration, hostId) &&
-          (pane === 'files' ? (this.showSftpPanel && !this.sftpRootSheetClosing && this.sftpPath === directory) : !this.showSftpPanel),
-        close: (): void => { this.closeSessionAndBack(); }
-      });
-      promptAction.showToast({ message: prepared ? '接续已准备，本端会话保持连接' :
+      const prepared = await this.armProContinuation(ProContinuationPreferences.getInstance().settings().auto, true);
+      promptAction.showToast({ message: prepared ? '接续已开启，本端会话保持连接' :
         proContinuationFailureText(ProContinuationService.getInstance().lastPrepareFailure()), duration: 2400 });
     } catch (_error) { promptAction.showToast({ message: '系统接续暂不可用', duration: 2200 }); }
+  }
+
+  // Described when the other device continues, so the current pane and SFTP directory are carried.
+  private proContinuationDescribe(): ProConnectionDescription | null {
+    const host = HostSyncService.getInstance().getHost(this.hostId);
+    if (host === undefined) { return null; }
+    const files = this.showSftpPanel && !this.sftpRootSheetClosing && this.sftpPath.startsWith('/');
+    return describeProSshConnection(host, files ? 'files' : 'terminal', files ? this.sftpPath : '',
+      getContext(this) as common.UIAbilityContext);
+  }
+
+  private async armProContinuation(persistent: boolean, requestPermission: boolean): Promise<boolean> {
+    const host = HostSyncService.getInstance().getHost(this.hostId);
+    if (host === undefined || !this.connected || this.terminalClosing) { return false; }
+    const page = this.pageGeneration; const binding = this.sshBindingGeneration;
+    const session = this.sessionId; const hostId = this.hostId;
+    const sessionGeneration = this.sshSessionGeneration;
+    if (!this.proContinuationSessionCurrent(page, binding, session, sessionGeneration, hostId) ||
+        this.proContinuationDescribe() === null) { return false; }
+    this.proContinuationArming = true;
+    try {
+      const win = window.findWindow(this.getUIContext().getWindowName());
+      this.proContinuationWindowId = win.getWindowProperties().id;
+      const prepared = await ProContinuationService.getInstance().prepare(getContext(this) as common.UIAbilityContext, {
+        windowId: this.proContinuationWindowId,
+        describe: (): ProConnectionDescription | null => this.hostId === hostId ? this.proContinuationDescribe() : null,
+        isCurrent: (): boolean => this.proContinuationSessionCurrent(page, binding, session, sessionGeneration, hostId),
+        close: (): void => { this.closeSessionAndBack(); }
+      }, persistent, requestPermission);
+      this.proContinuationPersistent = prepared && persistent;
+      return prepared;
+    } catch (_error) {
+      return false;
+    } finally { this.proContinuationArming = false; }
   }
 
   private async restoreProContinuation(): Promise<void> {
@@ -11126,6 +11173,7 @@ struct SshTerminal {
   }
 
   aboutToDisappear(): void {
+    this.proContinuationAutoStop?.(); this.proContinuationAutoStop = null;
     if (this.proContinuationWindowId > 0) {
       ProContinuationService.getInstance().cancelSource(this.proContinuationWindowId);
       this.proContinuationWindowId = 0;

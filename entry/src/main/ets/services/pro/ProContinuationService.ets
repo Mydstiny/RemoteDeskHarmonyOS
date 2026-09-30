@@ -122,13 +122,14 @@ export class ProContinuationService {
     const context = proContinuationContext(protocol); context.grantedPermissions = [SYNC_PERMISSION];
     return ProAppRuntime.getInstance().runtime.decision(PRO_CONTINUATION_FEATURE, context).executable;
   }
-  private async permission(context: common.UIAbilityContext): Promise<boolean> {
+  private async permission(context: common.UIAbilityContext, request: boolean = true): Promise<boolean> {
     try {
       const manager = abilityAccessCtrl.createAtManager();
       const token = context.applicationInfo.accessTokenId;
       if (await manager.checkAccessToken(token, SYNC_PERMISSION) === abilityAccessCtrl.GrantStatus.PERMISSION_GRANTED) {
         return true;
       }
+      if (!request) { return false; }
       const result = await manager.requestPermissionsFromUser(context, [SYNC_PERMISSION]);
       return result.authResults.length === 1 && result.authResults[0] === abilityAccessCtrl.GrantStatus.PERMISSION_GRANTED;
     } catch (_error) { return false; }
@@ -181,7 +182,14 @@ export class ProContinuationService {
     hilog.warn(0x0001, 'ProContinuation', 'prepare rejected reason=%{public}s', reason);
     return false;
   }
-  async prepare(context: common.UIAbilityContext, source: ProContinuationSource): Promise<boolean> {
+  /** Whether a source window currently offers continuation. */
+  armed(windowId: number): boolean { return windowId > 0 && this.source?.windowId === windowId && this.sourceCurrent(); }
+  /**
+   * persistent: the always-on Pro mode. It stays armed while the session is current (no two-minute
+   * window) and never raises the permission dialog on its own; the explicit menu action does.
+   */
+  async prepare(context: common.UIAbilityContext, source: ProContinuationSource, persistent: boolean = false,
+    requestPermission: boolean = !persistent): Promise<boolean> {
     this.cancelSource();
     this.prepareFailure = '';
     const protocol = source.describe()?.protocol ?? '';
@@ -193,7 +201,7 @@ export class ProContinuationService {
     const scope = AccountSessionCoordinator.getInstance().currentScope();
     if (scope.kind !== 'huawei_account' || !/^owner-[a-f0-9]{64}$/.test(scope.ownerScopeId)) { return this.rejectPrepare('account'); }
     const generation = this.sourceGeneration;
-    if (!await this.permission(context)) {
+    if (!await this.permission(context, requestPermission)) {
       return generation === this.sourceGeneration ? this.rejectPrepare('permission') : false;
     }
     if (generation !== this.sourceGeneration || !this.allowed(protocol) ||
@@ -203,16 +211,20 @@ export class ProContinuationService {
     }
     this.source = source; this.sourceContext = context; this.sourceOwner = scope.ownerScopeId;
     this.sourceAccountGeneration = scope.generation;
-    this.sourceDeadline = Date.now() + PRO_CONNECTION_TTL_MS;
-    this.sourceTimer = setTimeout((): void => { if (generation === this.sourceGeneration) { this.cancelSource(); } }, PRO_CONNECTION_TTL_MS);
+    this.sourceDeadline = persistent ? Number.MAX_SAFE_INTEGER : Date.now() + PRO_CONNECTION_TTL_MS;
+    if (!persistent) {
+      this.sourceTimer = setTimeout((): void => { if (generation === this.sourceGeneration) { this.cancelSource(); } }, PRO_CONNECTION_TTL_MS);
+    }
     try {
       await this.setMission(context, AbilityConstant.ContinueState.ACTIVE);
       if (generation !== this.sourceGeneration || !this.sourceCurrent()) {
         if (generation === this.sourceGeneration) { this.cancelSource(source.windowId); }
         return this.rejectPrepare('changed');
       }
-      hilog.info(0x0001, 'ProContinuation', 'prepare active protocol=%{public}s ttlMs=%{public}d', protocol, PRO_CONNECTION_TTL_MS);
-      this.sourceMessage = '已准备接续，请在 2 分钟内从另一台同账号设备的系统入口继续';
+      hilog.info(0x0001, 'ProContinuation', 'prepare active protocol=%{public}s persistent=%{public}s', protocol,
+        persistent ? 'true' : 'false');
+      this.sourceMessage = persistent ? '已开启：可在同账号设备的系统接续入口继续' :
+        '已准备接续，请在 2 分钟内从另一台同账号设备的系统入口继续';
       this.publish(); return true;
     } catch (error) {
       hilog.warn(0x0001, 'ProContinuation', 'setMissionContinueState failed code=%{public}d',
@@ -270,8 +282,8 @@ export class ProContinuationService {
     this.seen.set(envelope.transferId, envelope.expiresAt);
     this.target = new ProConnectionTransaction(envelope);
     this.targetMessage = envelope.connection.protocol === 'rdp'
-      ? '将重新进行 Windows 主机认证，恢复缩放、平移和输入模式；远端桌面是否保留取决于服务器策略。'
-      : '将重新进行主机认证。普通终端进程和未完成传输不会迁移。';
+      ? '正在自动接续：使用本设备保存的凭据连接，恢复缩放、平移和输入模式。'
+      : '正在自动接续：使用本设备保存的凭据连接并恢复目录。普通终端进程和未完成传输不会迁移。';
     this.targetTimer = setTimeout((): void => { this.cancelIncoming(); }, envelope.expiresAt - now);
     this.publish(); return true;
   }
@@ -308,7 +320,7 @@ export class ProContinuationService {
     const currentHost = HostSyncService.getInstance().getHost(envelope.connection.hostReference);
     if (currentHost === undefined || currentHost.userId !== envelope.owner ||
         this.restoreView(envelope.transferId, currentHost) === null) { this.cancelIncoming(); return null; }
-    this.targetMessage = '正在通过本设备原有流程进行主机认证'; this.publish(); return currentHost;
+    this.targetMessage = '正在连接；仅在缺少凭据或需要解锁时提示'; this.publish(); return currentHost;
   }
   incomingId(): string { return this.target?.envelope()?.transferId ?? ''; }
   restoreView(id: string, host: RemoteHost): ProConnectionView | null {

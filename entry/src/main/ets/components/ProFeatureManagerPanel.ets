@@ -9,6 +9,8 @@ import { ProFeature } from '../services/pro/ProFeatureCatalog';
 import { ProFeatureStatus, proFeatureScope, proFeatureStatus } from '../services/pro/ProFeatureStatus';
 import { ProFeatureVisibility } from '../services/pro/ProFeatureVisibility';
 import { ProDebugMode, ProRuntimeSnapshot } from '../services/pro/ProRuntime';
+import { ProContinuationPreferences, ProContinuationSettings } from '../services/pro/ProContinuationPreferences';
+import { PRO_CONTINUATION_FEATURE } from '../services/pro/ProContinuationService';
 
 const DEBUG_MODES: ProDebugMode[] = ['real', 'free', 'pro'];
 
@@ -21,13 +23,36 @@ export struct ProFeatureManagerPanel {
   private contextValue: common.UIAbilityContext | null = null;
   private stop: (() => void) | null = null;
 
+  @State continuation: ProContinuationSettings = ProContinuationPreferences.getInstance().settings();
+  private stopContinuation: (() => void) | null = null;
   aboutToAppear(): void {
     this.contextValue = getContext(this) as common.UIAbilityContext;
     ProFeatureVisibility.getInstance().load(this.contextValue);
+    ProContinuationPreferences.getInstance().load(this.contextValue);
     this.stop = ProEntries.subscribe((): void => { this.revision++; });
+    this.stopContinuation = ProContinuationPreferences.getInstance().subscribe((): void => {
+      this.continuation = ProContinuationPreferences.getInstance().settings();
+    });
   }
   aboutToDisappear(): void {
-    this.stop?.(); this.stop = null; this.contextValue = null;
+    this.stop?.(); this.stop = null; this.stopContinuation?.(); this.stopContinuation = null; this.contextValue = null;
+  }
+  private setContinuation(auto: boolean): void {
+    if (this.contextValue === null) { return; }
+    const next = ProContinuationPreferences.getInstance().settings(); next.auto = auto;
+    ProContinuationPreferences.getInstance().update(this.contextValue, next);
+  }
+  @Builder private continuationOptions() {
+    Row({ space: 12 }) {
+      Column({ space: 3 }) {
+        Text('Pro 下自动开启接续').fontSize(14).fontColor(this.pal().text).fontFamily(AppConfig.fontFamily).width('100%')
+        Text('连上直连 SSH 后自动允许在同账号设备继续；关闭后需在会话菜单中手动准备').fontSize(11)
+          .fontColor(this.pal().text3).fontFamily(AppConfig.fontFamily).width('100%')
+      }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+      Toggle({ type: ToggleType.Switch, isOn: this.continuation.auto }).selectedColor(this.accent)
+        .accessibilityText('Pro 下自动开启接续')
+        .onChange((on: boolean): void => { this.setContinuation(on); })
+    }.width('100%').padding({ left: 28, right: 16, top: 4, bottom: 12 })
   }
   private pal(): Palette { return this.theme === 'light' ? buildLight(this.accent) : buildDark(this.accent); }
   private features(_revision: number): ProFeature[] { return ProFeatureVisibility.getInstance().proCatalog(); }
@@ -105,6 +130,7 @@ export struct ProFeatureManagerPanel {
       ForEach(this.features(this.revision), (feature: ProFeature, index: number): void => {
         if (index > 0) { Divider().strokeWidth(0.5).color(this.pal().cardBorder).margin({ left: 16, right: 16 }) }
         this.featureRow(feature)
+        if (feature.id === PRO_CONTINUATION_FEATURE) { this.continuationOptions() }
       }, (feature: ProFeature): string => feature.id + ':' + this.revision.toString())
     }.width('100%').borderRadius(24).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
       .border({ width: 0.5, color: this.pal().cardBorder })

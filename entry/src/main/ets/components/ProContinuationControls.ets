@@ -3,6 +3,7 @@ import { common } from '@kit.AbilityKit';
 import { window, LengthMetrics } from '@kit.ArkUI';
 import { Palette, buildDark, buildLight } from '../common/Theme';
 import { ProFeatureGate } from './ProFeatureGate';
+import { ProContinuationPreferences } from '../services/pro/ProContinuationPreferences';
 import { ProContinuationService, proContinuationContext, ProContinuationSnapshot } from '../services/pro/ProContinuationService';
 import { RemoteHost } from '../model/RemoteHost';
 
@@ -14,18 +15,25 @@ export struct ProContinuationControls {
   onPrepare: () => void = (): void => {};
   @State status: string = '';
   @State canClose: boolean = false;
+  @State auto: boolean = true;
   private windowId: number = 0;
+  private stopPreferences: (() => void) | null = null;
   private stop: (() => void) | null = null;
   private pal(): Palette { return this.theme === 'light' ? buildLight(this.accent) : buildDark(this.accent); }
   aboutToAppear(): void {
     try { this.windowId = window.findWindow(this.getUIContext().getWindowName()).getWindowProperties().id; } catch (_error) {}
+    this.stopPreferences = ProContinuationPreferences.getInstance().subscribe((): void => {
+      this.auto = ProContinuationPreferences.getInstance().settings().auto;
+    });
     this.stop = ProContinuationService.getInstance().subscribe((): void => {
       const state = ProContinuationService.getInstance().snapshot();
       this.status = state.sourceWindow === this.windowId ? state.sourceMessage : '';
       this.canClose = state.sourceWindow === this.windowId && state.sourceCloseAllowed;
     });
   }
-  aboutToDisappear(): void { this.stop?.(); this.stop = null; }
+  aboutToDisappear(): void {
+    this.stop?.(); this.stop = null; this.stopPreferences?.(); this.stopPreferences = null;
+  }
   // Matches the SSH "更多" menu rows: title (+ Pro badge), grey detail, trailing chevron.
   @Builder private menuRow(title: string, detail: string, badge: boolean, action: () => void) {
     Row() {
@@ -47,15 +55,18 @@ export struct ProContinuationControls {
   }
   @Builder private controls() {
     Column() {
-      this.menuRow(this.status === '' ? '同账号接续' : '重新准备接续',
-        this.status === '' ? '2 分钟内在同账号设备继续 · 目前仅支持 RDP 和直连 SSH' : this.status, true, this.onPrepare)
+      this.menuRow('同账号接续', this.status !== '' ? this.status : (this.auto && this.protocol === 'ssh' ?
+        '连接后自动开启 · 点按重新开启或授予协同权限' : '点按后 2 分钟内在同账号设备继续') + ' · 仅支持 RDP 和直连 SSH',
+        true, this.onPrepare)
       if (this.status !== '') {
         if (this.canClose) {
           this.menuRow('结束本端会话', '目标设备已就绪', false,
             (): void => { ProContinuationService.getInstance().closeConfirmedSource(this.windowId); })
         }
-        this.menuRow('取消接续准备', '', false,
-          (): void => { ProContinuationService.getInstance().cancelSource(this.windowId); })
+        if (!(this.auto && this.protocol === 'ssh')) {
+          this.menuRow('取消接续准备', '', false,
+            (): void => { ProContinuationService.getInstance().cancelSource(this.windowId); })
+        }
       }
     }.width('100%')
   }
@@ -74,10 +85,18 @@ export struct ProIncomingContinuationCard {
   private stop: (() => void) | null = null;
   private live: boolean = false;
   private pal(): Palette { return this.theme === 'light' ? buildLight(this.accent) : buildDark(this.accent); }
+  // Tapping the system continuation entry is the user's consent, so each incoming transfer is
+  // accepted once automatically; a failure keeps the card with its reason and a retry.
+  private autoAcceptedId: string = '';
   aboutToAppear(): void {
     this.live = true;
     this.stop = ProContinuationService.getInstance().subscribe((): void => {
       this.state = ProContinuationService.getInstance().snapshot();
+      const id = ProContinuationService.getInstance().incomingId();
+      if (this.state.incomingCanAccept && id !== '' && id !== this.autoAcceptedId && !this.busy) {
+        this.autoAcceptedId = id;
+        setTimeout((): void => { if (this.live) { void this.accept(); } }, 0);
+      }
     });
   }
   aboutToDisappear(): void { this.live = false; this.stop?.(); this.stop = null; }
@@ -101,7 +120,7 @@ export struct ProIncomingContinuationCard {
         Text(this.state.incomingEndpoint).fontSize(12).fontColor(this.pal().text2).maxLines(3)
         Text(this.state.incomingMessage).fontSize(12).fontColor(this.pal().text2)
         Flex({ wrap: FlexWrap.Wrap, space: { main: LengthMetrics.vp(8) } }) {
-          Button('确认并进行主机认证').constraintSize({ minHeight: 44 }).fontSize(13)
+          Button(this.busy ? '正在接续…' : '重试接续').constraintSize({ minHeight: 44 }).fontSize(13)
             .enabled(!this.busy && this.state.incomingCanAccept)
             .onClick((): void => { void this.accept(); })
           Button('拒绝').constraintSize({ minHeight: 44 }).fontSize(13).backgroundColor(Color.Transparent)
