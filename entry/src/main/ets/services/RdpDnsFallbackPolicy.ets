@@ -48,6 +48,25 @@ export function rdpDnsFallbackEligible(
 }
 
 /**
+ * Direct RDP routes use the HarmonyOS resolver as the connection route
+ * authority whenever the configured target is a hostname.  This is broader
+ * than rdpDnsFallbackEligible: the native probe may succeed while FreeRDP's
+ * later resolver selects a different address family or DNS answer.  Keeping
+ * the candidate enumeration in both cases makes the preflight and the live
+ * socket use the same transport endpoint.
+ */
+export function rdpDnsFallbackShouldEnumerate(
+  host: string,
+  endpointMode: string
+): boolean {
+  if (endpointMode !== 'direct_rdp' && endpointMode !== 'transparent_tcp_rdp') {
+    return false;
+  }
+  const parsed = parseEndpointHost(host.trim(), 'runtime');
+  return parsed.ok && parsed.endpoint.family === 'hostname';
+}
+
+/**
  * A non-DNS preflight result proves that the numeric candidate reached the
  * RDP service. Keep that candidate for an advisory Continue Once decision;
  * resolver and TCP-connect failures do not prove a reusable transport.

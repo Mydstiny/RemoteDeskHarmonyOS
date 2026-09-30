@@ -3,6 +3,7 @@ import {
   normalizeRdpDnsCandidate,
   rdpDnsFallbackCandidates,
   rdpDnsFallbackEligible,
+  rdpDnsFallbackShouldEnumerate,
   rdpDnsFallbackProbeCanReuseTransport
 } from '../main/ets/services/RdpDnsFallbackPolicy';
 
@@ -27,6 +28,13 @@ export default function rdpDnsFallbackPolicyTest() {
       expect(rdpDnsFallbackEligible('192.0.2.10', -11, 'direct_rdp')).assertFalse();
       expect(rdpDnsFallbackEligible('rdp.example.test', -12, 'direct_rdp')).assertFalse();
       expect(rdpDnsFallbackEligible('rdp.example.test', -11, 'microsoft_rd_gateway')).assertFalse();
+    });
+
+    it('enumerates_hostname_routes_even_when_native_probe_did_not_fail_dns', 0, (): void => {
+      expect(rdpDnsFallbackShouldEnumerate('rdp.example.test', 'direct_rdp')).assertTrue();
+      expect(rdpDnsFallbackShouldEnumerate('rdp.example.test', 'transparent_tcp_rdp')).assertTrue();
+      expect(rdpDnsFallbackShouldEnumerate('192.0.2.10', 'direct_rdp')).assertFalse();
+      expect(rdpDnsFallbackShouldEnumerate('rdp.example.test', 'microsoft_rd_gateway')).assertFalse();
     });
 
     it('reuses_a_candidate_only_after_tcp_reached_the_service', 0, (): void => {

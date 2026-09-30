@@ -368,7 +368,7 @@ import {
 } from '../services/RdpCertificateProbeLifecyclePolicy';
 import { resolveRdpDnsFallback } from '../services/RdpDnsFallback';
 import {
-  rdpDnsFallbackEligible,
+  rdpDnsFallbackShouldEnumerate,
   rdpDnsFallbackProbeCanReuseTransport
 } from '../services/RdpDnsFallbackPolicy';
 import {
@@ -7135,6 +7135,10 @@ struct HostListPage {
       this.showRdpCertificatePreflight = false;
       hilog.info(0x0001, 'HostList',
         'RDP certificate preflight skipped; live certificate verification retained');
+      // Keep FreeRDP's native resolver path when the user explicitly skips
+      // the independent probe. There is no proven candidate to bind here,
+      // and forcing the first A/AAAA result would remove its own family
+      // fallback. The live certificate callback remains authoritative.
       this.doRdpCertificateRoute(host, undefined, false, true);
       return;
     }
@@ -7312,7 +7316,7 @@ struct HostListPage {
       targetServerName
     );
     const endpointMode: string = this.rdpCertificateRouteMode(host);
-    if (!rdpDnsFallbackEligible(host.host, info.errorCode, endpointMode)) {
+    if (!rdpDnsFallbackShouldEnumerate(host.host, endpointMode)) {
       return { info, transportHost: '' };
     }
     const candidates: string[] = await resolveRdpDnsFallback(host.host);
@@ -7355,6 +7359,12 @@ struct HostListPage {
         lastCandidateInfo = candidateInfo;
         lastCandidateTransportHost = candidate;
       }
+    }
+    if (lastCandidateTransportHost !== '') {
+      hilog.info(0x0001, 'HostList',
+        'RDP DNS fallback selected reachable candidate host=' + maskHost(host.host) +
+          ' candidate=' + maskHost(lastCandidateTransportHost) +
+          ' originalProbeCode=' + info.errorCode.toString());
     }
     return { info: lastCandidateInfo, transportHost: lastCandidateTransportHost };
   }
