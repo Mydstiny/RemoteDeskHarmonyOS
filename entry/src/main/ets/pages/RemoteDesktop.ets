@@ -23357,7 +23357,7 @@ struct RemoteDesktop {
             .enabled(this.rdpFileTransferEnabledForSession())
             .onClick((): void => { void this.requestRdpRemoteClipboardFiles(); })
           Text(this.rdpReceiveMessage).fontSize(12).fontColor(this.pal().text2).width('100%')
-          if (this.rdpReceiveOffer.state === 'ready') {
+          if (this.rdpReceiveOffer.state === 'ready' && this.rdpFileTransferEnabledForSession()) {
             Button('接收全部').width('100%').height(42)
               .onClick((): void => { void this.receiveRdpClipboardEntries(this.rdpReceiveOffer.entries); })
             ForEach(this.rdpReceiveOffer.entries, (entry: SessionRdpClipboardFileEntry) => {
