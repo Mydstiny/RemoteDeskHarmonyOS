@@ -27,10 +27,12 @@ import {
   resolveSshTerminalAppearance,
   resolveSshTerminalAppearanceFromCloudSettings,
   isValidSshTerminalFontSize,
-  sshDefaultTerminalFontSizeForDevice
+  sshDefaultTerminalFontSizeForDevice,
+  SSH_DEFAULT_TERMINAL_FONT_SIZE
 } from './SshSettingsPolicy';
 
 const SSH_PREFERENCES_NAME: string = 'RemoteDesktopAppPrefs';
+const SSH_FONT_DEVICE_DEFAULT_MIGRATED_KEY: string = 'sshTerminalFontDeviceDefaultV1';
 
 /** Owns global SSH terminal/session preferences without owning host trust data. */
 export class SshSettingsService {
@@ -71,14 +73,20 @@ export class SshSettingsService {
       this.values = resolveSshTerminalAppearance(
         preferredColor, legacyColor, preferredFontSize, legacyFontSize,
         preferredLineSpacing, legacyLineSpacing);
+      // Read the system device type directly; UI breakpoint flags may not be set yet.
+      const deviceType: string = deviceInfo.deviceType;
+      const deviceFontSize: number = sshDefaultTerminalFontSizeForDevice(
+        deviceType === '2in1' || deviceType === 'pc' || (AppStorage.get<boolean>('isDesktopDevice') ?? false),
+        deviceType === 'tablet');
       // Never chosen by the user: use the device default instead of the PC-sized 18.
-      if (!isValidSshTerminalFontSize(preferredFontSize) && !isValidSshTerminalFontSize(legacyFontSize)) {
-        // Read the system device type directly; UI breakpoint flags may not be set yet.
-        const deviceType: string = deviceInfo.deviceType;
-        this.values.fontSize = sshDefaultTerminalFontSizeForDevice(
-          deviceType === '2in1' || deviceType === 'pc' || (AppStorage.get<boolean>('isDesktopDevice') ?? false),
-          deviceType === 'tablet');
+      // Earlier builds also persisted that 18 on first run, so once per device a stored 18
+      // on a phone or tablet is treated as that old default and moved to the device size.
+      const migrated: boolean = prefs.getSync(SSH_FONT_DEVICE_DEFAULT_MIGRATED_KEY, false) as boolean;
+      if ((!isValidSshTerminalFontSize(preferredFontSize) && !isValidSshTerminalFontSize(legacyFontSize)) ||
+        (!migrated && this.values.fontSize === SSH_DEFAULT_TERMINAL_FONT_SIZE)) {
+        this.values.fontSize = deviceFontSize;
       }
+      if (!migrated) { prefs.putSync(SSH_FONT_DEVICE_DEFAULT_MIGRATED_KEY, true); }
       this.sessionLocale = normalizeSshSessionLocale(
         typeof storedSessionLocale === 'string' ? storedSessionLocale as string : '');
       this.writeRuntimeAndLocal(prefs);

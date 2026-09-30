@@ -428,7 +428,8 @@ import {
   defaultSshTerminalResolvedProfile,
   sshTerminalSessionProfileScopeKey,
   SshTerminalProfileV1,
-  SshTerminalResolvedProfile
+  SshTerminalResolvedProfile,
+  SSH_TERMINAL_PROFILE_LEGACY_ID
 } from '../services/ssh/profile/SshTerminalProfilePolicy';
 import { SshTerminalProfileStore } from
   '../services/ssh/profile/SshTerminalProfileStore';
@@ -13456,8 +13457,13 @@ struct SshTerminal {
       normalizedHostId, this.sshTabStore.sessionGeneration(normalizedHostId));
     const override: number | undefined = sessionScopeKey.length > 0 ?
       this.terminalSessionFontSizeOverrides.get(sessionScopeKey) : undefined;
+    // The migrated compatibility profile only mirrors the settings appearance; the
+    // 设置 > 终端字体大小 value stays authoritative unless a real profile sets a size.
+    const onlyLegacy: boolean = profile.appliedProfileIds.every((id: string): boolean =>
+      id === SSH_TERMINAL_PROFILE_LEGACY_ID);
     return override === undefined || revision < 0 ?
-      profile.fontSize : sshTerminalFontSizeForPinch(override, 1);
+      (onlyLegacy ? sshTerminalFontSizeForPinch(this.fontSize, 1) : profile.fontSize) :
+      sshTerminalFontSizeForPinch(override, 1);
   }
 
   private resolvedTerminalProfileForHost(hostId: string): SshTerminalResolvedProfile {
