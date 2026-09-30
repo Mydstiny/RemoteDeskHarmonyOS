@@ -38,6 +38,12 @@ export struct RdpControlCenter {
   @Prop displayScaleMode: string = 'fit';
   @Prop canvasZoomEnabled: boolean = false;
   @Prop canvasResetAvailable: boolean = false;
+  /**
+   * Parent-owned repaint fence for selection controls. The control center is
+   * retained while its sheet stays open; a monotonic fence prevents ArkUI
+   * from keeping a stale choice visual after a live setting changes.
+   */
+  @Prop selectionRevision: number = 0;
   @Prop reverseWheel: boolean = false;
   @Prop resolutionId: string = 'auto';
   @Prop surfaceWidthPx: number = 0;
@@ -168,9 +174,13 @@ export struct RdpControlCenter {
   }
 
   @Builder private choice(label: string, selected: boolean, action: () => void) {
-    Button(label).height(34).fontSize(10).borderRadius(9).padding({ left: 8, right: 8 })
+    Button(selected ? '✓ ' + label : label).height(34).fontSize(10).borderRadius(9)
+      .padding({ left: 8, right: 8 })
       .fontColor(selected ? Color.White : this.pal().text2)
       .backgroundColor(selected ? RDP_SESSION_CONTROL_ACCENT : this.pal().surface)
+      .border({ width: selected ? 1.5 : 0.5,
+        color: selected ? RDP_SESSION_CONTROL_ACCENT : this.pal().cardBorder })
+      .accessibilityText(label + (selected ? '，已选择' : ''))
       .onClick(action)
   }
 

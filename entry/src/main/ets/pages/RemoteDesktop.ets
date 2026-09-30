@@ -1153,6 +1153,9 @@ struct RemoteDesktop {
   @StorageLink('rdpControlMode') @Watch('onRemoteControlModeChange')
   rdpControlMode: number = 0; // 0=touchpad, 1=direct touch, 2=keyboard/mouse
   @State @Watch('onRemoteControlModeChange') private proRdpControlModeOverride: number = -1;
+  // Retained RDP control-center sheets need an explicit repaint fence after a
+  // live selection changes; the value is UI-only and does not affect protocol state.
+  @State private rdpControlCenterSelectionRevision: number = 0;
   @StorageLink('rdpClipboardEnabled') @Watch('onRdpClipboardSettingChange')
   rdpClipboardEnabled: boolean = true;
   @StorageLink('rdpShowDiagnostics') @Watch('onRdpDiagnosticsSettingChange')
@@ -5112,6 +5115,7 @@ struct RemoteDesktop {
   }
 
   private onRemoteControlModeChange(): void {
+    this.rdpControlCenterSelectionRevision++;
     // A mode change changes the input interpreter while the session remains
     // connected. Drain the old interpreter before resetting local gesture
     // state so no queued move, held button, key, or virtual latch crosses it.
@@ -5366,6 +5370,7 @@ struct RemoteDesktop {
   private setRemoteDisplayScaleMode(mode: string): void {
     if (this.proRdpIncomingId) { this.cancelProRdpIncoming(); }
     const next: LocalViewScaleMode = normalizeLocalViewScaleMode(mode);
+    this.bumpRdpControlCenterSelectionRevision();
     this.remoteDisplayScaleMode = next;
     this.persistSessionPref('remoteDisplayScaleMode', next);
     this.persistSessionPref(REMOTE_DISPLAY_SCALE_PREFERENCE_VERSION_KEY,
@@ -5380,6 +5385,10 @@ struct RemoteDesktop {
 
   private currentRdpControlMode(): number {
     return this.proRdpControlModeOverride >= 0 ? this.proRdpControlModeOverride : this.rdpControlMode;
+  }
+
+  private bumpRdpControlCenterSelectionRevision(): void {
+    this.rdpControlCenterSelectionRevision++;
   }
 
   private setRdpControlModePreference(mode: number): void {
@@ -5420,6 +5429,7 @@ struct RemoteDesktop {
 
   private setRdpResolutionPreference(id: string): void {
     const next: string = normalizeRdpResolutionId(id, this.rdpDesktopPreset);
+    this.bumpRdpControlCenterSelectionRevision();
     this.cancelRdpDynamicLayout('resolution-preference');
     this.rdpDesktopResolutionId = next;
     this.rdpDesktopPreset = legacyRdpPresetForResolutionId(next);
@@ -5439,6 +5449,7 @@ struct RemoteDesktop {
 
   private setRdpRemoteUiScalePreference(value: string): void {
     const next: string = normalizeRdpRemoteUiScalePreference(value);
+    this.bumpRdpControlCenterSelectionRevision();
     this.cancelRdpDynamicLayout('remote-ui-scale-preference');
     this.rdpRemoteUiScale = next;
     this.persistSessionPref('rdpRemoteUiScale', next);
@@ -5451,6 +5462,7 @@ struct RemoteDesktop {
 
   private setRdpColorDepthPreference(depth: number): void {
     const next: number = normalizeRdpSessionColorDepth(depth);
+    this.bumpRdpControlCenterSelectionRevision();
     this.rdpColorDepth = next;
     this.persistSessionPref('rdpColorDepth', next);
     this.showRdpReconnectPreferenceToast('色彩深度');
@@ -5481,6 +5493,7 @@ struct RemoteDesktop {
 
   private setRdpAuthIdentityModePreference(mode: number): void {
     const next: number = Number.isFinite(mode) ? Math.max(0, Math.min(4, Math.floor(mode))) : 1;
+    this.bumpRdpControlCenterSelectionRevision();
     this.rdpAuthIdentityMode = next;
     this.persistSessionPref('rdpAuthIdentityMode', next);
     this.showRdpReconnectPreferenceToast('登录身份格式');
@@ -14108,7 +14121,8 @@ struct RemoteDesktop {
         !proReconnectOnlyProtocol(host.protocol)) { return; }
     const service = ProContinuationService.getInstance();
     const armed = service.armed(this.proRemoteSourceWindowId);
-    if (!ProContinuationPreferences.getInstance().settings().auto) {
+    if (!ProContinuationPreferences.getInstance().settings().auto ||
+        !ProContinuationPreferences.getInstance().protocolEnabled(host.protocol)) {
       if (armed) { service.cancelSource(this.proRemoteSourceWindowId); }
       return;
     }
@@ -22369,6 +22383,7 @@ struct RemoteDesktop {
             displayScaleMode: this.remoteDisplayScaleMode,
             canvasZoomEnabled: this.rdpPinchZoomEnabled,
             canvasResetAvailable: this.canvasTransformGestureModified,
+            selectionRevision: this.rdpControlCenterSelectionRevision,
             reverseWheel: this.rdpReverseWheel,
             resolutionId: normalizeRdpResolutionId(this.rdpDesktopResolutionId, this.rdpDesktopPreset),
             surfaceWidthPx: this.renderWidthPx,
