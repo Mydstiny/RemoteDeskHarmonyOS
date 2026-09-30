@@ -11156,7 +11156,7 @@ struct HostListPage {
     this.vncHostRepeaterMode = host === null ? defaults.repeaterMode : host.repeaterMode;
     this.vncHostGatewayId = host === null ? defaults.defaultGatewayId : host.gatewayId;
     this.vncHostPasswordConfigured = host === null ? false : host.passwordConfigured;
-    this.vncHostRememberPassword = host === null ? false : host.rememberPassword;
+    this.vncHostRememberPassword = host === null ? true : host.rememberPassword;
     this.vncHostViewOnly = host === null ? defaults.viewOnly : host.viewOnly;
     this.vncHostDisplayOverrideEnabled = host === null ? false : host.displayOverrideEnabled;
     this.vncHostScalingMode = host === null ? defaults.scalingMode : host.scalingMode;

@@ -70,7 +70,7 @@ export struct VncAddFlow {
   private passwordFromStoredProjection: boolean = false;
   private passwordProjectionBinding: string[] = [];
   private passwordProjectionInvalidated: boolean = false;
-  @State rememberPassword: boolean = false;
+  @State rememberPassword: boolean = true;
   @State gatewayId: string = '';
   @State tls: boolean = true;
   @State viewOnly: boolean = false;
@@ -125,6 +125,8 @@ export struct VncAddFlow {
     this.passwordProjectionBinding = [];
     this.passwordProjectionInvalidated = false;
     this.password = '';
+    // A new host remembers the entered password by default (as RustDesk does); editing keeps its choice below.
+    this.rememberPassword = true;
     if (this.transport === 'ultravnc_repeater') {
       const gateway: VncGatewayView | undefined = this.selectedGateway();
       if (gateway !== undefined) {
