@@ -77,6 +77,11 @@ export default function cloudSyncSettingsPolicyTest() {
       expect(cloudUserSettingIsSyncable('totpLocked')).assertFalse();
       expect(cloudUserSettingIsSyncable('remoteDesktopBgFlag')).assertFalse();
       expect(cloudUserSettingIsSyncable('virtualMouseSession')).assertFalse();
+      expect(cloudUserSettingIsSyncable('pro.org.groups.v1')).assertTrue();
+      expect(cloudUserSettingIsSyncable('pro.org.membership.v1')).assertTrue();
+      expect(cloudUserSettingIsSyncable('pro.ws.workspace-1')).assertTrue();
+      expect(cloudUserSettingIsSyncable('pro.ws.')).assertFalse();
+      expect(cloudUserSettingIsSyncable('pro.secret')).assertFalse();
     });
   });
 }

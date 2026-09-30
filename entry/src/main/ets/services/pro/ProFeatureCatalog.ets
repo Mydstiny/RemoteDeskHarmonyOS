@@ -59,6 +59,18 @@ function personalization(): ProFeature {
   feature.availability = 'experimental';
   return feature;
 }
+function experimentalWorkspace(): ProFeature {
+  const feature = planned('pro.workspaces', '工作区与布局', '保存常用会话组合，让每次开工更从容。');
+  feature.availability = 'experimental';
+  feature.minApiVersion = 26;
+  return feature;
+}
+function experimentalHostManagement(): ProFeature {
+  const feature = planned('pro.hostManagement', '高级主机管理', '智能分组与批量配置，减少重复操作。');
+  feature.availability = 'experimental';
+  feature.minApiVersion = 26;
+  return feature;
+}
 function remoteAi(id: string, title: string, description: string): ProFeature {
   const feature = planned(id, title, description);
   // The local LAN pairing/session path is shipped and guarded by the real
@@ -74,8 +86,8 @@ export function proFeatures(): ProFeature[] {
     { id: 'core.connection', title: '完整的远程连接', description: '全部协议、正常画质与核心操作继续免费。',
       requiredEntitlementId: '', availability: 'available', minAppVersionCode: 0, minApiVersion: 0,
       devices: [], protocols: [], capabilities: [], permissions: [], serverAuthorized: false },
-    planned('pro.workspaces', '工作区与布局', '保存常用会话组合，让每次开工更从容。'),
-    planned('pro.hostManagement', '高级主机管理', '智能分组与批量配置，减少重复操作。'),
+    experimentalWorkspace(),
+    experimentalHostManagement(),
     personalization(),
     remoteAi('pro.ai.workspace', '远程 AI 工作台', '在自己的电脑上运行 AI，查看执行过程、批准操作并恢复会话。'),
     remoteAi('pro.ai.codex', 'Codex 远程控制', '连接电脑端 Codex 插件，使用原生会话、审批与文件差异。'),
@@ -103,8 +115,8 @@ export function proFeatureProgress(id: string): string {
     case 'pro.security.webauthnRedirect': return '开发中 · USB 安全密钥能力探测通过，待硬件与 RDP 验证';
     case 'pro.security.phonePasskey': return '可行性研究中';
     case 'pro.personalization': return '开发中 · 自定义组合键已转为 Pro，SSH 终端皮肤开发中';
-    case 'pro.workspaces':
-    case 'pro.hostManagement': return '规划中 · 已完成实施计划';
+    case 'pro.workspaces': return '实验中 · 工作区与布局基础能力已开放（Debug Pro）';
+    case 'pro.hostManagement': return '实验中 · 分组与安全批量策略已开放（Debug Pro）';
     default: return '';
   }
 }

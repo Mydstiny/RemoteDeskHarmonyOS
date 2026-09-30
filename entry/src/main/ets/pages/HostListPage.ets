@@ -23,6 +23,8 @@ import { ProPurchaseLifecycle } from '../services/pro/ProPurchaseLifecycle';
 import { ProPurchaseSheet } from '../components/ProPurchaseSheet';
 import { ProAppIconPanel } from '../components/ProAppIconPanel';
 import { ProAppIcons } from '../services/pro/ProAppIcons';
+import { ProOrganizationWorkspacePanel } from '../components/ProOrganizationWorkspacePanel';
+import { Workspace, workspaceOpenPlan } from '../services/pro/workspace/WorkspacePolicy';
 import { AiSettingsSurface } from './AiSettingsPage';
 /**
  * HostListPage v9 — 多端响应式 + 悬浮卡片 sheet + 滑动删除 + 官方图标按钮
@@ -5879,6 +5881,15 @@ struct HostListPage {
 
   private pal(): Palette {
     return this.theme === 'light' ? buildLight(this.accentColor) : buildDark(this.accentColor);
+  }
+
+  private openProWorkspace(workspace: Workspace): void {
+    if (!ProEntries.visible('pro.workspaces')) { return; }
+    const device: 'phone' | 'tablet' | 'pc' = this.isDesktopDevice ? 'pc' :
+      (this.breakpoint === 'md' || this.breakpoint === 'lg' ? 'tablet' : 'phone');
+    const plan = workspaceOpenPlan(workspace, device);
+    const mode = device === 'pc' ? '窗口' : device === 'tablet' ? '分屏/切换条' : '会话切换条';
+    promptAction.showToast({ message: '已生成 ' + plan.items.length.toString() + ' 个会话的' + mode + '打开计划', duration: 1800 });
   }
   private font(): string { return AppConfig.fontFamily; }
 
@@ -14954,6 +14965,7 @@ struct HostListPage {
             }
           }
           if (!this.groupedHostCardsActive()) {
+            ListItem() { ProOrganizationWorkspacePanel({ hosts: this.hosts, onOpen: (workspace: Workspace): void => { this.openProWorkspace(workspace); } }) }
             ListItem() { this.HostWorkspaceFilterBar() }
           }
 
@@ -15441,9 +15453,6 @@ struct HostListPage {
   private hostActionPopupWidth(host: RemoteHost): number {
     const labels: string[] = ['编辑', host.locked ? '解锁' : '上锁', '多选 / 排序', '删除'];
     if (host.protocol === 'ssh') { labels.push('部署公钥'); }
-    if (!isVncHostProjection(host) && host.protocol !== 'ai') {
-      labels.push(host.groupId === 'ops' ? '移出工作组' : '加入 ops 工作组');
-    }
     let longestTextVp: number = 0;
     const uiContext = this.getUIContext();
     labels.forEach((label: string): void => {
@@ -15507,25 +15516,6 @@ struct HostListPage {
       })
 
       Divider().strokeWidth(0.5).color(this.pal().cardBorder).width('100%')
-
-      if (!isVncHostProjection(host) && host.protocol !== 'ai') {
-        Row() {
-          SymbolGlyph($r('sys.symbol.folder_badge_plus'))
-            .fontSize(16).fontColor([this.pal().text])
-          Text(host.groupId === 'ops' ? '移出工作组' : '加入 ops 工作组')
-            .fontSize(13).fontColor(this.pal().text).fontFamily(this.font()).margin({ left: 8 })
-        }
-        .width('100%').padding({ left: 12, right: 12, top: 8, bottom: 8 })
-        .onClick(() => {
-          const nextGroup = host.groupId === 'ops' ? '' : 'ops';
-          if (!this.srv.setGroup(host.id, nextGroup)) {
-            promptAction.showToast({ message: '工作组保存失败 [E-HOST-WS-2]', duration: 1800 });
-          }
-          animateTo({ duration: 150 }, () => { this.hostActionPopupId = ''; });
-        })
-
-        Divider().strokeWidth(0.5).color(this.pal().cardBorder).width('100%')
-      }
 
       Row() {
         SymbolGlyph($r('sys.symbol.ohos_trash'))

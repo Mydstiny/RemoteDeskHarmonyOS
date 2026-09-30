@@ -95,3 +95,25 @@ assert.match(panel, /this\.proCustomShortcuts = ProEntries\.visible\(PRO_PERSONA
 assert.match(sources.get('components/VirtualKeyboardSettingsSheet.ets'),
   /requestedSection === 'custom'\) \{\s*if \(ProEntries\.visible\(PRO_PERSONALIZATION_FEATURE\)\)/);
 console.log('PASS Pro entry points follow the entitlement through ProEntries and every Pro badge is registered');
+
+// New Pro surfaces remain entitlement-gated while Debug exposes their experimental stage.
+const vm = require('node:vm');
+const entryTs = require(process.env.PRO_TYPESCRIPT_PATH || 'typescript');
+const catalogPath = path.resolve(__dirname, '../../entry/src/main/ets/services/pro/ProFeatureCatalog.ets');
+const entryModule = { exports: {} };
+const catalogSource = entryTs.transpileModule(fs.readFileSync(catalogPath, 'utf8'), {
+  compilerOptions: { target: entryTs.ScriptTarget.ES2021, module: entryTs.ModuleKind.CommonJS }
+}).outputText;
+vm.runInNewContext(catalogSource, { module: entryModule, exports: entryModule.exports, require: () => ({}) }, { filename: catalogPath });
+const proCatalog = entryModule.exports.proFeatures();
+for (const id of ['pro.workspaces', 'pro.hostManagement']) {
+  const item = proCatalog.find(item => item.id === id); assert.ok(item);
+  assert.equal(item.requiredEntitlementId, 'pro.lifetime');
+  assert.equal(item.availability, 'experimental');
+  assert.ok(item.devices.includes('phone')); assert.ok(item.devices.includes('tablet')); assert.ok(item.devices.includes('pc'));
+}
+assert.match(entryModule.exports.proFeatureProgress('pro.workspaces'), /实验中/);
+assert.match(entryModule.exports.proFeatureProgress('pro.hostManagement'), /实验中/);
+const hostPage = fs.readFileSync(path.resolve(__dirname, '../../entry/src/main/ets/pages/HostListPage.ets'), 'utf8');
+assert.equal(hostPage.includes('加入 ops 工作组'), false); assert.equal(hostPage.includes('移出工作组'), false);
+console.log('PASS Pro workspace/host-management entry gating');
