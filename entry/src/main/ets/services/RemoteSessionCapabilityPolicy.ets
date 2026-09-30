@@ -129,7 +129,10 @@ export function resolveSessionCapabilities(state: SessionCapabilityState): Remot
       fileUpload: !state.rdpClipboardEnabled
         ? clipboardDisabled
         : state.rdpClipboardReady ? available() : unavailable('RDP 文件剪贴板通道尚未就绪'),
-      fileDownload: drive,
+      // Remote clipboard file receive is independent of RDPDR's shared drive.
+      // Expose the receive action as soon as cliprdr is ready; the shared-drive
+      // path remains available as a second source when it has been mounted.
+      fileDownload: state.rdpClipboardEnabled && state.rdpClipboardReady ? available() : drive,
       multiDisplay: unavailable('当前 RDP 渲染仅支持单显示器')
     };
   }

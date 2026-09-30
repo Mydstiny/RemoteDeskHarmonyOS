@@ -41,7 +41,7 @@ export default function remoteSessionCapabilityPolicyTest(): void {
         vncClipboardEnabled: false, vncClipboardReady: false, vncViewOnly: true
       });
       expect(capabilities.fileUpload.enabled).assertTrue();
-      expect(capabilities.fileDownload.enabled).assertFalse();
+      expect(capabilities.fileDownload.enabled).assertTrue();
     });
 
     it('rdp_should_disable_all_clipboard_capabilities_when_setting_is_off', 0, (): void => {
@@ -67,6 +67,7 @@ export default function remoteSessionCapabilityPolicyTest(): void {
       expect(capabilities.clipboardSend.enabled).assertFalse();
       expect(capabilities.clipboardReceive.enabled).assertFalse();
       expect(capabilities.fileUpload.enabled).assertFalse();
+      expect(capabilities.fileDownload.enabled).assertFalse();
     });
 
     it('ssh_should_offer_sftp_upload_and_download_only_after_sftp_connects', 0, (): void => {

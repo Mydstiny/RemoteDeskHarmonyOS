@@ -4513,7 +4513,8 @@ struct RemoteDesktop {
     attemptId: number = this.connectAttemptId): boolean {
     return this.rdpClipboardEnabled && this.connected && this.sessionId > 0 &&
       this.sessionId === sessionId && this.connectAttemptId === attemptId &&
-      this.pendingHost !== null && this.pendingHost.protocol === 'rdp';
+      this.pendingHost !== null && this.pendingHost.protocol === 'rdp' &&
+      this.loader.isSessionClipboardReady(this.sessionId);
   }
 
   private handleVncTrustRequired(host: VncHostView, detail: string): void {
@@ -18464,6 +18465,12 @@ struct RemoteDesktop {
   private async requestRdpRemoteClipboardFiles(): Promise<void> {
     const lease: RemoteTransferLease | null = this.transferPanelLease;
     if (lease === null || lease.protocol !== 'rdp' || !this.transferLeaseIsCurrent(lease)) { return; }
+    if (!this.rdpFileTransferEnabledForSession(lease.sessionId, lease.attemptId)) {
+      this.rdpReceiveOffer = { sequence: 0, state: 'unavailable', streamSupported: false, lockSupported: false,
+        totalKnown: false, totalBytes: 0, diagnosticCode: 'clipboard_not_ready', entries: [] };
+      this.rdpReceiveMessage = 'RDP 文件剪贴板尚未就绪，请确认 RDP 设置已开启剪贴板并重新连接';
+      return;
+    }
     const generation: number = ++this.rdpOfferRequestGeneration;
     const sequence: number = this.loader.getSessionClipboardSnapshot(lease.sessionId).sequence;
     if (!this.loader.requestSessionRdpClipboardFiles(lease.sessionId, lease.nativeGeneration, sequence)) {
@@ -18479,7 +18486,11 @@ struct RemoteDesktop {
         this.rdpReceiveOffer = offer;
         this.rdpReceiveMessage = '选择接收后可另存到本机。跨设备剪切按复制处理，源文件保留。'; return;
       }
-      if (offer.state !== 'loading') { this.rdpReceiveMessage = '远端文件清单不可用或已失效'; return; }
+      if (offer.state !== 'loading') {
+        this.rdpReceiveMessage = offer.diagnosticCode.length > 0 ?
+          '远端文件清单不可用：' + offer.diagnosticCode : '远端文件清单不可用或已失效';
+        return;
+      }
       await this.yieldUi(100);
     }
     if (this.transferLeaseIsCurrent(lease)) { this.rdpReceiveMessage = '文件清单读取超时'; }
@@ -18527,12 +18538,16 @@ struct RemoteDesktop {
       (offer.totalKnown && offer.totalBytes > RDP_FILE_MAX_BYTES)) {
       this.rdpReceiveMessage = '接收清单无效或单批超过 2GB'; return;
     }
+    if (!this.rdpFileTransferEnabledForSession(lease.sessionId, lease.attemptId)) {
+      this.rdpReceiveMessage = 'RDP 文件剪贴板尚未就绪，请重新连接后再接收'; return;
+    }
     const context: common.UIAbilityContext | null = this.getFileTransferContext();
     if (context === null) { return; }
     const service: ManagedTransferTaskService = ManagedTransferTaskService.getInstance();
     if (!service.init(context)) { return; }
     const batch: TransferArtifactBatch | null = this.createTransferArtifactBatch(context, lease, 'received');
     if (batch === null) { return; }
+    this.setFileTransferStatus('正在接收远端文件清单', 0, true);
     this.transferArtifactBatches.set(batch.directory, batch);
     const handle = service.enqueue({ accountScopeId: lease.accountScopeId, hostId: lease.hostId,
       leaseId: lease.nativeGeneration.toString(),
@@ -18556,6 +18571,12 @@ struct RemoteDesktop {
           while (true) {
             const status: SessionRdpClipboardReceive = this.loader.getSessionRdpClipboardReceive(lease.sessionId, lease.nativeGeneration, id);
             control.update({ writtenBytes: status.transferredBytes, totalBytes: status.totalKnown ? status.totalBytes : 0 });
+            if (this.transferLeaseIsCurrent(lease)) {
+              const total: number = status.totalKnown ? status.totalBytes : 0;
+              const progress: number = total > 0 ? Math.min(1, status.transferredBytes / total) : -1;
+              this.setFileTransferStatus('正在接收远端文件 ' + this.formatTransferSize(status.transferredBytes) +
+                (total > 0 ? ' / ' + this.formatTransferSize(total) : ''), progress, true);
+            }
             if (status.phase === 'completed') {
               drained = true;
               if (!control.isCurrent()) { return { stage: 'cancelled', evidence: 'none' }; }
@@ -18570,6 +18591,10 @@ struct RemoteDesktop {
             }
             if (status.phase === 'failed' || status.phase === 'cancelled') {
               drained = true;
+              if (this.transferLeaseIsCurrent(lease)) {
+                this.setFileTransferStatus(status.phase === 'cancelled' ? '远端文件接收已取消' :
+                  '远端文件接收失败' + (status.diagnosticCode.length > 0 ? '：' + status.diagnosticCode : ''), -1, false);
+              }
               return { stage: status.phase, evidence: 'none', diagnosticCode: 'receive_incomplete' };
             }
             if (!control.isCurrent() || status.phase === 'unavailable') {
@@ -18593,6 +18618,8 @@ struct RemoteDesktop {
     const outcome: ManagedTransferOutcome = await handle.result;
     if (this.transferLeaseIsCurrent(lease)) {
       this.rdpReceiveMessage = outcome.stage === 'completed' ? '已接收到本机副本，目录结构保留' : '接收未完成，源文件保留';
+      this.setFileTransferStatus(outcome.stage === 'completed' ? '已接收到本机副本，源文件保留' :
+        '远端文件接收未完成，源文件保留', outcome.stage === 'completed' ? 1 : -1, false);
     }
   }
 
@@ -23149,6 +23176,8 @@ struct RemoteDesktop {
           'PC 也支持直接拖入远程桌面；Phone/Pad 可将文件拖入本面板，由 HarmonyOS 文件中转站先暂存再发送。' :
           '可从 HarmonyOS 文件管理器拖入本面板；文件会先进入受控暂存区，再提供给 RDP 远端。')
           .fontSize(12).fontColor(this.pal().text2).width('100%')
+        Text('RDP 只能把文件提供给远端当前会话，无法在本端替远端应用选择保存目录；发送完成表示远端已收到剪贴板文件供粘贴，最终落盘由远端应用确认。')
+          .fontSize(12).fontColor(this.pal().text2).width('100%')
       }
       if (this.currentProtocolName() === 'rustdesk') {
         this.rustDeskRemoteBrowserPanel(false)
@@ -23164,22 +23193,22 @@ struct RemoteDesktop {
             })
         }.width('100%').padding(10).backgroundColor(this.pal().card).borderRadius(10)
       } else {
-        Text('远端将通过当前会话读取你选择的文件；如需接收远端内容，请返回选择“远端发送”。')
+        Text('远端将通过当前会话读取你选择的文件；RDP 不能由本端指定远端保存目录。发送完成后请在远端应用中粘贴或保存。')
           .fontSize(13).fontColor(this.pal().text2).width('100%')
       }
       Row({ space: 8 }) {
         Button('选择文件').layoutWeight(1).height(46)
-          .enabled(!this.fileTransferBusy &&
+          .enabled(!this.fileTransferBusy && this.currentSessionCapabilities().fileUpload.enabled &&
             (this.currentProtocolName() !== 'rustdesk' || this.remoteTransferDirectory.length > 0))
           .onClick((): void => { void this.pickAndSendFile(); })
         Button('选择文件夹').layoutWeight(1).height(46)
-          .enabled(!this.fileTransferBusy &&
+          .enabled(!this.fileTransferBusy && this.currentSessionCapabilities().fileUpload.enabled &&
             (this.currentProtocolName() !== 'rustdesk' || this.remoteTransferDirectory.length > 0))
           .onClick((): void => { void this.pickAndSendDirectory(); })
       }.width('100%')
       if (this.currentProtocolName() !== 'rustdesk') {
         Button('从本机剪贴板发送文件').width('100%').height(42)
-          .enabled(!this.fileTransferBusy)
+          .enabled(!this.fileTransferBusy && this.currentSessionCapabilities().fileUpload.enabled)
           .onClick((): void => { void this.handleRdpSystemFilePaste(); })
       }
       if (this.currentProtocolName() === 'rustdesk') {
@@ -23325,6 +23354,7 @@ struct RemoteDesktop {
           Text('远端文件清单').fontSize(15).fontWeight(FontWeight.Medium)
             .fontColor(this.pal().text).width('100%')
           Button('读取远端文件').width('100%').height(42)
+            .enabled(this.rdpFileTransferEnabledForSession())
             .onClick((): void => { void this.requestRdpRemoteClipboardFiles(); })
           Text(this.rdpReceiveMessage).fontSize(12).fontColor(this.pal().text2).width('100%')
           if (this.rdpReceiveOffer.state === 'ready') {
