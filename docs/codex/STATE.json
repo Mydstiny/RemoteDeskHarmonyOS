@@ -27,7 +27,7 @@
     "M5 Share Kit App Linking domain, association and actual fragment delivery remain unverified; ServiceInteraction ACL is a separate path. M6 USB/RDP authenticator and phone-passkey RP/origin proof remain pending.",
     "M5 RustDesk/VNC continuation commit 090be1411 passes focused tests and both mandatory Hvigor gates; real cross-device/device protocol acceptance remains unverified and aggregate review has no matching PASS receipt.",
     "Sandbox core device flow passed. Numeric-version publication, notification endpoint and formal merchant/product release remain open; worker timer disabled.",
-    "RDP domain preflight bypass checkpoint f06bcf620: testCompile and signed assembleHap pass; optional ohosTest task 00306054 is unavailable; real hostname/device certificate acceptance remains open."
+    "RDP domain preflight checkpoints f06bcf620, b17d8d90 and d10db1076: direct/transparent hostname candidates are unified with the live FreeRDP transport after service reachability; testCompile and signed assembleHap pass; optional ohosTest task 00306054 is unavailable; real hostname/device certificate acceptance remains open."
   ],
   "planPaths": [
     "docs/codex/plans/2026-09-06-pro-purchase-foundation.md",
