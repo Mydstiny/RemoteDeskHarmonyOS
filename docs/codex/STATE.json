@@ -3,7 +3,7 @@
   "task": "pro-purchase-foundation",
   "branch": "codex/pro-purchase-foundation",
   "base": "8edc187868e94ed41634e8a6c4c4c072e3a48679",
-  "head": "8b58e010",
+  "head": "ad8c5d2ea",
   "phase": "Full acceptance: steps 1-3 PASS; step 4 external (no PC); step 5 M5 RustDesk/VNC continuation code PASS, device acceptance pending",
   "status": "in-progress",
   "next": "Acceptance step 4: M4 knock transfer phone -> HarmonyOS PC SFTP; then real M5 RustDesk/VNC cross-device acceptance and M7 remainder.",
@@ -234,9 +234,9 @@
     "reason": "Latest public UI restoration needs independent exact-checkpoint review; prior scoped receipts remain historical."
   },
   "lastVerification": {
-    "scope": "8b58e010 RustDesk remote file explorer and delayed RDP file-station staging",
-    "testCompile": "PASS exit 0; BUILD SUCCESSFUL in 13 s 937 ms",
-    "assembleHap": "PASS exit 0; BUILD SUCCESSFUL in 28 s 562 ms; SignHap 2 s 520 ms",
+    "scope": "ad8c5d2ea RustDesk remote file explorer and delayed RDP file-station staging",
+    "testCompile": "PASS exit 0; BUILD SUCCESSFUL in 10 s 353 ms",
+    "assembleHap": "PASS exit 0; BUILD SUCCESSFUL in 15 s 874 ms; SignHap 1 s 479 ms",
     "release": "NOT RUN; this increment used the mandatory default assembleHap gate",
     "hostChecks": "PASS test_transfer_page_ownership 37; test_continuous_clipboard_page 11; test_pc_remote_clipboard_files 26",
     "compliance": "PASS git diff --check",
