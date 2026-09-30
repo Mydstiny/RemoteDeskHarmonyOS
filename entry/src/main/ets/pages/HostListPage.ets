@@ -1,5 +1,5 @@
 import { ProBadge } from '../components/ProBadge';
-import { ProFeatureDetailPanel } from '../components/ProFeatureManagerPanel';
+import { ProBadgeSettingsPanel, ProFeatureDetailPanel } from '../components/ProFeatureManagerPanel';
 import { proFeatureCurrentStatus } from '../services/pro/ProFeatureStatusReader';
 import { ProFeature } from '../services/pro/ProFeatureCatalog';
 import { AiHostEditor } from '../components/ai/AiHostEditor';
@@ -500,6 +500,7 @@ import {
   SETTINGS_SHEET_PRO,
   SETTINGS_SHEET_APP_ICON,
   SETTINGS_SHEET_PRO_FEATURE,
+  SETTINGS_SHEET_PRO_BADGE,
   SETTINGS_SHEET_ACCENT_COLOR,
   SETTINGS_SHEET_DIAGNOSTIC_LOG,
   SETTINGS_SHEET_REMOTE_PINCH_ZOOM,
@@ -868,6 +869,8 @@ struct HostListPage {
   @State aiProVisible: boolean = false;
   @State appIconProVisible: boolean = true;
   @State proManagerVisible: boolean = false;
+  @StorageProp('proBadgeFlow') proBadgeFlow: boolean = true;
+  @StorageProp('proBadgeVisible') proBadgeVisible: boolean = true;
   @State proFeatureRevision: number = 0;
   @State selectedProFeatureId: string = '';
   @State appIconSupported: boolean = false;
@@ -15658,7 +15661,8 @@ struct HostListPage {
   private settingsLeafSheetHeight(): SheetSize | number {
     if (this.settingsLeafSheetMode === SETTINGS_SHEET_PRO) { return Math.min(820, Math.max(320, this.pageViewportHeight - 48)); }
     if (this.settingsLeafSheetMode === SETTINGS_SHEET_APP_ICON ||
-      this.settingsLeafSheetMode === SETTINGS_SHEET_PRO_FEATURE) { return SheetSize.FIT_CONTENT; }
+      this.settingsLeafSheetMode === SETTINGS_SHEET_PRO_FEATURE ||
+      this.settingsLeafSheetMode === SETTINGS_SHEET_PRO_BADGE) { return SheetSize.FIT_CONTENT; }
     if (this.settingsLeafSheetMode === SETTINGS_SHEET_POPUP && this.popupSheetMode === 1 &&
       this.aboutSheetMode === 3) {
       return SheetSize.LARGE;
@@ -15719,6 +15723,8 @@ struct HostListPage {
       ProPurchaseSheet({ onClose: (): void => { this.closeSettingsLeafSheet(); } })
     } else if (this.settingsLeafSheetMode === SETTINGS_SHEET_PRO_FEATURE) {
       ProFeatureDetailPanel({ featureId: this.selectedProFeatureId })
+    } else if (this.settingsLeafSheetMode === SETTINGS_SHEET_PRO_BADGE) {
+      ProBadgeSettingsPanel()
     } else if (this.settingsLeafSheetMode === SETTINGS_SHEET_APP_ICON) {
       ProAppIconPanel({ isOpen: (): boolean => this.showSettingsLeafSheet &&
         this.settingsLeafSheetMode === SETTINGS_SHEET_APP_ICON })
@@ -16009,6 +16015,10 @@ struct HostListPage {
                 .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font()).margin({ top: 2 })
             }
             .alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 12 })
+            // Owned Pro follows the account: shown only while its entitlement is active.
+            if (this.proManagerVisible && !this.appCloneLocalOnly) {
+              ProBadge().margin({ right: 10 })
+            }
             SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(20).fontColor([this.pal().text3])
           }
           .width('100%').height(75).padding({ left: 24, right: 24 }).alignItems(VerticalAlign.Center)
@@ -16949,8 +16959,11 @@ struct HostListPage {
         ListItem() {
           Column() {
             Column() {
-              ForEach(this.proCatalogFeatures(this.proFeatureRevision), (feature: ProFeature, index: number): void => {
-                if (index > 0) { this.cardDivider() }
+              this.protocolActionRow($r('sys.symbol.paintpalette_fill'), 'Pro 标识',
+                this.proBadgeVisible ? (this.proBadgeFlow ? '显示 · 幻彩流动' : '显示 · 静态') : '已隐藏',
+                (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_PRO_BADGE); })
+              ForEach(this.proCatalogFeatures(this.proFeatureRevision), (feature: ProFeature): void => {
+                this.cardDivider()
                 this.protocolActionRow(this.proFeatureIcon(feature.id), feature.title,
                   proFeatureCurrentStatus(feature).label + ' · ' + proFeatureCurrentStatus(feature).detail,
                   (): void => { this.selectedProFeatureId = feature.id; this.openSettingsLeafSheet(SETTINGS_SHEET_PRO_FEATURE); })
@@ -21609,11 +21622,16 @@ struct HostListPage {
             .width(64).height(64).borderRadius(32)
             .margin({ bottom: 8 })
         }
-        Text(this.appCloneLocalOnly ?
-          (this.appCloneIsClone ? 'RemoteDesk 应用分身' : 'RemoteDesk 本地安全模式') :
-          (this.auth.isLoggedIn() ? this.auth.getDisplayName() : '未登录'))
-          .fontSize(AppTheme.fontSize.subtitle)
-          .fontWeight(FontWeight.Bold).fontColor(this.pal().text)
+        Row({ space: 8 }) {
+          Text(this.appCloneLocalOnly ?
+            (this.appCloneIsClone ? 'RemoteDesk 应用分身' : 'RemoteDesk 本地安全模式') :
+            (this.auth.isLoggedIn() ? this.auth.getDisplayName() : '未登录'))
+            .fontSize(AppTheme.fontSize.subtitle)
+            .fontWeight(FontWeight.Bold).fontColor(this.pal().text)
+          if (this.proManagerVisible && !this.appCloneLocalOnly) {
+            ProBadge({ large: true })
+          }
+        }.justifyContent(FlexAlign.Center)
         Text(this.appCloneLocalOnly ?
           '主机、凭据和密钥与主应用隔离\n华为账号与云同步在分身中关闭' :
           (this.auth.isLoggedIn() ? '华为账号已登录' : '离线模式 · 主机仅本地存储'))

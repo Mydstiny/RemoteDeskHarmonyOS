@@ -50,9 +50,10 @@ const badges = new Map([
   ['pages/AiSettingsPage.ets', [1, /allowed = AiAccess\.getInstance\(\)\.proVisible\(\)/]],
   ['pages/SshTerminal.ets', [1, /ProFeatureGate\(\{ featureId: 'pro\.file\.knockTransfer'/]],
   // Per-feature sheets open only from the Pro 功能 section, which requires an active Pro.
-  ['components/ProFeatureManagerPanel.ets', [1, /export struct ProFeatureDetailPanel/]],
-  // AI cards/section (4) follow aiProVisible; the app-icon row follows ProEntries.
-  ['pages/HostListPage.ets', [5, /aiProVisible = AiAccess\.getInstance\(\)\.proVisible\(\)/]]
+  ['components/ProFeatureManagerPanel.ets', [2, /export struct ProBadgeSettingsPanel/]],
+  // AI cards/section (4) follow aiProVisible; the app-icon row follows ProEntries; the account card
+  // marker follows ProEntries.proActive().
+  ['pages/HostListPage.ets', [6, /aiProVisible = AiAccess\.getInstance\(\)\.proVisible\(\)/]]
 ]);
 for (const [file, text] of sources) {
   if (file === 'components/ProBadge.ets') continue;  // the badge component itself
@@ -83,4 +84,6 @@ const order = ['SETTINGS_SECTION_VNC', 'SETTINGS_SECTION_MOONLIGHT', 'SETTINGS_S
   .map(name => host.indexOf('this.settingsAccordionHeader(' + name));
 assert.ok(order.every((index, i) => index > 0 && (i === 0 || index > order[i - 1])), 'settings section order changed');
 assert.match(host, /this\.aiProVisible\) \{\s*ListItem\(\) \{\s*this\.settingsAccordionHeader\(SETTINGS_SECTION_AI/);
+// 4. The account card and sheet show the Pro marker only while the account's Pro is active.
+assert.equal(count(host, /if \(this\.proManagerVisible && !this\.appCloneLocalOnly\) \{\s*ProBadge\(/g), 2);
 console.log('PASS Pro entry points follow the entitlement through ProEntries and every Pro badge is registered');

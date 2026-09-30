@@ -48,7 +48,7 @@ export const SETTINGS_SHEET_SESSION_CONTROL_BAR: number = 40;
 export const SETTINGS_SHEET_HARMONY_SHORTCUT_BLOCKING: number = 41;
 export const SETTINGS_SHEET_APP_ICON: number = 47;
 export const SETTINGS_SHEET_PRO_FEATURE: number = 48;
-export const SETTINGS_SHEET_PRO_STATUS: number = 49;
+export const SETTINGS_SHEET_PRO_BADGE: number = 49;
 
 export const SETTINGS_PANEL_DISMISS_TO_LEAF_OPEN_MS: number = 360;
 

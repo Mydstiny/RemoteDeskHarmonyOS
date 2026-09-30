@@ -1,6 +1,6 @@
 import { common } from '@kit.AbilityKit';
 import { AppConfig, Palette, buildDark, buildLight } from '../common/Theme';
-import { ProBadge } from './ProBadge';
+import { ProBadge, ProBadgePreferences } from './ProBadge';
 import { ProEntries } from '../services/pro/ProEntries';
 import { ProFeature } from '../services/pro/ProFeatureCatalog';
 import { ProFeatureStatus, proFeatureScope } from '../services/pro/ProFeatureStatus';
@@ -203,5 +203,49 @@ export struct ProFeatureDetailPanel {
       }
     }.width('100%').padding({ left: 20, right: 20, top: 20, bottom: 28 })
     }.width('100%').scrollBar(BarState.Off).edgeEffect(EdgeEffect.Spring, { alwaysEnabled: false })
+  }
+}
+
+/** Settings sheet for the Pro marker itself: whether it shows and whether its colors flow. */
+@Component
+export struct ProBadgeSettingsPanel {
+  @StorageProp('currentTheme') theme: string = 'light';
+  @StorageProp('accentColor') accent: string = '#007DFF';
+  @StorageProp('proBadgeFlow') flow: boolean = true;
+  @StorageProp('proBadgeVisible') visible: boolean = true;
+  aboutToAppear(): void { ProBadgePreferences.load(getContext(this)); }
+  private pal(): Palette { return this.theme === 'light' ? buildLight(this.accent) : buildDark(this.accent); }
+  @Builder private switchRow(title: string, detail: string, isOn: boolean, enabled: boolean,
+    onChange: (on: boolean) => void) {
+    Row({ space: 12 }) {
+      Column({ space: 3 }) {
+        Text(title).fontSize(15).fontColor(this.pal().text).fontFamily(AppConfig.fontFamily).width('100%')
+        Text(detail).fontSize(12).fontColor(this.pal().text3).fontFamily(AppConfig.fontFamily).lineHeight(17).width('100%')
+      }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+      Toggle({ type: ToggleType.Switch, isOn }).selectedColor(this.accent).enabled(enabled)
+        .accessibilityText(title).onChange(onChange)
+    }.width('100%').padding(16).opacity(enabled ? 1 : 0.5)
+  }
+  build() {
+    Column({ space: 14 }) {
+      Text('Pro 标识').fontSize(20).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
+        .fontFamily(AppConfig.fontFamily).width('100%')
+      Row({ space: 12 }) {
+        if (this.visible) {
+          ProBadge()
+          ProBadge({ large: true })
+        } else {
+          Text('Pro 标识已隐藏').fontSize(13).fontColor(this.pal().text3).fontFamily(AppConfig.fontFamily)
+        }
+      }.width('100%').height(64).justifyContent(FlexAlign.Center)
+      .backgroundColor(this.pal().card).borderRadius(16)
+      Column() {
+        this.switchRow('显示 Pro 标识', '关闭后应用内的 Pro 标识都不显示；Pro 功能和入口不受影响',
+          this.visible, true, (on: boolean): void => { ProBadgePreferences.update(getContext(this), this.flow, on); })
+        Divider().strokeWidth(0.5).color(this.pal().cardBorder).margin({ left: 16, right: 16 })
+        this.switchRow('幻彩流动', '关闭后保持静态幻彩配色', this.flow, this.visible,
+          (on: boolean): void => { ProBadgePreferences.update(getContext(this), on, this.visible); })
+      }.width('100%').backgroundColor(this.pal().card).borderRadius(16)
+    }.width('100%').padding({ left: 20, right: 20, top: 20, bottom: 28 })
   }
 }
