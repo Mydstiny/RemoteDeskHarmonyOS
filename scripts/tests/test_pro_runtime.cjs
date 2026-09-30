@@ -91,6 +91,26 @@ test('debug synchronizes subscribers without changing real entitlement or planne
   stopA(); f.runtime.dispose(); assert.equal(f.timers.size, 0);
   const restarted = fixture(); assert.equal(restarted.runtime.snapshot().mode, 'real'); restarted.runtime.dispose();
 });
+test('Debug opens implemented experiments for real and simulated Pro; Release never does', async () => {
+  const ctx = { appVersionCode: 100, apiVersion: 26, device: 'phone', protocol: 'ssh',
+    capabilities: ['SystemCapability.DistributedDataManager.DataObject.DistributedObject'],
+    grantedPermissions: ['ohos.permission.DISTRIBUTED_DATASYNC'], requestablePermissions: [] };
+  const id = 'pro.connection.continuation';
+  for (const debug of [true, false]) {
+    const f = fixture(debug);
+    assert.equal(f.runtime.decision(id, ctx).visible, false, 'free users never see experiments');
+    f.verifier.result = { status: 'verified', owner: 'a', environment: 'production', grant: f.grant };
+    await f.service.reconcile([]);
+    assert.equal(f.runtime.snapshot().mode, 'real');
+    assert.equal(f.runtime.decision(id, ctx).executable, debug, 'real (sandbox) Pro in Debug reaches experiments');
+    assert.equal(f.runtime.decision(id, { ...ctx, device: 'unknown' }).visible, false, 'device checks still apply');
+    f.runtime.setDebugMode('free');
+    assert.equal(f.runtime.decision(id, ctx).visible, false);
+    f.runtime.setDebugMode('pro');
+    assert.equal(f.runtime.decision(id, ctx).executable, debug);
+    f.runtime.dispose();
+  }
+});
 test('refund pending disables Debug Pro overrides until a signed revocation arrives', async () => {
   const f = fixture();
   f.verifier.result = { status: 'verified', owner: 'a', environment: 'production', grant: f.grant };

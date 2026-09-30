@@ -26,27 +26,38 @@ export struct ProContinuationControls {
     });
   }
   aboutToDisappear(): void { this.stop?.(); this.stop = null; }
-  @Builder private controls() {
-    Column({ space: 8 }) {
-      Row() { Blank(); ProBadge() }.width('100%')
-      Button(this.status === '' ? '准备同账号接续' : '重新准备接续')
-        .width('100%').constraintSize({ minHeight: 44 }).fontSize(14)
-        .backgroundColor(Color.Transparent).fontColor(this.accent).onClick(this.onPrepare)
-      if (this.status === '') {
-        Text('目前仅支持 RDP 和直连 SSH；RustDesk 与 VNC 计划后续支持。')
-          .fontSize(12).fontColor(this.pal().text3).width('100%')
-      }
-      if (this.status !== '') {
-        Text(this.status).fontSize(12).fontColor(this.pal().text2).width('100%')
-        if (this.canClose) {
-          Button('目标已就绪，结束本端会话').constraintSize({ minHeight: 44 }).fontSize(13)
-            .onClick((): void => { ProContinuationService.getInstance().closeConfirmedSource(this.windowId); })
+  // Matches the SSH "更多" menu rows: title (+ Pro badge), grey detail, trailing chevron.
+  @Builder private menuRow(title: string, detail: string, badge: boolean, action: () => void) {
+    Row() {
+      Column({ space: 2 }) {
+        Row({ space: 6 }) {
+          Text(title).fontSize(14).fontColor(this.pal().text).maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis }).flexShrink(1)
+          if (badge) { ProBadge() }
         }
-        Button('取消接续准备').constraintSize({ minHeight: 44 }).fontSize(13)
-          .backgroundColor(Color.Transparent).fontColor(this.pal().text2)
-          .onClick((): void => { ProContinuationService.getInstance().cancelSource(this.windowId); })
+        if (detail.length > 0) {
+          Text(detail).fontSize(11).fontColor(this.pal().text3).maxLines(2)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+        }
+      }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+      SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(14).fontColor([this.pal().text3])
+    }
+    .width('100%').constraintSize({ minHeight: 52 }).padding({ left: 14, right: 12, top: 6, bottom: 6 })
+    .onClick(action).accessibilityText(title + (detail.length > 0 ? '，' + detail : ''))
+  }
+  @Builder private controls() {
+    Column() {
+      this.menuRow(this.status === '' ? '同账号接续' : '重新准备接续',
+        this.status === '' ? '2 分钟内在同账号设备继续 · 目前仅支持 RDP 和直连 SSH' : this.status, true, this.onPrepare)
+      if (this.status !== '') {
+        if (this.canClose) {
+          this.menuRow('结束本端会话', '目标设备已就绪', false,
+            (): void => { ProContinuationService.getInstance().closeConfirmedSource(this.windowId); })
+        }
+        this.menuRow('取消接续准备', '', false,
+          (): void => { ProContinuationService.getInstance().cancelSource(this.windowId); })
       }
-    }.width('100%').padding(12)
+    }.width('100%')
   }
   build() {
     ProFeatureGate({ featureId: 'pro.connection.continuation', context: proContinuationContext(this.protocol), content: (): void => { this.controls(); } })

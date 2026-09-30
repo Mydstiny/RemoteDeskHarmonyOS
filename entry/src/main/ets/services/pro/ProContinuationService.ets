@@ -24,7 +24,7 @@ export type ProContinuationPrepareFailure = '' | 'ability' | 'pro' | 'source' | 
   'changed' | 'mission';
 /** User-facing explanation for a preparation failure; never includes host or account details. */
 export function proContinuationFailureText(reason: ProContinuationPrepareFailure): string {
-  if (reason === 'pro') { return '无法准备接续：需要 Pro（实验功能需 Debug 模拟 Pro），且当前设备和协议受支持'; }
+  if (reason === 'pro') { return '无法准备接续：需要有效的 Pro，且当前设备和协议受支持'; }
   if (reason === 'host') { return '无法准备接续：此主机不属于当前登录账号，或已被修改，请重新打开主机'; }
   if (reason === 'account') { return '无法准备接续：请先登录华为账号'; }
   if (reason === 'permission') { return '无法准备接续：需要允许"多设备协同"权限'; }

@@ -62,17 +62,19 @@ export class ProRuntime {
     let state = real.state;
     let ids = real.entitlementIds;
     if (DEBUG && !real.refundPending) {
-      if (this.debugMode === 'pro') {
-        state = 'active'; ids = [PRO_LIFETIME];
+      if (this.debugMode === 'pro') { state = 'active'; ids = [PRO_LIFETIME]; }
+      if (this.debugMode === 'free') { state = 'free'; ids = []; }
+      // Debug builds let any active Pro view (the real sandbox subscription or the
+      // simulated one) reach implemented experiments, so testing matches what a
+      // subscriber sees; all device, protocol and capability checks still apply.
+      // Release bytecode drops this branch and never exposes experiments.
+      if (state === 'active') {
         const feature: ProFeature | undefined = proFeatures().find((item: ProFeature): boolean => item.id === id);
-        // Implemented experiments are reachable only in an explicit Debug Pro
-        // view; all device, protocol and capability checks still apply.
         if (feature !== undefined && feature.availability === 'experimental') {
           feature.availability = 'available';
           return resolveProFeatureAccess(feature, context, state, ids);
         }
       }
-      if (this.debugMode === 'free') { state = 'free'; ids = []; }
     }
     return proFeatureAccess(id, context, state, ids);
   }

@@ -30,7 +30,7 @@ export function proFeatureStatus(feature: ProFeature, decision: ProAccessDecisio
   if (reason === 'planned') {
     if (feature.availability === 'experimental') {
       return { label: '实验中', tone: 'experimental',
-        detail: debug ? '仅在 Debug 切到“模拟 Pro”后可测试' : '正式版暂未开放' };
+        detail: debug ? '开通 Pro（沙盒或模拟）后可在 Debug 中测试' : '正式版暂未开放' };
     }
     return { label: '规划中', detail: '尚未交付', tone: 'planned' };
   }

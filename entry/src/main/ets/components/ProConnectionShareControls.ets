@@ -22,19 +22,34 @@ export struct ProConnectionShareControls {
     });
   }
   aboutToDisappear(): void { this.stop?.(); this.stop = null; }
+  // Matches the SSH "更多" menu rows: title (+ Pro badge), grey detail, trailing chevron.
+  @Builder private menuRow(title: string, detail: string, badge: boolean, action: () => void) {
+    Row() {
+      Column({ space: 2 }) {
+        Row({ space: 6 }) {
+          Text(title).fontSize(14).fontColor(this.pal().text).maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis }).flexShrink(1)
+          if (badge) { ProBadge() }
+        }
+        if (detail.length > 0) {
+          Text(detail).fontSize(11).fontColor(this.pal().text3).maxLines(2)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+        }
+      }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+      SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(14).fontColor([this.pal().text3])
+    }
+    .width('100%').constraintSize({ minHeight: 52 }).padding({ left: 14, right: 12, top: 6, bottom: 6 })
+    .onClick(action).accessibilityText(title + (detail.length > 0 ? '，' + detail : ''))
+  }
   @Builder private controls() {
-    Column({ space: 8 }) {
-      Row() { Blank(); ProBadge() }.width('100%')
-      Button(this.message === '' ? '准备碰一碰分享连接' : '重新准备连接分享')
-        .width('100%').constraintSize({ minHeight: 44 }).fontSize(14)
-        .backgroundColor(Color.Transparent).fontColor(this.accent).onClick(this.onPrepare)
+    Column() {
+      this.menuRow(this.message === '' ? '碰一碰分享连接' : '重新准备分享',
+        this.message === '' ? '分享直连 SSH 信息，接收方在本机自行认证' : this.message, true, this.onPrepare)
       if (this.message !== '') {
-        Text(this.message).fontSize(12).fontColor(this.pal().text2).width('100%')
-        Button('结束分享准备').constraintSize({ minHeight: 44 }).fontSize(13)
-          .backgroundColor(Color.Transparent).fontColor(this.pal().text2)
-          .onClick((): void => { ProConnectionShareSender.getInstance().stop(this.windowId); })
+        this.menuRow('结束分享准备', '', false,
+          (): void => { ProConnectionShareSender.getInstance().stop(this.windowId); })
       }
-    }.width('100%').padding(12)
+    }.width('100%')
   }
   build() {
     ProFeatureGate({ featureId: 'pro.connection.knockShare', context: proConnectionShareContext(), content: (): void => { this.controls(); } })
