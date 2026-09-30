@@ -898,6 +898,9 @@ std::vector<uint8_t> buildSetEncodings(const std::string& preferredEncoding) {
     requested.push_back(VncCursorProtocol::kEncoding);
     requested.push_back(kDesktopSizeEncoding);
     requested.push_back(kLastRectEncoding);
+    // UltraVNC ignores unknown encodings; this pseudo-encoding is the
+    // documented capability request for its monitor-info server message.
+    requested.push_back(kUltraVncMonitorInfoEncoding);
 
     std::vector<uint8_t> packet;
     packet.reserve(4U + requested.size() * 4U);
@@ -913,6 +916,19 @@ std::vector<uint8_t> buildSetEncodings(const std::string& preferredEncoding) {
         packet.push_back(static_cast<uint8_t>(value));
     }
     return packet;
+}
+
+std::vector<uint8_t> buildUltraVncSetMonitor(uint8_t monitor) {
+    return {kUltraVncSetMonitorMessage, monitor, 0, 0};
+}
+
+bool parseUltraVncMonitorInfo(const uint8_t* data, size_t size,
+                              uint8_t& monitorCount) {
+    if (data == nullptr || size != 3U) {
+        return false;
+    }
+    monitorCount = data[0];
+    return true;
 }
 
 bool canSendTextInput(bool viewOnly, bool clipboardEnabled, bool connected) {

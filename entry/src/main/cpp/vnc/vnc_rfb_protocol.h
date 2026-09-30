@@ -23,6 +23,9 @@ constexpr int kLastRectEncoding = -224;
 constexpr int kRawEncoding = 0;
 constexpr int kCopyRectEncoding = 1;
 constexpr int kZrleEncoding = 16;
+constexpr uint8_t kUltraVncMonitorInfoMessage = 252;
+constexpr uint8_t kUltraVncSetMonitorMessage = 254;
+constexpr int kUltraVncMonitorInfoEncoding = -32763;
 constexpr size_t kMaxTextInputCodepoints = 4096;
 // UI-normalized VNC wheel input can emit up to 80 clicks after the device-
 // accepted 10x gain. Keep a bounded margin for direct native callers without
@@ -95,6 +98,13 @@ std::vector<uint8_t> buildSetPixelFormat(int colorDepth);
  * DesktopSize and LastRect are always advertised.
  */
 std::vector<uint8_t> buildSetEncodings(const std::string& preferredEncoding);
+
+/** Build UltraVNC's monitor-selection client message (type, monitor, padding). */
+std::vector<uint8_t> buildUltraVncSetMonitor(uint8_t monitor);
+
+/** Parse the three bytes following an UltraVNC monitor-info server message. */
+bool parseUltraVncMonitorInfo(const uint8_t* data, size_t size,
+                              uint8_t& monitorCount);
 
 /**
  * Whether soft-keyboard text may be sent for the current session. Clipboard

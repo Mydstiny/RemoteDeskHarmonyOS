@@ -1676,6 +1676,14 @@ void VncAdapter::requestFrameRefresh() {
     std::lock_guard<std::mutex> lock(impl_->mutex);
     if (impl_->engine) impl_->engine->requestFrameRefresh();
 }
+int VncAdapter::monitorCount() {
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    return impl_->engine ? impl_->engine->monitorCount() : 0;
+}
+bool VncAdapter::requestMonitorSwitch(int monitor) {
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    return impl_->engine && impl_->engine->requestMonitorSwitch(monitor);
+}
 std::string VncAdapter::getClipboardText() {
     std::lock_guard<std::mutex> lock(impl_->mutex);
     return impl_->engine ? impl_->engine->clipboardText() : "";

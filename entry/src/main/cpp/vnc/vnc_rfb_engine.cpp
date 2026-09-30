@@ -827,6 +827,8 @@ bool VncRfbEngine::receiveLoop(std::string& error) {
             // Bell: no payload.
         } else if (type == 3) {
             if (!receiveServerCutText(error)) return false;
+        } else if (type == VncRfbProtocol::kUltraVncMonitorInfoMessage) {
+            if (!receiveUltraVncMonitorInfo(error)) return false;
         } else {
             error = "unsupported VNC server message type";
             VNC_DIAG_WARN("[VNC-DIAG] unsupported server message type=%{public}d",
@@ -1176,6 +1178,19 @@ bool VncRfbEngine::receiveServerCutText(std::string& error) {
     return true;
 }
 
+bool VncRfbEngine::receiveUltraVncMonitorInfo(std::string& error) {
+    uint8_t payload[3] = {0};
+    if (!readBytes(payload, sizeof(payload), idleTimeoutMs_, error)) return false;
+    uint8_t count = 0;
+    if (!VncRfbProtocol::parseUltraVncMonitorInfo(payload, sizeof(payload), count)) {
+        error = "UltraVNC monitor-info payload is malformed";
+        return false;
+    }
+    monitorCount_.store(static_cast<int>(count), std::memory_order_release);
+    VNC_DIAG_INFO("[VNC-DIAG] UltraVNC monitor catalog count=%{public}d", count);
+    return true;
+}
+
 bool VncRfbEngine::readReason(std::string& reason, std::string& error) {
     uint32_t length = 0;
     if (!readU32(length, config_.vncAuthTimeoutMs, error)) return false;
@@ -1427,6 +1442,34 @@ void VncRfbEngine::requestFrameRefresh() {
     if (state() != ConnectionState::CONNECTED) return;
     std::string error;
     sendFramebufferUpdateRequest(false, error);
+}
+
+int VncRfbEngine::monitorCount() const {
+    return monitorCount_.load(std::memory_order_acquire);
+}
+
+bool VncRfbEngine::requestMonitorSwitch(int monitor) {
+    if (monitor < 0 || monitor > 255 || state() != ConnectionState::CONNECTED) {
+        return false;
+    }
+    const int count = monitorCount();
+    if (count <= 0 || monitor >= count) {
+        return false;
+    }
+    const std::vector<uint8_t> packet = VncRfbProtocol::buildUltraVncSetMonitor(
+        static_cast<uint8_t>(monitor));
+    std::string error;
+    {
+        std::lock_guard<std::mutex> lock(inputMutex_);
+        // Release any held buttons before changing the server's active
+        // monitor so coordinates from the old framebuffer cannot leak.
+        buttonMask_ = 0;
+    }
+    if (!writeBytes(packet.data(), packet.size(), error)) {
+        VNC_DIAG_WARN("[VNC-DIAG] UltraVNC monitor switch failed: %{public}s", error.c_str());
+        return false;
+    }
+    return sendFramebufferUpdateRequest(false, error);
 }
 
 #if defined(RDP_NATIVE_CALLBACK_TESTING)

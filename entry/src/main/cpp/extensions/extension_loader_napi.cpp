@@ -8198,6 +8198,58 @@ napi_value NapiBeginRustDeskDisplaySwitch(napi_env env, napi_callback_info info)
     return result;
 }
 
+/** NAPI: getVncDisplayCapabilities(sessionId): object */
+napi_value NapiGetVncDisplayCapabilities(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1] = {nullptr};
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    int32_t sessionId = 0;
+    if (argc > 0) napi_get_value_int32(env, args[0], &sessionId);
+
+    int monitorCount = 0;
+    auto it = g_sessionRegistry.find(sessionId);
+    const std::shared_ptr<SessionContext> session =
+        it == g_sessionRegistry.end() ? nullptr : it->second;
+    if (IsSessionCallbackActive(session)) {
+        if (auto* vnc = dynamic_cast<VncAdapter*>(session->adapter.get())) {
+            monitorCount = vnc->monitorCount();
+        }
+    }
+    napi_value result;
+    napi_create_object(env, &result);
+    SetObjectBool(env, result, "supported", monitorCount > 0);
+    SetObjectString(env, result, "mode",
+                    monitorCount > 0 ? std::string("serverSelection")
+                                     : std::string("unsupported"));
+    SetObjectInt32(env, result, "monitorCount", monitorCount);
+    return result;
+}
+
+/** NAPI: switchVncDisplay(sessionId, monitor): boolean */
+napi_value NapiSwitchVncDisplay(napi_env env, napi_callback_info info) {
+    size_t argc = 2;
+    napi_value args[2] = {nullptr, nullptr};
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    int32_t sessionId = 0;
+    int32_t monitor = -1;
+    if (argc >= 2) {
+        napi_get_value_int32(env, args[0], &sessionId);
+        napi_get_value_int32(env, args[1], &monitor);
+    }
+    bool accepted = false;
+    auto it = g_sessionRegistry.find(sessionId);
+    const std::shared_ptr<SessionContext> session =
+        it == g_sessionRegistry.end() ? nullptr : it->second;
+    if (monitor >= 0 && monitor <= 255 && IsSessionCallbackActive(session)) {
+        if (auto* vnc = dynamic_cast<VncAdapter*>(session->adapter.get())) {
+            accepted = vnc->requestMonitorSwitch(monitor);
+        }
+    }
+    napi_value result;
+    napi_get_boolean(env, accepted, &result);
+    return result;
+}
+
 /** NAPI: switchRustDeskDisplay(sessionId, display): boolean */
 napi_value NapiSwitchRustDeskDisplay(napi_env env, napi_callback_info info) {
     size_t argc = 2;
@@ -13246,6 +13298,14 @@ napi_value ExtensionLoaderNapi::Init(napi_env env, napi_value exports) {
     napi_create_function(env, "getRustDeskDisplayCapabilities", NAPI_AUTO_LENGTH,
                          NapiGetRustDeskDisplayCapabilities, nullptr, &fn);
     napi_set_named_property(env, exports, "getRustDeskDisplayCapabilities", fn);
+
+    napi_create_function(env, "getVncDisplayCapabilities", NAPI_AUTO_LENGTH,
+                         NapiGetVncDisplayCapabilities, nullptr, &fn);
+    napi_set_named_property(env, exports, "getVncDisplayCapabilities", fn);
+
+    napi_create_function(env, "switchVncDisplay", NAPI_AUTO_LENGTH,
+                         NapiSwitchVncDisplay, nullptr, &fn);
+    napi_set_named_property(env, exports, "switchVncDisplay", fn);
 
     napi_create_function(env, "attachRustDeskMultiCanvasPreview", NAPI_AUTO_LENGTH,
                          NapiAttachRustDeskMultiCanvasPreview, nullptr, &fn);

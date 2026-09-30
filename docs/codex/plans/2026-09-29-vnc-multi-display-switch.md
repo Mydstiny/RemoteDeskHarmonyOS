@@ -1,10 +1,21 @@
 # VNC 多显示器单屏切换与侧栏优化计划
 
-Status: PLAN_ONLY
+Status: M1_NATIVE_ULTRAVNC_INCREMENT
 Created: 2026-09-29 Asia/Shanghai
 Scope: VNC 连接多显示器电脑时，默认只显示一个远端屏幕，并在会话侧栏中切换屏幕。
-Implementation status: 未开始；本文件只记录评估、设计、验证和验收计划，不代表协议已经支持。
-Observed workspace: codex/pro-purchase-foundation @ 210bddb4f；当前工作树干净。现有 Pro 任务完成或归档前，不创建新的日常分支、不把实现混入当前分支。
+Implementation status: M1 native/NAPI increment implemented for UltraVNC monitor count and monitor selection; TigerVNC remains explicitly unsupported. ArkTS sidebar wiring and real-server acceptance remain open.
+Observed workspace: codex/pro-purchase-foundation @ f6fc03dfc；工作树包含本增量修改及并发未跟踪的手机竖屏计划。现有 Pro 任务仍在活动中，本增量继续在该分支并保留并发文件。
+
+M0/M1 evidence (2026-09-30): UltraVNC's public `rfbproto.h` defines the
+`rfbEncodingMonitorInfo` pseudo-encoding (`0xFFFF8005`), server message 252
+with a one-byte monitor count plus three-byte message payload, and client
+message 254 with monitor number plus two padding bytes. The implementation
+advertises the pseudo-encoding, parses the bounded count, exposes native/NAPI
+capability and switch calls, and releases held pointer buttons before sending
+the switch. TigerVNC has no corresponding server extension in its published
+RFB surface, so its capability remains `unsupported`. Host byte tests cover
+the exact request and parser bounds; real TigerVNC/UltraVNC sessions are not
+yet run.
 
 ## 1. 目标和决策结论
 

@@ -66,6 +66,8 @@ public:
     std::string clipboardText() const;
     bool clipboardReady() const;
     void requestFrameRefresh();
+    int monitorCount() const;
+    bool requestMonitorSwitch(int monitor);
 
 #if defined(RDP_NATIVE_CALLBACK_TESTING)
     // Initializes only test fixture bytes, then invokes production emitFrame.
@@ -101,6 +103,7 @@ private:
                                 std::string& error);
     bool receiveDesktopSize(int width, int height, std::string& error);
     bool receiveServerCutText(std::string& error);
+    bool receiveUltraVncMonitorInfo(std::string& error);
     bool readReason(std::string& reason, std::string& error);
     bool readU8(uint8_t& value, int timeoutMs, std::string& error);
     bool readU16(uint16_t& value, int timeoutMs, std::string& error);
@@ -168,6 +171,7 @@ private:
     uint64_t diagTimeouts_ = 0;
     int effectiveEncoding_ = VncRfbProtocol::kRawEncoding;
     std::atomic<uint64_t> lastFramebufferRequestAtMs_ {0};
+    std::atomic<int> monitorCount_ {0};
 };
 
 #endif // VNC_RFB_ENGINE_H

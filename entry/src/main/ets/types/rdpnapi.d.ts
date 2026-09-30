@@ -173,6 +173,8 @@ declare module 'librdpnapi.so' {
   export function getRustDeskDiagnostics(sessionId: number): RustDeskDiagnosticsSnapshot;
   export function replayPendingRustDeskFrame(sessionId: number): boolean;
   export function getRustDeskDisplayCapabilities(sessionId: number): RustDeskDisplayCapabilities;
+  export function getVncDisplayCapabilities(sessionId: number): VncDisplayCapabilities;
+  export function switchVncDisplay(sessionId: number, monitor: number): boolean;
   export function attachRustDeskMultiCanvasPreview(sessionId: number, display: number,
     surfaceId: string, surfaceWidth: number, surfaceHeight: number, sourceWidth: number,
     sourceHeight: number, codec: number, visualFlipX?: boolean,
@@ -324,6 +326,12 @@ declare module 'librdpnapi.so' {
   export function sshTerminalRendererScrollToBottom(handle: number): void;
   export function sshTerminalRendererContent(handle: number): string;
   export function sshTerminalRendererMode(handle: number): TerminalCoreMode;
+}
+
+export interface VncDisplayCapabilities {
+  supported: boolean;
+  mode: 'serverSelection' | 'unsupported';
+  monitorCount: number;
 }
 
 interface SessionVersionInfo {
