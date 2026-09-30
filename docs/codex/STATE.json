@@ -3,9 +3,21 @@
   "task": "pro-purchase-foundation",
   "branch": "codex/pro-purchase-foundation",
   "base": "8edc187868e94ed41634e8a6c4c4c072e3a48679",
-  "head": "ad8c5d2ea",
-  "phase": "Full acceptance: steps 1-3 PASS; step 4 external (no PC); step 5 M5 RustDesk/VNC continuation code PASS, device acceptance pending",
+  "head": "7cc752b8",
+  "phase": "Full acceptance: steps 1-3 PASS; step 4 external (no PC); step 5 M5 RustDesk/VNC continuation code PASS; RDP file-transfer toolbar increment device acceptance pending",
   "status": "in-progress",
+  "latestIncrement": {
+    "date": "2026-09-30",
+    "commit": "7cc752b8",
+    "parentCommit": "d03c8fb1",
+    "scope": [
+      "entry/src/main/ets/components/rdp/RdpSessionToolbar.ets",
+      "entry/src/main/ets/pages/RemoteDesktop.ets",
+      "entry/src/main/ets/components/FileTransferTaskList.ets"
+    ],
+    "status": "implemented-awaiting-independent-review-and-device-acceptance",
+    "validation": "Focused transfer tests 37+5+6 PASS; default@OhosTestCompileArkTS 16.925 s PASS; signed assembleHap 22.417 s PASS; git diff --check PASS"
+  },
   "next": "Acceptance step 4: M4 knock transfer phone -> HarmonyOS PC SFTP; then real M5 RustDesk/VNC cross-device acceptance and M7 remainder.",
   "blockers": [
     "Pad backup and Debug migration complete; same-account sandbox restore PASS without another payment. Remaining offline/cross-account and full protocol/device matrix remain open.",
