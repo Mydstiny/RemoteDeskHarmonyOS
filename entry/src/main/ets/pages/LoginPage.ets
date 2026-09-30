@@ -12,6 +12,8 @@ import {
   AccountTransitionResult
 } from '../services/AccountSessionCoordinator';
 import { hilog } from '@kit.PerformanceAnalysisKit';
+import { connection } from '@kit.NetworkKit';
+import { AccountKitService } from '../services/AccountKitService';
 import {
   SILENT_LOGIN_TIMEOUT_MS,
   shouldShowLoginAfterSilentAttempt,
@@ -163,6 +165,7 @@ struct LoginPage {
         this.loginError = silentLoginFallbackMessage(code, false);
       }
     } finally {
+      if (!restored) { restored = await this.restoreLastAccountOffline(); }
       // Empty responses and provider errors are normal recovery paths. Never
       // leave a fresh install behind an infinite full-screen spinner. A
       // failed silent authorization is not an explicit logout: keep the
@@ -172,6 +175,42 @@ struct LoginPage {
         this.checkingLogin = false;
       }
     }
+  }
+
+  private networkAvailable(): boolean {
+    try { return connection.hasDefaultNetSync(); } catch (_error) { return true; }
+  }
+
+  /**
+   * Silent Huawei ID authorization needs the network. Without one, keep the last
+   * account this device authorized (stored by AccountKitService) so its local data
+   * and cached Pro entitlement stay available; the next online start re-authorizes.
+   * A provider failure while online still shows the login page.
+   */
+  private async restoreLastAccountOffline(): Promise<boolean> {
+    if (this.networkAvailable()) { return false; }
+    const account: AccountKitService = AccountKitService.getInstance();
+    const unionId: string = account.getUnionID();
+    if (!account.isAuthorized() || unionId.trim().length === 0) { return false; }
+    const transition: AccountTransitionResult =
+      await AccountSessionCoordinator.getInstance().transitionToAccount({
+        unionID: unionId,
+        openID: account.getOpenID(),
+        // Re-save exactly what this device already holds; nothing new is claimed offline.
+        authorizationCode: account.getAuthorizationCode(),
+        idToken: account.getIdToken(),
+        displayName: account.getDisplayName() || '华为用户',
+        avatarUrl: ''
+      }, { deferCloudBootstrap: true });
+    if (!transition.ok) {
+      hilog.warn(0x0001, 'LoginDebug', '离线恢复上次账号失败 state=' + transition.state);
+      return false;
+    }
+    hilog.info(0x0001, 'LoginDebug', '网络不可用，已离线恢复上次登录的账号 unionHash=' + hashForLog(unionId));
+    this.loginError = '';
+    promptAction.showToast({ message: '网络不可用，已使用上次登录的华为账号（离线）', duration: 2400 });
+    this.enterMainPage();
+    return true;
   }
 
   private async prepareFirstLaunch(): Promise<void> {
