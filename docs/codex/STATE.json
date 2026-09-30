@@ -3,8 +3,8 @@
   "task": "pro-purchase-foundation",
   "branch": "codex/pro-purchase-foundation",
   "base": "8edc187868e94ed41634e8a6c4c4c072e3a48679",
-  "head": "9ff7eecb",
-  "phase": "Full acceptance: steps 1-3 PASS; step 4 external (no PC); step 5 M5 RustDesk/VNC continuation code PASS; RDP file-transfer toolbar increment device acceptance pending",
+  "head": "00644b216",
+  "phase": "Full acceptance: steps 1-3 PASS; step 4 external (no PC); step 5 M5 RustDesk/VNC continuation code PASS; RDP file-transfer toolbar and control-center selection increments device acceptance pending",
   "status": "in-progress",
   "latestIncrement": {
     "date": "2026-09-30",
