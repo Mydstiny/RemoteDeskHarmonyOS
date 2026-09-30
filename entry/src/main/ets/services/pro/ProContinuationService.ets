@@ -3,13 +3,13 @@ import { cryptoFramework } from '@kit.CryptoArchitectureKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { AccountSessionCoordinator } from '../AccountSessionCoordinator';
-import { HostSyncService } from '../HostSyncService';
 import { RemoteHost } from '../../model/RemoteHost';
 import { ProAccessContext } from './ProAccessPolicy';
 import { ProAppRuntime } from './ProAppRuntime';
 import { ProConnectionDescription, ProConnectionEnvelope, ProConnectionView, parseProConnectionEnvelope,
   PRO_CONNECTION_TTL_MS } from './ProConnectionEnvelope';
-import { matchesProConnectionHost } from './ProConnectionHostAdapter';
+import { matchesProConnectionHost, proContinuationHostStoreReady,
+  resolveProContinuationHost } from './ProConnectionHostAdapter';
 import { ProRdpConnectionIdentity, sameProRdpConnectionIdentity } from './ProRdpConnectionIdentity';
 import { ProConnectionTransaction } from './ProConnectionTransaction';
 import { ProContinuationReceiptChannel } from './ProContinuationReceiptChannel';
@@ -152,10 +152,10 @@ export class ProContinuationService {
       ['bound', 'ready', 'offline'].indexOf(scope.sessionState) >= 0;
   }
   private descriptionAllowed(description: ProConnectionDescription | null, context: common.Context): boolean {
-    if (description === null || !HostSyncService.getInstance().isReady()) { return false; }
-    const host = HostSyncService.getInstance().getHost(description.hostReference);
+    if (description === null || !proContinuationHostStoreReady(description.protocol)) { return false; }
+    const host = resolveProContinuationHost(description.protocol, description.hostReference);
     const scope = AccountSessionCoordinator.getInstance().currentScope();
-    return host !== undefined && host.userId === scope.ownerScopeId &&
+    return host !== null && host.userId === scope.ownerScopeId &&
       matchesProConnectionHost(description, host, context);
   }
   private setMission(context: common.UIAbilityContext, state: AbilityConstant.ContinueState): Promise<void> {
@@ -249,7 +249,8 @@ export class ProContinuationService {
     if (description === null) { return AbilityConstant.OnContinueResult.REJECT; }
     const generation = this.sourceGeneration;
     const now = Date.now();
-    const envelope: ProConnectionEnvelope = { version: description.protocol === 'rdp' ? 2 : 1,
+    const envelope: ProConnectionEnvelope = { version: description.protocol === 'rdp' ? 2 :
+      (description.protocol === 'ssh' ? 1 : 3),
       purpose: 'continuation', transferId: randomHex(),
       channelId: 'rd_' + randomHex(), owner: this.sourceOwner, createdAt: now,
       expiresAt: now + PRO_CONNECTION_TTL_MS, connection: description };
@@ -287,7 +288,8 @@ export class ProContinuationService {
     parameters[PRO_CONTINUATION_PARAM] = serialized;
     parameters[wantConstant.Params.SUPPORT_CONTINUE_PAGE_STACK_KEY] = false;
     parameters[wantConstant.Params.SUPPORT_CONTINUE_SOURCE_EXIT_KEY] = false;
-    this.sourceMessage = '正在等待目标确认与连接；本端会话继续保留'; this.publish();
+    // The target's readiness receipt cannot cross devices during continuation, so do not wait for it.
+    this.sourceMessage = '已接续到其他设备；本端会话仍保留，可随时手动结束'; this.publish();
     return AbilityConstant.OnContinueResult.AGREE;
   }
   ingest(serialized: string, secretValue: Object | null = null): boolean {
@@ -310,7 +312,9 @@ export class ProContinuationService {
     hilog.info(0x0001, 'ProContinuation', 'ingest credential=%{public}s', this.targetSecret !== null ? 'true' : 'false');
     this.targetMessage = envelope.connection.protocol === 'rdp'
       ? '正在自动接续：使用本设备保存的凭据连接，恢复缩放、平移和输入模式。'
-      : '正在自动接续：使用本设备保存的凭据连接并恢复目录。普通终端进程和未完成传输不会迁移。';
+      : envelope.connection.protocol === 'ssh'
+        ? '正在自动接续：使用本设备保存的凭据连接并恢复目录。普通终端进程和未完成传输不会迁移。'
+        : '正在自动接续：使用本设备保存的主机配置和凭据重新连接同一台远程桌面。';
     this.targetTimer = setTimeout((): void => { this.cancelIncoming(); }, envelope.expiresAt - now);
     this.publish(); return true;
   }
@@ -326,10 +330,11 @@ export class ProContinuationService {
       hilog.warn(0x0001, 'ProContinuation', 'accept rejected reason=account kind=%{public}s', scope.kind);
       this.targetMessage = '接续失败：请在两台设备登录同一华为账号'; this.publish(); return null;
     }
-    const host = HostSyncService.getInstance().getHost(envelope.connection.hostReference);
-    if (!HostSyncService.getInstance().isReady() || host === undefined || host.userId !== scope.ownerScopeId ||
+    const host = resolveProContinuationHost(envelope.connection.protocol, envelope.connection.hostReference);
+    if (!proContinuationHostStoreReady(envelope.connection.protocol) || host === null ||
+        host.userId !== scope.ownerScopeId ||
         !matchesProConnectionHost(envelope.connection, host, context)) {
-      const reason = !HostSyncService.getInstance().isReady() ? 'store' : host === undefined ? 'missing' :
+      const reason = !proContinuationHostStoreReady(envelope.connection.protocol) ? 'store' : host === null ? 'missing' :
         host.userId !== scope.ownerScopeId ? 'owner' : 'endpoint';
       hilog.warn(0x0001, 'ProContinuation', 'accept rejected reason=host-%{public}s', reason);
       this.targetMessage = reason === 'missing' ? '接续失败：本设备没有这台主机，请先开启云同步或在本设备添加' :
@@ -367,19 +372,19 @@ export class ProContinuationService {
     }
     hilog.info(0x0001, 'ProContinuation', 'accept credential received=%{public}s', secret !== null ? 'true' : 'false');
     hilog.info(0x0001, 'ProContinuation', 'accept connecting protocol=%{public}s', envelope.connection.protocol);
-    const currentHost = HostSyncService.getInstance().getHost(envelope.connection.hostReference);
-    if (currentHost === undefined || currentHost.userId !== envelope.owner ||
+    const currentHost = resolveProContinuationHost(envelope.connection.protocol, envelope.connection.hostReference);
+    if (currentHost === null || currentHost.userId !== envelope.owner ||
         this.restoreView(envelope.transferId, currentHost) === null) { this.cancelIncoming(); return null; }
     this.targetMessage = '正在连接；仅在缺少凭据或需要解锁时提示'; this.publish(); return currentHost;
   }
   incomingId(): string { return this.target?.envelope()?.transferId ?? ''; }
   restoreView(id: string, host: RemoteHost): ProConnectionView | null {
     const envelope = this.target?.envelope(); const scope = AccountSessionCoordinator.getInstance().currentScope();
-    const currentHost = HostSyncService.getInstance().getHost(host.id);
+    const currentHost = resolveProContinuationHost(envelope?.connection.protocol ?? '', host.id);
     if (envelope === undefined || envelope === null || this.target?.state() !== 'connecting' ||
         id !== envelope.transferId || scope.ownerScopeId !== envelope.owner ||
         scope.generation !== this.targetAccountGeneration || host.userId !== scope.ownerScopeId ||
-        !HostSyncService.getInstance().isReady() || currentHost?.userId !== scope.ownerScopeId ||
+        !proContinuationHostStoreReady(envelope.connection.protocol) || currentHost?.userId !== scope.ownerScopeId ||
         host.id !== envelope.connection.hostReference ||
         ['bound', 'ready', 'offline'].indexOf(scope.sessionState) < 0 ||
         !this.allowed(envelope.connection.protocol) || currentHost === undefined || this.targetContext === null ||

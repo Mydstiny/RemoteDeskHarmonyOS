@@ -4,7 +4,11 @@ import { RemoteHost, normalizeRdpAuthMode, normalizeRdpCredentialParts,
 import { HostSyncService } from '../HostSyncService';
 import { SshProxyProfileStore } from '../SshProxyProfileStore';
 import { resolveSshProxyRuntimePlan } from '../SshProxyRuntimePolicy';
-import { ProConnectionDescription, ProConnectionView, sameProConnectionEndpoint } from './ProConnectionEnvelope';
+import { VncHostService, VncHostView } from '../VncHostService';
+import { VncGatewayService, VncGatewayView } from '../VncGatewayService';
+import { projectVncHost, vncHostRecordIdFromUiId } from '../VncHostListProjectionPolicy';
+import { ProConnectionDescription, ProConnectionProtocol, ProConnectionView, proReconnectOnlyProtocol,
+  sameProConnectionEndpoint } from './ProConnectionEnvelope';
 import { ProRdpConnectionIdentity, proRdpConnectionRouteMatches, copyProRdpConnectionIdentity,
   describeProRdpConnectionIdentity, sameProRdpConnectionIdentity } from './ProRdpConnectionIdentity';
 // Initial continuation adapter is direct SSH. A proxy route must never silently become direct.
@@ -24,6 +28,125 @@ export function describeProSshConnection(host: RemoteHost, pane: string, directo
     username: host.username, hostReference: host.id, view };
 }
 
+// RustDesk/VNC continue by reconnecting the same synced host record on the target; only the host
+// reference and a normalized, non-secret endpoint travel. Passwords stay with each device.
+function proRemoteEndpoint(host: RemoteHost): string {
+  const value: string = host.protocol === 'rustdesk' && host.rustdeskDirectEnabled && host.rustdeskDirectHost.trim() !== '' ?
+    host.rustdeskDirectHost.trim() : host.host.trim();
+  return value.length > 0 && value.length <= 253 && !/[\s/\\?#@]/.test(value) ? value : '';
+}
+function proRemotePort(host: RemoteHost): number {
+  const port: number = host.protocol === 'rustdesk' && host.rustdeskDirectEnabled ? host.rustdeskDirectPort : host.port;
+  if (Number.isInteger(port) && port >= 1 && port <= 65535) { return port; }
+  return host.protocol === 'vnc' ? 5900 : 21116;
+}
+
+interface RustDeskContinuationRoute {
+  relayId: string;
+  accountId: string;
+  direct: boolean;
+  directHost: string;
+  directPort: number;
+  targetDevice: string;
+  proAccountId: string;
+  proPeerId: string;
+  proManaged: boolean;
+  customHostname: string;
+  authMode: string;
+  passwordMode: number;
+}
+
+interface VncContinuationGatewayRoute {
+  transport: string;
+  host: string;
+  port: number;
+  path: string;
+  repeaterMode: string;
+  targetId: string;
+  tls: boolean;
+  enabled: boolean;
+}
+
+interface VncContinuationRoute {
+  transport: string;
+  repeaterMode: string;
+  gatewayId: string;
+  tls: boolean;
+  securityPolicy: string;
+  gateway: VncContinuationGatewayRoute | null;
+}
+
+function rustDeskRouteKey(host: RemoteHost): string {
+  const route: RustDeskContinuationRoute = {
+    relayId: host.rustdeskRelayId.trim(), accountId: host.rustdeskAccountId.trim(),
+    direct: host.rustdeskDirectEnabled, directHost: host.rustdeskDirectHost.trim(),
+    directPort: host.rustdeskDirectPort, targetDevice: host.rustdeskTargetDevice,
+    proAccountId: host.rustdeskProAccountId.trim(), proPeerId: host.rustdeskProPeerId.trim(),
+    proManaged: host.rustdeskProManaged, customHostname: host.customHostname.trim(),
+    authMode: host.rustdeskAuthMode, passwordMode: host.rustdeskPasswordMode
+  };
+  return JSON.stringify(route);
+}
+
+function vncRouteKey(host: VncHostView): string {
+  const gateway: VncGatewayView | null = host.gatewayId.trim() === '' ? null :
+    VncGatewayService.getInstance().find(host.gatewayId.trim());
+  const gatewayRoute: VncContinuationGatewayRoute | null = gateway === null ? null : {
+    transport: gateway.transport, host: gateway.host, port: gateway.port, path: gateway.path,
+    repeaterMode: gateway.repeaterMode, targetId: gateway.targetId, tls: gateway.tls,
+    enabled: gateway.enabled
+  };
+  const route: VncContinuationRoute = {
+    transport: host.transport, repeaterMode: host.repeaterMode, gatewayId: host.gatewayId.trim(),
+    tls: host.tls, securityPolicy: host.securityPolicy, gateway: gatewayRoute
+  };
+  return JSON.stringify(route);
+}
+
+/** Resolve the current account-owned host without treating VNC's separate
+ * vncrecordv2 store as if it lived in remotehosts. */
+export function resolveProContinuationHost(protocol: string, hostReference: string): RemoteHost | null {
+  if (protocol === 'vnc') {
+    const recordId: string = vncHostRecordIdFromUiId(hostReference);
+    if (recordId === '') { return null; }
+    const view: VncHostView | null = VncHostService.getInstance().find(recordId);
+    return view === null ? null : projectVncHost(view);
+  }
+  const host: RemoteHost | undefined = HostSyncService.getInstance().getHost(hostReference);
+  return host === undefined ? null : host;
+}
+
+export function proContinuationHostStoreReady(protocol: string): boolean {
+  return protocol === 'vnc' ? VncHostService.getInstance().isReady() :
+    HostSyncService.getInstance().isReady();
+}
+
+export function describeProRemoteConnection(host: RemoteHost): ProConnectionDescription | null {
+  if (!proReconnectOnlyProtocol(host.protocol) || host.id.length === 0 || host.id.length > 128) { return null; }
+  // Re-read VNC from its owning store. The RemoteHost-shaped projection is
+  // only a routing view and must not become the source of truth for a
+  // continuation after a cloud/account update.
+  let source: RemoteHost = host;
+  let vncView: VncHostView | null = null;
+  if (host.protocol === 'vnc') {
+    const recordId: string = vncHostRecordIdFromUiId(host.id);
+    if (recordId === '') { return null; }
+    vncView = VncHostService.getInstance().find(recordId);
+    if (vncView === null) { return null; }
+    source = projectVncHost(vncView);
+  }
+  const endpoint: string = proRemoteEndpoint(source);
+  if (endpoint === '') { return null; }
+  const label: string = (source.label.trim() !== '' ? source.label.trim() : endpoint).substring(0, 120);
+  const view: ProConnectionView = { sshPane: 'terminal', sshDirectory: '', monitor: 0, scale: 1, panX: 0, panY: 0,
+    inputMode: 'direct' };
+  const routeKey: string = source.protocol === 'vnc' && vncView !== null ? vncRouteKey(vncView) :
+    rustDeskRouteKey(source);
+  return { protocol: source.protocol as ProConnectionProtocol, label, host: endpoint, port: proRemotePort(source),
+    username: source.protocol === 'vnc' && vncView !== null ? vncView.username.substring(0, 256) : '',
+    hostReference: host.id, view, routeKey };
+}
+
 /** RDP credentials are re-obtained locally. Only the already-authenticated
  * non-secret native identity and canonical transport may enter the wire model. */
 export function describeProRdpConnection(host: RemoteHost, identity: ProRdpConnectionIdentity,
@@ -38,6 +161,10 @@ export function matchesProConnectionHost(description: ProConnectionDescription, 
   context: common.Context): boolean {
   if (description.protocol === 'ssh') {
     const local = describeProSshConnection(host, 'terminal', '', context);
+    return local !== null && sameProConnectionEndpoint(local, description);
+  }
+  if (proReconnectOnlyProtocol(description.protocol)) {
+    const local = describeProRemoteConnection(host);
     return local !== null && sameProConnectionEndpoint(local, description);
   }
   if (description.protocol !== 'rdp') { return false; }

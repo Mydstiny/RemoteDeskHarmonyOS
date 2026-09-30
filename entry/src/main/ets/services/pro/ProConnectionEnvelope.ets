@@ -1,7 +1,9 @@
 import { ProRdpConnectionIdentity, validProRdpConnectionIdentity,
   copyProRdpConnectionIdentity, sameProRdpConnectionIdentity } from './ProRdpConnectionIdentity';
 // A deliberately separate wire model. Never serialize a RemoteHost and strip secrets afterwards.
-export type ProConnectionProtocol = 'ssh' | 'rdp';
+export type ProConnectionProtocol = 'ssh' | 'rdp' | 'rustdesk' | 'vnc';
+/** Remote-desktop protocols continued by reconnecting the same synced host record (V3, no view state). */
+export function proReconnectOnlyProtocol(protocol: string): boolean { return protocol === 'rustdesk' || protocol === 'vnc'; }
 export type ProConnectionPurpose = 'share' | 'continuation';
 export interface ProConnectionView {
   sshPane: string;
@@ -21,6 +23,8 @@ export interface ProConnectionDescription {
   username: string;
   hostReference: string;
   view: ProConnectionView;
+  /** Canonical non-secret route binding for reconnect-only protocols. */
+  routeKey?: string;
   rdpIdentity?: ProRdpConnectionIdentity;
 }
 export interface ProConnectionEnvelope {
@@ -61,6 +65,10 @@ function viewValid(value: Object, protocol: string): boolean {
       !finite(view.panY, -100000, 100000) ||
       ['direct', 'touchpad', 'keyboardMouse'].indexOf(view.inputMode) < 0) { return false; }
   // Unused protocol fields have one canonical value; no hidden command or route payload.
+  if (proReconnectOnlyProtocol(protocol)) {
+    return view.sshPane === 'terminal' && view.sshDirectory === '' && view.monitor === 0 && view.scale === 1 &&
+      view.panX === 0 && view.panY === 0 && view.inputMode === 'direct';
+  }
   return protocol === 'ssh'
     ? view.monitor === 0 && view.scale === 1 && view.panX === 0 && view.panY === 0 && view.inputMode === 'direct'
     : view.sshPane === 'terminal' && view.sshDirectory === '' && view.monitor === 0 &&
@@ -72,6 +80,7 @@ export function copyProConnectionDescription(value: ProConnectionDescription): P
     view: { sshPane: value.view.sshPane, sshDirectory: value.view.sshDirectory,
       monitor: value.view.monitor, scale: value.view.scale, panX: value.view.panX,
       panY: value.view.panY, inputMode: value.view.inputMode } };
+  if (proReconnectOnlyProtocol(value.protocol)) { result.routeKey = value.routeKey; }
   if (value.protocol === 'rdp' && value.rdpIdentity !== undefined) {
     result.rdpIdentity = copyProRdpConnectionIdentity(value.rdpIdentity);
     result.view.strictBounds = value.view.strictBounds;
@@ -87,7 +96,8 @@ export function parseProConnectionEnvelope(serialized: string, now: number = Dat
       return null;
     }
     const value = raw as ProConnectionEnvelope;
-    if ((value.version !== 1 && value.version !== 2) || (value.purpose !== 'share' && value.purpose !== 'continuation') ||
+    if ((value.version !== 1 && value.version !== 2 && value.version !== 3) ||
+        (value.purpose !== 'share' && value.purpose !== 'continuation') ||
         typeof value.transferId !== 'string' || !/^[a-f0-9]{32}$/.test(value.transferId) ||
         typeof value.channelId !== 'string' || !/^rd_[a-f0-9]{32}$/.test(value.channelId) ||
         !Number.isSafeInteger(value.createdAt) || !Number.isSafeInteger(value.expiresAt) ||
@@ -98,18 +108,26 @@ export function parseProConnectionEnvelope(serialized: string, now: number = Dat
       : value.owner !== '') { return null; }
     const keys: string[] = ['protocol', 'label', 'host', 'port', 'username', 'hostReference', 'view'];
     if (value.version === 2) { keys.push('rdpIdentity'); }
+    if (value.version === 3 && proReconnectOnlyProtocol((value.connection as ProConnectionDescription).protocol)) {
+      keys.push('routeKey');
+    }
     if (!fields(value.connection, keys)) { return null; }
     const connection = value.connection;
-    if ((connection.protocol !== 'ssh' && connection.protocol !== 'rdp') ||
+    if ((connection.protocol !== 'ssh' && connection.protocol !== 'rdp' && !proReconnectOnlyProtocol(connection.protocol)) ||
         !text(connection.label, 120) || !text(connection.host, 253) ||
         /[\s/\\?#@]/.test(connection.host) || !Number.isInteger(connection.port) ||
         connection.port < 1 || connection.port > 65535 || !text(connection.username, 256, true) ||
         !text(connection.hostReference, 128, value.purpose === 'share') ||
         (value.purpose === 'share' && connection.hostReference !== '') ||
-        !viewValid(connection.view, connection.protocol)) { return null; }
+        !viewValid(connection.view, connection.protocol) ||
+        (proReconnectOnlyProtocol(connection.protocol) &&
+          (typeof connection.routeKey !== 'string' || !text(connection.routeKey, 2048)))) { return null; }
     // V1 SSH stays byte-compatible with existing sharing/continuation clients.
     // RDP requires V2 and a bound identity; reserved V1 RDP data is not executable.
-    if (connection.protocol === 'ssh' ? value.version !== 1 :
+    // RustDesk/VNC are V3 continuation only: reconnect the same host record, nothing else.
+    if (proReconnectOnlyProtocol(connection.protocol)) {
+      if (value.version !== 3 || value.purpose !== 'continuation') { return null; }
+    } else if (connection.protocol === 'ssh' ? value.version !== 1 :
       value.version !== 2 || value.purpose !== 'continuation' || connection.rdpIdentity === undefined ||
       !validProRdpConnectionIdentity(connection.rdpIdentity) ||
       connection.username !== connection.rdpIdentity.username) { return null; }
@@ -120,7 +138,8 @@ export function parseProConnectionEnvelope(serialized: string, now: number = Dat
 }
 export function sameProConnectionEndpoint(a: ProConnectionDescription, b: ProConnectionDescription): boolean {
   return a.protocol === b.protocol && a.host === b.host && a.port === b.port && a.username === b.username &&
-    a.hostReference === b.hostReference && (a.protocol !== 'rdp' ||
+    a.hostReference === b.hostReference && (proReconnectOnlyProtocol(a.protocol) ?
+      a.routeKey !== undefined && a.routeKey === b.routeKey : a.protocol !== 'rdp' ||
       (a.rdpIdentity !== undefined && b.rdpIdentity !== undefined &&
         sameProRdpConnectionIdentity(a.rdpIdentity, b.rdpIdentity)));
 }

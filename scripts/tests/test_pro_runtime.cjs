@@ -382,11 +382,11 @@ test('continuation includes PC while retaining Debug, protocol, version and plat
     capabilities: ['SystemCapability.DistributedDataManager.DataObject.DistributedObject'],
     grantedPermissions: ['ohos.permission.DISTRIBUTED_DATASYNC'] };
   for (const device of ['phone', 'tablet', 'pc']) {
-    for (const protocol of ['ssh', 'rdp']) {
+    for (const protocol of ['ssh', 'rdp', 'rustdesk', 'vnc']) {
       assert.equal(f.runtime.decision('pro.connection.continuation', { ...context, device, protocol }).executable, true);
     }
   }
-  for (const patch of [{ apiVersion: 22 }, { protocol: 'vnc' }, { protocol: 'rustdesk' }, { capabilities: [] }, { grantedPermissions: [] }]) {
+  for (const patch of [{ apiVersion: 22 }, { protocol: 'moonlight' }, { protocol: 'ai' }, { capabilities: [] }, { grantedPermissions: [] }]) {
     assert.equal(f.runtime.decision('pro.connection.continuation', { ...context, ...patch }).executable, false);
   }
   f.runtime.setDebugMode('free');

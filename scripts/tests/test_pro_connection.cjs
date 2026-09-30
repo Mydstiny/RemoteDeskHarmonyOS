@@ -89,6 +89,18 @@ function fixture() {
           isReady: () => state.hostReady, getHost: id => state.host?.id === id ? state.host : undefined,
           getRdpCredential: () => state.credential
         }) } };
+        if (id.endsWith('/VncHostService')) return { VncHostService: { getInstance: () => ({
+          isReady: () => state.vncHostReady ?? state.hostReady,
+          find: id => state.vncHost?.id === id ? state.vncHost : null
+        }) } };
+        if (id.endsWith('/VncGatewayService')) return { VncGatewayService: { getInstance: () => ({
+          find: id => state.vncGateway?.id === id ? state.vncGateway : null
+        }) } };
+        if (id.endsWith('/VncHostListProjectionPolicy')) return {
+          vncHostRecordIdFromUiId: id => typeof id === 'string' && id.startsWith('vnc:') ? id.substring(4) : '',
+          projectVncHost: view => ({ id: 'vnc:' + view.id, userId: view.userId, label: view.label,
+            protocol: 'vnc', host: view.host, port: view.port, username: view.username ?? '', sourceType: 'vnc' })
+        };
         if (id === './ProAppRuntime') return { ProAppRuntime: { getInstance: () => ({ runtime,
           context: protocol => ({ protocol, capabilities: [], grantedPermissions: [], requestablePermissions: [] }) }) } };
         if (id.startsWith('.')) return load(path.resolve(path.dirname(file), id + '.ets'));
@@ -566,6 +578,98 @@ test('opt-in credential transfer rides a separate continuation parameter, never 
     assert.equal(c.load(dir + 'ProContinuationCredentials.ets').ProContinuationCredentialHandoff.getInstance()
       .take(ce2.connection.hostReference, ce2.owner), null);
   } finally { prefs.value.credentialMode = 'manual'; }
+});
+test('RustDesk and VNC continue as V3 reconnect-only transfers of the same synced host', async () => {
+  for (const kind of ['rustdesk', 'vnc']) {
+    const f = fixture();
+    const remote = kind === 'rustdesk'
+      ? { id: 'rd-host', userId: f.state.scope.ownerScopeId, protocol: 'rustdesk', label: 'Office PC', host: '123456789',
+        port: 0, username: '', password: 'NEVER_EXPORT', rustdeskDirectEnabled: false, rustdeskDirectHost: '', rustdeskDirectPort: 21118,
+        rustdeskRelayId: 'relay-1', rustdeskAccountId: 'acct-1', rustdeskTargetDevice: 'computer',
+        rustdeskProAccountId: '', rustdeskProPeerId: '', rustdeskProManaged: false, customHostname: '',
+        rustdeskAuthMode: 'password', rustdeskPasswordMode: 0 }
+      : { id: 'vnc-host', userId: f.state.scope.ownerScopeId, protocol: 'vnc', label: 'Lab Mac', host: '192.0.2.10',
+        port: 5901, username: 'alice', password: 'NEVER_EXPORT', transport: 'direct_tcp', repeaterMode: 'mode12',
+        gatewayId: '', tls: true, securityPolicy: 'secure_only', viewOnly: false, displayOverrideEnabled: false,
+        scalingMode: 'fit', rustdeskDirectEnabled: false, rustdeskDirectHost: '', rustdeskDirectPort: 0 };
+    f.state.host = remote;
+    const source = kind === 'vnc' ? { ...remote, id: 'vnc:' + remote.id, sourceType: 'vnc' } : remote;
+    if (kind === 'vnc') { f.state.vncHost = remote; f.state.vncHostReady = true; }
+    const described = f.adapter.describeProRemoteConnection(source);
+    assert.equal(described.port, kind === 'rustdesk' ? 21116 : 5901, 'missing ports are normalized');
+    assert.equal(f.adapter.describeProRemoteConnection({ ...source, protocol: 'ssh' }), null);
+    const offer = { windowId: 9, isCurrent: () => true, describe: () => f.adapter.describeProRemoteConnection(source),
+      close() { f.state.closed = true; } };
+    assert.equal(await f.service.prepare(f.context, offer, true, false), true);
+    const params = {}; assert.equal(await f.service.onContinue(9, params), 0);
+    const wire = params[f.key]; const e = JSON.parse(wire);
+    assert.equal(e.version, 3); assert.equal(e.connection.protocol, kind); assert.equal(wire.includes('NEVER_EXPORT'), false);
+    // Only V3 continuation with the canonical empty view is accepted.
+    for (const edit of [x => { x.version = 1; }, x => { x.version = 2; }, x => { x.purpose = 'share'; x.owner = ''; x.connection.hostReference = ''; },
+      x => { x.connection.view.scale = 2; }, x => { x.connection.view.sshDirectory = '/tmp'; }]) {
+      const copy = JSON.parse(wire); edit(copy); assert.equal(f.policy.parseProConnectionEnvelope(JSON.stringify(copy)), null);
+    }
+    // Target: the same synced host record is accepted; a changed endpoint is not.
+    const t = fixture();
+    if (kind === 'vnc') { t.state.vncHost = { ...remote, viewOnly: true, displayOverrideEnabled: true, scalingMode: 'integer' }; t.state.vncHostReady = true; }
+    else { t.state.host = { ...remote }; }
+    assert.equal(t.service.ingest(wire), true);
+    assert.equal((await t.service.accept(t.context)).id, kind === 'vnc' ? 'vnc:' + remote.id : remote.id);
+    const u = fixture();
+    if (kind === 'vnc') { u.state.vncHost = { ...remote, host: '192.0.2.99' }; u.state.vncHostReady = true; }
+    else { u.state.host = { ...remote, host: '987654321' }; }
+    assert.equal(u.service.ingest(wire), true); assert.equal(await u.service.accept(u.context), null);
+    // The endpoint alone is insufficient: a same-endpoint route mutation and
+    // a different account owner must both fail closed.
+    const route = fixture();
+    if (kind === 'vnc') {
+      route.state.vncHost = { ...remote, repeaterMode: 'none' }; route.state.vncHostReady = true;
+    } else {
+      route.state.host = { ...remote, rustdeskTargetDevice: 'phone' };
+    }
+    assert.equal(route.service.ingest(wire), true); assert.equal(await route.service.accept(route.context), null);
+    const routeWire = JSON.parse(wire); routeWire.connection.routeKey += 'x';
+    const routeWireTarget = fixture();
+    if (kind === 'vnc') { routeWireTarget.state.vncHost = { ...remote }; routeWireTarget.state.vncHostReady = true; }
+    else { routeWireTarget.state.host = { ...remote }; }
+    assert.equal(routeWireTarget.service.ingest(JSON.stringify(routeWire)), true);
+    assert.equal(await routeWireTarget.service.accept(routeWireTarget.context), null);
+    const owner = fixture();
+    const foreignOwner = 'owner-' + 'd'.repeat(64);
+    if (kind === 'vnc') { owner.state.vncHost = { ...remote, userId: foreignOwner }; owner.state.vncHostReady = true; }
+    else { owner.state.host = { ...remote, userId: foreignOwner }; }
+    assert.equal(owner.service.ingest(wire), true); assert.equal(await owner.service.accept(owner.context), null);
+  }
+  const f = fixture();
+  const direct = { id: 'rd-direct', protocol: 'rustdesk', label: '', host: '123', port: 0, username: 'x',
+    rustdeskDirectEnabled: true, rustdeskDirectHost: '198.51.100.7', rustdeskDirectPort: 21118,
+    rustdeskRelayId: '', rustdeskAccountId: '', rustdeskTargetDevice: 'computer', rustdeskProAccountId: '',
+    rustdeskProPeerId: '', rustdeskProManaged: false, customHostname: '', rustdeskAuthMode: 'password', rustdeskPasswordMode: 0 };
+  const d = f.adapter.describeProRemoteConnection(direct);
+  assert.equal(d.host, '198.51.100.7'); assert.equal(d.port, 21118); assert.equal(d.username, ''); assert.equal(d.label, '198.51.100.7');
+  const gateway = fixture();
+  const vnc = { id: 'vnc-gateway-host', userId: gateway.state.scope.ownerScopeId, protocol: 'vnc', label: 'Gateway VNC',
+    host: '192.0.2.20', port: 5900, username: 'bob', password: 'NEVER_EXPORT', transport: 'gateway_https',
+    repeaterMode: 'mode12', gatewayId: 'gw-1', tls: true, securityPolicy: 'secure_only', viewOnly: false,
+    displayOverrideEnabled: false, scalingMode: 'fit', rustdeskDirectEnabled: false, rustdeskDirectHost: '', rustdeskDirectPort: 0 };
+  gateway.state.vncHost = vnc; gateway.state.vncHostReady = true;
+  gateway.state.vncGateway = { id: 'gw-1', userId: vnc.userId, transport: 'https', host: 'gw.example.test', port: 443,
+    path: '/vnc', repeaterMode: 'mode12', targetId: 'peer-1', tls: true, enabled: true };
+  const gatewaySource = { ...vnc, id: 'vnc:' + vnc.id, sourceType: 'vnc' };
+  const gatewayDescription = gateway.adapter.describeProRemoteConnection(gatewaySource);
+  assert.ok(gatewayDescription.routeKey.includes('gw.example.test'));
+  const gatewayWireOffer = { windowId: 9, isCurrent: () => true, describe: () => gatewayDescription, close() {} };
+  assert.equal(await gateway.service.prepare(gateway.context, gatewayWireOffer, true, false), true);
+  const gatewayParams = {}; assert.equal(await gateway.service.onContinue(9, gatewayParams), 0);
+  const gatewayWire = gatewayParams[gateway.key];
+  const gatewayTarget = fixture(); gatewayTarget.state.vncHost = { ...vnc, viewOnly: true, scalingMode: 'integer' };
+  gatewayTarget.state.vncHostReady = true; gatewayTarget.state.vncGateway = { ...gateway.state.vncGateway };
+  assert.equal(gatewayTarget.service.ingest(gatewayWire), true);
+  assert.ok(await gatewayTarget.service.accept(gatewayTarget.context));
+  const changedGateway = fixture(); changedGateway.state.vncHost = { ...vnc }; changedGateway.state.vncHostReady = true;
+  changedGateway.state.vncGateway = { ...gateway.state.vncGateway, host: 'other-gw.example.test' };
+  assert.equal(changedGateway.service.ingest(gatewayWire), true);
+  assert.equal(await changedGateway.service.accept(changedGateway.context), null);
 });
 test('actual source page binds native generation and CONNECTED before accepting an old close receipt', async () => {
   for (const mutation of [f => { f.state.nativeGeneration++; }, f => { f.state.nativeState = 1; }]) {

@@ -21,8 +21,11 @@ import { image } from '@kit.ImageKit';
 import { HostSyncService } from '../services/HostSyncService';
 import { CloudStore } from '../services/CloudStore';
 import { ProContinuationService, proContinuationFailureText } from '../services/pro/ProContinuationService';
-import { ProConnectionDescription } from '../services/pro/ProConnectionEnvelope';
-import { describeProRdpConnection } from '../services/pro/ProConnectionHostAdapter';
+import { ProConnectionDescription, proReconnectOnlyProtocol } from '../services/pro/ProConnectionEnvelope';
+import { describeProRdpConnection, describeProRemoteConnection,
+  resolveProContinuationHost } from '../services/pro/ProConnectionHostAdapter';
+import { ProContinuationPreferences } from '../services/pro/ProContinuationPreferences';
+import { ProEntries } from '../services/pro/ProEntries';
 import { ProRdpConnectionIdentity, describeProRdpConnectionIdentity,
   sameProRdpConnectionIdentity } from '../services/pro/ProRdpConnectionIdentity';
 import { ProRdpSessionIdentityStore } from '../services/pro/ProRdpSessionIdentityStore';
@@ -1342,6 +1345,17 @@ struct RemoteDesktop {
   private proRdpContinuationEpoch: number = 0;
   private proRdpRestoreRunning: boolean = false;
   private proRdpSourceWindowId: number = 0;
+  // RustDesk/VNC continuation is reconnect-only. Keep the incoming transfer
+  // attached to this page until the native session and its first usable frame
+  // are ready; routing and preflight completion are not readiness evidence.
+  private proRemoteIncomingId: string = '';
+  private proRemoteContinuationEpoch: number = 0;
+  private proRemoteCompletionRunning: boolean = false;
+  // Always-on RustDesk/VNC continuation (reconnect the same host on the other device).
+  private proRemoteSourceWindowId: number = 0;
+  private proRemoteAutoStop: (() => void) | null = null;
+  private proRemoteArming: boolean = false;
+  private proRemoteRetryAt: number = 0;
   // Staged synchronously from router params before aboutToAppear's first
   // await, so an immediate independent-window background event can still burn
   // the exact one-shot credential without relying on pendingHost initialization.
@@ -5055,6 +5069,7 @@ struct RemoteDesktop {
   }
 
   private onRemoteConnectionStateChange(): void {
+    this.onProRemoteContinuationConnectionChange();
     if (this.connected) {
       this.syncRemoteSystemPointer('connection-state');
       if (this.isRdpRemoteSession()) {
@@ -9199,6 +9214,13 @@ struct RemoteDesktop {
       this.nativeHandles.markAsyncTeardownTransferred();
       this.nativeDisconnectIdentity = null;
       this.cleanupDisconnectIdentity = null;
+      // The independent target received the route parameters and now owns the
+      // continuation transaction. Do not let teardown of this source page
+      // cancel the transaction before that target reaches native readiness.
+      this.proRdpIncomingId = '';
+      this.proRdpContinuationEpoch++;
+      this.proRemoteIncomingId = '';
+      this.proRemoteContinuationEpoch++;
       this.sessionId = -1;
       this.rendererHandle = -1;
       this.decoderHandle = -1;
@@ -9362,6 +9384,7 @@ struct RemoteDesktop {
         this.pendingVncHost = vncHost;
         const vncRemoteHost: RemoteHost = this.transientRemoteHostForVnc(vncHost);
         this.pendingHost = vncRemoteHost;
+        this.stageProRemoteIncoming(routeParams, vncRemoteHost);
         this.syncHarmonyShortcutCapture('vnc-route-ready');
         this.vncAuthResolved = false;
         this.vncTransientPassword = '';
@@ -9450,6 +9473,7 @@ struct RemoteDesktop {
             }
           }
           this.pendingHost = resolvedHost;
+          this.stageProRemoteIncoming(routeParams, resolvedHost);
           this.syncHarmonyShortcutCapture('host-route-ready');
           if (restoring) {
             RdpSessionCredentialHandoff.getInstance().clearIfMatches(
@@ -9685,6 +9709,7 @@ struct RemoteDesktop {
   }
 
   aboutToDisappear(): void {
+    this.stopProRemoteContinuation();
     this.proRdpPageLive = false;
     this.proRdpContinuationEpoch++;
     // Existing PC authentication moves this same transaction to its new page.
@@ -14029,6 +14054,125 @@ struct RemoteDesktop {
   }
 
   // XComponent 就绪后初始化渲染管线并连接
+  private onProRemoteContinuationConnectionChange(): void {
+    if (!this.connected) {
+      // A successful PC handoff deliberately flips the source page's local
+      // `connected` mirror to false. The independent target owns the transfer
+      // from that point, so do not cancel its incoming transaction here.
+      if (!this.pcWindowHandoffComplete) {
+        this.cancelProRemoteIncoming();
+        if (this.proRemoteSourceWindowId > 0) {
+          ProContinuationService.getInstance().cancelSource(this.proRemoteSourceWindowId);
+        }
+      }
+      return;
+    }
+    if (this.pendingHost === null || !proReconnectOnlyProtocol(this.pendingHost.protocol)) { return; }
+    if (!this.pcWindowAfterAuthentication) { void this.completeProRemoteIncoming(); }
+    this.proRemoteRetryAt = 0;
+    if (this.proRemoteAutoStop === null) {
+      ProContinuationPreferences.getInstance().load(getContext(this) as common.UIAbilityContext);
+      const stopPreferences = ProContinuationPreferences.getInstance().subscribe((): void => { this.maybeArmProRemoteContinuation(); });
+      const stopEntries = ProEntries.subscribe((): void => { this.maybeArmProRemoteContinuation(); });
+      const stopService = ProContinuationService.getInstance().subscribe((): void => { this.maybeArmProRemoteContinuation(); });
+      this.proRemoteAutoStop = (): void => { stopPreferences(); stopEntries(); stopService(); };
+    } else {
+      this.maybeArmProRemoteContinuation();
+    }
+  }
+
+  private stopProRemoteContinuation(): void {
+    this.proRemoteAutoStop?.(); this.proRemoteAutoStop = null;
+    if (this.proRemoteSourceWindowId > 0) {
+      ProContinuationService.getInstance().cancelSource(this.proRemoteSourceWindowId);
+      this.proRemoteSourceWindowId = 0;
+    }
+  }
+
+  private maybeArmProRemoteContinuation(): void {
+    const host = this.pendingHost;
+    if (this.proRemoteArming || this.cleanupStarted || !this.connected || host === null ||
+        !proReconnectOnlyProtocol(host.protocol)) { return; }
+    const service = ProContinuationService.getInstance();
+    const armed = service.armed(this.proRemoteSourceWindowId);
+    if (!ProContinuationPreferences.getInstance().settings().auto) {
+      if (armed) { service.cancelSource(this.proRemoteSourceWindowId); }
+      return;
+    }
+    if (armed || Date.now() < this.proRemoteRetryAt) { return; }
+    void this.armProRemoteContinuation().then((ok: boolean): void => {
+      if (!ok) { this.proRemoteRetryAt = Date.now() + 30000; }
+    });
+  }
+
+  private async armProRemoteContinuation(): Promise<boolean> {
+    const host = this.pendingHost;
+    if (host === null || !proReconnectOnlyProtocol(host.protocol) || describeProRemoteConnection(host) === null) { return false; }
+    const hostId = host.id; const session = this.sessionId;
+    this.proRemoteArming = true;
+    try {
+      const win = window.findWindow(this.getUIContext().getWindowName());
+      this.proRemoteSourceWindowId = win.getWindowProperties().id;
+      return await ProContinuationService.getInstance().prepare(getContext(this) as common.UIAbilityContext, {
+        windowId: this.proRemoteSourceWindowId,
+        // Read when the other device continues; the synced record is the source of truth.
+        describe: (): ProConnectionDescription | null => {
+          const current = resolveProContinuationHost(host.protocol, hostId);
+          return current === null ? null : describeProRemoteConnection(current);
+        },
+        isCurrent: (): boolean => this.connected && !this.cleanupStarted && this.pendingHost?.id === hostId &&
+          this.sessionId === session,
+        close: (): void => { this.disconnectAndCleanup('pro-remote-continuation'); this.goBack(); }
+      }, true, false);
+    } catch (_error) {
+      return false;
+    } finally { this.proRemoteArming = false; }
+  }
+
+  /**
+   * Confirm a reconnect-only transfer only after the actual native session is
+   * usable. RustDesk already waits for its first presented frame in doConnect
+   * and the pre-auth restore path; VNC needs the same explicit frame barrier.
+   */
+  private async completeProRemoteIncoming(): Promise<void> {
+    const id = this.proRemoteIncomingId;
+    const host = this.pendingHost;
+    const service = ProContinuationService.getInstance();
+    if (this.proRemoteCompletionRunning || id === '' || host === null ||
+        !proReconnectOnlyProtocol(host.protocol) || !this.connected ||
+        this.cleanupStarted || this.pcWindowAfterAuthentication ||
+        service.incomingId() !== id || service.restoreView(id, host) === null) {
+      return;
+    }
+    const epoch = this.proRemoteContinuationEpoch;
+    const sessionId = this.sessionId;
+    const attemptId = this.connectAttemptId;
+    this.proRemoteCompletionRunning = true;
+    try {
+      if (host.protocol === 'vnc' && !this.isVncPresentedFrameReady() &&
+          !(await this.waitForVncPresentedFrame(sessionId, 0, attemptId))) {
+        return;
+      }
+      if (this.proRemoteIncomingId !== id || this.proRemoteContinuationEpoch !== epoch ||
+          !this.connected || this.cleanupStarted || this.pendingHost?.id !== host.id ||
+          this.sessionId !== sessionId || service.incomingId() !== id ||
+          service.restoreView(id, host) === null) {
+        return;
+      }
+      if (service.complete(id, host)) {
+        // Leave the ready transaction/channel alive long enough for the source
+        // to observe and acknowledge the receipt. Teardown must not cancel it.
+        this.proRemoteIncomingId = '';
+      } else {
+        service.cancelIncoming(id);
+        this.proRemoteIncomingId = '';
+        promptAction.showToast({ message: '远程桌面已连接，但接续就绪回执未完成；源端仍保留', duration: 2400 });
+      }
+    } finally {
+      this.proRemoteCompletionRunning = false;
+    }
+  }
+
   private stageProRdpIncoming(params: Object): void {
     this.proRdpPageLive = true;
     this.proRdpContinuationEpoch++;
@@ -14042,6 +14186,28 @@ struct RemoteDesktop {
     const id = this.proRdpIncomingId;
     this.proRdpIncomingId = '';
     this.proRdpContinuationEpoch++;
+    if (id !== '') { ProContinuationService.getInstance().cancelIncoming(id); }
+  }
+
+  private stageProRemoteIncoming(params: Object, host: RemoteHost): void {
+    this.proRemoteContinuationEpoch++;
+    const raw = (params as Record<string, Object>)?.['proConnectionTransferId'];
+    const id = typeof raw === 'string' && /^[a-f0-9]{32}$/.test(raw) ? raw : '';
+    if (this.proRemoteIncomingId !== '' && this.proRemoteIncomingId !== id) {
+      this.cancelProRemoteIncoming();
+    }
+    const service = ProContinuationService.getInstance();
+    // A route parameter is only a candidate. Require the current accepted
+    // transaction and the exact same-account host projection before retaining
+    // it on the session page.
+    this.proRemoteIncomingId = id !== '' && id === service.incomingId() &&
+      proReconnectOnlyProtocol(host.protocol) && service.restoreView(id, host) !== null ? id : '';
+  }
+
+  private cancelProRemoteIncoming(): void {
+    const id = this.proRemoteIncomingId;
+    this.proRemoteIncomingId = '';
+    this.proRemoteContinuationEpoch++;
     if (id !== '') { ProContinuationService.getInstance().cancelIncoming(id); }
   }
 
@@ -15690,6 +15856,7 @@ struct RemoteDesktop {
       this.registryRestoreAdoption = null;
     }
     this.cancelProRdpIncoming();
+    this.cancelProRemoteIncoming();
     if (this.proRdpSourceWindowId > 0) {
       ProContinuationService.getInstance().cancelSource(this.proRdpSourceWindowId);
       this.proRdpSourceWindowId = 0;

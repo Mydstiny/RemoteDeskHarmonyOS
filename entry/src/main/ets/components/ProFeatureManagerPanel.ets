@@ -112,7 +112,7 @@ export struct ProFeatureDetailPanel {
   }
   @Builder private continuationOptions() {
     Column() {
-      this.switchRow('Pro 下自动开启接续', '连上直连 SSH 后自动允许在同账号设备继续；关闭后需在会话菜单中手动准备',
+      this.switchRow('Pro 下自动开启接续', '连上直连 SSH、RustDesk 或 VNC 后自动允许在同账号设备继续；关闭后需在会话菜单中手动准备',
         this.continuation.auto, (on: boolean): void => { this.updateContinuation(on, this.continuation.credentialMode); })
       Divider().strokeWidth(0.5).color(this.pal().cardBorder).margin({ left: 16, right: 16 })
       Column({ space: 10 }) {

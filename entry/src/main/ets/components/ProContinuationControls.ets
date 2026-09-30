@@ -56,7 +56,7 @@ export struct ProContinuationControls {
   @Builder private controls() {
     Column() {
       this.menuRow('同账号接续', this.status !== '' ? this.status : (this.auto && this.protocol === 'ssh' ?
-        '连接后自动开启 · 点按重新开启或授予协同权限' : '点按后 2 分钟内在同账号设备继续') + ' · 仅支持 RDP 和直连 SSH',
+        '连接后自动开启 · 点按重新开启或授予协同权限' : '点按后 2 分钟内在同账号设备继续') + ' · 支持直连 SSH、RDP、RustDesk、VNC',
         true, this.onPrepare)
       if (this.status !== '') {
         if (this.canClose) {

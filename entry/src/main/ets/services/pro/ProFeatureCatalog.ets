@@ -37,9 +37,9 @@ function knockTransfer(): ProFeature {
 }
 function continuation(): ProFeature {
   const feature = planned('pro.connection.continuation', '同账号接续',
-    '在手机、平板和 PC 间重新认证同账号的主机并恢复目录或桌面视图。目前仅支持 RDP 和直连 SSH，RustDesk 与 VNC 计划后续支持。', 23);
+    '在手机、平板和 PC 间重新连接同账号的主机：直连 SSH 恢复目录，RDP 恢复桌面视图，RustDesk 与 VNC 重新连接同一台远程桌面。', 23);
   feature.availability = 'experimental';
-  feature.devices = ['phone', 'tablet', 'pc']; feature.protocols = ['ssh', 'rdp'];
+  feature.devices = ['phone', 'tablet', 'pc']; feature.protocols = ['ssh', 'rdp', 'rustdesk', 'vnc'];
   feature.capabilities = ['SystemCapability.DistributedDataManager.DataObject.DistributedObject'];
   feature.permissions = ['ohos.permission.DISTRIBUTED_DATASYNC'];
   return feature;

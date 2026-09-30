@@ -12,6 +12,8 @@ import { ProIncomingConnectionShareCard } from '../components/ProConnectionShare
 import { ProConnectionShareReceiver } from '../services/pro/ProConnectionShareReceiver';
 import { SshAddBasicFields } from '../common/SshAddBasicFields';
 import { ProContinuationService } from '../services/pro/ProContinuationService';
+import { proReconnectOnlyProtocol } from '../services/pro/ProConnectionEnvelope';
+import { resolveProContinuationHost } from '../services/pro/ProConnectionHostAdapter';
 import { SshConnectionPreflightSheet } from '../components/SshConnectionPreflightSheet';
 import { SshAuthenticatedHandoff } from '../services/ssh/auth/SshAuthenticatedHandoff';
 import { ProAppRuntime } from '../services/pro/ProAppRuntime';
@@ -6475,10 +6477,13 @@ struct HostListPage {
     if (this.proContinuationAttemptId !== '' &&
         (url === 'pages/SshTerminal' || url === 'pages/RemoteDesktop') &&
         this.proContinuationAttemptId === ProContinuationService.getInstance().incomingId()) {
-      const continuedHost = this.srv.getHost((params['hostId'] as string) || '');
-      if (continuedHost !== undefined &&
+      const continuedHostId: string = (params['hostId'] as string) || '';
+      const continuedHost: RemoteHost | null = this.srv.getHost(continuedHostId) ??
+        resolveProContinuationHost('vnc', continuedHostId);
+      if (continuedHost !== null &&
           ((url === 'pages/SshTerminal' && continuedHost.protocol === 'ssh') ||
-            (url === 'pages/RemoteDesktop' && continuedHost.protocol === 'rdp')) &&
+            (url === 'pages/RemoteDesktop' &&
+              (continuedHost.protocol === 'rdp' || proReconnectOnlyProtocol(continuedHost.protocol)))) &&
           ProContinuationService.getInstance().restoreView(this.proContinuationAttemptId, continuedHost) !== null) {
         params['proConnectionTransferId'] = this.proContinuationAttemptId;
       }
@@ -6738,7 +6743,14 @@ struct HostListPage {
     const host = await service.accept(getContext(this) as common.UIAbilityContext);
     if (host === null) { return; }
     if (service.incomingId() !== id || !this.pageActive || this.appInBackground) { service.cancelIncoming(id); return; }
-    void this.connectToHost(host, id);
+    await this.connectToProContinuationHost(host, id);
+  }
+
+  // Every continuation stays live until the destination page observes the
+  // protocol-specific native-ready boundary and sends its receipt. A route
+  // push or a preflight sheet closing is only navigation, never readiness.
+  private async connectToProContinuationHost(host: RemoteHost, id: string): Promise<void> {
+    await this.connectToHost(host, id);
   }
 
   private async connectToHost(host: RemoteHost, continuationId: string = '', shareId: string = ''): Promise<void> {
@@ -8640,6 +8652,10 @@ struct HostListPage {
     const vncHostId: string = this.vncCertificateHostId;
     if (vncHostId === '') { this.releaseConnectionAttempt(hostId); return; }
     const params: Record<string, Object> = {};
+    // Keep the projected HostSync record addressable for continuation
+    // validation. `vncHostId` is the VNC owner id; `hostId` is the synced
+    // RemoteHost projection used by ProConnectionEnvelope.
+    params['hostId'] = hostId;
     params['vncHostId'] = vncHostId;
     const host: VncHostView | null = this.vncHosts.find(vncHostId);
     const endpoint: VncTlsEndpointResolution | null = this.vncCertificateEndpoint;
@@ -14885,7 +14901,7 @@ struct HostListPage {
             ListItem() {
               ProIncomingContinuationCard({
                 onConnect: (host: RemoteHost, transferId: string): void => {
-                  if (this.pageActive && !this.appInBackground) { void this.connectToHost(host, transferId); }
+                  if (this.pageActive && !this.appInBackground) { void this.connectToProContinuationHost(host, transferId); }
                   else { ProContinuationService.getInstance().cancelIncoming(); }
                 }
               })
