@@ -383,7 +383,7 @@ export struct RdpControlCenter {
           this.sectionTitle('远端会话参数',
             this.isDesktopDevice && this.stats.displayControlReady ? '分辨率可实时生效' : '重连后生效')
           this.reconnectCard()
-          ProContinuationControls({ protocol: 'rdp', onPrepare: this.onPrepareContinuation })
+          ProContinuationControls({ protocol: 'rdp', forceDark: true, onPrepare: this.onPrepareContinuation })
           this.sectionTitle('连接操作')
           Column() {
             this.actionRow($r('sys.symbol.xmark_circle_fill'), '断开 RDP 会话',

@@ -1,6 +1,4 @@
 import { ProBadge } from '../components/ProBadge';
-import { ProContinuationControls } from '../components/ProContinuationControls';
-import { ProConnectionShareControls } from '../components/ProConnectionShareControls';
 import { ProConnectionShareSender } from '../services/pro/ProConnectionShareSender';
 import { ProConnectionShareReceiver } from '../services/pro/ProConnectionShareReceiver';
 import { proConnectionShareBase } from '../services/pro/ProConnectionShareConfiguration';
@@ -7052,12 +7050,7 @@ struct SshTerminal {
 
         Divider().strokeWidth(0.5).color(this.pal().cardBorder).width('100%')
         this.SshHeaderActionRow('新建 SSH 会话', '选择主机并打开新标签', 'new-session')
-        if (this.connected) {
-          ProContinuationControls({ onPrepare: (): void => { void this.prepareProContinuation(); } })
-        }
-        if (this.connected) {
-          ProConnectionShareControls({ onPrepare: (): void => { void this.prepareProConnectionShare(); } })
-        }
+        // Continuation is automatic and managed in 设置 > Pro 功能; no per-session menu rows.
         this.SshHeaderActionRow('常用命令', this.sshProductivityReady
           ? this.sshProductivityDocument.snippets.length.toString() + ' 条 · 可新增、编辑和插入'
           : '本地存储不可用；若已启用加密，请先解锁', 'quick-commands')

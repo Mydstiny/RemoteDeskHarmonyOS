@@ -1355,6 +1355,8 @@ struct RemoteDesktop {
   private proRdpContinuationEpoch: number = 0;
   private proRdpRestoreRunning: boolean = false;
   private proRdpSourceWindowId: number = 0;
+  // The control-center action replaces the auto arming; auto must not race it back.
+  private proRdpManualPreparing: boolean = false;
   // RustDesk/VNC continuation is reconnect-only. Keep the incoming transfer
   // attached to this page until the native session and its first usable frame
   // are ready; routing and preflight completion are not readiness evidence.
@@ -14093,8 +14095,10 @@ struct RemoteDesktop {
       }
       return;
     }
-    if (this.pendingHost === null || !proReconnectOnlyProtocol(this.pendingHost.protocol)) { return; }
-    if (!this.pcWindowAfterAuthentication) { void this.completeProRemoteIncoming(); }
+    if (this.pendingHost === null || !this.proAutoContinuationProtocol(this.pendingHost.protocol)) { return; }
+    if (!this.pcWindowAfterAuthentication && proReconnectOnlyProtocol(this.pendingHost.protocol)) {
+      void this.completeProRemoteIncoming();
+    }
     this.proRemoteRetryAt = 0;
     if (this.proRemoteAutoStop === null) {
       ProContinuationPreferences.getInstance().load(getContext(this) as common.UIAbilityContext);
@@ -14115,10 +14119,15 @@ struct RemoteDesktop {
     }
   }
 
+  // RDP, RustDesk and VNC arm automatically under Pro; RDP can still be re-prepared from the control center.
+  private proAutoContinuationProtocol(protocol: string): boolean {
+    return protocol === 'rdp' || proReconnectOnlyProtocol(protocol);
+  }
+
   private maybeArmProRemoteContinuation(): void {
     const host = this.pendingHost;
-    if (this.proRemoteArming || this.cleanupStarted || !this.connected || host === null ||
-        !proReconnectOnlyProtocol(host.protocol)) { return; }
+    if (this.proRemoteArming || this.proRdpManualPreparing || this.cleanupStarted || !this.connected || host === null ||
+        !this.proAutoContinuationProtocol(host.protocol)) { return; }
     const service = ProContinuationService.getInstance();
     const armed = service.armed(this.proRemoteSourceWindowId);
     if (!ProContinuationPreferences.getInstance().settings().auto ||
@@ -14133,6 +14142,7 @@ struct RemoteDesktop {
   }
 
   private async armProRemoteContinuation(): Promise<boolean> {
+    if (this.pendingHost?.protocol === 'rdp') { return await this.armProRdpAutoContinuation(); }
     const host = this.pendingHost;
     if (host === null || !proReconnectOnlyProtocol(host.protocol) || describeProRemoteConnection(host) === null) { return false; }
     const hostId = host.id; const session = this.sessionId;
@@ -14281,6 +14291,40 @@ struct RemoteDesktop {
     return false;
   }
 
+  /**
+   * Always-on RDP arming. The view is read when the other device continues, so the
+   * target restores whatever the user is looking at then (the requested transform,
+   * without waiting for it to be presented as the manual action does).
+   */
+  private async armProRdpAutoContinuation(): Promise<boolean> {
+    const host = this.pendingHost;
+    const owner = this.loader.captureDisconnectIdentity(this.sessionId);
+    if (host === null || host.protocol !== 'rdp' || owner === null || !this.proRdpNativeCurrent(host.id, owner) ||
+        ProRdpSessionIdentityStore.getInstance().get(host.id, owner) === null) { return false; }
+    const hostId = host.id;
+    this.proRemoteArming = true;
+    try {
+      const win = window.findWindow(this.getUIContext().getWindowName());
+      this.proRemoteSourceWindowId = win.getWindowProperties().id;
+      return await ProContinuationService.getInstance().prepare(getContext(this) as common.UIAbilityContext, {
+        windowId: this.proRemoteSourceWindowId,
+        describe: (): ProConnectionDescription | null => {
+          const current = this.pendingHost;
+          const identity = ProRdpSessionIdentityStore.getInstance().get(hostId, owner);
+          if (current === null || current.id !== hostId || identity === null ||
+              this.canvasVisualFlipX || this.canvasVisualFlipY) { return null; }
+          const view = describeProRdpView(this.canvasTransform, this.currentRdpControlMode());
+          return view === null ? null : describeProRdpConnection(current, identity, view);
+        },
+        isCurrent: (): boolean => this.connected && !this.cleanupStarted && this.proRdpNativeCurrent(hostId, owner) &&
+          ProRdpSessionIdentityStore.getInstance().get(hostId, owner) !== null,
+        close: (): void => { this.disconnectAndCleanup('pro-rdp-continuation'); this.goBack(); }
+      }, true, false);
+    } catch (_error) {
+      return false;
+    } finally { this.proRemoteArming = false; }
+  }
+
   private async prepareProRdpContinuation(): Promise<void> {
     this.rdpControlCenterVisible = false;
     const host = this.pendingHost;
@@ -14304,7 +14348,9 @@ struct RemoteDesktop {
       if (description === null) { return; }
       const win = window.findWindow(this.getUIContext().getWindowName());
       this.proRdpSourceWindowId = win.getWindowProperties().id;
+      this.proRemoteSourceWindowId = this.proRdpSourceWindowId; // auto arming sees this preparation as armed
       let preparing = true;
+      this.proRdpManualPreparing = true;
       const prepared = await ProContinuationService.getInstance().prepare(getContext(this) as common.UIAbilityContext, {
         windowId: this.proRdpSourceWindowId,
         describe: (): ProConnectionDescription | null => description,
@@ -14319,7 +14365,12 @@ struct RemoteDesktop {
       preparing = !prepared;
       promptAction.showToast({ message: prepared ? 'RDP 接续已准备，本端会话保持连接' :
         proContinuationFailureText(ProContinuationService.getInstance().lastPrepareFailure()), duration: 2400 });
-    } catch (_error) { promptAction.showToast({ message: '系统接续暂不可用', duration: 2200 }); }
+    } catch (_error) {
+      promptAction.showToast({ message: '系统接续暂不可用', duration: 2200 });
+    } finally {
+      this.proRdpManualPreparing = false;
+      this.maybeArmProRemoteContinuation();
+    }
   }
 
   private async restoreProRdpContinuation(): Promise<void> {
@@ -15199,6 +15250,9 @@ struct RemoteDesktop {
       if (host.protocol === 'rdp' && proRdpAttemptIdentity !== null &&
           this.loader.ownsDisconnectIdentity(this.nativeDisconnectIdentity) && this.loader.getConnectionState(sid) === 2) {
         ProRdpSessionIdentityStore.getInstance().remember(host.id, this.nativeDisconnectIdentity, proRdpAttemptIdentity);
+        // Auto continuation needs this identity; arm now instead of waiting for the retry.
+        this.proRemoteRetryAt = 0;
+        this.maybeArmProRemoteContinuation();
       }
       if (this.pcWindowAfterAuthentication) {
         await this.handoffAuthenticatedSessionToIndependentWindow(host, sid);

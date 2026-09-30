@@ -12,6 +12,8 @@ export struct ProContinuationControls {
   @StorageProp('currentTheme') theme: string = 'light';
   @StorageProp('accentColor') accent: string = '#007DFF';
   @Prop protocol: string = 'ssh';
+  /** Session panels such as the RDP control center are always dark regardless of the app theme. */
+  @Prop forceDark: boolean = false;
   onPrepare: () => void = (): void => {};
   @State status: string = '';
   @State canClose: boolean = false;
@@ -20,7 +22,7 @@ export struct ProContinuationControls {
   private windowId: number = 0;
   private stopPreferences: (() => void) | null = null;
   private stop: (() => void) | null = null;
-  private pal(): Palette { return this.theme === 'light' ? buildLight(this.accent) : buildDark(this.accent); }
+  private pal(): Palette { return this.theme === 'light' && !this.forceDark ? buildLight(this.accent) : buildDark(this.accent); }
   aboutToAppear(): void {
     try { this.windowId = window.findWindow(this.getUIContext().getWindowName()).getWindowProperties().id; } catch (_error) {}
     this.stopPreferences = ProContinuationPreferences.getInstance().subscribe((): void => {
@@ -55,11 +57,10 @@ export struct ProContinuationControls {
     .width('100%').constraintSize({ minHeight: 52 }).padding({ left: 14, right: 12, top: 6, bottom: 6 })
     .onClick(action).accessibilityText(title + (detail.length > 0 ? '，' + detail : ''))
   }
-  private autoProtocol(): boolean { return this.protocol !== 'rdp'; }
   private detail(): string {
     if (!this.protocolOn) { return proContinuationProtocolLabel(this.protocol) + ' 接续已关闭 · 可在设置 > Pro 功能 > 同账号接续中开启'; }
     if (this.status !== '') { return this.status; }
-    return this.auto && this.autoProtocol() ? '连接后自动开启 · 点按重新开启或授予协同权限' : '点按后 2 分钟内在同账号设备继续';
+    return this.auto ? '连接后已自动开启 · 点按按当前画面重新准备' : '点按后 2 分钟内在同账号设备继续';
   }
   @Builder private controls() {
     Column() {
@@ -69,7 +70,7 @@ export struct ProContinuationControls {
           this.menuRow('结束本端会话', '目标设备已就绪', false,
             (): void => { ProContinuationService.getInstance().closeConfirmedSource(this.windowId); })
         }
-        if (!(this.auto && this.autoProtocol())) {
+        if (!this.auto) {
           this.menuRow('取消接续准备', '', false,
             (): void => { ProContinuationService.getInstance().cancelSource(this.windowId); })
         }

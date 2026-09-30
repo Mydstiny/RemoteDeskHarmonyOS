@@ -227,7 +227,8 @@ function productionPage(bindings) {
   const file='entry/src/main/ets/pages/RemoteDesktop.ets',input=fs.readFileSync(path.join(root,file),'utf8');
   const names=['stageProRdpIncoming','cancelProRdpIncoming','proRdpNativeCurrent','proRdpViewKey',
     'proRdpPresentationCurrent','submitProRdpView','waitProRdpPresentedView','prepareProRdpContinuation',
-    'restoreProRdpContinuation','currentRdpControlMode','setRdpControlModePreference','applyCanvasTransform'];
+    'restoreProRdpContinuation','currentRdpControlMode','setRdpControlModePreference','applyCanvasTransform',
+    'armProRdpAutoContinuation'];
   const methods=names.map(name=>{
     const start=input.search(new RegExp(`  private (?:async )?${name}\\(`));assert.ok(start>=0,name);
     const open=input.indexOf('{',start),scanner=ts.createScanner(ts.ScriptTarget.Latest,true,ts.LanguageVariant.Standard,input.slice(open));
@@ -276,6 +277,8 @@ function pageFixture() {
     refreshCanvasTransformModified:()=>{},updateRendererViewportCacheForCanvasTransform:()=>{},
     persistSessionPref:(key,value)=>state.preferences.push({key,value}),
     disconnectAndCleanup:()=>state.closed++,goBack:()=>{},
+    proRemoteArming:false,proRdpManualPreparing:false,proRemoteSourceWindowId:0,
+    maybeArmProRemoteContinuation:()=>{state.autoArmChecks=(state.autoArmChecks??0)+1;},
     loader:{captureDisconnectIdentity:()=>state.nativeOwner,
       ownsDisconnectIdentity:receipt=>receipt!==null && state.nativeOwner!==null &&
         ['sessionId','generation','ownerToken','facadeGeneration'].every(k=>receipt[k]===state.nativeOwner[k]),
@@ -341,6 +344,25 @@ test('actual source keeps live native background preservation but refuses old id
   f.state.nativeOwner={...f.owner,generation:6};assert.equal(f.state.source.isCurrent(),false);
   f.state.nativeOwner=f.owner;f.page.canvasTransform.scale=3;assert.equal(f.state.source.isCurrent(),false);
   assert.equal(f.state.closed,0);
+});
+test('automatic RDP arming reads the view at continuation time and survives view changes', async()=>{
+  const f=pageFixture();f.page.proRdpIncomingId='';
+  assert.equal(await f.page.armProRdpAutoContinuation(),true);
+  const source=f.state.source;assert.ok(source);assert.equal(f.page.proRemoteSourceWindowId,9);
+  assert.equal(source.describe().view.scale,1);
+  f.page.canvasTransform.scale=2;
+  assert.equal(source.isCurrent(),true,'a zoom does not invalidate the always-on source');
+  assert.equal(source.describe().view.scale,2,'the target gets the view current at continuation');
+  f.page.canvasVisualFlipX=true;assert.equal(source.describe(),null);f.page.canvasVisualFlipX=false;
+  f.state.nativeOwner={...f.owner,generation:6};assert.equal(source.isCurrent(),false);
+  f.state.nativeOwner=f.owner;f.store.forget(f.owner);assert.equal(source.isCurrent(),false);
+  assert.equal(await f.page.armProRdpAutoContinuation(),false,'no verified identity, no arming');
+});
+test('the control-center action suppresses auto arming while it prepares, then re-checks', async()=>{
+  const f=pageFixture();f.page.proRdpIncomingId='';
+  await f.page.prepareProRdpContinuation();
+  assert.equal(f.page.proRdpManualPreparing,false);assert.equal(f.page.proRemoteSourceWindowId,9);
+  assert.equal(f.state.autoArmChecks,1);
 });
 test('actual source preparation rejects background during permission await and missing native receipts', async()=>{
   const f=pageFixture();f.page.proRdpIncomingId='';let resolve;

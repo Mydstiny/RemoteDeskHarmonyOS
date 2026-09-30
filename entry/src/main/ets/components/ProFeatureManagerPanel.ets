@@ -13,7 +13,7 @@ import { ProDebugMode, ProRuntimeSnapshot } from '../services/pro/ProRuntime';
 import { PRO_CONTINUATION_PROTOCOLS, ProContinuationCredentialMode, ProContinuationPreferences,
   ProContinuationSettings, proContinuationProtocolLabel } from '../services/pro/ProContinuationPreferences';
 import { ProConnectionProtocol } from '../services/pro/ProConnectionEnvelope';
-import { PRO_CONTINUATION_FEATURE } from '../services/pro/ProContinuationService';
+import { PRO_CONTINUATION_FEATURE, ProContinuationService } from '../services/pro/ProContinuationService';
 
 const DEBUG_MODES: ProDebugMode[] = ['real', 'free', 'pro'];
 
@@ -67,6 +67,7 @@ export struct ProFeatureDetailPanel {
   @Prop featureId: string = '';
   @State revision: number = 0;
   @State continuation: ProContinuationSettings = ProContinuationPreferences.getInstance().settings();
+  @State collaborationGranted: boolean = true;
   private contextValue: common.UIAbilityContext | null = null;
   private stop: (() => void) | null = null;
   private stopContinuation: (() => void) | null = null;
@@ -76,6 +77,7 @@ export struct ProFeatureDetailPanel {
     ProFeatureVisibility.getInstance().load(this.contextValue);
     ProContinuationPreferences.getInstance().load(this.contextValue);
     this.stop = ProEntries.subscribe((): void => { this.revision++; });
+    if (this.featureId === PRO_CONTINUATION_FEATURE) { void this.syncCollaboration(false); }
     this.stopContinuation = ProContinuationPreferences.getInstance().subscribe((): void => {
       this.continuation = ProContinuationPreferences.getInstance().settings();
     });
@@ -96,6 +98,11 @@ export struct ProFeatureDetailPanel {
     if (status !== null && status.tone === 'experimental') { return '#B26A00'; }
     return this.pal().text3;
   }
+  private async syncCollaboration(request: boolean): Promise<void> {
+    if (this.contextValue === null) { return; }
+    const context = this.contextValue;
+    this.collaborationGranted = await ProContinuationService.getInstance().syncPermission(context, request);
+  }
   private updateContinuation(next: ProContinuationSettings): void {
     if (this.contextValue === null) { return; }
     ProContinuationPreferences.getInstance().update(this.contextValue, next);
@@ -113,7 +120,7 @@ export struct ProFeatureDetailPanel {
   }
   private protocolDetail(protocol: ProConnectionProtocol): string {
     if (protocol === 'ssh') { return '连接后自动开启，恢复当前终端或文件目录'; }
-    if (protocol === 'rdp') { return '在会话菜单中手动准备，恢复显示器、缩放与视图位置'; }
+    if (protocol === 'rdp') { return '连接后自动开启，恢复显示器、缩放与视图位置；也可在控制中心按当前画面重新准备'; }
     return '连接后自动开启，在目标设备重新连接同一台主机';
   }
   /** #AARRGGBB tint of the accent for the selected option card. */
@@ -149,8 +156,19 @@ export struct ProFeatureDetailPanel {
   }
   @Builder private continuationOptions() {
     Column() {
-      this.switchRow('Pro 下自动开启接续', '连上下方开启的协议后自动允许在同账号设备继续；关闭后需在会话菜单中手动准备',
+      this.switchRow('Pro 下自动开启接续', '连上下方开启的协议后自动允许在同账号设备继续；关闭后只有 RDP 可在控制中心手动准备',
         this.continuation.auto, (on: boolean): void => { this.updateContinuation(this.withAuto(on)); })
+      if (!this.collaborationGranted) {
+        Divider().strokeWidth(0.5).color(this.pal().cardBorder).margin({ left: 16, right: 16 })
+        Row({ space: 12 }) {
+          Column({ space: 3 }) {
+            Text('需要“多设备协同”权限').fontSize(15).fontColor(this.pal().text).fontFamily(AppConfig.fontFamily).width('100%')
+            Text('未授予时不会出现接续图标').fontSize(12).fontColor(this.pal().text3).fontFamily(AppConfig.fontFamily).width('100%')
+          }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+          Button('授予').fontSize(13).height(32).backgroundColor(this.accent).fontColor(Color.White)
+            .onClick((): void => { void this.syncCollaboration(true); })
+        }.width('100%').padding(16)
+      }
     }.width('100%').backgroundColor(this.pal().card).borderRadius(16)
     Column({ space: 8 }) {
       this.sectionTitle('允许接续的协议')

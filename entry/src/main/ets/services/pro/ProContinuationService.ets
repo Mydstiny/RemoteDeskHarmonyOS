@@ -143,6 +143,12 @@ export class ProContinuationService {
       return result.authResults.length === 1 && result.authResults[0] === abilityAccessCtrl.GrantStatus.PERMISSION_GRANTED;
     } catch (_error) { return false; }
   }
+  /** Settings entry point: automatic arming never raises the dialog itself. */
+  async syncPermission(context: common.UIAbilityContext, request: boolean): Promise<boolean> {
+    const granted = await this.permission(context, request);
+    if (granted && request) { this.publish(); }
+    return granted;
+  }
   private sourceCurrent(): boolean {
     const scope = AccountSessionCoordinator.getInstance().currentScope();
     const description = this.source?.describe() ?? null;
