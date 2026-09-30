@@ -3,32 +3,24 @@
   "task": "pro-purchase-foundation",
   "branch": "codex/pro-purchase-foundation",
   "base": "8edc187868e94ed41634e8a6c4c4c072e3a48679",
-  "head": "2efbe905",
-  "phase": "Full acceptance active; Pro 工作区与高级主机管理基础增量已实现，设备/跨端验收待完成",
+  "head": "d9a066ec",
+  "phase": "Full acceptance active; Pro 工作区与高级主机管理基础层及工作区编辑器已实现，设备/跨端验收待完成",
   "status": "in-progress",
   "latestIncrement": {
     "date": "2026-09-30",
-    "commit": "2efbe905",
-    "parentCommit": "9fb2716c5",
+    "commit": "d9a066ec",
+    "parentCommit": "2efbe905",
     "scope": [
-      "entry/src/main/ets/services/pro/ProFeatureCatalog.ets",
-      "entry/src/main/ets/services/pro/org",
-      "entry/src/main/ets/services/pro/workspace",
       "entry/src/main/ets/components/ProOrganizationWorkspacePanel.ets",
-      "entry/src/main/ets/pages/HostListPage.ets",
-      "entry/src/main/ets/services/CloudSyncSettingsPolicy.ets",
-      "scripts/tests/test_pro_host_org.cjs",
-      "scripts/tests/test_pro_workspace.cjs",
-      "scripts/tests/test_pro_workspace_capture.cjs",
-      "scripts/tests/test_pro_workspace_launcher.cjs",
+      "entry/src/main/ets/components/ProWorkspaceEditorPanel.ets",
       "docs/codex/plans/2026-09-30-pro-workspaces-host-management-plan.md"
     ],
     "status": "implemented-build-pass-device-acceptance-pending",
     "reviewTaskId": "/root/review_pro_plan",
     "reviewResult": "pending incremental independent review",
-    "validation": "Five Node policy/orchestration tests PASS; default@OhosTestCompileArkTS BUILD SUCCESSFUL 15.033 s; assembleHap BUILD SUCCESSFUL 17.380 s; git diff --check PASS; device/cross-device acceptance not run"
+    "validation": "Four Node policy/orchestration tests PASS; default@OhosTestCompileArkTS BUILD SUCCESSFUL 15.675 s; assembleHap BUILD SUCCESSFUL 26.625 s; git diff --check PASS; device/cross-device acceptance not run"
   },
-  "next": "继续 H2 分组胶囊与管理 UI、H3 批量操作、H4 导入导出、S3 编辑器/S4 会话捕获；随后完成设备与跨端验收。",
+  "next": "继续 H2 分组胶囊与管理 UI、H3 批量操作、H4 导入导出、S4 布局恢复与真实启动适配；随后完成设备与跨端验收。",
   "blockers": [
     "Pad backup and Debug migration complete; same-account sandbox restore PASS without another payment. Remaining offline/cross-account and full protocol/device matrix remain open.",
     "M3/U0-U4 device matrix and M4 PC real Share Kit/SFTP file-integrity acceptance remain unverified.",
@@ -257,11 +249,12 @@
       "scripts/tests/test_pro_host_org.cjs",
       "scripts/tests/test_pro_workspace.cjs",
       "scripts/tests/test_pro_workspace_capture.cjs",
-      "scripts/tests/test_pro_workspace_launcher.cjs"
+      "scripts/tests/test_pro_workspace_launcher.cjs",
+      "entry/src/main/ets/components/ProWorkspaceEditorPanel.ets"
     ],
     "findings": [],
     "reviewedHead": "13413239bd7475539ade4deaae522a3d6a2e753e",
-    "reason": "Pro workspace/host-management checkpoint requires independent scoped review; concurrent SSH skin work remains outside this commit."
+    "reason": "Pro workspace/host-management editor checkpoint requires independent scoped review; concurrent SSH skin work remains outside this commit."
   },
   "lastVerification": {
     "scope": "ad8c5d2ea RustDesk remote file explorer and delayed RDP file-station staging",
