@@ -647,8 +647,13 @@ test('RustDesk and VNC continue as V3 reconnect-only transfers of the same synce
     const t = fixture();
     if (kind === 'vnc') { t.state.vncHost = { ...remote, viewOnly: true, displayOverrideEnabled: true, scalingMode: 'integer' }; t.state.vncHostReady = true; }
     else { t.state.host = { ...remote }; }
-    assert.equal(t.service.ingest(wire), true);
+    const secret = { kind: 'password', password: 'saved-' + kind, privateKeyPem: '', passphrase: '', username: '' };
+    assert.equal(t.service.ingest(wire, JSON.stringify(secret)), true);
     assert.equal((await t.service.accept(t.context)).id, kind === 'vnc' ? 'vnc:' + remote.id : remote.id);
+    // 随接续传输 reaches the target's one-shot handoff for this host, not only for SSH.
+    const handoff = t.load('entry/src/main/ets/services/pro/ProContinuationCredentials.ets')
+      .ProContinuationCredentialHandoff.getInstance();
+    assert.equal(handoff.take(e.connection.hostReference, e.owner)?.password, 'saved-' + kind);
     const u = fixture();
     if (kind === 'vnc') { u.state.vncHost = { ...remote, host: '192.0.2.99' }; u.state.vncHostReady = true; }
     else { u.state.host = { ...remote, host: '987654321' }; }

@@ -5,7 +5,8 @@ import {
   RemoteSessionWindowCoordinator,
   RemoteSessionWindowRecord
 } from '../services/RemoteSessionWindowCoordinator';
-import { ProContinuationService, PRO_CONTINUATION_PARAM } from '../services/pro/ProContinuationService';
+import { ProContinuationService, PRO_CONTINUATION_PARAM,
+  PRO_CONTINUATION_SECRET_PARAM } from '../services/pro/ProContinuationService';
 import { ProFeatureVisibility } from '../services/pro/ProFeatureVisibility';
 import { recordDiagnosticAppLifecycleEvent } from '../services/DiagnosticCaptureRuntime';
 
@@ -64,7 +65,8 @@ export default class RemoteSessionAbility extends UIAbility {
     const stack: Object | undefined = want.parameters?.[wantConstant.Params.SUPPORT_CONTINUE_PAGE_STACK_KEY];
     const sourceExit: Object | undefined = want.parameters?.[wantConstant.Params.SUPPORT_CONTINUE_SOURCE_EXIT_KEY];
     const service = ProContinuationService.getInstance();
-    if (stack !== false || sourceExit !== false || typeof value !== 'string' || !service.ingest(value)) {
+    if (stack !== false || sourceExit !== false || typeof value !== 'string' ||
+        !service.ingest(value, want.parameters?.[PRO_CONTINUATION_SECRET_PARAM] ?? null)) {
       void this.context.terminateSelf().catch((): void => {});
       return;
     }

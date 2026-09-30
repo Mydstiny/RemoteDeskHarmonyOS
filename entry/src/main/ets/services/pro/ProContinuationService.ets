@@ -319,7 +319,8 @@ export class ProContinuationService {
     }
     this.seen.set(envelope.transferId, envelope.expiresAt);
     this.target = new ProConnectionTransaction(envelope);
-    this.targetSecret = envelope.connection.protocol === 'ssh' ? secret : null;
+    // Every protocol may carry its saved credential; RDP's also names the Windows account.
+    this.targetSecret = secret;
     hilog.info(0x0001, 'ProContinuation', 'ingest credential=%{public}s', this.targetSecret !== null ? 'true' : 'false');
     this.targetMessage = envelope.connection.protocol === 'rdp'
       ? '正在自动接续：使用本设备保存的凭据连接，恢复缩放、平移和输入模式。'
