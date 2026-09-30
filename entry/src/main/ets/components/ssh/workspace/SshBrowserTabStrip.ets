@@ -17,6 +17,9 @@ export struct SshBrowserTabStrip {
   @Prop sftpTabVisible: boolean = false;
   @Prop sftpTabActive: boolean = false;
   @Prop sftpTabTitle: string = 'SFTP';
+  // Pro SSH skin: bar text color (#RRGGBB) and accent; empty keeps the classic dark strip.
+  @Prop skinText: string = '';
+  @Prop skinAccent: string = '';
   onActivate: (hostId: string) => void = (_hostId: string): void => {};
   onClose: (hostId: string) => void = (_hostId: string): void => {};
   onTogglePin: (hostId: string) => void = (_hostId: string): void => {};
@@ -46,10 +49,21 @@ export struct SshBrowserTabStrip {
     return '已连接';
   }
 
+  /** Bar text at an opacity: the skin text as #AARRGGBB, or the classic light text. */
+  private ink(opacity: number): string {
+    if (/^#[0-9A-Fa-f]{6}$/.test(this.skinText)) {
+      const alpha: string = Math.round(Math.max(0, Math.min(1, opacity)) * 255).toString(16).toUpperCase();
+      return '#' + (alpha.length < 2 ? '0' + alpha : alpha) + this.skinText.substring(1);
+    }
+    return opacity >= 1 ? '#F7F9FB' : 'rgba(242,244,247,' + opacity.toString() + ')';
+  }
+
+  private accentTone(): string { return this.skinAccent.length > 0 ? this.skinAccent : this.accentColor; }
+
   private tabBackground(tab: SshTerminalTabView): string {
-    if (this.terminalTabsActive && tab.active) { return 'rgba(255,255,255,0.095)'; }
-    if (this.hoveredTabId === tab.tabId) { return 'rgba(255,255,255,0.065)'; }
-    return 'rgba(255,255,255,0.018)';
+    if (this.terminalTabsActive && tab.active) { return this.ink(0.12); }
+    if (this.hoveredTabId === tab.tabId) { return this.ink(0.08); }
+    return this.ink(0.03);
   }
 
   private terminalTabActive(tab: SshTerminalTabView): boolean {
@@ -57,14 +71,14 @@ export struct SshBrowserTabStrip {
   }
 
   private statusColor(tab: SshTerminalTabView): string {
-    if (tab.state === 'disconnected') { return 'rgba(242,244,247,0.34)'; }
+    if (tab.state === 'disconnected') { return this.ink(0.34); }
     if (tab.state === 'error') { return '#FF7777'; }
     if (tab.state === 'connecting' || tab.state === 'reconnecting') { return '#F5B942'; }
     return '#34C759';
   }
 
   private closeButtonBackground(tabId: string): string {
-    return this.hoveredCloseId === tabId ? 'rgba(255,255,255,0.12)' : 'transparent';
+    return this.hoveredCloseId === tabId ? this.ink(0.14) : 'transparent';
   }
 
   private closeButtonOpacity(tab: SshTerminalTabView): number {
@@ -72,8 +86,8 @@ export struct SshBrowserTabStrip {
   }
 
   private sftpTabBackground(): string {
-    if (this.sftpTabActive) { return 'rgba(255,255,255,0.095)'; }
-    return this.sftpTabHovered ? 'rgba(255,255,255,0.065)' : 'rgba(255,255,255,0.018)';
+    if (this.sftpTabActive) { return this.ink(0.12); }
+    return this.sftpTabHovered ? this.ink(0.08) : this.ink(0.03);
   }
 
   @Builder
@@ -105,19 +119,19 @@ export struct SshBrowserTabStrip {
       if (tab.pinned) {
         SymbolGlyph($r('sys.symbol.pin_fill'))
           .fontSize(11)
-          .fontColor([this.accentColor])
+          .fontColor([this.accentTone()])
           .accessibilityText('已固定')
       }
       Text(this.tabTitle(tab))
         .fontSize(12)
         .fontWeight(this.terminalTabActive(tab) ? FontWeight.Medium : FontWeight.Regular)
-        .fontColor(this.terminalTabActive(tab) ? '#F7F9FB' : 'rgba(242,244,247,0.70)')
+        .fontColor(this.terminalTabActive(tab) ? this.ink(1) : this.ink(0.70))
         .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
         .layoutWeight(1)
       Button() {
         SymbolGlyph($r('sys.symbol.xmark'))
           .fontSize(11)
-          .fontColor(['rgba(242,244,247,0.82)'])
+          .fontColor([this.ink(0.82)])
       }
         .width(this.compact ? 40 : 32).height(40).padding(0)
         .opacity(this.closeButtonOpacity(tab))
@@ -139,13 +153,13 @@ export struct SshBrowserTabStrip {
       Column()
         .width('100%').height(2)
         .borderRadius(1)
-        .backgroundColor(this.terminalTabActive(tab) ? this.accentColor : 'transparent')
+        .backgroundColor(this.terminalTabActive(tab) ? this.accentTone() : 'transparent')
     }
     .width(sshTabWidthVp(this.compact, tab.pinned))
     .height(44)
     .borderRadius(7)
     .backgroundColor(this.tabBackground(tab))
-    .border({ width: { right: 0.5 }, color: 'rgba(255,255,255,0.07)' })
+    .border({ width: { right: 0.5 }, color: this.ink(0.08) })
     .onHover((hover: boolean): void => { this.hoveredTabId = hover ? tab.tabId : ''; })
     .onDragStart((_event: DragEvent): DragItemInfo => {
       this.draggingTabId = tab.hostId;
@@ -170,18 +184,18 @@ export struct SshBrowserTabStrip {
       Row({ space: 7 }) {
         SymbolGlyph($r('sys.symbol.folder_fill'))
           .fontSize(14)
-          .fontColor([this.sftpTabActive ? this.accentColor : 'rgba(242,244,247,0.62)'])
+          .fontColor([this.sftpTabActive ? this.accentTone() : this.ink(0.62)])
         Text(this.sftpTabTitle)
           .fontSize(12)
           .fontWeight(this.sftpTabActive ? FontWeight.Medium : FontWeight.Regular)
-          .fontColor(this.sftpTabActive ? '#F7F9FB' : 'rgba(242,244,247,0.70)')
+          .fontColor(this.sftpTabActive ? this.ink(1) : this.ink(0.70))
           .maxLines(1)
           .textOverflow({ overflow: TextOverflow.Ellipsis })
           .layoutWeight(1)
         Button() {
           SymbolGlyph($r('sys.symbol.xmark'))
             .fontSize(11)
-            .fontColor(['rgba(242,244,247,0.82)'])
+            .fontColor([this.ink(0.82)])
         }
           .width(this.compact ? 40 : 32).height(40).padding(0)
           .opacity(this.sftpTabActive || this.sftpTabHovered ? 0.86 : 0.42)
@@ -195,13 +209,13 @@ export struct SshBrowserTabStrip {
       Column()
         .width('100%').height(2)
         .borderRadius(1)
-        .backgroundColor(this.sftpTabActive ? this.accentColor : 'transparent')
+        .backgroundColor(this.sftpTabActive ? this.accentTone() : 'transparent')
     }
     .width(sshTabWidthVp(this.compact, false))
     .height(44)
     .borderRadius(7)
     .backgroundColor(this.sftpTabBackground())
-    .border({ width: { right: 0.5 }, color: 'rgba(255,255,255,0.07)' })
+    .border({ width: { right: 0.5 }, color: this.ink(0.08) })
     .onHover((hover: boolean): void => { this.sftpTabHovered = hover; })
     .onClick((): void => { this.onActivateSftp(); })
     .accessibilityText('SFTP 文件工作台' + (this.sftpTabActive ? '，当前标签' : ''))
@@ -221,6 +235,8 @@ export struct SshBrowserTabStrip {
       }
       .scrollable(ScrollDirection.Horizontal)
       .scrollBar(BarState.Off)
+      // Tabs start at the left edge like a browser; a Scroll centers short content by default.
+      .align(Alignment.Start)
       .layoutWeight(1).height(48)
     }
     .width('100%').height(SSH_TAB_STRIP_HEIGHT_VP)

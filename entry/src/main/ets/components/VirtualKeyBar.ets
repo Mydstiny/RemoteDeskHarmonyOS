@@ -76,6 +76,12 @@ export struct VirtualKeyBar {
 
   private accent(): string { return this.skinAccent.length > 0 ? this.skinAccent : this.accentColor; }
 
+  /** ArkUI colors are #AARRGGBB: the alpha goes in front, not after the RGB digits. */
+  private accentTint(alpha: string): string {
+    const base: string = this.accent();
+    return /^#[0-9A-Fa-f]{6}$/.test(base) ? '#' + alpha + base.substring(1) : base;
+  }
+
   private keyBg(): string {
     return this.skinKey.length > 0 ? this.skinKey : 'rgba(255,255,255,0.075)';
   }
@@ -89,11 +95,11 @@ export struct VirtualKeyBar {
   }
 
   private keyPressedBg(): string {
-    return this.accent() + '33';
+    return this.accentTint('33');
   }
 
   private keyActiveBg(): string {
-    return this.accent() + '44';
+    return this.accentTint('44');
   }
 
   private keyBorderColor(active: boolean, pressed: boolean): string {
@@ -107,7 +113,7 @@ export struct VirtualKeyBar {
   }
 
   private enterBg(): string {
-    return this.accent() + '99';
+    return this.accentTint('99');
   }
 
   private modifierActive(modifier: string): boolean {
@@ -131,7 +137,7 @@ export struct VirtualKeyBar {
       .border({ width: this.isPressed(label) ? 1 : 0.5, color: this.keyBorderColor(false, this.isPressed(label)) })
       .shadow({
         radius: this.isPressed(label) ? 12 : 8,
-        color: this.isPressed(label) ? this.accent() + '33' : 'rgba(0,0,0,0.10)',
+        color: this.isPressed(label) ? this.accentTint('33') : 'rgba(0,0,0,0.10)',
         offsetY: 2
       })
       .margin({ left: 3, right: 3 })
@@ -154,7 +160,7 @@ export struct VirtualKeyBar {
       })
       .shadow({
         radius: this.modifierActive(modifier) ? 18 : 8,
-        color: this.modifierActive(modifier) ? this.accent() + '66' : 'rgba(0,0,0,0.10)',
+        color: this.modifierActive(modifier) ? this.accentTint('66') : 'rgba(0,0,0,0.10)',
         offsetY: 2
       })
       .margin({ left: 3, right: 3 })
@@ -173,7 +179,7 @@ export struct VirtualKeyBar {
       .border({ width: this.isPressed(label) ? 1 : 0.5, color: this.keyBorderColor(false, this.isPressed(label)) })
       .shadow({
         radius: this.isPressed(label) ? 12 : 8,
-        color: this.isPressed(label) ? this.accent() + '33' : 'rgba(0,0,0,0.10)',
+        color: this.isPressed(label) ? this.accentTint('33') : 'rgba(0,0,0,0.10)',
         offsetY: 2
       })
       .margin({ left: 3, right: 3 })
@@ -198,7 +204,7 @@ export struct VirtualKeyBar {
       .textAlign(TextAlign.Center)
       .borderRadius(10).backgroundColor(this.isPressed('Enter') ? this.accent() : this.enterBg())
       .border({ width: 1, color: this.isPressed('Enter') ? '#FFFFFF' : this.accent() })
-      .shadow({ radius: this.isPressed('Enter') ? 16 : 12, color: this.accent() + '44', offsetY: 2 })
+      .shadow({ radius: this.isPressed('Enter') ? 16 : 12, color: this.accentTint('44'), offsetY: 2 })
       .margin({ left: 3, right: 3 })
       .gesture(TapGesture({ count: 1 }).onAction((): void => { this.pressKey('Enter', '\r'); }))
   }

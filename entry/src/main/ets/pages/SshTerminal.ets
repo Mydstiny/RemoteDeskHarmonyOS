@@ -5975,6 +5975,8 @@ struct SshTerminal {
   private sshTabStripItems() {
     if (this.sshWorkbenchEnabled) {
       SshBrowserTabStrip({
+        skinText: this.sshSkin()?.chrome.barText ?? '',
+        skinAccent: this.sshSkin()?.chrome.accent ?? '',
         tabs: this.sshWorkspaceModeEnabled() ? this.sshWorkspaceTabViews() : this.sshTabViews,
         compact: this.sshCompactChrome(),
         terminalTabsActive: this.sftpWorkspaceTabState.activeSurface === 'terminal',
@@ -6028,8 +6030,13 @@ struct SshTerminal {
     }
     .width('100%').height(this.sshTabStripHeight() + this.sshTopChromeLayout().standaloneTabTopInsetVp)
     .padding({ top: this.sshTopChromeLayout().standaloneTabTopInsetVp })
+    // The tab row and the host bar below read as one block: same color, the highlight
+    // gradient starts here instead of on the host bar, and no divider between them.
     .backgroundColor(this.chromeBg())
-    .border({ width: { bottom: 0.5 }, color: 'rgba(255,255,255,0.08)' })
+    .linearGradient({
+      direction: GradientDirection.Bottom,
+      colors: [[this.chromeText(0.07), 0], [this.chromeText(0), 1]]
+    })
     .id('ssh-workspace-focus-tab-strip-standalone')
     .focusable(this.sshWorkspaceModeEnabled())
     .focusOnTouch(false)
@@ -6044,8 +6051,6 @@ struct SshTerminal {
     }
     .layoutWeight(1)
     .height(this.sshTabStripHeight())
-    .borderRadius(8)
-    .backgroundColor('rgba(255,255,255,0.025)')
     .margin({ left: 12, right: 8 })
     .id('ssh-workspace-focus-tab-strip-inline')
     .focusable(this.sshWorkspaceModeEnabled())
@@ -12121,6 +12126,11 @@ struct SshTerminal {
     if (skin === null) { return opacity >= 1 ? '#F4F7FA' : 'rgba(242,244,247,' + opacity.toString() + ')'; }
     const alpha: string = Math.round(Math.max(0, Math.min(1, opacity)) * 255).toString(16).toUpperCase();
     return '#' + (alpha.length < 2 ? '0' + alpha : alpha) + skin.chrome.barText.substring(1);
+  }
+
+  /** Floating buttons over the terminal: an opaque bar-colored disc. */
+  private floatingChromeBg(): string {
+    return this.sshSkin()?.chrome.bar ?? 'rgba(20,25,33,0.90)';
   }
 
   private chromeChipBg(): string {
@@ -19221,8 +19231,11 @@ struct SshTerminal {
       .backgroundBlurStyle(BlurStyle.NONE)
       .linearGradient({
         direction: GradientDirection.Bottom,
-        colors: [['rgba(255,255,255,0.09)', 0], ['rgba(255,255,255,0.00)', 1]]
+        colors: this.sshTopChromeLayout().tabStripAboveHeader ?
+          [[this.chromeText(0), 0], [this.chromeText(0), 1]] :
+          [[this.chromeText(0.07), 0], [this.chromeText(0), 1]]
       })
+      .border({ width: { bottom: 0.5 }, color: this.chromeText(0.1) })
       .id('ssh-workspace-focus-title-actions')
       .focusable(this.sshWorkspaceModeEnabled())
       .focusOnTouch(false)
@@ -19413,17 +19426,17 @@ struct SshTerminal {
 
             if (this.terminalProfileEnabled() && !this.isDesktopDevice &&
               !this.terminalSearchVisible) {
+              // align() only places the glyph inside the button; position() pins the button itself.
               Button() {
                 SymbolGlyph($r('sys.symbol.gearshape_fill'))
                   .fontSize(18)
-                  .fontColor(['#F2F4F7'])
+                  .fontColor([this.chromeText(0.95)])
               }
-              .width(40).height(40)
+              .width(40).height(40).padding(0)
               .borderRadius(20)
-              .backgroundColor('rgba(20,25,33,0.90)')
+              .backgroundColor(this.floatingChromeBg())
               .shadow({ radius: 12, color: 'rgba(0,0,0,0.36)', offsetY: 4 })
-              .align(Alignment.TopEnd)
-              .margin({ top: 10, right: 10 })
+              .position({ top: 10, right: 10 })
               .zIndex(45)
               .onClick((): void => { this.openTerminalProfileSheet(); })
               .accessibilityText('打开终端 Profile')
@@ -19434,14 +19447,13 @@ struct SshTerminal {
               Button() {
                 SymbolGlyph($r('sys.symbol.magnifyingglass'))
                   .fontSize(18)
-                  .fontColor(['#F2F4F7'])
+                  .fontColor([this.chromeText(0.95)])
               }
-              .width(40).height(40)
+              .width(40).height(40).padding(0)
               .borderRadius(20)
-              .backgroundColor('rgba(20,25,33,0.90)')
+              .backgroundColor(this.floatingChromeBg())
               .shadow({ radius: 12, color: 'rgba(0,0,0,0.36)', offsetY: 4 })
-              .align(Alignment.TopEnd)
-              .margin({ top: 10, right: this.terminalProfileEnabled() ? 58 : 10 })
+              .position({ top: 10, right: this.terminalProfileEnabled() ? 58 : 10 })
               .zIndex(45)
               .onClick((): void => { this.openTerminalSearch(); })
               .accessibilityText('打开终端搜索')
