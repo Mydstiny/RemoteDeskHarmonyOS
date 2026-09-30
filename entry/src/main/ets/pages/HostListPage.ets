@@ -1,5 +1,6 @@
 import { ProBadge } from '../components/ProBadge';
 import { ProBadgeSettingsPanel, ProFeatureDetailPanel } from '../components/ProFeatureManagerPanel';
+import { SshSkinSettingsPanel } from '../components/ssh/skin/SshSkinSettingsPanel';
 import { proFeatureCurrentStatus } from '../services/pro/ProFeatureStatusReader';
 import { PRO_PERSONALIZATION_FEATURE, ProFeature } from '../services/pro/ProFeatureCatalog';
 import { AiHostEditor } from '../components/ai/AiHostEditor';
@@ -503,6 +504,7 @@ import {
   SETTINGS_SHEET_APP_ICON,
   SETTINGS_SHEET_PRO_FEATURE,
   SETTINGS_SHEET_PRO_BADGE,
+  SETTINGS_SHEET_SSH_SKIN,
   SETTINGS_SHEET_ACCENT_COLOR,
   SETTINGS_SHEET_DIAGNOSTIC_LOG,
   SETTINGS_SHEET_REMOTE_PINCH_ZOOM,
@@ -15651,6 +15653,7 @@ struct HostListPage {
   }
 
   private settingsLeafSheetHeight(): SheetSize | number {
+    if (this.settingsLeafSheetMode === SETTINGS_SHEET_SSH_SKIN) { return SheetSize.LARGE; }
     if (this.settingsLeafSheetMode === SETTINGS_SHEET_PRO) { return Math.min(820, Math.max(320, this.pageViewportHeight - 48)); }
     if (this.settingsLeafSheetMode === SETTINGS_SHEET_APP_ICON ||
       this.settingsLeafSheetMode === SETTINGS_SHEET_PRO_FEATURE ||
@@ -15715,6 +15718,8 @@ struct HostListPage {
       ProPurchaseSheet({ onClose: (): void => { this.closeSettingsLeafSheet(); } })
     } else if (this.settingsLeafSheetMode === SETTINGS_SHEET_PRO_FEATURE) {
       ProFeatureDetailPanel({ featureId: this.selectedProFeatureId })
+    } else if (this.settingsLeafSheetMode === SETTINGS_SHEET_SSH_SKIN) {
+      SshSkinSettingsPanel()
     } else if (this.settingsLeafSheetMode === SETTINGS_SHEET_PRO_BADGE) {
       ProBadgeSettingsPanel()
     } else if (this.settingsLeafSheetMode === SETTINGS_SHEET_APP_ICON) {
@@ -16722,6 +16727,23 @@ struct HostListPage {
               }.width('100%').height(60).padding({ left: 16, right: 16 })
                 .onClick(() => { this.openSettingsLeafSheet(SETTINGS_SHEET_TERMINAL_LINE_SPACING); })
               this.cardDivider()
+              // Pro 个性化方案: skins (font, colors, key bar, top bar) for the terminal.
+              if (this.personalizationProVisible) {
+                Row() {
+                  Row() { SymbolGlyph($r('sys.symbol.paintpalette_fill')).fontSize(20).fontColor([this.pal().text]) }
+                    .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
+                  Column({ space: 2 }) {
+                    Text('终端皮肤').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
+                      .fontColor(this.pal().text).fontFamily(this.font())
+                    Text('字体、配色、功能键栏与顶栏成套切换，可自由搭配').fontSize(11).fontColor(this.pal().text3)
+                      .fontFamily(this.font()).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+                  }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
+                  ProBadge().margin({ right: 4 })
+                  Text(' >').fontSize(14).fontColor(this.pal().text3).margin({ left: 4 })
+                }.width('100%').height(64).padding({ left: 16, right: 16 })
+                  .onClick((): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_SSH_SKIN); })
+                this.cardDivider()
+              }
               Row() {
                 Column() {
                   Text('新 SSH 工作台').fontSize(AppTheme.fontSize.body)

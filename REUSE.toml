@@ -23,3 +23,9 @@ path = "server/pro-entitlement/agc/pkix/licenses/**"
 precedence = "aggregate"
 SPDX-FileCopyrightText = "Upstream authors; see included copyright notices and the separate PKIX SBOM"
 SPDX-License-Identifier = "LicenseRef-ThirdParty"
+
+[[annotations]]
+path = "entry/src/main/resources/rawfile/ssh-terminal/fonts/**"
+precedence = "override"
+SPDX-FileCopyrightText = "JetBrains Mono, Fira Code, Source Code Pro and IBM Plex Mono project authors; see the bundled *-LICENSE.txt files"
+SPDX-License-Identifier = "OFL-1.1"

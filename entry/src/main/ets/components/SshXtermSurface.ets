@@ -362,6 +362,9 @@ export struct SshXtermSurface {
   @Prop @Watch('onAppearanceChange') profileBackgroundColor: string = '#0D0D0D';
   @Prop @Watch('onAppearanceChange') profilePalette: string[] = [];
   @Prop @Watch('onAppearanceChange') profileFontFamily: string = 'monospace';
+  // Pro skin colors; empty keeps the terminal defaults (cursor follows the foreground).
+  @Prop @Watch('onAppearanceChange') profileCursorColor: string = '';
+  @Prop @Watch('onAppearanceChange') profileSelectionColor: string = '';
   @Prop @Watch('onAppearanceChange') profileFontWeight: string = 'normal';
   @Prop @Watch('onAppearanceChange') profileCursorStyle: string = 'bar';
   @Prop @Watch('onAppearanceChange') profileCursorBlink: boolean = true;
@@ -874,7 +877,10 @@ export struct SshXtermSurface {
       fontSize: normalizedFontSize,
       lineHeight: normalizedLineSpacing,
       fontFamily: this.profileEnabled && this.profileFontFamily !== 'monospace' ?
-        this.profileFontFamily + ', monospace' : 'monospace',
+        (this.profileFontFamily.endsWith('monospace') ? this.profileFontFamily : this.profileFontFamily + ', monospace') :
+        'monospace',
+      cursor: this.profileEnabled ? this.profileCursorColor : '',
+      selection: this.profileEnabled ? this.profileSelectionColor : '',
       fontWeight: this.profileEnabled ? this.profileFontWeight : 'normal',
       foreground: this.profileEnabled ? this.profileForegroundColor : this.terminalFgColor,
       background: this.profileEnabled ? this.profileBackgroundColor : '#0D0D0D',

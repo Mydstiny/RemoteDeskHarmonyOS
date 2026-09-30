@@ -112,4 +112,84 @@ test('platform availability checks every step (macOS lacks F21-F24)', () => {
   assert.equal(p.remoteCustomShortcutAvailableOnPlatform(s, 'macos'), false);
 });
 
+const k = load('entry/src/main/ets/services/ssh/skin/SshSkinPolicy.ets');
+
+test('built-in skins: 12 complete, valid palettes with matching chrome', () => {
+  const skins = k.sshBuiltInSkins();
+  assert.equal(skins.length, 12);
+  assert.equal(new Set(skins.map(s => s.id)).size, 12);
+  for (const skin of skins) {
+    assert.equal(skin.terminal.palette.length, 16, skin.id);
+    for (const c of [skin.terminal.background, skin.terminal.foreground, skin.terminal.cursor, skin.terminal.selection,
+      ...skin.terminal.palette]) assert.match(c, /^#[0-9A-F]{6}$/i, skin.id);
+    for (const c of Object.values(skin.chrome)) assert.match(c, /^#([0-9A-F]{6}|[0-9A-F]{8})$/i, skin.id);
+    assert.ok(k.sshSkinContrast(skin.terminal.foreground, skin.terminal.background) >= 3, skin.id + ' readable');
+    assert.equal(k.sshSkinFont(skin.fontId).id, skin.fontId);
+  }
+  assert.equal(skins.find(s => s.id === 'solarized-light').dark, false);
+  assert.equal(skins.find(s => s.id === 'dracula').dark, true);
+});
+
+test('auto chrome follows the terminal: lighter bars on dark skins, darker on light ones', () => {
+  const dark = k.sshSkinAutoChrome({ background: '#101010', foreground: '#EEEEEE', cursor: '#EEEEEE',
+    selection: '#333333', palette: [] }, '#00AAFF');
+  assert.ok(k.sshSkinLuminance(dark.bar) > k.sshSkinLuminance('#101010'));
+  const light = k.sshSkinAutoChrome({ background: '#FAFAFA', foreground: '#222222', cursor: '#222222',
+    selection: '#DDDDDD', palette: [] }, '#00AAFF');
+  assert.ok(k.sshSkinLuminance(light.bar) < k.sshSkinLuminance('#FAFAFA'));
+  assert.equal(dark.accent, '#00AAFF');
+  assert.equal(k.sshSkinAlpha('#112233', 0.5), '#80112233');
+});
+
+test('resolution: Pro required, host beats global, custom skins and font override apply', () => {
+  const settings = k.emptySshSkinSettings();
+  settings.globalSkinId = 'nord';
+  assert.equal(k.resolveSshSkin(settings, 'h1', false), null, 'free users keep the free appearance');
+  assert.equal(k.resolveSshSkin(settings, 'h1', true).id, 'nord');
+  const custom = k.sshSkinCopy(k.sshBuiltInSkins()[1], 'custom-abc', '我的');
+  custom.terminal.background = '#000000';
+  settings.custom.push(custom);
+  settings.hostSkins.h1 = 'custom-abc';
+  assert.equal(k.resolveSshSkin(settings, 'h1', true).terminal.background, '#000000');
+  assert.equal(k.resolveSshSkin(settings, 'h2', true).id, 'nord');
+  settings.fontId = 'fira-code';
+  assert.equal(k.resolveSshSkin(settings, 'h2', true).fontId, 'fira-code');
+  assert.equal(k.sshBuiltInSkins().find(s => s.id === 'nord').fontId, 'jetbrains-mono', 'built-ins are not mutated');
+  settings.globalSkinId = '';
+  assert.equal(k.resolveSshSkin(settings, 'h2', true), null, 'no skin selected keeps the free appearance');
+  settings.globalSkinId = 'missing';
+  assert.equal(k.resolveSshSkin(settings, 'h2', true), null);
+});
+
+test('storage: custom skins are whitelisted, colors validated, names bounded; hostile input is dropped', () => {
+  const settings = k.emptySshSkinSettings();
+  settings.globalSkinId = 'custom-one';
+  settings.fontId = 'jetbrains-mono';
+  settings.hostSkins = { 'host-1': 'dracula' };
+  settings.custom = [k.sshSkinCopy(k.sshBuiltInSkins()[0], 'custom-one', '一'.repeat(40))];
+  const back = k.decodeSshSkinSettings(k.encodeSshSkinSettings(settings));
+  assert.equal(back.globalSkinId, 'custom-one');
+  assert.equal(back.custom.length, 1);
+  assert.equal(back.custom[0].name.length, 20);
+  assert.equal(back.hostSkins['host-1'], 'dracula');
+  const evil = JSON.stringify({ version: 1, globalSkinId: 'x', fontId: '"; alert(1)',
+    custom: [{ ...settings.custom[0], id: 'custom-two', terminal: { ...settings.custom[0].terminal, background: 'red;x' } },
+      { ...settings.custom[0], id: '../escape' }, { ...settings.custom[0], id: 'custom-ok', extra: 'dropped' }] });
+  const parsed = k.decodeSshSkinSettings(evil);
+  assert.equal(parsed.fontId, 'system', 'unknown fonts fall back to the system font');
+  same(parsed.custom.map(s => s.id), ['custom-ok']);
+  assert.equal('extra' in parsed.custom[0], false);
+  assert.equal(k.decodeSshSkinSettings('{bad').custom.length, 0);
+});
+
+test('bundled fonts are shipped with their OFL licenses', () => {
+  const dir = path.join(root, 'entry/src/main/resources/rawfile/ssh-terminal/fonts');
+  for (const font of k.SSH_SKIN_FONTS.filter(f => f.bundled)) {
+    for (const weight of ['400', '700']) assert.ok(fs.existsSync(path.join(dir, `${font.id}-latin-${weight}-normal.woff2`)), font.id);
+    assert.match(fs.readFileSync(path.join(dir, `${font.id}-LICENSE.txt`), 'utf8'), /SIL Open Font License/);
+  }
+  const html = fs.readFileSync(path.join(root, 'entry/src/main/resources/rawfile/ssh-terminal/index.html'), 'utf8');
+  for (const font of k.SSH_SKIN_FONTS.filter(f => f.bundled)) assert.ok(html.includes(`./fonts/${font.id}-latin-400-normal.woff2`), font.id);
+});
+
 console.log(passed + ' personalization checks passed');

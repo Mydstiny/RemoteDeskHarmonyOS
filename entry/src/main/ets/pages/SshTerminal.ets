@@ -6,6 +6,9 @@ import { ProContinuationService, proContinuationFailureText } from '../services/
 import { ProContinuationPreferences } from '../services/pro/ProContinuationPreferences';
 import { ProContinuationSecret, validProContinuationSecret } from '../services/pro/ProContinuationCredentials';
 import { ProEntries } from '../services/pro/ProEntries';
+import { PRO_PERSONALIZATION_FEATURE } from '../services/pro/ProFeatureCatalog';
+import { SshSkinStore } from '../services/ssh/skin/SshSkinStore';
+import { SshSkin, sshSkinFont } from '../services/ssh/skin/SshSkinPolicy';
 import { ProConnectionDescription } from '../services/pro/ProConnectionEnvelope';
 import { describeProSshConnection } from '../services/pro/ProConnectionHostAdapter';
 import { SshAuthenticatedHandoff } from '../services/ssh/auth/SshAuthenticatedHandoff';
@@ -663,6 +666,10 @@ type SshHeaderAction = 'new-session' | 'tabs' | 'palette' | 'transfers' | 'resto
 @Component
 struct SshTerminal {
   @StorageLink('currentTheme') theme: string = 'light';
+  // Pro SSH skin: re-render on skin edits and on entitlement changes.
+  @StorageProp('sshSkinRevision') sshSkinRevision: number = 0;
+  @State sshSkinProTick: number = 0;
+  private sshSkinStopPro: (() => void) | null = null;
   @StorageProp('accentColor') accentColor: string = '#007DFF';
   @StorageLink(REMOTE_SESSION_QUICK_EXIT_DISABLED_KEY)
   remoteSessionQuickExitDisabled: boolean = false;
@@ -5715,11 +5722,14 @@ struct SshTerminal {
       bottomAlignSparseContent: !this.isDesktopDevice,
       bottomAlignSafeRows: this.terminalBottomSafeRows(),
       bottomInsetPx: this.terminalXtermBottomInsetPx(),
-      profileEnabled: this.terminalProfileEnabled(),
-      profileForegroundColor: profile.foregroundColor,
-      profileBackgroundColor: profile.backgroundColor,
-      profilePalette: profile.palette,
-      profileFontFamily: profile.fontFamily,
+      // A Pro skin supplies colors and font; profiles keep cursor, scrollback and behavior.
+      profileEnabled: this.terminalProfileEnabled() || this.sshSkin(tab.hostId) !== null,
+      profileForegroundColor: this.sshSkin(tab.hostId)?.terminal.foreground ?? profile.foregroundColor,
+      profileBackgroundColor: this.sshSkin(tab.hostId)?.terminal.background ?? profile.backgroundColor,
+      profilePalette: this.sshSkin(tab.hostId)?.terminal.palette ?? profile.palette,
+      profileFontFamily: this.sshTerminalFontFamily(tab.hostId, profile.fontFamily),
+      profileCursorColor: this.sshSkin(tab.hostId)?.terminal.cursor ?? '',
+      profileSelectionColor: this.sshSkin(tab.hostId)?.terminal.selection ?? '',
       profileFontWeight: profile.fontWeight,
       profileCursorStyle: profile.cursorStyle,
       profileCursorBlink: profile.cursorBlink,
@@ -5843,7 +5853,7 @@ struct SshTerminal {
       x: this.sshWorkspaceFrameForTab(tab.tabId)?.xVp ?? -10,
       y: this.sshWorkspaceFrameForTab(tab.tabId)?.yVp ?? -10
     })
-    .backgroundColor('#0D0D0D')
+    .backgroundColor(this.terminalBgColor())
     .border({ width: this.sshWorkspaceFrameForTab(tab.tabId)?.active === true ? 1 : 0.5,
       color: this.sshWorkspaceFrameForTab(tab.tabId)?.active === true ?
         this.accentColor + 'AA' : 'rgba(255,255,255,0.12)' })
@@ -5920,10 +5930,10 @@ struct SshTerminal {
     Row() {
       Column() {
         Text(tab.label.length > 0 ? tab.label : tab.address)
-          .fontSize(12).fontColor(tab.active ? '#F4F7FA' : 'rgba(242,244,247,0.76)')
+          .fontSize(12).fontColor(tab.active ? this.chromeText(1) : this.chromeText(0.76))
           .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
         Text(this.sshTabDisplayState(tab))
-          .fontSize(9).fontColor(tab.state === 'error' ? '#FF7777' : 'rgba(242,244,247,0.48)')
+          .fontSize(9).fontColor(tab.state === 'error' ? '#FF7777' : this.chromeText(0.48))
           .maxLines(1)
       }.alignItems(HorizontalAlign.Start).layoutWeight(1)
       if (tab.active) {
@@ -5949,7 +5959,7 @@ struct SshTerminal {
       }, (tab: SshTerminalTabView): string => sshTerminalTabChromeRenderKey(tab))
       if (sshTabStripShowsStandaloneNewSessionAction(this.sshHeaderActionPopupEnabled())) {
         Row() {
-          SymbolGlyph($r('sys.symbol.plus')).fontSize(17).fontColor(['rgba(242,244,247,0.86)'])
+          SymbolGlyph($r('sys.symbol.plus')).fontSize(17).fontColor([this.chromeText(0.86)])
         }
         .width(34).height(34).justifyContent(FlexAlign.Center).borderRadius(8)
         .backgroundColor('rgba(255,255,255,0.07)')
@@ -10709,6 +10719,9 @@ struct SshTerminal {
   }
 
   async aboutToAppear(): Promise<void> {
+    SshSkinStore.getInstance().load(getContext(this) as common.Context);
+    this.sshSkinStopPro?.();
+    this.sshSkinStopPro = ProEntries.subscribe((): void => { this.sshSkinProTick++; });
     this.stopSftpKnock();
     this.sftpKnockStopPro?.();
     this.sftpKnockStopPro = ProAppRuntime.getInstance().runtime.subscribe((): void => { this.stopSftpKnock(); });
@@ -11183,6 +11196,7 @@ struct SshTerminal {
   }
 
   aboutToDisappear(): void {
+    this.sshSkinStopPro?.(); this.sshSkinStopPro = null;
     this.proContinuationAutoStop?.(); this.proContinuationAutoStop = null;
     if (this.proContinuationWindowId > 0) {
       ProContinuationService.getInstance().cancelSource(this.proContinuationWindowId);
@@ -12056,8 +12070,40 @@ struct SshTerminal {
     } catch (_) {}
   }
 
+  /** The Pro skin for a host (the active tab by default), or null for the free appearance. */
+  private sshSkin(hostId: string = this.hostId): SshSkin | null {
+    if (this.sshSkinRevision < 0 || this.sshSkinProTick < 0) { return null; }
+    return SshSkinStore.getInstance().resolve(hostId);
+  }
+
+  /** Terminal fonts are Pro: the skin font, else a profile font only with Pro. */
+  private sshTerminalFontFamily(hostId: string, profileFont: string): string {
+    const skin: SshSkin | null = this.sshSkin(hostId);
+    if (skin !== null) { return sshSkinFont(skin.fontId).css; }
+    return this.sshSkinProTick >= 0 && ProEntries.visible(PRO_PERSONALIZATION_FEATURE) ? profileFont : 'monospace';
+  }
+
+  private terminalBgColor(): string {
+    return this.sshSkin()?.terminal.background ?? '#0D0D0D';
+  }
+
   private sshPal(): Palette {
-    return buildDark(this.accentColor);
+    const skin: SshSkin | null = this.sshSkin();
+    if (skin === null) { return buildDark(this.accentColor); }
+    const pal: Palette = skin.dark ? buildDark(skin.chrome.accent) : buildLight(skin.chrome.accent);
+    pal.bg = skin.terminal.background;
+    pal.sheetBg = skin.chrome.sheet;
+    pal.card = skin.chrome.chip;
+    pal.surface = skin.chrome.chip;
+    pal.cardBorder = skin.chrome.divider;
+    pal.divider = skin.chrome.divider;
+    pal.text = skin.chrome.barText;
+    pal.text2 = skin.chrome.barTextDim;
+    pal.text3 = skin.chrome.barTextDim;
+    pal.terminalBg = skin.terminal.background;
+    pal.terminalBar = skin.chrome.bar;
+    pal.terminalFg = skin.terminal.foreground;
+    return pal;
   }
 
   private bindSheetBg(originalBackground: string): string {
@@ -12066,11 +12112,19 @@ struct SshTerminal {
 
   // SSH 终端始终深色模式 — 顶栏和底栏不跟随系统主题, 固定深色背景+亮色文字
   private chromeBg(): string {
-    return '#11151C';
+    return this.sshSkin()?.chrome.bar ?? '#11151C';
+  }
+
+  /** Text on the terminal bars: the skin's bar text, or the classic light text on dark chrome. */
+  private chromeText(opacity: number): string {
+    const skin: SshSkin | null = this.sshSkin();
+    if (skin === null) { return opacity >= 1 ? '#F4F7FA' : 'rgba(242,244,247,' + opacity.toString() + ')'; }
+    const alpha: string = Math.round(Math.max(0, Math.min(1, opacity)) * 255).toString(16).toUpperCase();
+    return '#' + (alpha.length < 2 ? '0' + alpha : alpha) + skin.chrome.barText.substring(1);
   }
 
   private chromeChipBg(): string {
-    return 'rgba(255,255,255,0.08)';
+    return this.sshSkin()?.chrome.chip ?? 'rgba(255,255,255,0.08)';
   }
 
   private connectionDotColor(): string {
@@ -19026,7 +19080,7 @@ struct SshTerminal {
         Column() {
           Text(this.hostLabel).fontSize(15).fontWeight(FontWeight.Medium).fontColor('#F2F4F7')
             .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-          Text(this.userAtHost).fontSize(11).fontColor('rgba(242,244,247,0.58)')
+          Text(this.userAtHost).fontSize(11).fontColor(this.chromeText(0.58))
             .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
         }.alignItems(HorizontalAlign.Start)
           .layoutWeight(this.sshTabsInline() ? 0 : 1)
@@ -19038,7 +19092,7 @@ struct SshTerminal {
         if (!this.sshHeaderActionPopupEnabled() &&
           this.isDesktopDevice && !this.sshCompactChrome()) {
           Text(this.remoteSessionQuickExitDisabled ? '仅按钮退出' : 'Ctrl+Shift+Q 退出')
-            .fontSize(11).fontColor('rgba(242,244,247,0.54)')
+            .fontSize(11).fontColor(this.chromeText(0.54))
             .margin({ right: 12 })
         }
         if (!this.sshHeaderActionPopupEnabled() && this.isDesktopDevice &&
@@ -19046,7 +19100,7 @@ struct SshTerminal {
           Row() {
             SymbolGlyph($r('sys.symbol.gearshape_fill'))
               .fontSize(17)
-              .fontColor(['rgba(242,244,247,0.86)'])
+              .fontColor([this.chromeText(0.86)])
           }
           .width(34).height(34)
           .justifyContent(FlexAlign.Center)
@@ -19061,7 +19115,7 @@ struct SshTerminal {
           Row() {
             SymbolGlyph($r('sys.symbol.magnifyingglass'))
               .fontSize(17)
-              .fontColor(['rgba(242,244,247,0.86)'])
+              .fontColor([this.chromeText(0.86)])
           }
           .width(34).height(34)
           .justifyContent(FlexAlign.Center)
@@ -19079,10 +19133,10 @@ struct SshTerminal {
         } else {
           Row({ space: 4 }) {
             Text(this.sshCompactChrome() ? '语' : 'LANG').fontSize(10).fontWeight(FontWeight.Medium)
-              .fontColor('rgba(242,244,247,0.76)')
+              .fontColor(this.chromeText(0.76))
             if (this.isDesktopDevice && !this.sshCompactChrome()) {
               Text(sshSessionLocaleLabel(this.sshSessionLocale, true))
-                .fontSize(10).fontColor('rgba(242,244,247,0.60)')
+                .fontSize(10).fontColor(this.chromeText(0.60))
             }
           }
           .height(34)
@@ -19096,7 +19150,7 @@ struct SshTerminal {
         if (this.sshConnectionIsConnected()) {
           if (!this.sshHeaderActionPopupEnabled() && !this.isDesktopDevice) {
             Row() {
-              Text('↻').fontSize(19).fontColor('rgba(242,244,247,0.86)')
+              Text('↻').fontSize(19).fontColor(this.chromeText(0.86))
             }
             .width(34)
             .height(34)
@@ -19110,7 +19164,7 @@ struct SshTerminal {
             Row() {
               SymbolGlyph($r('sys.symbol.doc'))
                 .fontSize(18)
-                .fontColor(['rgba(242,244,247,0.86)'])
+                .fontColor([this.chromeText(0.86)])
             }
             .width(34)
             .height(34)
@@ -19121,9 +19175,9 @@ struct SshTerminal {
             .onClick((): void => { this.openSftpPanel(); })
             Stack({ alignContent: Alignment.TopEnd }) {
               Row({ space: 4 }) {
-                Text('⇄').fontSize(18).fontColor('rgba(242,244,247,0.88)')
+                Text('⇄').fontSize(18).fontColor(this.chromeText(0.88))
                 if (this.isDesktopDevice) {
-                  Text('隧道').fontSize(11).fontColor('rgba(242,244,247,0.78)')
+                  Text('隧道').fontSize(11).fontColor(this.chromeText(0.78))
                 }
               }
               .width(this.isDesktopDevice ? 62 : 34)
@@ -19151,7 +19205,7 @@ struct SshTerminal {
             .shadow({ radius: 8, color: this.connectionDotColor() + '66', offsetY: 0 })
           if (!this.sshCompactChrome()) {
             Text(this.connectionLabel())
-              .fontSize(11).fontColor('rgba(242,244,247,0.70)').margin({ left: 6 })
+              .fontSize(11).fontColor(this.chromeText(0.70)).margin({ left: 6 })
           }
         }
         .height(34)
@@ -19204,7 +19258,7 @@ struct SshTerminal {
             Button('返回').margin({ top: 16 }).backgroundColor(this.accentColor).fontColor('#FFFFFF').borderRadius(8)
               .onClick((): void => { this.closeSessionAndBack(); })
           }
-        }.width('100%').layoutWeight(1).justifyContent(FlexAlign.Center).backgroundColor('#0D0D0D')
+        }.width('100%').layoutWeight(1).justifyContent(FlexAlign.Center).backgroundColor(this.terminalBgColor())
       } else {
         Column() {
           Stack({ alignContent: Alignment.TopStart }) {
@@ -19229,7 +19283,7 @@ struct SshTerminal {
               }
             }
             .width('100%').height('100%').justifyContent(FlexAlign.Center)
-            .backgroundColor('#0D0D0D').zIndex(30)
+            .backgroundColor(this.terminalBgColor()).zIndex(30)
           }
 
           Stack({ alignContent: Alignment.TopStart }) {
@@ -19511,6 +19565,11 @@ struct SshTerminal {
           if (this.virtualKeyBarVisible()) {
             Column() {
               VirtualKeyBar({
+                skinBar: this.sshSkin()?.chrome.keyBar ?? '',
+                skinKey: this.sshSkin()?.chrome.key ?? '',
+                skinKeyText: this.sshSkin()?.chrome.keyText ?? '',
+                skinAccent: this.sshSkin()?.chrome.accent ?? '',
+                skinDivider: this.sshSkin()?.chrome.divider ?? '',
                 ctrlActive: $ctrlActive,
                 altActive: $altActive,
                 shiftActive: $shiftActive,
@@ -19531,7 +19590,7 @@ struct SshTerminal {
               Column()
                 .width('100%')
                 .height(this.barBottomOffset())
-                .backgroundColor('#0D0D0D')
+                .backgroundColor(this.terminalBgColor())
                 .hitTestBehavior(HitTestMode.None)
             }
           }
@@ -19601,7 +19660,7 @@ struct SshTerminal {
       .width('100%')
       .layoutWeight(1)
       .constraintSize({ minHeight: 0 })
-      .backgroundColor('#0D0D0D')
+      .backgroundColor(this.terminalBgColor())
       .id('ssh-terminal-pane')
       // API 23/24 requires the retained terminal root to participate in the
       // same focus scope as the hidden ArkUI input anchor. Keep the root

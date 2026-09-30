@@ -36,6 +36,10 @@ source and license files before redistribution.
 | TOTP reviewed supplier/logo overrides | Reviewed local assets listed in `officialOverrides` within `totp_brand_manifest.json`; per-asset source, SHA-256 and trademark guidance are authoritative there | 29 reviewed override assets; catalog vectors are labeled separately from official assets; use is limited to supplier identification and remains subject to each brand's trademark rules. |
 <!-- TOTP_BRAND_NOTICE_END -->
 
+<!-- SSH_TERMINAL_FONTS_NOTICE_BEGIN -->
+| SSH terminal fonts | JetBrains Mono, Fira Code, Source Code Pro, IBM Plex Mono via `@fontsource/*@5.3.0` (Latin, 400/700 woff2, unmodified); see `docs/compliance/SSH_TERMINAL_FONTS_PROVENANCE.md` | OFL-1.1; per-family copyright notices in `entry/src/main/resources/rawfile/ssh-terminal/fonts/*-LICENSE.txt` | Pro SSH terminal skins in the local xterm WebView |
+<!-- SSH_TERMINAL_FONTS_NOTICE_END -->
+
 Artifact hashes are generated in `docs/compliance/THIRD_PARTY_ARTIFACTS.sha256`.
 A component with an unknown source, license, or hash is a release blocker.
 

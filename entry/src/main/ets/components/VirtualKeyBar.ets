@@ -26,6 +26,12 @@ export struct VirtualKeyBar {
   onModifierLock: (modifier: string) => void = (_modifier: string): void => {};
   onModifierUnlock: (modifier: string) => void = (_modifier: string): void => {};
   @StorageProp('accentColor') accentColor: string = '#007DFF';
+  // Pro SSH skin colors; empty values keep the built-in dark bar.
+  @Prop skinBar: string = '';
+  @Prop skinKey: string = '';
+  @Prop skinKeyText: string = '';
+  @Prop skinAccent: string = '';
+  @Prop skinDivider: string = '';
 
   private static readonly KEY_H: number = 36;
   /** 键盘栏总高 (vp) — 两行各 42 + 上下 padding(4+6) = 94; 父级用于布局占位与栅格行数计算 */
@@ -68,22 +74,32 @@ export struct VirtualKeyBar {
     this.onModifierTap();
   }
 
+  private accent(): string { return this.skinAccent.length > 0 ? this.skinAccent : this.accentColor; }
+
   private keyBg(): string {
-    return 'rgba(255,255,255,0.075)';
+    return this.skinKey.length > 0 ? this.skinKey : 'rgba(255,255,255,0.075)';
+  }
+
+  private keyText(opacity: number): string {
+    if (this.skinKeyText.length === 7) {
+      const alpha: string = Math.round(opacity * 255).toString(16).toUpperCase();
+      return '#' + (alpha.length < 2 ? '0' + alpha : alpha) + this.skinKeyText.substring(1);
+    }
+    return this.skinKeyText.length > 0 ? this.skinKeyText : 'rgba(242,244,247,' + opacity.toString() + ')';
   }
 
   private keyPressedBg(): string {
-    return this.accentColor + '33';
+    return this.accent() + '33';
   }
 
   private keyActiveBg(): string {
-    return this.accentColor + '44';
+    return this.accent() + '44';
   }
 
   private keyBorderColor(active: boolean, pressed: boolean): string {
-    if (active) { return this.accentColor; }
-    if (pressed) { return 'rgba(255,255,255,0.55)'; }
-    return 'rgba(255,255,255,0.10)';
+    if (active) { return this.accent(); }
+    if (pressed) { return this.keyText(0.55); }
+    return this.skinDivider.length > 0 ? this.skinDivider : 'rgba(255,255,255,0.10)';
   }
 
   private isPressed(id: string): boolean {
@@ -91,7 +107,7 @@ export struct VirtualKeyBar {
   }
 
   private enterBg(): string {
-    return this.accentColor + '99';
+    return this.accent() + '99';
   }
 
   private modifierActive(modifier: string): boolean {
@@ -107,7 +123,7 @@ export struct VirtualKeyBar {
   /** 普通键 — 点击发送序列 */
   @Builder
   KeyBtn(label: string, seq: string) {
-    Text(label).fontSize(12).fontColor('rgba(242,244,247,0.82)')
+    Text(label).fontSize(12).fontColor(this.keyText(0.82))
       .height(VirtualKeyBar.KEY_H).layoutWeight(1)
       .textAlign(TextAlign.Center)
       .borderRadius(10)
@@ -115,7 +131,7 @@ export struct VirtualKeyBar {
       .border({ width: this.isPressed(label) ? 1 : 0.5, color: this.keyBorderColor(false, this.isPressed(label)) })
       .shadow({
         radius: this.isPressed(label) ? 12 : 8,
-        color: this.isPressed(label) ? this.accentColor + '33' : 'rgba(0,0,0,0.10)',
+        color: this.isPressed(label) ? this.accent() + '33' : 'rgba(0,0,0,0.10)',
         offsetY: 2
       })
       .margin({ left: 3, right: 3 })
@@ -126,7 +142,7 @@ export struct VirtualKeyBar {
   @Builder
   ModBtn(label: string, modifier: string) {
     Text(label).fontSize(12)
-      .fontColor(this.modifierActive(modifier) ? '#FFFFFF' : 'rgba(242,244,247,0.82)')
+      .fontColor(this.modifierActive(modifier) ? '#FFFFFF' : this.keyText(0.82))
       .fontWeight(this.modifierActive(modifier) ? FontWeight.Bold : FontWeight.Normal)
       .height(VirtualKeyBar.KEY_H).layoutWeight(1)
       .textAlign(TextAlign.Center)
@@ -138,7 +154,7 @@ export struct VirtualKeyBar {
       })
       .shadow({
         radius: this.modifierActive(modifier) ? 18 : 8,
-        color: this.modifierActive(modifier) ? this.accentColor + '66' : 'rgba(0,0,0,0.10)',
+        color: this.modifierActive(modifier) ? this.accent() + '66' : 'rgba(0,0,0,0.10)',
         offsetY: 2
       })
       .margin({ left: 3, right: 3 })
@@ -149,7 +165,7 @@ export struct VirtualKeyBar {
   /** 方向键 — 长按重复 137ms (LongPressGesture repeat=true) */
   @Builder
   ArrowBtn(label: string, seq: string) {
-    Text(label).fontSize(14).fontColor('rgba(242,244,247,0.86)')
+    Text(label).fontSize(14).fontColor(this.keyText(0.86))
       .height(VirtualKeyBar.KEY_H).layoutWeight(1)
       .textAlign(TextAlign.Center)
       .borderRadius(10)
@@ -157,7 +173,7 @@ export struct VirtualKeyBar {
       .border({ width: this.isPressed(label) ? 1 : 0.5, color: this.keyBorderColor(false, this.isPressed(label)) })
       .shadow({
         radius: this.isPressed(label) ? 12 : 8,
-        color: this.isPressed(label) ? this.accentColor + '33' : 'rgba(0,0,0,0.10)',
+        color: this.isPressed(label) ? this.accent() + '33' : 'rgba(0,0,0,0.10)',
         offsetY: 2
       })
       .margin({ left: 3, right: 3 })
@@ -180,9 +196,9 @@ export struct VirtualKeyBar {
     Text('↵').fontSize(16).fontColor('#FFFFFF').fontWeight(FontWeight.Medium)
       .height(VirtualKeyBar.KEY_H).layoutWeight(1)
       .textAlign(TextAlign.Center)
-      .borderRadius(10).backgroundColor(this.isPressed('Enter') ? this.accentColor : this.enterBg())
-      .border({ width: 1, color: this.isPressed('Enter') ? '#FFFFFF' : this.accentColor })
-      .shadow({ radius: this.isPressed('Enter') ? 16 : 12, color: this.accentColor + '44', offsetY: 2 })
+      .borderRadius(10).backgroundColor(this.isPressed('Enter') ? this.accent() : this.enterBg())
+      .border({ width: 1, color: this.isPressed('Enter') ? '#FFFFFF' : this.accent() })
+      .shadow({ radius: this.isPressed('Enter') ? 16 : 12, color: this.accent() + '44', offsetY: 2 })
       .margin({ left: 3, right: 3 })
       .gesture(TapGesture({ count: 1 }).onAction((): void => { this.pressKey('Enter', '\r'); }))
   }
@@ -221,7 +237,7 @@ export struct VirtualKeyBar {
     .width('100%')
     .alignItems(HorizontalAlign.Center)
     // SSH 终端始终深色模式 — 背景和文字硬编码, 不跟随系统主题
-    .backgroundColor('#11151C')
+    .backgroundColor(this.skinBar.length > 0 ? this.skinBar : '#11151C')
     .backgroundBlurStyle(BlurStyle.NONE)
     .linearGradient({
       direction: GradientDirection.Bottom,

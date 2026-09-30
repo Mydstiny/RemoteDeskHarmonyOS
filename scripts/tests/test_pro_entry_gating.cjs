@@ -50,10 +50,12 @@ const badges = new Map([
   ['pages/AiSettingsPage.ets', [1, /allowed = AiAccess\.getInstance\(\)\.proVisible\(\)/]],
   ['pages/SshTerminal.ets', [1, /ProFeatureGate\(\{ featureId: 'pro\.file\.knockTransfer'/]],
   // Per-feature sheets open only from the Pro 功能 section, which requires an active Pro.
+  // The skin sheet opens only from the Pro-gated 终端皮肤 row in settings.
+  ['components/ssh/skin/SshSkinSettingsPanel.ets', [1, /export struct SshSkinSettingsPanel/]],
   ['components/ProFeatureManagerPanel.ets', [2, /export struct ProBadgeSettingsPanel/]],
   // AI cards/section (4) follow aiProVisible; the app-icon row follows ProEntries; the account card
   // marker follows ProEntries.proActive().
-  ['pages/HostListPage.ets', [7, /aiProVisible = AiAccess\.getInstance\(\)\.proVisible\(\)/]]
+  ['pages/HostListPage.ets', [8, /aiProVisible = AiAccess\.getInstance\(\)\.proVisible\(\)/]]
 ]);
 for (const [file, text] of sources) {
   if (file === 'components/ProBadge.ets') continue;  // the badge component itself
@@ -94,6 +96,9 @@ assert.match(panel, /if \(this\.proCustomShortcuts\) \{\s*this\.SectionChoice\('
 assert.match(panel, /this\.proCustomShortcuts = ProEntries\.visible\(PRO_PERSONALIZATION_FEATURE\)/);
 assert.match(sources.get('components/VirtualKeyboardSettingsSheet.ets'),
   /requestedSection === 'custom'\) \{\s*if \(ProEntries\.visible\(PRO_PERSONALIZATION_FEATURE\)\)/);
+assert.match(host, /if \(this\.personalizationProVisible\) \{[\s\S]{0,900}ProBadge\(\)[\s\S]{0,300}SETTINGS_SHEET_SSH_SKIN/);
+assert.match(sources.get('services/ssh/skin/SshSkinStore.ets'),
+  /resolveSshSkin\(this\.settings, hostId, ProEntries\.visible\(PRO_PERSONALIZATION_FEATURE\)\)/);
 console.log('PASS Pro entry points follow the entitlement through ProEntries and every Pro badge is registered');
 
 // New Pro surfaces remain entitlement-gated while Debug exposes their experimental stage.
