@@ -18902,10 +18902,12 @@ struct RemoteDesktop {
       promptAction.showToast({ message: '文件会话尚未就绪，请重新连接后重试', duration: 2200 });
       return;
     }
-    const capability = this.currentSessionCapabilities().fileUpload;
-    if (!capability.enabled) {
-      hilog.warn(RD_DOMAIN, RD_TAG, 'RustDesk file panel blocked capability=' + capability.reason);
-      promptAction.showToast({ message: capability.reason, duration: 2200 });
+    const capabilities: RemoteSessionCapabilities = this.currentSessionCapabilities();
+    if (!capabilities.fileUpload.enabled && !capabilities.fileDownload.enabled) {
+      const reason: string = capabilities.fileUpload.reason.length > 0 ? capabilities.fileUpload.reason :
+        capabilities.fileDownload.reason;
+      hilog.warn(RD_DOMAIN, RD_TAG, 'File panel blocked capability=' + reason);
+      promptAction.showToast({ message: reason, duration: 2200 });
       return;
     }
     if (this.showFileTransferPanel || this.fileTransferPanelOpenScheduled) {
