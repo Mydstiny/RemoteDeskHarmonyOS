@@ -1,5 +1,6 @@
 import { common } from '@kit.AbilityKit';
 import { preferences } from '@kit.ArkData';
+import { deviceInfo } from '@kit.BasicServicesKit';
 import { CloudStore } from './CloudStore';
 import {
   cloudUserSettingIsSyncable,
@@ -24,7 +25,9 @@ import {
   normalizeSshTerminalFontSize,
   normalizeSshTerminalForegroundColor,
   resolveSshTerminalAppearance,
-  resolveSshTerminalAppearanceFromCloudSettings
+  resolveSshTerminalAppearanceFromCloudSettings,
+  isValidSshTerminalFontSize,
+  sshDefaultTerminalFontSizeForDevice
 } from './SshSettingsPolicy';
 
 const SSH_PREFERENCES_NAME: string = 'RemoteDesktopAppPrefs';
@@ -68,6 +71,14 @@ export class SshSettingsService {
       this.values = resolveSshTerminalAppearance(
         preferredColor, legacyColor, preferredFontSize, legacyFontSize,
         preferredLineSpacing, legacyLineSpacing);
+      // Never chosen by the user: use the device default instead of the PC-sized 18.
+      if (!isValidSshTerminalFontSize(preferredFontSize) && !isValidSshTerminalFontSize(legacyFontSize)) {
+        // Read the system device type directly; UI breakpoint flags may not be set yet.
+        const deviceType: string = deviceInfo.deviceType;
+        this.values.fontSize = sshDefaultTerminalFontSizeForDevice(
+          deviceType === '2in1' || deviceType === 'pc' || (AppStorage.get<boolean>('isDesktopDevice') ?? false),
+          deviceType === 'tablet');
+      }
       this.sessionLocale = normalizeSshSessionLocale(
         typeof storedSessionLocale === 'string' ? storedSessionLocale as string : '');
       this.writeRuntimeAndLocal(prefs);

@@ -19,6 +19,10 @@ const PROFILE_SCROLLBACKS: number[] = [5000, 10000, 30000, 100000];
 export struct SshTerminalProfileSheet {
   @StorageProp('accentColor') accentColor: string = '#007DFF';
   @Prop sheetBackgroundColor: string = '#171D25';
+  // > 0: the sheet sizes to its content and only the body scrolls past this height.
+  @Prop maxBodyHeightVp: number = 0;
+  private fitContent(): boolean { return this.maxBodyHeightVp > 0; }
+  private bodyMaxHeight(): number { return this.fitContent() ? this.maxBodyHeightVp : 100000; }
   @Prop profiles: SshTerminalProfileV1[] = [];
   @Prop resolvedProfile: SshTerminalResolvedProfile;
   @Prop globalProfileId: string = '';
@@ -286,7 +290,7 @@ export struct SshTerminalProfileSheet {
 
           if (this.editing) { this.Editor() }
         }.width('100%').padding({ left: 18, right: 18, bottom: 28 })
-      }.width('100%').layoutWeight(1)
-    }.width('100%').height('100%').backgroundColor(this.sheetBackgroundColor)
+      }.width('100%').layoutWeight(this.fitContent() ? 0 : 1).constraintSize({ maxHeight: this.bodyMaxHeight() })
+    }.width('100%').height(this.fitContent() ? 'auto' : '100%').backgroundColor(this.sheetBackgroundColor)
   }
 }

@@ -9,6 +9,10 @@ import {
 export struct SshCommandPalette {
   @StorageProp('accentColor') accentColor: string = '#007DFF';
   @Prop sheetBackgroundColor: string = '#171D25';
+  // > 0: the sheet sizes to its content and only the body scrolls past this height.
+  @Prop maxBodyHeightVp: number = 0;
+  private fitContent(): boolean { return this.maxBodyHeightVp > 0; }
+  private bodyMaxHeight(): number { return this.fitContent() ? this.maxBodyHeightVp : 100000; }
   @Prop commands: Array<SshCommandDescriptor> = [];
   @Prop compact: boolean = false;
   onExecute: (commandId: string) => void = (_commandId: string): void => {};
@@ -185,7 +189,8 @@ export struct SshCommandPalette {
             }
           }, (command: SshCommandDescriptor): string => command.id)
         }
-        .width('100%').layoutWeight(1).scrollBar(BarState.Auto)
+        .width('100%').layoutWeight(this.fitContent() ? 0 : 1)
+        .constraintSize({ maxHeight: this.bodyMaxHeight() }).scrollBar(BarState.Auto)
       }
 
       Row() {
@@ -195,7 +200,7 @@ export struct SshCommandPalette {
           .fontSize(9).fontColor('rgba(242,244,247,0.38)')
       }.width('100%')
     }
-    .width('100%').height('100%')
+    .width('100%').height(this.fitContent() ? 'auto' : '100%')
     .padding({ left: 14, right: 14, top: 14, bottom: 12 })
     .backgroundColor(this.sheetBackgroundColor)
   }

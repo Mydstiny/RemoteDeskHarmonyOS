@@ -11,6 +11,10 @@ import {
 export struct SshSessionLogSheet {
   @StorageProp('accentColor') accentColor: string = '#007DFF';
   @Prop sheetBackgroundColor: string = '#171D25';
+  // > 0: the sheet sizes to its content and only the body scrolls past this height.
+  @Prop maxBodyHeightVp: number = 0;
+  private fitContent(): boolean { return this.maxBodyHeightVp > 0; }
+  private bodyMaxHeight(): number { return this.fitContent() ? this.maxBodyHeightVp : 100000; }
   @Prop document: SshSessionLogDocumentV1;
   @Prop results: Array<SshSessionLogSearchHitV1>;
   @Prop ready: boolean = false;
@@ -107,7 +111,8 @@ export struct SshSessionLogSheet {
             .width('100%')
           this.ResultList()
         }.width('100%').padding({ left: 16, right: 16, bottom: 18 })
-      }.layoutWeight(1).width('100%').scrollBar(BarState.Auto)
-    }.width('100%').height('100%').backgroundColor(this.sheetBackgroundColor)
+      }.layoutWeight(this.fitContent() ? 0 : 1).constraintSize({ maxHeight: this.bodyMaxHeight() })
+        .width('100%').scrollBar(BarState.Auto)
+    }.width('100%').height(this.fitContent() ? 'auto' : '100%').backgroundColor(this.sheetBackgroundColor)
   }
 }

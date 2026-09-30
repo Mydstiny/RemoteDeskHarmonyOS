@@ -662,6 +662,9 @@ type SshHeaderAction = 'new-session' | 'tabs' | 'palette' | 'transfers' | 'resto
   'sidebar' | 'inspector' | 'profile' | 'reset-font' | 'search' | 'locale' | 'sftp' | 'forwarding' |
   'orientation' | 'quick-commands';
 
+const SSH_PTY_STARTUP_SETTLE_WINDOW_MS: number = 2500;
+const SSH_PTY_STARTUP_SETTLE_MS: number = 900;
+
 @Entry
 @Component
 struct SshTerminal {
@@ -5693,6 +5696,7 @@ struct SshTerminal {
   private SftpTransferCenterContent() {
     SshTransferCenter({
       sheetBackgroundColor: this.bindSheetBg('#111820'),
+      maxBodyHeightVp: this.sshSheetBodyMaxVp(),
       tasks: this.sftpTransferCenterTasks(),
       summary: this.sftpTransferCenterSummary(),
       compact: this.sshCompactChrome(),
@@ -6117,12 +6121,13 @@ struct SshTerminal {
       commands: this.sshCommandRegistry,
       compact: this.breakpoint === 'sm',
       onExecute: (commandId: string): void => { this.queueSshCommand(commandId); },
+      maxBodyHeightVp: this.sshSheetBodyMaxVp(),
       onClose: (): void => {
         this.pendingSshCommandId = '';
         this.showSshCommandPalette = false;
       }
     })
-      .width('100%').height('100%')
+      .width('100%')
   }
 
   @Builder
@@ -6742,6 +6747,21 @@ struct SshTerminal {
     }
   }
 
+  // While a new session's layout, font and appearance settle (about the first two seconds on
+  // phones), every PTY resize makes the remote shell reprint its prompt. Coalesce harder then
+  // so only the final size is sent.
+  private ptyStartupKey: string = '';
+  private ptyStartupDeadline: number = 0;
+
+  private ptyResizeDelay(): number {
+    const key: string = this.sessionId.toString() + ':' + this.sshSessionGeneration.toString();
+    if (key !== this.ptyStartupKey) {
+      this.ptyStartupKey = key;
+      this.ptyStartupDeadline = Date.now() + SSH_PTY_STARTUP_SETTLE_WINDOW_MS;
+    }
+    return Date.now() < this.ptyStartupDeadline ? SSH_PTY_STARTUP_SETTLE_MS : SSH_TERMINAL_PTY_RESIZE_COALESCE_MS;
+  }
+
   private schedulePtyResize(): void {
     if (this.sessionId <= 0) { return; }
     const requestPageGeneration: number = this.pageGeneration;
@@ -6770,7 +6790,7 @@ struct SshTerminal {
       if (!this.isDesktopDevice) {
         this.requestTerminalScrollToBottomSettled();
       }
-    }, SSH_TERMINAL_PTY_RESIZE_COALESCE_MS);
+    }, this.ptyResizeDelay());
   }
 
   /** Coalesce each retained pane independently without keeping stale native owners alive. */
@@ -13441,7 +13461,14 @@ struct SshTerminal {
   }
 
   private resolvedTerminalProfileForHost(hostId: string): SshTerminalResolvedProfile {
-    if (!this.terminalProfileStore.isReady()) { return defaultSshTerminalResolvedProfile(); }
+    if (!this.terminalProfileStore.isReady()) {
+      // Lay out with the user's appearance until profiles load, so the grid does not start at
+      // the built-in 18 and resize (and reprint the remote prompt) a moment later.
+      const fallback: SshTerminalResolvedProfile = defaultSshTerminalResolvedProfile();
+      fallback.fontSize = this.fontSize;
+      fallback.lineSpacing = this.lineSpacing;
+      return fallback;
+    }
     const normalizedHostId: string = hostId.trim();
     const sessionScopeKey: string = sshTerminalSessionProfileScopeKey(
       normalizedHostId, this.sshTabStore.sessionGeneration(normalizedHostId));
@@ -13588,6 +13615,7 @@ struct SshTerminal {
   private TerminalProfileSheetContent() {
     SshTerminalProfileSheet({
       sheetBackgroundColor: this.bindSheetBg('#171D25'),
+      maxBodyHeightVp: this.sshSheetBodyMaxVp(),
       profiles: this.terminalProfiles,
       resolvedProfile: this.resolvedTerminalProfile,
       globalProfileId: this.terminalGlobalProfileId,
@@ -13611,6 +13639,12 @@ struct SshTerminal {
         this.setSessionTerminalProfile(profileId);
       }
     })
+  }
+
+  /** Tallest scrolling body for a content-sized SSH sheet: the visible page minus keyboard and chrome. */
+  private sshSheetBodyMaxVp(): number {
+    const page: number = this.shellAreaH > 0 ? this.shellAreaH : 720;
+    return Math.max(160, Math.min(640, page - this.kbHeight - 140));
   }
 
   @Builder
@@ -13681,6 +13715,7 @@ struct SshTerminal {
   private SshSessionLogSheetContent() {
     SshSessionLogSheet({
       sheetBackgroundColor: this.bindSheetBg('#171D25'),
+      maxBodyHeightVp: this.sshSheetBodyMaxVp(),
       document: this.sshSessionLogDocument,
       results: this.sshSessionLogResults,
       ready: this.sshSessionLogReady,
@@ -13701,6 +13736,7 @@ struct SshTerminal {
   private SshBroadcastSheetContent() {
     SshBroadcastSheet({
       sheetBackgroundColor: this.bindSheetBg('#341A1A'),
+      maxBodyHeightVp: this.sshSheetBodyMaxVp(),
       targets: this.sshBroadcastTargets,
       selectedHostIds: this.sshBroadcastSelectedHostIds,
       text: this.sshBroadcastText,
@@ -19812,7 +19848,8 @@ struct SshTerminal {
           // API 23 can close a FIT_CONTENT sheet while its builder is still
           // resolving dynamic prompt rows. A bounded height keeps the
           // official Sheet measurable through the first render.
-          height: this.isDesktopDevice ? '560vp' : '520vp',
+          height: Math.max(320, Math.min(this.isDesktopDevice ? 560 : 520,
+            (this.shellAreaH > 0 ? this.shellAreaH : 720) + 60 - this.kbHeight)),
           preferType: this.isDesktopDevice ? SheetType.CENTER : SheetType.BOTTOM,
           width: this.isDesktopDevice ? '560vp' : '100%',
           dragBar: !this.isDesktopDevice,
@@ -19847,7 +19884,7 @@ struct SshTerminal {
         .height(1)
         .hitTestBehavior(HitTestMode.None)
         .bindSheet($$this.showSshCommandPalette, this.sshCommandPaletteSheet(), {
-          height: this.breakpoint === 'sm' ? SheetSize.LARGE : '620vp',
+          height: SheetSize.FIT_CONTENT,
           preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
           width: this.breakpoint === 'sm' ? '100%' : '700vp',
           dragBar: this.breakpoint === 'sm',
@@ -19870,7 +19907,7 @@ struct SshTerminal {
         .height(1)
         .hitTestBehavior(HitTestMode.None)
         .bindSheet($$this.showSftpTransferCenter, this.SftpTransferCenterContent(), {
-          height: this.breakpoint === 'sm' ? SheetSize.LARGE : '720vp',
+          height: SheetSize.FIT_CONTENT,
           preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
           width: this.breakpoint === 'sm' ? '100%' : '760vp',
           dragBar: this.breakpoint === 'sm',
@@ -19898,7 +19935,7 @@ struct SshTerminal {
         .height(1)
         .hitTestBehavior(HitTestMode.None)
         .bindSheet($$this.showTerminalProfileSheet, this.TerminalProfileSheetContent(), {
-          height: this.breakpoint === 'sm' ? SheetSize.LARGE : '680vp',
+          height: SheetSize.FIT_CONTENT,
           preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
           width: this.breakpoint === 'sm' ? '100%' : '620vp',
           dragBar: this.breakpoint === 'sm',
@@ -19953,7 +19990,7 @@ struct SshTerminal {
         .height(1)
         .hitTestBehavior(HitTestMode.None)
         .bindSheet($$this.showSshSessionLogSheet, this.SshSessionLogSheetContent(), {
-          height: this.breakpoint === 'sm' ? SheetSize.LARGE : '720vp',
+          height: SheetSize.FIT_CONTENT,
           preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
           width: this.breakpoint === 'sm' ? '100%' : '760vp',
           dragBar: this.breakpoint === 'sm',
@@ -19981,7 +20018,7 @@ struct SshTerminal {
         .height(1)
         .hitTestBehavior(HitTestMode.None)
         .bindSheet($$this.showSshBroadcastSheet, this.SshBroadcastSheetContent(), {
-          height: this.breakpoint === 'sm' ? SheetSize.LARGE : '640vp',
+          height: SheetSize.FIT_CONTENT,
           preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
           width: this.breakpoint === 'sm' ? '100%' : '760vp',
           dragBar: this.breakpoint === 'sm',
