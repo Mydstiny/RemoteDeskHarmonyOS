@@ -48,7 +48,7 @@ Updated: 2026-09-30 Asia/Shanghai
 
 - M5 SSH Share Kit eca8f8aa, PC SSH 3fc4a578 and RDP 35e38224 + 13413239 independently PASS. RDP paired-fence finding closed. Real App Link/fragment, Windows and Phone/Pad/PC cross-device acceptance remain open.
 
-- M5 RustDesk/VNC continuation checkpoint `090be1411`: focused route/account/receiver/native-ready checks PASS; real RustDesk/VNC cross-device acceptance remains open and aggregate review is still `REVIEW_REQUIRED` pending a matching receipt.
+- M5 continuation Phone/Pad device acceptance PASS 2026-09-30 for SSH/RDP/RustDesk/VNC (auto arming, per-protocol switches, credential picker, opt-in credential transfer for all four; commits 00644b216..f690e6cf0). Independent review of the continuation/credential-transfer increment is still required before merge. Open: VNC cloud sync on Pad stuck in restore quarantine with only Moonlight selected (device state; verify after re-selection), PC continuation, knock share.
 
 0. Pro M5/M6/M7: proceed with connection sharing/official continuation, USB FIDO2 and phone-passkey feasibility, then trusted production purchase/restore/offline/refunds. ACL/App Linking and backend configuration are not confirmed; production checkout and unaccepted features remain disabled.
 
