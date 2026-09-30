@@ -175,7 +175,9 @@ export class SshConnectionPreflight {
       } else if (handed !== null) {
         useKey = false; password = handed.password;
       }
-      if (useKey && key.length === 0) { throw new Error('SSH 私钥不存在或不可用'); }
+      if (useKey && key.length === 0) {
+        throw new Error('本设备没有这台主机的 SSH 私钥：请在本设备导入密钥，或在源设备的 Pro 功能 > 同账号接续中开启“随接续传输”');
+      }
       const passphrase: string = useKey ? await this.keyPassphrase(key, storedPassphrase, '目标主机') : '';
       if (useKey) { password = ''; }
       let proxyPassword: string = '';

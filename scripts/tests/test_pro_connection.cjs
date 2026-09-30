@@ -544,8 +544,11 @@ test('opt-in credential transfer uses a derived session, never the envelope, and
     const e = JSON.parse(params[f.key]);
     assert.equal(params[f.key].includes('PRIVATE KEY'), false); assert.equal(params[f.key].includes('pp'), false);
     const offered = f.state.objects.find(o => 'secret' in o);
-    assert.equal(offered.calls.at(-1), creds.proContinuationCredentialSession(e.channelId));
-    assert.notEqual(offered.calls.at(-1), e.channelId);
+    const session = creds.proContinuationCredentialSession(e.channelId);
+    assert.equal(offered.calls.at(-1), session); assert.notEqual(session, e.channelId);
+    assert.equal(offered.secret, '', 'nothing is on the session before the target asks');
+    offered.request = 'rd_' + '0'.repeat(32); offered.emit(session); assert.equal(offered.secret, '', 'a foreign request is ignored');
+    offered.request = session; offered.emit(session);
     assert.equal(offered.secret, JSON.stringify(secret));
     f.service.cancelSource(); assert.equal(offered.secret, '', 'cancelling wipes the offered secret');
     // Target: receives the synced value, deposits it for this host only, one use.

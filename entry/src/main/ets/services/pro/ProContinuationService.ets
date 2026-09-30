@@ -88,7 +88,7 @@ export class ProContinuationService {
   private targetChannel: ProContinuationReceiptChannel = new ProContinuationReceiptChannel();
   private targetCredentials: ProContinuationCredentialChannel = new ProContinuationCredentialChannel();
   /** How long the target waits for an opted-in secret to synchronize. */
-  credentialWaitMs: number = 2000;
+  credentialWaitMs: number = 5000;
   private targetAccountGeneration: number = 0;
   private targetGeneration: number = 0;
   private targetTimer: number = -1;

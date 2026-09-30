@@ -48,8 +48,11 @@ export function proContinuationCredentialSession(channelId: string): string {
   return 'rd_' + hex.substring(0, 32);
 }
 
-interface CredentialFields { secret: string; taken: string; }
-interface CredentialObject extends distributedDataObject.DataObject { secret: string; taken: string; }
+// Handshake: both sides join first; the target writes `request`, the source then writes `secret`,
+// the target marks `taken`. Writes after both joined synchronize reliably (unlike a value written
+// before the peer joined), and the secret exists on the session only between request and taken.
+interface CredentialFields { secret: string; request: string; taken: string; }
+interface CredentialObject extends distributedDataObject.DataObject { secret: string; request: string; taken: string; }
 
 export class ProContinuationCredentialChannel {
   private object: CredentialObject | null = null;
@@ -67,12 +70,17 @@ export class ProContinuationCredentialChannel {
     this.close();
     if (!this.valid(session, expiresAt) || validProContinuationSecret(secret) === null) { return false; }
     const generation = this.generation;
-    const fields: CredentialFields = { secret: JSON.stringify(secret), taken: '' };
+    const payload: string = JSON.stringify(secret);
+    const fields: CredentialFields = { secret: '', request: '', taken: '' };
     let object: CredentialObject;
     try { object = distributedDataObject.create(context, fields) as CredentialObject; } catch (_error) { return false; }
+    let sent = false;
     const change = (sessionId: string, _fields: string[]): void => {
-      if (generation !== this.generation || sessionId !== session) { return; }
-      try { if (object.taken === session) { this.close(); } } catch (_error) { this.close(); }
+      if (generation !== this.generation || sessionId !== session || Date.now() >= expiresAt) { return; }
+      try {
+        if (object.taken === session) { this.close(); return; }
+        if (!sent && object.request === session) { sent = true; object.secret = payload; }
+      } catch (_error) { this.close(); }
     };
     this.object = object; this.change = change;
     try {
@@ -91,7 +99,7 @@ export class ProContinuationCredentialChannel {
     this.close();
     if (!this.valid(session, expiresAt)) { return null; }
     const generation = this.generation;
-    const fields: CredentialFields = { secret: '', taken: '' };
+    const fields: CredentialFields = { secret: '', request: '', taken: '' };
     let object: CredentialObject;
     try { object = distributedDataObject.create(context, fields) as CredentialObject; } catch (_error) { return null; }
     this.object = object;
@@ -118,8 +126,12 @@ export class ProContinuationCredentialChannel {
       this.change = change;
       try { object.on('change', change); } catch (_error) { finish(null); return; }
       this.timer = setTimeout((): void => { finish(null); }, Math.max(0, Math.min(waitMs, expiresAt - Date.now())));
-      object.setSessionId(session).then((): void => { read(); if (waitMs <= 0) { finish(null); } })
-        .catch((): void => { finish(null); });
+      object.setSessionId(session).then((): void => {
+        read();
+        if (settled) { return; }
+        try { object.request = session; } catch (_error) { finish(null); return; }
+        if (waitMs <= 0) { read(); finish(null); }
+      }).catch((): void => { finish(null); });
     });
   }
 
