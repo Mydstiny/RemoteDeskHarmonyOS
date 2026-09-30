@@ -360,6 +360,11 @@ import {
   nextRdpCertificateProbeGeneration,
   shouldApplyRdpCertificateProbeResult
 } from '../services/RdpCertificateProbeLifecyclePolicy';
+import { resolveRdpDnsFallback } from '../services/RdpDnsFallback';
+import {
+  rdpDnsFallbackEligible,
+  rdpDnsFallbackProbeCanReuseTransport
+} from '../services/RdpDnsFallbackPolicy';
 import {
   classifyVncCertificateProbeForOwner,
   isVncSha256Fingerprint,
@@ -848,6 +853,11 @@ const REMOTE_HOST_SHEET_MOONLIGHT_CATALOG = 10;
 const REMOTE_HOST_SHEET_MOONLIGHT_EDIT = 11;
 const REMOTE_HOST_SHEET_RDP_CREDENTIAL = 12;
 const DESKTOP_MOONLIGHT_TAB = 7;
+
+interface RdpCertificateDnsProbeResult {
+  info: RdpCertificateInfo;
+  transportHost: string;
+}
 
 @Entry
 @Component
@@ -7233,8 +7243,70 @@ struct HostListPage {
     };
   }
 
+  private async probeRdpCertificateWithDnsFallback(
+    host: RemoteHost,
+    generation: number = 0
+  ): Promise<RdpCertificateDnsProbeResult> {
+    const probeIsCurrent = (): boolean => generation <= 0 ||
+      this.isCurrentRdpCertificateProbe(host, generation);
+    const targetServerName: string = host.customHostname.trim() !== ''
+      ? host.customHostname : host.host;
+    let info: RdpCertificateInfo = await this.loader.probeRdpCertificateAsync(
+      host.host,
+      host.port,
+      targetServerName
+    );
+    const endpointMode: string = this.rdpCertificateRouteMode(host);
+    if (!rdpDnsFallbackEligible(host.host, info.errorCode, endpointMode)) {
+      return { info, transportHost: '' };
+    }
+    const candidates: string[] = await resolveRdpDnsFallback(host.host);
+    if (!probeIsCurrent()) {
+      return { info, transportHost: '' };
+    }
+    if (candidates.length === 0) {
+      hilog.warn(0x0001, 'HostList',
+        'RDP DNS fallback returned no numeric candidate host=' + maskHost(host.host));
+      return { info, transportHost: '' };
+    }
+
+    hilog.info(0x0001, 'HostList',
+      'RDP DNS fallback candidates host=' + maskHost(host.host) +
+      ' count=' + candidates.length.toString());
+    let lastCandidateInfo: RdpCertificateInfo = info;
+    let lastCandidateTransportHost: string = '';
+    for (let index = 0; index < candidates.length; index++) {
+      if (!probeIsCurrent()) {
+        return { info, transportHost: '' };
+      }
+      const candidate: string = candidates[index];
+      const candidateInfo: RdpCertificateInfo =
+        await this.loader.probeRdpCertificateAsync(candidate, host.port, targetServerName);
+      if (!probeIsCurrent()) {
+        return { info, transportHost: '' };
+      }
+      if (candidateInfo.ok && candidateInfo.fingerprintSha256.length > 0) {
+        hilog.info(0x0001, 'HostList',
+          'RDP DNS fallback probe succeeded host=' + maskHost(host.host) +
+            ' candidate=' + maskHost(candidate));
+        return { info: candidateInfo, transportHost: candidate };
+      }
+      // Once NetworkKit has resolved the name, a TCP/TLS/negotiation result is
+      // more actionable than the original resolver error. Keep the last such
+      // observation for the certificate sheet. If it reached the service but
+      // could not expose a certificate, the candidate is still reusable after
+      // an explicit Continue Once decision.
+      if (rdpDnsFallbackProbeCanReuseTransport(candidateInfo.errorCode)) {
+        lastCandidateInfo = candidateInfo;
+        lastCandidateTransportHost = candidate;
+      }
+    }
+    return { info: lastCandidateInfo, transportHost: lastCandidateTransportHost };
+  }
+
   private rdpCertificateResultFromDirectProbe(host: RemoteHost,
-    info: RdpCertificateInfo, generation: number): RdpPreflightResult {
+    info: RdpCertificateInfo, generation: number,
+    transportHost: string = ''): RdpPreflightResult {
     return {
       ok: info.ok && info.fingerprintSha256.length > 0,
       preflightStatus: info.ok ? 'completed' :
@@ -7255,6 +7327,7 @@ struct HostListPage {
       requiresGatewayAuth: false,
       requiresUserDecision: info.ok || rdpCertificatePreflightAllowsRealConnection(
         info.preflightStatus, info.errorCode),
+      transportHost: transportHost,
       gatewayCertificate: {
         present: false, rootTrusted: false, hostMismatch: false, flags: 0,
         host: host.gatewayHost, port: host.gatewayPort, stage: 'gateway',
@@ -7267,7 +7340,7 @@ struct HostListPage {
         rootTrusted: info.rootTrusted,
         hostMismatch: info.hostMismatch,
         flags: info.flags,
-        host: info.host,
+        host: host.host,
         port: info.port,
         stage: 'target',
         serverName: host.customHostname || host.host,
@@ -7653,12 +7726,10 @@ struct HostListPage {
         // Apply the gateway view only after the full result has passed the
         // generation and route-identity checks below.
       } else {
-        info = await this.loader.probeRdpCertificateAsync(
-          host.host,
-          host.port,
-          host.customHostname
-        );
-        routeResult = this.rdpCertificateResultFromDirectProbe(host, info, generation);
+        const directProbe = await this.probeRdpCertificateWithDnsFallback(host, generation);
+        info = directProbe.info;
+        routeResult = this.rdpCertificateResultFromDirectProbe(
+          host, info, generation, directProbe.transportHost);
       }
       if (!this.renewRdpSessionCredentialForHost(host)) {
         this.rejectExpiredRdpSessionCredential(host);
@@ -8136,6 +8207,17 @@ struct HostListPage {
           diagnosticResult.preflightStatus, diagnosticResult.errorCode,
           diagnosticResult.riskFlags || []);
       params['rdpCertificateOneTimeRouteIdentity'] = diagnosticResult.routeIdentity;
+      const transportHost: string = (diagnosticResult.transportHost || '').trim();
+      if (transportHost !== '' &&
+          (diagnosticResult.endpointMode === 'direct_rdp' ||
+            diagnosticResult.endpointMode === 'transparent_tcp_rdp')) {
+        // The candidate is bound to the same route and connection-attempt
+        // generation as the certificate decision. RemoteDesktop validates
+        // both before using it and keeps it in memory only.
+        params['rdpTransportHost'] = transportHost;
+        params['rdpTransportRouteIdentity'] = diagnosticResult.routeIdentity;
+        params['rdpTransportAttemptGeneration'] = this.rdpCertificateAttemptGeneration;
+      }
       params['rdpCertificatePreflightStatus'] = diagnosticResult.preflightStatus;
       params['rdpCertificatePreflightRiskFlags'] = diagnosticResult.riskFlags;
       params['rdpGatewayCertificatePreflightRiskFlags'] = diagnosticResult.gatewayRiskFlags;
@@ -9727,9 +9809,8 @@ struct HostListPage {
             (this.rdpCertificateRouteMode(host) !== 'microsoft_rd_gateway' ||
               result.gatewayCertificate.present);
         } else {
-          const info: RdpCertificateInfo = await this.loader.probeRdpCertificateAsync(
-            host.host, host.port, host.customHostname);
-          ok = info.ok;
+          const directProbe = await this.probeRdpCertificateWithDnsFallback(host);
+          ok = directProbe.info.ok;
         }
       } else if (host.protocol === 'vnc') {
         const vncHostId: string = this.vncRecordIdForHost(host);
@@ -22423,9 +22504,9 @@ struct HostListPage {
         result = await this.loader.probeRdpCertificateRouteAsync(
           this.rdpCertificateRouteRequest(host, Date.now()));
       } else {
-        const info: RdpCertificateInfo = await this.loader.probeRdpCertificateAsync(
-          host.host, host.port, host.customHostname);
-        result = this.rdpCertificateResultFromDirectProbe(host, info, Date.now());
+        const directProbe = await this.probeRdpCertificateWithDnsFallback(host);
+        result = this.rdpCertificateResultFromDirectProbe(
+          host, directProbe.info, Date.now(), directProbe.transportHost);
       }
       if (!result.ok || !result.targetCertificate.present ||
         (this.rdpCertificateRouteMode(host) === 'microsoft_rd_gateway' &&

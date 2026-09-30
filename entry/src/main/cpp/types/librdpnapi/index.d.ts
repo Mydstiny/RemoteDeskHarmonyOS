@@ -793,6 +793,8 @@ export interface RdpPreflightResult {
   gatewayTransportSelected: string;
   requiresGatewayAuth: boolean;
   requiresUserDecision: boolean;
+  /** Runtime-only numeric transport override from direct RDP DNS fallback. */
+  transportHost?: string;
   gatewayCertificate: RdpCertificateRecord;
   targetCertificate: RdpCertificateRecord;
 }

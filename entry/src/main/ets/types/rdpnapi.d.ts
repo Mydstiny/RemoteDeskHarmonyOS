@@ -473,6 +473,12 @@ export interface RdpPreflightResult {
   gatewayTransportSelected: string;
   requiresGatewayAuth: boolean;
   requiresUserDecision: boolean;
+  /**
+   * Runtime-only numeric transport override from the direct DNS fallback.
+   * The configured hostname remains the RDP/TLS identity and this value is
+   * never persisted in RemoteHost or sent through cloud sync.
+   */
+  transportHost?: string;
   gatewayCertificate: RdpCertificateRecord;
   targetCertificate: RdpCertificateRecord;
 }

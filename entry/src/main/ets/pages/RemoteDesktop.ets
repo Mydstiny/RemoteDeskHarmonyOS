@@ -50,6 +50,10 @@ import {
   RdpAuthMode,
   RdpRestrictedAdminSecretSource
 } from '../model/RemoteHost';
+import {
+  endpointTransportHost,
+  parseEndpointHost
+} from '../services/EndpointAddressPolicy';
 import { TotpEntry } from '../model/TotpEntry';
 import { VncHostService, VncHostView } from '../services/VncHostService';
 import { VncGatewayService, VncGatewayView } from '../services/VncGatewayService';
@@ -1352,6 +1356,9 @@ struct RemoteDesktop {
   private rdpGatewayCertificateAllowUnpinnedOnce: boolean = false;
   private rdpGatewayCertificateAllowTimeAnomalyOnce: boolean = false;
   private rdpCertificateTransientRouteIdentity: string = '';
+  // Runtime-only DNS fallback candidate. The configured hostname remains the
+  // RDP/TLS identity and this value is cleared on session teardown.
+  private rdpTransportHostOverride: string = '';
   private pendingVncHost: VncHostView | null = null;
   // Set only by the RustDesk Pro preflight handoff. It is consumed after the
   // first renderer/decoder pair is installed and is never inferred from a
@@ -8710,6 +8717,37 @@ struct RemoteDesktop {
     this.rdpConnectTimeCredentialRoutePending = true;
   }
 
+  private stageRdpTransportHostOverride(
+    host: RemoteHost,
+    routeParams: Record<string, Object>
+  ): void {
+    this.rdpTransportHostOverride = '';
+    if (host.protocol !== 'rdp') {
+      return;
+    }
+    const rawHost: string = ((routeParams['rdpTransportHost'] as string) || '').trim();
+    const routeIdentity: string =
+      ((routeParams['rdpTransportRouteIdentity'] as string) || '').trim();
+    const rawGeneration: Object | undefined = routeParams['rdpTransportAttemptGeneration'];
+    const transportGeneration: number = typeof rawGeneration === 'number' &&
+      Number.isSafeInteger(rawGeneration) && rawGeneration > 0 ? rawGeneration : 0;
+    const routeAttemptGeneration: number = this.rdpCredentialRouteAttemptGeneration;
+    if (rawHost === '' || routeIdentity !== rdpRouteIdentity(host) ||
+        transportGeneration === 0 || routeAttemptGeneration === 0 ||
+        transportGeneration !== routeAttemptGeneration) {
+      return;
+    }
+    const parsed = parseEndpointHost(rawHost, 'runtime');
+    if (!parsed.ok || parsed.endpoint.family === 'hostname') {
+      hilog.warn(RD_DOMAIN, RD_TAG,
+        'RDP DNS fallback route contained a non-numeric transport host; ignored');
+      return;
+    }
+    this.rdpTransportHostOverride = endpointTransportHost(parsed.endpoint);
+    hilog.info(RD_DOMAIN, RD_TAG,
+      'RDP DNS fallback transport host staged candidate=' + maskHost(this.rdpTransportHostOverride));
+  }
+
   private clearRdpCredentialRouteBinding(): void {
     this.rdpCredentialRouteHostId = '';
     this.rdpCredentialRouteOwnerId = '';
@@ -9379,6 +9417,7 @@ struct RemoteDesktop {
           // await 之后、紧邻 native connect 时才允许消费。
           let resolvedHost: RemoteHost = this.hostWithResolvedCredential(host);
           resolvedHost = this.hostWithRdpOneTimeCertificate(resolvedHost, p);
+          this.stageRdpTransportHostOverride(resolvedHost, p);
           const restoring: boolean = this.prepareRegistryRestore(host);
           if (rdpSessionCredentialRequiredForNewConnection(resolvedHost, restoring)) {
             const scope = AccountSessionCoordinator.getInstance().currentScope();
@@ -14568,10 +14607,15 @@ struct RemoteDesktop {
       }
       let sessionHost: string = rustDeskEndpoint === null ? host.host : rustDeskEndpoint.host;
       let sessionPort: number = rustDeskEndpoint === null ? host.port : rustDeskEndpoint.port;
+      if (host.protocol === 'rdp' && this.rdpTransportHostOverride !== '') {
+        sessionHost = this.rdpTransportHostOverride;
+      }
       if (isVnc && vncEndpointForConnect !== null) {
         sessionHost = vncEndpointForConnect.connectHost;
         sessionPort = vncEndpointForConnect.connectPort;
       }
+      const rdpTargetServerName: string = host.protocol === 'rdp'
+        ? (host.customHostname.trim() !== '' ? host.customHostname : host.host) : '';
       const cfg: SessionConfig = {
         protocol: host.protocol,
         host: sessionHost,
@@ -14583,7 +14627,7 @@ struct RemoteDesktop {
         width: w,
         height: h,
         customHostname: host.customHostname,
-        targetServerName: host.protocol === 'rdp' ? host.customHostname : '',
+        targetServerName: rdpTargetServerName,
         clientHostname: host.protocol === 'rdp' ? host.rdpClientHostname : '',
         gatewayHost: host.gatewayHost,
         gatewayPort: host.gatewayPort,
@@ -15553,6 +15597,7 @@ struct RemoteDesktop {
         pendingRdpAttemptGeneration);
     }
     this.clearRdpCredentialRouteBinding();
+    this.rdpTransportHostOverride = '';
     // VNC passwords are connection-scoped memory only. The native session has
     // already received its copy; never retain the transient value across a
     // page/session teardown.
