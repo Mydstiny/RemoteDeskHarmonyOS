@@ -23213,8 +23213,6 @@ struct RemoteDesktop {
               if ((entry.type === 0 || entry.type === 3) && !this.remoteTransferBrowserBusy) {
                 void this.browseRemoteTransferDirectory(remoteTransferEntryPath(
                   this.remoteTransferDirectory, entry.name, entry.type));
-              } else if (receiving && entry.type === 4 && !this.remoteTransferBrowserBusy && !this.fileTransferBusy) {
-                void this.downloadRustDeskFile(entry);
               }
             })
         }, (entry: SessionRemoteFileEntry): string => entry.type.toString() + ':' + entry.name)

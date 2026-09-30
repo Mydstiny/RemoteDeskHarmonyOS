@@ -24,7 +24,7 @@ Updated: 2026-09-30 Asia/Shanghai
 
 - RDP direct touch: accept text caret placement with slight finger jitter, real dragging, long-press right click, mouse in all three modes, keyboard open/closed and zoom after code repair `da9ad958`; device acceptance remains pending.
 
-- File transfer / clipboard: `d3a4500d` implemented scope reviewed; new [RustDesk parity plan](plans/2026-09-08-rustdesk-file-transfer-parity.md) is PLAN_ONLY. Next P0 peer identity/compatibility and P1 system folder/URI validation, then P2-P6; continuous successor files need verified peer binding. Real drag-out is separate. Existing copy-only/shared branch boundaries remain.
+- File transfer / clipboard: `d3a4500d` scope remains reviewed; checkpoint `8b58e010` now gives RustDesk remote send/receive a shared explorer with address bar, breadcrumbs, folder/file rows, direct entry and new-folder/refresh actions. `test_transfer_page_ownership.cjs` 37, continuous clipboard 11 and PC remote clipboard 26 pass; device UI and real drag-out/cross-device acceptance remain open. Continue the [RustDesk parity plan](plans/2026-09-08-rustdesk-file-transfer-parity.md) with P0 peer identity/compatibility and P1 system folder/URI validation.
 
 - Remote AI UI: [parity cleanup](plans/2026-09-08-remote-ai-ui-parity.md) code `066493a7` independently PASS; next Phone/Pad/PC visual, large-font and keyboard acceptance. New 15 UI regressions plus existing lifecycle/entry checks PASS.
 
