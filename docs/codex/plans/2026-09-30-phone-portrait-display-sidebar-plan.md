@@ -4,6 +4,7 @@
 创建时间：2026-09-30 Asia/Shanghai
 范围：手机本地窗口的竖屏显示、远端横向画面的等比缩小、显示与缩放设置、RDP/RustDesk/VNC/Moonlight 侧栏联动。
 实现状态：核心实现已落地；真实手机方向、触控、侧栏拖动和多协议会话验收仍待设备矩阵执行。
+实现提交：05d754e46（feat(ui): add phone portrait display and sidebar toggle）。
 观察基线：codex/pro-purchase-foundation @ c8dcfdb36；本轮继续现有活动分支，保护共享工作区中的 Pro 并发改动，不创建新分支。
 
 ## 1. 目标和最终交互契约
@@ -408,7 +409,7 @@ Pad/PC 只需证明新入口不改变既有方向和 PC flip；不能把 Pad/PC 
 本轮验证：
 
 - `default@OhosTestCompileArkTS`：通过，exit 0。
-- `assembleHap`：通过，exit 0；签名产物为 `entry/build/default/outputs/default/entry-default-signed.hap`，SHA-256 以交付时实际文件为准。
+- `assembleHap`：通过，exit 0；签名产物为 `entry/build/default/outputs/default/entry-default-signed.hap`，SHA-256 `9265e26c9a366461f59aeb15880d314042ddd9c3d8d3c9717eba08a83b2161b2`。
 - `git diff --check`：通过；纯源码 wiring 检查通过；Light 合规门 `scripts/verify_open_source_release.ps1 -Mode Light`：通过。
 - `ohosTest@OhosTestCompileArkTS`：当前工程任务未注册，返回 `00306054 task not found`，不记为测试通过；Smoke 脚本的额外 pre-push 临时 commit 检查受沙箱禁止临时文件影响，独立 Light 门本身已通过。
 
