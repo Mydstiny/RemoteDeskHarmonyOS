@@ -5,6 +5,7 @@
   "base": "8edc187868e94ed41634e8a6c4c4c072e3a48679",
   "head": "f468f24b",
   "phase": "Full acceptance active; Pro 工作区与高级主机管理基础层及工作区编辑器已实现，设备/跨端验收待完成",
+  "currentFocus": "更新 Pro 反馈的两种二维码",
   "status": "in-progress",
   "latestIncrement": {
     "date": "2026-09-30",
@@ -2007,7 +2008,7 @@
   },
   "feedbackProQr": {
     "commit": "f468f24b",
-    "status": "implemented-server-and-app-build-pass-device-acceptance-pending",
+    "status": "deployed-to-three-devices-qr-rotation-task-active",
     "feature": "pro.feedback",
     "app": "Feedback settings keeps email and ordinary Chanlian for free users; valid Pro users get a third tab with the flowing Pro badge and Chanlian/QQ QR cards; revocation clears QR state.",
     "endpoints": [
@@ -2016,7 +2017,16 @@
     ],
     "serverValidation": "HTTP 200 manifests/images; issuedAt-to-expiresAt is 7 days; declared image hashes and byte counts match downloaded JPEGs; existing chanlian.json remains reachable.",
     "appValidation": "default@OhosTestCompileArkTS BUILD SUCCESSFUL; assembleHap BUILD SUCCESSFUL; Light and git diff --check PASS; Pro gating/status/visibility tests PASS.",
-    "deviceAcceptance": "NOT RUN"
+    "deviceDeployment": {
+      "hapSha256": "f0e6f88d7d7c3c9d8e9c0241223a26582935a931f2fa64b3c4f8de6d3fb11750",
+      "targets": [
+        "127.0.0.1:5555 emulator",
+        "192.168.31.118:40123 MLR-AL10",
+        "192.168.31.156:38451 SGT-AL10"
+      ],
+      "result": "hdc install -r succeeded on all three; package reports versionName 1.1.6 and versionCode 1001007"
+    },
+    "deviceAcceptance": "Installed; UI interaction and QR scan acceptance not run"
   },
   "futurePlans": []
 }

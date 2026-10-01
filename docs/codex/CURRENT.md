@@ -4,7 +4,7 @@
 
 - E2EE planning only: [resilience and legacy compatibility plan](plans/2026-09-07-e2ee-resilience-legacy-compatibility.md) has 8 stages and 24 acceptance scenarios; independent /root/review_e2ee_plan PLAN-ONLY PASS. Prioritize local fault isolation, healthy-module availability and old enabled-App data. No application code changed; implementation awaits user authorization and the existing Pro task remains active. Current documentation gates: testCompile BUILD SUCCESSFUL in 11 s 295 ms; signed assembleHap BUILD SUCCESSFUL in 16 s 858 ms, both exit 0; Light/diff PASS. Initial sandbox cache EPERM was resolved by an authorized retry; device/data compatibility tests NOT RUN.
 
-- Task: pro-purchase-foundation; branch codex/pro-purchase-foundation; Pro 工作区与高级主机管理实施增量已开始（计划 W0/H1/S1/S2/S3，当前 head 仍含并行工作）；f468f24b 已实现反馈设置 Pro 三栏、权益门控与双二维码端点，设备 UI 验收待补。
+- Task: pro-purchase-foundation; branch codex/pro-purchase-foundation; 当前 session focus=更新 Pro 反馈的两种二维码；f468f24b 已实现反馈设置 Pro 三栏、权益门控与双二维码端点，签名 HAP 已覆盖安装到模拟器、MLR-AL10、SGT-AL10。
 - Phase: full M1-M7/U0-U4 roadmap active; 2026-09-30 Pro 工作区/高级主机管理基础层已实现，设备与跨端验收待补。
 - Pro stages: M1 eaca0300; M2 2db4ef2d; free U1 ca929ceb; M3 62baa018+fea42b9b; M4 02a8cab6+ee45030b; M5 ed537821+27716d2d+c64efc8e. Each implementation/fix increment is separately committed.
 - M3: default plus supplied white/transparent preset PNGs only. Custom upload cancelled. Paid selection uses shared controller/business checks, restoring default stays free; real device acceptance pending.

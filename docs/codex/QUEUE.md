@@ -6,7 +6,7 @@ Updated: 2026-10-01 Asia/Shanghai
 
 - Pro 工作区与高级主机管理：W0/H1/S1/S2/S3 基础实现已提交准备；继续 H2 分组胶囊/H3 批量操作/H4 导入导出/S3 编辑器/S4 当前会话捕获，并完成设备验收。
 
-- Pro 反馈渠道（f468f24b）：反馈设置按权益显示邮箱、畅联、Pro 三栏；Pro 双二维码端点已部署并验证，设备 UI 验收待补。
+- Pro 反馈渠道（f468f24b）：当前 session 任务为更新 Pro 反馈的两种二维码；反馈设置按权益显示邮箱、畅联、Pro 三栏，签名 HAP 已部署到三台设备。
 
 - RDP domain connection repair: guarded “跳过连接前证书预检” switch is in `f06bcf620`; `b17d8d90` adds a one-time direct-attempt hint and `d10db1076` unifies successful HarmonyOS DNS candidates with the live direct/transparent FreeRDP transport while keeping hostname certificate identity; validate the direct hostname path and live certificate behavior on a real endpoint.
 
