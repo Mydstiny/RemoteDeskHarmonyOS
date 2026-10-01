@@ -1,4 +1,4 @@
-import { bundleManager, common, StartOptions, Want } from '@kit.AbilityKit';
+import { AbilityConstant, bundleManager, common, StartOptions, Want } from '@kit.AbilityKit';
 import { display } from '@kit.ArkUI';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import {
@@ -18,7 +18,7 @@ import {
   remoteSessionWindowAuthorizationRequiresLiveHandoff
 } from './RemoteSessionWindowAuthorization';
 import { REMOTE_SESSION_WINDOW_READY_TIMEOUT_MS } from './RemoteSessionWindowReadiness';
-import { WorkspaceHandoff } from './pro/workspace/WorkspaceHandoff';
+import { WorkspaceHandoff, WorkspaceSplitSide } from './pro/workspace/WorkspaceHandoff';
 import { WorkspaceFrame, workspaceWindowRect, WorkspaceWindowRect } from './pro/workspace/WorkspacePolicy';
 
 const DOMAIN: number = 0x0025;
@@ -91,8 +91,27 @@ export class RemoteSessionWindowLauncher {
         bundleManager.SupportWindowMode.FLOATING
       ]
     };
+    // A Pad workspace places its two sessions side by side. If the system refuses split screen,
+    // the same window opens normally instead of losing the already-authenticated session.
+    const splitSide: WorkspaceSplitSide | null = WorkspaceHandoff.getInstance().takeSplit(request.hostId);
     try {
-      await context.startAbility(want, options);
+      if (splitSide !== null) {
+        const splitOptions: StartOptions = {
+          withAnimation: false,
+          windowMode: splitSide === 'primary' ? AbilityConstant.WindowMode.WINDOW_MODE_SPLIT_PRIMARY :
+            AbilityConstant.WindowMode.WINDOW_MODE_SPLIT_SECONDARY,
+          supportWindowModes: options.supportWindowModes
+        };
+        try {
+          await context.startAbility(want, splitOptions);
+        } catch (splitError) {
+          hilog.warn(DOMAIN, TAG, 'split-screen session window refused, opening normally: %{public}s',
+            JSON.stringify(splitError));
+          await context.startAbility(want, options);
+        }
+      } else {
+        await context.startAbility(want, options);
+      }
       hilog.info(DOMAIN, TAG,
         'independent session window requested protocol=%{public}s target=%{public}s',
         request.protocol, request.target);

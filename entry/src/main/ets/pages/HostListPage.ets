@@ -39,7 +39,7 @@ import {
   workspaceRunFor, WorkspaceRun, WorkspaceRunItem, workspaceRunSummary
 } from '../services/pro/workspace/WorkspacePolicy';
 import { WorkspaceStore } from '../services/pro/workspace/WorkspaceStore';
-import { WorkspaceHandoff } from '../services/pro/workspace/WorkspaceHandoff';
+import { WorkspaceHandoff, WorkspaceSplitSide } from '../services/pro/workspace/WorkspaceHandoff';
 import {
 import {
   WORKSPACE_PHONE_ENABLED_KEY, workspaceDeviceKind, WorkspaceDeviceKind, workspaceEntryLimit, WorkspacePhonePreference,
@@ -6328,6 +6328,13 @@ struct HostListPage {
     if (connectingRunIndex(run) >= 0) { return; }
     const index: number = nextQueuedRunIndex(run);
 
+  private workspaceSplitRoute(params: Record<string, Object>): boolean {
+    const handoff: WorkspaceHandoff = WorkspaceHandoff.getInstance();
+    const hostId: string = ((params['hostId'] as string) || '').trim();
+    const vncHostId: string = ((params['vncHostId'] as string) || '').trim();
+    return (hostId !== '' && handoff.hasSplit(hostId)) || (vncHostId !== '' && handoff.hasSplit(vncHostId));
+  }
+
   private takeWorkspaceLockClearance(hostId: string): boolean {
     if (this.proWorkspaceRun === null || !this.workspaceLockCleared.has(hostId)) { return false; }
     this.workspaceLockCleared.delete(hostId);
@@ -6389,6 +6396,12 @@ struct HostListPage {
     handoff.stage(host.id, sshView, frame);
     const vncRecordId: string = this.vncRecordIdForHost(host);
     if (vncRecordId !== '' && frame !== null) { handoff.stage(vncRecordId, null, frame); }
+    if (this.workspaceDeviceKind() === 'tablet') {
+      // Pad: first entry on the left, second on the right.
+      const side: WorkspaceSplitSide = index === 0 ? 'primary' : 'secondary';
+      handoff.stageSplit(host.id, side);
+      if (vncRecordId !== '') { handoff.stageSplit(vncRecordId, side); }
+    }
     this.proWorkspaceRun = setRunItemState(run, index, 'connecting', '');
     this.proWorkspacePageHidden = false;
     void this.connectToHost(host);
@@ -7055,7 +7068,9 @@ struct HostListPage {
       ? rawRdpAttemptGeneration : 0;
     const rdpCredentialOwnerScopeId: string =
       ((params['rdpCredentialOwnerScopeId'] as string) || '').trim();
-    if (!this.isDesktopDevice) {
+    // A Pad workspace session uses the same authenticated window hand-off as PC so it can open in split screen.
+    const workspaceSplit: boolean = !this.isDesktopDevice && this.workspaceSplitRoute(params);
+    if (!this.isDesktopDevice && !workspaceSplit) {
       const routeHostId: string = ((params['hostId'] as string) || '').trim();
       void router.pushUrl({ url, params }).catch((_err: Error): void => {
         SshAuthenticatedHandoff.getInstance().discard((params['sshAuthenticatedHandoff'] as string) || '');
@@ -7106,6 +7121,7 @@ struct HostListPage {
     // handoff can be staged. Preserve that original result so the existing
     // session page cannot ask for the same biometric twice.
     routeParams['authenticated'] = true;
+    if (workspaceSplit) { routeParams['workspaceSplitWindow'] = true; }
     if (protocol === 'rdp' || protocol === 'vnc' || protocol === 'ssh') {
       // Certificate/host-key preflight is not the remote protocol's login
       // commit. Keep the original RemoteDesktop/SshTerminal authentication UI

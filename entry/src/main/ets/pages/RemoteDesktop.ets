@@ -9370,8 +9370,10 @@ struct RemoteDesktop {
   }
 
   private stageIndependentWindowAfterAuthentication(params: Object): void {
-    if (this.sessionWindowId.length > 0 || !this.isDesktopDevice) { return; }
     const values: Record<string, Object> = params as Record<string, Object>;
+    // PC always hands the authenticated session to its own window; a Pad workspace does so to open in split screen.
+    if (this.sessionWindowId.length > 0 ||
+      (!this.isDesktopDevice && values['workspaceSplitWindow'] !== true)) { return; }
     if (values['pcWindowAfterAuthentication'] !== true) { return; }
     const preflightKind: string = typeof values['pcWindowPreflightKind'] === 'string' ?
       values['pcWindowPreflightKind'] as string : '';
