@@ -51,15 +51,25 @@ export struct DiagnosticAiSettingsSheet {
   private allowed(): boolean { return ProEntries.visible(PRO_DIAGNOSTICS_FEATURE, ProAppRuntime.getInstance().context()); }
   private providerAllowed(): boolean { return ProEntries.visible(PRO_DIAGNOSTICS_PROVIDER_FEATURE, ProAppRuntime.getInstance().context()); }
 
+  private providerAvailable(manifest: DiagnosticAiProviderManifest): boolean {
+    return manifest.endpoint !== '' && manifest.chatPath !== '';
+  }
+
   private selectProvider(id: string): void {
     this.selectedProvider = id; const manifest = this.manifests.find((value: DiagnosticAiProviderManifest): boolean => value.providerId === id);
+    if (manifest !== undefined && (manifest.endpoint === '' || manifest.chatPath === '')) {
+      this.message = '该 Provider 已列入路线图，当前版本尚未开放请求适配';
+      return;
+    }
     this.endpoint = manifest?.endpoint ?? ''; this.message = '';
   }
 
   private async saveProvider(): Promise<void> {
     if (!this.providerAllowed() || this.busy) { return; }
     const manifest = this.manifests.find((value: DiagnosticAiProviderManifest): boolean => value.providerId === this.selectedProvider);
-    if (manifest === undefined) { return; }
+    if (manifest === undefined || manifest.endpoint === '' || manifest.chatPath === '') {
+      this.message = '该 Provider 尚未完成请求适配'; return;
+    }
     const endpointDecision = validateDiagnosticAiEndpoint(this.endpoint, manifest.adapterFamily, false);
     if (!endpointDecision.ok) { this.message = '保存失败：' + endpointDecision.message; return; }
     this.busy = true; this.message = '';
@@ -128,10 +138,12 @@ export struct DiagnosticAiSettingsSheet {
             ForEach(this.manifests, (manifest: DiagnosticAiProviderManifest): void => {
               Row({ space: 8 }) {
                 Text(manifest.displayName).fontSize(14).fontColor(this.pal().text).layoutWeight(1)
-                Text(manifest.market === 'local' ? '本机' : '大陆').fontSize(11).fontColor(this.accent)
+                Text(this.providerAvailable(manifest) ? (manifest.market === 'local' ? '本机' : '大陆') : '后续适配')
+                  .fontSize(11).fontColor(this.providerAvailable(manifest) ? this.accent : this.pal().text3)
               }.width('100%').height(48).padding({ left: 12, right: 12 }).borderRadius(12)
                 .backgroundColor(this.selectedProvider === manifest.providerId ? this.pal().surface : this.pal().card)
-                .onClick((): void => { this.selectProvider(manifest.providerId); })
+                .opacity(this.providerAvailable(manifest) ? 1 : 0.62)
+                .onClick((): void => { if (this.providerAvailable(manifest)) { this.selectProvider(manifest.providerId); } })
             }, (manifest: DiagnosticAiProviderManifest): string => manifest.providerId)
             TextInput({ placeholder: 'Provider HTTPS 地址（预设为空时手动填写）', text: this.endpoint }).height(44).onChange((value: string): void => { this.endpoint = value; })
             TextInput({ placeholder: 'API Key（仅写入本机安全存储）', text: this.keyText }).height(44).type(InputType.Password).onChange((value: string): void => { this.keyText = value; })

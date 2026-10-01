@@ -3,25 +3,27 @@
   "task": "pro-purchase-foundation",
   "branch": "codex/pro-purchase-foundation",
   "base": "8edc187868e94ed41634e8a6c4c4c072e3a48679",
-  "head": "cea057c9b",
-  "phase": "Full acceptance active; Pro 工作区与高级主机管理基础层及工作区编辑器已实现，设备/跨端验收待完成",
-  "currentFocus": "RDP/RustDesk 高级显示计划：P0–P4 实现、本地门禁与设备安装已完成；等待真实远端矩阵和独立复核",
+  "head": "1e4e4185",
+  "phase": "Full acceptance active; Pro 诊断与 AI 帮助客户端 checkpoint 已实现，真实 Provider/设备/邮件验收待完成",
+  "currentFocus": "Pro 诊断与 AI 帮助：b8a56f21 基础实现与 1e4e4185 生命周期/端点修复已完成，等待独立复核和真实环境验收",
   "status": "in-progress",
   "latestIncrement": {
-    "date": "2026-09-30",
-    "commit": "d9a066ec",
-    "parentCommit": "2efbe905",
+    "date": "2026-10-02",
+    "commit": "1e4e4185",
+    "parentCommit": "b8a56f21",
     "scope": [
       "entry/src/main/ets/components/ProOrganizationWorkspacePanel.ets",
       "entry/src/main/ets/components/ProWorkspaceEditorPanel.ets",
-      "docs/codex/plans/2026-09-30-pro-workspaces-host-management-plan.md"
+      "docs/codex/plans/2026-10-01-pro-diagnostic-ai-help-upgrade.md",
+      "entry/src/main/ets/components/diagnosticAi",
+      "entry/src/main/ets/services/diagnosticAi"
     ],
-    "status": "implemented-build-pass-device-acceptance-pending",
-    "reviewTaskId": "/root/review_pro_plan",
-    "reviewResult": "pending incremental independent review",
-    "validation": "Four Node policy/orchestration tests PASS; default@OhosTestCompileArkTS BUILD SUCCESSFUL 15.675 s; assembleHap BUILD SUCCESSFUL 26.625 s; git diff --check PASS; device/cross-device acceptance not run"
+    "status": "implemented-corrective-fixes-build-pass-review-pending",
+    "reviewTaskId": "/root/diagnostic_ai_review",
+    "reviewResult": "initial findings fixed; corrective re-review pending",
+    "validation": "default@OhosTestCompileArkTS BUILD SUCCESSFUL 16.897 s; assembleHap BUILD SUCCESSFUL 21.885 s; Light/diff PASS; test_pro_entry_gating PASS; three existing Node tests could not start because typescript is absent; real Provider/device/mail acceptance not run"
   },
-  "next": "完成 Windows 10/11/Server、RustDesk peer/platform/permission、Phone/Pad/PC 真实交互与恢复矩阵；补齐独立 review 和 PR required checks，再决定是否开放 Release。",
+  "next": "完成诊断 AI 独立复核；随后在 Phone/Pad/PC 验证 orb、抓取停止、账号切换、邮件预览，并用真实国内 Provider 验证模型列表/分析；保留 experimental 直到证据齐全。",
   "blockers": [
     "Pad backup and Debug migration complete; same-account sandbox restore PASS without another payment. Remaining offline/cross-account and full protocol/device matrix remain open.",
     "M3/U0-U4 device matrix and M4 PC real Share Kit/SFTP file-integrity acceptance remain unverified.",
@@ -40,12 +42,14 @@
     "docs/codex/plans/2026-09-07-pro-m5-connection-continuation.md",
     "docs/codex/plans/2026-09-07-pro-m6-fido-transport.md",
     "docs/codex/plans/2026-09-07-pro-m7-trusted-purchase.md",
-    "docs/codex/plans/2026-09-30-pro-workspaces-host-management-plan.md"
+    "docs/codex/plans/2026-09-30-pro-workspaces-host-management-plan.md",
+    "docs/codex/plans/2026-10-01-pro-diagnostic-ai-help-upgrade.md"
   ],
   "review": {
     "status": "REVIEW_REQUIRED",
     "taskIds": [
-      "/root/review_pro_plan"
+      "/root/review_pro_plan",
+      "/root/diagnostic_ai_review"
     ],
     "scope": [
       "entry/src/main/ets/services/pro",
