@@ -29,7 +29,7 @@ import { HostBatchActions } from '../components/pro/org/HostBatchActions';
 import { HostImportPanel } from '../components/pro/org/HostImportPanel';
 import { WorkspaceStrip } from '../components/pro/workspace/WorkspaceStrip';
 import { WorkspaceGroupCard, WorkspacePanel } from '../components/pro/workspace/WorkspaceGroupCard';
-import { createWorkspace } from '../components/pro/workspace/WorkspaceActions';
+import { WorkspaceAddFlow } from '../components/pro/workspace/WorkspaceAddFlow';
 import { ProWorkspaceEditorPanel } from '../components/ProWorkspaceEditorPanel';
 import { WorkspaceRunPanel } from '../components/pro/workspace/WorkspaceRunPanel';
 import {
@@ -939,7 +939,8 @@ struct HostListPage {
   @State proWorkspaceRun: WorkspaceRun | null = null;
   @State showHostImportSheet: boolean = false;
   @State showWorkspaceEditor: boolean = false;
-  private pendingWorkspaceCreate: boolean = false;
+  /** 创建并打开 from the add sheet: opened once the sheet has closed. */
+  private pendingWorkspaceOpen: Workspace | null = null;
   @State workspaceEditorTarget: Workspace = newWorkspace('', '', '#007DFF', 'sym.desktop_fill', 0, 0);
   @State hostImportDocument: HostExportDocument = { schemaVersion: 1, exportedAt: 0, groups: [], hosts: [] };
   private proWorkspacePageHidden: boolean = false;
@@ -4215,9 +4216,10 @@ struct HostListPage {
   }
 
   private handleAddSheetDisappear(): void {
-    if (this.pendingWorkspaceCreate) {
-      this.pendingWorkspaceCreate = false;
-      setTimeout((): void => { this.createWorkspaceFromFab(); }, 0);
+    if (this.pendingWorkspaceOpen !== null) {
+      const created: Workspace = this.pendingWorkspaceOpen as Workspace;
+      this.pendingWorkspaceOpen = null;
+      setTimeout((): void => { this.openProWorkspace(created); }, 0);
     }
     const pendingAiId = this.pendingAiConnectId, pendingAiAccount = this.pendingAiAccount;
     this.pendingAiConnectId = ''; this.pendingAiAccount = null; this.aiEditingHost = null;
@@ -13848,7 +13850,7 @@ struct HostListPage {
             } else if (this.curTab === 6) {
               this.relayAddTrigger++;
             } else if (this.curTab === DESKTOP_WORKSPACE_TAB) {
-              this.createWorkspaceFromFab();
+              this.openWorkspaceAddSheet();
             }
           } else {
             // 手机/平板/PC小窗: 主机/密钥/中继/设置
@@ -14853,11 +14855,13 @@ struct HostListPage {
     })
   }
 
-  /** FAB → 工作区: create an empty workspace and open its editor. */
-  private createWorkspaceFromFab(): void {
+  /** PC 工作区 page 「+」: the add sheet opens straight at the new-workspace flow. */
+  private openWorkspaceAddSheet(): void {
     if (!this.pageActive || !this.proWorkspacesVisible) { return; }
-    const workspace: Workspace | null = createWorkspace(this.getUIContext());
-    if (workspace !== null) { this.openWorkspaceEditor(workspace); }
+    this.resetForm();
+    this.modernAddProtocol = 'workspace';
+    this.addSheetShowsModernPicker = false;
+    this.openSheetSafely((): void => { this.showAddSheet = true; });
   }
 
   private openWorkspaceEditor(workspace: Workspace): void {
@@ -20710,12 +20714,6 @@ struct HostListPage {
         moonlightProtocolAvailable: this.moonlightProtocolAvailable,
         workspaceAvailable: this.proWorkspacesVisible,
         onSelectProtocol: (protocol: string): void => {
-          if (protocol === 'workspace') {
-            // A workspace is created after the add sheet has fully closed, then edited in its own sheet.
-            this.pendingWorkspaceCreate = true;
-            this.requestAddSheetClose();
-            return;
-          }
           this.modernAddProtocol = protocol;
           this.addSheetShowsModernPicker = false;
           if (protocol === 'moonlight') {
@@ -20859,6 +20857,17 @@ struct HostListPage {
           this.revokeMoonlightTemporaryPairing(),
         onSaved: (hostId: string, openCatalog: boolean, ownerToken: number): void => {
           this.handleMoonlightHostSaved(hostId, openCatalog, ownerToken);
+        }
+      })
+    } else if (this.modernAddProtocol === 'workspace') {
+      WorkspaceAddFlow({
+        extraRows: this.orgRows(this.hostViewRevision).filter((row: OrgHostRow): boolean => row.protocol === 'moonlight'),
+        onBackToProtocols: (): void => { this.modernAddProtocol = ''; this.addSheetShowsModernPicker = true; },
+        onClose: (): void => { this.requestAddSheetClose(); },
+        onCreated: (workspace: Workspace, openNow: boolean): void => {
+          this.pendingWorkspaceOpen = openNow ? workspace : null;
+          if (!openNow) { promptAction.showToast({ message: '已创建「' + workspace.name + '」', duration: 1600 }); }
+          this.requestAddSheetClose();
         }
       })
     } else if (this.modernAddProtocol === 'ssh') {

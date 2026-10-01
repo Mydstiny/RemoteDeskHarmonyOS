@@ -1,3 +1,4 @@
+import { display } from '@kit.ArkUI';
 import { ProBadge } from '../ProBadge';
 /** Protocol entry for the modern add-host wizard. */
 import { AppTheme, Palette, buildDark, buildLight } from '../../common/Theme';
@@ -40,6 +41,16 @@ export struct HostProtocolPicker {
   aboutToDisappear(): void {
     this.stopAiAccess?.();
     this.stopAiAccess = null;
+  }
+
+  /** The option list scrolls once it would push the sheet past ~85% of the screen (header excluded). */
+  private listMaxHeight(): number {
+    try {
+      const screen: display.Display = display.getDefaultDisplaySync();
+      return Math.max(240, Math.round(screen.height / Math.max(1, screen.densityPixels) * 0.85) - 110);
+    } catch (_error) {
+      return 520;
+    }
   }
 
   private pal(): Palette {
@@ -118,6 +129,8 @@ export struct HostProtocolPicker {
           .width(36).height(36).borderRadius(18).padding(0).backgroundColor(this.pal().surface)
           .onClick((): void => { this.onClose(); })
       }.width('100%').margin({ bottom: 18 })
+      Scroll() {
+        Column() {
       this.protocolOption('rdp', 'RDP', '连接 Windows 远程桌面',
         resolveHostProtocolPickerOption('rdp', true))
       this.protocolOption('rustdesk', 'RustDesk', '中继、直连与局域网发现',
@@ -142,6 +155,9 @@ export struct HostProtocolPicker {
           .layoutWeight(1).margin({ left: 8 })
       }
       .width('100%').padding({ left: 12, right: 12, top: 8, bottom: 2 })
+        }.width('100%')
+      }.width('100%').constraintSize({ maxHeight: this.listMaxHeight() }).scrollBar(BarState.Off)
+      .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: false }).align(Alignment.Top)
     }.width('100%').padding({ left: 20, right: 20, top: 20, bottom: 18 })
     .backgroundColor(this.pal().sheetBg)
   }
