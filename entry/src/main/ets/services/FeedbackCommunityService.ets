@@ -6,6 +6,7 @@ import {
   FEEDBACK_COMMUNITY_QR_MAX_BYTES,
   FEEDBACK_COMMUNITY_MANIFEST_URL,
   FeedbackCommunityManifest,
+  isFeedbackCommunityManifestUrl,
   isFeedbackCommunityQrImageUrl,
   validateFeedbackCommunityManifest
 } from './FeedbackCommunityPolicy';
@@ -31,11 +32,16 @@ function responseBytes(result: Object): ArrayBuffer {
 }
 
 export class FeedbackCommunityService {
-  async fetchManifest(): Promise<FeedbackCommunityManifest> {
+  async fetchManifest(
+    manifestUrl: string = FEEDBACK_COMMUNITY_MANIFEST_URL
+  ): Promise<FeedbackCommunityManifest> {
+    if (!isFeedbackCommunityManifestUrl(manifestUrl)) {
+      throw new Error('反馈清单地址不是受信任的 HTTPS 资源地址');
+    }
     const request: http.HttpRequest = http.createHttp();
     try {
-      const separator: string = FEEDBACK_COMMUNITY_MANIFEST_URL.indexOf('?') >= 0 ? '&' : '?';
-      const url: string = FEEDBACK_COMMUNITY_MANIFEST_URL + separator + 't=' + Date.now().toString();
+      const separator: string = manifestUrl.indexOf('?') >= 0 ? '&' : '?';
+      const url: string = manifestUrl + separator + 't=' + Date.now().toString();
       const response: http.HttpResponse = await request.request(url, {
         method: http.RequestMethod.GET,
         expectDataType: http.HttpDataType.STRING,

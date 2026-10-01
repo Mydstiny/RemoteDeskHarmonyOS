@@ -44,6 +44,13 @@ export function isFeedbackCommunityQrImageUrl(value: string): boolean {
   return value.indexOf(FEEDBACK_COMMUNITY_ASSET_PREFIX) === 0;
 }
 
+export function isFeedbackCommunityManifestUrl(value: string): boolean {
+  if (value.indexOf(FEEDBACK_COMMUNITY_ASSET_PREFIX) !== 0) { return false; }
+  const queryIndex: number = value.indexOf('?');
+  const path: string = queryIndex >= 0 ? value.slice(0, queryIndex) : value;
+  return path.endsWith('.json');
+}
+
 export function validateFeedbackCommunityManifest(
   payload: Object,
   now: number

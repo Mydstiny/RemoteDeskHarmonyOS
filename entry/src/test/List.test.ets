@@ -108,6 +108,7 @@ import rustDeskPeerTwoFactorPolicyTest from './RustDeskPeerTwoFactorPolicy.test'
 import cloudSyncGuidancePolicyTest from './CloudSyncGuidancePolicy.test';
 import settingsLeafSheetLifecyclePolicyTest from './SettingsLeafSheetLifecyclePolicy.test';
 import feedbackCommunityPolicyTest from './FeedbackCommunityPolicy.test';
+import proFeedbackPolicyTest from './ProFeedbackPolicy.test';
 import guideContentRegistryTest from './GuideContentRegistry.test';
 import releaseNotesRegistryTest from './ReleaseNotesRegistry.test';
 import sshKeyImportServiceTest from './SshKeyImportService.test';
@@ -382,6 +383,7 @@ export default function testsuite() {
   cloudSyncGuidancePolicyTest();
   settingsLeafSheetLifecyclePolicyTest();
   feedbackCommunityPolicyTest();
+  proFeedbackPolicyTest();
   guideContentRegistryTest();
   releaseNotesRegistryTest();
   sshKeyImportServiceTest();

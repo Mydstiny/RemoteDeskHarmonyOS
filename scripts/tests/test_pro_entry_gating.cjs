@@ -114,9 +114,14 @@ const catalogSource = entryTs.transpileModule(fs.readFileSync(catalogPath, 'utf8
 }).outputText;
 vm.runInNewContext(catalogSource, { module: entryModule, exports: entryModule.exports, require: () => ({}) }, { filename: catalogPath });
 const proCatalog = entryModule.exports.proFeatures();
-for (const id of ['pro.workspaces', 'pro.hostManagement']) {
+for (const id of ['pro.workspaces', 'pro.hostManagement', 'pro.feedback']) {
   const item = proCatalog.find(item => item.id === id); assert.ok(item);
   assert.equal(item.requiredEntitlementId, 'pro.lifetime');
+  if (id === 'pro.feedback') {
+    assert.equal(item.availability, 'available');
+    assert.match(entryModule.exports.proFeatureProgress(id), /Pro.*畅联群.*QQ 群/);
+    continue;
+  }
   assert.equal(item.availability, 'experimental');
   assert.ok(item.devices.includes('phone')); assert.ok(item.devices.includes('tablet')); assert.ok(item.devices.includes('pc'));
 }

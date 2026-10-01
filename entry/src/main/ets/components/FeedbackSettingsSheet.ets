@@ -1,5 +1,5 @@
 /**
- * FeedbackSettingsSheet.ets — 反馈子选项卡：邮箱反馈 / 畅联群聊。
+ * FeedbackSettingsSheet.ets — 反馈子选项卡：邮箱反馈 / 畅联群聊 / Pro 反馈。
  */
 import { promptAction } from '@kit.ArkUI';
 import { common, Want } from '@kit.AbilityKit';
@@ -17,6 +17,15 @@ import {
   feedbackCommunityRemainingText
 } from '../services/FeedbackCommunityPolicy';
 import { FeedbackCommunityService } from '../services/FeedbackCommunityService';
+import {
+  PRO_FEEDBACK_CHANLIAN_MANIFEST_URL,
+  PRO_FEEDBACK_FEATURE,
+  PRO_FEEDBACK_QQ_MANIFEST_URL
+} from '../services/pro/ProFeedbackPolicy';
+import { ProEntries } from '../services/pro/ProEntries';
+import { ProBadge } from './ProBadge';
+
+const FEEDBACK_QR_DECODE_EDGE: number = 640;
 
 @Component
 export struct FeedbackSettingsSheet {
@@ -34,10 +43,20 @@ export struct FeedbackSettingsSheet {
   @State nowMs: number = Date.now();
   @State savingQr: boolean = false;
   @State activeTab: number = 0;
+  @State proFeedbackVisible: boolean = false;
+  @State proChanlian: FeedbackCommunityManifest | null = null;
+  @State proChanlianQrPixelMap: image.PixelMap | null = null;
+  @State proChanlianError: string = '';
+  @State proQq: FeedbackCommunityManifest | null = null;
+  @State proQqQrPixelMap: image.PixelMap | null = null;
+  @State proQqError: string = '';
+  @State proLoading: boolean = false;
 
   private readonly tabsController: HdsTabsController = new HdsTabsController();
   private readonly communityService: FeedbackCommunityService = new FeedbackCommunityService();
   private communityLoadEpoch: number = 0;
+  private proLoadEpoch: number = 0;
+  private proStop: (() => void) | null = null;
 
   aboutToAppear(): void {
     this.communityLoadEpoch++;
@@ -47,12 +66,42 @@ export struct FeedbackSettingsSheet {
     this.communityError = '';
     this.nowMs = Date.now();
     this.refreshCommunityQr();
+    this.proFeedbackVisible = ProEntries.visible(PRO_FEEDBACK_FEATURE);
+    this.proStop?.();
+    this.proStop = ProEntries.subscribe((): void => {
+      const visible: boolean = ProEntries.visible(PRO_FEEDBACK_FEATURE);
+      this.proFeedbackVisible = visible;
+      if (!visible) {
+        // Entitlement revocation must discard in-memory QR state before a later
+        // restore; a restored Pro account should fetch a fresh manifest.
+        this.proLoadEpoch++;
+        this.proLoading = false;
+        this.proChanlian = null;
+        this.proQq = null;
+        this.proChanlianError = '';
+        this.proQqError = '';
+        this.clearProQrPixelMaps();
+        if (this.activeTab === 2) { this.activeTab = 0; }
+      }
+      if (visible && this.proChanlian === null && !this.proLoading) {
+        void this.refreshProQr();
+      }
+    });
   }
 
   aboutToDisappear(): void {
     this.communityLoadEpoch++;
+    this.proLoadEpoch++;
     this.communityLoading = false;
+    this.proLoading = false;
+    this.proStop?.();
+    this.proStop = null;
     this.clearQrPixelMap();
+    this.proChanlian = null;
+    this.proQq = null;
+    this.proChanlianError = '';
+    this.proQqError = '';
+    this.clearProQrPixelMaps();
   }
 
   private pal(): Palette {
@@ -93,6 +142,10 @@ export struct FeedbackSettingsSheet {
       let pixelMap: image.PixelMap;
       try {
         pixelMap = await source.createPixelMap({
+          desiredSize: {
+            width: FEEDBACK_QR_DECODE_EDGE,
+            height: FEEDBACK_QR_DECODE_EDGE
+          },
           desiredPixelFormat: image.PixelMapFormat.RGBA_8888
         });
       } finally {
@@ -132,6 +185,140 @@ export struct FeedbackSettingsSheet {
     const pixelMap: image.PixelMap | null = this.communityQrPixelMap;
     this.communityQrPixelMap = null;
     this.releasePixelMap(pixelMap);
+  }
+
+  private proVisible(): boolean {
+    return this.proFeedbackVisible && ProEntries.visible(PRO_FEEDBACK_FEATURE);
+  }
+
+  private clearProQrPixelMaps(): void {
+    const chanlian: image.PixelMap | null = this.proChanlianQrPixelMap;
+    const qq: image.PixelMap | null = this.proQqQrPixelMap;
+    this.proChanlianQrPixelMap = null;
+    this.proQqQrPixelMap = null;
+    this.releasePixelMap(chanlian);
+    this.releasePixelMap(qq);
+  }
+
+  private async loadProChannel(manifestUrl: string, channel: string, epoch: number): Promise<void> {
+    try {
+      const manifest: FeedbackCommunityManifest = await this.communityService.fetchManifest(manifestUrl);
+      const bytes: ArrayBuffer = await this.communityService.downloadQrImage(
+        feedbackCommunityImageUrl(manifest)
+      );
+      const source: image.ImageSource = image.createImageSource(bytes);
+      let pixelMap: image.PixelMap;
+      try {
+        pixelMap = await source.createPixelMap({
+          desiredSize: {
+            width: FEEDBACK_QR_DECODE_EDGE,
+            height: FEEDBACK_QR_DECODE_EDGE
+          },
+          desiredPixelFormat: image.PixelMapFormat.RGBA_8888
+        });
+      } finally {
+        source.release();
+      }
+      if (epoch !== this.proLoadEpoch || !this.proVisible()) {
+        this.releasePixelMap(pixelMap);
+        return;
+      }
+      if (channel === 'chanlian') {
+        const previous: image.PixelMap | null = this.proChanlianQrPixelMap;
+        this.proChanlian = manifest;
+        this.proChanlianQrPixelMap = pixelMap;
+        this.proChanlianError = '';
+        this.releasePixelMap(previous);
+      } else {
+        const previous: image.PixelMap | null = this.proQqQrPixelMap;
+        this.proQq = manifest;
+        this.proQqQrPixelMap = pixelMap;
+        this.proQqError = '';
+        this.releasePixelMap(previous);
+      }
+      this.nowMs = Date.now();
+    } catch (error) {
+      if (epoch !== this.proLoadEpoch) { return; }
+      const message: string = this.errorMessage(error as Object);
+      if (channel === 'chanlian') {
+        this.proChanlian = null;
+        this.releasePixelMap(this.proChanlianQrPixelMap);
+        this.proChanlianQrPixelMap = null;
+        this.proChanlianError = '畅联二维码：' + message;
+      } else {
+        this.proQq = null;
+        this.releasePixelMap(this.proQqQrPixelMap);
+        this.proQqQrPixelMap = null;
+        this.proQqError = 'QQ 二维码：' + message;
+      }
+    }
+  }
+
+  private async refreshProQr(): Promise<void> {
+    if (this.proLoading || !this.proVisible()) { return; }
+    this.proLoading = true;
+    const epoch: number = ++this.proLoadEpoch;
+    this.proChanlian = null;
+    this.proQq = null;
+    this.proChanlianError = '';
+    this.proQqError = '';
+    this.clearProQrPixelMaps();
+    try {
+      await Promise.all([
+        this.loadProChannel(PRO_FEEDBACK_CHANLIAN_MANIFEST_URL, 'chanlian', epoch),
+        this.loadProChannel(PRO_FEEDBACK_QQ_MANIFEST_URL, 'qq', epoch)
+      ]);
+    } finally {
+      if (epoch === this.proLoadEpoch) { this.proLoading = false; }
+    }
+  }
+
+  private proManifestIsCurrent(
+    current: FeedbackCommunityManifest,
+    latest: FeedbackCommunityManifest
+  ): boolean {
+    return current.version === latest.version && current.qrImageUrl === latest.qrImageUrl &&
+      current.expiresAt === latest.expiresAt;
+  }
+
+  private async saveProQrImage(
+    result: SaveButtonOnClickResult,
+    current: FeedbackCommunityManifest | null,
+    manifestUrl: string,
+    title: string
+  ): Promise<void> {
+    if (result !== SaveButtonOnClickResult.SUCCESS) {
+      promptAction.showToast({ message: '未获得相册保存授权，请重试', duration: 2200 });
+      return;
+    }
+    if (current === null || !this.proVisible() || this.savingQr) { return; }
+    this.savingQr = true;
+    try {
+      const latest: FeedbackCommunityManifest = await this.communityService.fetchManifest(manifestUrl);
+      if (!this.proVisible()) { return; }
+      if (!this.proManifestIsCurrent(current, latest) || latest.expiresAt <= Date.now()) {
+        await this.refreshProQr();
+        throw new Error('二维码已更新或过期，已刷新，请重试保存');
+      }
+      const bytes: ArrayBuffer = await this.communityService.downloadQrImage(
+        feedbackCommunityImageUrl(latest)
+      );
+      if (!this.proVisible()) { return; }
+      const ctx: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
+      const helper = photoAccessHelper.getPhotoAccessHelper(ctx);
+      const request: photoAccessHelper.MediaAssetChangeRequest =
+        photoAccessHelper.MediaAssetChangeRequest.createAssetRequest(
+          ctx, photoAccessHelper.PhotoType.IMAGE, 'jpg', { title: title });
+      request.addResource(photoAccessHelper.ResourceType.IMAGE_RESOURCE, bytes);
+      await helper.applyChanges(request);
+      if (this.proVisible()) {
+        promptAction.showToast({ message: '二维码已保存到相册', duration: 1800 });
+      }
+    } catch (error) {
+      promptAction.showToast({ message: '保存失败：' + this.errorMessage(error as Object), duration: 2400 });
+    } finally {
+      this.savingQr = false;
+    }
   }
 
   private communityManifestIsCurrent(
@@ -221,6 +408,10 @@ export struct FeedbackSettingsSheet {
           .focusable(false).tabBar(this.emailTabBar)
         TabContent() { this.communityContent() }
           .focusable(false).tabBar(this.communityTabBar)
+        if (this.proFeedbackVisible) {
+          TabContent() { this.proFeedbackContent() }
+            .focusable(false).tabBar(this.proFeedbackTabBar)
+        }
       }
       .barOverlap(false)
       .barPosition(BarPosition.Start)
@@ -256,6 +447,18 @@ export struct FeedbackSettingsSheet {
       Text('加入畅联群聊').fontSize(12)
         .fontColor(this.activeTab === 1 ? this.accentColor : this.pal().text3)
         .margin({ top: 3 })
+    }.alignItems(HorizontalAlign.Center)
+  }
+
+  @Builder proFeedbackTabBar() {
+    Column() {
+      SymbolGlyph($r('sys.symbol.person_2_fill')).fontSize(18)
+        .fontColor([this.activeTab === 2 ? this.accentColor : this.pal().text3])
+      Row({ space: 4 }) {
+        Text('Pro反馈').fontSize(12)
+          .fontColor(this.activeTab === 2 ? this.accentColor : this.pal().text3)
+        ProBadge({ large: false })
+      }.margin({ top: 3 })
     }.alignItems(HorizontalAlign.Center)
   }
 
@@ -341,6 +544,75 @@ export struct FeedbackSettingsSheet {
           }.width('100%').margin({ top: 16, bottom: 24 })
         }
       }.width('100%').alignItems(HorizontalAlign.Center)
+    }.width('100%').layoutWeight(1).scrollBar(BarState.Off)
+  }
+
+  @Builder proChannelCard(
+    title: string,
+    scannerHint: string,
+    manifest: FeedbackCommunityManifest | null,
+    pixelMap: image.PixelMap | null,
+    error: string,
+    manifestUrl: string,
+    saveTitle: string
+  ) {
+    Column() {
+      Text(title).fontSize(18).fontWeight(FontWeight.Medium)
+        .fontColor(this.pal().text).fontFamily(this.font()).margin({ top: 14, bottom: 5 })
+      if (manifest !== null && pixelMap !== null) {
+        Text(manifest.notice + ' ' + scannerHint).fontSize(12).lineHeight(18)
+          .textAlign(TextAlign.Center).fontColor(this.pal().text2).fontFamily(this.font())
+          .width('100%').padding({ left: 8, right: 8 })
+        Column() {
+          Image(pixelMap)
+            .width(this.breakpoint === 'sm' ? 220 : 248)
+            .height(this.breakpoint === 'sm' ? 220 : 248)
+            .objectFit(ImageFit.Contain)
+        }.padding(10).margin({ top: 12 }).backgroundColor(Color.White).borderRadius(16)
+          .shadow({ radius: 10, color: 'rgba(0,0,0,0.12)', offsetY: 3 })
+        Text(feedbackCommunityRemainingText(manifest.expiresAt, this.nowMs))
+          .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font()).margin({ top: 8 })
+        Row() {
+          SaveButton().width('100%').height(40)
+            .onClick((_event: ClickEvent, result: SaveButtonOnClickResult): void => {
+              this.saveProQrImage(result, manifest, manifestUrl, saveTitle);
+            })
+        }.width('100%').margin({ top: 12, bottom: 16 })
+      } else if (error !== '') {
+        Text(error).fontSize(13).lineHeight(20).textAlign(TextAlign.Center)
+          .fontColor(this.pal().text2).fontFamily(this.font()).width('100%')
+          .padding({ left: 12, right: 12, bottom: 18 })
+      } else {
+        LoadingProgress().width(28).height(28).color(this.accentColor).margin({ top: 24, bottom: 24 })
+      }
+    }.width('100%').alignItems(HorizontalAlign.Center)
+      .backgroundColor(this.pal().surface).borderRadius(18)
+  }
+
+  @Builder proFeedbackContent() {
+    Scroll() {
+      Column({ space: 12 }) {
+        Text('Pro 专属反馈').fontSize(20).fontWeight(FontWeight.Medium)
+          .fontColor(this.pal().text).fontFamily(this.font()).margin({ top: 14, bottom: 2 })
+        Text('可任选畅联群或 QQ 群加入；二维码会按清单有效期轮换。')
+          .fontSize(13).lineHeight(20).textAlign(TextAlign.Center)
+          .fontColor(this.pal().text2).fontFamily(this.font()).width('100%')
+          .padding({ left: 8, right: 8, bottom: 4 })
+        if (!this.proVisible()) {
+          Text('Pro 权益已失效，请刷新账号状态后重试。').fontSize(13)
+            .fontColor(this.pal().text2).margin({ top: 24, bottom: 24 })
+        } else {
+          this.proChannelCard('Pro 畅联群', '请使用畅连扫描。', this.proChanlian,
+            this.proChanlianQrPixelMap, this.proChanlianError,
+            PRO_FEEDBACK_CHANLIAN_MANIFEST_URL, 'Pro 畅联群二维码')
+          this.proChannelCard('Pro QQ 群', '请使用 QQ 扫描。', this.proQq,
+            this.proQqQrPixelMap, this.proQqError,
+            PRO_FEEDBACK_QQ_MANIFEST_URL, 'Pro QQ 群二维码')
+          Button('刷新全部二维码').height(38).fontSize(13)
+            .backgroundColor(Color.Transparent).fontColor(this.accentColor)
+            .onClick((): void => { void this.refreshProQr(); })
+        }
+      }.width('100%').padding({ left: 24, right: 24, bottom: 24 })
     }.width('100%').layoutWeight(1).scrollBar(BarState.Off)
   }
 }

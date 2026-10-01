@@ -59,6 +59,12 @@ function personalization(): ProFeature {
   feature.availability = 'experimental';
   return feature;
 }
+function proFeedback(): ProFeature {
+  const feature = planned('pro.feedback', 'Pro 反馈',
+    '加入 Pro 专属畅联群或 QQ 群，选择适合你的反馈渠道。');
+  feature.availability = 'available';
+  return feature;
+}
 function experimentalWorkspace(): ProFeature {
   const feature = planned('pro.workspaces', '工作区与布局',
     '把常用的一组会话存成工作区，一键依次打开；SSH 可指定初始目录，PC 按保存的布局摆放窗口。');
@@ -99,6 +105,7 @@ export function proFeatures(): ProFeature[] {
     knockTransfer(),
     connectionShare(),
     continuation(),
+    proFeedback(),
     planned('pro.security.webauthnRedirect', '安全密钥重定向', '在支持的 RDP 会话中使用本地安全密钥。'),
     planned('pro.security.phonePasskey', '手机通行密钥', '探索使用华为手机完成远端支持的认证。')
   ];
@@ -119,6 +126,7 @@ export function proFeatureProgress(id: string): string {
     case 'pro.personalization': return '已开发 · 自定义组合键与 SSH 终端皮肤待实机验收';
     case 'pro.workspaces': return '已开发 · 依次打开、布局编辑与 PC 窗口摆放待实机验收';
     case 'pro.hostManagement': return '已开发 · 分组、标签、智能分组、批量操作与导入导出待实机验收';
+    case 'pro.feedback': return '已上线 · Pro 专属畅联群与 QQ 群';
     default: return '';
   }
 }
