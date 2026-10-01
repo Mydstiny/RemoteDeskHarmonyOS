@@ -652,3 +652,30 @@ test('version-one cache migration preserves its signed grant and recovery receip
   await restarted.service.restoreCached(); assert.equal(restarted.service.snapshot().state, 'active');
   assert.deepEqual(normalize(await restarted.store.pending(f.lease.scope)), ['preserved']);
 });
+test('the combined cold-start read matches read() plus refundPending() in every fence and clock state', async t => {
+  const f = await fixture(t);
+  const scope = f.lease.scope;
+  const both = async now => {
+    const record = normalize(await f.store.read(scope, now)); const refund = await f.store.refundPending(scope);
+    const combined = normalize(await f.store.readWithRefund(scope, now));
+    assert.deepEqual(combined, { record, refundPending: refund });
+    return combined;
+  };
+  // No cached grant yet.
+  assert.deepEqual(await both(f.state.now), { record: null, refundPending: false });
+  await f.service.reconcile([], true);
+  const key = f.database.prepare('SELECT scope FROM pro_cache').get().scope;
+  // A clean cache, then an interrupted verification, an untimed refund fence, an anchored one and a rolled-back clock.
+  assert.equal((await both(f.state.now + 1)).record.clockBlocked, false);
+  await f.store.beginVerification(scope);
+  assert.equal((await both(f.state.now + 2)).record.clockBlocked, true);
+  await f.store.endVerification(scope, true);
+  await f.store.markRefundPending(scope);
+  const untimed = await both(f.state.now + 3);
+  assert.equal(untimed.refundPending, true); assert.equal(untimed.record.clockBlocked, true);
+  await f.store.clearRefundPending(scope);
+  f.database.prepare('INSERT INTO pro_verifying VALUES (?)').run(key + ':refund:12345');
+  assert.equal((await both(f.state.now + 4)).refundPending, true);
+  await f.store.clearRefundPending(scope);
+  assert.equal((await both(1)).record.clockBlocked, true);
+});

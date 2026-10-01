@@ -13,6 +13,8 @@ export interface ProCachedRecord {
   observedAt: number;
   clockBlocked: boolean;
 }
+/** The cached record together with the scope's refund fence, read in one store operation. */
+export interface ProCachedReadout { record: ProCachedRecord | null; refundPending: boolean; }
 export interface ProEntitlementStorePort {
   beginVerification(scope: ProStoreScope): Promise<boolean>;
   endVerification(scope: ProStoreScope, clear: boolean): Promise<void>;
@@ -20,6 +22,7 @@ export interface ProEntitlementStorePort {
   clearRefundPending(scope: ProStoreScope): Promise<void>;
   refundPending(scope: ProStoreScope): Promise<boolean>;
   read(scope: ProStoreScope, now: number): Promise<ProCachedRecord | null>;
+  readWithRefund(scope: ProStoreScope, now: number): Promise<ProCachedReadout>;
   accept(scope: ProStoreScope, snapshot: ProTrustedSnapshot, observedAt: number, receipts: string[]): Promise<void>;
   retain(scope: ProStoreScope, receipts: string[]): Promise<void>;
   pending(scope: ProStoreScope): Promise<string[]>;
@@ -137,6 +140,42 @@ export class ProEntitlementStore implements ProEntitlementStorePort {
       try { record.clockBlocked = blocked || fence.goToFirstRow(); } finally { fence.close(); }
       record.observedAt = observed;
       return record;
+    });
+  }
+  /**
+   * read() and refundPending() in one queued operation for the cold-start cache path. The same queries and the same
+   * observed-time update run; the row and fence queries are issued together, so startup waits on the busy UI thread
+   * twice instead of four or five times.
+   */
+  readWithRefund(scope: ProStoreScope, now: number): Promise<ProCachedReadout> {
+    const key = scopeKey(scope);
+    return this.serialize(async (store: relationalStore.RdbStore): Promise<ProCachedReadout> => {
+      const fenceQuery = store.querySql('SELECT scope FROM pro_verifying WHERE scope=? OR scope=? OR scope LIKE ?',
+        [key, refundFenceKey(key), refundFencePattern(key)]);
+      let record: ProCachedRecord | null = null;
+      try { record = await this.row(store, key); }
+      catch (error) { void fenceQuery.then((result: relationalStore.ResultSet): void => { result.close(); }, (): void => {}); throw error as Error; }
+      const fence = await fenceQuery;
+      let fenced: boolean = false;
+      let refundPending: boolean = false;
+      try {
+        if (fence.goToFirstRow()) {
+          do {
+            const value: string = fence.getString(0);
+            fenced = true;
+            if (value === refundFenceKey(key) || value.startsWith(refundFenceKey(key) + ':')) { refundPending = true; }
+          } while (fence.goToNextRow());
+        }
+      } finally { fence.close(); }
+      if (record === null) { return { record: null, refundPending }; }
+      const blocked = record.clockBlocked || !validTime(now) || now < record.observedAt;
+      const observed = validTime(now) ? Math.max(record.observedAt, now) : record.observedAt;
+      if (observed !== record.observedAt || blocked !== record.clockBlocked) {
+        await store.executeSql('UPDATE pro_cache SET observed_at=?,clock_blocked=? WHERE scope=?', [observed, blocked ? 1 : 0, key]);
+      }
+      record.clockBlocked = blocked || fenced;
+      record.observedAt = observed;
+      return { record, refundPending };
     });
   }
   // Persist before contacting the server: a crash or disk failure after an

@@ -4,7 +4,7 @@ import { cryptoFramework } from '@kit.CryptoArchitectureKit';
 import { ProEnvironment } from './ProAccessPolicy';
 import { ProOrderVerifier, ProVerificationResult } from './ProEntitlementService';
 import { ProEntitlementClock } from './ProEntitlementClock';
-import { ProCachedRecord, ProEntitlementStorePort, ProStoreScope } from './ProEntitlementStore';
+import { ProCachedReadout, ProCachedRecord, ProEntitlementStorePort, ProStoreScope } from './ProEntitlementStore';
 import { ProSignedEntitlementVerifier, ProTrustConfiguration, ProTrustedSnapshot } from './ProSignedEntitlement';
 
 export type ProBackendOperation = 'intents' | 'reconcile' | 'refund-order';
@@ -87,8 +87,9 @@ export class ProTrustedEntitlementClient implements ProOrderVerifier {
         return result;
       }
       const now = this.clock.now();
-      const cached = await this.store.read(lease.scope, now);
-      const refundPending = await this.store.refundPending(lease.scope);
+      const readout: ProCachedReadout = await this.store.readWithRefund(lease.scope, now);
+      const cached: ProCachedRecord | null = readout.record;
+      const refundPending: boolean = readout.refundPending;
       if (cached === null || cached.clockBlocked || !Number.isSafeInteger(now) || !this.current(lease)) {
         const result = this.unavailable(lease.scope.owner);
         result.refundPending = refundPending;
