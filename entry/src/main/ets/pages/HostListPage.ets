@@ -2,7 +2,11 @@ import { ProBadge, proBadgeMotionLabel, proBadgeStyleLabel } from '../components
 import { ProBadgeSettingsPanel, ProFeatureDetailPanel } from '../components/ProFeatureManagerPanel';
 import { SshSkinSettingsPanel } from '../components/ssh/skin/SshSkinSettingsPanel';
 import { proFeatureCurrentStatus } from '../services/pro/ProFeatureStatusReader';
-import { PRO_PERSONALIZATION_FEATURE, ProFeature } from '../services/pro/ProFeatureCatalog';
+import {
+  PRO_PERSONALIZATION_FEATURE,
+  PRO_RDP_ADVANCED_DISPLAY_FEATURE,
+  ProFeature
+} from '../services/pro/ProFeatureCatalog';
 import { AiHostEditor } from '../components/ai/AiHostEditor';
 import { AiHostService, projectAiHost, aiHostId } from '../services/ai/AiHostService';
 import { AiHost } from '../services/ai/AiModels';
@@ -703,6 +707,11 @@ import {
   rdpRemoteUiScaleLabel
 } from '../services/RdpAdaptiveDisplayPolicy';
 import {
+  normalizeRdpDesktopScalePercent,
+  normalizeRdpDeviceScalePercent,
+  validateRemoteDisplayGeometry
+} from '../services/RemoteDisplayProfilePolicy';
+import {
   localViewScalePercent,
   normalizeLocalViewScaleMode,
   REMOTE_DISPLAY_SCALE_PREFERENCE_VERSION,
@@ -1355,9 +1364,18 @@ struct HostListPage {
   @StorageLink('rustdeskControlMode') rustdeskControlMode: number = 0; // 0=触控板, 1=直接触控, 2=键鼠
   @StorageLink('rdpDesktopPreset') rdpDesktopPreset: number = 0; // 0=自动, 1=1080p, 2=2K, 3=4K
   @StorageLink('rdpDesktopResolutionId') rdpDesktopResolutionId: string = 'auto';
+  @StorageLink('rdpCustomWidth') rdpCustomWidth: number = 1920;
+  @StorageLink('rdpCustomHeight') rdpCustomHeight: number = 1080;
   @StorageLink('rdpRemoteUiScale') rdpRemoteUiScale: string = 'auto';
+  @StorageLink('rdpDesktopScaleMode') rdpDesktopScaleMode: string = 'auto';
+  @StorageLink('rdpDesktopScalePercent') rdpDesktopScalePercent: number = 100;
+  @StorageLink('rdpDeviceScaleMode') rdpDeviceScaleMode: string = 'auto';
+  @StorageLink('rdpDeviceScalePercent') rdpDeviceScalePercent: number = 100;
   @StorageLink('remoteDisplayScaleMode') remoteDisplayScaleMode: string = 'fit';
   @StorageLink('remoteDisplayCustomScalePercent') remoteDisplayCustomScalePercent: number = 100;
+  @State private rdpCustomWidthDraft: string = '1920';
+  @State private rdpCustomHeightDraft: string = '1080';
+  @State private rdpDesktopScaleDraft: string = '100';
   @StorageLink(REMOTE_SESSION_CONTROL_BAR_HIDDEN_RDP_KEY)
   sessionControlBarHiddenRdp: boolean = false;
   @StorageLink(REMOTE_SESSION_CONTROL_BAR_HIDDEN_RUSTDESK_KEY)
@@ -2355,7 +2373,13 @@ struct HostListPage {
         prefs.getSync('rustdeskControlMode', defaults.rustdeskControlMode) as number;
       const savedRdpDesktopPreset: number = prefs.getSync('rdpDesktopPreset', 0) as number;
       const savedRdpDesktopResolutionId: string = prefs.getSync('rdpDesktopResolutionId', '') as string;
+      const savedRdpCustomWidth: number = prefs.getSync('rdpCustomWidth', 1920) as number;
+      const savedRdpCustomHeight: number = prefs.getSync('rdpCustomHeight', 1080) as number;
       const savedRdpRemoteUiScale: string = prefs.getSync('rdpRemoteUiScale', 'auto') as string;
+      const savedRdpDesktopScaleMode: string = prefs.getSync('rdpDesktopScaleMode', 'auto') as string;
+      const savedRdpDesktopScalePercent: number = prefs.getSync('rdpDesktopScalePercent', 100) as number;
+      const savedRdpDeviceScaleMode: string = prefs.getSync('rdpDeviceScaleMode', 'auto') as string;
+      const savedRdpDeviceScalePercent: number = prefs.getSync('rdpDeviceScalePercent', 100) as number;
       const savedRemoteDisplayScaleMode: string = prefs.getSync('remoteDisplayScaleMode', '') as string;
       const remoteDisplayScalePreferenceVersion: number =
         prefs.getSync(REMOTE_DISPLAY_SCALE_PREFERENCE_VERSION_KEY, 0) as number;
@@ -2471,13 +2495,33 @@ struct HostListPage {
       this.rdpDesktopPreset = savedRdpDesktopPreset >= 0 && savedRdpDesktopPreset <= 3 ? savedRdpDesktopPreset : 0;
       this.rdpDesktopResolutionId = normalizeRdpResolutionId(savedRdpDesktopResolutionId, this.rdpDesktopPreset);
       this.rdpDesktopPreset = legacyRdpPresetForResolutionId(this.rdpDesktopResolutionId);
+      const customGeometry = validateRemoteDisplayGeometry(savedRdpCustomWidth, savedRdpCustomHeight);
+      this.rdpCustomWidth = customGeometry.accepted ? customGeometry.width : 1920;
+      this.rdpCustomHeight = customGeometry.accepted ? customGeometry.height : 1080;
+      this.rdpCustomWidthDraft = this.rdpCustomWidth.toString();
+      this.rdpCustomHeightDraft = this.rdpCustomHeight.toString();
       this.rdpRemoteUiScale = normalizeRdpRemoteUiScalePreference(savedRdpRemoteUiScale);
+      this.rdpDesktopScaleMode = savedRdpDesktopScaleMode === 'custom' || savedRdpDesktopScaleMode === 'preset' ?
+        savedRdpDesktopScaleMode : (this.rdpRemoteUiScale === 'auto' ? 'auto' : 'preset');
+      this.rdpDesktopScalePercent = normalizeRdpDesktopScalePercent(
+        savedRdpDesktopScalePercent, this.rdpRemoteUiScale === 'auto' ? 100 : Number(this.rdpRemoteUiScale));
+      this.rdpDesktopScaleDraft = this.rdpDesktopScalePercent.toString();
+      this.rdpDeviceScaleMode = savedRdpDeviceScaleMode === 'fixed' ? 'fixed' :
+        (this.rdpRemoteUiScale === 'auto' ? 'auto' : 'fixed');
+      this.rdpDeviceScalePercent = normalizeRdpDeviceScalePercent(
+        savedRdpDeviceScalePercent, this.rdpRemoteUiScale === 'auto' ? 100 : Number(this.rdpRemoteUiScale));
       this.remoteDisplayScaleMode = resolveInitialRemoteDisplayScaleMode(savedRemoteDisplayScaleMode,
         remoteDisplayScalePreferenceVersion, prefs.hasSync('remoteDisplayScaleMode'));
       this.remoteDisplayCustomScalePercent = Math.max(50, Math.min(300,
         Number.isFinite(savedRemoteDisplayCustomScalePercent) ? savedRemoteDisplayCustomScalePercent : 100));
       prefs.putSync('rdpDesktopResolutionId', this.rdpDesktopResolutionId);
+      prefs.putSync('rdpCustomWidth', this.rdpCustomWidth);
+      prefs.putSync('rdpCustomHeight', this.rdpCustomHeight);
       prefs.putSync('rdpRemoteUiScale', this.rdpRemoteUiScale);
+      prefs.putSync('rdpDesktopScaleMode', this.rdpDesktopScaleMode);
+      prefs.putSync('rdpDesktopScalePercent', this.rdpDesktopScalePercent);
+      prefs.putSync('rdpDeviceScaleMode', this.rdpDeviceScaleMode);
+      prefs.putSync('rdpDeviceScalePercent', this.rdpDeviceScalePercent);
       prefs.putSync('remoteDisplayScaleMode', this.remoteDisplayScaleMode);
       prefs.putSync(REMOTE_DISPLAY_SCALE_PREFERENCE_VERSION_KEY,
         REMOTE_DISPLAY_SCALE_PREFERENCE_VERSION);
@@ -2526,7 +2570,13 @@ struct HostListPage {
       AppStorage.setOrCreate('rustdeskControlMode', this.rustdeskControlMode);
       AppStorage.setOrCreate('rdpDesktopPreset', this.rdpDesktopPreset);
       AppStorage.setOrCreate('rdpDesktopResolutionId', this.rdpDesktopResolutionId);
+      AppStorage.setOrCreate('rdpCustomWidth', this.rdpCustomWidth);
+      AppStorage.setOrCreate('rdpCustomHeight', this.rdpCustomHeight);
       AppStorage.setOrCreate('rdpRemoteUiScale', this.rdpRemoteUiScale);
+      AppStorage.setOrCreate('rdpDesktopScaleMode', this.rdpDesktopScaleMode);
+      AppStorage.setOrCreate('rdpDesktopScalePercent', this.rdpDesktopScalePercent);
+      AppStorage.setOrCreate('rdpDeviceScaleMode', this.rdpDeviceScaleMode);
+      AppStorage.setOrCreate('rdpDeviceScalePercent', this.rdpDeviceScalePercent);
       AppStorage.setOrCreate('remoteDisplayScaleMode', this.remoteDisplayScaleMode);
       AppStorage.setOrCreate('remoteDisplayCustomScalePercent', this.remoteDisplayCustomScalePercent);
       AppStorage.setOrCreate('rdpColorDepth', this.rdpColorDepth);
@@ -13104,8 +13154,72 @@ struct HostListPage {
     this.persistPref('rdpDesktopPreset', this.rdpDesktopPreset);
   }
 
+  private canUseRdpAdvancedDisplay(): boolean {
+    const context = ProAppRuntime.getInstance().context('rdp');
+    context.capabilities = ['rdp.displayControl'];
+    const decision = ProAppRuntime.getInstance().runtime.decision(
+      PRO_RDP_ADVANCED_DISPLAY_FEATURE, context);
+    if (decision.executable) { return true; }
+    promptAction.showToast({
+      message: decision.reason === 'purchaseRequired' ? 'RDP 自定义显示需要 Pro' :
+        decision.reason === 'planned' ? 'RDP 高级显示仍在灰度，当前只开放标准预设' : '当前设备暂不支持 RDP 高级显示',
+      duration: 2200
+    });
+    return false;
+  }
+
+  private saveRdpCustomResolution(widthText: string, heightText: string): void {
+    if (!this.canUseRdpAdvancedDisplay()) { return; }
+    const checked = validateRemoteDisplayGeometry(Number(widthText), Number(heightText));
+    if (!checked.accepted) {
+      promptAction.showToast({ message: checked.reason, duration: 1800 });
+      return;
+    }
+    this.rdpCustomWidth = checked.width;
+    this.rdpCustomHeight = checked.height;
+    this.rdpCustomWidthDraft = checked.width.toString();
+    this.rdpCustomHeightDraft = checked.height.toString();
+    this.rdpDesktopResolutionId = 'custom';
+    this.rdpDesktopPreset = legacyRdpPresetForResolutionId('custom');
+    this.persistPref('rdpCustomWidth', checked.width);
+    this.persistPref('rdpCustomHeight', checked.height);
+    this.persistPref('rdpDesktopResolutionId', 'custom');
+    this.persistPref('rdpDesktopPreset', this.rdpDesktopPreset);
+  }
+
   private saveRdpRemoteUiScale(value: string): void {
     this.rdpRemoteUiScale = normalizeRdpRemoteUiScalePreference(value);
+    this.persistPref('rdpRemoteUiScale', this.rdpRemoteUiScale);
+    this.rdpDesktopScaleMode = value === 'auto' ? 'auto' : 'preset';
+    this.rdpDesktopScalePercent = value === 'auto' ? 100 : normalizeRdpDesktopScalePercent(Number(value));
+    this.rdpDeviceScaleMode = value === 'auto' ? 'auto' : 'fixed';
+    this.rdpDeviceScalePercent = value === 'auto' ? 100 : normalizeRdpDeviceScalePercent(Number(value));
+    this.rdpDesktopScaleDraft = this.rdpDesktopScalePercent.toString();
+    this.persistPref('rdpDesktopScaleMode', this.rdpDesktopScaleMode);
+    this.persistPref('rdpDesktopScalePercent', this.rdpDesktopScalePercent);
+    this.persistPref('rdpDeviceScaleMode', this.rdpDeviceScaleMode);
+    this.persistPref('rdpDeviceScalePercent', this.rdpDeviceScalePercent);
+  }
+
+  private saveRdpDesktopScalePercent(valueText: string): void {
+    const value: number = Number(valueText);
+    if (!Number.isFinite(value) || value < 100 || value > 500) {
+      promptAction.showToast({ message: 'Windows 界面缩放请输入 100–500%', duration: 1800 });
+      return;
+    }
+    const normalized: number = normalizeRdpDesktopScalePercent(value);
+    const isFreePreset: boolean = normalized === 100 || normalized === 140 || normalized === 180;
+    if (!isFreePreset && !this.canUseRdpAdvancedDisplay()) { return; }
+    this.rdpDesktopScalePercent = normalized;
+    this.rdpDesktopScaleMode = isFreePreset ? 'preset' : 'custom';
+    this.rdpDeviceScalePercent = isFreePreset ? normalizeRdpDeviceScalePercent(normalized) : 100;
+    this.rdpDeviceScaleMode = isFreePreset ? 'fixed' : 'auto';
+    this.rdpRemoteUiScale = isFreePreset ? normalized.toString() : 'auto';
+    this.rdpDesktopScaleDraft = normalized.toString();
+    this.persistPref('rdpDesktopScalePercent', normalized);
+    this.persistPref('rdpDesktopScaleMode', this.rdpDesktopScaleMode);
+    this.persistPref('rdpDeviceScalePercent', this.rdpDeviceScalePercent);
+    this.persistPref('rdpDeviceScaleMode', this.rdpDeviceScaleMode);
     this.persistPref('rdpRemoteUiScale', this.rdpRemoteUiScale);
   }
 
@@ -19977,7 +20091,19 @@ struct HostListPage {
       .width('100%')
       .height(42)
       .margin({ top: 4 })
-    }.width('100%').height(110).padding({ top: 10, bottom: 10 })
+      Row({ space: 6 }) {
+        TextInput({ text: this.rdpCustomWidthDraft, placeholder: '宽 200–8192' })
+          .layoutWeight(1).height(34).type(InputType.Number).fontSize(11)
+          .onChange((value: string): void => { this.rdpCustomWidthDraft = value; })
+        Text('×').fontSize(12).fontColor(this.pal().text3)
+        TextInput({ text: this.rdpCustomHeightDraft, placeholder: '高 200–8192' })
+          .layoutWeight(1).height(34).type(InputType.Number).fontSize(11)
+          .onChange((value: string): void => { this.rdpCustomHeightDraft = value; })
+        Button('自定义 · Pro').height(34).fontSize(10).padding({ left: 8, right: 8 })
+          .backgroundColor(this.pal().surface).fontColor(this.accentColor)
+          .onClick((): void => { this.saveRdpCustomResolution(this.rdpCustomWidthDraft, this.rdpCustomHeightDraft); })
+      }.width('100%').padding({ left: 16, right: 16, top: 7 })
+    }.width('100%').height(155).padding({ top: 10, bottom: 10 })
   }
 
   @Builder rdpDesktopPresetLabelBlock() {
@@ -20015,7 +20141,7 @@ struct HostListPage {
         Row() { this.rdpRemoteUiScaleLabelBlock() }.width('100%')
         Row() { this.rdpRemoteUiScaleSelector() }
           .width('100%').justifyContent(FlexAlign.Center).margin({ top: 10 })
-      }.width('100%').height(92).padding({ left: 16, right: 16, top: 14, bottom: 12 })
+      }.width('100%').height(132).padding({ left: 16, right: 16, top: 14, bottom: 12 })
     }
   }
 
@@ -20037,20 +20163,37 @@ struct HostListPage {
     Row({ space: 4 }) {
       this.rdpRemoteUiScaleChip('自动', 'auto')
       this.rdpRemoteUiScaleChip('标准', '100')
+      this.rdpRemoteUiScaleChip('125% · Pro', '125')
       this.rdpRemoteUiScaleChip('大', '140')
+      this.rdpRemoteUiScaleChip('150% · Pro', '150')
+      this.rdpRemoteUiScaleChip('175% · Pro', '175')
       this.rdpRemoteUiScaleChip('特大', '180')
+      this.rdpRemoteUiScaleChip('200% · Pro', '200')
+      TextInput({ text: this.rdpDesktopScaleDraft, placeholder: '100–500' })
+        .width(76).height(32).type(InputType.Number).fontSize(11)
+        .onChange((value: string): void => { this.rdpDesktopScaleDraft = value; })
+        .onSubmit((): void => { this.saveRdpDesktopScalePercent(this.rdpDesktopScaleDraft); })
     }.padding(3).borderRadius(11).backgroundColor(this.pal().surface)
   }
 
   @Builder rdpRemoteUiScaleChip(label: string, value: string) {
     Text(label).fontSize(11)
-      .fontColor(this.rdpRemoteUiScale === value ? '#FFFFFF' : this.pal().text2)
-      .fontWeight(this.rdpRemoteUiScale === value ? FontWeight.Medium : FontWeight.Normal)
+      .fontColor((value === 'auto' ? this.rdpRemoteUiScale === value :
+        this.rdpDesktopScalePercent === Number(value)) ? '#FFFFFF' : this.pal().text2)
+      .fontWeight((value === 'auto' ? this.rdpRemoteUiScale === value :
+        this.rdpDesktopScalePercent === Number(value)) ? FontWeight.Medium : FontWeight.Normal)
       .textAlign(TextAlign.Center).maxLines(1)
       .padding({ left: 9, right: 9, top: 7, bottom: 7 })
-      .backgroundColor(this.rdpRemoteUiScale === value ? this.accentColor : Color.Transparent)
+      .backgroundColor((value === 'auto' ? this.rdpRemoteUiScale === value :
+        this.rdpDesktopScalePercent === Number(value)) ? this.accentColor : Color.Transparent)
       .borderRadius(8)
-      .onClick((): void => { this.saveRdpRemoteUiScale(value); })
+      .onClick((): void => {
+        if (value === 'auto' || value === '100' || value === '140' || value === '180') {
+          this.saveRdpRemoteUiScale(value);
+        } else {
+          this.saveRdpDesktopScalePercent(value);
+        }
+      })
   }
 
   private remoteDisplayScaleLabel(): string {

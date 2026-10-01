@@ -11,6 +11,9 @@ export interface RdpAdaptiveDisplayInput {
   uiScalePreference: string;
   dpiScaleSupported: boolean;
   maxEdgePx?: number;
+  /** New split fields. Legacy uiScalePreference remains the migration input. */
+  desktopScalePercent?: number;
+  deviceScalePercent?: number;
 }
 
 export interface RdpAdaptiveDisplayResult {
@@ -243,6 +246,18 @@ export function normalizeRdpRemoteUiScalePreference(value: string): RdpRemoteUiS
   return 'auto';
 }
 
+export function normalizeRdpDesktopScalePercent(value: number, fallback: number = 100): number {
+  const safeFallback: number = Number.isFinite(fallback) ? Math.round(fallback) : 100;
+  const boundedFallback: number = Math.max(100, Math.min(500, safeFallback));
+  if (!Number.isFinite(value) || value < 100) { return boundedFallback; }
+  return Math.max(100, Math.min(500, Math.round(value)));
+}
+
+export function normalizeRdpDeviceScalePercent(value: number, fallback: number = 100): number {
+  if (value === 100 || value === 140 || value === 180) { return value; }
+  return fallback === 140 || fallback === 180 ? fallback : 100;
+}
+
 export function resolveRdpRemoteUiScale(value: string, densityPixels: number): number {
   const preference: RdpRemoteUiScalePreference = normalizeRdpRemoteUiScalePreference(value);
   if (preference !== 'auto') {
@@ -288,8 +303,12 @@ export function resolveRdpAdaptiveDisplay(input: RdpAdaptiveDisplayInput): RdpAd
     };
   }
 
-  const requestedUiScale: number = resolveRdpRemoteUiScale(
+  const legacyUiScale: number = resolveRdpRemoteUiScale(
     input.uiScalePreference, input.densityPixels);
+  const requestedUiScale: number = normalizeRdpDesktopScalePercent(
+    input.desktopScalePercent ?? legacyUiScale, legacyUiScale);
+  const requestedDeviceScale: number = normalizeRdpDeviceScalePercent(
+    input.deviceScalePercent ?? legacyUiScale, legacyUiScale);
   const requestedMaxEdge: number = input.maxEdgePx ?? 0;
   const maxEdge: number = validPositive(requestedMaxEdge) ?
     Math.max(200, Math.min(8192, Math.round(requestedMaxEdge))) :
@@ -312,12 +331,12 @@ export function resolveRdpAdaptiveDisplay(input: RdpAdaptiveDisplayInput): RdpAd
     width: evenDimension(width),
     height: evenDimension(height),
     desktopScaleFactor: input.dpiScaleSupported ? requestedUiScale : 100,
-    deviceScaleFactor: input.dpiScaleSupported ? requestedUiScale : 100,
+    deviceScaleFactor: input.dpiScaleSupported ? requestedDeviceScale : 100,
     physicalWidthMm: physicalMillimetres(input.surfaceWidthPx, input.densityDpi),
     physicalHeightMm: physicalMillimetres(input.surfaceHeightPx, input.densityDpi),
     orientation: input.surfaceWidthPx >= input.surfaceHeightPx ? 0 : 90,
     requestedUiScale,
-    usesDpiScale: input.dpiScaleSupported && requestedUiScale > 100,
+    usesDpiScale: input.dpiScaleSupported && (requestedUiScale > 100 || requestedDeviceScale > 100),
     fallbackReason
   };
 }

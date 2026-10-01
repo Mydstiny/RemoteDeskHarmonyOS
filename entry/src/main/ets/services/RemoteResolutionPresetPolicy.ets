@@ -55,8 +55,18 @@ function evenWidth(value: number): number {
 /** Resolve the one authoritative geometry used by both the initial handshake
  * and mid-session Display Control requests. */
 export function resolveRdpResolutionGeometry(id: string, adaptiveWidth: number,
-  adaptiveHeight: number): RdpResolutionGeometry {
+  adaptiveHeight: number, customWidth: number = 0, customHeight: number = 0): RdpResolutionGeometry {
   const preset: RemoteResolutionPreset | null = rdpResolutionPresetForId(id);
+  if (id === 'custom') {
+    const custom: RdpResolutionGeometry = {
+      width: evenWidth(validDimension(customWidth) ? customWidth : adaptiveWidth),
+      height: Math.max(200, Math.min(8192,
+        Math.round(validDimension(customHeight) ? customHeight : adaptiveHeight))),
+      orientation: customWidth >= customHeight ? 0 : 90,
+      followsWindow: false
+    };
+    return custom;
+  }
   const width: number = preset === null ?
     evenWidth(validDimension(adaptiveWidth) ? adaptiveWidth : 1920) : preset.width;
   const height: number = preset === null ?
@@ -71,11 +81,13 @@ export function resolveRdpResolutionGeometry(id: string, adaptiveWidth: number,
 }
 
 export function rdpResolutionAspectAssessment(id: string, surfaceWidth: number,
-  surfaceHeight: number): RdpResolutionAspectAssessment {
+  surfaceHeight: number, customWidth: number = 0, customHeight: number = 0): RdpResolutionAspectAssessment {
   if (id === 'auto') {
     return { followsWindow: true, aspectGapPercent: 0, avoidsRatioBars: true };
   }
-  const preset: RemoteResolutionPreset | null = rdpResolutionPresetForId(id);
+  const preset: RemoteResolutionPreset | null = id === 'custom' ?
+    { id: 'custom', label: '自定义', width: customWidth, height: customHeight } :
+    rdpResolutionPresetForId(id);
   if (preset === null || !validDimension(surfaceWidth) || !validDimension(surfaceHeight)) {
     return { followsWindow: false, aspectGapPercent: 100, avoidsRatioBars: false };
   }
@@ -123,7 +135,7 @@ export function rdpResolutionPresetForId(id: string): RemoteResolutionPreset | n
 }
 
 export function normalizeRdpResolutionId(value: string, legacyPreset: number): string {
-  if (value === 'auto' || rdpResolutionPresetForId(value) !== null) {
+  if (value === 'auto' || value === 'custom' || rdpResolutionPresetForId(value) !== null) {
     return value;
   }
   if (legacyPreset === 0) { return 'auto'; }
@@ -142,6 +154,7 @@ export function legacyRdpPresetForResolutionId(id: string): number {
 
 export function rdpResolutionLabel(id: string): string {
   if (id === 'auto') { return '自适应当前窗口'; }
+  if (id === 'custom') { return '自定义分辨率'; }
   const preset = rdpResolutionPresetForId(id);
   return preset === null ? '1920 × 1080' : preset.label;
 }

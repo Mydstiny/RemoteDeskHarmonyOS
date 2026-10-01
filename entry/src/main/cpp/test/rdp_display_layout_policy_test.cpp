@@ -27,10 +27,22 @@ RDP_TEST_CASE(rdp_display_layout_policy_rejects_odd_width) {
     RDP_ASSERT(!RdpDisplayLayoutPolicy::Validate(request).accepted);
 }
 
-RDP_TEST_CASE(rdp_display_layout_policy_rejects_unknown_scale) {
+RDP_TEST_CASE(rdp_display_layout_policy_accepts_custom_desktop_scale) {
     RdpDisplayLayoutRequest request = ValidLayout();
     request.desktopScaleFactor = 125;
-    RDP_ASSERT(RdpDisplayLayoutPolicy::Validate(request).code == "invalid_scale");
+    RDP_ASSERT(RdpDisplayLayoutPolicy::Validate(request).accepted);
+}
+
+RDP_TEST_CASE(rdp_display_layout_policy_rejects_invalid_device_scale) {
+    RdpDisplayLayoutRequest request = ValidLayout();
+    request.deviceScaleFactor = 125;
+    RDP_ASSERT(RdpDisplayLayoutPolicy::Validate(request).code == "invalid_device_scale");
+}
+
+RDP_TEST_CASE(rdp_display_layout_policy_rejects_desktop_scale_above_windows_limit) {
+    RdpDisplayLayoutRequest request = ValidLayout();
+    request.desktopScaleFactor = 501;
+    RDP_ASSERT(RdpDisplayLayoutPolicy::Validate(request).code == "invalid_desktop_scale");
 }
 
 RDP_TEST_CASE(rdp_display_layout_policy_accepts_portrait_orientation) {

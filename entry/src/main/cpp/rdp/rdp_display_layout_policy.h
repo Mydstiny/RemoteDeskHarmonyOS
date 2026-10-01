@@ -8,8 +8,19 @@ namespace RdpDisplayLayoutPolicy {
 constexpr int64_t kMinimumSendIntervalUs = 500000;
 constexpr int64_t kInFlightTimeoutUs = 5000000;
 
-inline bool IsScaleFactorValid(int value) {
+inline bool IsDesktopScaleFactorValid(int value) {
+    return value >= 100 && value <= 500;
+}
+
+inline bool IsDeviceScaleFactorValid(int value) {
     return value == 100 || value == 140 || value == 180;
+}
+
+// Kept as a source-compatible helper for older adapter call sites.  New code
+// must choose the field-specific validator above because RDPEDISP gives the
+// two percentages different contracts.
+inline bool IsScaleFactorValid(int value) {
+    return IsDeviceScaleFactorValid(value);
 }
 
 inline bool IsOrientationValid(int value) {
@@ -130,9 +141,11 @@ inline RdpDisplayLayoutResult Validate(const RdpDisplayLayoutRequest& request) {
     if (!IsOrientationValid(request.orientation)) {
         return {false, "invalid_orientation", "RDP display orientation is unsupported"};
     }
-    if (!IsScaleFactorValid(request.desktopScaleFactor) ||
-        !IsScaleFactorValid(request.deviceScaleFactor)) {
-        return {false, "invalid_scale", "RDP display scale must be 100, 140, or 180"};
+    if (!IsDesktopScaleFactorValid(request.desktopScaleFactor)) {
+        return {false, "invalid_desktop_scale", "RDP desktop scale must be an integer from 100 to 500"};
+    }
+    if (!IsDeviceScaleFactorValid(request.deviceScaleFactor)) {
+        return {false, "invalid_device_scale", "RDP device scale must be 100, 140, or 180"};
     }
     return {true, "accepted", "RDP display layout queued"};
 }

@@ -117,6 +117,11 @@ struct RustDeskDisplayCapabilities {
     int originalHeight = 0;
     int scaleMilli = 1000;
     uint32_t geometryEpoch = 0;
+    std::string peerVersion;
+    std::string peerPlatform;
+    bool hasDisplayIndex = false;
+    bool hasPermission = false;
+    bool hasVirtualDisplay = false;
     std::vector<RustDeskDisplayResolution> resolutions;
     std::vector<RustDeskDisplayInfo> displays;
 };

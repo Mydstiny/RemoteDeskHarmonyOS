@@ -1,5 +1,7 @@
 export const PRO_LIFETIME: string = 'pro.lifetime';
 export const PRO_PERSONALIZATION_FEATURE: string = 'pro.personalization';
+export const PRO_RDP_ADVANCED_DISPLAY_FEATURE: string = 'pro.display.rdpAdvanced';
+export const PRO_RUSTDESK_ADVANCED_DISPLAY_FEATURE: string = 'pro.display.rustdeskAdvanced';
 export type ProAvailability = 'available' | 'planned' | 'experimental' | 'disabled';
 export type ProDevice = 'phone' | 'tablet' | 'pc' | 'unknown';
 export interface ProFeature {
@@ -79,6 +81,22 @@ function experimentalHostManagement(): ProFeature {
   feature.minApiVersion = 26;
   return feature;
 }
+function rdpAdvancedDisplay(): ProFeature {
+  const feature = planned(PRO_RDP_ADVANCED_DISPLAY_FEATURE, 'RDP 高级显示方案',
+    '自定义远端桌面宽高与 Windows 100–500% 界面缩放，并按设备保存显示方案。');
+  feature.availability = 'experimental';
+  feature.protocols = ['rdp'];
+  feature.capabilities = ['rdp.displayControl'];
+  return feature;
+}
+function rustDeskAdvancedDisplay(): ProFeature {
+  const feature = planned(PRO_RUSTDESK_ADVANCED_DISPLAY_FEATURE, 'RustDesk 高级显示方案',
+    '在已验证的远端显示器和权限条件下提交自定义分辨率，并回读实际应用结果。');
+  feature.availability = 'experimental';
+  feature.protocols = ['rustdesk'];
+  feature.capabilities = ['rustdesk.displayControl'];
+  return feature;
+}
 function remoteAi(id: string, title: string, description: string): ProFeature {
   const feature = planned(id, title, description);
   // The local LAN pairing/session path is shipped and guarded by the real
@@ -96,6 +114,8 @@ export function proFeatures(): ProFeature[] {
       devices: [], protocols: [], capabilities: [], permissions: [], serverAuthorized: false },
     experimentalWorkspace(),
     experimentalHostManagement(),
+    rdpAdvancedDisplay(),
+    rustDeskAdvancedDisplay(),
     personalization(),
     remoteAi('pro.ai.workspace', '远程 AI 工作台', '在自己的电脑上运行 AI，查看执行过程、批准操作并恢复会话。'),
     remoteAi('pro.ai.codex', 'Codex 远程控制', '连接电脑端 Codex 插件，使用原生会话、审批与文件差异。'),
@@ -126,6 +146,8 @@ export function proFeatureProgress(id: string): string {
     case 'pro.personalization': return '已开发 · 自定义组合键与 SSH 终端皮肤待实机验收';
     case 'pro.workspaces': return '已开发 · 依次打开、布局编辑与 PC 窗口摆放待实机验收';
     case 'pro.hostManagement': return '已开发 · 分组、标签、智能分组、批量操作与导入导出待实机验收';
+    case PRO_RDP_ADVANCED_DISPLAY_FEATURE: return '已开发 · RDP 自定义尺寸与 Windows 缩放待真实 Windows 矩阵验收';
+    case PRO_RUSTDESK_ADVANCED_DISPLAY_FEATURE: return '已开发 · 能力感知自定义分辨率待 RustDesk peer/设备矩阵验收';
     case 'pro.feedback': return '已上线 · Pro 专属畅联群与 QQ 群';
     default: return '';
   }

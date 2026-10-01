@@ -207,6 +207,10 @@ extern "C" {
         int32_t scaleMilli;
         uint32_t geometryEpoch;
         uint32_t resolutionCount;
+        uint32_t peerVersionLen;
+        uint8_t peerVersion[64];
+        uint32_t peerPlatformLen;
+        uint8_t peerPlatform[64];
     };
     struct RustDeskFfiResolution { int32_t width; int32_t height; };
     struct RustDeskFfiDisplayInfoSnapshot {
@@ -245,7 +249,7 @@ static constexpr uint32_t kRustDeskPermissionStateVersion = 1;
 static constexpr uint32_t kRustDeskPermissionKeyboard = 1U << 0;
 static constexpr uint32_t kRustDeskPermissionClipboard = 1U << 2;
 static constexpr uint32_t kRustDeskPermissionFile = 1U << 4;
-static constexpr uint32_t kRustDeskDisplaySnapshotVersion = 1;
+static constexpr uint32_t kRustDeskDisplaySnapshotVersion = 2;
 static constexpr uint32_t kRustDeskVideoFrameAbiVersion = 2;
 static constexpr uint32_t kRustDeskTransportCapabilitiesVersion = 1;
 static constexpr uint32_t kRustDeskStrategyForceRelay = 1U << 0;
@@ -294,7 +298,7 @@ static_assert(sizeof(RustDeskFfiPermissionState) == 16,
               "RustDeskPermissionState ABI size changed; update both sides together");
 static_assert(alignof(RustDeskFfiPermissionState) == 4,
               "RustDeskPermissionState ABI alignment changed");
-static_assert(sizeof(RustDeskFfiDisplaySnapshot) == 36,
+static_assert(sizeof(RustDeskFfiDisplaySnapshot) == 172,
               "RustDeskDisplaySnapshot ABI size changed; update both sides together");
 static_assert(alignof(RustDeskFfiDisplaySnapshot) == 4,
               "RustDeskDisplaySnapshot ABI alignment changed");
@@ -307,6 +311,10 @@ static_assert(offsetof(RustDeskFfiDisplaySnapshot, originalHeight) == 20);
 static_assert(offsetof(RustDeskFfiDisplaySnapshot, scaleMilli) == 24);
 static_assert(offsetof(RustDeskFfiDisplaySnapshot, geometryEpoch) == 28);
 static_assert(offsetof(RustDeskFfiDisplaySnapshot, resolutionCount) == 32);
+static_assert(offsetof(RustDeskFfiDisplaySnapshot, peerVersionLen) == 36);
+static_assert(offsetof(RustDeskFfiDisplaySnapshot, peerVersion) == 40);
+static_assert(offsetof(RustDeskFfiDisplaySnapshot, peerPlatformLen) == 104);
+static_assert(offsetof(RustDeskFfiDisplaySnapshot, peerPlatform) == 108);
 static_assert(sizeof(RustDeskFfiResolution) == 8,
               "RustDeskResolution ABI size changed; update both sides together");
 static_assert(sizeof(RustDeskFfiDisplayInfoSnapshot) == 176,
@@ -2995,6 +3003,19 @@ RustDeskDisplayCapabilities RustDeskBridge::getDisplayCapabilities() const {
             candidate.originalHeight = snapshot.originalHeight;
             candidate.scaleMilli = snapshot.scaleMilli;
             candidate.geometryEpoch = snapshot.geometryEpoch;
+            const size_t peerVersionLength =
+                std::min<size_t>(snapshot.peerVersionLen, sizeof(snapshot.peerVersion));
+            const size_t peerPlatformLength =
+                std::min<size_t>(snapshot.peerPlatformLen, sizeof(snapshot.peerPlatform));
+            candidate.peerVersion.assign(
+                reinterpret_cast<const char*>(snapshot.peerVersion), peerVersionLength);
+            candidate.peerPlatform.assign(
+                reinterpret_cast<const char*>(snapshot.peerPlatform), peerPlatformLength);
+            candidate.hasDisplayIndex = snapshot.currentDisplay >= 0;
+            candidate.hasPermission = !candidate.displays.empty() ||
+                snapshot.width > 0 || snapshot.height > 0;
+            candidate.hasVirtualDisplay = candidate.peerPlatform.find("windows") != std::string::npos ||
+                candidate.peerPlatform.find("linux") != std::string::npos;
             const size_t count = std::min<size_t>(snapshot.resolutionCount, 32);
             candidate.resolutions.reserve(count);
             for (size_t index = 0; index < count; ++index) {

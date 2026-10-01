@@ -857,12 +857,13 @@ pub enum FfiConnectionState {
 pub const RUSTDESK_STREAM_STATS_VERSION: u32 = 1;
 pub const RUSTDESK_QUALITY_STATE_VERSION: u32 = 1;
 pub const RUSTDESK_PERMISSION_STATE_VERSION: u32 = 1;
-pub const RUSTDESK_DISPLAY_SNAPSHOT_VERSION: u32 = 1;
+pub const RUSTDESK_DISPLAY_SNAPSHOT_VERSION: u32 = 2;
 pub const RUSTDESK_DISPLAY_LIST_VERSION: u32 = 1;
 pub const RUSTDESK_VIDEO_FRAME_ABI_VERSION: u32 = 2;
 pub const RUSTDESK_MAX_DISPLAY_RESOLUTIONS: usize = 32;
 pub const RUSTDESK_MAX_DISPLAYS: usize = 16;
 pub const RUSTDESK_DISPLAY_NAME_BYTES: usize = 128;
+pub const RUSTDESK_DISPLAY_IDENTITY_BYTES: usize = 64;
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -994,6 +995,8 @@ pub(crate) struct RustDeskDisplayState {
     pub geometry_epoch: u32,
     pub resolutions: Vec<(i32, i32)>,
     pub displays: Vec<RustDeskDisplayInfoState>,
+    pub peer_version: String,
+    pub peer_platform: String,
 }
 
 impl Default for RustDeskDisplayState {
@@ -1012,12 +1015,14 @@ impl Default for RustDeskDisplayState {
             geometry_epoch: 0,
             resolutions: Vec::new(),
             displays: Vec::new(),
+            peer_version: String::new(),
+            peer_platform: String::new(),
         }
     }
 }
 
 #[repr(C)]
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy)]
 pub struct RustDeskDisplaySnapshot {
     pub version: u32,
     pub current_display: i32,
@@ -1028,6 +1033,30 @@ pub struct RustDeskDisplaySnapshot {
     pub scale_milli: i32,
     pub geometry_epoch: u32,
     pub resolution_count: u32,
+    pub peer_version_len: u32,
+    pub peer_version: [u8; RUSTDESK_DISPLAY_IDENTITY_BYTES],
+    pub peer_platform_len: u32,
+    pub peer_platform: [u8; RUSTDESK_DISPLAY_IDENTITY_BYTES],
+}
+
+impl Default for RustDeskDisplaySnapshot {
+    fn default() -> Self {
+        Self {
+            version: 0,
+            current_display: 0,
+            width: 0,
+            height: 0,
+            original_width: 0,
+            original_height: 0,
+            scale_milli: 1000,
+            geometry_epoch: 0,
+            resolution_count: 0,
+            peer_version_len: 0,
+            peer_version: [0; RUSTDESK_DISPLAY_IDENTITY_BYTES],
+            peer_platform_len: 0,
+            peer_platform: [0; RUSTDESK_DISPLAY_IDENTITY_BYTES],
+        }
+    }
 }
 
 #[repr(C)]
@@ -1642,7 +1671,7 @@ fn dispatch_display_snapshot(
     let Ok(state) = display_state.lock() else {
         return;
     };
-    let snapshot = RustDeskDisplaySnapshot {
+    let mut snapshot = RustDeskDisplaySnapshot {
         version: RUSTDESK_DISPLAY_SNAPSHOT_VERSION,
         current_display: state.current_display,
         width: state.width,
@@ -1655,7 +1684,15 @@ fn dispatch_display_snapshot(
             .resolutions
             .len()
             .min(RUSTDESK_MAX_DISPLAY_RESOLUTIONS) as u32,
+        peer_version_len: 0,
+        peer_version: [0; RUSTDESK_DISPLAY_IDENTITY_BYTES],
+        peer_platform_len: 0,
+        peer_platform: [0; RUSTDESK_DISPLAY_IDENTITY_BYTES],
     };
+    snapshot.peer_version_len = copy_identity_text(
+        &state.peer_version, &mut snapshot.peer_version);
+    snapshot.peer_platform_len = copy_identity_text(
+        &state.peer_platform, &mut snapshot.peer_platform);
     on_display(&snapshot, user_data);
 }
 
@@ -2225,6 +2262,10 @@ fn rustdesk_connect_impl(
             let callback_user_data = user_data as usize;
             let remote_clipboard = Arc::clone(&controls.remote_clipboard);
             let display_state = Arc::new(Mutex::new(c.peer_display_state()));
+            if let Ok(mut state) = display_state.lock() {
+                state.peer_version = c.peer_version();
+                state.peer_platform = peer_platform.clone();
+            }
             let (mut remote_width, mut remote_height) = display_state
                 .lock()
                 .map(|state| (state.width.max(1), state.height.max(1)))
@@ -3073,7 +3114,7 @@ pub extern "C" fn rustdesk_get_display_snapshot(
     let Ok(state) = ctx.display_state.lock() else {
         return false;
     };
-    let snapshot = RustDeskDisplaySnapshot {
+    let mut snapshot = RustDeskDisplaySnapshot {
         version: RUSTDESK_DISPLAY_SNAPSHOT_VERSION,
         current_display: state.current_display,
         width: state.width,
@@ -3086,7 +3127,15 @@ pub extern "C" fn rustdesk_get_display_snapshot(
             .resolutions
             .len()
             .min(RUSTDESK_MAX_DISPLAY_RESOLUTIONS) as u32,
+        peer_version_len: 0,
+        peer_version: [0; RUSTDESK_DISPLAY_IDENTITY_BYTES],
+        peer_platform_len: 0,
+        peer_platform: [0; RUSTDESK_DISPLAY_IDENTITY_BYTES],
     };
+    snapshot.peer_version_len = copy_identity_text(
+        &state.peer_version, &mut snapshot.peer_version);
+    snapshot.peer_platform_len = copy_identity_text(
+        &state.peer_platform, &mut snapshot.peer_platform);
     unsafe {
         ptr::write(out_snapshot, snapshot);
     }
@@ -3111,13 +3160,17 @@ pub extern "C" fn rustdesk_get_display_snapshot(
     true
 }
 
-fn copy_display_name(name: &str, target: &mut [u8; RUSTDESK_DISPLAY_NAME_BYTES]) -> u32 {
+fn copy_identity_text(name: &str, target: &mut [u8]) -> u32 {
     let mut length = name.len().min(target.len());
     while length > 0 && !name.is_char_boundary(length) {
         length -= 1;
     }
     target[..length].copy_from_slice(&name.as_bytes()[..length]);
     length as u32
+}
+
+fn copy_display_name(name: &str, target: &mut [u8; RUSTDESK_DISPLAY_NAME_BYTES]) -> u32 {
+    copy_identity_text(name, target)
 }
 
 /// Copy the complete remote display catalog into fixed-width C snapshots.

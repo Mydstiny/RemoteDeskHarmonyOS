@@ -19,6 +19,7 @@
 #include "disconnect_request_registry.h"
 #include "rdp/freerdp_adapter.h"
 #include "rdp/rdp_auth_mode_policy.h"
+#include "rdp/rdp_display_layout_policy.h"
 #include "rdp/rdp_connection_identity_policy.h"
 #include "rdp/rdp_network_retry_policy.h"
 #include "rdp/rdp_preflight_operation_fence.h"
@@ -5032,13 +5033,11 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
         getInt("rdpDesktopPhysicalWidthMm", cfg.rdpDesktopPhysicalWidthMm);
         getInt("rdpDesktopPhysicalHeightMm", cfg.rdpDesktopPhysicalHeightMm);
         getInt("rdpDesktopOrientation", cfg.rdpDesktopOrientation);
-        if (cfg.rdpDesktopScaleFactor != 100 && cfg.rdpDesktopScaleFactor != 140 &&
-            cfg.rdpDesktopScaleFactor != 180) {
+        if (!RdpDisplayLayoutPolicy::IsDesktopScaleFactorValid(cfg.rdpDesktopScaleFactor)) {
             cfg.rdpDesktopScaleFactor = 100;
         }
-        if (cfg.rdpDeviceScaleFactor != 100 && cfg.rdpDeviceScaleFactor != 140 &&
-            cfg.rdpDeviceScaleFactor != 180) {
-            cfg.rdpDeviceScaleFactor = cfg.rdpDesktopScaleFactor;
+        if (!RdpDisplayLayoutPolicy::IsDeviceScaleFactorValid(cfg.rdpDeviceScaleFactor)) {
+            cfg.rdpDeviceScaleFactor = 100;
         }
         if (cfg.rdpDesktopPhysicalWidthMm < 10 || cfg.rdpDesktopPhysicalWidthMm > 10000) {
             cfg.rdpDesktopPhysicalWidthMm = 0;
@@ -7819,6 +7818,11 @@ napi_value NapiGetRustDeskDisplayCapabilities(napi_env env, napi_callback_info i
     SetObjectInt32(env, result, "originalHeight", capabilities.originalHeight);
     SetObjectInt32(env, result, "scaleMilli", capabilities.scaleMilli);
     SetObjectInt32(env, result, "geometryEpoch", static_cast<int32_t>(capabilities.geometryEpoch));
+    SetObjectString(env, result, "peerVersion", capabilities.peerVersion);
+    SetObjectString(env, result, "peerPlatform", capabilities.peerPlatform);
+    SetObjectBool(env, result, "hasDisplayIndex", capabilities.hasDisplayIndex);
+    SetObjectBool(env, result, "hasPermission", capabilities.hasPermission);
+    SetObjectBool(env, result, "hasVirtualDisplay", capabilities.hasVirtualDisplay);
     napi_value resolutions;
     napi_create_array_with_length(env, capabilities.resolutions.size(), &resolutions);
     for (size_t index = 0; index < capabilities.resolutions.size(); ++index) {

@@ -46,9 +46,13 @@ export struct RdpControlCenter {
   @Prop selectionRevision: number = 0;
   @Prop reverseWheel: boolean = false;
   @Prop resolutionId: string = 'auto';
+  @Prop customWidth: number = 1920;
+  @Prop customHeight: number = 1080;
   @Prop surfaceWidthPx: number = 0;
   @Prop surfaceHeightPx: number = 0;
   @Prop remoteUiScale: string = 'auto';
+  @Prop desktopScaleMode: string = 'auto';
+  @Prop desktopScalePercent: number = 100;
   @Prop colorDepth: number = 32;
   @Prop audioEnabled: boolean = true;
   @Prop driveEnabled: boolean = true;
@@ -56,6 +60,9 @@ export struct RdpControlCenter {
   @Prop authIdentityMode: number = 1;
   @Prop tlsWithoutNla: boolean = false;
   @State private driveNameDraft: string = 'RemoteDesktop';
+  @State private customWidthDraft: string = '1920';
+  @State private customHeightDraft: string = '1080';
+  @State private desktopScaleDraft: string = '100';
   onClose: () => void = (): void => {};
   onOpenKeyboard: () => void = (): void => {};
   onOpenShortcuts: () => void = (): void => {};
@@ -70,7 +77,9 @@ export struct RdpControlCenter {
   onResetCanvas: () => void = (): void => {};
   onReverseWheel: (enabled: boolean) => void = (_enabled: boolean): void => {};
   onResolution: (id: string) => void = (_id: string): void => {};
+  onCustomResolution: (width: string, height: string) => void = (_width: string, _height: string): void => {};
   onRemoteUiScale: (value: string) => void = (_value: string): void => {};
+  onDesktopScalePercent: (value: string) => void = (_value: string): void => {};
   onColorDepth: (depth: number) => void = (_depth: number): void => {};
   onAudio: (enabled: boolean) => void = (_enabled: boolean): void => {};
   onDrive: (enabled: boolean) => void = (_enabled: boolean): void => {};
@@ -121,7 +130,12 @@ export struct RdpControlCenter {
 
   private onDriveNameChange(): void { this.driveNameDraft = this.driveName; }
 
-  aboutToAppear(): void { this.driveNameDraft = this.driveName; }
+  aboutToAppear(): void {
+    this.driveNameDraft = this.driveName;
+    this.customWidthDraft = this.customWidth.toString();
+    this.customHeightDraft = this.customHeight.toString();
+    this.desktopScaleDraft = this.desktopScalePercent.toString();
+  }
 
   @Builder private sectionTitle(title: string, activation: string = '') {
     Row() {
@@ -297,6 +311,18 @@ export struct RdpControlCenter {
         }.width('100%').height(38).scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off)
         Text(this.resolutionSelectionSummary()).fontSize(9)
           .fontColor(this.pal().text3).width('100%').margin({ top: 5, bottom: 10 })
+        Row({ space: 6 }) {
+          TextInput({ text: this.customWidthDraft, placeholder: '宽 200–8192' })
+            .layoutWeight(1).height(34).type(InputType.Number).fontSize(11)
+            .onChange((value: string): void => { this.customWidthDraft = value; })
+          Text('×').fontSize(12).fontColor(this.pal().text3)
+          TextInput({ text: this.customHeightDraft, placeholder: '高 200–8192' })
+            .layoutWeight(1).height(34).type(InputType.Number).fontSize(11)
+            .onChange((value: string): void => { this.customHeightDraft = value; })
+          Button('应用 · Pro').height(34).fontSize(10).padding({ left: 8, right: 8 })
+            .backgroundColor(this.pal().surface).fontColor(RDP_SESSION_CONTROL_ACCENT)
+            .onClick((): void => { this.onCustomResolution(this.customWidthDraft, this.customHeightDraft); })
+        }.width('100%').margin({ bottom: 10 })
         Divider().color(this.pal().divider)
         Text('远端界面大小').fontSize(11).fontColor(this.pal().text2)
           .width('100%').margin({ top: 10, bottom: 6 })
@@ -304,11 +330,29 @@ export struct RdpControlCenter {
           Row({ space: 6 }) {
             this.choice('自动', this.remoteUiScale === 'auto', (): void => { this.onRemoteUiScale('auto'); })
             this.choice('标准', this.remoteUiScale === '100', (): void => { this.onRemoteUiScale('100'); })
+            this.choice('125% · Pro', this.desktopScalePercent === 125,
+              (): void => { this.onDesktopScalePercent('125'); })
             this.choice('大', this.remoteUiScale === '140', (): void => { this.onRemoteUiScale('140'); })
+            this.choice('150% · Pro', this.desktopScalePercent === 150,
+              (): void => { this.onDesktopScalePercent('150'); })
+            this.choice('175% · Pro', this.desktopScalePercent === 175,
+              (): void => { this.onDesktopScalePercent('175'); })
             this.choice('特大', this.remoteUiScale === '180', (): void => { this.onRemoteUiScale('180'); })
+            this.choice('200% · Pro', this.desktopScalePercent === 200,
+              (): void => { this.onDesktopScalePercent('200'); })
           }
         }.width('100%').height(38).scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off)
-        Text('调整 Windows 字体与控件；与本地画面缩放相互独立').fontSize(9)
+        Row({ space: 6 }) {
+          Text('自定义 100–500%').fontSize(9).fontColor(this.pal().text3)
+          TextInput({ text: this.desktopScaleDraft, placeholder: '100 - 500' })
+            .width(82).height(30).type(InputType.Number).fontSize(11)
+            .onChange((value: string): void => { this.desktopScaleDraft = value; })
+          Button('应用').height(30).fontSize(10).padding({ left: 8, right: 8 })
+            .backgroundColor(this.pal().surface).fontColor(RDP_SESSION_CONTROL_ACCENT)
+            .onClick((): void => { this.onDesktopScalePercent(this.desktopScaleDraft); })
+        }.width('100%').margin({ top: 5 })
+        Text('调整 Windows 字体与控件；与本地画面缩放相互独立。125–500% 自定义档需要 Pro')
+          .fontSize(9)
           .fontColor(this.pal().text3).width('100%').margin({ top: 5, bottom: 10 })
         Divider().color(this.pal().divider)
         Text('色彩深度').fontSize(11).fontColor(this.pal().text2).width('100%').margin({ top: 10, bottom: 6 })

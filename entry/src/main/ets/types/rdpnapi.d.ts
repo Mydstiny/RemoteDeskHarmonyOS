@@ -771,6 +771,11 @@ export interface RustDeskDisplayCapabilities {
   originalHeight: number;
   scaleMilli: number;
   geometryEpoch: number;
+  peerVersion?: string;
+  peerPlatform?: string;
+  hasDisplayIndex?: boolean;
+  hasPermission?: boolean;
+  hasVirtualDisplay?: boolean;
   resolutions: RustDeskDisplayResolution[];
   displays: RustDeskDisplayInfo[];
 }

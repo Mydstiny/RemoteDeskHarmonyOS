@@ -28,6 +28,11 @@ import { describeProRdpConnection, describeProRemoteConnection,
   resolveProContinuationHost } from '../services/pro/ProConnectionHostAdapter';
 import { ProContinuationPreferences } from '../services/pro/ProContinuationPreferences';
 import { ProEntries } from '../services/pro/ProEntries';
+import { ProAppRuntime } from '../services/pro/ProAppRuntime';
+import {
+  PRO_RDP_ADVANCED_DISPLAY_FEATURE,
+  PRO_RUSTDESK_ADVANCED_DISPLAY_FEATURE
+} from '../services/pro/ProFeatureCatalog';
 import { ProRdpConnectionIdentity, describeProRdpConnectionIdentity,
   sameProRdpConnectionIdentity } from '../services/pro/ProRdpConnectionIdentity';
 import { ProRdpSessionIdentityStore } from '../services/pro/ProRdpSessionIdentityStore';
@@ -527,6 +532,8 @@ import {
 } from '../services/RemoteResolutionPresetPolicy';
 import {
   normalizeRdpRemoteUiScalePreference,
+  normalizeRdpDesktopScalePercent,
+  normalizeRdpDeviceScalePercent,
   rdpSessionOrientationPolicy,
   RDP_DYNAMIC_LAYOUT_SETTLE_MS,
   RDP_INPUT_STABILITY_DELAY_MS,
@@ -548,6 +555,12 @@ import {
   shouldUseRdpInitialDpiScale,
   shouldUseRdpPcAdaptiveDisplay
 } from '../services/RdpAdaptiveDisplayPolicy';
+import {
+  rustDeskCustomResolutionDecision,
+  RustDeskCustomResolutionCapability,
+  validateRemoteDisplayGeometry
+} from '../services/RemoteDisplayProfilePolicy';
+import { ProAccessDecision } from '../services/pro/ProAccessPolicy';
 import {
   normalizeRdpSessionColorDepth,
   normalizeRdpSessionControlMode,
@@ -1057,6 +1070,11 @@ const EMPTY_RUSTDESK_DISPLAY_CAPABILITIES: RustDeskDisplayCapabilities = {
   originalHeight: 0,
   scaleMilli: 1000,
   geometryEpoch: 0,
+  peerVersion: '',
+  peerPlatform: 'unknown',
+  hasDisplayIndex: false,
+  hasPermission: false,
+  hasVirtualDisplay: false,
   resolutions: [],
   displays: []
 };
@@ -1231,7 +1249,13 @@ struct RemoteDesktop {
   rdpShowDiagnostics: boolean = false;
   @StorageLink('rdpDesktopResolutionId') rdpDesktopResolutionId: string = 'auto';
   @StorageLink('rdpDesktopPreset') rdpDesktopPreset: number = 0;
+  @StorageLink('rdpCustomWidth') rdpCustomWidth: number = 1920;
+  @StorageLink('rdpCustomHeight') rdpCustomHeight: number = 1080;
   @StorageLink('rdpRemoteUiScale') rdpRemoteUiScale: string = 'auto';
+  @StorageLink('rdpDesktopScaleMode') rdpDesktopScaleMode: string = 'auto';
+  @StorageLink('rdpDesktopScalePercent') rdpDesktopScalePercent: number = 100;
+  @StorageLink('rdpDeviceScaleMode') rdpDeviceScaleMode: string = 'auto';
+  @StorageLink('rdpDeviceScalePercent') rdpDeviceScalePercent: number = 100;
   @StorageLink('rdpColorDepth') rdpColorDepth: number = 32;
   @StorageLink('rdpAudioEnabled') rdpAudioEnabled: boolean = true;
   @StorageLink('rdpAuthIdentityMode') rdpAuthIdentityMode: number = 1;
@@ -1280,6 +1304,8 @@ struct RemoteDesktop {
   @State vncDisplayCapabilities: VncDisplayCapabilities = EMPTY_VNC_DISPLAY_CAPABILITIES;
   @State @Watch('onHarmonyShortcutInputOwnerChange') showVncDisplayMenu: boolean = false;
   @State rustDeskDisplayPendingResolution: RustDeskDisplayResolution = EMPTY_RUSTDESK_DISPLAY_RESOLUTION;
+  @State rustDeskCustomWidthDraft: string = '1920';
+  @State rustDeskCustomHeightDraft: string = '1080';
   @State @Watch('onHarmonyShortcutInputOwnerChange')
   showRustDeskDisplayResolutionMenu: boolean = false;
   @State rustDeskMultiCanvasPreview: RustDeskMultiCanvasPreviewSnapshot =
@@ -5670,6 +5696,9 @@ struct RemoteDesktop {
 
   private setRdpResolutionPreference(id: string): void {
     const next: string = normalizeRdpResolutionId(id, this.rdpDesktopPreset);
+    if (next === 'custom' && !this.ensureRdpAdvancedDisplayEntitled()) {
+      return;
+    }
     this.bumpRdpControlCenterSelectionRevision();
     this.cancelRdpDynamicLayout('resolution-preference');
     this.rdpDesktopResolutionId = next;
@@ -5688,16 +5717,116 @@ struct RemoteDesktop {
     }
   }
 
+  private rdpAdvancedDisplayDecision(): ProAccessDecision {
+    const context = ProAppRuntime.getInstance().context('rdp');
+    context.capabilities = ['rdp.displayControl'];
+    return ProAppRuntime.getInstance().runtime.decision(
+      PRO_RDP_ADVANCED_DISPLAY_FEATURE, context);
+  }
+
+  private ensureRdpAdvancedDisplayEntitled(): boolean {
+    const decision: ProAccessDecision = this.rdpAdvancedDisplayDecision();
+    if (decision.executable) { return true; }
+    const message: string = decision.reason === 'purchaseRequired' ?
+      '自定义远端分辨率需要 Pro' : decision.reason === 'planned' ?
+      'RDP 高级显示仍在灰度，当前只开放标准预设' : '当前 RDP 会话暂不支持高级显示';
+    promptAction.showToast({ message, duration: 2200 });
+    return false;
+  }
+
+  /**
+   * A stored custom value is only a draft until the current entitlement is
+   * checked again.  This check is used on the initial SessionConfig path and
+   * on window/display refreshes, where there is no user click to trigger the
+   * normal action gate.
+   */
+  private rdpStoredDisplayPreferenceNeedsPro(resolutionId: string): boolean {
+    if (resolutionId === 'custom' || this.rdpDesktopScaleMode === 'custom') {
+      return true;
+    }
+    if (this.rdpDesktopScaleMode !== 'preset') { return false; }
+    return this.rdpDesktopScalePercent !== 100 &&
+      this.rdpDesktopScalePercent !== 140 && this.rdpDesktopScalePercent !== 180;
+  }
+
+  private setRdpCustomResolution(widthText: string, heightText: string): void {
+    if (!this.ensureRdpAdvancedDisplayEntitled()) { return; }
+    const width: number = Number(widthText);
+    const height: number = Number(heightText);
+    const checked = validateRemoteDisplayGeometry(width, height);
+    if (!checked.accepted) {
+      promptAction.showToast({ message: checked.reason, duration: 1800 });
+      return;
+    }
+    this.bumpRdpControlCenterSelectionRevision();
+    this.cancelRdpDynamicLayout('custom-resolution');
+    this.rdpCustomWidth = checked.width;
+    this.rdpCustomHeight = checked.height;
+    this.rdpDesktopResolutionId = 'custom';
+    this.rdpDesktopPreset = legacyRdpPresetForResolutionId('custom');
+    this.persistSessionPref('rdpCustomWidth', checked.width);
+    this.persistSessionPref('rdpCustomHeight', checked.height);
+    this.persistSessionPref('rdpDesktopResolutionId', 'custom');
+    this.persistSessionPref('rdpDesktopPreset', this.rdpDesktopPreset);
+    void this.applyRdpOrientationPolicy('CUSTOM-RESOLUTION');
+    if (this.requestRdpDynamicLayoutNow('custom-resolution')) {
+      this.resetCanvasToDisplayDefault();
+      promptAction.showToast({ message: '已请求自定义 RDP 远端分辨率', duration: 1800 });
+    } else {
+      this.showRdpReconnectPreferenceToast('自定义远端分辨率');
+    }
+  }
+
   private setRdpRemoteUiScalePreference(value: string): void {
+    if (value !== 'auto' && value !== '100' && value !== '140' && value !== '180' &&
+        !this.ensureRdpAdvancedDisplayEntitled()) {
+      return;
+    }
     const next: string = normalizeRdpRemoteUiScalePreference(value);
     this.bumpRdpControlCenterSelectionRevision();
     this.cancelRdpDynamicLayout('remote-ui-scale-preference');
     this.rdpRemoteUiScale = next;
+    this.rdpDesktopScaleMode = value === 'auto' ? 'auto' : 'preset';
+    this.rdpDesktopScalePercent = value === 'auto' ? 100 : normalizeRdpDesktopScalePercent(Number(value));
+    this.rdpDeviceScaleMode = value === 'auto' ? 'auto' : 'fixed';
+    this.rdpDeviceScalePercent = value === 'auto' ? 100 : normalizeRdpDeviceScalePercent(Number(value));
     this.persistSessionPref('rdpRemoteUiScale', next);
+    this.persistSessionPref('rdpDesktopScaleMode', this.rdpDesktopScaleMode);
+    this.persistSessionPref('rdpDesktopScalePercent', this.rdpDesktopScalePercent);
+    this.persistSessionPref('rdpDeviceScaleMode', this.rdpDeviceScaleMode);
+    this.persistSessionPref('rdpDeviceScalePercent', this.rdpDeviceScalePercent);
     if (this.requestRdpDynamicLayoutNow('remote-ui-scale-preference')) {
       promptAction.showToast({ message: '已请求更新 Windows 字体与控件大小', duration: 1600 });
     } else {
       this.showRdpReconnectPreferenceToast('远端界面大小');
+    }
+  }
+
+  private setRdpDesktopScalePercent(valueText: string): void {
+    const value: number = Number(valueText);
+    const normalized: number = normalizeRdpDesktopScalePercent(value);
+    if (!Number.isFinite(value) || value < 100 || value > 500) {
+      promptAction.showToast({ message: 'Windows 界面缩放请输入 100–500%', duration: 1800 });
+      return;
+    }
+    const isFreePreset: boolean = normalized === 100 || normalized === 140 || normalized === 180;
+    if (!isFreePreset && !this.ensureRdpAdvancedDisplayEntitled()) { return; }
+    this.bumpRdpControlCenterSelectionRevision();
+    this.cancelRdpDynamicLayout('custom-desktop-scale');
+    this.rdpDesktopScalePercent = normalized;
+    this.rdpDesktopScaleMode = isFreePreset ? 'preset' : 'custom';
+    this.rdpDeviceScalePercent = isFreePreset ? normalizeRdpDeviceScalePercent(normalized) : 100;
+    this.rdpDeviceScaleMode = isFreePreset ? 'fixed' : 'auto';
+    this.rdpRemoteUiScale = isFreePreset ? normalized.toString() : 'auto';
+    this.persistSessionPref('rdpDesktopScalePercent', this.rdpDesktopScalePercent);
+    this.persistSessionPref('rdpDesktopScaleMode', this.rdpDesktopScaleMode);
+    this.persistSessionPref('rdpDeviceScalePercent', this.rdpDeviceScalePercent);
+    this.persistSessionPref('rdpDeviceScaleMode', this.rdpDeviceScaleMode);
+    this.persistSessionPref('rdpRemoteUiScale', this.rdpRemoteUiScale);
+    if (this.requestRdpDynamicLayoutNow('custom-desktop-scale')) {
+      promptAction.showToast({ message: '已请求 Windows ' + normalized.toString() + '% 界面缩放', duration: 1800 });
+    } else {
+      this.showRdpReconnectPreferenceToast('Windows 界面缩放');
     }
   }
 
@@ -5868,11 +5997,56 @@ struct RemoteDesktop {
       return;
     }
     this.rustDeskDisplayCapabilities = capabilities;
+    this.rustDeskCustomWidthDraft = (capabilities.width > 0 ? capabilities.width : 1920).toString();
+    this.rustDeskCustomHeightDraft = (capabilities.height > 0 ? capabilities.height : 1080).toString();
     this.showRustDeskDisplayResolutionMenu = true;
+  }
+
+  private ensureRustDeskAdvancedDisplayEntitled(): boolean {
+    const capabilities: RustDeskDisplayCapabilities = this.rustDeskDisplayCapabilities;
+    const capability: RustDeskCustomResolutionCapability = {
+      peerVersion: capabilities.peerVersion ?? '',
+      platform: (capabilities.peerPlatform ?? '').toLowerCase().indexOf('windows') >= 0 ? 'windows' :
+        (capabilities.peerPlatform ?? '').toLowerCase().indexOf('linux') >= 0 ? 'linux_x11' : 'unknown',
+      hasDisplayIndex: capabilities.hasDisplayIndex === true || capabilities.currentDisplay >= 0,
+      hasPermission: capabilities.hasPermission !== false && capabilities.supported,
+      hasVirtualDisplay: capabilities.hasVirtualDisplay === true || capabilities.displays.length > 0
+    };
+    const support = rustDeskCustomResolutionDecision(capability);
+    if (!support.allowed) {
+      promptAction.showToast({ message: support.detail, duration: 2200 });
+      return false;
+    }
+    const context = ProAppRuntime.getInstance().context('rustdesk');
+    context.capabilities = ['rustdesk.displayControl'];
+    const decision = ProAppRuntime.getInstance().runtime.decision(
+      PRO_RUSTDESK_ADVANCED_DISPLAY_FEATURE, context);
+    if (decision.executable) { return true; }
+    promptAction.showToast({
+      message: decision.reason === 'purchaseRequired' ? 'RustDesk 自定义远端分辨率需要 Pro' :
+        decision.reason === 'planned' ? 'RustDesk 高级显示仍在灰度，当前只开放候选分辨率' : '当前 RustDesk 会话暂不支持自定义显示',
+      duration: 2200
+    });
+    return false;
+  }
+
+  private applyRustDeskCustomResolution(widthText: string, heightText: string): void {
+    if (!this.ensureRustDeskAdvancedDisplayEntitled()) { return; }
+    const checked = validateRemoteDisplayGeometry(Number(widthText), Number(heightText));
+    if (!checked.accepted) {
+      promptAction.showToast({ message: checked.reason, duration: 1800 });
+      return;
+    }
+    this.changeRustDeskDisplayResolution(checked.width, checked.height);
   }
 
   private changeRustDeskDisplayResolution(width: number, height: number): void {
     const capabilities: RustDeskDisplayCapabilities = this.rustDeskDisplayCapabilities;
+    const candidateListed: boolean = capabilities.resolutions.some(
+      (item: RustDeskDisplayResolution): boolean => item.width === width && item.height === height);
+    if (!candidateListed && !this.ensureRustDeskAdvancedDisplayEntitled()) {
+      return;
+    }
     if (this.rustDeskDisplaySwitchState.inputBlocked || capabilities.inputBlocked) {
       promptAction.showToast({ message: '显示器仍在切换，请等待切换完成', duration: 1600 });
       return;
@@ -9146,7 +9320,28 @@ struct RemoteDesktop {
     heightPx: number = this.renderHeightPx,
     dpiScaleSupported: boolean = false,
     resolutionId: string = normalizeRdpResolutionId(
-      this.rdpDesktopResolutionId, this.rdpDesktopPreset)): RdpAdaptiveDisplayResult | null {
+      this.rdpDesktopResolutionId, this.rdpDesktopPreset),
+    customWidth: number = this.rdpCustomWidth,
+    customHeight: number = this.rdpCustomHeight,
+    allowAdvancedDisplay: boolean = true): RdpAdaptiveDisplayResult | null {
+    const protectedScalePreference: boolean = this.rdpDesktopScaleMode === 'custom' ||
+      (this.rdpDesktopScaleMode === 'preset' && this.rdpDesktopScalePercent !== 100 &&
+        this.rdpDesktopScalePercent !== 140 && this.rdpDesktopScalePercent !== 180);
+    const protectedPreference: boolean = resolutionId === 'custom' || protectedScalePreference;
+    const useAdvancedDisplay: boolean = allowAdvancedDisplay &&
+      (!protectedPreference || this.rdpAdvancedDisplayDecision().executable);
+    const effectiveResolutionId: string = useAdvancedDisplay || resolutionId !== 'custom' ?
+      resolutionId : 'auto';
+    const effectiveCustomWidth: number = useAdvancedDisplay ? customWidth : 0;
+    const effectiveCustomHeight: number = useAdvancedDisplay ? customHeight : 0;
+    const effectiveDesktopScaleMode: string = !useAdvancedDisplay && protectedScalePreference ?
+      'auto' : this.rdpDesktopScaleMode;
+    const effectiveDesktopScalePercent: number = effectiveDesktopScaleMode === 'auto' ? -1 :
+      this.rdpDesktopScalePercent;
+    const effectiveDeviceScaleMode: string = !useAdvancedDisplay && protectedScalePreference ?
+      'auto' : this.rdpDeviceScaleMode;
+    const effectiveDeviceScalePercent: number = effectiveDeviceScaleMode === 'auto' ? -1 :
+      this.rdpDeviceScalePercent;
     let surfaceWidthPx: number = widthPx;
     let surfaceHeightPx: number = heightPx;
     let densityPixels: number = 1;
@@ -9171,10 +9366,13 @@ struct RemoteDesktop {
       densityDpi,
       uiScalePreference: this.rdpRemoteUiScale,
       dpiScaleSupported,
-      maxEdgePx: 3840
+      maxEdgePx: 3840,
+      desktopScalePercent: effectiveDesktopScalePercent,
+      deviceScalePercent: effectiveDeviceScalePercent
     });
     const geometry: RdpResolutionGeometry = resolveRdpResolutionGeometry(
-      resolutionId, adaptive.width, adaptive.height);
+      effectiveResolutionId, adaptive.width, adaptive.height,
+      effectiveCustomWidth, effectiveCustomHeight);
     if (geometry.followsWindow) {
       return adaptive;
     }
@@ -10148,8 +10346,13 @@ struct RemoteDesktop {
     }
     if (host.protocol === 'rdp') {
       const legacyPreset: number = AppStorage.get<number>('rdpDesktopPreset') ?? 0;
-      const resolutionId: string = normalizeRdpResolutionId(
+      const savedResolutionId: string = normalizeRdpResolutionId(
         AppStorage.get<string>('rdpDesktopResolutionId') ?? '', legacyPreset);
+      const protectedPreference: boolean = this.rdpStoredDisplayPreferenceNeedsPro(savedResolutionId);
+      const allowAdvancedDisplay: boolean = !protectedPreference ||
+        this.rdpAdvancedDisplayDecision().executable;
+      const resolutionId: string = !allowAdvancedDisplay && savedResolutionId === 'custom' ?
+        'auto' : savedResolutionId;
       const colorDepthPref: number = AppStorage.get<number>('rdpColorDepth') ?? 32;
       const colorDepth: number = colorDepthPref === 16 || colorDepthPref === 24 ? colorDepthPref : 32;
       // Until Display Control capabilities arrive, auto mode starts with the
@@ -10160,7 +10363,8 @@ struct RemoteDesktop {
         this.isDesktopDevice, resolutionId);
       const rdpDisplay: RdpAdaptiveDisplayResult | null = pcAdaptive || resolutionId !== 'auto' ?
         this.resolveRdpDisplayLayout(this.renderWidthPx, this.renderHeightPx,
-          shouldUseRdpInitialDpiScale(this.isDesktopDevice, resolutionId), resolutionId) : null;
+          shouldUseRdpInitialDpiScale(this.isDesktopDevice, resolutionId), resolutionId,
+          this.rdpCustomWidth, this.rdpCustomHeight, allowAdvancedDisplay) : null;
       if (pcAdaptive) {
         if (rdpDisplay !== null) {
           hilog.info(RD_DOMAIN, RD_TAG, 'RDP density-aware adaptive size=' +
@@ -11844,6 +12048,12 @@ struct RemoteDesktop {
 
   private requestRdpDynamicLayoutNow(reason: string): boolean {
     if (!this.canRequestRdpDynamicLayout()) {
+      return false;
+    }
+    const resolutionId: string = normalizeRdpResolutionId(
+      this.rdpDesktopResolutionId, this.rdpDesktopPreset);
+    if (this.rdpStoredDisplayPreferenceNeedsPro(resolutionId) &&
+      !this.rdpAdvancedDisplayDecision().executable) {
       return false;
     }
     const layout: RdpAdaptiveDisplayResult | null =
@@ -22744,6 +22954,26 @@ struct RemoteDesktop {
             Text('当前显示器暂无可选分辨率').fontSize(12).fontColor('#6B7280')
               .width('100%').textAlign(TextAlign.Center).padding({ top: 10, bottom: 10 })
           }
+          Divider().strokeWidth(1).color('#E5E7EB').margin({ top: 4, bottom: 2 })
+          Text('自定义远端分辨率 · Pro').fontSize(12).fontColor('#6B7280')
+            .margin({ top: 2, bottom: 2 }).alignSelf(ItemAlign.Start)
+          Row({ space: 6 }) {
+            TextInput({ text: this.rustDeskCustomWidthDraft, placeholder: '宽 200–8192' })
+              .layoutWeight(1).height(34).type(InputType.Number).fontSize(11)
+              .onChange((value: string): void => { this.rustDeskCustomWidthDraft = value; })
+            Text('×').fontSize(12).fontColor('#6B7280')
+            TextInput({ text: this.rustDeskCustomHeightDraft, placeholder: '高 200–8192' })
+              .layoutWeight(1).height(34).type(InputType.Number).fontSize(11)
+              .onChange((value: string): void => { this.rustDeskCustomHeightDraft = value; })
+            Button('应用').height(34).fontSize(10).padding({ left: 9, right: 9 })
+              .backgroundColor('#F3F4F6').fontColor(this.accentColor)
+              .onClick((): void => {
+                this.applyRustDeskCustomResolution(
+                  this.rustDeskCustomWidthDraft, this.rustDeskCustomHeightDraft);
+              })
+          }.width('100%')
+          Text('以远端实际回读的帧尺寸为准；Wayland、移动端或权限未知时只提供候选列表')
+            .fontSize(9).fontColor('#6B7280').width('100%').margin({ top: 4 })
         }.width('100%')
       }.height(this.rustDeskDisplayCardListHeight())
         .scrollable(ScrollDirection.Vertical).scrollBar(BarState.Auto)
@@ -23051,9 +23281,13 @@ struct RemoteDesktop {
             selectionRevision: this.rdpControlCenterSelectionRevision,
             reverseWheel: this.rdpReverseWheel,
             resolutionId: normalizeRdpResolutionId(this.rdpDesktopResolutionId, this.rdpDesktopPreset),
+            customWidth: this.rdpCustomWidth,
+            customHeight: this.rdpCustomHeight,
             surfaceWidthPx: this.renderWidthPx,
             surfaceHeightPx: this.renderHeightPx,
             remoteUiScale: normalizeRdpRemoteUiScalePreference(this.rdpRemoteUiScale),
+            desktopScaleMode: this.rdpDesktopScaleMode,
+            desktopScalePercent: this.rdpDesktopScalePercent,
             colorDepth: normalizeRdpSessionColorDepth(this.rdpColorDepth),
             audioEnabled: this.rdpAudioEnabled,
             driveEnabled: this.rdpDriveEnabled,
@@ -23077,8 +23311,14 @@ struct RemoteDesktop {
             onResetCanvas: (): void => { this.resetCanvasTransformFromMenu(); },
             onReverseWheel: (enabled: boolean): void => { this.setRdpReverseWheelPreference(enabled); },
             onResolution: (id: string): void => { this.setRdpResolutionPreference(id); },
+            onCustomResolution: (width: string, height: string): void => {
+              this.setRdpCustomResolution(width, height);
+            },
             onRemoteUiScale: (value: string): void => {
               this.setRdpRemoteUiScalePreference(value);
+            },
+            onDesktopScalePercent: (value: string): void => {
+              this.setRdpDesktopScalePercent(value);
             },
             onColorDepth: (depth: number): void => { this.setRdpColorDepthPreference(depth); },
             onAudio: (enabled: boolean): void => { this.setRdpAudioPreference(enabled); },

@@ -7789,11 +7789,11 @@ void FreeRdpAdapter::connectThreadFunc(
                                 static_cast<UINT32>(cfg.height > 0 ? cfg.height : 1080));
     freerdp_settings_set_bool(s, FreeRDP_DesktopResize, TRUE);
     const UINT32 desktopScaleFactor = static_cast<UINT32>(
-        RdpDisplayLayoutPolicy::IsScaleFactorValid(cfg.rdpDesktopScaleFactor)
+        RdpDisplayLayoutPolicy::IsDesktopScaleFactorValid(cfg.rdpDesktopScaleFactor)
             ? cfg.rdpDesktopScaleFactor : 100);
     const UINT32 deviceScaleFactor = static_cast<UINT32>(
-        RdpDisplayLayoutPolicy::IsScaleFactorValid(cfg.rdpDeviceScaleFactor)
-            ? cfg.rdpDeviceScaleFactor : desktopScaleFactor);
+        RdpDisplayLayoutPolicy::IsDeviceScaleFactorValid(cfg.rdpDeviceScaleFactor)
+            ? cfg.rdpDeviceScaleFactor : 100);
     freerdp_settings_set_uint32(s, FreeRDP_DesktopScaleFactor, desktopScaleFactor);
     freerdp_settings_set_uint32(s, FreeRDP_DeviceScaleFactor, deviceScaleFactor);
     if (cfg.rdpDesktopPhysicalWidthMm >= 10 && cfg.rdpDesktopPhysicalHeightMm >= 10) {

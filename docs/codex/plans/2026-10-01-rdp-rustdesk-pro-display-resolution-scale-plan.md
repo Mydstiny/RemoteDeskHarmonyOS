@@ -1,6 +1,6 @@
 # RDP 与 RustDesk 高级显示方案及 Pro 接入计划
 
-状态：`PLAN-ONLY`，等待明确的实现授权
+状态：`IMPLEMENTING`；P0–P4 代码增量已落盘，P5 真实远端与设备矩阵待验收
 
 日期：2026-10-01（Asia/Shanghai）
 
@@ -8,7 +8,7 @@
 
 适用范围：RDP 远端桌面分辨率、RDP Windows 式界面缩放、RustDesk 远端显示分辨率、自定义显示方案、Pro 权益与真机验收。
 
-本计划由 2026-10-01 的只读研判形成。当前工作区处于既有 `codex/pro-purchase-foundation` 活动任务，工作树有其他并行改动；本计划不授权切换分支、创建 worktree、清理脏文件或修改应用实现。实现前必须重新读取 `AGENTS.md`、`CURRENT.md`、`STATE.json`、`QUEUE.md` 并刷新 Git 状态。
+本计划由 2026-10-01 的只读研判形成，随后获得实现授权。当前工作区继续使用既有 `codex/pro-purchase-foundation` 活动任务；工作树保留其他并行改动，不切换分支、不创建持久 worktree、不清理无关脏文件。实现增量按声明范围落盘，真实 Windows/RustDesk peer、HarmonyOS 设备和生产权益验收仍需单独完成。
 
 ## 1. 决策摘要
 
@@ -197,6 +197,16 @@ RemoteDisplayProfile {
 
 退出条件：同一远端帧在 Fit、固定本地缩放、远端重设分辨率后都能通过四角/中心/边界 round-trip；输入误差不超过 1 个物理像素或定义的取整误差。
 
+### 5.1 当前执行记录（2026-10-01）
+
+- P0 契约已冻结：远端桌面大小、RDP Windows 界面缩放、本地查看缩放使用独立字段；RDP v1 只处理单远端显示器，RustDesk 自定义请求按 `display index` 处理。
+- P1 已落盘：新增版本化 `RemoteDisplayProfilePolicy`，覆盖几何范围、旧 RDP 字段迁移、RDP desktop/device scale 分离、RustDesk peer 能力判断和请求状态文案；RDP/RustDesk 两个 Pro feature ID 已进入共享目录，当前保持 `experimental`，Release 不开放。
+- P2 已落盘：RDP 设置页、会话控制中心和 `SessionConfig` 已接通自定义宽高；native 接受 desktop 100–500%、device 100/140/180% 的分离校验；Display Control 动态请求继续使用原有 caps、latest-wins、超时和输入几何 fence。
+- P3 已落盘：RustDesk FFI display snapshot 升级到 v2，携带 peer 版本/平台；ArkTS 会在 Windows 或 Linux X11、版本至少 1.2.4、显示器索引和权限证据齐全时才提交 Pro 自定义请求，Wayland/mobile/能力未知保持候选列表降级。
+- P4 已落盘：设置与会话菜单已区分远端分辨率和本地画布缩放，custom 草稿不写入凭据；RDP 在冷启动、重连、窗口变化和动态请求前重新检查 entitlement，失效时回退 Auto/免费标准档。
+- 本地验证：`default@OhosTestCompileArkTS` 通过（1 min 35 s 204 ms）；强制并行 `assembleHap` 通过（1 min 408 ms）；RDP display policy 原生策略测试 15/15 通过；Rust host `--no-default-features` 319/319 通过；arm64 Rust 交叉编译、双 ABI native 编译、Light 合规、`git diff --check` 和 state validation 通过。
+- 未关闭项：Windows 10/11/Server 实机 DPI 与 Display Control、RustDesk 新旧 peer/Windows 虚拟显示器/X11/Wayland/mobile 矩阵、Phone/Pad/PC 交互与恢复、真实 Pro 购买/退款/账号切换回归、独立代码 review、PR/required check/merge。生产能力继续由 `experimental` 和 capability/entitlement 双重门控。
+
 ### P5：自动化、真机和远端矩阵
 
 纯策略与 ArkTS：
@@ -250,7 +260,7 @@ Native/Rust：
 
 ## 7. Definition of Done
 
-计划本身的落盘不代表功能完成。实现任务只有同时满足以下条件才可从 `PLAN-ONLY` 转为交付状态：
+计划本身的落盘和本地构建通过不代表功能完成。实现任务只有同时满足以下条件才可从 `IMPLEMENTING` 转为交付状态：
 
 1. 三层显示语义、免费/Pro 边界和 profile schema 已评审；
 2. RDP 初始连接、动态 Display Control、DPI scale、fallback 和输入几何通过自动化与真实 Windows 矩阵；
