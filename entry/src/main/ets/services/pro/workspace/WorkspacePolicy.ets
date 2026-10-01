@@ -86,3 +86,177 @@ export function workspaceOpenPlan(workspace: Workspace, device: WorkspaceDevice)
   return { device, items, maxConcurrent: device === 'phone' ? 3 : device === 'tablet' ? 2 : Math.max(1, items.length),
     fallback: device === 'tablet' ? 'session_switcher' : device === 'phone' ? 'session_switcher' : 'visible_bounds' };
 }
+
+export const WORKSPACE_COLORS: string[] = [
+  '#007DFF', '#5856D6', '#AF52DE', '#FF2D55', '#FF9500', '#34C759', '#00C7BE', '#30B0C7'
+];
+export const WORKSPACE_ICONS: string[] = ['🖥️', '💻', '🧑‍💻', '🛠️', '🚀', '📊', '🧪', '🎮', '☁️', '🏢', '🏠', '⭐'];
+export const WORKSPACE_LAYOUT_PRESETS: WorkspaceLayoutPreset[] = ['split', 'columns3', 'masterDetail', 'grid4'];
+/** Layout rectangles snap to an 8 × 8 grid. */
+export const WORKSPACE_GRID: number = 8;
+
+export function workspaceLayoutLabel(preset: WorkspaceLayoutPreset | undefined): string {
+  if (preset === 'split') { return '左右平分'; }
+  if (preset === 'columns3') { return '三栏'; }
+  if (preset === 'masterDetail') { return '主副'; }
+  if (preset === 'grid4') { return '四宫格'; }
+  return '自定义';
+}
+
+export function newWorkspace(id: string, name: string, color: string, icon: string, order: number,
+  nowMs: number = Date.now()): Workspace {
+  return { schemaVersion: WORKSPACE_SCHEMA_VERSION, id, name: name.trim().slice(0, MAX_WORKSPACE_NAME_LENGTH),
+    color, icon, order, entries: [], layout: 'custom', updatedAt: nowMs };
+}
+
+export function copyWorkspaceEntry(entry: WorkspaceEntry): WorkspaceEntry {
+  const copied: WorkspaceEntry = {
+    hostRef: entry.hostRef, protocol: entry.protocol, order: entry.order, autoConnect: entry.autoConnect,
+    view: { sshPane: entry.view.sshPane, sshDirectory: entry.view.sshDirectory, monitor: entry.view.monitor,
+      scale: entry.view.scale, panX: entry.view.panX, panY: entry.view.panY, inputMode: entry.view.inputMode }
+  };
+  if (entry.view.strictBounds !== undefined) { copied.view.strictBounds = entry.view.strictBounds; }
+  if (entry.frame !== undefined) {
+    copied.frame = { x: entry.frame.x, y: entry.frame.y, w: entry.frame.w, h: entry.frame.h,
+      fullscreen: entry.frame.fullscreen };
+  }
+  return copied;
+}
+
+export function copyWorkspace(source: Workspace): Workspace {
+  return { schemaVersion: source.schemaVersion, id: source.id, name: source.name, color: source.color,
+    icon: source.icon, order: source.order,
+    entries: source.entries.map((entry: WorkspaceEntry): WorkspaceEntry => copyWorkspaceEntry(entry)),
+    layout: source.layout, updatedAt: source.updatedAt };
+}
+
+/** A new entry with the protocol's default view (RDP also carries strictBounds). */
+export function newWorkspaceEntry(hostRef: string, protocol: string, order: number): WorkspaceEntry {
+  const entry: WorkspaceEntry = { hostRef, protocol, order, autoConnect: true, view: defaultWorkspaceView() };
+  if (protocol === 'rdp') { entry.view.strictBounds = false; }
+  return entry;
+}
+
+function renumber(entries: WorkspaceEntry[]): WorkspaceEntry[] {
+  return entries.map((entry: WorkspaceEntry, index: number): WorkspaceEntry => {
+    const copied: WorkspaceEntry = copyWorkspaceEntry(entry);
+    copied.order = index;
+    return copied;
+  });
+}
+
+export function sortedEntries(entries: WorkspaceEntry[]): WorkspaceEntry[] {
+  return entries.slice().sort((left: WorkspaceEntry, right: WorkspaceEntry): number => left.order - right.order);
+}
+
+export function addWorkspaceEntries(entries: WorkspaceEntry[], refs: string[], protocols: string[]): WorkspaceEntry[] {
+  const result: WorkspaceEntry[] = renumber(sortedEntries(entries));
+  refs.forEach((hostRef: string, index: number): void => {
+    if (result.length >= MAX_WORKSPACE_ENTRIES ||
+        result.some((entry: WorkspaceEntry): boolean => entry.hostRef === hostRef)) { return; }
+    result.push(newWorkspaceEntry(hostRef, protocols[index] || '', result.length));
+  });
+  return result;
+}
+
+export function removeWorkspaceEntry(entries: WorkspaceEntry[], hostRef: string): WorkspaceEntry[] {
+  return renumber(sortedEntries(entries).filter((entry: WorkspaceEntry): boolean => entry.hostRef !== hostRef));
+}
+
+export function moveWorkspaceEntry(entries: WorkspaceEntry[], hostRef: string, delta: number): WorkspaceEntry[] {
+  const ordered: WorkspaceEntry[] = sortedEntries(entries);
+  const index: number = ordered.findIndex((entry: WorkspaceEntry): boolean => entry.hostRef === hostRef);
+  const target: number = index + delta;
+  if (index < 0 || target < 0 || target >= ordered.length) { return renumber(ordered); }
+  const moved: WorkspaceEntry = ordered[index];
+  ordered.splice(index, 1);
+  ordered.splice(target, 0, moved);
+  return renumber(ordered);
+}
+
+/** Entries whose host was deleted; kept until the user clears them. */
+export function missingWorkspaceRefs(workspace: Workspace, liveRefs: string[]): string[] {
+  return workspace.entries.filter((entry: WorkspaceEntry): boolean => liveRefs.indexOf(entry.hostRef) < 0)
+    .map((entry: WorkspaceEntry): string => entry.hostRef);
+}
+
+function snap(value: number): number { return Math.round(value * WORKSPACE_GRID) / WORKSPACE_GRID; }
+
+/** Snaps a window rectangle to the grid and keeps it fully on screen. */
+export function snapWorkspaceFrame(frame: WorkspaceFrame): WorkspaceFrame {
+  const minSize: number = 1 / WORKSPACE_GRID;
+  const w: number = Math.min(1, Math.max(minSize, snap(frame.w)));
+  const h: number = Math.min(1, Math.max(minSize, snap(frame.h)));
+  const x: number = Math.min(1 - w, Math.max(0, snap(frame.x)));
+  const y: number = Math.min(1 - h, Math.max(0, snap(frame.y)));
+  return { x, y, w, h, fullscreen: frame.fullscreen };
+}
+
+/** The frame an entry opens with; entries without one fill the screen. */
+export function workspaceEntryFrame(entry: WorkspaceEntry): WorkspaceFrame {
+  return entry.frame !== undefined ? entry.frame : { x: 0, y: 0, w: 1, h: 1, fullscreen: false };
+}
+
+export type WorkspaceRunState = 'queued' | 'connecting' | 'opened' | 'failed' | 'skipped';
+export interface WorkspaceRunItem {
+  hostRef: string; protocol: string; label: string; state: WorkspaceRunState; message: string; autoConnect: boolean;
+}
+export interface WorkspaceRun { workspaceId: string; name: string; color: string; items: WorkspaceRunItem[]; startedAt: number; }
+
+/** Builds a run from the entries in order; hosts that no longer exist are skipped up front. */
+export function workspaceRunFor(workspace: Workspace, labels: Record<string, string>, nowMs: number = Date.now()): WorkspaceRun {
+  const items: WorkspaceRunItem[] = sortedEntries(workspace.entries).map((entry: WorkspaceEntry): WorkspaceRunItem => {
+    const label: string | undefined = labels[entry.hostRef];
+    return { hostRef: entry.hostRef, protocol: entry.protocol, label: label !== undefined ? label : '已删除的主机',
+      state: label !== undefined ? 'queued' : 'skipped', message: label !== undefined ? '' : '主机不存在',
+      autoConnect: entry.autoConnect };
+  });
+  return { workspaceId: workspace.id, name: workspace.name, color: workspace.color, items, startedAt: nowMs };
+}
+
+export function nextQueuedRunIndex(run: WorkspaceRun): number {
+  return run.items.findIndex((item: WorkspaceRunItem): boolean => item.state === 'queued');
+}
+
+export function connectingRunIndex(run: WorkspaceRun): number {
+  return run.items.findIndex((item: WorkspaceRunItem): boolean => item.state === 'connecting');
+}
+
+export function workspaceRunFinished(run: WorkspaceRun): boolean {
+  return run.items.every((item: WorkspaceRunItem): boolean => item.state !== 'queued' && item.state !== 'connecting');
+}
+
+export function workspaceRunSummary(run: WorkspaceRun): string {
+  const count = (state: WorkspaceRunState): number =>
+    run.items.filter((item: WorkspaceRunItem): boolean => item.state === state).length;
+  const parts: string[] = [];
+  if (count('opened') > 0) { parts.push(count('opened').toString() + ' 个已打开'); }
+  if (count('failed') > 0) { parts.push(count('failed').toString() + ' 个未完成'); }
+  if (count('skipped') > 0) { parts.push(count('skipped').toString() + ' 个已跳过'); }
+  if (count('queued') + count('connecting') > 0) {
+    parts.push((count('queued') + count('connecting')).toString() + ' 个待打开');
+  }
+  return parts.join(' · ');
+}
+
+export function setRunItemState(run: WorkspaceRun, index: number, state: WorkspaceRunState, message: string): WorkspaceRun {
+  const items: WorkspaceRunItem[] = run.items.map((item: WorkspaceRunItem, at: number): WorkspaceRunItem => ({
+    hostRef: item.hostRef, protocol: item.protocol, label: item.label, autoConnect: item.autoConnect,
+    state: at === index ? state : item.state, message: at === index ? message : item.message }));
+  return { workspaceId: run.workspaceId, name: run.name, color: run.color, items, startedAt: run.startedAt };
+}
+
+export interface WorkspaceWindowRect { left: number; top: number; width: number; height: number; }
+
+/** Converts a saved relative frame into a pixel window rectangle on the given display, respecting minimum sizes. */
+export function workspaceWindowRect(frame: WorkspaceFrame, displayWidth: number, displayHeight: number,
+  minWidth: number, minHeight: number): WorkspaceWindowRect {
+  const w: number = Math.max(1, displayWidth);
+  const h: number = Math.max(1, displayHeight);
+  if (frame.fullscreen) { return { left: 0, top: 0, width: Math.round(w), height: Math.round(h) }; }
+  const width: number = Math.min(w, Math.max(minWidth, Math.round(frame.w * w)));
+  const height: number = Math.min(h, Math.max(minHeight, Math.round(frame.h * h)));
+  const left: number = Math.max(0, Math.min(w - width, Math.round(frame.x * w)));
+  const top: number = Math.max(0, Math.min(h - height, Math.round(frame.y * h)));
+  return { left, top, width, height };
+}

@@ -60,13 +60,15 @@ function personalization(): ProFeature {
   return feature;
 }
 function experimentalWorkspace(): ProFeature {
-  const feature = planned('pro.workspaces', '工作区与布局', '保存常用会话组合，让每次开工更从容。');
+  const feature = planned('pro.workspaces', '工作区与布局',
+    '把常用的一组会话存成工作区，一键依次打开；SSH 可指定初始目录，PC 按保存的布局摆放窗口。');
   feature.availability = 'experimental';
   feature.minApiVersion = 26;
   return feature;
 }
 function experimentalHostManagement(): ProFeature {
-  const feature = planned('pro.hostManagement', '高级主机管理', '智能分组与批量配置，减少重复操作。');
+  const feature = planned('pro.hostManagement', '高级主机管理',
+    '跨协议分组与标签、智能分组筛选、多选批量编辑与连通检测，以及不含密码的导入导出。');
   feature.availability = 'experimental';
   feature.minApiVersion = 26;
   return feature;
@@ -115,8 +117,8 @@ export function proFeatureProgress(id: string): string {
     case 'pro.security.webauthnRedirect': return '开发中 · USB 安全密钥能力探测通过，待硬件与 RDP 验证';
     case 'pro.security.phonePasskey': return '可行性研究中';
     case 'pro.personalization': return '已开发 · 自定义组合键与 SSH 终端皮肤待实机验收';
-    case 'pro.workspaces': return '实验中 · 工作区与布局基础能力已开放（Debug Pro）';
-    case 'pro.hostManagement': return '实验中 · 分组与安全批量策略已开放（Debug Pro）';
+    case 'pro.workspaces': return '已开发 · 依次打开、布局编辑与 PC 窗口摆放待实机验收';
+    case 'pro.hostManagement': return '已开发 · 分组、标签、智能分组、批量操作与导入导出待实机验收';
     default: return '';
   }
 }

@@ -24,8 +24,27 @@ import { ProPurchaseLifecycle } from '../services/pro/ProPurchaseLifecycle';
 import { ProPurchaseSheet } from '../components/ProPurchaseSheet';
 import { ProAppIconPanel } from '../components/ProAppIconPanel';
 import { ProAppIcons } from '../services/pro/ProAppIcons';
-import { ProOrganizationWorkspacePanel } from '../components/ProOrganizationWorkspacePanel';
-import { Workspace, workspaceOpenPlan } from '../services/pro/workspace/WorkspacePolicy';
+import { HostGroupBar } from '../components/pro/org/HostGroupBar';
+import { HostBatchActions } from '../components/pro/org/HostBatchActions';
+import { HostImportPanel } from '../components/pro/org/HostImportPanel';
+import { WorkspaceStrip } from '../components/pro/workspace/WorkspaceStrip';
+import { WorkspaceRunPanel } from '../components/pro/workspace/WorkspaceRunPanel';
+import {
+  connectingRunIndex, nextQueuedRunIndex, setRunItemState, sortedEntries, Workspace, WorkspaceEntry, workspaceRunFinished,
+  workspaceRunFor, WorkspaceRun, WorkspaceRunItem, workspaceRunSummary
+} from '../services/pro/workspace/WorkspacePolicy';
+import { WorkspaceStore } from '../services/pro/workspace/WorkspaceStore';
+import { WorkspaceHandoff } from '../services/pro/workspace/WorkspaceHandoff';
+import {
+  HostFilter, HostGroupDefinition, HostMembership, hostMatchesFilter, parseHostFilterKey
+} from '../services/pro/org/HostOrganizationPolicy';
+import { HostOrganizationStore } from '../services/pro/org/HostOrganizationStore';
+import { orgHostView, OrgHostRow, orgRowForRemoteHost } from '../services/pro/org/HostOrganizationDirectory';
+import {
+  exportHosts, HostExportDocument, hostExportFileName, HostExportRecord, parseHostExport
+} from '../services/pro/org/HostExportPolicy';
+import { HostExportFileService, HostImportFileResult } from '../services/pro/org/HostExportFileService';
+import { SshSessionContext, SshSessionStore } from '../services/SshSessionStore';
 import { AiSettingsSurface } from './AiSettingsPage';
 /**
  * HostListPage v9 — 多端响应式 + 悬浮卡片 sheet + 滑动删除 + 官方图标按钮
@@ -875,6 +894,18 @@ struct HostListPage {
   @State appIconProVisible: boolean = true;
   @State proManagerVisible: boolean = false;
   @State personalizationProVisible: boolean = false;
+  // Pro 高级主机管理 / 工作区与布局 on the home list.
+  @State proOrgVisible: boolean = false;
+  @State proWorkspacesVisible: boolean = false;
+  @State hostOrgFilterKey: string = 'all';
+  @State hostOrgRevision: number = 0;
+  @State hostBatchProbing: boolean = false;
+  @State proWorkspaceRun: WorkspaceRun | null = null;
+  @State showHostImportSheet: boolean = false;
+  @State hostImportDocument: HostExportDocument = { schemaVersion: 1, exportedAt: 0, groups: [], hosts: [] };
+  private proWorkspacePageHidden: boolean = false;
+  private proWorkspaceRunTimer: number = -1;
+  private hostOrgUnsubscribe: (() => void) | null = null;
   @StorageProp('proBadgeFlow') proBadgeFlow: boolean = true;
   @StorageProp('proBadgeVisible') proBadgeVisible: boolean = true;
   @State proFeatureRevision: number = 0;
@@ -2013,12 +2044,23 @@ struct HostListPage {
     this.appIconSupported = icons.supported;
     this.appIconProVisible = ProEntries.visible(id) || (ProEntries.shown(id) && icons.loaded && icons.currentName !== '');
     this.personalizationProVisible = ProEntries.visible(PRO_PERSONALIZATION_FEATURE);
+    const orgVisible: boolean = ProEntries.visible('pro.hostManagement');
+    const workspacesVisible: boolean = ProEntries.visible('pro.workspaces');
+    if (orgVisible !== this.proOrgVisible || workspacesVisible !== this.proWorkspacesVisible) {
+      this.proOrgVisible = orgVisible;
+      this.proWorkspacesVisible = workspacesVisible;
+      // Losing Pro keeps every group and workspace but returns the home page to the plain list.
+      if (!orgVisible) { this.hostOrgFilterKey = 'all'; }
+      if (!workspacesVisible) { this.endProWorkspaceRun(); }
+      this.refreshFilteredHostView();
+    }
   }
 
   async aboutToAppear(): Promise<void> {
     const proVisibility = ProFeatureVisibility.getInstance();
     proVisibility.load(getContext(this) as common.UIAbilityContext);
     this.refreshAppIconEntry();
+    this.ensureHostOrganizationSubscription();
     this.proVisibilityUnsubscribe?.();
     const stopEntries = ProEntries.subscribe((): void => {
       this.refreshAppIconEntry(); this.proManagerVisible = ProEntries.proActive(); this.proFeatureRevision++;
@@ -2459,6 +2501,14 @@ struct HostListPage {
     void this.refreshDynamicLanHosts(false);
     this.handleVncRelayRouteRequest();
     this.consumeRemoteSessionConnectionIntent();
+    this.resumeProWorkspaceRun();
+  }
+
+  onPageHide(): void {
+    // A workspace entry whose session page covered the list counts as opened once the list returns.
+    if (this.proWorkspaceRun !== null && connectingRunIndex(this.proWorkspaceRun as WorkspaceRun) >= 0) {
+      this.proWorkspacePageHidden = true;
+    }
   }
 
   private consumeRemoteSessionConnectionIntent(): void {
@@ -2969,10 +3019,12 @@ struct HostListPage {
     // Moonlight tab receives Moonlight rows. A workspace chip excludes
     // Moonlight because Moonlight currently has no workspace-group field.
     if ((desktopProtocolTab && this.curTab === DESKTOP_MOONLIGHT_TAB) ||
-        (!desktopProtocolTab && this.workspaceGroupId === '')) {
+        (!desktopProtocolTab && (this.proOrgVisible || this.workspaceGroupId === ''))) {
       const views: MoonlightHostLocalView[] = this.visibleMoonlightHosts();
       for (let index: number = 0; index < views.length; index++) {
-        if (views[index].host !== null) { moonlightIds.push((views[index].host as MoonlightHost).id); }
+        if (views[index].host !== null && this.orgMoonlightVisible(views[index].host as MoonlightHost)) {
+          moonlightIds.push((views[index].host as MoonlightHost).id);
+        }
       }
     }
     return buildUnifiedHostCardRefs(remoteIds, moonlightIds, this.hostManualOrder);
@@ -5371,6 +5423,8 @@ struct HostListPage {
   }
 
   aboutToDisappear(): void {
+    this.hostOrgUnsubscribe?.(); this.hostOrgUnsubscribe = null;
+    this.endProWorkspaceRun();
     this.aiStopStore(); this.aiStopAccess();
     this.proVisibilityUnsubscribe?.(); this.proVisibilityUnsubscribe = null;
     this.proContinuationStop?.(); this.proContinuationStop = null;
@@ -5671,6 +5725,9 @@ struct HostListPage {
       // the RDP/RustDesk/SSH/VNC cards.
       this.refreshMoonlightDirectory();
       await this.refreshAiHosts();
+      // Cloud sync may have replaced the Pro group and workspace rows since the last visit.
+      if (this.proOrgVisible) { HostOrganizationStore.getInstance().reload(); }
+      if (this.proWorkspacesVisible) { WorkspaceStore.getInstance().reload(); }
       this.refreshHostListView();
       this.rdpCredentials = this.srv.getAllRdpCredentials();
       this.rdpCount = this.srv.getRdpCount();
@@ -5869,7 +5926,7 @@ struct HostListPage {
 
   private visibleHostsForCurrentMode(): RemoteHost[] {
     if (this.groupedHostCardsActive()) {
-      return searchHosts(this.hosts, this.searchText);
+      return this.orgFilterHosts(searchHosts(this.hosts, this.searchText));
     }
     let visible = visibleHostsForHostListMode(
       this.hosts,
@@ -5879,6 +5936,7 @@ struct HostListPage {
       this.activeFilterProto,
       this.curTab
     );
+    if (this.proOrgVisible) { return this.orgFilterHosts(visible); }
     return filterHostsByWorkspace(visible, this.workspaceGroupId);
   }
 
@@ -5886,13 +5944,325 @@ struct HostListPage {
     return this.theme === 'light' ? buildLight(this.accentColor) : buildDark(this.accentColor);
   }
 
+  // ---------- Pro 高级主机管理 ----------
+  /** Every host card on the home list as an organization row; Moonlight cards included. */
+  private orgRows(_revision: number): OrgHostRow[] {
+    const rows: OrgHostRow[] = this.hosts.map((host: RemoteHost): OrgHostRow => orgRowForRemoteHost(host));
+    this.moonlightHosts.forEach((view: MoonlightHostLocalView): void => {
+      if (view.host === null) { return; }
+      const host: MoonlightHost = view.host as MoonlightHost;
+      rows.push({ ref: 'moonlight:' + host.id, protocol: 'moonlight', label: host.displayName,
+        address: host.addresses.length > 0 ? host.addresses[0].host : '', port: 0, username: '', lastConnected: 0 });
+    });
+    return rows;
+  }
+  private orgOnline(host: RemoteHost): boolean | undefined {
+    const state: HostPresenceState = this.hostGroupPresenceForHost(host);
+    if (state === 'online' || state === 'recently_online') { return true; }
+    return state === 'offline' ? false : undefined;
+  }
+  private orgPresenceRefs(online: boolean, _revision: number): string[] {
+    return this.hosts.filter((host: RemoteHost): boolean => this.orgOnline(host) === online)
+      .map((host: RemoteHost): string => host.id);
+  }
+  private orgMembership(ref: string, _revision: number): HostMembership {
+    return HostOrganizationStore.getInstance().membership(ref);
+  }
+  private orgGroupFor(ref: string, _revision: number): HostGroupDefinition | null {
+    const groupId: string = HostOrganizationStore.getInstance().membership(ref).groupId;
+    return groupId === '' ? null : HostOrganizationStore.getInstance().group(groupId);
+  }
+  private orgFilterHosts(hosts: RemoteHost[]): RemoteHost[] {
+    if (!this.proOrgVisible || this.hostOrgFilterKey === 'all') { return hosts; }
+    const filter: HostFilter = parseHostFilterKey(this.hostOrgFilterKey);
+    const store: HostOrganizationStore = HostOrganizationStore.getInstance();
+    const now: number = Date.now();
+    return hosts.filter((host: RemoteHost): boolean =>
+      hostMatchesFilter(orgHostView(orgRowForRemoteHost(host), this.orgOnline(host)), store.membership(host.id), filter, now));
+  }
+  private orgMoonlightVisible(host: MoonlightHost): boolean {
+    if (!this.proOrgVisible || this.hostOrgFilterKey === 'all') { return this.workspaceGroupId === '' || this.proOrgVisible; }
+    const filter: HostFilter = parseHostFilterKey(this.hostOrgFilterKey);
+    const ref: string = 'moonlight:' + host.id;
+    const row: OrgHostRow = { ref, protocol: 'moonlight', label: host.displayName,
+      address: host.addresses.length > 0 ? host.addresses[0].host : '', port: 0, username: '', lastConnected: 0 };
+    return hostMatchesFilter(orgHostView(row, undefined), HostOrganizationStore.getInstance().membership(ref), filter, Date.now());
+  }
+  private setHostOrgFilter(key: string): void {
+    this.hostOrgFilterKey = parseHostFilterKey(key).kind === 'all' ? 'all' : key;
+    this.refreshFilteredHostView();
+  }
+  private ensureHostOrganizationSubscription(): void {
+    if (this.hostOrgUnsubscribe !== null) { return; }
+    this.hostOrgUnsubscribe = HostOrganizationStore.getInstance().subscribe((): void => {
+      this.hostOrgRevision++;
+      // A deleted group can no longer be the active filter.
+      const filter: HostFilter = parseHostFilterKey(this.hostOrgFilterKey);
+      if (filter.kind === 'group' && HostOrganizationStore.getInstance().group(filter.value) === null) {
+        this.hostOrgFilterKey = 'all';
+      }
+      if (this.proOrgVisible) { this.refreshFilteredHostView(); }
+    });
+  }
+  /** The organization reference behind a selection key (remote:<id>, moonlight:<id> or a bare id). */
+  private orgRefForSelectionKey(key: string): string {
+    const remoteId: string = remoteHostIdFromCardKey(key);
+    if (remoteId !== '') { return remoteId; }
+    const moonlightId: string = moonlightHostIdFromCardKey(key);
+    return moonlightId !== '' ? 'moonlight:' + moonlightId : key;
+  }
+  private selectedOrgRefs(): string[] {
+    return Array.from(this.hostSelectedIds).map((key: string): string => this.orgRefForSelectionKey(key));
+  }
+  /** Enters multi-select with the given hosts already selected (used by 重复主机 → 在列表中选中). */
+  private selectHostsByRefs(refs: string[]): void {
+    const keys: string[] = refs.map((ref: string): string => ref.startsWith('moonlight:') ?
+      unifiedMoonlightHostCardKey(ref.substring('moonlight:'.length)) : remoteHostCardKey(ref));
+    this.hostOrgFilterKey = 'all';
+    this.refreshFilteredHostView();
+    animateTo({ duration: 250, curve: Curve.FastOutSlowIn }, (): void => {
+      this.hostSelectionMode = true;
+      this.hostReorderEnabled = false;
+      this.hostSelectedIds = new Set<string>(keys);
+      this.hostViewRevision += 1;
+    });
+  }
+  private async batchProbeHosts(): Promise<void> {
+    if (this.hostBatchProbing) { return; }
+    const refs: string[] = this.selectedOrgRefs();
+    const targets: RemoteHost[] = this.hosts.filter((host: RemoteHost): boolean => refs.indexOf(host.id) >= 0 &&
+      host.protocol !== 'ai' && !(host.protocol === 'rustdesk' && host.rustdeskDirectEnabled));
+    if (targets.length === 0) { promptAction.showToast({ message: '所选主机无需在线探测', duration: 1800 }); return; }
+    this.hostBatchProbing = true;
+    let online: number = 0;
+    let offline: number = 0;
+    try {
+      // Four probes at a time keeps the radio and the remote hosts calm.
+      for (let start: number = 0; start < targets.length && this.pageActive; start += 4) {
+        const batch: RemoteHost[] = targets.slice(start, start + 4);
+        await Promise.all(batch.map((host: RemoteHost): Promise<void> => this.probeHostConnectivity(host, false)));
+      }
+      targets.forEach((host: RemoteHost): void => {
+        const state: boolean | undefined = this.orgOnline(host);
+        if (state === true) { online++; } else if (state === false) { offline++; }
+      });
+      if (this.pageActive) {
+        promptAction.showToast({ message: '检测完成 · ' + online.toString() + ' 在线 · ' + offline.toString() + ' 离线' +
+          (targets.length - online - offline > 0 ? ' · ' + (targets.length - online - offline).toString() + ' 未知' : ''),
+          duration: 2400 });
+      }
+    } finally {
+      this.hostBatchProbing = false;
+      this.hostViewRevision += 1;
+    }
+  }
+  private async batchSetHostLock(lock: boolean): Promise<void> {
+    const refs: string[] = this.selectedOrgRefs();
+    const targets: RemoteHost[] = this.hosts.filter((host: RemoteHost): boolean => refs.indexOf(host.id) >= 0 &&
+      host.protocol !== 'ai' && host.locked !== lock);
+    if (targets.length === 0) {
+      promptAction.showToast({ message: lock ? '所选主机都已上锁' : '所选主机都未上锁', duration: 1800 });
+      return;
+    }
+    const gate: LockGateResult = await showLockGate(targets.length.toString() + ' 台主机', 'biometric');
+    if (!gate.ok) {
+      const message: string = lockGateErrorMessage(gate);
+      if (message !== '') { promptAction.showToast({ message, duration: 2000 }); }
+      return;
+    }
+    let changed: number = 0;
+    targets.forEach((host: RemoteHost): void => {
+      const vncHostId: string = this.vncRecordIdForHost(host);
+      if (vncHostId !== '') {
+        if (this.vncHosts.updateLock(vncHostId, lock, lock ? LockType.BIOMETRIC : LockType.NONE)) { changed++; }
+        return;
+      }
+      const current: RemoteHost | undefined = this.srv.getHost(host.id);
+      if (current === undefined) { return; }
+      const updated: RemoteHost = current.runtimeClone();
+      updated.locked = lock;
+      updated.lockType = lock ? LockType.BIOMETRIC : LockType.NONE;
+      if (this.srv.updateHost(updated)) { changed++; }
+    });
+    this.refreshHostSnapshotAfterMutation();
+    promptAction.showToast({ message: (lock ? '已上锁 ' : '已解锁 ') + changed.toString() + ' 台', duration: 1800 });
+  }
+  /** Exports the given hosts (all when empty) as JSON without any secret. */
+  private async exportHostsToFile(refs: string[]): Promise<void> {
+    const store: HostOrganizationStore = HostOrganizationStore.getInstance();
+    const records: HostExportRecord[] = this.orgRows(this.hostViewRevision)
+      .filter((row: OrgHostRow): boolean => refs.length === 0 || refs.indexOf(row.ref) >= 0)
+      .map((row: OrgHostRow): HostExportRecord => {
+        const membership: HostMembership = store.membership(row.ref);
+        return { id: row.ref, protocol: row.protocol, host: row.address, port: row.port, username: row.username,
+          label: row.label, groupId: membership.groupId, tags: membership.tags.slice() };
+      });
+    if (records.length === 0) { promptAction.showToast({ message: '没有可导出的主机', duration: 1800 }); return; }
+    const code = await HostExportFileService.save(hostExportFileName(), exportHosts(records, store.listGroups()));
+    if (code === 'cancelled') { return; }
+    promptAction.showToast({ message: code === 'ok' ? '已导出 ' + records.length.toString() + ' 台主机（不含密码与私钥）' :
+      '导出失败，请重试', duration: 2200 });
+  }
+  private async importHostsFromFile(): Promise<void> {
+    const result: HostImportFileResult = await HostExportFileService.open();
+    if (result.code === 'cancelled') { return; }
+    const document: HostExportDocument | null = result.code === 'ok' ? parseHostExport(result.text) : null;
+    if (document === null) {
+      promptAction.showToast({ message: result.code === 'too_large' ? '文件太大' : '不是 RemoteDesk 导出的主机文件', duration: 2200 });
+      return;
+    }
+    this.hostImportDocument = document;
+    this.openSheetSafely((): void => { if (this.pageActive) { this.showHostImportSheet = true; } });
+  }
+  /** Opens the normal add form pre-filled from one imported record; credentials are entered there. */
+  private addImportedHost(record: HostExportRecord): void {
+    this.showHostImportSheet = false;
+    setTimeout((): void => {
+      if (!this.pageActive || this.appInBackground || this.showAddSheet) { return; }
+      this.resetForm();
+      if (record.protocol === 'ssh') {
+        this.proConnectionShareBasicFields = { label: record.label, address: record.host,
+          port: record.port > 0 ? record.port : 22, username: record.username };
+        this.modernAddProtocol = 'ssh'; this.addSheetShowsModernPicker = false;
+      } else {
+        if (record.protocol === 'vnc') { this.prepareVncAddFlow(); }
+        this.proto = record.protocol; this.label = record.label; this.hostAddr = record.host;
+        this.portVal = record.port > 0 ? record.port : (record.protocol === 'vnc' ? 5900 : 3389);
+        if (record.protocol === 'rdp') { this.rdpPortVal = this.portVal; }
+        this.modernAddProtocol = ''; this.addSheetShowsModernPicker = false;
+      }
+      this.openSheetSafely((): void => { if (this.pageActive && !this.appInBackground) { this.showAddSheet = true; } });
+    }, 360);
+  }
+  /** Hosts with a live session, offered by 保存当前会话. */
+  private activeSessionRefs(_revision: number): string[] {
+    const refs: string[] = [];
+    const active: ActiveRemoteSessionRecord | null = ActiveRemoteSessionRegistry.getInstance().getActive();
+    if (active !== null && active.protocolConnected) {
+      const ref: string = active.protocol === RemoteProtocol.vnc && !active.hostId.startsWith('vnc:') ?
+        'vnc:' + active.hostId : active.hostId;
+      if (this.hosts.some((host: RemoteHost): boolean => host.id === ref)) { refs.push(ref); }
+    }
+    SshSessionStore.getInstance().contexts().forEach((context: SshSessionContext): void => {
+      if (context.state === 'Ready' && refs.indexOf(context.hostId) < 0 &&
+        this.hosts.some((host: RemoteHost): boolean => host.id === context.hostId)) { refs.push(context.hostId); }
+    });
+    return refs;
+  }
+
+  // ---------- Pro 工作区与布局 ----------
+  /**
+   * Opens a workspace entry by entry through the normal connect flow (lock, preflight and credentials all apply).
+   * Each entry is marked 已打开 once its session page takes over; the next one starts when the list returns.
+   */
   private openProWorkspace(workspace: Workspace): void {
     if (!ProEntries.visible('pro.workspaces')) { return; }
-    const device: 'phone' | 'tablet' | 'pc' = this.isDesktopDevice ? 'pc' :
-      (this.breakpoint === 'md' || this.breakpoint === 'lg' ? 'tablet' : 'phone');
-    const plan = workspaceOpenPlan(workspace, device);
-    const mode = device === 'pc' ? '窗口' : device === 'tablet' ? '分屏/切换条' : '会话切换条';
-    promptAction.showToast({ message: '已生成 ' + plan.items.length.toString() + ' 个会话的' + mode + '打开计划', duration: 1800 });
+    if (this.proWorkspaceRun !== null && !workspaceRunFinished(this.proWorkspaceRun as WorkspaceRun) &&
+      (this.proWorkspaceRun as WorkspaceRun).workspaceId !== workspace.id) {
+      promptAction.showToast({ message: '已结束上一个工作区的打开进度', duration: 1600 });
+    }
+    const labels: Record<string, string> = {};
+    this.orgRows(this.hostViewRevision).forEach((row: OrgHostRow): void => { labels[row.ref] = row.label; });
+    this.proWorkspaceRun = workspaceRunFor(workspace, labels);
+    this.advanceProWorkspaceRun(true);
+  }
+  private endProWorkspaceRun(): void {
+    if (this.proWorkspaceRunTimer >= 0) { clearTimeout(this.proWorkspaceRunTimer); this.proWorkspaceRunTimer = -1; }
+    if (this.proWorkspaceRun !== null) {
+      (this.proWorkspaceRun as WorkspaceRun).items.forEach((item: WorkspaceRunItem): void => {
+        WorkspaceHandoff.getInstance().clear(item.hostRef);
+      });
+    }
+    this.proWorkspaceRun = null;
+    this.proWorkspacePageHidden = false;
+  }
+  private workspaceEntryFor(run: WorkspaceRun, hostRef: string): WorkspaceEntry | null {
+    const workspace: Workspace | null = WorkspaceStore.getInstance().get(run.workspaceId);
+    if (workspace === null) { return null; }
+    const entry: WorkspaceEntry | undefined = sortedEntries(workspace.entries)
+      .find((item: WorkspaceEntry): boolean => item.hostRef === hostRef);
+    return entry === undefined ? null : entry;
+  }
+  /** Starts the next queued entry; `explicit` also starts entries set to manual connect. */
+  private advanceProWorkspaceRun(explicit: boolean): void {
+    if (this.proWorkspaceRun === null || !this.pageActive || this.appInBackground) { return; }
+    const run: WorkspaceRun = this.proWorkspaceRun as WorkspaceRun;
+    if (connectingRunIndex(run) >= 0) { return; }
+    const index: number = nextQueuedRunIndex(run);
+    if (index < 0) {
+      promptAction.showToast({ message: run.name + ' · ' + workspaceRunSummary(run), duration: 2200 });
+      return;
+    }
+    if (!explicit && !run.items[index].autoConnect) { return; }
+    this.connectProWorkspaceItem(index);
+  }
+  private connectProWorkspaceItem(index: number): void {
+    if (this.proWorkspaceRun === null) { return; }
+    const run: WorkspaceRun = this.proWorkspaceRun as WorkspaceRun;
+    const item: WorkspaceRunItem = run.items[index];
+    if (item.hostRef.startsWith('moonlight:')) {
+      const moonlightId: string = item.hostRef.substring('moonlight:'.length);
+      const view: MoonlightHostLocalView | undefined = this.moonlightHosts.find((candidate: MoonlightHostLocalView): boolean =>
+        candidate.host !== null && candidate.host.id === moonlightId);
+      if (view === undefined || view.host === null) {
+        this.proWorkspaceRun = setRunItemState(run, index, 'failed', '主机不存在');
+        this.advanceProWorkspaceRun(false);
+        return;
+      }
+      // Moonlight opens its own app catalog; the workspace hands over and continues when the list returns.
+      this.proWorkspaceRun = setRunItemState(run, index, 'connecting', '');
+      this.proWorkspacePageHidden = false;
+      void this.openMoonlightHost(view.host.id);
+      return;
+    }
+    const host: RemoteHost | undefined = this.hosts.find((candidate: RemoteHost): boolean => candidate.id === item.hostRef);
+    if (host === undefined) {
+      this.proWorkspaceRun = setRunItemState(run, index, 'failed', '主机不存在');
+      this.advanceProWorkspaceRun(false);
+      return;
+    }
+    const entry: WorkspaceEntry | null = this.workspaceEntryFor(run, item.hostRef);
+    const handoff: WorkspaceHandoff = WorkspaceHandoff.getInstance();
+    const frame = this.isDesktopDevice && entry !== null && entry.frame !== undefined ? entry.frame : null;
+    const sshView = entry !== null && host.protocol === 'ssh' &&
+      (entry.view.sshPane === 'files' || entry.view.sshDirectory !== '') ? entry.view : null;
+    handoff.stage(host.id, sshView, frame);
+    const vncRecordId: string = this.vncRecordIdForHost(host);
+    if (vncRecordId !== '' && frame !== null) { handoff.stage(vncRecordId, null, frame); }
+    this.proWorkspaceRun = setRunItemState(run, index, 'connecting', '');
+    this.proWorkspacePageHidden = false;
+    void this.connectToHost(host);
+  }
+  private retryProWorkspaceItem(index: number): void {
+    if (this.proWorkspaceRun === null) { return; }
+    const run: WorkspaceRun = this.proWorkspaceRun as WorkspaceRun;
+    const connecting: number = connectingRunIndex(run);
+    if (connecting >= 0 && connecting !== index) {
+      this.proWorkspaceRun = setRunItemState(run, connecting, 'failed', '未完成');
+    }
+    this.connectProWorkspaceItem(index);
+  }
+  private skipProWorkspaceItem(index: number): void {
+    if (this.proWorkspaceRun === null) { return; }
+    const run: WorkspaceRun = this.proWorkspaceRun as WorkspaceRun;
+    WorkspaceHandoff.getInstance().clear(run.items[index].hostRef);
+    this.proWorkspaceRun = setRunItemState(run, index, 'skipped', '');
+    this.advanceProWorkspaceRun(false);
+  }
+  /** Called when the host list shows again: a session page took over, so the entry it opened is done. */
+  private resumeProWorkspaceRun(): void {
+    if (this.proWorkspaceRun === null) { return; }
+    const run: WorkspaceRun = this.proWorkspaceRun as WorkspaceRun;
+    const connecting: number = connectingRunIndex(run);
+    if (connecting >= 0 && this.proWorkspacePageHidden) {
+      this.proWorkspaceRun = setRunItemState(run, connecting, 'opened', '');
+    }
+    this.proWorkspacePageHidden = false;
+    if (this.proWorkspaceRunTimer >= 0) { clearTimeout(this.proWorkspaceRunTimer); }
+    this.proWorkspaceRunTimer = setTimeout((): void => {
+      this.proWorkspaceRunTimer = -1;
+      this.advanceProWorkspaceRun(false);
+    }, 900);
   }
   private font(): string { return AppConfig.fontFamily; }
 
@@ -13274,9 +13644,10 @@ struct HostListPage {
       .justifyContent(shouldUseGripFabAlignment(this.isDesktopDevice, this.breakpoint) ? this.getFabAlignment() : FlexAlign.Start)
       .position({ x: 0, y: '100%' })
       .markAnchor({ x: 0, y: '100%' })
-      .translate({ y: (!this.isDesktopDevice && this.curTab === 3 ? 120 :
+      .translate({ y: ((!this.isDesktopDevice && this.curTab === 3) || (this.hostSelectionMode && this.proOrgVisible) ? 120 :
         -hostListFabLiftVp(this.breakpoint)) })
-      .opacity(!this.pageActive || (!this.isDesktopDevice && this.curTab === 3) ? 0 : 1)
+      .opacity(!this.pageActive || (!this.isDesktopDevice && this.curTab === 3) ||
+        (this.hostSelectionMode && this.proOrgVisible) ? 0 : 1)
       .animation({ curve: curves.interpolatingSpring(0, 1, 200, 17) })
 
       if (this.sheetReleaseFenceActive) {
@@ -13481,7 +13852,30 @@ struct HostListPage {
   }
 
   @Builder HostGroupChip(host: RemoteHost) {
-    if (host.groupId.length > 0) {
+    if (this.proOrgVisible) {
+      if (this.orgGroupFor(host.id, this.hostOrgRevision) !== null ||
+        this.orgMembership(host.id, this.hostOrgRevision).tags.length > 0) {
+        Row({ space: 4 }) {
+          if (this.orgGroupFor(host.id, this.hostOrgRevision) !== null) {
+            Row({ space: 3 }) {
+              Circle().width(6).height(6).fill((this.orgGroupFor(host.id, this.hostOrgRevision) as HostGroupDefinition).color)
+              Text((this.orgGroupFor(host.id, this.hostOrgRevision) as HostGroupDefinition).name).fontSize(10)
+                .fontColor((this.orgGroupFor(host.id, this.hostOrgRevision) as HostGroupDefinition).color).maxLines(1)
+                .constraintSize({ maxWidth: 88 }).textOverflow({ overflow: TextOverflow.Ellipsis })
+            }.padding({ left: 6, right: 6, top: 2, bottom: 2 }).borderRadius(6).backgroundColor(this.pal().surface)
+          }
+          ForEach(this.orgMembership(host.id, this.hostOrgRevision).tags.slice(0, 2), (tag: string): void => {
+            Text('#' + tag).fontSize(10).fontColor(this.pal().text2).maxLines(1)
+              .constraintSize({ maxWidth: 72 }).textOverflow({ overflow: TextOverflow.Ellipsis })
+              .padding({ left: 5, right: 5, top: 2, bottom: 2 }).borderRadius(6).backgroundColor(this.pal().surface)
+          }, (tag: string): string => tag)
+          if (this.orgMembership(host.id, this.hostOrgRevision).tags.length > 2) {
+            Text('+' + (this.orgMembership(host.id, this.hostOrgRevision).tags.length - 2).toString()).fontSize(10)
+              .fontColor(this.pal().text3)
+          }
+        }
+      }
+    } else if (host.groupId.length > 0) {
       Text(host.groupId)
         .fontSize(11).fontColor(this.accentColor)
         .padding({ left: 6, right: 6, top: 2, bottom: 2 })
@@ -15019,8 +15413,30 @@ struct HostListPage {
               ProIncomingConnectionShareCard({ onImport: (id: string): void => { this.openProConnectionShareImport(id); } })
             }
           }
-          if (!this.groupedHostCardsActive()) {
-            ListItem() { ProOrganizationWorkspacePanel({ hosts: this.hosts, onOpen: (workspace: Workspace): void => { this.openProWorkspace(workspace); } }) }
+          if (this.proWorkspacesVisible) {
+            ListItem() {
+              WorkspaceStrip({
+                rows: this.orgRows(this.hostViewRevision),
+                activeRefs: this.activeSessionRefs(this.hostViewRevision),
+                runningId: this.proWorkspaceRun === null ? '' : (this.proWorkspaceRun as WorkspaceRun).workspaceId,
+                onOpen: (workspace: Workspace): void => { this.openProWorkspace(workspace); }
+              })
+            }.margin({ left: -16, right: -16 })
+          }
+          if (this.proOrgVisible) {
+            ListItem() {
+              HostGroupBar({
+                rows: this.orgRows(this.hostViewRevision),
+                onlineRefs: this.orgPresenceRefs(true, this.hostViewRevision),
+                offlineRefs: this.orgPresenceRefs(false, this.hostViewRevision),
+                filterKey: this.hostOrgFilterKey,
+                onFilter: (key: string): void => { this.setHostOrgFilter(key); },
+                onExport: (): void => { void this.exportHostsToFile([]); },
+                onImport: (): void => { void this.importHostsFromFile(); },
+                onSelectHosts: (refs: string[]): void => { this.selectHostsByRefs(refs); }
+              })
+            }.margin({ left: -16, right: -16 })
+          } else if (!this.groupedHostCardsActive()) {
             ListItem() { this.HostWorkspaceFilterBar() }
           }
 
@@ -15235,11 +15651,64 @@ struct HostListPage {
         .padding({ left: 16, right: 16 })
         .position({ x: 0, y: 0 })
         .hitTestBehavior(HitTestMode.Transparent)
+
+        // Pro: workspace open progress and the multi-select batch bar float above the FAB area.
+        if (this.proWorkspaceRun !== null || (this.hostSelectionMode && this.proOrgVisible && !this.hostReorderEnabled)) {
+          Column({ space: 10 }) {
+            if (this.proWorkspaceRun !== null) {
+              WorkspaceRunPanel({
+                run: this.proWorkspaceRun as WorkspaceRun,
+                onNext: (): void => { this.advanceProWorkspaceRun(true); },
+                onRetry: (index: number): void => { this.retryProWorkspaceItem(index); },
+                onSkip: (index: number): void => { this.skipProWorkspaceItem(index); },
+                onClose: (): void => { this.endProWorkspaceRun(); }
+              })
+            }
+            if (this.hostSelectionMode && this.proOrgVisible && !this.hostReorderEnabled) {
+              HostBatchActions({
+                selectedRefs: this.selectedOrgRefs(),
+                rows: this.orgRows(this.hostViewRevision),
+                probing: this.hostBatchProbing,
+                onProbe: (): void => { void this.batchProbeHosts(); },
+                onExport: (): void => { void this.exportHostsToFile(this.selectedOrgRefs()); },
+                onDelete: (): void => { void this.doHostBatchDelete(); },
+                onLock: (lock: boolean): void => { void this.batchSetHostLock(lock); },
+                onChanged: (): void => { this.refreshHostSnapshotAfterMutation(); }
+              })
+            }
+          }
+          .width('100%').constraintSize({ maxWidth: 560 })
+          .padding({ left: 16, right: 16 })
+          .position({ x: 0, y: '100%' })
+          .markAnchor({ x: 0, y: '100%' })
+          .translate({ y: -(this.hostSelectionMode && this.proOrgVisible ? hostListFabLiftVp(this.breakpoint) - 40 :
+            hostListFabLiftVp(this.breakpoint) + hostListFabSizeVp(this.breakpoint) + 12) })
+          .transition(TransitionEffect.translate({ y: 80 }).combine(TransitionEffect.OPACITY)
+            .animation({ duration: 250, curve: Curve.FastOutSlowIn }))
+        }
       }
       .width('100%').height('100%')
+      .bindSheet($$this.showHostImportSheet, this.hostImportSheet(), {
+        height: SheetSize.LARGE, dragBar: true, showClose: false, backgroundColor: this.pal().sheetBg
+      })
 
     }
     .width('100%').height('100%')
+  }
+
+  @Builder hostImportSheet() {
+    Column() {
+      Scroll() {
+        Column() {
+          HostImportPanel({
+            document: this.hostImportDocument,
+            rows: this.orgRows(this.hostViewRevision),
+            onAdd: (record: HostExportRecord): void => { this.addImportedHost(record); },
+            onClose: (): void => { this.showHostImportSheet = false; }
+          })
+        }.padding({ left: 16, right: 16, top: 18, bottom: 28 })
+      }.layoutWeight(1).scrollBar(BarState.Off).align(Alignment.Top).edgeEffect(EdgeEffect.Spring)
+    }.width('100%').height('100%').backgroundColor(this.pal().sheetBg)
   }
 
   private async openSshPublicKeyInstall(host: RemoteHost): Promise<void> {
@@ -18334,7 +18803,7 @@ struct HostListPage {
                   void this.toggleCloudSyncTable(table);
                 })
               Column() {
-                Text(table === 'usersettings' ? '跨设备外观设置' : table === 'remotehosts' ? '远程主机' : table === 'rdpcredentials' ? 'Windows 登录凭据' : table === 'rustdeskrelays' ? 'RustDesk 中继配置' : table === 'sshkeys' ? 'SSH 密钥' : table === 'totpentries' ? '双重验证动态口令' : table === 'vncrecordv2' ? 'VNC 记录（vncrecord）' : 'Moonlight 串流数据')
+                Text(table === 'usersettings' ? '跨设备外观、分组与工作区' : table === 'remotehosts' ? '远程主机' : table === 'rdpcredentials' ? 'Windows 登录凭据' : table === 'rustdeskrelays' ? 'RustDesk 中继配置' : table === 'sshkeys' ? 'SSH 密钥' : table === 'totpentries' ? '双重验证动态口令' : table === 'vncrecordv2' ? 'VNC 记录（vncrecord）' : 'Moonlight 串流数据')
                   .fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
                 Text(table === 'usersettings' ? '仅同步主题、壁纸等可跨设备复用的外观偏好' : table === 'vncrecordv2' ? 'VNC 设置、主机、Gateway、加密机密和 trust 候选元数据' : '包含敏感数据，启用时自动同步加密参数')
                   .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font()).margin({ top: 3 })

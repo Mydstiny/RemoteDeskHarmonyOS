@@ -1,5 +1,7 @@
 import { ProBadge } from '../components/ProBadge';
 import { ProConnectionShareSender } from '../services/pro/ProConnectionShareSender';
+import { WorkspaceHandoff } from '../services/pro/workspace/WorkspaceHandoff';
+import { WorkspaceView } from '../services/pro/workspace/WorkspacePolicy';
 import { ProConnectionShareReceiver } from '../services/pro/ProConnectionShareReceiver';
 import { proConnectionShareBase } from '../services/pro/ProConnectionShareConfiguration';
 import { ProContinuationService, proContinuationFailureText } from '../services/pro/ProContinuationService';
@@ -8935,6 +8937,16 @@ struct SshTerminal {
     } catch (_error) { this.stopProConnectionShare(); }
   }
 
+  /** A session opened from a Pro workspace restores the entry's initial pane and directory once. */
+  private async restoreProWorkspaceView(hostId: string): Promise<void> {
+    const view: WorkspaceView | null = WorkspaceHandoff.getInstance().takeView(hostId);
+    if (view === null || this.terminalClosing || !this.connected || this.hostId !== hostId) { return; }
+    if (view.sshPane === 'files') { this.openSftpPanel(); }
+    if (view.sshDirectory !== '' && !(await this.refreshSftp(view.sshDirectory))) {
+      promptAction.showToast({ message: '工作区目录未能打开，可在 SFTP 中手动进入', duration: 2200 });
+    }
+  }
+
   private async restoreProConnectionShare(): Promise<void> {
     if (this.proConnectionShareRestoreRunning || this.proConnectionShareId === '' || !this.connected ||
         this.sessionId <= 0 || this.terminalClosing) { return; }
@@ -12793,6 +12805,7 @@ struct SshTerminal {
     // authenticated page binding are committed, never from a raw CONNECTED poll.
     void this.restoreProContinuation();
     void this.restoreProConnectionShare();
+    void this.restoreProWorkspaceView(bindingHostId);
     this.startLatencyProbe();
     void this.prepareSshPip(pageGeneration, bindingGeneration, bindingHostId);
 

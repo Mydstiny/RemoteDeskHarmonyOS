@@ -18,6 +18,8 @@ import {
   remoteSessionWindowAuthorizationRequiresLiveHandoff
 } from './RemoteSessionWindowAuthorization';
 import { REMOTE_SESSION_WINDOW_READY_TIMEOUT_MS } from './RemoteSessionWindowReadiness';
+import { WorkspaceHandoff } from './pro/workspace/WorkspaceHandoff';
+import { WorkspaceFrame, workspaceWindowRect, WorkspaceWindowRect } from './pro/workspace/WorkspacePolicy';
 
 const DOMAIN: number = 0x0025;
 const TAG: string = 'SessionWindowLaunch';
@@ -47,11 +49,25 @@ export class RemoteSessionWindowLauncher {
     const record = coordinator.reserve(request, nativeHandoff);
     if (record === null) { return false; }
     let densityPixels: number = 1;
+    let displayWidth: number = 0;
+    let displayHeight: number = 0;
     try {
-      densityPixels = Math.max(1, display.getDefaultDisplaySync().densityPixels);
+      const defaultDisplay: display.Display = display.getDefaultDisplaySync();
+      densityPixels = Math.max(1, defaultDisplay.densityPixels);
+      displayWidth = defaultDisplay.width;
+      displayHeight = defaultDisplay.height;
     } catch (_err) {}
     const placement = remoteSessionWindowPlacement(
       coordinator.nextPlacementSequence() - 1, densityPixels);
+    // A session opened from a Pro workspace starts at the rectangle saved in its layout.
+    const workspaceFrame: WorkspaceFrame | null = WorkspaceHandoff.getInstance().takeFrame(request.hostId);
+    if (workspaceFrame !== null && displayWidth > 0 && displayHeight > 0) {
+      const rect: WorkspaceWindowRect = workspaceWindowRect(workspaceFrame, displayWidth, displayHeight,
+        Math.round(REMOTE_SESSION_WINDOW_MIN_WIDTH_VP * densityPixels),
+        Math.round(REMOTE_SESSION_WINDOW_MIN_HEIGHT_VP * densityPixels));
+      placement.left = rect.left; placement.top = rect.top;
+      placement.width = rect.width; placement.height = rect.height;
+    }
     const want: Want = {
       bundleName: context.abilityInfo.bundleName,
       moduleName: context.abilityInfo.moduleName,

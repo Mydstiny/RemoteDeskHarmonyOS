@@ -1,11 +1,12 @@
 import { CloudStore } from '../../CloudStore';
-import { HostSyncService } from '../../HostSyncService';
 import { AccountScopeToken } from '../../AccountScopePolicy';
 import { AccountSessionCoordinator } from '../../AccountSessionCoordinator';
 import { ProEntries } from '../ProEntries';
 import {
-  HostGroupDefinition, HostMembership, HostOrganizationSnapshot, HOST_ORGANIZATION_SCHEMA_VERSION,
-  emptyOrganization, normalizeOrganizationName, normalizeTags, validateOrganization
+  addTagsIn, assignGroupIn, danglingRefs, deleteTagIn, HOST_GROUP_COLORS, HOST_GROUP_ICONS,
+  HOST_ORGANIZATION_SCHEMA_VERSION, HostGroupDefinition, HostMembership, HostOrganizationSnapshot, hostRefParts,
+  MAX_HOST_GROUPS, moveGroupIn, normalizeOrganizationName, normalizeTags, pruneMembership, removeTagsIn,
+  renameTagIn, sortedGroups, validateGroup, validateOrganization
 } from './HostOrganizationPolicy';
 
 export const HOST_GROUPS_SETTING_KEY: string = 'pro.org.groups.v1';
@@ -84,63 +85,137 @@ export class HostOrganizationStore {
     });
     return { schemaVersion: HOST_ORGANIZATION_SCHEMA_VERSION, groups: this.groups.slice(), byHost: membership, updatedAt: this.updatedAt };
   }
-  listGroups(): HostGroupDefinition[] { return this.groups.slice().sort((a: HostGroupDefinition, b: HostGroupDefinition): number => a.order - b.order); }
-  membership(hostRef: string): HostMembership { return this.byHost[hostRef] || { groupId: '', tags: [], updatedAt: 0 }; }
-  createGroup(group: HostGroupDefinition): boolean {
-    if (!this.canWrite() || this.groups.length >= 100 || this.groups.some((item: HostGroupDefinition): boolean => item.id === group.id)) { return false; }
-    const now: number = Date.now();
-    const next: HostGroupDefinition = { id: group.id.trim(), name: normalizeOrganizationName(group.name), color: group.color.trim(), icon: group.icon.trim(), order: this.groups.length, createdAt: now, updatedAt: now };
-    this.groups = this.groups.concat([next]);
-    return this.persist();
+  listGroups(): HostGroupDefinition[] { return sortedGroups(this.groups); }
+  group(groupId: string): HostGroupDefinition | null {
+    return this.groups.find((group: HostGroupDefinition): boolean => group.id === groupId) || null;
   }
-  renameGroup(groupId: string, name: string): boolean {
+  membership(hostRef: string): HostMembership { return this.byHost[hostRef] || { groupId: '', tags: [], updatedAt: 0 }; }
+  /** Forces a re-read, used after cloud sync may have replaced the rows. */
+  reload(): HostOrganizationSnapshot { this.loadedOwner = ''; return this.load(); }
+  createGroup(group: HostGroupDefinition): boolean {
+    const name: string = normalizeOrganizationName(group.name);
+    if (!this.canWrite() || name.length === 0 || this.groups.length >= MAX_HOST_GROUPS ||
+        this.groups.some((item: HostGroupDefinition): boolean => item.id === group.id)) { return false; }
+    const now: number = Date.now();
+    const next: HostGroupDefinition = { id: group.id.trim(), name, color: group.color.trim(), icon: group.icon.trim(),
+      order: this.groups.length, createdAt: now, updatedAt: now };
+    if (validateGroup(next).length > 0) { return false; }
+    return this.commit(this.groups.concat([next]), this.byHost);
+  }
+  /** Updates name, color and icon together; empty values keep the current ones. */
+  updateGroup(groupId: string, name: string, color: string, icon: string): boolean {
     if (!this.canWrite()) { return false; }
-    const nextName: string = normalizeOrganizationName(name);
-    if (nextName.length === 0) { return false; }
     const index: number = this.groups.findIndex((group: HostGroupDefinition): boolean => group.id === groupId);
     if (index < 0) { return false; }
     const current: HostGroupDefinition = this.groups[index];
-    const next: HostGroupDefinition = { id: current.id, name: nextName, color: current.color, icon: current.icon,
+    const nextName: string = normalizeOrganizationName(name);
+    const next: HostGroupDefinition = { id: current.id, name: nextName.length > 0 ? nextName : current.name,
+      color: color.trim().length > 0 ? color.trim() : current.color,
+      icon: icon.trim().length > 0 ? icon.trim() : current.icon,
       order: current.order, createdAt: current.createdAt, updatedAt: Date.now() };
-    this.groups[index] = next;
-    return this.persist();
+    if (validateGroup(next).length > 0) { return false; }
+    const groups: HostGroupDefinition[] = this.groups.slice();
+    groups[index] = next;
+    return this.commit(groups, this.byHost);
   }
+  renameGroup(groupId: string, name: string): boolean { return this.updateGroup(groupId, name, '', ''); }
+  moveGroup(groupId: string, delta: number): boolean {
+    if (!this.canWrite()) { return false; }
+    return this.commit(moveGroupIn(this.groups, groupId, delta, Date.now()), this.byHost);
+  }
+  /** Deletes the group only; its hosts stay and become ungrouped. */
   deleteGroup(groupId: string): boolean {
     if (!this.canWrite()) { return false; }
-    this.groups = this.groups.filter((group: HostGroupDefinition): boolean => group.id !== groupId)
-      .map((group: HostGroupDefinition, index: number): HostGroupDefinition => ({ id: group.id, name: group.name,
-        color: group.color, icon: group.icon, order: index, createdAt: group.createdAt, updatedAt: Date.now() }));
-    Object.keys(this.byHost).forEach((hostRef: string): void => {
-      if (this.byHost[hostRef].groupId === groupId) {
-        const current: HostMembership = this.byHost[hostRef];
-        this.byHost[hostRef] = { groupId: '', tags: current.tags.slice(), updatedAt: Date.now() };
-      }
-    });
-    return this.persist();
-  }
-  assignHost(hostRef: string, groupId: string, tags: string[] = []): boolean {
-    if (!this.canWrite() || hostRef.trim() === '' || (groupId !== '' && !this.groups.some((group: HostGroupDefinition): boolean => group.id === groupId))) { return false; }
     const now: number = Date.now();
-    this.byHost[hostRef] = { groupId: groupId.trim(), tags: normalizeTags(tags), updatedAt: now };
-    // Keep the legacy RemoteHost.groupId view synchronized for the canonical host table.
-    if (!hostRef.includes(':')) { HostSyncService.getInstance().setGroup(hostRef, groupId); }
-    return this.persist();
+    const groups: HostGroupDefinition[] = sortedGroups(this.groups.filter((group: HostGroupDefinition): boolean =>
+      group.id !== groupId)).map((group: HostGroupDefinition, index: number): HostGroupDefinition => ({
+        id: group.id, name: group.name, color: group.color, icon: group.icon, order: index,
+        createdAt: group.createdAt, updatedAt: group.order === index ? group.updatedAt : now }));
+    const members: string[] = Object.keys(this.byHost).filter((hostRef: string): boolean =>
+      this.byHost[hostRef].groupId === groupId);
+    return this.commit(groups, assignGroupIn(this.byHost, members, '', now));
+  }
+  assignHost(hostRef: string, groupId: string): boolean { return this.assignHosts([hostRef], groupId); }
+  /** Moves hosts into a group ('' removes them from every group); tags are kept. */
+  assignHosts(hostRefs: string[], groupId: string): boolean {
+    if (!this.canWrite() || hostRefs.length === 0 ||
+        (groupId !== '' && this.group(groupId) === null)) { return false; }
+    return this.commit(this.groups, assignGroupIn(this.byHost, hostRefs, groupId, Date.now()));
   }
   setTags(hostRef: string, tags: string[]): boolean {
-    if (!this.canWrite() || hostRef.trim() === '') { return false; }
-    const current: HostMembership = this.membership(hostRef);
-    this.byHost[hostRef] = { groupId: current.groupId, tags: normalizeTags(tags), updatedAt: Date.now() };
-    return this.persist();
+    if (!this.canWrite() || hostRefParts(hostRef) === null) { return false; }
+    const current: string[] = this.membership(hostRef).tags;
+    const now: number = Date.now();
+    return this.commit(this.groups, addTagsIn(removeTagsIn(this.byHost, [hostRef], current, now), [hostRef], tags, now));
+  }
+  addTags(hostRefs: string[], tags: string[]): boolean {
+    if (!this.canWrite() || hostRefs.length === 0 || normalizeTags(tags).length === 0) { return false; }
+    return this.commit(this.groups, addTagsIn(this.byHost, hostRefs, tags, Date.now()));
+  }
+  removeTags(hostRefs: string[], tags: string[]): boolean {
+    if (!this.canWrite() || hostRefs.length === 0) { return false; }
+    return this.commit(this.groups, removeTagsIn(this.byHost, hostRefs, tags, Date.now()));
+  }
+  renameTag(from: string, to: string): boolean {
+    if (!this.canWrite() || normalizeTags([to]).length === 0) { return false; }
+    return this.commit(this.groups, renameTagIn(this.byHost, from, to, Date.now()));
+  }
+  deleteTag(tag: string): boolean {
+    if (!this.canWrite()) { return false; }
+    return this.commit(this.groups, deleteTagIn(this.byHost, tag, Date.now()));
+  }
+  /** Drops memberships of hosts that were deleted; returns how many were removed. */
+  pruneDangling(liveRefs: string[]): number {
+    const dangling: string[] = danglingRefs(this.byHost, liveRefs);
+    if (!this.canWrite() || dangling.length === 0) { return 0; }
+    return this.commit(this.groups, pruneMembership(this.byHost, liveRefs)) ? dangling.length : 0;
+  }
+  /** Adds imported groups (by name) and memberships; existing groups with the same name are reused. */
+  importOrganization(groups: HostGroupDefinition[], assignments: Record<string, HostMembership>): boolean {
+    if (!this.canWrite()) { return false; }
+    const now: number = Date.now();
+    let nextGroups: HostGroupDefinition[] = sortedGroups(this.groups);
+    const idMap: Record<string, string> = {};
+    groups.forEach((group: HostGroupDefinition, index: number): void => {
+      const name: string = normalizeOrganizationName(group.name || '');
+      if (name.length === 0) { return; }
+      const existing: HostGroupDefinition | undefined =
+        nextGroups.find((item: HostGroupDefinition): boolean => item.name === name);
+      if (existing !== undefined) { idMap[group.id] = existing.id; return; }
+      if (nextGroups.length >= MAX_HOST_GROUPS) { return; }
+      const created: HostGroupDefinition = { id: 'group-' + now.toString(36) + '-' + index.toString(36), name,
+        color: typeof group.color === 'string' && group.color.length > 0 ? group.color : HOST_GROUP_COLORS[0],
+        icon: typeof group.icon === 'string' && group.icon.length > 0 ? group.icon : HOST_GROUP_ICONS[0],
+        order: nextGroups.length, createdAt: now, updatedAt: now };
+      if (validateGroup(created).length > 0) { return; }
+      idMap[group.id] = created.id;
+      nextGroups = nextGroups.concat([created]);
+    });
+    let membership: Record<string, HostMembership> = this.byHost;
+    Object.keys(assignments).forEach((hostRef: string): void => {
+      const value: HostMembership = assignments[hostRef];
+      const groupId: string = idMap[value.groupId] || '';
+      if (groupId !== '') { membership = assignGroupIn(membership, [hostRef], groupId, now); }
+      if (value.tags.length > 0) { membership = addTagsIn(membership, [hostRef], value.tags, now); }
+    });
+    return this.commit(nextGroups, membership);
   }
   subscribe(listener: () => void): () => void { this.listeners.push(listener); listener(); return (): void => { this.listeners = this.listeners.filter((item: () => void): boolean => item !== listener); }; }
   dispose(): void { this.accountStop(); this.listeners = []; }
-  private persist(): boolean {
-    const now: number = Date.now(); this.updatedAt = now;
-    const groupsPayload: string = JSON.stringify({ schemaVersion: HOST_ORGANIZATION_SCHEMA_VERSION, groups: this.groups, updatedAt: now });
-    const membershipPayload: string = JSON.stringify({ schemaVersion: HOST_ORGANIZATION_SCHEMA_VERSION, byHost: this.byHost, updatedAt: now });
-    const ok: boolean = this.persistence.save(HOST_GROUPS_SETTING_KEY, groupsPayload) && this.persistence.save(HOST_MEMBERSHIP_SETTING_KEY, membershipPayload);
-    if (ok) { this.publish(); }
-    return ok;
+  /** Validates and writes both rows; memory only changes when the write succeeds. */
+  private commit(groups: HostGroupDefinition[], byHost: Record<string, HostMembership>): boolean {
+    const now: number = Date.now();
+    const candidate: HostOrganizationSnapshot = { schemaVersion: HOST_ORGANIZATION_SCHEMA_VERSION, groups,
+      byHost, updatedAt: now };
+    if (validateOrganization(candidate).length > 0) { return false; }
+    const groupsPayload: string = JSON.stringify({ schemaVersion: HOST_ORGANIZATION_SCHEMA_VERSION, groups, updatedAt: now });
+    const membershipPayload: string = JSON.stringify({ schemaVersion: HOST_ORGANIZATION_SCHEMA_VERSION, byHost, updatedAt: now });
+    const ok: boolean = this.persistence.save(HOST_GROUPS_SETTING_KEY, groupsPayload) &&
+      this.persistence.save(HOST_MEMBERSHIP_SETTING_KEY, membershipPayload);
+    if (!ok) { return false; }
+    this.groups = groups.slice(); this.byHost = byHost; this.updatedAt = now;
+    this.publish();
+    return true;
   }
   private publish(): void { this.listeners.slice().forEach((listener: () => void): void => { try { listener(); } catch (_error) {} }); }
 }

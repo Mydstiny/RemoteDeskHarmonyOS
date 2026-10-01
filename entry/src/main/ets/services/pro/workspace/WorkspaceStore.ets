@@ -2,7 +2,7 @@ import { CloudStore } from '../../CloudStore';
 import { AccountScopeToken } from '../../AccountScopePolicy';
 import { AccountSessionCoordinator } from '../../AccountSessionCoordinator';
 import { ProEntries } from '../ProEntries';
-import { MAX_WORKSPACES, WORKSPACE_SCHEMA_VERSION, Workspace, validateWorkspace } from './WorkspacePolicy';
+import { copyWorkspace, MAX_WORKSPACES, WORKSPACE_SCHEMA_VERSION, Workspace, validateWorkspace } from './WorkspacePolicy';
 
 export interface WorkspacePersistence { load(key: string): string | null; save(key: string, value: string): boolean; }
 class CloudWorkspacePersistence implements WorkspacePersistence {
@@ -42,14 +42,41 @@ export class WorkspaceStore {
     this.items.sort((a: Workspace, b: Workspace): number => a.order - b.order);
     this.publish(); return this.list();
   }
-  list(): Workspace[] { return this.items.slice().sort((a: Workspace, b: Workspace): number => a.order - b.order); }
-  get(id: string): Workspace | null { return this.items.find((item: Workspace): boolean => item.id === id) || null; }
+  list(): Workspace[] {
+    return this.items.map((item: Workspace): Workspace => copyWorkspace(item))
+      .sort((a: Workspace, b: Workspace): number => a.order - b.order || a.name.localeCompare(b.name));
+  }
+  get(id: string): Workspace | null {
+    const found: Workspace | undefined = this.items.find((item: Workspace): boolean => item.id === id);
+    return found === undefined ? null : copyWorkspace(found);
+  }
+  /** Forces a re-read, used after cloud sync may have replaced the rows. */
+  reload(): Workspace[] { this.loadedOwner = ''; return this.load(); }
+  canAdd(): boolean { return this.items.length < MAX_WORKSPACES; }
+  /** Moves one workspace earlier (-1) or later (+1) and rewrites the orders that changed. */
+  move(id: string, delta: number): boolean {
+    if (!ProEntries.visible('pro.workspaces')) { return false; }
+    const ordered: Workspace[] = this.list();
+    const index: number = ordered.findIndex((item: Workspace): boolean => item.id === id);
+    const target: number = index + delta;
+    if (index < 0 || target < 0 || target >= ordered.length) { return false; }
+    const moved: Workspace = ordered[index];
+    ordered.splice(index, 1);
+    ordered.splice(target, 0, moved);
+    let ok: boolean = true;
+    ordered.forEach((item: Workspace, order: number): void => {
+      if (item.order === order) { return; }
+      const next: Workspace = copyWorkspace(item);
+      next.order = order;
+      ok = this.save(next) && ok;
+    });
+    return ok;
+  }
   save(workspace: Workspace): boolean {
     if (!ProEntries.visible('pro.workspaces') || validateWorkspace(workspace).length > 0) { return false; }
     if (this.get(workspace.id) === null && this.items.length >= MAX_WORKSPACES) { return false; }
-    const next: Workspace = { schemaVersion: workspace.schemaVersion, id: workspace.id, name: workspace.name,
-      color: workspace.color, icon: workspace.icon, order: workspace.order, entries: workspace.entries.slice(),
-      layout: workspace.layout, updatedAt: Date.now() };
+    const next: Workspace = copyWorkspace(workspace);
+    next.updatedAt = Date.now();
     const previous: Workspace[] = this.items.slice();
     this.items = this.items.filter((item: Workspace): boolean => item.id !== next.id).concat([next]);
     const ok: boolean = this.persistence.save('pro.ws.' + next.id, JSON.stringify(next));

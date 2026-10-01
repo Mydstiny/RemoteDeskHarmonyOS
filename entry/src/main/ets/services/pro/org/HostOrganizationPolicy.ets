@@ -4,6 +4,20 @@ export const MAX_HOST_GROUPS: number = 100;
 export const MAX_GROUP_NAME_LENGTH: number = 32;
 export const MAX_HOST_TAGS: number = 10;
 export const MAX_TAG_LENGTH: number = 32;
+/** 「最近」智能分组覆盖的时间窗口。 */
+export const HOST_RECENT_WINDOW_MS: number = 7 * 24 * 60 * 60 * 1000;
+/** Twelve group colors tuned to read on both light and dark cards. */
+export const HOST_GROUP_COLORS: string[] = [
+  '#007DFF', '#34C759', '#FF9500', '#FF3B30', '#AF52DE', '#5856D6',
+  '#00C7BE', '#FF2D55', '#A2845E', '#30B0C7', '#FFCC00', '#8E8E93'
+];
+/** Group icons are plain glyphs so they sync as text and render on every device. */
+export const HOST_GROUP_ICONS: string[] = [
+  '📁', '💼', '🏠', '🏢', '🖥️', '💻', '🧪', '🚀', '⚙️', '🛠️', '🔒', '☁️',
+  '🌐', '📡', '🗄️', '🎮', '🎬', '📊', '🧩', '⭐', '🔥', '🌱', '🏷️', '🧭'
+];
+/** Smart chips shown on the home bar unless the user hides them. */
+export const HOST_SMART_FILTER_KINDS: string[] = ['recent', 'online', 'offline', 'unassigned'];
 
 export type HostOrganizationProtocol = 'rdp' | 'rustdesk' | 'ssh' | 'vnc' | 'moonlight' | 'ai' | string;
 export type HostSmartGroup = 'recent' | 'online' | 'offline' | 'unassigned' | 'protocol' | 'subnet' | 'tag';
@@ -161,14 +175,14 @@ export function sortedHosts(hosts: HostOrganizationHostView[], mode: 'manual' | 
 }
 
 export function smartGroup(hosts: HostOrganizationHostView[], kind: HostSmartGroup, value: string = '', nowMs: number = Date.now()): string[] {
-  const recentCutoff: number = nowMs - 15 * 60 * 1000;
+  const recentCutoff: number = nowMs - HOST_RECENT_WINDOW_MS;
   return hosts.filter((host: HostOrganizationHostView): boolean => {
-    if (kind === 'recent') { return (host.lastConnected || 0) >= recentCutoff; }
+    if (kind === 'recent') { return (host.lastConnected || 0) > 0 && (host.lastConnected || 0) >= recentCutoff; }
     if (kind === 'online') { return host.nowOnline === true; }
     if (kind === 'offline') { return host.nowOnline === false; }
     if (kind === 'unassigned') { return (host.groupId || '').trim().length === 0; }
     if (kind === 'protocol') { return host.protocol === value; }
-    if (kind === 'subnet') { return host.host.trim().startsWith(value.trim()); }
+    if (kind === 'subnet') { return subnetMatches(host.host, value); }
     if (kind === 'tag') { return (host.tags || []).indexOf(value) >= 0; }
     return false;
   }).map((host: HostOrganizationHostView): string => host.id);
@@ -183,4 +197,220 @@ export function duplicateHostGroups(hosts: HostOrganizationHostView[]): HostDupl
   });
   return Object.keys(buckets).filter((key: string): boolean => buckets[key].length > 1)
     .map((key: string): HostDuplicateGroup => ({ key, hostIds: buckets[key].slice() }));
+}
+
+export type HostFilterKind = 'all' | 'recent' | 'online' | 'offline' | 'unassigned' | 'protocol' | 'subnet' |
+  'tag' | 'group';
+export interface HostFilter { kind: HostFilterKind; value: string; }
+export interface HostTagUsage { tag: string; count: number; }
+
+export function hostFilterKey(filter: HostFilter): string {
+  return filter.value.length > 0 ? filter.kind + ':' + filter.value : filter.kind;
+}
+
+export function parseHostFilterKey(key: string): HostFilter {
+  const separator: number = key.indexOf(':');
+  const kind: string = separator < 0 ? key : key.substring(0, separator);
+  const value: string = separator < 0 ? '' : key.substring(separator + 1);
+  const kinds: string[] = ['all', 'recent', 'online', 'offline', 'unassigned', 'protocol', 'subnet', 'tag', 'group'];
+  if (kinds.indexOf(kind) < 0) { return { kind: 'all', value: '' }; }
+  const needsValue: boolean = kind === 'protocol' || kind === 'subnet' || kind === 'tag' || kind === 'group';
+  if (needsValue && value.length === 0) { return { kind: 'all', value: '' }; }
+  return { kind: kind as HostFilterKind, value: needsValue ? value : '' };
+}
+
+function ipv4Number(address: string): number {
+  const parts: string[] = address.trim().split('.');
+  if (parts.length !== 4) { return -1; }
+  let value: number = 0;
+  for (let index: number = 0; index < 4; index++) {
+    if (!/^[0-9]{1,3}$/.test(parts[index])) { return -1; }
+    const octet: number = Number(parts[index]);
+    if (octet > 255) { return -1; }
+    value = value * 256 + octet;
+  }
+  return value;
+}
+
+/** IPv4 CIDR match (`192.168.31.0/24`); anything else falls back to a plain prefix match. */
+export function subnetMatches(address: string, subnet: string): boolean {
+  const rule: string = subnet.trim();
+  if (rule.length === 0) { return false; }
+  const slash: number = rule.indexOf('/');
+  if (slash > 0) {
+    const base: number = ipv4Number(rule.substring(0, slash));
+    const bits: number = Number(rule.substring(slash + 1));
+    const target: number = ipv4Number(address);
+    if (base < 0 || target < 0 || !Number.isInteger(bits) || bits < 0 || bits > 32) { return false; }
+    const size: number = Math.pow(2, 32 - bits);
+    return Math.floor(base / size) === Math.floor(target / size);
+  }
+  return address.trim().toLowerCase().startsWith(rule.toLowerCase());
+}
+
+export function subnetForAddress(address: string): string {
+  const value: number = ipv4Number(address);
+  if (value < 0) { return ''; }
+  const parts: string[] = address.trim().split('.');
+  return parts[0] + '.' + parts[1] + '.' + parts[2] + '.0/24';
+}
+
+/** /24 networks that hold at least two hosts, most populated first. */
+export function subnetSuggestions(hosts: HostOrganizationHostView[]): string[] {
+  const counts: Record<string, number> = {};
+  hosts.forEach((host: HostOrganizationHostView): void => {
+    const subnet: string = subnetForAddress(host.host);
+    if (subnet !== '') { counts[subnet] = (counts[subnet] || 0) + 1; }
+  });
+  return Object.keys(counts).filter((subnet: string): boolean => counts[subnet] >= 2)
+    .sort((left: string, right: string): number => counts[right] - counts[left] || left.localeCompare(right));
+}
+
+export function emptyMembership(): HostMembership { return { groupId: '', tags: [], updatedAt: 0 }; }
+
+export function hostMatchesFilter(host: HostOrganizationHostView, membership: HostMembership, filter: HostFilter,
+  nowMs: number = Date.now()): boolean {
+  if (filter.kind === 'all') { return true; }
+  if (filter.kind === 'group') { return membership.groupId === filter.value; }
+  if (filter.kind === 'unassigned') { return membership.groupId === ''; }
+  if (filter.kind === 'tag') { return membership.tags.indexOf(filter.value) >= 0; }
+  if (filter.kind === 'recent') { return (host.lastConnected || 0) > 0 && (host.lastConnected || 0) >= nowMs - HOST_RECENT_WINDOW_MS; }
+  if (filter.kind === 'online') { return host.nowOnline === true; }
+  if (filter.kind === 'offline') { return host.nowOnline === false; }
+  if (filter.kind === 'protocol') { return host.protocol === filter.value; }
+  if (filter.kind === 'subnet') { return subnetMatches(host.host, filter.value); }
+  return false;
+}
+
+function copyMembership(byHost: Record<string, HostMembership>): Record<string, HostMembership> {
+  const result: Record<string, HostMembership> = {};
+  Object.keys(byHost).forEach((hostRef: string): void => {
+    const value: HostMembership = byHost[hostRef];
+    result[hostRef] = { groupId: value.groupId, tags: value.tags.slice(), updatedAt: value.updatedAt };
+  });
+  return result;
+}
+
+function compactMembership(byHost: Record<string, HostMembership>): Record<string, HostMembership> {
+  const result: Record<string, HostMembership> = {};
+  Object.keys(byHost).forEach((hostRef: string): void => {
+    const value: HostMembership = byHost[hostRef];
+    if (value.groupId !== '' || value.tags.length > 0) { result[hostRef] = value; }
+  });
+  return result;
+}
+
+/** Moves hosts into one group (or out of every group with ''), keeping their tags. */
+export function assignGroupIn(byHost: Record<string, HostMembership>, hostRefs: string[], groupId: string,
+  nowMs: number): Record<string, HostMembership> {
+  const result: Record<string, HostMembership> = copyMembership(byHost);
+  hostRefs.forEach((hostRef: string): void => {
+    if (hostRefParts(hostRef) === null) { return; }
+    const current: HostMembership = result[hostRef] || emptyMembership();
+    result[hostRef] = { groupId: groupId, tags: current.tags.slice(), updatedAt: nowMs };
+  });
+  return compactMembership(result);
+}
+
+export function addTagsIn(byHost: Record<string, HostMembership>, hostRefs: string[], tags: string[],
+  nowMs: number): Record<string, HostMembership> {
+  const result: Record<string, HostMembership> = copyMembership(byHost);
+  hostRefs.forEach((hostRef: string): void => {
+    if (hostRefParts(hostRef) === null) { return; }
+    const current: HostMembership = result[hostRef] || emptyMembership();
+    result[hostRef] = { groupId: current.groupId, tags: normalizeTags(current.tags.concat(tags)), updatedAt: nowMs };
+  });
+  return compactMembership(result);
+}
+
+export function removeTagsIn(byHost: Record<string, HostMembership>, hostRefs: string[], tags: string[],
+  nowMs: number): Record<string, HostMembership> {
+  const result: Record<string, HostMembership> = copyMembership(byHost);
+  hostRefs.forEach((hostRef: string): void => {
+    const current: HostMembership | undefined = result[hostRef];
+    if (current === undefined) { return; }
+    result[hostRef] = { groupId: current.groupId,
+      tags: current.tags.filter((tag: string): boolean => tags.indexOf(tag) < 0), updatedAt: nowMs };
+  });
+  return compactMembership(result);
+}
+
+/** Renames a tag everywhere; renaming onto an existing tag merges the two. */
+export function renameTagIn(byHost: Record<string, HostMembership>, from: string, to: string,
+  nowMs: number): Record<string, HostMembership> {
+  const target: string = normalizeHostTag(to);
+  const result: Record<string, HostMembership> = copyMembership(byHost);
+  Object.keys(result).forEach((hostRef: string): void => {
+    const current: HostMembership = result[hostRef];
+    if (current.tags.indexOf(from) < 0) { return; }
+    const tags: string[] = current.tags.map((tag: string): string => tag === from ? target : tag)
+      .filter((tag: string): boolean => tag.length > 0);
+    result[hostRef] = { groupId: current.groupId, tags: normalizeTags(tags), updatedAt: nowMs };
+  });
+  return compactMembership(result);
+}
+
+export function deleteTagIn(byHost: Record<string, HostMembership>, tag: string,
+  nowMs: number): Record<string, HostMembership> {
+  return removeTagsIn(byHost, Object.keys(byHost), [tag], nowMs);
+}
+
+export function tagUsage(byHost: Record<string, HostMembership>, liveRefs: string[] = []): HostTagUsage[] {
+  const counts: Record<string, number> = {};
+  Object.keys(byHost).forEach((hostRef: string): void => {
+    if (liveRefs.length > 0 && liveRefs.indexOf(hostRef) < 0) { return; }
+    byHost[hostRef].tags.forEach((tag: string): void => { counts[tag] = (counts[tag] || 0) + 1; });
+  });
+  return Object.keys(counts).map((tag: string): HostTagUsage => ({ tag, count: counts[tag] }))
+    .sort((left: HostTagUsage, right: HostTagUsage): number => right.count - left.count || left.tag.localeCompare(right.tag));
+}
+
+/** Memberships that point at hosts which no longer exist on this account. */
+export function danglingRefs(byHost: Record<string, HostMembership>, liveRefs: string[]): string[] {
+  return Object.keys(byHost).filter((hostRef: string): boolean => liveRefs.indexOf(hostRef) < 0).sort();
+}
+
+export function pruneMembership(byHost: Record<string, HostMembership>,
+  liveRefs: string[]): Record<string, HostMembership> {
+  const result: Record<string, HostMembership> = {};
+  Object.keys(byHost).forEach((hostRef: string): void => {
+    if (liveRefs.indexOf(hostRef) >= 0) { result[hostRef] = byHost[hostRef]; }
+  });
+  return copyMembership(result);
+}
+
+export function groupMemberCounts(byHost: Record<string, HostMembership>, liveRefs: string[]): Record<string, number> {
+  const counts: Record<string, number> = {};
+  liveRefs.forEach((hostRef: string): void => {
+    const membership: HostMembership | undefined = byHost[hostRef];
+    if (membership !== undefined && membership.groupId !== '') {
+      counts[membership.groupId] = (counts[membership.groupId] || 0) + 1;
+    }
+  });
+  return counts;
+}
+
+/** Moves one group up (-1) or down (+1) and renumbers every order. */
+export function moveGroupIn(groups: HostGroupDefinition[], groupId: string, delta: number,
+  nowMs: number): HostGroupDefinition[] {
+  const ordered: HostGroupDefinition[] = sortedGroups(groups);
+  const index: number = ordered.findIndex((group: HostGroupDefinition): boolean => group.id === groupId);
+  const target: number = index + delta;
+  if (index < 0 || target < 0 || target >= ordered.length) { return ordered; }
+  const moved: HostGroupDefinition = ordered[index];
+  ordered.splice(index, 1);
+  ordered.splice(target, 0, moved);
+  return ordered.map((group: HostGroupDefinition, order: number): HostGroupDefinition => ({
+    id: group.id, name: group.name, color: group.color, icon: group.icon, order,
+    createdAt: group.createdAt, updatedAt: group.order === order ? group.updatedAt : nowMs
+  }));
+}
+
+/** Picks a fresh default name (分组 1, 分组 2 …) that no existing group uses. */
+export function nextGroupName(groups: HostGroupDefinition[], base: string = '分组'): string {
+  for (let index: number = 1; index <= MAX_HOST_GROUPS + 1; index++) {
+    const name: string = base + ' ' + index.toString();
+    if (!groups.some((group: HostGroupDefinition): boolean => group.name === name)) { return name; }
+  }
+  return base;
 }

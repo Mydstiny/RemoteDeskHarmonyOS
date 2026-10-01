@@ -22,4 +22,30 @@ assert.deepEqual(p.workspaceOpenPlan({ ...workspace, entries }, 'phone').items.m
 assert.deepEqual(p.workspaceOpenPlan({ ...workspace, entries }, 'tablet').items.slice(0, 2).map(i => i.mode), ['split', 'split']);
 assert.deepEqual(p.workspaceOpenPlan({ ...workspace, entries }, 'pc').items.map(i => i.mode), ['tab', 'window', 'window', 'window']);
 assert.equal(p.workspaceOpenPlan({ ...workspace, entries }, 'phone').maxConcurrent, 3);
+const created = p.newWorkspace('ws-2', '  晨间巡检  ', '#5856D6', '🖥️', 1, 5);
+assert.equal(created.name, '晨间巡检'); assert.equal(JSON.stringify(p.validateWorkspace(created)), '[]');
+let list = p.addWorkspaceEntries([], ['a', 'b', 'c', 'a'], ['ssh', 'rdp', 'vnc', 'ssh']);
+assert.equal(list.map(e => e.hostRef).join(), 'a,b,c'); assert.equal(list[1].view.strictBounds, false);
+assert.equal(JSON.stringify(p.validateWorkspace({ ...created, entries: list })), '[]');
+list = p.moveWorkspaceEntry(list, 'c', -2); assert.equal(list.map(e => e.hostRef + e.order).join(), 'c0,a1,b2');
+list = p.removeWorkspaceEntry(list, 'a'); assert.equal(list.map(e => e.hostRef + e.order).join(), 'c0,b1');
+assert.equal(p.addWorkspaceEntries(Array.from({ length: 16 }, (_, i) => p.newWorkspaceEntry('x' + i, 'ssh', i)), ['y'], ['ssh']).length, 16);
+const copy = p.copyWorkspace({ ...created, entries: list }); copy.entries[0].view.scale = 3;
+assert.equal(list[0].view.scale, 1);
+assert.equal(p.missingWorkspaceRefs({ ...created, entries: list }, ['c']).join(), 'b');
+const snapped = p.snapWorkspaceFrame({ x: 0.93, y: -0.2, w: 0.3, h: 2, fullscreen: false });
+assert.equal(JSON.stringify(snapped), JSON.stringify({ x: 0.75, y: 0, w: 0.25, h: 1, fullscreen: false }));
+assert.equal(p.workspaceLayoutLabel('masterDetail'), '主副'); assert.equal(p.workspaceLayoutLabel(undefined), '自定义');
+let run = p.workspaceRunFor({ ...created, entries: list }, { c: 'VNC 主机' }, 9);
+assert.equal(run.items.map(i => i.state).join(), 'queued,skipped');
+assert.equal(p.nextQueuedRunIndex(run), 0); assert.equal(p.workspaceRunFinished(run), false);
+run = p.setRunItemState(run, 0, 'connecting', ''); assert.equal(p.connectingRunIndex(run), 0);
+run = p.setRunItemState(run, 0, 'opened', ''); assert.equal(p.workspaceRunFinished(run), true);
+assert.equal(p.workspaceRunSummary(run), '1 个已打开 · 1 个已跳过');
+assert.equal(JSON.stringify(p.workspaceWindowRect({ x: 0.5, y: 0, w: 0.5, h: 1, fullscreen: false }, 2000, 1200, 600, 400)),
+  JSON.stringify({ left: 1000, top: 0, width: 1000, height: 1200 }));
+assert.equal(JSON.stringify(p.workspaceWindowRect({ x: 0.9, y: 0.9, w: 0.125, h: 0.125, fullscreen: false }, 2000, 1200, 600, 400)),
+  JSON.stringify({ left: 1400, top: 800, width: 600, height: 400 }));
+assert.equal(JSON.stringify(p.workspaceWindowRect({ x: 0.5, y: 0.5, w: 0.5, h: 0.5, fullscreen: true }, 2000, 1200, 600, 400)),
+  JSON.stringify({ left: 0, top: 0, width: 2000, height: 1200 }));
 console.log('PASS Pro workspace validation, presets and device plans');

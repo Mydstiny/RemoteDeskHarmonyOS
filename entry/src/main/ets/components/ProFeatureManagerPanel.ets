@@ -10,22 +10,17 @@ import { PRO_CONTINUATION_PROTOCOLS, ProContinuationCredentialMode, ProContinuat
   ProContinuationSettings, proContinuationProtocolLabel } from '../services/pro/ProContinuationPreferences';
 import { ProConnectionProtocol } from '../services/pro/ProConnectionEnvelope';
 import { PRO_CONTINUATION_FEATURE, ProContinuationService } from '../services/pro/ProContinuationService';
-import { RemoteHost } from '../model/RemoteHost';
-import { HostSyncService } from '../services/HostSyncService';
-import { VncHostService, VncHostView } from '../services/VncHostService';
-import { projectVncHost } from '../services/VncHostListProjectionPolicy';
-import { HostGroupDefinition, hostRefForProtocol } from '../services/pro/org/HostOrganizationPolicy';
 import { HostOrganizationStore } from '../services/pro/org/HostOrganizationStore';
-import { Workspace } from '../services/pro/workspace/WorkspacePolicy';
+import {
+  copyWorkspace, newWorkspace, Workspace, WORKSPACE_COLORS, WORKSPACE_ICONS, workspaceLayoutLabel
+} from '../services/pro/workspace/WorkspacePolicy';
+import { HostOrganizationManager } from './pro/org/HostOrganizationManager';
 import { WorkspaceStore } from '../services/pro/workspace/WorkspaceStore';
 import { ProWorkspaceEditorPanel } from './ProWorkspaceEditorPanel';
 
 const HOST_MANAGEMENT_FEATURE: string = 'pro.hostManagement';
 const WORKSPACES_FEATURE: string = 'pro.workspaces';
-const GROUP_COLORS: string[] = ['#007DFF', '#34C759', '#FF9500', '#AF52DE', '#FF3B30', '#5AC8FA', '#FFCC00', '#8E8E93'];
 
-/** One host row in the group editor; `ref` is the cross-protocol organization reference. */
-interface OrgHostRow { ref: string; label: string; detail: string; }
 
 /** Settings sheet for one Pro feature: live status, scope, display switch and its own options. */
 @Component
@@ -38,9 +33,6 @@ export struct ProFeatureDetailPanel {
   @State collaborationGranted: boolean = true;
   // 高级主机管理 / 工作区与布局 options.
   @State orgRevision: number = 0;
-  @State openGroupId: string = '';
-  @State groupNameDraft: string = '';
-  @State newGroupName: string = '';
   @State openWorkspaceId: string = '';
   @State workspaceNameDraft: string = '';
   @State editingWorkspace: Workspace | null = null;
@@ -109,6 +101,9 @@ export struct ProFeatureDetailPanel {
     if (protocol === 'ssh') { return '连接后自动开启，恢复当前终端或文件目录'; }
     if (protocol === 'rdp') { return '连接后自动开启，恢复显示器、缩放与视图位置；也可在控制中心按当前画面重新准备'; }
     return '连接后自动开启，在目标设备重新连接同一台主机';
+  }
+  private colorTint(color: string): string {
+    return /^#[0-9A-Fa-f]{6}$/.test(color) ? '#2E' + color.substring(1) : color;
   }
   /** #AARRGGBB tint of the accent for the selected option card. */
   private accentTint(alpha: string): string {
@@ -204,48 +199,6 @@ export struct ProFeatureDetailPanel {
       Toggle({ type: ToggleType.Switch, isOn }).selectedColor(this.accent).accessibilityText(title).onChange(onChange)
     }.width('100%').padding(16)
   }
-  // ---------- 高级主机管理 ----------
-  private orgGroups(_revision: number): HostGroupDefinition[] { return HostOrganizationStore.getInstance().listGroups(); }
-  /** Hosts that can join a group: the synced RDP/RustDesk/SSH records plus VNC hosts. */
-  private orgHosts(): OrgHostRow[] {
-    const rows: OrgHostRow[] = HostSyncService.getInstance().getAllHosts()
-      .filter((host: RemoteHost): boolean => host.protocol === 'rdp' || host.protocol === 'rustdesk' || host.protocol === 'ssh')
-      .map((host: RemoteHost): OrgHostRow => ({ ref: hostRefForProtocol(host.protocol, host.id),
-        label: host.label.length > 0 ? host.label : host.host, detail: host.protocol.toUpperCase() + ' · ' + host.host }));
-    VncHostService.getInstance().list().forEach((view: VncHostView): void => {
-      rows.push({ ref: hostRefForProtocol('vnc', view.id), label: view.label.length > 0 ? view.label : view.host,
-        detail: 'VNC · ' + view.host });
-    });
-    return rows;
-  }
-  private groupMemberCount(groupId: string, _revision: number): number {
-    const store: HostOrganizationStore = HostOrganizationStore.getInstance();
-    return this.orgHosts().filter((row: OrgHostRow): boolean => store.membership(row.ref).groupId === groupId).length;
-  }
-  private inGroup(ref: string, groupId: string, _revision: number): boolean {
-    return HostOrganizationStore.getInstance().membership(ref).groupId === groupId;
-  }
-  private createGroup(): void {
-    const name: string = this.newGroupName.trim();
-    if (name.length === 0) { return; }
-    const count: number = this.orgGroups(this.orgRevision).length;
-    const ok: boolean = HostOrganizationStore.getInstance().createGroup({ id: 'group-' + Date.now().toString(36),
-      name, color: GROUP_COLORS[count % GROUP_COLORS.length], icon: 'folder', order: count, createdAt: 0, updatedAt: 0 });
-    if (ok) { this.newGroupName = ''; }
-  }
-  private toggleGroup(group: HostGroupDefinition): void {
-    this.openGroupId = this.openGroupId === group.id ? '' : group.id;
-    this.groupNameDraft = group.name;
-  }
-  private deleteGroup(group: HostGroupDefinition): void {
-    this.getUIContext().getPromptAction().showDialog({
-      title: '删除分组', message: '删除「' + group.name + '」？主机不会被删除，只是回到未分组。',
-      buttons: [{ text: '取消', color: this.pal().text2 }, { text: '删除', color: this.pal().danger }]
-    }).then((result): void => {
-      if (result.index === 1 && HostOrganizationStore.getInstance().deleteGroup(group.id)) { this.openGroupId = ''; }
-    }).catch((): void => {});
-  }
-
   @Builder private sectionHeader(title: string, detail: string) {
     Column({ space: 2 }) {
       Text(title).fontSize(13).fontColor(this.pal().text2).fontFamily(AppConfig.fontFamily).width('100%')
@@ -257,89 +210,25 @@ export struct ProFeatureDetailPanel {
 
   @Builder private hostManagementOptions() {
     Column({ space: 8 }) {
-      this.sectionHeader('分组', '跨协议整理主机；每台主机属于一个分组，展开分组可改名、选择主机或删除')
-      Column() {
-        ForEach(this.orgGroups(this.orgRevision), (group: HostGroupDefinition, index: number): void => {
-          if (index > 0) { Divider().strokeWidth(0.5).color(this.pal().cardBorder).margin({ left: 16, right: 16 }) }
-          Column() {
-            Row({ space: 10 }) {
-              Circle().width(12).height(12).fill(group.color.length > 0 ? group.color : this.accent)
-              Text(group.name).fontSize(15).fontColor(this.pal().text).fontFamily(AppConfig.fontFamily)
-                .layoutWeight(1).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-              Text(this.groupMemberCount(group.id, this.orgRevision).toString() + ' 台').fontSize(12)
-                .fontColor(this.pal().text3)
-              SymbolGlyph(this.openGroupId === group.id ? $r('sys.symbol.chevron_up') : $r('sys.symbol.chevron_down'))
-                .fontSize(14).fontColor([this.pal().text3])
-            }.width('100%').padding(16).onClick((): void => { this.toggleGroup(group); })
-            if (this.openGroupId === group.id) {
-              Column({ space: 10 }) {
-                Row({ space: 8 }) {
-                  TextInput({ text: this.groupNameDraft, placeholder: '分组名称' }).height(38).layoutWeight(1)
-                    .maxLength(32).backgroundColor(this.pal().surface).borderRadius(10)
-                    .onChange((value: string): void => { this.groupNameDraft = value; })
-                  Button('保存名称').height(36).fontSize(12).backgroundColor(this.accent).fontColor(Color.White)
-                    .enabled(this.groupNameDraft.trim().length > 0 && this.groupNameDraft.trim() !== group.name)
-                    .onClick((): void => { HostOrganizationStore.getInstance().renameGroup(group.id, this.groupNameDraft); })
-                }.width('100%')
-                if (this.orgHosts().length === 0) {
-                  Text('还没有可加入分组的主机').fontSize(12).fontColor(this.pal().text3).width('100%')
-                }
-                ForEach(this.orgHosts(), (row: OrgHostRow): void => {
-                  Row({ space: 10 }) {
-                    Column({ space: 2 }) {
-                      Text(row.label).fontSize(14).fontColor(this.pal().text).maxLines(1)
-                        .textOverflow({ overflow: TextOverflow.Ellipsis })
-                      Text(row.detail).fontSize(11).fontColor(this.pal().text3).maxLines(1)
-                    }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-                    Checkbox().select(this.inGroup(row.ref, group.id, this.orgRevision)).selectedColor(this.accent)
-                      .onChange((on: boolean): void => {
-                        HostOrganizationStore.getInstance().assignHost(row.ref, on ? group.id : '',
-                          HostOrganizationStore.getInstance().membership(row.ref).tags);
-                      })
-                  }.width('100%')
-                }, (row: OrgHostRow): string => row.ref + ':' + this.orgRevision.toString())
-                Button('删除分组').width('100%').height(38).fontSize(13).fontColor(this.pal().danger)
-                  .backgroundColor(this.pal().surface).onClick((): void => { this.deleteGroup(group); })
-              }.width('100%').padding({ left: 16, right: 16, bottom: 16 })
-            }
-          }.width('100%')
-        }, (group: HostGroupDefinition): string => group.id + ':' + group.name + ':' + this.orgRevision.toString())
-        if (this.orgGroups(this.orgRevision).length > 0) {
-          Divider().strokeWidth(0.5).color(this.pal().cardBorder).margin({ left: 16, right: 16 })
-        }
-        Row({ space: 8 }) {
-          TextInput({ text: this.newGroupName, placeholder: '新分组名称，例如「生产」' }).height(38).layoutWeight(1)
-            .maxLength(32).backgroundColor(this.pal().surface).borderRadius(10)
-            .onChange((value: string): void => { this.newGroupName = value; })
-            .onSubmit((): void => { this.createGroup(); })
-          Button('＋ 新建').height(36).fontSize(12).backgroundColor(this.accent).fontColor(Color.White)
-            .enabled(this.newGroupName.trim().length > 0).onClick((): void => { this.createGroup(); })
-        }.width('100%').padding(16)
-      }.width('100%').backgroundColor(this.pal().card).borderRadius(16)
+      this.sectionHeader('分组、标签与智能分组', '这里的修改会立即同步到主页分组栏；导入导出与批量操作在主页多选主机后使用')
+      HostOrganizationManager()
     }.width('100%')
   }
 
   // ---------- 工作区与布局 ----------
   private workspaces(_revision: number): Workspace[] { return WorkspaceStore.getInstance().list(); }
-  private workspaceHosts(): RemoteHost[] {
-    const hosts: RemoteHost[] = HostSyncService.getInstance().getAllHosts()
-      .filter((host: RemoteHost): boolean => host.protocol === 'rdp' || host.protocol === 'rustdesk' || host.protocol === 'ssh');
-    VncHostService.getInstance().list().forEach((view: VncHostView): void => { hosts.push(projectVncHost(view)); });
-    return hosts;
-  }
   private createWorkspace(): void {
     const now: number = Date.now();
     const count: number = this.workspaces(this.orgRevision).length;
-    const workspace: Workspace = { schemaVersion: 1, id: 'workspace-' + now.toString(36), name: '工作区 ' + (count + 1).toString(),
-      color: this.accent, icon: 'desktop', order: count, entries: [], layout: 'split', updatedAt: now };
+    const workspace: Workspace = newWorkspace('workspace-' + now.toString(36), '工作区 ' + (count + 1).toString(),
+      WORKSPACE_COLORS[count % WORKSPACE_COLORS.length], WORKSPACE_ICONS[count % WORKSPACE_ICONS.length], count, now);
     if (WorkspaceStore.getInstance().save(workspace)) { this.editingWorkspace = workspace; }
   }
   private renameWorkspace(workspace: Workspace): void {
     const name: string = this.workspaceNameDraft.trim();
     if (name.length === 0) { return; }
-    const next: Workspace = { schemaVersion: workspace.schemaVersion, id: workspace.id, name: name.slice(0, 48),
-      color: workspace.color, icon: workspace.icon, order: workspace.order, entries: workspace.entries,
-      layout: workspace.layout, updatedAt: Date.now() };
+    const next: Workspace = copyWorkspace(workspace);
+    next.name = name.slice(0, 48);
     WorkspaceStore.getInstance().save(next);
   }
   private deleteWorkspace(workspace: Workspace): void {
@@ -350,17 +239,13 @@ export struct ProFeatureDetailPanel {
       if (result.index === 1 && WorkspaceStore.getInstance().remove(workspace.id)) { this.openWorkspaceId = ''; }
     }).catch((): void => {});
   }
-  private layoutLabel(workspace: Workspace): string {
-    const layout: string = workspace.layout ?? 'custom';
-    return layout === 'split' ? '左右平分' : layout === 'columns3' ? '三栏' : layout === 'masterDetail' ? '主副' :
-      layout === 'grid4' ? '四宫格' : '自定义';
-  }
+  private layoutLabel(workspace: Workspace): string { return workspaceLayoutLabel(workspace.layout); }
 
   @Builder private workspaceOptions() {
     Column({ space: 8 }) {
-      this.sectionHeader('工作区', '保存常用的一组会话和布局；在主页工作区卡片中一键打开')
+      this.sectionHeader('工作区', '保存常用的一组会话和布局；在主页工作区卡片中一键依次打开，PC 上按布局摆放窗口')
       if (this.editingWorkspace !== null) {
-        ProWorkspaceEditorPanel({ workspace: this.editingWorkspace as Workspace, hosts: this.workspaceHosts(),
+        ProWorkspaceEditorPanel({ workspace: this.editingWorkspace as Workspace,
           onClose: (): void => { this.editingWorkspace = null; } })
       } else {
         Column() {
@@ -368,7 +253,8 @@ export struct ProFeatureDetailPanel {
             if (index > 0) { Divider().strokeWidth(0.5).color(this.pal().cardBorder).margin({ left: 16, right: 16 }) }
             Column() {
               Row({ space: 10 }) {
-                SymbolGlyph($r('sys.symbol.rectangle_on_rectangle')).fontSize(18).fontColor([this.accent])
+                Text(workspace.icon).fontSize(18).width(30).height(30).textAlign(TextAlign.Center).borderRadius(9)
+                  .backgroundColor(this.colorTint(workspace.color))
                 Column({ space: 2 }) {
                   Text(workspace.name).fontSize(15).fontColor(this.pal().text).maxLines(1)
                     .textOverflow({ overflow: TextOverflow.Ellipsis })

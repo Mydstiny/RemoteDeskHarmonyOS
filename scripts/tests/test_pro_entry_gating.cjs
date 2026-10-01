@@ -53,6 +53,8 @@ const badges = new Map([
   // The skin sheet opens only from the Pro-gated 终端皮肤 row in settings.
   ['components/ssh/skin/SshSkinSettingsPanel.ets', [1, /export struct SshSkinSettingsPanel/]],
   ['components/ProFeatureManagerPanel.ets', [2, /export struct ProBadgeSettingsPanel/]],
+  // The home workspace band renders only while 工作区与布局 is visible to an entitled account.
+  ['components/pro/workspace/WorkspaceStrip.ets', [1, /if \(ProEntries\.visible\('pro\.workspaces'\)\) \{/]],
   // AI cards/section (4) follow aiProVisible; the app-icon row follows ProEntries; the account card
   // marker follows ProEntries.proActive().
   ['pages/HostListPage.ets', [8, /aiProVisible = AiAccess\.getInstance\(\)\.proVisible\(\)/]]
