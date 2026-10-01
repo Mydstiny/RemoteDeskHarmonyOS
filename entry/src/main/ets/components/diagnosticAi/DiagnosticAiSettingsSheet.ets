@@ -6,6 +6,7 @@ import { DiagnosticCaptureSettingsSheet } from '../DiagnosticCaptureSettingsShee
 import { DiagnosticAiAssistantPanel } from './DiagnosticAiAssistantPanel';
 import { DiagnosticAiProviderManifest, DiagnosticAiProviderProfile, DiagnosticAiSettings } from '../../services/diagnosticAi/DiagnosticAiModels';
 import { diagnosticAiProviderManifests } from '../../services/diagnosticAi/DiagnosticAiProviderCatalog';
+import { validateDiagnosticAiEndpoint } from '../../services/diagnosticAi/DiagnosticAiEndpointPolicy';
 import { DiagnosticAiProfileStore } from '../../services/diagnosticAi/DiagnosticAiProfileStore';
 import { DiagnosticAiProviderService, diagnosticAiPrivacySummary } from '../../services/diagnosticAi/DiagnosticAiProviderService';
 import { AccountSessionCoordinator } from '../../services/AccountSessionCoordinator';
@@ -59,6 +60,8 @@ export struct DiagnosticAiSettingsSheet {
     if (!this.providerAllowed() || this.busy) { return; }
     const manifest = this.manifests.find((value: DiagnosticAiProviderManifest): boolean => value.providerId === this.selectedProvider);
     if (manifest === undefined) { return; }
+    const endpointDecision = validateDiagnosticAiEndpoint(this.endpoint, manifest.adapterFamily, false);
+    if (!endpointDecision.ok) { this.message = '保存失败：' + endpointDecision.message; return; }
     this.busy = true; this.message = '';
     const profile: DiagnosticAiProviderProfile = { id: this.selectedProvider + '-' + this.owner.slice(-8), owner: this.owner,
       providerId: manifest.providerId, displayName: manifest.displayName, endpoint: this.endpoint.trim(), modelId: this.model.trim(),

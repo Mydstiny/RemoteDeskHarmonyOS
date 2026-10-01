@@ -2,6 +2,28 @@ import { DiagnosticAiAdapterFamily } from './DiagnosticAiModels';
 
 export interface DiagnosticAiEndpointDecision { ok: boolean; message: string; normalized: string; }
 interface ParsedEndpoint { scheme: string; authority: string; host: string; path: string; }
+interface ParsedAuthority { host: string; valid: boolean; }
+
+function parseAuthority(value: string): ParsedAuthority {
+  if (value.startsWith('[')) {
+    const close: number = value.indexOf(']');
+    if (close < 0) { return { host: '', valid: false }; }
+    const host: string = value.slice(0, close + 1).toLowerCase();
+    const tail: string = value.slice(close + 1);
+    if (tail !== '' && !/^:[0-9]{1,5}$/.test(tail)) { return { host: '', valid: false }; }
+    if (tail !== '' && Number(tail.slice(1)) > 65535) { return { host: '', valid: false }; }
+    return { host, valid: true };
+  }
+  const firstColon: number = value.indexOf(':');
+  if (firstColon < 0) { return { host: value.toLowerCase(), valid: value !== '' }; }
+  if (value.indexOf(':', firstColon + 1) >= 0) { return { host: '', valid: false }; }
+  const host: string = value.slice(0, firstColon).toLowerCase();
+  const port: string = value.slice(firstColon + 1);
+  if (host === '' || !/^[0-9]{1,5}$/.test(port) || Number(port) > 65535) {
+    return { host: '', valid: false };
+  }
+  return { host, valid: true };
+}
 
 function parseEndpoint(value: string): ParsedEndpoint | null {
   const schemeEnd = value.indexOf('://'); if (schemeEnd <= 0) { return null; }
@@ -13,9 +35,11 @@ function parseEndpoint(value: string): ParsedEndpoint | null {
   if (hash >= 0 && hash < authorityEnd) { authorityEnd = hash; }
   const authority = rest.slice(0, authorityEnd); if (authority === '') { return null; }
   if (authority.lastIndexOf('@') >= 0) { return null; }
+  const authorityParts: ParsedAuthority = parseAuthority(authority);
+  if (!authorityParts.valid) { return null; }
   const pathStart = rest.indexOf('/', authorityEnd);
   const path = pathStart >= 0 ? rest.slice(pathStart).split('?')[0].split('#')[0].replace(/\/+$/, '') : '';
-  return { scheme, authority, host: authority.split(':')[0].toLowerCase(), path };
+  return { scheme, authority, host: authorityParts.host, path };
 }
 
 function isLoopback(host: string): boolean {

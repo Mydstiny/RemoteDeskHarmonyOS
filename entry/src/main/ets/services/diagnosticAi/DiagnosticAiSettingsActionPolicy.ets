@@ -14,19 +14,23 @@ export function diagnosticAiProposalIsSafe(proposal: DiagnosticAiSettingProposal
     proposal.rollbackValue.length <= 256 && proposal.requiresUserConfirmation;
 }
 
+function normalizedBoolean(value: string): boolean | null {
+  const normalized: string = value.trim().toLowerCase();
+  if (normalized === 'true' || normalized === 'on' || normalized === '开启' || normalized === '打开') { return true; }
+  if (normalized === 'false' || normalized === 'off' || normalized === '关闭') { return false; }
+  return null;
+}
+
 /** Apply only simple, reversible, user-confirmed boolean settings. */
 export function diagnosticAiApplyProposal(proposal: DiagnosticAiSettingProposal): boolean {
-  if (!diagnosticAiProposalIsSafe(proposal) || proposal.risk === 'high' ||
-      proposal.currentValue === proposal.proposedValue) { return false; }
-  const next: string = proposal.proposedValue.trim().toLowerCase();
-  if (next !== 'true' && next !== 'false') { return false; }
-  const value: boolean = next === 'true';
+  const value: boolean | null = normalizedBoolean(proposal.proposedValue);
+  const current: boolean | null = normalizedBoolean(proposal.currentValue);
+  if (!diagnosticAiProposalIsSafe(proposal) || proposal.risk === 'high' || value === null ||
+      (current !== null && current === value)) { return false; }
   switch (proposal.settingId) {
-    case 'rdp.showDiagnostics': AppStorage.setOrCreate('rdpShowDiagnostics', value); return true;
-    case 'rustdesk.showDiagnostics': AppStorage.setOrCreate('rustdeskShowDiagnostics', value); return true;
-    case 'vnc.showDiagnostics': AppStorage.setOrCreate('vncShowDiagnostics', value); return true;
-    case 'moonlight.showDiagnostics': AppStorage.setOrCreate('moonlightShowDiagnostics', value); return true;
-    case 'ai.showOrbOnHostPage': AppStorage.setOrCreate('diagnosticAiOrbEnabled', value); return true;
+    case 'rdp.showDiagnostics': AppStorage.setOrCreate('rdpShowDiagnostics', value as boolean); return true;
+    case 'rustdesk.showDiagnostics': AppStorage.setOrCreate('rustdeskShowDiagnostics', value as boolean); return true;
+    case 'ai.showOrbOnHostPage': AppStorage.setOrCreate('diagnosticAiOrbEnabled', value as boolean); return true;
     default: return false;
   }
 }

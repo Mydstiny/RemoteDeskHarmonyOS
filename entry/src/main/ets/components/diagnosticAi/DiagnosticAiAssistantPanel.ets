@@ -30,22 +30,36 @@ export struct DiagnosticAiAssistantPanel {
   @State eventCount: number = 0;
   @State elapsed: number = 0;
   @State private latestBundleText: string = '';
+  @State private mailPreviewVisible: boolean = false;
+  @State private mailSubject: string = '';
+  @State private mailBody: string = '';
   private readonly capture: DiagnosticAiCaptureOrchestrator = DiagnosticAiCaptureOrchestrator.getInstance();
   private readonly provider: DiagnosticAiProviderService = new DiagnosticAiProviderService();
   private store: DiagnosticAiProfileStore = new DiagnosticAiProfileStore();
   private owner: string = 'device-local';
   private timer: number = -1;
+  private lifecycleGeneration: number = 0;
+  private captureOwnedByPanel: boolean = false;
 
   private pal(): Palette { return this.theme === 'light' ? buildLight(this.accent) : buildDark(this.accent); }
 
   aboutToAppear(): void {
+    this.lifecycleGeneration++;
     const scope = AccountSessionCoordinator.getInstance().currentScope();
     this.owner = scope.ownerScopeId.trim() === '' ? 'device-local' : scope.ownerScopeId;
     this.store.init(getContext(this) as common.UIAbilityContext, this.owner);
     this.timer = setInterval((): void => { this.syncCapture(); }, 500);
   }
 
-  aboutToDisappear(): void { if (this.timer >= 0) { clearInterval(this.timer); this.timer = -1; } }
+  aboutToDisappear(): void {
+    this.lifecycleGeneration++;
+    if (this.timer >= 0) { clearInterval(this.timer); this.timer = -1; }
+    if (this.captureOwnedByPanel) {
+      this.capture.stop(this.owner);
+      this.captureOwnedByPanel = false;
+      this.onCaptureStateChanged(false);
+    }
+  }
 
   private allowed(): boolean {
     return ProEntries.visible(PRO_DIAGNOSTICS_ASSISTANT_FEATURE, ProAppRuntime.getInstance().context());
@@ -62,6 +76,7 @@ export struct DiagnosticAiAssistantPanel {
     const result = this.capture.start(this.owner, { modules: this.modules, durationMinutes: 3, consentId: 'consent-' + Date.now().toString() });
     this.syncCapture();
     if (result === 'ok') {
+      this.captureOwnedByPanel = true;
       this.onCaptureStateChanged(true);
       this.status = '正在抓取脱敏诊断事件…';
     } else {
@@ -71,17 +86,27 @@ export struct DiagnosticAiAssistantPanel {
 
   private async finishCapture(): Promise<void> {
     if (this.busy) { return; }
-    this.busy = true; this.capture.stop(this.owner); this.onCaptureStateChanged(false); this.syncCapture();
-    const bundle = this.capture.bundle(this.owner);
+    const requestGeneration: number = this.lifecycleGeneration;
+    const requestOwner: string = this.owner;
+    this.busy = true; this.capture.stop(requestOwner); this.captureOwnedByPanel = false;
+    this.onCaptureStateChanged(false); this.syncCapture();
+    const bundle = this.capture.bundle(requestOwner);
     if (bundle === null) { this.status = '没有可分析的诊断事件'; this.busy = false; return; }
     this.latestBundleText = bundle.text;
     const profiles = this.store.list(); const selected = profiles.find((value: DiagnosticAiProviderProfile): boolean => value.modelId !== '');
     if (selected === undefined) { this.status = '请先在辅助 AI 配置中保存 Provider 和模型'; this.busy = false; return; }
     try {
       const secret = this.store.secret(selected);
-      this.result = await this.provider.analyze(selected, secret, {
+      const analyzed: DiagnosticAiResult = await this.provider.analyze(selected, secret, {
         question: this.question, bundle: bundle.text, knowledge: 'RemoteDesktop 使用、隐私和数据安全文档 v1'
       });
+      const currentScope = AccountSessionCoordinator.getInstance().currentScope();
+      const currentOwner: string = currentScope.ownerScopeId.trim() === '' ? 'device-local' : currentScope.ownerScopeId;
+      if (requestGeneration !== this.lifecycleGeneration || currentOwner !== requestOwner || !this.allowed()) {
+        this.status = '页面或账号作用域已变化，已丢弃旧诊断结果';
+        return;
+      }
+      this.result = analyzed;
       this.status = '分析完成。结果仅供参考，请根据证据和应用提示操作。';
     } catch (error) {
       this.status = error instanceof Error ? error.message : 'AI 分析失败';
@@ -94,7 +119,7 @@ export struct DiagnosticAiAssistantPanel {
         Text('启动 AI 辅助').fontSize(20).fontWeight(FontWeight.Bold).fontColor(this.pal().text).fontFamily(AppConfig.fontFamily).layoutWeight(1)
         Button('关闭').height(40).backgroundColor(Color.Transparent).fontColor(this.accent).onClick((): void => { this.onClose(); })
       }.width('100%')
-      Text('助手只分析脱敏结构化事件。开始抓取前会显示协议、模组和时长；不会自动修改设置或发送邮件。')
+      Text('助手只分析脱敏结构化事件。开始前会显示当前页面/会话范围、模组和时长；抓取时可随时点击“取消”停止，不会自动修改设置或发送邮件。')
         .fontSize(12).lineHeight(18).fontColor(this.pal().text2).width('100%')
       TextInput({ placeholder: '例如：RDP 连接后黑屏，或 RustDesk 中继很慢', text: this.question })
         .height(AppUiMetrics.minTouchTarget).fontSize(15).fontFamily(AppConfig.fontFamily)
@@ -110,7 +135,7 @@ export struct DiagnosticAiAssistantPanel {
           .onClick((): void => { if (this.capture.status().phase === 'capturing') { void this.finishCapture(); } else { this.beginCapture(); } })
         Button('取消').height(46).layoutWeight(1).borderRadius(14).backgroundColor(this.pal().surface).fontColor(this.pal().text)
           .enabled(!this.busy && this.capture.status().phase === 'capturing')
-          .onClick((): void => { this.capture.stop(this.owner); this.onCaptureStateChanged(false); this.syncCapture(); })
+          .onClick((): void => { this.capture.stop(this.owner); this.captureOwnedByPanel = false; this.onCaptureStateChanged(false); this.syncCapture(); })
       }.width('100%')
       Text(this.status).fontSize(12).lineHeight(18).fontColor(this.pal().text2).width('100%')
       if (this.capture.status().phase === 'capturing') {
@@ -147,8 +172,23 @@ export struct DiagnosticAiAssistantPanel {
                 captureId: 'latest', schemaVersion: 8, modules: this.modules,
                 text: this.latestBundleText, eventCount: this.eventCount, bytes: this.latestBundleText.length
               });
-              this.onOpenMailDraft(draft.subject, draft.body);
+              this.mailSubject = draft.subject; this.mailBody = draft.body; this.mailPreviewVisible = true;
             })
+          if (this.mailPreviewVisible) {
+            Column({ space: 8 }) {
+              Text('邮件二次预览').fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.pal().text).width('100%')
+              Text('主题：' + this.mailSubject).fontSize(12).fontColor(this.pal().text2).width('100%')
+              Scroll() {
+                Text(this.mailBody).fontSize(11).lineHeight(16).fontColor(this.pal().text).width('100%').copyOption(CopyOptions.InApp)
+              }.height(150).width('100%').backgroundColor(this.pal().surface).borderRadius(10).padding(8)
+              Row({ space: 8 }) {
+                Button('打开系统邮件').layoutWeight(1).height(40).backgroundColor(this.accent).fontColor(Color.White)
+                  .onClick((): void => { this.onOpenMailDraft(this.mailSubject, this.mailBody); this.mailPreviewVisible = false; })
+                Button('取消').layoutWeight(1).height(40).backgroundColor(this.pal().surface).fontColor(this.pal().text)
+                  .onClick((): void => { this.mailPreviewVisible = false; })
+              }.width('100%')
+            }.width('100%').padding(10).backgroundColor(this.pal().surface).borderRadius(12)
+          }
         }.width('100%').padding(14).borderRadius(16).backgroundColor(this.pal().card)
       }
     }.width('100%').padding(20).backgroundColor(this.pal().sheetBg)

@@ -4,6 +4,8 @@ Updated: 2026-10-02 Asia/Shanghai
 
 ## Now
 
+- Pro「诊断与 AI 帮助」checkpoint `b8a56f21` 已实现：设置页三分区、国内优先 Provider/Asset Store、脱敏诊断编排、结构化 AI 结果和白名单设置建议、HostList/RemoteSession orb、邮件草稿与隐私/用户文档。编译、签名 HAP、Light/diff 已通过；待独立复核、真实 Provider/设备/邮件验收后再决定是否把 experimental 提升为 available。详见 [计划](plans/2026-10-01-pro-diagnostic-ai-help-upgrade.md)。
+
 - RDP/RustDesk 高级显示计划：[2026-10-01 计划](plans/2026-10-01-rdp-rustdesk-pro-display-resolution-scale-plan.md) P0–P4 代码已落盘；最新 compile、并行 assemble、RDP 15/15、Rust 320/320、Pro entry/runtime、双 ABI、Light/diff/state PASS，签名 HAP 已安装到 emulator 5557、MLR、SGT。`ohosTest` 任务未注册（00306054），真实 Windows/RustDesk peer、完整设备交互与独立 review 仍待完成，Pro feature 继续保持 experimental。
 
 - Pro 工作区与高级主机管理：W0/H1/S1/S2/S3 基础实现已提交准备；继续 H2 分组胶囊/H3 批量操作/H4 导入导出/S3 编辑器/S4 当前会话捕获，并完成设备验收。
