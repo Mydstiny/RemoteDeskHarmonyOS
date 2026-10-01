@@ -28,6 +28,7 @@ import { HostGroupBar } from '../components/pro/org/HostGroupBar';
 import { HostBatchActions } from '../components/pro/org/HostBatchActions';
 import { HostImportPanel } from '../components/pro/org/HostImportPanel';
 import { WorkspaceStrip } from '../components/pro/workspace/WorkspaceStrip';
+import { WorkspaceGroupCard } from '../components/pro/workspace/WorkspaceGroupCard';
 import { WorkspaceRunPanel } from '../components/pro/workspace/WorkspaceRunPanel';
 import {
   connectingRunIndex, nextQueuedRunIndex, setRunItemState, sortedEntries, Workspace, WorkspaceEntry, workspaceRunFinished,
@@ -14604,8 +14605,22 @@ struct HostListPage {
           Checkbox()
             .select(this.hostSelectedIds.has(unifiedMoonlightHostCardKey(view.host.id)))
             .selectedColor(this.accentColor).margin({ right: 8 })
+  @Builder workspaceGroupCard() {
+    if (this.proWorkspacesVisible) {
+      WorkspaceGroupCard({
+        rows: this.orgRows(this.hostViewRevision),
+        activeRefs: this.activeSessionRefs(this.hostViewRevision),
+        runningId: this.proWorkspaceRun === null ? '' : (this.proWorkspaceRun as WorkspaceRun).workspaceId,
+        compact: this.breakpoint === 'sm',
+        cardHeight: this.hostGroupCardHeight(),
+        onOpen: (workspace: Workspace): void => { this.openProWorkspace(workspace); }
+      }).margin({ bottom: 10 })
+    }
+  }
+
             .onChange((checked: boolean): void => {
               this.toggleHostSelect(unifiedMoonlightHostCardKey(view.host?.id || ''), checked);
+      this.workspaceGroupCard()
             })
         }
         Column() {
@@ -15413,7 +15428,8 @@ struct HostListPage {
               ProIncomingConnectionShareCard({ onImport: (id: string): void => { this.openProConnectionShareImport(id); } })
             }
           }
-          if (this.proWorkspacesVisible) {
+          // Classic list: a compact workspace row. The categorized page shows a 工作区 category card instead.
+          if (this.proWorkspacesVisible && !this.groupedHostCardsActive()) {
             ListItem() {
               WorkspaceStrip({
                 rows: this.orgRows(this.hostViewRevision),

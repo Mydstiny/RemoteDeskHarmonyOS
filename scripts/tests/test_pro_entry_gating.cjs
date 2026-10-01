@@ -55,6 +55,7 @@ const badges = new Map([
   ['components/ProFeatureManagerPanel.ets', [2, /export struct ProBadgeSettingsPanel/]],
   // The home workspace band renders only while 工作区与布局 is visible to an entitled account.
   ['components/pro/workspace/WorkspaceStrip.ets', [1, /if \(ProEntries\.visible\('pro\.workspaces'\)\) \{/]],
+  ['components/pro/workspace/WorkspaceGroupCard.ets', [1, /if \(ProEntries\.visible\('pro\.workspaces'\)\) \{/]],
   // AI cards/section (4) follow aiProVisible; the app-icon row follows ProEntries; the account card
   // marker follows ProEntries.proActive().
   ['pages/HostListPage.ets', [8, /aiProVisible = AiAccess\.getInstance\(\)\.proVisible\(\)/]]
@@ -119,8 +120,8 @@ for (const id of ['pro.workspaces', 'pro.hostManagement']) {
   assert.equal(item.availability, 'experimental');
   assert.ok(item.devices.includes('phone')); assert.ok(item.devices.includes('tablet')); assert.ok(item.devices.includes('pc'));
 }
-assert.match(entryModule.exports.proFeatureProgress('pro.workspaces'), /实验中/);
-assert.match(entryModule.exports.proFeatureProgress('pro.hostManagement'), /实验中/);
+assert.match(entryModule.exports.proFeatureProgress('pro.workspaces'), /已开发/);
+assert.match(entryModule.exports.proFeatureProgress('pro.hostManagement'), /已开发/);
 const hostPage = fs.readFileSync(path.resolve(__dirname, '../../entry/src/main/ets/pages/HostListPage.ets'), 'utf8');
 assert.equal(hostPage.includes('加入 ops 工作组'), false); assert.equal(hostPage.includes('移出工作组'), false);
 console.log('PASS Pro workspace/host-management entry gating');
