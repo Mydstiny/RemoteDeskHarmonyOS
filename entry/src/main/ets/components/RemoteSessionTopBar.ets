@@ -50,6 +50,11 @@ import {
   remotePortraitSidebarHeightPx,
   normalizeRemotePortraitSidebarHeightMode
 } from '../services/RemotePortraitSidebarPolicy';
+import { DiagnosticAiAssistantPanel } from './diagnosticAi/DiagnosticAiAssistantPanel';
+import { DiagnosticAiOrb } from './diagnosticAi/DiagnosticAiOrb';
+import { ProAppRuntime } from '../services/pro/ProAppRuntime';
+import { ProEntries } from '../services/pro/ProEntries';
+import { PRO_DIAGNOSTICS_ASSISTANT_FEATURE } from '../services/pro/ProFeatureCatalog';
 
 const EMPTY_RUSTDESK_DISPLAY_CAPABILITIES: RustDeskDisplayCapabilities = {
   supported: false,
@@ -162,6 +167,9 @@ export struct RemoteSessionTopBar {
   @Prop @Watch('onKeyboardSurfaceChange') keyboardOpen: boolean = false;
   @Prop @Watch('onKeyboardSurfaceChange') shortcutsOpen: boolean = false;
   @Prop diagnosticsEnabled: boolean = false;
+  @StorageProp('diagnosticAiOrbEnabled') diagnosticAiOrbEnabled: boolean = false;
+  @State private diagnosticAiAssistantVisible: boolean = false;
+  @State private diagnosticAiCaptureActive: boolean = false;
   @Prop canvasResetAvailable: boolean = false;
   @Prop rustDeskDisplayCapabilities: RustDeskDisplayCapabilities = EMPTY_RUSTDESK_DISPLAY_CAPABILITIES;
   @Prop rustDeskDisplaySwitchState: RustDeskDisplaySwitchState = EMPTY_RUSTDESK_DISPLAY_SWITCH_STATE;
@@ -323,6 +331,16 @@ export struct RemoteSessionTopBar {
     if (!this.collapsed) {
       this.scheduleAutoCollapse();
     }
+  }
+
+  private diagnosticAiVisible(): boolean {
+    return this.diagnosticAiOrbEnabled && ProEntries.visible(
+      PRO_DIAGNOSTICS_ASSISTANT_FEATURE, ProAppRuntime.getInstance().context());
+  }
+
+  private diagnosticAiState(): 'idle' | 'open' | 'capturing' {
+    if (this.diagnosticAiCaptureActive) { return 'capturing'; }
+    return this.diagnosticAiAssistantVisible ? 'open' : 'idle';
   }
 
   private onKeyboardSurfaceChange(): void {
@@ -1475,7 +1493,7 @@ export struct RemoteSessionTopBar {
   }
 
   build() {
-    Stack() {
+    Stack({ alignContent: Alignment.TopEnd }) {
       if (this.edgeRail) {
         if (this.collapsed) {
           this.edgeRailHandle()
@@ -1494,6 +1512,33 @@ export struct RemoteSessionTopBar {
         .height(this.collapsed ? REMOTE_SESSION_COLLAPSED_TOP_TOUCH_HEIGHT : 540)
         .position({ x: 0, y: 0 })
         .hitTestBehavior(HitTestMode.Transparent)
+      }
+      if (this.diagnosticAiVisible()) {
+        Row() {
+          DiagnosticAiOrb({
+            visible: true,
+            state: this.diagnosticAiState(),
+            onOpen: (): void => { this.diagnosticAiAssistantVisible = true; }
+          })
+        }
+        .width('100%').padding({ top: 10, right: 12 })
+        .hitTestBehavior(HitTestMode.Transparent)
+      }
+      if (this.diagnosticAiAssistantVisible && this.diagnosticAiVisible()) {
+        Column() {
+          DiagnosticAiAssistantPanel({
+            onClose: (): void => { this.diagnosticAiAssistantVisible = false; },
+            onCaptureStateChanged: (capturing: boolean): void => {
+              this.diagnosticAiCaptureActive = capturing;
+            }
+          })
+        }
+        .width(this.layout.deviceClass === 'phone' ? '92%' : 420)
+        .height(this.layout.deviceClass === 'phone' ? '72%' : 560)
+        .margin({ top: 62, right: 12 })
+        .borderRadius(18)
+        .shadow({ radius: 20, color: 'rgba(0,0,0,0.28)', offsetY: 8 })
+        .hitTestBehavior(HitTestMode.Block)
       }
     }
     .width('100%')

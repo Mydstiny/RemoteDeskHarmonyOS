@@ -5,6 +5,7 @@ import { proFeatureCurrentStatus } from '../services/pro/ProFeatureStatusReader'
 import {
   PRO_PERSONALIZATION_FEATURE,
   PRO_RDP_ADVANCED_DISPLAY_FEATURE,
+  PRO_DIAGNOSTICS_FEATURE,
   ProFeature
 } from '../services/pro/ProFeatureCatalog';
 import { AiHostEditor } from '../components/ai/AiHostEditor';
@@ -544,6 +545,7 @@ import {
   SETTINGS_SHEET_SSH_SKIN,
   SETTINGS_SHEET_ACCENT_COLOR,
   SETTINGS_SHEET_DIAGNOSTIC_LOG,
+  SETTINGS_SHEET_DIAGNOSTIC_AI,
   SETTINGS_SHEET_REMOTE_PINCH_ZOOM,
   SETTINGS_SHEET_REMOTE_PORTRAIT_DISPLAY,
   SETTINGS_SHEET_REMOTE_WHEEL_DIRECTION,
@@ -589,6 +591,7 @@ import {
   VirtualKeyboardSettingsSection,
   VirtualKeyboardSettingsRouteSpec,
   diagnosticLogSettingsLeafSheetHeight,
+  diagnosticAiSettingsLeafSheetHeight,
   remotePinchZoomSettingsLeafSheetHeight,
   remotePortraitDisplaySettingsLeafSheetHeight,
   remoteWheelDirectionSettingsLeafSheetHeight,
@@ -689,6 +692,7 @@ import {
   SETTINGS_MOONLIGHT_ACTION_ROW_COUNT,
   SettingsFeedbackLaunchAttempt,
   settingsFeedbackLaunchAttempts,
+  settingsFeedbackBody,
   settingsFeedbackMailPanelParams,
   settingsNextExpandedSection,
   settingsRatingUriCandidates,
@@ -791,6 +795,9 @@ import {
 } from '../services/ReleaseNotesRegistry';
 import { AboutSettingsSheet } from '../components/AboutSettingsSheet';
 import { DiagnosticCaptureSettingsSheet } from '../components/DiagnosticCaptureSettingsSheet';
+import { DiagnosticAiSettingsSheet } from '../components/diagnosticAi/DiagnosticAiSettingsSheet';
+import { DiagnosticAiOrb } from '../components/diagnosticAi/DiagnosticAiOrb';
+import { DiagnosticAiProfileStore } from '../services/diagnosticAi/DiagnosticAiProfileStore';
 import { recordDiagnosticEvent } from '../services/DiagnosticCaptureRuntime';
 import { FeedbackSettingsSheet } from '../components/FeedbackSettingsSheet';
 import { VirtualKeyboardSettingsSheet } from '../components/VirtualKeyboardSettingsSheet';
@@ -1107,6 +1114,8 @@ struct HostListPage {
   @State showAccount: boolean = false;
   @State showSettingsPanel: boolean = false;
   @State showSettingsLeafSheet: boolean = false;
+  @StorageProp('diagnosticAiOrbEnabled') diagnosticAiOrbEnabled: boolean = false;
+  @State diagnosticAiOrbState: string = 'idle';
   @State settingsLeafSheetMode: number = SETTINGS_SHEET_NONE;
   @State virtualKeyboardCustomEditorVisible: boolean = false;
   @State vncSettingsLeafDirty: boolean = false;
@@ -2152,11 +2161,20 @@ struct HostListPage {
     }
   }
 
+  private syncDiagnosticAiOrbPreference(): void {
+    const scope = AccountSessionCoordinator.getInstance().currentScope();
+    const owner: string = scope.ownerScopeId.trim() === '' ? 'device-local' : scope.ownerScopeId;
+    const store = new DiagnosticAiProfileStore();
+    store.init(getContext(this) as common.UIAbilityContext, owner);
+    AppStorage.setOrCreate('diagnosticAiOrbEnabled', store.settingsSnapshot().showOrbOnHostPage);
+  }
+
   async aboutToAppear(): Promise<void> {
     const proVisibility = ProFeatureVisibility.getInstance();
     proVisibility.load(getContext(this) as common.UIAbilityContext);
     WorkspacePhonePreference.load(getContext(this) as common.UIAbilityContext);
     this.workspacePhoneEnabled = AppStorage.get<boolean>(WORKSPACE_PHONE_ENABLED_KEY) ?? false;
+    this.syncDiagnosticAiOrbPreference();
     this.refreshAppIconEntry();
     this.ensureHostOrganizationSubscription();
     this.proVisibilityUnsubscribe?.();
@@ -5350,13 +5368,17 @@ struct HostListPage {
       measured > 0 ? Math.ceil(measured + 8) : 0);
   }
 
-  private async openFeedbackEmail(): Promise<void> {
+  private async openFeedbackEmail(subject: string = '', body: string = ''): Promise<void> {
     const ctx: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
     const versionName: string = CURRENT_RELEASE_VERSION;
+    const resolvedSubject: string = subject.trim() === '' ? 'RemoteDesktop 用户反馈' : subject;
+    const resolvedBody: string = body.trim() === '' ? '' : body;
     const attempts: SettingsFeedbackLaunchAttempt[] =
-      settingsFeedbackLaunchAttempts(versionName, this.breakpoint, this.isDesktopDevice);
+      settingsFeedbackLaunchAttempts(versionName, this.breakpoint, this.isDesktopDevice,
+        resolvedSubject, resolvedBody === '' ? settingsFeedbackBody(versionName, this.breakpoint, this.isDesktopDevice) : resolvedBody);
     const params: Record<string, Object> =
-      settingsFeedbackMailPanelParams(versionName, this.breakpoint, this.isDesktopDevice);
+      settingsFeedbackMailPanelParams(versionName, this.breakpoint, this.isDesktopDevice,
+        resolvedSubject, resolvedBody === '' ? settingsFeedbackBody(versionName, this.breakpoint, this.isDesktopDevice) : resolvedBody);
     for (let i = 0; i < attempts.length; i++) {
       try {
         const spec: SettingsFeedbackLaunchAttempt = attempts[i];
@@ -14001,6 +14023,16 @@ struct HostListPage {
           .hitTestBehavior(HitTestMode.None);
       }
 
+      if (this.diagnosticAiOrbEnabled && ProEntries.visible(PRO_DIAGNOSTICS_FEATURE,
+        ProAppRuntime.getInstance().context())) {
+        Row() {
+          DiagnosticAiOrb({ visible: true, onOpen: (): void => {
+            this.openSettingsLeafSheet(SETTINGS_SHEET_DIAGNOSTIC_AI);
+          } })
+        }.position({ x: 0, y: this.topRectHeight > 0 ? px2vp(this.topRectHeight) + 8 : 8 })
+          .width('100%').padding({ right: 16 }).justifyContent(FlexAlign.End).zIndex(12)
+      }
+
       // FAB — 智感握姿悬浮加号按钮
       // 官方推荐: 对齐驱动 (justifyContent) 而非 translate, .animation() 保证弹簧动画可靠触发
       Row() {
@@ -16756,6 +16788,8 @@ struct HostListPage {
     }
     const diagnosticHeight: number = diagnosticLogSettingsLeafSheetHeight(this.settingsLeafSheetMode);
     if (diagnosticHeight > 0) { return diagnosticHeight; }
+    const diagnosticAiHeight: number = diagnosticAiSettingsLeafSheetHeight(this.settingsLeafSheetMode);
+    if (diagnosticAiHeight > 0) { return diagnosticAiHeight; }
     const secretVisibilityHeight: number =
       secretVisibilitySettingsLeafSheetHeight(this.settingsLeafSheetMode);
     if (secretVisibilityHeight > 0) { return secretVisibilityHeight; }
@@ -16890,6 +16924,13 @@ struct HostListPage {
         onClose: (): void => { this.closeSettingsLeafSheet(); },
         onSave: (update: RemoteSessionControlBarPreferenceUpdate): boolean =>
           this.saveSessionControlBarPreferenceUpdate(update)
+      })
+    } else if (this.settingsLeafSheetMode === SETTINGS_SHEET_DIAGNOSTIC_AI) {
+      DiagnosticAiSettingsSheet({
+        onClose: (): void => { this.closeSettingsLeafSheet(); },
+        onOpenMailDraft: (subject: string, body: string): void => {
+          void this.openFeedbackEmail(subject, body);
+        }
       })
     } else if (this.settingsLeafSheetMode === SETTINGS_SHEET_DIAGNOSTIC_LOG) {
       DiagnosticCaptureSettingsSheet({
@@ -18411,9 +18452,9 @@ struct HostListPage {
         .animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
 
         ListItem() {
-          this.settingsActionHeader($r('sys.symbol.doc_plaintext'), '日志',
-            '抓取连接、同步与数据模组的脱敏诊断事件',
-            (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_DIAGNOSTIC_LOG); })
+          this.settingsActionHeader($r('sys.symbol.doc_plaintext'), '诊断与 AI 帮助',
+            '辅助 AI 配置、自动诊断和传统脱敏日志',
+            (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_DIAGNOSTIC_AI); })
         }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 10 })
 
         ListItem() {

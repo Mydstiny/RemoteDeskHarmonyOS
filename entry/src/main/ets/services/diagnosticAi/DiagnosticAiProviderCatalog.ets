@@ -1,0 +1,96 @@
+import { DiagnosticAiProviderManifest } from './DiagnosticAiModels';
+
+/**
+ * The first catalog is intentionally conservative. URLs and capability claims
+ * are versioned data and must be rechecked against the provider's current
+ * official contract before changing a manifest from optional to verified.
+ */
+const PROVIDERS: DiagnosticAiProviderManifest[] = [
+  {
+    schemaVersion: 1, providerId: 'deepseek', displayName: 'DeepSeek', market: 'mainland-cn',
+    adapterFamily: 'openai_compatible_http', endpoint: 'https://api.deepseek.com', modelListPath: '/models', chatPath: '/chat/completions',
+    authKind: 'bearer', authHeader: 'Authorization', supportsStreaming: true,
+    supportsVision: false, supportsTools: false,
+    privacy: { region: 'mainland', retention: 'unknown', trainingUse: 'unknown', policyRef: 'https://api-docs.deepseek.com/' }, verifiedAt: '2026-10-02'
+  },
+  {
+    schemaVersion: 1, providerId: 'qwen', displayName: '通义千问 / Qwen', market: 'mainland-cn',
+    adapterFamily: 'openai_compatible_http', endpoint: 'https://dashscope.aliyuncs.com/compatible-mode/v1', modelListPath: '/models', chatPath: '/chat/completions',
+    authKind: 'bearer', authHeader: 'Authorization', supportsStreaming: true,
+    supportsVision: true, supportsTools: true,
+    privacy: { region: 'mainland', retention: 'unknown', trainingUse: 'unknown', policyRef: 'https://help.aliyun.com/zh/model-studio/' }, verifiedAt: ''
+  },
+  {
+    schemaVersion: 1, providerId: 'zhipu', displayName: '智谱 GLM', market: 'mainland-cn',
+    adapterFamily: 'openai_compatible_http', endpoint: 'https://open.bigmodel.cn/api/paas/v4', modelListPath: '/models', chatPath: '/chat/completions',
+    authKind: 'bearer', authHeader: 'Authorization', supportsStreaming: true,
+    supportsVision: true, supportsTools: true,
+    privacy: { region: 'mainland', retention: 'unknown', trainingUse: 'unknown', policyRef: 'https://open.bigmodel.cn/dev/api' }, verifiedAt: ''
+  },
+  {
+    schemaVersion: 1, providerId: 'kimi', displayName: '月之暗面 / Kimi', market: 'mainland-cn',
+    adapterFamily: 'openai_compatible_http', endpoint: 'https://api.moonshot.cn/v1', modelListPath: '/models', chatPath: '/chat/completions',
+    authKind: 'bearer', authHeader: 'Authorization', supportsStreaming: true,
+    supportsVision: true, supportsTools: false,
+    privacy: { region: 'mainland', retention: 'unknown', trainingUse: 'unknown', policyRef: 'https://platform.moonshot.cn/docs' }, verifiedAt: ''
+  },
+  {
+    schemaVersion: 1, providerId: 'siliconflow', displayName: '硅基流动', market: 'mainland-cn',
+    adapterFamily: 'openai_compatible_http', endpoint: 'https://api.siliconflow.cn/v1', modelListPath: '/models', chatPath: '/chat/completions',
+    authKind: 'bearer', authHeader: 'Authorization', supportsStreaming: true,
+    supportsVision: true, supportsTools: true,
+    privacy: { region: 'unknown', retention: 'unknown', trainingUse: 'unknown', policyRef: 'https://docs.siliconflow.cn/' }, verifiedAt: ''
+  },
+  {
+    schemaVersion: 1, providerId: 'ollama', displayName: 'Ollama（本机）', market: 'local',
+    adapterFamily: 'ollama_local', endpoint: 'http://127.0.0.1:11434', modelListPath: '/api/tags', chatPath: '/api/chat',
+    authKind: 'none', authHeader: '', supportsStreaming: true,
+    supportsVision: true, supportsTools: false,
+    privacy: { region: 'device-local', retention: 'documented', trainingUse: 'off', policyRef: '' }, verifiedAt: ''
+  },
+  {
+    schemaVersion: 1, providerId: 'doubao', displayName: '字节豆包 / 火山引擎', market: 'mainland-cn',
+    adapterFamily: 'vendor_native_http', endpoint: '', modelListPath: '', chatPath: '',
+    authKind: 'api_key_header', authHeader: 'Authorization', supportsStreaming: true,
+    supportsVision: true, supportsTools: true,
+    privacy: { region: 'mainland', retention: 'unknown', trainingUse: 'unknown', policyRef: '' }, verifiedAt: ''
+  },
+  {
+    schemaVersion: 1, providerId: 'wenxin', displayName: '百度文心 / 千帆', market: 'mainland-cn',
+    adapterFamily: 'vendor_native_http', endpoint: '', modelListPath: '', chatPath: '',
+    authKind: 'api_key_header', authHeader: 'Authorization', supportsStreaming: true,
+    supportsVision: true, supportsTools: false,
+    privacy: { region: 'mainland', retention: 'unknown', trainingUse: 'unknown', policyRef: '' }, verifiedAt: ''
+  },
+  {
+    schemaVersion: 1, providerId: 'spark', displayName: '讯飞星火', market: 'mainland-cn',
+    adapterFamily: 'vendor_native_websocket', endpoint: '', modelListPath: '', chatPath: '',
+    authKind: 'custom_header', authHeader: '', supportsStreaming: true,
+    supportsVision: false, supportsTools: false,
+    privacy: { region: 'mainland', retention: 'unknown', trainingUse: 'unknown', policyRef: '' }, verifiedAt: ''
+  }
+];
+
+export function diagnosticAiProviderManifests(): DiagnosticAiProviderManifest[] {
+  return PROVIDERS.map((value: DiagnosticAiProviderManifest): DiagnosticAiProviderManifest => cloneManifest(value));
+}
+
+function cloneManifest(value: DiagnosticAiProviderManifest): DiagnosticAiProviderManifest {
+  return { schemaVersion: value.schemaVersion, providerId: value.providerId, displayName: value.displayName,
+    market: value.market, adapterFamily: value.adapterFamily, endpoint: value.endpoint,
+    modelListPath: value.modelListPath, chatPath: value.chatPath, authKind: value.authKind,
+    authHeader: value.authHeader, supportsStreaming: value.supportsStreaming,
+    supportsVision: value.supportsVision, supportsTools: value.supportsTools,
+    privacy: { region: value.privacy.region, retention: value.privacy.retention,
+      trainingUse: value.privacy.trainingUse, policyRef: value.privacy.policyRef }, verifiedAt: value.verifiedAt };
+}
+
+export function diagnosticAiProviderManifest(providerId: string): DiagnosticAiProviderManifest | null {
+  const found = PROVIDERS.find((value: DiagnosticAiProviderManifest): boolean => value.providerId === providerId);
+  return found === undefined ? null : cloneManifest(found);
+}
+
+export function diagnosticAiProviderIsDomestic(providerId: string): boolean {
+  const found = diagnosticAiProviderManifest(providerId);
+  return found !== null && found.market === 'mainland-cn';
+}

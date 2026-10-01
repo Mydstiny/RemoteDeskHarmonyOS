@@ -53,6 +53,7 @@ export const SETTINGS_SHEET_PRO_BADGE: number = 49;
 export const SETTINGS_SHEET_SSH_SKIN: number = 56;
 /** Pro 远端显示方案: RDP desktop size and Windows scale in one sheet. */
 export const SETTINGS_SHEET_RDP_DISPLAY_PROFILE: number = 57;
+export const SETTINGS_SHEET_DIAGNOSTIC_AI: number = 58;
 
 export const SETTINGS_PANEL_DISMISS_TO_LEAF_OPEN_MS: number = 360;
 
@@ -137,6 +138,10 @@ export function vncSettingsLeafSheetHeight(mode: number): number {
 
 export function diagnosticLogSettingsLeafSheetHeight(mode: number): number {
   return mode === SETTINGS_SHEET_DIAGNOSTIC_LOG ? 740 : 0;
+}
+
+export function diagnosticAiSettingsLeafSheetHeight(mode: number): number {
+  return mode === SETTINGS_SHEET_DIAGNOSTIC_AI ? 840 : 0;
 }
 
 export function secretVisibilitySettingsLeafSheetHeight(mode: number): number {

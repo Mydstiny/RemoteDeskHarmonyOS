@@ -2,6 +2,10 @@ export const PRO_LIFETIME: string = 'pro.lifetime';
 export const PRO_PERSONALIZATION_FEATURE: string = 'pro.personalization';
 export const PRO_RDP_ADVANCED_DISPLAY_FEATURE: string = 'pro.display.rdpAdvanced';
 export const PRO_RUSTDESK_ADVANCED_DISPLAY_FEATURE: string = 'pro.display.rustdeskAdvanced';
+export const PRO_DIAGNOSTICS_FEATURE: string = 'pro.diagnostics';
+export const PRO_DIAGNOSTICS_PROVIDER_FEATURE: string = 'pro.diagnostics.providerConfig';
+export const PRO_DIAGNOSTICS_ASSISTANT_FEATURE: string = 'pro.diagnostics.assistant';
+export const PRO_DIAGNOSTICS_EMAIL_FEATURE: string = 'pro.diagnostics.emailBundle';
 export type ProAvailability = 'available' | 'planned' | 'experimental' | 'disabled';
 export type ProDevice = 'phone' | 'tablet' | 'pc' | 'unknown';
 export interface ProFeature {
@@ -97,6 +101,11 @@ function rustDeskAdvancedDisplay(): ProFeature {
   feature.capabilities = ['rustdesk.displayControl'];
   return feature;
 }
+function diagnosticsFeature(id: string, title: string, description: string): ProFeature {
+  const feature = planned(id, title, description);
+  feature.availability = 'experimental';
+  return feature;
+}
 function remoteAi(id: string, title: string, description: string): ProFeature {
   const feature = planned(id, title, description);
   // The local LAN pairing/session path is shipped and guarded by the real
@@ -116,6 +125,10 @@ export function proFeatures(): ProFeature[] {
     experimentalHostManagement(),
     rdpAdvancedDisplay(),
     rustDeskAdvancedDisplay(),
+    diagnosticsFeature(PRO_DIAGNOSTICS_FEATURE, '诊断与 AI 帮助', '使用自有 AI Provider 分析脱敏诊断事件，并保留传统日志抓取。'),
+    diagnosticsFeature(PRO_DIAGNOSTICS_PROVIDER_FEATURE, '辅助 AI 配置', '配置国内 AI Provider、保存设备级密钥并拉取模型列表。'),
+    diagnosticsFeature(PRO_DIAGNOSTICS_ASSISTANT_FEATURE, '启动 AI 辅助', '在应用内打开 AI 浮窗、生成诊断建议并预览可控设置操作。'),
+    diagnosticsFeature(PRO_DIAGNOSTICS_EMAIL_FEATURE, '诊断邮件打包', '预览脱敏日志和诊断结果后调用系统邮件编辑器。'),
     personalization(),
     remoteAi('pro.ai.workspace', '远程 AI 工作台', '在自己的电脑上运行 AI，查看执行过程、批准操作并恢复会话。'),
     remoteAi('pro.ai.codex', 'Codex 远程控制', '连接电脑端 Codex 插件，使用原生会话、审批与文件差异。'),
@@ -149,6 +162,10 @@ export function proFeatureProgress(id: string): string {
     case PRO_RDP_ADVANCED_DISPLAY_FEATURE: return '已开发 · RDP 自定义尺寸与 Windows 缩放待真实 Windows 矩阵验收';
     case PRO_RUSTDESK_ADVANCED_DISPLAY_FEATURE: return '已开发 · 能力感知自定义分辨率待 RustDesk peer/设备矩阵验收';
     case 'pro.feedback': return '已上线 · Pro 专属畅联群与 QQ 群';
+    case PRO_DIAGNOSTICS_FEATURE:
+    case PRO_DIAGNOSTICS_PROVIDER_FEATURE:
+    case PRO_DIAGNOSTICS_ASSISTANT_FEATURE:
+    case PRO_DIAGNOSTICS_EMAIL_FEATURE: return '已实现基础链路 · Provider、邮件与实机验收待完成';
     default: return '';
   }
 }

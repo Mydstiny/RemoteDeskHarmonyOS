@@ -156,31 +156,40 @@ export function settingsFeedbackBody(versionName: string, breakpoint: string, is
     '可选：请附上复现步骤、截图或日志。';
 }
 
-export function settingsFeedbackMailtoUri(versionName: string, breakpoint: string, isDesktopDevice: boolean): string {
+export function settingsFeedbackMailtoUri(
+  versionName: string,
+  breakpoint: string,
+  isDesktopDevice: boolean,
+  subject: string = SETTINGS_SUPPORT_SUBJECT,
+  body: string = settingsFeedbackBody(versionName, breakpoint, isDesktopDevice)
+): string {
   return 'mailto:' + SETTINGS_SUPPORT_EMAIL +
-    '?subject=' + encodeURIComponent(SETTINGS_SUPPORT_SUBJECT) +
-    '&body=' + encodeURIComponent(settingsFeedbackBody(versionName, breakpoint, isDesktopDevice));
+    '?subject=' + encodeURIComponent(subject) + '&body=' + encodeURIComponent(body);
 }
 
 export function settingsFeedbackMailPanelParams(
   versionName: string,
   breakpoint: string,
-  isDesktopDevice: boolean
+  isDesktopDevice: boolean,
+  subject: string = SETTINGS_SUPPORT_SUBJECT,
+  body: string = settingsFeedbackBody(versionName, breakpoint, isDesktopDevice)
 ): Record<string, Object> {
   const params: Record<string, Object> = {};
   params['sceneType'] = 1;
   params['email'] = [encodeURI(SETTINGS_SUPPORT_EMAIL)];
-  params['subject'] = encodeURI(SETTINGS_SUPPORT_SUBJECT);
-  params['body'] = encodeURI(settingsFeedbackBody(versionName, breakpoint, isDesktopDevice));
+  params['subject'] = encodeURI(subject);
+  params['body'] = encodeURI(body);
   return params;
 }
 
 export function settingsFeedbackFallbackWantSpecs(
   versionName: string,
   breakpoint: string,
-  isDesktopDevice: boolean
+  isDesktopDevice: boolean,
+  subject: string = SETTINGS_SUPPORT_SUBJECT,
+  body: string = settingsFeedbackBody(versionName, breakpoint, isDesktopDevice)
 ): SettingsFeedbackWantSpec[] {
-  const uri: string = settingsFeedbackMailtoUri(versionName, breakpoint, isDesktopDevice);
+  const uri: string = settingsFeedbackMailtoUri(versionName, breakpoint, isDesktopDevice, subject, body);
   return [
     { action: SETTINGS_EMAIL_SEND_TO_ACTION, uri: uri, entities: [] },
     { action: SETTINGS_BROWSER_VIEW_ACTION, uri: uri, entities: ['entity.system.browsable'] }
@@ -190,10 +199,12 @@ export function settingsFeedbackFallbackWantSpecs(
 export function settingsFeedbackLaunchAttempts(
   versionName: string,
   breakpoint: string,
-  isDesktopDevice: boolean
+  isDesktopDevice: boolean,
+  subject: string = SETTINGS_SUPPORT_SUBJECT,
+  body: string = settingsFeedbackBody(versionName, breakpoint, isDesktopDevice)
 ): SettingsFeedbackLaunchAttempt[] {
   const fallbackSpecs: SettingsFeedbackWantSpec[] =
-    settingsFeedbackFallbackWantSpecs(versionName, breakpoint, isDesktopDevice);
+    settingsFeedbackFallbackWantSpecs(versionName, breakpoint, isDesktopDevice, subject, body);
   return [
     {
       kind: 'want',

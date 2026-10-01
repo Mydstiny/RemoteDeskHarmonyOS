@@ -16,6 +16,8 @@ import { VncPlaintextDecisionHandoff } from './VncPlaintextDecisionHandoff';
 import { MoonlightDataLifecycleBarrier } from './MoonlightDataLifecycleBarrier';
 import { AiLifecycle } from './ai/AiLifecycle';
 import { AiTransport } from './ai/AiTransport';
+import { DiagnosticAiCaptureOrchestrator } from './diagnosticAi/DiagnosticAiCaptureOrchestrator';
+import { DiagnosticAiProfileStore } from './diagnosticAi/DiagnosticAiProfileStore';
 
 /**
  * One transition boundary shared by login, logout, account switch and restore.
@@ -40,6 +42,8 @@ export class SensitiveDataBarrier {
   async drain(reason: string): Promise<boolean> {
     AiLifecycle.invalidateAll();
     AiTransport.cancelAll();
+    DiagnosticAiCaptureOrchestrator.getInstance().invalidateAll();
+    DiagnosticAiProfileStore.clearActiveScope();
     // Invalidate the ArkTS handoff before the first await. Native route probes
     // may already own a synchronous copy, so cancel and drain those workers
     // before the account/store scope is allowed to change.
