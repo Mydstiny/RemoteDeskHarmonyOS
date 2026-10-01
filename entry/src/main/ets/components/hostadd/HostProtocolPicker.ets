@@ -23,6 +23,8 @@ export struct HostProtocolPicker {
   // gates. The entry can be reviewed before pairing/streaming is released.
   @Prop moonlightFabEntryAvailable: boolean = false;
   @Prop moonlightProtocolAvailable: boolean = false;
+  /** Pro 工作区与布局 is visible on this device: offered as the last option. */
+  @Prop workspaceAvailable: boolean = false;
   onSelect: (protocol: string) => void = (_protocol: string): void => {};
   onClose: () => void = (): void => {};
   @State moonlightIconFailed: boolean = false;
@@ -89,6 +91,22 @@ export struct HostProtocolPicker {
     })
   }
 
+  /** Same look as the protocol rows; creates a Pro workspace instead of a host. */
+  @Builder private workspaceOption() {
+    Row() {
+      SymbolGlyph($r('sys.symbol.rectangle_on_rectangle')).fontSize(24).fontColor([this.accentColor])
+        .margin({ right: 14 })
+      Column() {
+        Text('工作区').fontSize(16).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
+        Text('把常用主机组成一组，一键打开').fontSize(12).fontColor(this.pal().text3).margin({ top: 3 })
+      }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+      ProBadge().margin({ right: 8 }).alignSelf(ItemAlign.Center)
+      SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(18).fontColor([this.pal().text3])
+    }.width('100%').height(68).padding({ left: 18, right: 18 })
+    .borderRadius(16).backgroundColor(this.pal().surface).margin({ bottom: 10 })
+    .onClick((): void => { this.onSelect('workspace'); })
+  }
+
   build() {
     Column() {
       Row() {
@@ -115,6 +133,7 @@ export struct HostProtocolPicker {
         this.protocolOption('ai', '远程 AI', 'Codex 与 DSH 会话、审批和代码差异',
           resolveHostProtocolPickerOption('ai', true, false, true))
       }
+      if (this.workspaceAvailable) { this.workspaceOption() }
       Row() {
         SymbolGlyph($r('sys.symbol.info_circle')).fontSize(16)
           .fontColor([this.accentColor]).margin({ top: 1 })

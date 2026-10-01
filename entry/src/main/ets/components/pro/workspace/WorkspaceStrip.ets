@@ -8,7 +8,7 @@ import { WorkspaceStore } from '../../../services/pro/workspace/WorkspaceStore';
 import { OrgHostRow } from '../../../services/pro/org/HostOrganizationDirectory';
 import { ProWorkspaceEditorPanel } from '../../ProWorkspaceEditorPanel';
 import {
-  createWorkspace, saveCurrentWorkspace, showWorkspaceMenu, workspaceSubtitle, workspaceTint
+  saveCurrentWorkspace, showWorkspaceMenu, workspaceSubtitle, workspaceTint
 } from './WorkspaceActions';
 
 /**
@@ -46,10 +46,6 @@ export struct WorkspaceStrip {
   private pal(): Palette { return this.theme === 'light' ? buildLight(this.accent) : buildDark(this.accent); }
   private workspaces(_revision: number): Workspace[] { return WorkspaceStore.getInstance().list(); }
   private edit(workspace: Workspace): void { this.editing = workspace; this.showEditor = true; }
-  private create(): void {
-    const workspace: Workspace | null = createWorkspace(this.getUIContext());
-    if (workspace !== null) { this.edit(workspace); }
-  }
   private saveCurrent(): void {
     const workspace: Workspace | null = saveCurrentWorkspace(this.getUIContext(), this.rows, this.activeRefs);
     if (workspace !== null) { this.edit(workspace); }
@@ -121,13 +117,12 @@ export struct WorkspaceStrip {
             SymbolGlyph($r('sys.symbol.rectangle_on_rectangle')).fontSize(16).fontColor([this.accent])
             Text('工作区').fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
             ProBadge()
-            Text('一键依次打开常用会话').fontSize(12).fontColor(this.pal().text3).layoutWeight(1).maxLines(1)
+            Text('点「+」→「工作区」新建').fontSize(12).fontColor(this.pal().text3).layoutWeight(1).maxLines(1)
               .textOverflow({ overflow: TextOverflow.Ellipsis })
             if (this.activeRefs.length > 0) {
-              Text('保存当前').fontSize(12).fontColor(this.accent).padding(4)
+              Text('保存当前会话').fontSize(12).fontColor(this.accent).padding(4)
                 .onClick((): void => { this.saveCurrent(); })
             }
-            Text('＋ 新建').fontSize(12).fontColor(this.accent).padding(4).onClick((): void => { this.create(); })
           }
           .width('100%').height(44).padding({ left: 14, right: 10 }).borderRadius(16)
           .backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
@@ -142,7 +137,6 @@ export struct WorkspaceStrip {
               if (this.activeRefs.length > 0) {
                 this.smallAction($r('sys.symbol.rectangle_on_rectangle'), '保存当前', (): void => { this.saveCurrent(); })
               }
-              this.smallAction($r('sys.symbol.plus'), '新建', (): void => { this.create(); })
             }.padding({ left: 16, right: 8 })
           }.scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off).align(Alignment.Start).width('100%')
         }

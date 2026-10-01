@@ -29,6 +29,7 @@ import { HostBatchActions } from '../components/pro/org/HostBatchActions';
 import { HostImportPanel } from '../components/pro/org/HostImportPanel';
 import { WorkspaceStrip } from '../components/pro/workspace/WorkspaceStrip';
 import { WorkspaceGroupCard, WorkspacePanel } from '../components/pro/workspace/WorkspaceGroupCard';
+import { createWorkspace } from '../components/pro/workspace/WorkspaceActions';
 import { ProWorkspaceEditorPanel } from '../components/ProWorkspaceEditorPanel';
 import { WorkspaceRunPanel } from '../components/pro/workspace/WorkspaceRunPanel';
 import {
@@ -938,6 +939,7 @@ struct HostListPage {
   @State proWorkspaceRun: WorkspaceRun | null = null;
   @State showHostImportSheet: boolean = false;
   @State showWorkspaceEditor: boolean = false;
+  private pendingWorkspaceCreate: boolean = false;
   @State workspaceEditorTarget: Workspace = newWorkspace('', '', '#007DFF', 'sym.desktop_fill', 0, 0);
   @State hostImportDocument: HostExportDocument = { schemaVersion: 1, exportedAt: 0, groups: [], hosts: [] };
   private proWorkspacePageHidden: boolean = false;
@@ -4213,6 +4215,10 @@ struct HostListPage {
   }
 
   private handleAddSheetDisappear(): void {
+    if (this.pendingWorkspaceCreate) {
+      this.pendingWorkspaceCreate = false;
+      setTimeout((): void => { this.createWorkspaceFromFab(); }, 0);
+    }
     const pendingAiId = this.pendingAiConnectId, pendingAiAccount = this.pendingAiAccount;
     this.pendingAiConnectId = ''; this.pendingAiAccount = null; this.aiEditingHost = null;
     const aiGeneration = ++this.aiSheetGeneration;
@@ -13841,6 +13847,8 @@ struct HostListPage {
               this.kvAddTrigger++;
             } else if (this.curTab === 6) {
               this.relayAddTrigger++;
+            } else if (this.curTab === DESKTOP_WORKSPACE_TAB) {
+              this.createWorkspaceFromFab();
             }
           } else {
             // 手机/平板/PC小窗: 主机/密钥/中继/设置
@@ -13874,10 +13882,10 @@ struct HostListPage {
       .justifyContent(shouldUseGripFabAlignment(this.isDesktopDevice, this.breakpoint) ? this.getFabAlignment() : FlexAlign.Start)
       .position({ x: 0, y: '100%' })
       .markAnchor({ x: 0, y: '100%' })
-      .translate({ y: ((!this.isDesktopDevice && this.curTab === 3) || (this.hostSelectionMode && this.proOrgVisible) ||
-        this.curTab === DESKTOP_WORKSPACE_TAB ? 120 : -hostListFabLiftVp(this.breakpoint)) })
+      .translate({ y: ((!this.isDesktopDevice && this.curTab === 3) || (this.hostSelectionMode && this.proOrgVisible) ?
+        120 : -hostListFabLiftVp(this.breakpoint)) })
       .opacity(!this.pageActive || (!this.isDesktopDevice && this.curTab === 3) ||
-        (this.hostSelectionMode && this.proOrgVisible) || this.curTab === DESKTOP_WORKSPACE_TAB ? 0 : 1)
+        (this.hostSelectionMode && this.proOrgVisible) ? 0 : 1)
       .animation({ curve: curves.interpolatingSpring(0, 1, 200, 17) })
 
       if (this.sheetReleaseFenceActive) {
@@ -14843,6 +14851,13 @@ struct HostListPage {
       onOpen: (workspace: Workspace): void => { this.openProWorkspace(workspace); },
       onEdit: (workspace: Workspace): void => { this.openWorkspaceEditor(workspace); }
     })
+  }
+
+  /** FAB → 工作区: create an empty workspace and open its editor. */
+  private createWorkspaceFromFab(): void {
+    if (!this.pageActive || !this.proWorkspacesVisible) { return; }
+    const workspace: Workspace | null = createWorkspace(this.getUIContext());
+    if (workspace !== null) { this.openWorkspaceEditor(workspace); }
   }
 
   private openWorkspaceEditor(workspace: Workspace): void {
@@ -20693,7 +20708,14 @@ struct HostListPage {
         // network-observer lease. Pairing and streaming remain capability-gated.
         moonlightFabEntryAvailable: true,
         moonlightProtocolAvailable: this.moonlightProtocolAvailable,
+        workspaceAvailable: this.proWorkspacesVisible,
         onSelectProtocol: (protocol: string): void => {
+          if (protocol === 'workspace') {
+            // A workspace is created after the add sheet has fully closed, then edited in its own sheet.
+            this.pendingWorkspaceCreate = true;
+            this.requestAddSheetClose();
+            return;
+          }
           this.modernAddProtocol = protocol;
           this.addSheetShowsModernPicker = false;
           if (protocol === 'moonlight') {

@@ -6,7 +6,7 @@ import { Workspace } from '../../../services/pro/workspace/WorkspacePolicy';
 import { WorkspaceStore } from '../../../services/pro/workspace/WorkspaceStore';
 import { OrgHostRow } from '../../../services/pro/org/HostOrganizationDirectory';
 import {
-  createWorkspace, saveCurrentWorkspace, showWorkspaceMenu, workspaceProtocols, workspaceSubtitle, workspaceTint
+  saveCurrentWorkspace, showWorkspaceMenu, workspaceProtocols, workspaceSubtitle, workspaceTint
 } from './WorkspaceActions';
 
 /** 工作区 category card for the categorized host page; it expands in place like the protocol cards. */
@@ -198,11 +198,6 @@ export struct WorkspacePanel {
 
   @Builder private actions() {
     Row({ space: 10 }) {
-      Button('＋ 新建工作区').layoutWeight(1).height(40).fontSize(13).backgroundColor(this.pal().surface)
-        .fontColor(this.accent).onClick((): void => {
-          const created: Workspace | null = createWorkspace(this.getUIContext());
-          if (created !== null) { this.edit(created); }
-        })
       if (this.activeRefs.length > 0) {
         Button('保存当前会话').layoutWeight(1).height(40).fontSize(13).backgroundColor(this.pal().surface)
           .fontColor(this.accent).onClick((): void => {
@@ -217,7 +212,7 @@ export struct WorkspacePanel {
     Column({ space: 10 }) {
       if (this.columns <= 1) {
         if (this.workspaces(this.revision).length === 0) {
-          Text('把常用的几台主机存成工作区，点「打开」会按顺序连接；PC 上还能按布局摆放窗口。')
+          Text('还没有工作区。点「+」→「工作区」新建，把常用的几台主机组成一组，一键打开。')
             .fontSize(12).fontColor(this.pal().text3).lineHeight(17).width('100%').padding({ left: 4, right: 4 })
         } else {
           Column() {
@@ -231,7 +226,7 @@ export struct WorkspacePanel {
         }
       } else {
         if (this.workspaces(this.revision).length === 0) {
-          Text('还没有工作区。把常用的几台主机存成工作区，一键依次打开，并按布局摆放独立窗口。')
+          Text('还没有工作区。点右下角「+」新建，把常用的几台主机组成一组，一键打开并按布局摆放窗口。')
             .fontSize(13).fontColor(this.pal().text3).width('100%').padding({ top: 8, bottom: 8 })
         } else {
           ForEach(this.gridRows(this.revision), (line: Workspace[], lineIndex: number): void => {

@@ -45,7 +45,8 @@ const badges = new Map([
   ['components/ProPurchaseSheet.ets', [1, /purchase/i]],
   ['components/ProFeatureVisibilityPanel.ets', [1, /ProFeatureVisibility/]],
   ['components/AppSheetHeader.ets', [1, /if \(this\.showProBadge\)/]],
-  ['components/hostadd/HostProtocolPicker.ets', [1, /aiProVisible = AiAccess\.getInstance\(\)\.proVisible\(\)/]],
+  // The 工作区 row shows only when the host page passes workspaceAvailable (ProEntries.visible('pro.workspaces')).
+  ['components/hostadd/HostProtocolPicker.ets', [2, /aiProVisible = AiAccess\.getInstance\(\)\.proVisible\(\)[\s\S]*if \(this\.workspaceAvailable\) \{ this\.workspaceOption\(\) \}/]],
   ['components/ai/AiHostEditor.ets', [1, /AiAccess\.getInstance\(\)\.proVisible\(\)/]],
   ['pages/AiSettingsPage.ets', [1, /allowed = AiAccess\.getInstance\(\)\.proVisible\(\)/]],
   ['pages/SshTerminal.ets', [1, /ProFeatureGate\(\{ featureId: 'pro\.file\.knockTransfer'/]],

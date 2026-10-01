@@ -5,6 +5,7 @@ import { HostProtocolPicker } from './HostProtocolPicker';
 export struct HostAddWizardSheet {
   @Prop moonlightFabEntryAvailable: boolean = false;
   @Prop moonlightProtocolAvailable: boolean = false;
+  @Prop workspaceAvailable: boolean = false;
   onSelectProtocol: (protocol: string) => void = (_protocol: string): void => {};
   onClose: () => void = (): void => {};
 
@@ -12,6 +13,7 @@ export struct HostAddWizardSheet {
     HostProtocolPicker({
       moonlightFabEntryAvailable: this.moonlightFabEntryAvailable,
       moonlightProtocolAvailable: this.moonlightProtocolAvailable,
+      workspaceAvailable: this.workspaceAvailable,
       onSelect: (protocol: string): void => { this.onSelectProtocol(protocol); },
       onClose: (): void => { this.onClose(); }
     })
