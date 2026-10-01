@@ -2,7 +2,7 @@ import { common } from '@kit.AbilityKit';
 import { preferences } from '@kit.ArkData';
 import { AppConfig } from '../common/Theme';
 import {
-  badgeInkFor, badgeLuminance, cleanBadgeColors, cycleColor, mixHex, PRO_BADGE_DEFAULT_PRIMARY, PRO_BADGE_DEFAULT_SECONDARY,
+  badgeInkFor, badgeLuminance, badgePalette, cleanBadgeColors, cycleColor, mixHex, PRO_BADGE_DEFAULT_PRIMARY, PRO_BADGE_DEFAULT_SECONDARY,
   PRO_BADGE_RAY_LAYERS, proBadgeCycleStops, proBadgePulse, proBadgeRayLayer, ProBadgeWarpRay, proBadgeWarpRays,
   proBadgeShimmerStops, proBadgeStaticStops, validBadgeHex, withAlpha
 } from '../services/pro/ProBadgeFlowPolicy';
@@ -76,6 +76,27 @@ export function proBadgeMotionLabel(motion: string): string {
   const found: ProBadgeMotionOption | undefined = PRO_BADGE_MOTION_OPTIONS.find((item: ProBadgeMotionOption): boolean =>
     item.id === motion);
   return found === undefined ? '流彩' : found.label;
+}
+
+/** Palette name for summaries: a built-in palette's label, otherwise 自定义. */
+export function proBadgePaletteLabel(palette: string): string {
+  const found = badgePalette(palette);
+  return found === null ? '自定义' : found.label;
+}
+
+/** The preset the current look matches exactly, or null when it was put together by hand. */
+export function proBadgeMatchingPreset(style: string, motion: string, palette: string): ProBadgePreset | null {
+  const found: ProBadgePreset | undefined = PRO_BADGE_PRESETS.find((item: ProBadgePreset): boolean =>
+    item.style === style && item.motion === motion && item.palette === palette);
+  return found === undefined ? null : found;
+}
+
+/** One-line description of the current look for the settings row: a preset name, or style · motion · palette. */
+export function proBadgeSummary(visible: boolean, style: string, motion: string, palette: string): string {
+  if (!visible) { return '已隐藏'; }
+  const preset: ProBadgePreset | null = proBadgeMatchingPreset(style, motion, palette);
+  if (preset !== null) { return '显示 · 预设「' + preset.label + '」'; }
+  return '显示 · ' + proBadgeStyleLabel(style) + ' · ' + proBadgeMotionLabel(motion) + ' · ' + proBadgePaletteLabel(palette);
 }
 
 function styleOr(value: Object): ProBadgeStyle {
@@ -233,6 +254,7 @@ export struct ProBadge {
   private rayContext: CanvasRenderingContext2D = new CanvasRenderingContext2D(new RenderingContextSettings(true));
   private rayCanvasReady: boolean = false;
   private layerContexts: CanvasRenderingContext2D[] = [];
+  private layerReady: boolean[] = [];
   /** Moving layers exist only while flying; removing them is what stops their endless animations. */
   @State raysFlying: boolean = false;
   @State rayScale0: number = 0.5;
@@ -287,13 +309,16 @@ export struct ProBadge {
     if (wanted) {
       // Fresh contexts for the fresh canvases; each layer starts flying once its canvas is ready.
       this.layerContexts = [];
+      this.layerReady = [];
       for (let k: number = 0; k < PRO_BADGE_RAY_LAYERS; k++) {
         this.layerContexts.push(new CanvasRenderingContext2D(new RenderingContextSettings(true)));
+        this.layerReady.push(false);
       }
       this.rayScale0 = 0.5; this.rayScale1 = 0.5; this.rayScale2 = 0.5;
       this.rayFade0 = 0; this.rayFade1 = 0; this.rayFade2 = 0;
     } else {
       this.layerContexts = [];
+      this.layerReady = [];
     }
     this.raysFlying = wanted;
   }
@@ -438,7 +463,7 @@ export struct ProBadge {
 
   /** One flying layer, painted once near the center; thinner strokes because the layer is scaled up as it flies. */
   private drawLayer(k: number): void {
-    if (k >= this.layerContexts.length) { return; }
+    if (k >= this.layerContexts.length || this.layerReady[k] !== true) { return; }
     const ctx: CanvasRenderingContext2D = this.layerContexts[k];
     ctx.clearRect(0, 0, this.w(), this.h());
     this.paintRays(ctx, proBadgeRayLayer(k, this.raysPerLayer()), 1, this.large ? 0.55 : 0.45);
@@ -453,7 +478,12 @@ export struct ProBadge {
       .hitTestBehavior(HitTestMode.None)
       .scale({ x: this.layerScale(k), y: this.layerScale(k) })
       .opacity(this.layerFade(k))
-      .onReady((): void => { this.drawLayer(k); this.flyLayer(k); })
+      .onReady((): void => {
+        if (k >= this.layerReady.length) { return; }
+        this.layerReady[k] = true;
+        this.drawLayer(k);
+        this.flyLayer(k);
+      })
   }
 
   @Builder private body() {

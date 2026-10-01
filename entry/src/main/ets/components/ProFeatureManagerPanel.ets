@@ -399,13 +399,28 @@ export struct ProBadgeSettingsPanel {
   /** Which custom color the swatches and hex field edit: 0 = 起始色, 1 = 结束色. */
   @State slot: number = 0;
   @State hexDraft: string = '';
+  /** The saved look; any change (here, from another window or a preset) re-syncs the sheet. */
+  @StorageProp('proBadgeStyle') @Watch('syncFromStorage') storedStyle: string = 'capsule';
+  @StorageProp('proBadgeMotion') @Watch('syncFromStorage') storedMotion: string = 'sweep';
+  @StorageProp('proBadgePalette') @Watch('syncFromStorage') storedPalette: string = 'aurora';
+  @StorageProp('proBadgeColors') @Watch('syncFromStorage') storedColors: string = '';
 
   aboutToAppear(): void {
     ProBadgePreferences.load(getContext(this));
+    this.syncFromStorage();
+  }
+
+  /** Mirrors the saved settings into the sheet; unchanged values are skipped so nothing re-renders needlessly. */
+  syncFromStorage(): void {
     const settings: ProBadgeSettings = ProBadgePreferences.snapshot();
-    this.badgeStyle = settings.style; this.badgeMotion = settings.motion;
-    this.palette = settings.palette; this.colors = settings.colors;
-    this.hexDraft = this.colors[0];
+    if (this.badgeStyle !== settings.style) { this.badgeStyle = settings.style; }
+    if (this.badgeMotion !== settings.motion) { this.badgeMotion = settings.motion; }
+    if (this.palette !== settings.palette) { this.palette = settings.palette; }
+    if (JSON.stringify(this.colors) !== JSON.stringify(settings.colors)) {
+      this.colors = settings.colors;
+      this.hexDraft = this.slotColor();
+    }
+    if (this.hexDraft.length === 0) { this.hexDraft = this.slotColor(); }
   }
 
   private pal(): Palette { return this.theme === 'light' ? buildLight(this.accent) : buildDark(this.accent); }

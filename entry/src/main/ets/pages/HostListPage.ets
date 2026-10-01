@@ -1,4 +1,4 @@
-import { ProBadge, proBadgeMotionLabel, proBadgeStyleLabel } from '../components/ProBadge';
+import { ProBadge, proBadgeSummary } from '../components/ProBadge';
 import { ProBadgeSettingsPanel, ProFeatureDetailPanel } from '../components/ProFeatureManagerPanel';
 import { SshSkinSettingsPanel } from '../components/ssh/skin/SshSkinSettingsPanel';
 import { proFeatureCurrentStatus } from '../services/pro/ProFeatureStatusReader';
@@ -969,6 +969,7 @@ struct HostListPage {
   @StorageProp('proBadgeVisible') proBadgeVisible: boolean = true;
   @StorageProp('proBadgeStyle') proBadgeStyle: string = 'capsule';
   @StorageProp('proBadgeMotion') proBadgeMotion: string = 'sweep';
+  @StorageProp('proBadgePalette') proBadgePalette: string = 'aurora';
   @State proFeatureRevision: number = 0;
   @State selectedProFeatureId: string = '';
   @State appIconSupported: boolean = false;
@@ -18011,10 +18012,7 @@ struct HostListPage {
         ListItem() {
           Column() {
             Column() {
-              this.protocolActionRow($r('sys.symbol.paintpalette_fill'), 'Pro 标识',
-                this.proBadgeVisible ? '显示 · ' + proBadgeStyleLabel(this.proBadgeStyle) + ' · ' +
-                  proBadgeMotionLabel(this.proBadgeMotion) : '已隐藏',
-                (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_PRO_BADGE); })
+              this.proBadgeSettingsRow()
               ForEach(this.proCatalogFeatures(this.proFeatureRevision), (feature: ProFeature): void => {
                 this.cardDivider()
                 this.protocolActionRow(this.proFeatureIcon(feature.id), feature.title,
@@ -19942,6 +19940,27 @@ struct HostListPage {
       SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(18).fontColor([this.pal().text3])
         .margin({ right: 14 })
     }.width('100%').height(62).padding({ left: 16, right: 16 }).onClick(action)
+  }
+
+  /**
+   * Pro 标识 row. It reads the badge settings itself: a value passed into protocolActionRow is copied once, so the
+   * subtitle would keep showing the old look after a change.
+   */
+  @Builder proBadgeSettingsRow() {
+    Row() {
+      SymbolGlyph($r('sys.symbol.paintpalette_fill')).fontSize(22).fontColor([this.pal().text3])
+        .width(22).height(22).margin({ left: 9, right: 9 })
+      Column() {
+        Text('Pro 标识').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
+          .fontColor(this.pal().text).fontFamily(this.font())
+        Text(proBadgeSummary(this.proBadgeVisible, this.proBadgeStyle, this.proBadgeMotion, this.proBadgePalette))
+          .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
+          .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).margin({ top: 2 })
+      }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
+      SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(18).fontColor([this.pal().text3])
+        .margin({ right: 14 })
+    }.width('100%').height(62).padding({ left: 16, right: 16 })
+    .onClick((): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_PRO_BADGE); })
   }
 
   @Builder cardDivider() {
