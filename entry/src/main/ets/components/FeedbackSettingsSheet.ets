@@ -142,10 +142,7 @@ export struct FeedbackSettingsSheet {
       let pixelMap: image.PixelMap;
       try {
         pixelMap = await source.createPixelMap({
-          desiredSize: {
-            width: FEEDBACK_QR_DECODE_EDGE,
-            height: FEEDBACK_QR_DECODE_EDGE
-          },
+          desiredSize: this.qrDecodeSize(source),
           desiredPixelFormat: image.PixelMapFormat.RGBA_8888
         });
       } finally {
@@ -181,6 +178,20 @@ export struct FeedbackSettingsSheet {
     }
   }
 
+  /** Downsample large QR images without changing their aspect ratio. */
+  private qrDecodeSize(source: image.ImageSource): image.Size {
+    const size: image.Size = source.getImageInfoSync().size;
+    const longestEdge: number = Math.max(size.width, size.height);
+    if (longestEdge <= FEEDBACK_QR_DECODE_EDGE) {
+      return { width: size.width, height: size.height };
+    }
+    const scale: number = FEEDBACK_QR_DECODE_EDGE / longestEdge;
+    return {
+      width: Math.max(1, Math.round(size.width * scale)),
+      height: Math.max(1, Math.round(size.height * scale))
+    };
+  }
+
   private clearQrPixelMap(): void {
     const pixelMap: image.PixelMap | null = this.communityQrPixelMap;
     this.communityQrPixelMap = null;
@@ -210,10 +221,7 @@ export struct FeedbackSettingsSheet {
       let pixelMap: image.PixelMap;
       try {
         pixelMap = await source.createPixelMap({
-          desiredSize: {
-            width: FEEDBACK_QR_DECODE_EDGE,
-            height: FEEDBACK_QR_DECODE_EDGE
-          },
+          desiredSize: this.qrDecodeSize(source),
           desiredPixelFormat: image.PixelMapFormat.RGBA_8888
         });
       } finally {
