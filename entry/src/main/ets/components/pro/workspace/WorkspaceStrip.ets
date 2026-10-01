@@ -1,3 +1,4 @@
+import { display } from '@kit.ArkUI';
 import { AppConfig, buildDark, buildLight, Palette } from '../../../common/Theme';
 import { ProBadge } from '../../ProBadge';
 import { ProEntries } from '../../../services/pro/ProEntries';
@@ -33,6 +34,14 @@ export struct WorkspaceStrip {
   }
   aboutToDisappear(): void { this.stop?.(); this.stop = null; }
 
+  private sheetMaxHeight(): number {
+    try {
+      const screen: display.Display = display.getDefaultDisplaySync();
+      return Math.round(screen.height / Math.max(1, screen.densityPixels) * 0.85);
+    } catch (_error) {
+      return 640;
+    }
+  }
   private pal(): Palette { return this.theme === 'light' ? buildLight(this.accent) : buildDark(this.accent); }
   private workspaces(_revision: number): Workspace[] { return WorkspaceStore.getInstance().list(); }
   private edit(workspace: Workspace): void { this.editing = workspace; this.showEditor = true; }
@@ -98,8 +107,9 @@ export struct WorkspaceStrip {
             onClose: (): void => { this.showEditor = false; }
           })
         }.padding({ left: 16, right: 16, top: 18, bottom: 28 })
-      }.layoutWeight(1).scrollBar(BarState.Off).align(Alignment.Top).edgeEffect(EdgeEffect.Spring)
-    }.width('100%').height('100%').backgroundColor(this.pal().sheetBg)
+      }.constraintSize({ maxHeight: this.sheetMaxHeight() }).scrollBar(BarState.Off).align(Alignment.Top)
+      .edgeEffect(EdgeEffect.Spring)
+    }.width('100%').backgroundColor(this.pal().sheetBg)
   }
 
   build() {
@@ -139,7 +149,7 @@ export struct WorkspaceStrip {
     }
     .width('100%').padding({ top: 2, bottom: 6 })
     .bindSheet($$this.showEditor, this.editorSheet(), {
-      height: SheetSize.LARGE, dragBar: true, showClose: false, backgroundColor: this.pal().sheetBg
+      height: SheetSize.FIT_CONTENT, dragBar: true, showClose: false, backgroundColor: this.pal().sheetBg
     })
   }
 }

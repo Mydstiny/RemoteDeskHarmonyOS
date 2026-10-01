@@ -11,9 +11,8 @@ import { PRO_CONTINUATION_PROTOCOLS, ProContinuationCredentialMode, ProContinuat
 import { ProConnectionProtocol } from '../services/pro/ProConnectionEnvelope';
 import { PRO_CONTINUATION_FEATURE, ProContinuationService } from '../services/pro/ProContinuationService';
 import { HostOrganizationStore } from '../services/pro/org/HostOrganizationStore';
-import {
-  copyWorkspace, newWorkspace, Workspace, WORKSPACE_COLORS, WORKSPACE_ICONS, workspaceLayoutLabel
-} from '../services/pro/workspace/WorkspacePolicy';
+import { copyWorkspace, Workspace, workspaceLayoutLabel } from '../services/pro/workspace/WorkspacePolicy';
+import { createWorkspace } from './pro/workspace/WorkspaceActions';
 import { HostOrganizationManager } from './pro/org/HostOrganizationManager';
 import { WorkspaceStore } from '../services/pro/workspace/WorkspaceStore';
 import { ProWorkspaceEditorPanel } from './ProWorkspaceEditorPanel';
@@ -218,11 +217,8 @@ export struct ProFeatureDetailPanel {
   // ---------- 工作区与布局 ----------
   private workspaces(_revision: number): Workspace[] { return WorkspaceStore.getInstance().list(); }
   private createWorkspace(): void {
-    const now: number = Date.now();
-    const count: number = this.workspaces(this.orgRevision).length;
-    const workspace: Workspace = newWorkspace('workspace-' + now.toString(36), '工作区 ' + (count + 1).toString(),
-      WORKSPACE_COLORS[count % WORKSPACE_COLORS.length], WORKSPACE_ICONS[count % WORKSPACE_ICONS.length], count, now);
-    if (WorkspaceStore.getInstance().save(workspace)) { this.editingWorkspace = workspace; }
+    const workspace: Workspace | null = createWorkspace(this.getUIContext());
+    if (workspace !== null) { this.editingWorkspace = workspace; }
   }
   private renameWorkspace(workspace: Workspace): void {
     const name: string = this.workspaceNameDraft.trim();

@@ -28,10 +28,11 @@ import { HostGroupBar } from '../components/pro/org/HostGroupBar';
 import { HostBatchActions } from '../components/pro/org/HostBatchActions';
 import { HostImportPanel } from '../components/pro/org/HostImportPanel';
 import { WorkspaceStrip } from '../components/pro/workspace/WorkspaceStrip';
-import { WorkspaceGroupCard } from '../components/pro/workspace/WorkspaceGroupCard';
+import { WorkspaceGroupCard, WorkspacePanel } from '../components/pro/workspace/WorkspaceGroupCard';
+import { ProWorkspaceEditorPanel } from '../components/ProWorkspaceEditorPanel';
 import { WorkspaceRunPanel } from '../components/pro/workspace/WorkspaceRunPanel';
 import {
-  connectingRunIndex, nextQueuedRunIndex, setRunItemState, sortedEntries, Workspace, WorkspaceEntry, workspaceRunFinished,
+  connectingRunIndex, newWorkspace, nextQueuedRunIndex, setRunItemState, sortedEntries, Workspace, WorkspaceEntry, workspaceRunFinished,
   workspaceRunFor, WorkspaceRun, WorkspaceRunItem, workspaceRunSummary
 } from '../services/pro/workspace/WorkspacePolicy';
 import { WorkspaceStore } from '../services/pro/workspace/WorkspaceStore';
@@ -899,6 +900,8 @@ struct HostListPage {
   @State proOrgVisible: boolean = false;
   @State proWorkspacesVisible: boolean = false;
   @State hostOrgFilterKey: string = 'all';
+/** PC large-screen sidebar page for Pro 工作区与布局. */
+const DESKTOP_WORKSPACE_TAB = 9;
   @State hostOrgRevision: number = 0;
   @State hostBatchProbing: boolean = false;
   @State proWorkspaceRun: WorkspaceRun | null = null;
@@ -921,6 +924,8 @@ struct HostListPage {
   private hostDataSignature: string = '';
   private hostDataUnsubscribe: (() => void) | null = null;
   private vncHostDataUnsubscribe: (() => void) | null = null;
+  @State showWorkspaceEditor: boolean = false;
+  @State workspaceEditorTarget: Workspace = newWorkspace('', '', '#007DFF', '🖥️', 0, 0);
   private vncTrustDataUnsubscribe: (() => void) | null = null;
   private cryptoStateUnsubscribe: (() => void) | null = null;
   private secretPresentationUnsubscribe: (() => void) | null = null;
@@ -2052,7 +2057,10 @@ struct HostListPage {
       this.proWorkspacesVisible = workspacesVisible;
       // Losing Pro keeps every group and workspace but returns the home page to the plain list.
       if (!orgVisible) { this.hostOrgFilterKey = 'all'; }
-      if (!workspacesVisible) { this.endProWorkspaceRun(); }
+      if (!workspacesVisible) {
+        this.endProWorkspaceRun();
+        if (this.curTab === DESKTOP_WORKSPACE_TAB) { this.curTab = 0; }
+      }
       this.refreshFilteredHostView();
     }
   }
@@ -13479,6 +13487,11 @@ struct HostListPage {
         }
       })
       Column() {
+      // Page-level host for the Pro workspace editor (see workspaceEditorSheet).
+      Column().width(0).height(0)
+        .bindSheet($$this.showWorkspaceEditor, this.workspaceEditorSheet(), {
+          height: SheetSize.FIT_CONTENT, dragBar: true, showClose: false, backgroundColor: this.pal().sheetBg
+        })
         Column()
           .width('100%').height('100%')
           .backgroundColor(this.getCurrentWallpaperColor())
@@ -13555,6 +13568,9 @@ struct HostListPage {
           .divider({ mode: DividerMode.FOLLOW_SCROLL })
           .animationDuration(300)
           .onChange((i: number) => {
+                if (this.proWorkspacesVisible) {
+                  this.sidebarTab('工作区 · Pro', $r('sys.symbol.rectangle_on_rectangle'), DESKTOP_WORKSPACE_TAB)
+                }
             this.curTab = i;
             this.lastScrollY = 0;
             if (this.tabBarHidden) {
@@ -13569,6 +13585,7 @@ struct HostListPage {
 
       // Start ArkWeb/xterm while the host list is visible so opening an SSH
       // host does not pay the first WebView/vendor-script cold-start cost.
+              else if (this.curTab === DESKTOP_WORKSPACE_TAB) { this.workspaceBoardContent() }
       if (this.sshCount > 0) {
         SshXtermPrewarmSurface({ prewarmEnabled: true })
           .width(1).height(1)
@@ -13645,10 +13662,10 @@ struct HostListPage {
       .justifyContent(shouldUseGripFabAlignment(this.isDesktopDevice, this.breakpoint) ? this.getFabAlignment() : FlexAlign.Start)
       .position({ x: 0, y: '100%' })
       .markAnchor({ x: 0, y: '100%' })
-      .translate({ y: ((!this.isDesktopDevice && this.curTab === 3) || (this.hostSelectionMode && this.proOrgVisible) ? 120 :
-        -hostListFabLiftVp(this.breakpoint)) })
+      .translate({ y: ((!this.isDesktopDevice && this.curTab === 3) || (this.hostSelectionMode && this.proOrgVisible) ||
+        this.curTab === DESKTOP_WORKSPACE_TAB ? 120 : -hostListFabLiftVp(this.breakpoint)) })
       .opacity(!this.pageActive || (!this.isDesktopDevice && this.curTab === 3) ||
-        (this.hostSelectionMode && this.proOrgVisible) ? 0 : 1)
+        (this.hostSelectionMode && this.proOrgVisible) || this.curTab === DESKTOP_WORKSPACE_TAB ? 0 : 1)
       .animation({ curve: curves.interpolatingSpring(0, 1, 200, 17) })
 
       if (this.sheetReleaseFenceActive) {
@@ -13748,7 +13765,7 @@ struct HostListPage {
       this.curTab = index;
       if (this.isDesktopDevice) {
         const titles: string[] = ['RDP 远程主机', 'RustDesk 远程主机', 'SSH 终端', 'VNC 主机', '', '', '中继服务器'];
-        this.hostPageTitle = index === 8 ? '远程 AI · Pro' : titles[index] || '';
+        this.hostPageTitle = index === 8 ? '远程 AI · Pro' : index === DESKTOP_WORKSPACE_TAB ? '工作区' : titles[index] || '';
         if (index === 4) { this.keyVaultInnerTab = 0; }
         if (index === 5) { this.keyVaultInnerTab = 1; }
       }
@@ -14605,22 +14622,8 @@ struct HostListPage {
           Checkbox()
             .select(this.hostSelectedIds.has(unifiedMoonlightHostCardKey(view.host.id)))
             .selectedColor(this.accentColor).margin({ right: 8 })
-  @Builder workspaceGroupCard() {
-    if (this.proWorkspacesVisible) {
-      WorkspaceGroupCard({
-        rows: this.orgRows(this.hostViewRevision),
-        activeRefs: this.activeSessionRefs(this.hostViewRevision),
-        runningId: this.proWorkspaceRun === null ? '' : (this.proWorkspaceRun as WorkspaceRun).workspaceId,
-        compact: this.breakpoint === 'sm',
-        cardHeight: this.hostGroupCardHeight(),
-        onOpen: (workspace: Workspace): void => { this.openProWorkspace(workspace); }
-      }).margin({ bottom: 10 })
-    }
-  }
-
             .onChange((checked: boolean): void => {
               this.toggleHostSelect(unifiedMoonlightHostCardKey(view.host?.id || ''), checked);
-      this.workspaceGroupCard()
             })
         }
         Column() {
@@ -14632,6 +14635,85 @@ struct HostListPage {
         .borderRadius(this.breakpoint === 'sm' ? 21 : 14)
         .backgroundColor(this.accentColor)
         .justifyContent(FlexAlign.Center)
+  private toggleWorkspaceGroup(): void {
+    animateTo({ duration: 220, curve: Curve.FastOutSlowIn }, (): void => {
+      this.expandedHostGroup = this.expandedHostGroup === 'workspace' ? '' : 'workspace';
+    });
+  }
+
+  @Builder workspaceGroupCard() {
+    WorkspaceGroupCard({
+      runningId: this.proWorkspaceRun === null ? '' : (this.proWorkspaceRun as WorkspaceRun).workspaceId,
+      expanded: this.expandedHostGroup === 'workspace',
+      compact: this.breakpoint === 'sm',
+      cardHeight: this.hostGroupCardHeight(),
+      onToggle: (): void => { this.toggleWorkspaceGroup(); }
+    })
+  }
+
+  /** The workspace list under the expanded 工作区 card (or on the PC sidebar page with more columns). */
+  @Builder workspacePanel(columns: number) {
+    WorkspacePanel({
+      rows: this.orgRows(this.hostViewRevision),
+      activeRefs: this.activeSessionRefs(this.hostViewRevision),
+      runningId: this.proWorkspaceRun === null ? '' : (this.proWorkspaceRun as WorkspaceRun).workspaceId,
+      columns: columns,
+      onOpen: (workspace: Workspace): void => { this.openProWorkspace(workspace); },
+      onEdit: (workspace: Workspace): void => { this.openWorkspaceEditor(workspace); }
+    })
+  }
+
+  private openWorkspaceEditor(workspace: Workspace): void {
+    this.workspaceEditorTarget = workspace;
+    this.openSheetSafely((): void => { if (this.pageActive) { this.showWorkspaceEditor = true; } });
+  }
+
+  /** Workspace editor sheet, hosted on the page root so list refreshes cannot dismiss it. */
+  @Builder workspaceEditorSheet() {
+    Column() {
+      Scroll() {
+        Column() {
+          ProWorkspaceEditorPanel({
+            workspace: this.workspaceEditorTarget,
+            extraRows: this.orgRows(this.hostViewRevision).filter((row: OrgHostRow): boolean => row.protocol === 'moonlight'),
+            onClose: (): void => { this.showWorkspaceEditor = false; }
+          })
+        }.padding({ left: 16, right: 16, top: 18, bottom: 28 })
+      }.constraintSize({ maxHeight: Math.round(this.pageViewportHeight * 0.85) }).scrollBar(BarState.Off).align(Alignment.Top)
+      .edgeEffect(EdgeEffect.Spring)
+    }.width('100%').backgroundColor(this.pal().sheetBg)
+  }
+
+  /** PC sidebar 工作区 page (large-screen mode). */
+  @Builder workspaceBoardContent() {
+    Stack() {
+      Scroll() {
+        Column({ space: 16 }) {
+          Row().width('100%').height(this.topSafeHeightVp() + this.titleOffsetY())
+          Column({ space: 4 }) {
+            Text('工作区').fontSize(27).fontWeight(FontWeight.Bold).fontColor(this.pal().text).fontFamily(this.font())
+            Text('一键依次打开常用会话，并按保存的布局摆放独立窗口').fontSize(13).fontColor(this.pal().text3)
+              .fontFamily(this.font())
+          }.alignItems(HorizontalAlign.Start).width('100%')
+          this.workspacePanel(this.windowW - 300 >= 1100 ? 3 : 2)
+          Column().height(140)
+        }.width('100%').padding({ left: 28, right: 28 })
+      }.width('100%').height('100%').scrollBar(BarState.Off).align(Alignment.Top).edgeEffect(EdgeEffect.Spring)
+      if (this.proWorkspaceRun !== null) {
+        Column() {
+          WorkspaceRunPanel({
+            run: this.proWorkspaceRun as WorkspaceRun,
+            onNext: (): void => { this.advanceProWorkspaceRun(true); },
+            onRetry: (index: number): void => { this.retryProWorkspaceItem(index); },
+            onSkip: (index: number): void => { this.skipProWorkspaceItem(index); },
+            onClose: (): void => { this.endProWorkspaceRun(); }
+          })
+        }.width('100%').constraintSize({ maxWidth: 560 }).padding(20)
+        .position({ x: 0, y: '100%' }).markAnchor({ x: 0, y: '100%' })
+      }
+    }.width('100%').height('100%')
+  }
+
         .margin({ right: this.breakpoint === 'sm' ? 10 : 12 })
         .onClick((): void => {
           this.handleMoonlightHostCardClick(view.host?.id || '');
@@ -14643,10 +14725,32 @@ struct HostListPage {
               .fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
               .layoutWeight(1).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
             if (view.host.locked === true) {
+        // 工作区 sits below the remote-AI module and expands in place like the protocol cards.
+        if (this.proWorkspacesVisible) {
+          Column() {
+            this.workspaceGroupCard()
+            if (this.expandedHostGroup === 'workspace') {
+              Column() { this.workspacePanel(1) }.width('100%').margin({ top: 10 })
+            }
+          }.width('100%').margin({ bottom: 10 })
+        }
               SymbolGlyph($r('sys.symbol.ohos_lock'))
                 .fontSize(this.breakpoint === 'sm' ? 14 : 18).fontColor([this.pal().danger])
                 .margin({ left: this.breakpoint === 'sm' ? 6 : 8 })
             }
+        // Keep the two-column grid: 工作区 takes the left half of its own row under remote AI.
+        if (this.proWorkspacesVisible) {
+          Column() {
+            Row() {
+              Column() { this.workspaceGroupCard() }.layoutWeight(1)
+              Blank().width(10)
+              Blank().layoutWeight(1)
+            }.width('100%').alignItems(VerticalAlign.Top)
+            if (this.expandedHostGroup === 'workspace') {
+              Column() { this.workspacePanel(1) }.width('100%').margin({ top: 10 })
+            }
+          }.width('100%').margin({ bottom: 10 })
+        }
           }.width('100%')
           if (view.host.locked === true) {
             Text('已锁定 · 需验证')
@@ -15429,7 +15533,8 @@ struct HostListPage {
             }
           }
           // Classic list: a compact workspace row. The categorized page shows a 工作区 category card instead.
-          if (this.proWorkspacesVisible && !this.groupedHostCardsActive()) {
+          if (this.proWorkspacesVisible && !this.groupedHostCardsActive() &&
+            !(this.isDesktopDevice && this.breakpoint === 'xl')) {
             ListItem() {
               WorkspaceStrip({
                 rows: this.orgRows(this.hostViewRevision),

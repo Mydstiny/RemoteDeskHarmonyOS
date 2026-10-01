@@ -24,6 +24,16 @@ export function workspaceSubtitle(workspace: Workspace, rows: OrgHostRow[]): str
     (missing > 0 ? ' · ' + missing.toString() + ' 台已删除' : '');
 }
 
+/** First "<base> N" that no workspace uses yet (two devices can create 工作区 1 before they sync). */
+function freeName(base: string): string {
+  const names: string[] = WorkspaceStore.getInstance().list().map((item: Workspace): string => item.name);
+  for (let index: number = 1; index <= MAX_WORKSPACES + 1; index++) {
+    const name: string = base + ' ' + index.toString();
+    if (names.indexOf(name) < 0) { return name; }
+  }
+  return base;
+}
+
 function toast(ui: UIContext, message: string): void { ui.getPromptAction().showToast({ message, duration: 1800 }); }
 
 /** Creates an empty workspace; returns it so the caller can open the editor. */
@@ -31,7 +41,7 @@ export function createWorkspace(ui: UIContext): Workspace | null {
   const store: WorkspaceStore = WorkspaceStore.getInstance();
   if (!store.canAdd()) { toast(ui, '最多 ' + MAX_WORKSPACES.toString() + ' 个工作区'); return null; }
   const count: number = store.list().length;
-  const workspace: Workspace = newWorkspace('workspace-' + Date.now().toString(36), '工作区 ' + (count + 1).toString(),
+  const workspace: Workspace = newWorkspace('workspace-' + Date.now().toString(36), freeName('工作区'),
     WORKSPACE_COLORS[count % WORKSPACE_COLORS.length], WORKSPACE_ICONS[count % WORKSPACE_ICONS.length], count);
   if (store.save(workspace)) { return workspace; }
   toast(ui, '工作区未保存，请稍后重试');
@@ -50,7 +60,7 @@ export function saveCurrentWorkspace(ui: UIContext, rows: OrgHostRow[], activeRe
   if (sessions.length === 0) { toast(ui, '当前没有已连接的会话'); return null; }
   const count: number = store.list().length;
   try {
-    const workspace: Workspace = captureWorkspace('workspace-' + Date.now().toString(36), '当前会话 ' + (count + 1).toString(),
+    const workspace: Workspace = captureWorkspace('workspace-' + Date.now().toString(36), freeName('当前会话'),
       WORKSPACE_COLORS[count % WORKSPACE_COLORS.length], WORKSPACE_ICONS[0], sessions, 'custom');
     workspace.order = count;
     if (store.save(workspace)) { return workspace; }

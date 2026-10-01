@@ -90,7 +90,11 @@ export function workspaceOpenPlan(workspace: Workspace, device: WorkspaceDevice)
 export const WORKSPACE_COLORS: string[] = [
   '#007DFF', '#5856D6', '#AF52DE', '#FF2D55', '#FF9500', '#34C759', '#00C7BE', '#30B0C7'
 ];
-export const WORKSPACE_ICONS: string[] = ['🖥️', '💻', '🧑‍💻', '🛠️', '🚀', '📊', '🧪', '🎮', '☁️', '🏢', '🏠', '⭐'];
+export const WORKSPACE_ICONS: string[] = [
+  '🖥️', '💻', '⌨️', '🧑‍💻', '🛠️', '🚀', '📊', '🧪', '🎮', '☁️', '🏢', '🏠',
+  '⭐', '🌙', '☕', '📚', '🎨', '🎬', '🎧', '🔬', '🧠', '🌿', '🔐', '📡',
+  '🗂️', '💡', '🪐', '🧭', '🌊', '🔥', '🍀', '🦊', '🐳', '🌸', '⚡', '🎯'
+];
 export const WORKSPACE_LAYOUT_PRESETS: WorkspaceLayoutPreset[] = ['split', 'columns3', 'masterDetail', 'grid4'];
 /** Layout rectangles snap to an 8 × 8 grid. */
 export const WORKSPACE_GRID: number = 8;
