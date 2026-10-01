@@ -11,6 +11,15 @@ function deviceName(device: string): string {
   return device;
 }
 
+/**
+ * Whether a catalog capability is a HarmonyOS system capability (checked with canIUse). The others, such as
+ * rdp.displayControl, name the app's own protocol stacks: they ship with the app, and each session confirms them
+ * again before acting, so the status list counts them as present, like the entry points do.
+ */
+export function proSystemCapability(capability: string): boolean {
+  return capability.startsWith('SystemCapability.');
+}
+
 /** Where a feature applies, for the management list. */
 export function proFeatureScope(feature: ProFeature): string {
   const parts: string[] = [];

@@ -27,4 +27,11 @@ assert.equal(proFeatureStatus(feature(), denied('capabilityUnsupported'), false)
 assert.equal(proFeatureStatus(feature(), { visible: true, executable: false, reason: 'permissionRequired' }, false).label, '需要授权');
 assert.equal(proFeatureScope(feature()), '手机/平板/PC · SSH/RDP · API 26+');
 assert.equal(proFeatureScope(feature({ devices: [], protocols: ['ai'], minApiVersion: 0 })), '远程 AI');
+// Only HarmonyOS system capabilities go through canIUse; the app's own protocol capabilities count as present,
+// so RDP/RustDesk 高级显示方案 no longer read as 系统能力不支持.
+assert.equal(loaded.exports.proSystemCapability('SystemCapability.Collaboration.HarmonyShare'), true);
+assert.equal(loaded.exports.proSystemCapability('rdp.displayControl'), false);
+assert.equal(loaded.exports.proSystemCapability('rustdesk.displayControl'), false);
+const reader = fs.readFileSync(path.resolve(__dirname, '../../entry/src/main/ets/services/pro/ProFeatureStatusReader.ets'), 'utf8');
+assert.match(reader, /if \(!proSystemCapability\(capability\) \|\| canIUse\(capability\)\) \{ context\.capabilities\.push\(capability\); \}/);
 console.log('PASS Pro feature status explains every decision reason and scope');
