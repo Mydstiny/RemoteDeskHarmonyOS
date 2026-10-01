@@ -1,5 +1,8 @@
 import { AppTheme, Palette, buildDark } from '../../common/Theme';
 import { ProContinuationControls } from '../ProContinuationControls';
+import { ProBadge } from '../ProBadge';
+import { RdpDisplayProfilePanel } from './RdpDisplayProfilePanel';
+import { rdpDisplayProfileSummary, rdpResolutionSelection } from '../../services/RemoteDisplayProfilePolicy';
 import { RdpRenderStats } from '../../types/rdpnapi';
 import { EMPTY_RDP_RENDER_STATS } from '../RdpDiagnosticsHud';
 import {
@@ -48,6 +51,8 @@ export struct RdpControlCenter {
   @Prop resolutionId: string = 'auto';
   @Prop customWidth: number = 1920;
   @Prop customHeight: number = 1080;
+  /** RDP 高级显示方案 is visible to this account (ProEntries.visible); otherwise the free chips are shown. */
+  @Prop advancedDisplayVisible: boolean = false;
   @Prop surfaceWidthPx: number = 0;
   @Prop surfaceHeightPx: number = 0;
   @Prop remoteUiScale: string = 'auto';
@@ -60,9 +65,7 @@ export struct RdpControlCenter {
   @Prop authIdentityMode: number = 1;
   @Prop tlsWithoutNla: boolean = false;
   @State private driveNameDraft: string = 'RemoteDesktop';
-  @State private customWidthDraft: string = '1920';
-  @State private customHeightDraft: string = '1080';
-  @State private desktopScaleDraft: string = '100';
+  @State private displayProfileShown: boolean = false;
   onClose: () => void = (): void => {};
   onOpenKeyboard: () => void = (): void => {};
   onOpenShortcuts: () => void = (): void => {};
@@ -111,31 +114,68 @@ export struct RdpControlCenter {
     return rdpResolutionPresetsForSurface(this.surfaceWidthPx, this.surfaceHeightPx);
   }
 
+  /** Free sessions connect a saved custom size as 自适应, so that is what the chips show. */
+  private resolutionSelected(): string { return rdpResolutionSelection(this.resolutionId, this.advancedDisplayVisible); }
+
   private resolutionSelectionSummary(): string {
     const assessment: RdpResolutionAspectAssessment = rdpResolutionAspectAssessment(
-      this.resolutionId, this.surfaceWidthPx, this.surfaceHeightPx);
+      this.resolutionSelected(), this.surfaceWidthPx, this.surfaceHeightPx, this.customWidth, this.customHeight);
     if (assessment.followsWindow) {
       return this.isDesktopDevice ? '跟随当前窗口，自动协商，完整适应时不产生比例黑边' :
         '下次连接时适应设备画面；手机与平板不进行窗口实时重协商';
     }
     if (assessment.avoidsRatioBars) {
-      return rdpResolutionLabel(this.resolutionId) + ' · 与当前窗口比例匹配';
+      return this.resolutionName() + ' · 与当前窗口比例匹配';
     }
     if (this.displayScaleMode === 'fill') {
-      return rdpResolutionLabel(this.resolutionId) + ' · 已填满窗口并居中裁边，可拖动查看';
+      return this.resolutionName() + ' · 已填满窗口并居中裁边，可拖动查看';
     }
-    return rdpResolutionLabel(this.resolutionId) + ' · 与当前窗口比例相差 ' +
+    return this.resolutionName() + ' · 与当前窗口比例相差 ' +
       assessment.aspectGapPercent.toFixed(1) + '%，可改用自适应或“填满”';
+  }
+
+  private resolutionName(): string {
+    return this.resolutionSelected() === 'custom' ?
+      this.customWidth.toString() + ' × ' + this.customHeight.toString() : rdpResolutionLabel(this.resolutionSelected());
+  }
+
+  @Builder private displayProfileSheet() {
+    RdpDisplayProfilePanel({
+      forceDark: true,
+      isDesktopDevice: this.isDesktopDevice,
+      applyHint: '立即向 Windows 请求；会话不支持时下次连接生效',
+      onResolution: (id: string): void => { this.onResolution(id); },
+      onCustomResolution: (width: string, height: string): void => { this.onCustomResolution(width, height); },
+      onRemoteUiScale: (value: string): void => { this.onRemoteUiScale(value); },
+      onDesktopScalePercent: (value: string): void => { this.onDesktopScalePercent(value); }
+    })
+  }
+
+  /** Pro: the remote size and Windows scale live behind one entry that opens 远端显示方案. */
+  @Builder private displayProfileEntry() {
+    Row({ space: 8 }) {
+      Column({ space: 3 }) {
+        Text('远端显示方案').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
+        Text(rdpDisplayProfileSummary(this.resolutionId, this.customWidth, this.customHeight,
+          rdpResolutionLabel(this.resolutionId), this.desktopScaleMode, this.desktopScalePercent))
+          .fontSize(10).fontColor(this.pal().text3).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+      }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+      ProBadge()
+      SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(16).fontColor([this.pal().text3])
+    }
+    .width('100%').padding({ left: 12, right: 10, top: 10, bottom: 10 }).borderRadius(12)
+    .backgroundColor(this.pal().surface).border({ width: 0.5, color: this.pal().cardBorder })
+    .accessibilityText('远端显示方案，Pro')
+    .onClick((): void => { this.displayProfileShown = true; })
+    .bindSheet($$this.displayProfileShown, this.displayProfileSheet(), {
+      height: SheetSize.FIT_CONTENT, dragBar: true, showClose: true,
+      backgroundColor: this.pal().sheetBg, maskColor: 'rgba(0,0,0,0.4)'
+    })
   }
 
   private onDriveNameChange(): void { this.driveNameDraft = this.driveName; }
 
-  aboutToAppear(): void {
-    this.driveNameDraft = this.driveName;
-    this.customWidthDraft = this.customWidth.toString();
-    this.customHeightDraft = this.customHeight.toString();
-    this.desktopScaleDraft = this.desktopScalePercent.toString();
-  }
+  aboutToAppear(): void { this.driveNameDraft = this.driveName; }
 
   @Builder private sectionTitle(title: string, activation: string = '') {
     Row() {
@@ -298,62 +338,38 @@ export struct RdpControlCenter {
 
   @Builder private reconnectCard() {
     Column() {
-        Text('Windows 远端分辨率').fontSize(11).fontColor(this.pal().text2)
-          .width('100%').margin({ bottom: 6 })
-        Scroll() {
-          Row({ space: 6 }) {
-            this.choice('自适应（推荐）', this.resolutionId === 'auto', (): void => { this.onResolution('auto'); })
-            ForEach(this.orderedResolutionPresets(), (preset: RemoteResolutionPreset): void => {
-              this.choice(preset.label, this.resolutionId === preset.id,
-                (): void => { this.onResolution(preset.id); })
-            }, (preset: RemoteResolutionPreset): string => preset.id)
-          }
-        }.width('100%').height(38).scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off)
-        Text(this.resolutionSelectionSummary()).fontSize(9)
-          .fontColor(this.pal().text3).width('100%').margin({ top: 5, bottom: 10 })
-        Row({ space: 6 }) {
-          TextInput({ text: this.customWidthDraft, placeholder: '宽 200–8192' })
-            .layoutWeight(1).height(34).type(InputType.Number).fontSize(11)
-            .onChange((value: string): void => { this.customWidthDraft = value; })
-          Text('×').fontSize(12).fontColor(this.pal().text3)
-          TextInput({ text: this.customHeightDraft, placeholder: '高 200–8192' })
-            .layoutWeight(1).height(34).type(InputType.Number).fontSize(11)
-            .onChange((value: string): void => { this.customHeightDraft = value; })
-          Button('应用 · Pro').height(34).fontSize(10).padding({ left: 8, right: 8 })
-            .backgroundColor(this.pal().surface).fontColor(RDP_SESSION_CONTROL_ACCENT)
-            .onClick((): void => { this.onCustomResolution(this.customWidthDraft, this.customHeightDraft); })
-        }.width('100%').margin({ bottom: 10 })
-        Divider().color(this.pal().divider)
-        Text('远端界面大小').fontSize(11).fontColor(this.pal().text2)
-          .width('100%').margin({ top: 10, bottom: 6 })
-        Scroll() {
-          Row({ space: 6 }) {
-            this.choice('自动', this.remoteUiScale === 'auto', (): void => { this.onRemoteUiScale('auto'); })
-            this.choice('标准', this.remoteUiScale === '100', (): void => { this.onRemoteUiScale('100'); })
-            this.choice('125% · Pro', this.desktopScalePercent === 125,
-              (): void => { this.onDesktopScalePercent('125'); })
-            this.choice('大', this.remoteUiScale === '140', (): void => { this.onRemoteUiScale('140'); })
-            this.choice('150% · Pro', this.desktopScalePercent === 150,
-              (): void => { this.onDesktopScalePercent('150'); })
-            this.choice('175% · Pro', this.desktopScalePercent === 175,
-              (): void => { this.onDesktopScalePercent('175'); })
-            this.choice('特大', this.remoteUiScale === '180', (): void => { this.onRemoteUiScale('180'); })
-            this.choice('200% · Pro', this.desktopScalePercent === 200,
-              (): void => { this.onDesktopScalePercent('200'); })
-          }
-        }.width('100%').height(38).scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off)
-        Row({ space: 6 }) {
-          Text('自定义 100–500%').fontSize(9).fontColor(this.pal().text3)
-          TextInput({ text: this.desktopScaleDraft, placeholder: '100 - 500' })
-            .width(82).height(30).type(InputType.Number).fontSize(11)
-            .onChange((value: string): void => { this.desktopScaleDraft = value; })
-          Button('应用').height(30).fontSize(10).padding({ left: 8, right: 8 })
-            .backgroundColor(this.pal().surface).fontColor(RDP_SESSION_CONTROL_ACCENT)
-            .onClick((): void => { this.onDesktopScalePercent(this.desktopScaleDraft); })
-        }.width('100%').margin({ top: 5 })
-        Text('调整 Windows 字体与控件；与本地画面缩放相互独立。125–500% 自定义档需要 Pro')
-          .fontSize(9)
-          .fontColor(this.pal().text3).width('100%').margin({ top: 5, bottom: 10 })
+        if (this.advancedDisplayVisible) {
+          this.displayProfileEntry()
+          Text(this.resolutionSelectionSummary()).fontSize(9)
+            .fontColor(this.pal().text3).width('100%').margin({ top: 6, bottom: 10 })
+        } else {
+          Text('Windows 远端分辨率').fontSize(11).fontColor(this.pal().text2)
+            .width('100%').margin({ bottom: 6 })
+          Scroll() {
+            Row({ space: 6 }) {
+              this.choice('自适应（推荐）', this.resolutionSelected() === 'auto', (): void => { this.onResolution('auto'); })
+              ForEach(this.orderedResolutionPresets(), (preset: RemoteResolutionPreset): void => {
+                this.choice(preset.label, this.resolutionSelected() === preset.id,
+                  (): void => { this.onResolution(preset.id); })
+              }, (preset: RemoteResolutionPreset): string => preset.id)
+            }
+          }.width('100%').height(38).scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off)
+          Text(this.resolutionSelectionSummary()).fontSize(9)
+            .fontColor(this.pal().text3).width('100%').margin({ top: 5, bottom: 10 })
+          Divider().color(this.pal().divider)
+          Text('远端界面大小').fontSize(11).fontColor(this.pal().text2)
+            .width('100%').margin({ top: 10, bottom: 6 })
+          Scroll() {
+            Row({ space: 6 }) {
+              this.choice('自动', this.remoteUiScale === 'auto', (): void => { this.onRemoteUiScale('auto'); })
+              this.choice('标准', this.remoteUiScale === '100', (): void => { this.onRemoteUiScale('100'); })
+              this.choice('大', this.remoteUiScale === '140', (): void => { this.onRemoteUiScale('140'); })
+              this.choice('特大', this.remoteUiScale === '180', (): void => { this.onRemoteUiScale('180'); })
+            }
+          }.width('100%').height(38).scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off)
+          Text('调整 Windows 字体与控件；与本地画面缩放相互独立').fontSize(9)
+            .fontColor(this.pal().text3).width('100%').margin({ top: 5, bottom: 10 })
+        }
         Divider().color(this.pal().divider)
         Text('色彩深度').fontSize(11).fontColor(this.pal().text2).width('100%').margin({ top: 10, bottom: 6 })
         Row({ space: 6 }) {

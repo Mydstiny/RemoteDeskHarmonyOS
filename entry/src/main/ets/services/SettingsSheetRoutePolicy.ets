@@ -51,6 +51,8 @@ export const SETTINGS_SHEET_APP_ICON: number = 47;
 export const SETTINGS_SHEET_PRO_FEATURE: number = 48;
 export const SETTINGS_SHEET_PRO_BADGE: number = 49;
 export const SETTINGS_SHEET_SSH_SKIN: number = 56;
+/** Pro 远端显示方案: RDP desktop size and Windows scale in one sheet. */
+export const SETTINGS_SHEET_RDP_DISPLAY_PROFILE: number = 57;
 
 export const SETTINGS_PANEL_DISMISS_TO_LEAF_OPEN_MS: number = 360;
 

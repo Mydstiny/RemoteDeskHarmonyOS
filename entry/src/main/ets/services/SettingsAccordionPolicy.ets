@@ -25,9 +25,11 @@ export const SETTINGS_SECURITY_ACTION_ROW_COUNT: number = 5;
 const SETTINGS_VNC_ACTION_ROW_HEIGHT_VP: number = 62;
 const SETTINGS_VNC_ACTION_DIVIDER_HEIGHT_VP: number = 0.5;
 const SETTINGS_VNC_SECTION_CHROME_HEIGHT_VP: number = 73;
-const SETTINGS_RDP_DESKTOP_PRESET_HEIGHT_VP: number = 155;
+const SETTINGS_RDP_DESKTOP_PRESET_HEIGHT_VP: number = 110;
+/** Pro replaces the desktop-size and remote-scale rows with one 远端显示方案 entry. */
+const SETTINGS_RDP_DISPLAY_PROFILE_ROW_HEIGHT_VP: number = 64;
 const SETTINGS_RDP_INLINE_SELECTOR_HEIGHT_VP: number = 64;
-const SETTINGS_RDP_STACKED_SELECTOR_HEIGHT_VP: number = 132;
+const SETTINGS_RDP_STACKED_SELECTOR_HEIGHT_VP: number = 92;
 const SETTINGS_RDP_SELECTOR_ROW_COUNT: number = 4;
 const SETTINGS_RDP_FIXED_ROW_COUNT: number = 2;
 const SETTINGS_RDP_FIXED_ROW_HEIGHT_VP: number = 64;
@@ -107,18 +109,23 @@ export function settingsMoonlightExpandedMaxHeight(
  */
 export function settingsRdpExpandedMaxHeight(
   breakpoint: string,
-  switchRowCount: number = SETTINGS_RDP_SWITCH_ROW_COUNT
+  switchRowCount: number = SETTINGS_RDP_SWITCH_ROW_COUNT,
+  proDisplayProfile: boolean = false
 ): number {
+  // Pro: one entry row instead of the desktop-size chips and the remote-scale selector.
+  const selectorRows: number = proDisplayProfile ? SETTINGS_RDP_SELECTOR_ROW_COUNT - 1 : SETTINGS_RDP_SELECTOR_ROW_COUNT;
+  const leadHeight: number = proDisplayProfile ? SETTINGS_RDP_DISPLAY_PROFILE_ROW_HEIGHT_VP :
+    SETTINGS_RDP_DESKTOP_PRESET_HEIGHT_VP;
   const boundedSwitchCount: number = Number.isFinite(switchRowCount) ?
     Math.max(0, Math.floor(switchRowCount)) : 0;
   const selectorHeight: number = breakpoint === 'md' || breakpoint === 'lg' ?
     SETTINGS_RDP_INLINE_SELECTOR_HEIGHT_VP : SETTINGS_RDP_STACKED_SELECTOR_HEIGHT_VP;
-  const itemCount: number = 1 + SETTINGS_RDP_SELECTOR_ROW_COUNT +
+  const itemCount: number = 1 + selectorRows +
     boundedSwitchCount + SETTINGS_RDP_FIXED_ROW_COUNT;
   const dividerCount: number = Math.max(0, itemCount - 1);
   return Math.ceil(SETTINGS_VNC_SECTION_CHROME_HEIGHT_VP +
-    SETTINGS_RDP_DESKTOP_PRESET_HEIGHT_VP +
-    SETTINGS_RDP_SELECTOR_ROW_COUNT * selectorHeight +
+    leadHeight +
+    selectorRows * selectorHeight +
     boundedSwitchCount * SETTINGS_RDP_FIXED_ROW_HEIGHT_VP +
     SETTINGS_RDP_FIXED_ROW_COUNT * SETTINGS_RDP_FIXED_ROW_HEIGHT_VP +
     dividerCount * SETTINGS_VNC_ACTION_DIVIDER_HEIGHT_VP);

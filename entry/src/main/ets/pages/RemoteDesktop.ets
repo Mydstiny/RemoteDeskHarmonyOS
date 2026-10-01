@@ -28,6 +28,7 @@ import { describeProRdpConnection, describeProRemoteConnection,
   resolveProContinuationHost } from '../services/pro/ProConnectionHostAdapter';
 import { ProContinuationPreferences } from '../services/pro/ProContinuationPreferences';
 import { ProEntries } from '../services/pro/ProEntries';
+import { ProBadge } from '../components/ProBadge';
 import { ProAppRuntime } from '../services/pro/ProAppRuntime';
 import {
   PRO_RDP_ADVANCED_DISPLAY_FEATURE,
@@ -556,10 +557,14 @@ import {
   shouldUseRdpPcAdaptiveDisplay
 } from '../services/RdpAdaptiveDisplayPolicy';
 import {
+  remoteDisplayAspectLabel,
+  RemoteDisplayGeometryValidation,
   rustDeskCustomResolutionDecision,
   RustDeskCustomResolutionCapability,
+  RustDeskCustomResolutionDecision,
   validateRemoteDisplayGeometry
 } from '../services/RemoteDisplayProfilePolicy';
+import { ProAccessContext } from '../services/pro/ProAccessPolicy';
 import { ProAccessDecision } from '../services/pro/ProAccessPolicy';
 import {
   normalizeRdpSessionColorDepth,
@@ -1306,6 +1311,11 @@ struct RemoteDesktop {
   @State rustDeskDisplayPendingResolution: RustDeskDisplayResolution = EMPTY_RUSTDESK_DISPLAY_RESOLUTION;
   @State rustDeskCustomWidthDraft: string = '1920';
   @State rustDeskCustomHeightDraft: string = '1080';
+  /** RustDesk 高级显示方案 is visible to this account; refreshed whenever the display menu opens. */
+  @State rustDeskCustomVisible: boolean = false;
+  /** Whether this peer can take a custom size, and why not (shown under the Pro section). */
+  @State rustDeskCustomSupported: boolean = false;
+  @State rustDeskCustomSupportDetail: string = '';
   @State @Watch('onHarmonyShortcutInputOwnerChange')
   showRustDeskDisplayResolutionMenu: boolean = false;
   @State rustDeskMultiCanvasPreview: RustDeskMultiCanvasPreviewSnapshot =
@@ -5749,15 +5759,26 @@ struct RemoteDesktop {
       this.rdpDesktopScalePercent !== 140 && this.rdpDesktopScalePercent !== 180;
   }
 
+  /** Validates a typed size; an odd width is corrected to the even value Windows and RustDesk expect. */
+  private checkedCustomGeometry(widthText: string, heightText: string): RemoteDisplayGeometryValidation | null {
+    let checked: RemoteDisplayGeometryValidation = validateRemoteDisplayGeometry(Number(widthText), Number(heightText));
+    if (!checked.accepted && checked.reason === '宽度必须为偶数') {
+      checked = validateRemoteDisplayGeometry(checked.width, checked.height);
+      if (checked.accepted) {
+        promptAction.showToast({ message: '宽度需为偶数，已调整为 ' + checked.width.toString(), duration: 1800 });
+      }
+    }
+    if (!checked.accepted) {
+      promptAction.showToast({ message: '宽和高请输入 200–8192 的整数', duration: 1800 });
+      return null;
+    }
+    return checked;
+  }
+
   private setRdpCustomResolution(widthText: string, heightText: string): void {
     if (!this.ensureRdpAdvancedDisplayEntitled()) { return; }
-    const width: number = Number(widthText);
-    const height: number = Number(heightText);
-    const checked = validateRemoteDisplayGeometry(width, height);
-    if (!checked.accepted) {
-      promptAction.showToast({ message: checked.reason, duration: 1800 });
-      return;
-    }
+    const checked = this.checkedCustomGeometry(widthText, heightText);
+    if (checked === null) { return; }
     this.bumpRdpControlCenterSelectionRevision();
     this.cancelRdpDynamicLayout('custom-resolution');
     this.rdpCustomWidth = checked.width;
@@ -5999,10 +6020,28 @@ struct RemoteDesktop {
     this.rustDeskDisplayCapabilities = capabilities;
     this.rustDeskCustomWidthDraft = (capabilities.width > 0 ? capabilities.width : 1920).toString();
     this.rustDeskCustomHeightDraft = (capabilities.height > 0 ? capabilities.height : 1080).toString();
+    this.rustDeskCustomVisible = ProEntries.visible(PRO_RUSTDESK_ADVANCED_DISPLAY_FEATURE,
+      this.rustDeskAdvancedDisplayContext());
+    const support: RustDeskCustomResolutionDecision = this.rustDeskCustomSupport();
+    this.rustDeskCustomSupported = support.allowed;
+    this.rustDeskCustomSupportDetail = support.allowed ? '' : support.detail;
     this.showRustDeskDisplayResolutionMenu = true;
   }
 
-  private ensureRustDeskAdvancedDisplayEntitled(): boolean {
+  private rustDeskAdvancedDisplayContext(): ProAccessContext {
+    const context: ProAccessContext = ProAppRuntime.getInstance().context('rustdesk');
+    context.capabilities = ['rustdesk.displayControl'];
+    return context;
+  }
+
+  private rdpAdvancedDisplayVisible(): boolean {
+    const context: ProAccessContext = ProAppRuntime.getInstance().context('rdp');
+    context.capabilities = ['rdp.displayControl'];
+    return ProEntries.visible(PRO_RDP_ADVANCED_DISPLAY_FEATURE, context);
+  }
+
+  /** What this peer allows, from its version, platform, display index and permission. */
+  private rustDeskCustomSupport(): RustDeskCustomResolutionDecision {
     const capabilities: RustDeskDisplayCapabilities = this.rustDeskDisplayCapabilities;
     const capability: RustDeskCustomResolutionCapability = {
       peerVersion: capabilities.peerVersion ?? '',
@@ -6021,15 +6060,17 @@ struct RemoteDesktop {
       hasPermission: capabilities.hasPermission === true,
       hasVirtualDisplay: capabilities.hasVirtualDisplay === true
     };
-    const support = rustDeskCustomResolutionDecision(capability);
+    return rustDeskCustomResolutionDecision(capability);
+  }
+
+  private ensureRustDeskAdvancedDisplayEntitled(): boolean {
+    const support: RustDeskCustomResolutionDecision = this.rustDeskCustomSupport();
     if (!support.allowed) {
       promptAction.showToast({ message: support.detail, duration: 2200 });
       return false;
     }
-    const context = ProAppRuntime.getInstance().context('rustdesk');
-    context.capabilities = ['rustdesk.displayControl'];
     const decision = ProAppRuntime.getInstance().runtime.decision(
-      PRO_RUSTDESK_ADVANCED_DISPLAY_FEATURE, context);
+      PRO_RUSTDESK_ADVANCED_DISPLAY_FEATURE, this.rustDeskAdvancedDisplayContext());
     if (decision.executable) { return true; }
     promptAction.showToast({
       message: decision.reason === 'purchaseRequired' ? 'RustDesk 自定义远端分辨率需要 Pro' :
@@ -6041,11 +6082,8 @@ struct RemoteDesktop {
 
   private applyRustDeskCustomResolution(widthText: string, heightText: string): void {
     if (!this.ensureRustDeskAdvancedDisplayEntitled()) { return; }
-    const checked = validateRemoteDisplayGeometry(Number(widthText), Number(heightText));
-    if (!checked.accepted) {
-      promptAction.showToast({ message: checked.reason, duration: 1800 });
-      return;
-    }
+    const checked = this.checkedCustomGeometry(widthText, heightText);
+    if (checked === null) { return; }
     this.changeRustDeskDisplayResolution(checked.width, checked.height);
   }
 
@@ -22964,26 +23002,40 @@ struct RemoteDesktop {
             Text('当前显示器暂无可选分辨率').fontSize(12).fontColor('#6B7280')
               .width('100%').textAlign(TextAlign.Center).padding({ top: 10, bottom: 10 })
           }
-          Divider().strokeWidth(1).color('#E5E7EB').margin({ top: 4, bottom: 2 })
-          Text('自定义远端分辨率 · Pro').fontSize(12).fontColor('#6B7280')
-            .margin({ top: 2, bottom: 2 }).alignSelf(ItemAlign.Start)
-          Row({ space: 6 }) {
-            TextInput({ text: this.rustDeskCustomWidthDraft, placeholder: '宽 200–8192' })
-              .layoutWeight(1).height(34).type(InputType.Number).fontSize(11)
-              .onChange((value: string): void => { this.rustDeskCustomWidthDraft = value; })
-            Text('×').fontSize(12).fontColor('#6B7280')
-            TextInput({ text: this.rustDeskCustomHeightDraft, placeholder: '高 200–8192' })
-              .layoutWeight(1).height(34).type(InputType.Number).fontSize(11)
-              .onChange((value: string): void => { this.rustDeskCustomHeightDraft = value; })
-            Button('应用').height(34).fontSize(10).padding({ left: 9, right: 9 })
-              .backgroundColor('#F3F4F6').fontColor(this.accentColor)
-              .onClick((): void => {
-                this.applyRustDeskCustomResolution(
-                  this.rustDeskCustomWidthDraft, this.rustDeskCustomHeightDraft);
-              })
-          }.width('100%')
-          Text('以远端实际回读的帧尺寸为准；Wayland、移动端或权限未知时只提供候选列表')
-            .fontSize(9).fontColor('#6B7280').width('100%').margin({ top: 4 })
+          if (this.rustDeskCustomVisible) {
+            Divider().strokeWidth(1).color('#E5E7EB').margin({ top: 4, bottom: 2 })
+            Row({ space: 6 }) {
+              Text('自定义分辨率').fontSize(12).fontColor('#6B7280')
+              ProBadge()
+            }.margin({ top: 2, bottom: 4 }).alignSelf(ItemAlign.Start)
+            if (this.rustDeskCustomSupported) {
+              Row({ space: 6 }) {
+                TextInput({ text: this.rustDeskCustomWidthDraft, placeholder: '宽' })
+                  .width(72).height(34).type(InputType.Number).maxLength(4).fontSize(13)
+                  .textAlign(TextAlign.Center).backgroundColor('#F3F4F6').borderRadius(8)
+                  .onChange((value: string): void => { this.rustDeskCustomWidthDraft = value; })
+                Text('×').fontSize(13).fontColor('#6B7280')
+                TextInput({ text: this.rustDeskCustomHeightDraft, placeholder: '高' })
+                  .width(72).height(34).type(InputType.Number).maxLength(4).fontSize(13)
+                  .textAlign(TextAlign.Center).backgroundColor('#F3F4F6').borderRadius(8)
+                  .onChange((value: string): void => { this.rustDeskCustomHeightDraft = value; })
+                Text(remoteDisplayAspectLabel(Number(this.rustDeskCustomWidthDraft),
+                  Number(this.rustDeskCustomHeightDraft))).fontSize(11).fontColor('#6B7280').maxLines(1)
+                Blank()
+                Button('应用').height(32).fontSize(12).padding({ left: 12, right: 12 })
+                  .backgroundColor(this.accentColor).fontColor('#FFFFFF')
+                  .onClick((): void => {
+                    this.applyRustDeskCustomResolution(
+                      this.rustDeskCustomWidthDraft, this.rustDeskCustomHeightDraft);
+                  })
+              }.width('100%')
+              Text('远端可能按自身能力取整，以实际回传的画面尺寸为准')
+                .fontSize(10).fontColor('#6B7280').width('100%').margin({ top: 4 })
+            } else {
+              Text(this.rustDeskCustomSupportDetail + '；可先使用上方候选分辨率')
+                .fontSize(11).fontColor('#6B7280').width('100%')
+            }
+          }
         }.width('100%')
       }.height(this.rustDeskDisplayCardListHeight())
         .scrollable(ScrollDirection.Vertical).scrollBar(BarState.Auto)
@@ -23292,6 +23344,7 @@ struct RemoteDesktop {
             reverseWheel: this.rdpReverseWheel,
             resolutionId: normalizeRdpResolutionId(this.rdpDesktopResolutionId, this.rdpDesktopPreset),
             customWidth: this.rdpCustomWidth,
+            advancedDisplayVisible: this.rdpAdvancedDisplayVisible(),
             customHeight: this.rdpCustomHeight,
             surfaceWidthPx: this.renderWidthPx,
             surfaceHeightPx: this.renderHeightPx,

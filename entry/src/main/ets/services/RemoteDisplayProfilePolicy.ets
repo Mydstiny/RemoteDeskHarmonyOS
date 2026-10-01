@@ -292,3 +292,59 @@ export function remoteDisplayRequestStateLabel(state: string): string {
     default: return '未应用';
   }
 }
+
+/** Windows scale steps every user gets (RDPEDISP DeviceScaleFactor values). */
+export const RDP_FREE_DESKTOP_SCALES: number[] = [100, 140, 180];
+export function isRdpFreeDesktopScale(percent: number): boolean {
+  return RDP_FREE_DESKTOP_SCALES.indexOf(percent) >= 0;
+}
+
+/**
+ * Which Windows scale chip is selected: exactly one of 'auto', '100', '140', '180' or 'custom'.
+ * A Pro value that the current account cannot use falls back to 'auto', which is what the session will negotiate.
+ */
+export function rdpDesktopScaleSelection(mode: string, percent: number, proUsable: boolean): string {
+  if (mode === 'preset' && isRdpFreeDesktopScale(percent)) { return percent.toString(); }
+  if (mode === 'custom' || mode === 'preset') { return proUsable ? 'custom' : 'auto'; }
+  return 'auto';
+}
+
+/** Which desktop-size chip is selected; a custom size the account cannot use falls back to 自适应. */
+export function rdpResolutionSelection(id: string, proUsable: boolean): string {
+  return id === 'custom' && !proUsable ? 'auto' : id;
+}
+
+/** Label of the custom size, e.g. 2560 × 1600. */
+export function remoteDisplaySizeLabel(width: number, height: number): string {
+  return Math.round(width).toString() + ' × ' + Math.round(height).toString();
+}
+
+/** Aspect ratio in the usual short form (16:10, 21:9 …), or W:H reduced when it is not a common one. */
+export function remoteDisplayAspectLabel(width: number, height: number): string {
+  if (!finite(width) || !finite(height) || width <= 0 || height <= 0) { return ''; }
+  const ratio: number = width / height;
+  const known: string[] = ['16:9', '16:10', '3:2', '4:3', '5:4', '21:9', '32:9', '1:1'];
+  for (const item of known) {
+    const parts: string[] = item.split(':');
+    // Relative tolerance: ultrawide 3440 × 1440 is sold as 21:9; 16:10 and 3:2 still stay apart.
+    const target: number = Number(parts[0]) / Number(parts[1]);
+    if (Math.abs(ratio - target) / target < 0.025) { return item; }
+  }
+  let a: number = Math.round(width);
+  let b: number = Math.round(height);
+  while (b !== 0) { const t: number = b; b = a % b; a = t; }
+  return Math.round(width / a).toString() + ':' + Math.round(height / a).toString();
+}
+
+/** All Windows scale steps offered to Pro in one grid (free and Pro values together, in order). */
+export const RDP_PRO_DESKTOP_SCALE_GRID: number[] = [100, 125, 140, 150, 175, 180, 200];
+
+/** One line for the Pro 远端显示方案 entry: desktop size, then Windows scale. */
+export function rdpDisplayProfileSummary(resolutionId: string, width: number, height: number, presetLabel: string,
+  scaleMode: string, scalePercent: number): string {
+  const size: string = resolutionId === 'auto' ? '自适应' :
+    resolutionId === 'custom' ? remoteDisplaySizeLabel(width, height) : presetLabel;
+  const selection: string = rdpDesktopScaleSelection(scaleMode, scalePercent, true);
+  const scale: string = selection === 'auto' ? '自动' : (selection === 'custom' ? scalePercent : Number(selection)).toString() + '%';
+  return size + ' · Windows 缩放 ' + scale;
+}

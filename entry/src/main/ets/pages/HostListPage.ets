@@ -538,6 +538,7 @@ import {
   SETTINGS_SHEET_APP_ICON,
   SETTINGS_SHEET_PRO_FEATURE,
   SETTINGS_SHEET_PRO_BADGE,
+  SETTINGS_SHEET_RDP_DISPLAY_PROFILE,
   SETTINGS_SHEET_SSH_SKIN,
   SETTINGS_SHEET_ACCENT_COLOR,
   SETTINGS_SHEET_DIAGNOSTIC_LOG,
@@ -702,15 +703,16 @@ import {
   rdpResolutionLabel,
   rdpResolutionPresets
 } from '../services/RemoteResolutionPresetPolicy';
-import {
-  normalizeRdpRemoteUiScalePreference,
-  rdpRemoteUiScaleLabel
-} from '../services/RdpAdaptiveDisplayPolicy';
+import { normalizeRdpRemoteUiScalePreference, rdpRemoteUiScaleLabel } from '../services/RdpAdaptiveDisplayPolicy';
+import { RdpDisplayProfilePanel } from '../components/rdp/RdpDisplayProfilePanel';
 import {
   normalizeRdpDesktopScalePercent,
   normalizeRdpDeviceScalePercent,
+  rdpDisplayProfileSummary,
+  rdpResolutionSelection,
   validateRemoteDisplayGeometry
 } from '../services/RemoteDisplayProfilePolicy';
+import { ProAccessContext } from '../services/pro/ProAccessPolicy';
 import {
   localViewScalePercent,
   normalizeLocalViewScaleMode,
@@ -939,6 +941,8 @@ struct HostListPage {
   @State appIconProVisible: boolean = true;
   @State proManagerVisible: boolean = false;
   @State personalizationProVisible: boolean = false;
+  /** RDP custom desktop size and Windows scale: shown only while the account may use them. */
+  @State rdpAdvancedDisplayVisible: boolean = false;
   // Pro 高级主机管理 / 工作区与布局 on the home list.
   @State proOrgVisible: boolean = false;
   @State proWorkspacesVisible: boolean = false;
@@ -2126,6 +2130,7 @@ struct HostListPage {
     this.appIconSupported = icons.supported;
     this.appIconProVisible = ProEntries.visible(id) || (ProEntries.shown(id) && icons.loaded && icons.currentName !== '');
     this.personalizationProVisible = ProEntries.visible(PRO_PERSONALIZATION_FEATURE);
+    this.rdpAdvancedDisplayVisible = ProEntries.visible(PRO_RDP_ADVANCED_DISPLAY_FEATURE, this.rdpAdvancedDisplayContext());
     const orgVisible: boolean = ProEntries.visible('pro.hostManagement');
     const workspacesVisible: boolean = ProEntries.visible('pro.workspaces') &&
       workspaceUsableOnDevice(this.workspaceDeviceKind(), this.workspacePhoneEnabled);
@@ -5303,7 +5308,8 @@ struct HostListPage {
       return 470;
     }
     if (section === SETTINGS_SECTION_RDP) {
-      return settingsRdpExpandedMaxHeight(this.breakpoint, SETTINGS_RDP_SWITCH_ROW_COUNT);
+      return settingsRdpExpandedMaxHeight(this.breakpoint, SETTINGS_RDP_SWITCH_ROW_COUNT,
+        this.rdpAdvancedDisplayVisible);
     }
     if (section === SETTINGS_SECTION_RUSTDESK) {
       return 980;
@@ -13155,11 +13161,15 @@ struct HostListPage {
     this.persistPref('rdpDesktopPreset', this.rdpDesktopPreset);
   }
 
-  private canUseRdpAdvancedDisplay(): boolean {
-    const context = ProAppRuntime.getInstance().context('rdp');
+  private rdpAdvancedDisplayContext(): ProAccessContext {
+    const context: ProAccessContext = ProAppRuntime.getInstance().context('rdp');
     context.capabilities = ['rdp.displayControl'];
+    return context;
+  }
+
+  private canUseRdpAdvancedDisplay(): boolean {
     const decision = ProAppRuntime.getInstance().runtime.decision(
-      PRO_RDP_ADVANCED_DISPLAY_FEATURE, context);
+      PRO_RDP_ADVANCED_DISPLAY_FEATURE, this.rdpAdvancedDisplayContext());
     if (decision.executable) { return true; }
     promptAction.showToast({
       message: decision.reason === 'purchaseRequired' ? 'RDP 自定义显示需要 Pro' :
@@ -13171,9 +13181,15 @@ struct HostListPage {
 
   private saveRdpCustomResolution(widthText: string, heightText: string): void {
     if (!this.canUseRdpAdvancedDisplay()) { return; }
-    const checked = validateRemoteDisplayGeometry(Number(widthText), Number(heightText));
+    let checked = validateRemoteDisplayGeometry(Number(widthText), Number(heightText));
+    if (!checked.accepted && checked.reason === '宽度必须为偶数') {
+      checked = validateRemoteDisplayGeometry(checked.width, checked.height);
+      if (checked.accepted) {
+        promptAction.showToast({ message: 'Windows 要求宽度为偶数，已调整为 ' + checked.width.toString(), duration: 1800 });
+      }
+    }
     if (!checked.accepted) {
-      promptAction.showToast({ message: checked.reason, duration: 1800 });
+      promptAction.showToast({ message: '宽和高请输入 200–8192 的整数', duration: 1800 });
       return;
     }
     this.rdpCustomWidth = checked.width;
@@ -16667,7 +16683,8 @@ struct HostListPage {
     if (this.settingsLeafSheetMode === SETTINGS_SHEET_PRO) { return Math.min(820, Math.max(320, this.pageViewportHeight - 48)); }
     if (this.settingsLeafSheetMode === SETTINGS_SHEET_APP_ICON ||
       this.settingsLeafSheetMode === SETTINGS_SHEET_PRO_FEATURE ||
-      this.settingsLeafSheetMode === SETTINGS_SHEET_PRO_BADGE) { return SheetSize.FIT_CONTENT; }
+      this.settingsLeafSheetMode === SETTINGS_SHEET_PRO_BADGE ||
+      this.settingsLeafSheetMode === SETTINGS_SHEET_RDP_DISPLAY_PROFILE) { return SheetSize.FIT_CONTENT; }
     if (this.settingsLeafSheetMode === SETTINGS_SHEET_POPUP && this.popupSheetMode === 1 &&
       this.aboutSheetMode === 3) {
       return SheetSize.LARGE;
@@ -16735,6 +16752,15 @@ struct HostListPage {
       SshSkinSettingsPanel()
     } else if (this.settingsLeafSheetMode === SETTINGS_SHEET_PRO_BADGE) {
       ProBadgeSettingsPanel()
+    } else if (this.settingsLeafSheetMode === SETTINGS_SHEET_RDP_DISPLAY_PROFILE) {
+      RdpDisplayProfilePanel({
+        isDesktopDevice: this.isDesktopDevice,
+        applyHint: '保存后用于下次连接',
+        onResolution: (id: string): void => { this.saveRdpDesktopResolutionId(id); },
+        onCustomResolution: (width: string, height: string): void => { this.saveRdpCustomResolution(width, height); },
+        onRemoteUiScale: (value: string): void => { this.saveRdpRemoteUiScale(value); },
+        onDesktopScalePercent: (value: string): void => { this.saveRdpDesktopScalePercent(value); }
+      })
     } else if (this.settingsLeafSheetMode === SETTINGS_SHEET_APP_ICON) {
       ProAppIconPanel({ isOpen: (): boolean => this.showSettingsLeafSheet &&
         this.settingsLeafSheetMode === SETTINGS_SHEET_APP_ICON })
@@ -17563,9 +17589,13 @@ struct HostListPage {
             Text('Windows RDP').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text3)
               .fontFamily(this.font()).padding({ left: 8, bottom: 8 })
             Column() {
-              this.rdpDesktopPresetRow()
-              this.cardDivider()
-              this.rdpRemoteUiScaleRow()
+              if (this.rdpAdvancedDisplayVisible) {
+                this.rdpDisplayProfileRow()
+              } else {
+                this.rdpDesktopPresetRow()
+                this.cardDivider()
+                this.rdpRemoteUiScaleRow()
+              }
               this.cardDivider()
               this.rdpColorDepthRow()
               this.cardDivider()
@@ -20088,12 +20118,12 @@ struct HostListPage {
   }
 
   private rdpDesktopPresetLabel(): string {
-    return rdpResolutionLabel(this.rdpDesktopResolutionId) +
-      (this.rdpDesktopResolutionId === 'auto' ?
-        (this.isDesktopDevice ? '（推荐，跟随会话窗口）' : '（推荐，连接时适应设备）') :
-        '（固定分辨率）');
+    const id: string = rdpResolutionSelection(this.rdpDesktopResolutionId, false);
+    return rdpResolutionLabel(id) +
+      (id === 'auto' ? (this.isDesktopDevice ? '（推荐，跟随会话窗口）' : '（推荐，连接时适应设备）') : '（固定分辨率）');
   }
 
+  /** Free layout (unchanged): a chip row of 自适应 and the standard sizes. */
   @Builder rdpDesktopPresetRow() {
     Column() {
       this.rdpDesktopPresetLabelBlock()
@@ -20110,19 +20140,30 @@ struct HostListPage {
       .width('100%')
       .height(42)
       .margin({ top: 4 })
-      Row({ space: 6 }) {
-        TextInput({ text: this.rdpCustomWidthDraft, placeholder: '宽 200–8192' })
-          .layoutWeight(1).height(34).type(InputType.Number).fontSize(11)
-          .onChange((value: string): void => { this.rdpCustomWidthDraft = value; })
-        Text('×').fontSize(12).fontColor(this.pal().text3)
-        TextInput({ text: this.rdpCustomHeightDraft, placeholder: '高 200–8192' })
-          .layoutWeight(1).height(34).type(InputType.Number).fontSize(11)
-          .onChange((value: string): void => { this.rdpCustomHeightDraft = value; })
-        Button('自定义 · Pro').height(34).fontSize(10).padding({ left: 8, right: 8 })
-          .backgroundColor(this.pal().surface).fontColor(this.accentColor)
-          .onClick((): void => { this.saveRdpCustomResolution(this.rdpCustomWidthDraft, this.rdpCustomHeightDraft); })
-      }.width('100%').padding({ left: 16, right: 16, top: 7 })
-    }.width('100%').height(155).padding({ top: 10, bottom: 10 })
+    }.width('100%').height(110).padding({ top: 10, bottom: 10 })
+  }
+
+  /** Free users see the old chips; a saved custom size they can no longer use shows as 自适应, as it connects. */
+  private rdpResolutionSelection(): string { return rdpResolutionSelection(this.rdpDesktopResolutionId, false); }
+
+  /** Pro: desktop size and Windows scale behind one entry that opens 远端显示方案. */
+  @Builder rdpDisplayProfileRow() {
+    Row() {
+      Row() { Image($r('app.media.icon_desktop')).width(22).height(22).fillColor(this.pal().text3) }
+        .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
+      Column() {
+        Text('远端显示方案').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
+          .fontColor(this.pal().text).fontFamily(this.font())
+        Text(rdpDisplayProfileSummary(this.rdpDesktopResolutionId, this.rdpCustomWidth, this.rdpCustomHeight,
+          rdpResolutionLabel(this.rdpDesktopResolutionId), this.rdpDesktopScaleMode, this.rdpDesktopScalePercent))
+          .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
+          .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).margin({ top: 2 })
+      }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
+      ProBadge().margin({ right: 8 })
+      SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(18).fontColor([this.pal().text3])
+    }.width('100%').height(64).padding({ left: 16, right: 16 })
+    .accessibilityText('远端显示方案，Pro')
+    .onClick((): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_RDP_DISPLAY_PROFILE); })
   }
 
   @Builder rdpDesktopPresetLabelBlock() {
@@ -20140,11 +20181,11 @@ struct HostListPage {
   @Builder rdpResolutionPresetChip(label: string, id: string) {
     Text(label)
       .fontSize(11)
-      .fontColor(this.rdpDesktopResolutionId === id ? '#FFFFFF' : this.pal().text2)
-      .fontWeight(this.rdpDesktopResolutionId === id ? FontWeight.Medium : FontWeight.Normal)
+      .fontColor(this.rdpResolutionSelection() === id ? '#FFFFFF' : this.pal().text2)
+      .fontWeight(this.rdpResolutionSelection() === id ? FontWeight.Medium : FontWeight.Normal)
       .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
       .padding({ left: 10, right: 10, top: 7, bottom: 7 })
-      .backgroundColor(this.rdpDesktopResolutionId === id ? this.accentColor : this.pal().surface)
+      .backgroundColor(this.rdpResolutionSelection() === id ? this.accentColor : this.pal().surface)
       .borderRadius(6)
       .onClick((): void => { this.saveRdpDesktopResolutionId(id); })
   }
@@ -20160,7 +20201,7 @@ struct HostListPage {
         Row() { this.rdpRemoteUiScaleLabelBlock() }.width('100%')
         Row() { this.rdpRemoteUiScaleSelector() }
           .width('100%').justifyContent(FlexAlign.Center).margin({ top: 10 })
-      }.width('100%').height(132).padding({ left: 16, right: 16, top: 14, bottom: 12 })
+      }.width('100%').height(92).padding({ left: 16, right: 16, top: 14, bottom: 12 })
     }
   }
 
@@ -20182,37 +20223,20 @@ struct HostListPage {
     Row({ space: 4 }) {
       this.rdpRemoteUiScaleChip('自动', 'auto')
       this.rdpRemoteUiScaleChip('标准', '100')
-      this.rdpRemoteUiScaleChip('125% · Pro', '125')
       this.rdpRemoteUiScaleChip('大', '140')
-      this.rdpRemoteUiScaleChip('150% · Pro', '150')
-      this.rdpRemoteUiScaleChip('175% · Pro', '175')
       this.rdpRemoteUiScaleChip('特大', '180')
-      this.rdpRemoteUiScaleChip('200% · Pro', '200')
-      TextInput({ text: this.rdpDesktopScaleDraft, placeholder: '100–500' })
-        .width(76).height(32).type(InputType.Number).fontSize(11)
-        .onChange((value: string): void => { this.rdpDesktopScaleDraft = value; })
-        .onSubmit((): void => { this.saveRdpDesktopScalePercent(this.rdpDesktopScaleDraft); })
     }.padding(3).borderRadius(11).backgroundColor(this.pal().surface)
   }
 
   @Builder rdpRemoteUiScaleChip(label: string, value: string) {
     Text(label).fontSize(11)
-      .fontColor((value === 'auto' ? this.rdpRemoteUiScale === value :
-        this.rdpDesktopScalePercent === Number(value)) ? '#FFFFFF' : this.pal().text2)
-      .fontWeight((value === 'auto' ? this.rdpRemoteUiScale === value :
-        this.rdpDesktopScalePercent === Number(value)) ? FontWeight.Medium : FontWeight.Normal)
+      .fontColor(this.rdpRemoteUiScale === value ? '#FFFFFF' : this.pal().text2)
+      .fontWeight(this.rdpRemoteUiScale === value ? FontWeight.Medium : FontWeight.Normal)
       .textAlign(TextAlign.Center).maxLines(1)
       .padding({ left: 9, right: 9, top: 7, bottom: 7 })
-      .backgroundColor((value === 'auto' ? this.rdpRemoteUiScale === value :
-        this.rdpDesktopScalePercent === Number(value)) ? this.accentColor : Color.Transparent)
+      .backgroundColor(this.rdpRemoteUiScale === value ? this.accentColor : Color.Transparent)
       .borderRadius(8)
-      .onClick((): void => {
-        if (value === 'auto' || value === '100' || value === '140' || value === '180') {
-          this.saveRdpRemoteUiScale(value);
-        } else {
-          this.saveRdpDesktopScalePercent(value);
-        }
-      })
+      .onClick((): void => { this.saveRdpRemoteUiScale(value); })
   }
 
   private remoteDisplayScaleLabel(): string {

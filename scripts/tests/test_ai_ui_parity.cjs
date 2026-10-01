@@ -316,7 +316,8 @@ const cases = [
   }],
   ['Pro markers stay semantic, visible and revoked approval inputs stay disabled', async () => {
     const badge = read('entry/src/main/ets/components/ProBadge.ets');
-    assert.ok(badge.includes("accessibilityText('Pro 功能标识')"));
+    // The marker announces itself as a Pro feature marker, followed by the chosen style name.
+    assert.ok(badge.includes("accessibilityText('Pro 功能标识，' + proBadgeStyleLabel(this.activeStyle()))"));
     const header = read('entry/src/main/ets/components/AppSheetHeader.ets');
     assert.ok(header.includes('@Prop showProBadge: boolean = false;'));
     const workspace = read(workspaceFile);

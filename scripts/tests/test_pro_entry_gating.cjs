@@ -58,8 +58,14 @@ const badges = new Map([
   ['components/pro/workspace/WorkspaceStrip.ets', [1, /if \(ProEntries\.visible\('pro\.workspaces'\)\) \{/]],
   ['components/pro/workspace/WorkspaceGroupCard.ets', [1, /if \(ProEntries\.visible\('pro\.workspaces'\)\) \{/]],
   // AI cards/section (4) follow aiProVisible; the app-icon row follows ProEntries; the account card
-  // marker follows ProEntries.proActive().
-  ['pages/HostListPage.ets', [8, /aiProVisible = AiAccess\.getInstance\(\)\.proVisible\(\)/]]
+  // marker follows ProEntries.proActive(); the RDP 远端显示方案 row follows rdpAdvancedDisplayVisible.
+  ['pages/HostListPage.ets', [9, /aiProVisible = AiAccess\.getInstance\(\)\.proVisible\(\)/]],
+  // RDP session panel: the 远端显示方案 entry exists only while RemoteDesktop passes advancedDisplayVisible.
+  ['components/rdp/RdpControlCenter.ets', [1, /if \(this\.advancedDisplayVisible\) \{\s*this\.displayProfileEntry\(\)/]],
+  // The 远端显示方案 sheet opens only from those gated entries (settings row and session panel).
+  ['components/rdp/RdpDisplayProfilePanel.ets', [1, /export struct RdpDisplayProfilePanel/]],
+  // RustDesk display menu: the custom-resolution section follows rustDeskCustomVisible.
+  ['pages/RemoteDesktop.ets', [1, /if \(this\.rustDeskCustomVisible\) \{[\s\S]{0,300}ProBadge\(\)/]]
 ]);
 for (const [file, text] of sources) {
   if (file === 'components/ProBadge.ets') continue;  // the badge component itself
@@ -75,6 +81,16 @@ for (const [file, text] of sources) {
   if (file === 'components/AppSheetHeader.ets' || !/showProBadge: true/.test(text)) continue;
   assert.equal(file, 'pages/RemoteAiWorkspace.ets', `${file}: Pro sheet header needs a registered gate`);
 }
+
+// RDP/RustDesk advanced display: every Pro choice follows ProEntries.visible for its own feature.
+const remoteDesktop = sources.get('pages/RemoteDesktop.ets');
+assert.match(sources.get('pages/HostListPage.ets'),
+  /this\.rdpAdvancedDisplayVisible = ProEntries\.visible\(PRO_RDP_ADVANCED_DISPLAY_FEATURE, this\.rdpAdvancedDisplayContext\(\)\)/);
+assert.match(sources.get('pages/HostListPage.ets'), /if \(this\.rdpAdvancedDisplayVisible\) \{\s*this\.rdpDisplayProfileRow\(\)/);
+assert.match(sources.get('pages/HostListPage.ets'), /this\.settingsLeafSheetMode === SETTINGS_SHEET_RDP_DISPLAY_PROFILE\) \{\s*RdpDisplayProfilePanel\(/);
+assert.match(remoteDesktop, /advancedDisplayVisible: this\.rdpAdvancedDisplayVisible\(\)/);
+assert.match(remoteDesktop, /return ProEntries\.visible\(PRO_RDP_ADVANCED_DISPLAY_FEATURE, context\)/);
+assert.match(remoteDesktop, /this\.rustDeskCustomVisible = ProEntries\.visible\(PRO_RUSTDESK_ADVANCED_DISPLAY_FEATURE,/);
 
 // 3. Regression: the settings app-icon row follows the entitlement.
 const host = sources.get('pages/HostListPage.ets');
