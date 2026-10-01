@@ -163,9 +163,7 @@ export struct ProPurchaseSheet {
       Scroll() {
         Column({ space: 14 }) {
           Column({ space: 12 }) {
-            Text('PRO').fontSize(14).fontWeight(FontWeight.Bold).fontColor(Color.White)
-              .letterSpacing(4).padding({ left: 18, right: 18, top: 8, bottom: 8 })
-              .backgroundColor(this.accent).borderRadius(12)
+            ProBadge({ large: true })
             Text('让每次连接\n更得心应手').fontSize(30).fontWeight(FontWeight.Bold)
               .fontColor(this.pal().text).textAlign(TextAlign.Center).lineHeight(39)
             Text('全部协议免费连接，专业工具提升效率。')

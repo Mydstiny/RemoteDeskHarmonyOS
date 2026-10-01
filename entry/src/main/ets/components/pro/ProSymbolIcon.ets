@@ -1,8 +1,30 @@
 /**
- * Icons for Pro groups and workspaces. They are stored as `sym.<name>` text so they sync like any other field;
- * older emoji values still render as text.
+ * Icons for Pro groups and workspaces. They are stored as `sym.<name>` text so they sync like any other field.
+ * Groups and workspaces created before the symbol set stored emoji; those render as the closest symbol.
  */
 export const PRO_SYMBOL_PREFIX: string = 'sym.';
+
+/** Closest symbol for each emoji the earlier icon sets offered. */
+const LEGACY_EMOJI_SYMBOLS: Record<string, string> = {
+  '📁': 'sym.folder_fill', '🗂️': 'sym.folder_fill', '🗄️': 'sym.folder_fill', '💼': 'sym.doc',
+  '🏠': 'sym.house_fill', '🏢': 'sym.computer_host_fill', '🖥️': 'sym.desktop_fill', '💻': 'sym.display',
+  '⌨️': 'sym.keyboard', '🧑‍💻': 'sym.code_square', '🧪': 'sym.performance', '🔬': 'sym.performance',
+  '📊': 'sym.performance', '🚀': 'sym.bolt_fill', '⚡': 'sym.bolt_fill', '🔥': 'sym.bolt_fill',
+  '⚙️': 'sym.gearshape_fill', '🛠️': 'sym.gearshape_fill', '🔒': 'sym.lock_fill', '🔐': 'sym.lock_shield_fill',
+  '☁️': 'sym.cloud_fill', '🌐': 'sym.link', '📡': 'sym.link', '🎮': 'sym.gamecontroller_fill',
+  '🎬': 'sym.camera_fill', '🎨': 'sym.paintpalette_fill', '🧩': 'sym.list_bullet', '⭐': 'sym.star_fill',
+  '🎯': 'sym.pin_fill', '🏷️': 'sym.pin_fill', '🧭': 'sym.pin_fill', '🌙': 'sym.moon_fill',
+  '🌱': 'sym.sun_max_fill', '🌿': 'sym.sun_max_fill', '🍀': 'sym.sun_max_fill', '🌸': 'sym.paintpalette_fill',
+  '☕': 'sym.timer', '📚': 'sym.doc', '🎧': 'sym.message', '🧠': 'sym.performance', '💡': 'sym.sun_max_fill',
+  '🪐': 'sym.star_fill', '🌊': 'sym.cloud_fill', '🦊': 'sym.person_2_fill', '🐳': 'sym.person_2_fill'
+};
+
+/** The stored icon as a symbol key: symbol keys pass through, emoji map to their closest symbol. */
+export function proSymbolKey(icon: string): string {
+  if (icon.startsWith(PRO_SYMBOL_PREFIX)) { return icon; }
+  const mapped: string | undefined = LEGACY_EMOJI_SYMBOLS[icon];
+  return mapped !== undefined ? mapped : 'sym.folder_fill';
+}
 
 /** Maps a stored key to its system symbol; `$r` needs a literal per name. */
 export function proSymbolResource(key: string): Resource | null {
@@ -43,7 +65,7 @@ export function proSymbolResource(key: string): Resource | null {
   }
 }
 
-/** A Pro icon: system symbol in the given color, or the legacy emoji text. */
+/** A Pro icon drawn as a tinted system symbol; legacy emoji values show their closest symbol. */
 @Component
 export struct ProSymbolIcon {
   @Prop icon: string = '';
@@ -51,10 +73,7 @@ export struct ProSymbolIcon {
   @Prop color: string = '#007DFF';
 
   build() {
-    if (proSymbolResource(this.icon) !== null) {
-      SymbolGlyph(proSymbolResource(this.icon) as Resource).fontSize(this.glyphSize).fontColor([this.color])
-    } else {
-      Text(this.icon).fontSize(this.glyphSize)
-    }
+    SymbolGlyph(proSymbolResource(proSymbolKey(this.icon)) ?? $r('sys.symbol.folder_fill'))
+      .fontSize(this.glyphSize).fontColor([this.color])
   }
 }

@@ -1,7 +1,13 @@
 import { common } from '@kit.AbilityKit';
 import { ProSymbolIcon } from './pro/ProSymbolIcon';
 import { AppConfig, Palette, buildDark, buildLight } from '../common/Theme';
-import { ProBadge, ProBadgePreferences } from './ProBadge';
+import {
+  ProBadge, ProBadgePreferences, ProBadgeSettings, ProBadgeStyle, ProBadgeMotion,
+  ProBadgeStyleOption, ProBadgeMotionOption, PRO_BADGE_STYLE_OPTIONS,
+  PRO_BADGE_MOTION_OPTIONS, proBadgePaletteStops
+} from './ProBadge';
+import { mixHex, PRO_BADGE_PALETTES, ProBadgePalette, validBadgeHex } from '../services/pro/ProBadgeFlowPolicy';
+
 import { ProEntries } from '../services/pro/ProEntries';
 import { ProFeature } from '../services/pro/ProFeatureCatalog';
 import { ProFeatureStatus, proFeatureScope } from '../services/pro/ProFeatureStatus';
@@ -20,6 +26,12 @@ import {
 import { HostOrganizationManager } from './pro/org/HostOrganizationManager';
 import { WorkspaceStore } from '../services/pro/workspace/WorkspaceStore';
 import { ProWorkspaceEditorPanel } from './ProWorkspaceEditorPanel';
+
+/** Quick picks for the custom start/end color. */
+const PRO_BADGE_CUSTOM_SWATCHES: string[] = [
+  '#B9F3EA', '#8DE8FF', '#7FB8FF', '#7B61FF', '#CDC9FF', '#C58BFF', '#FF4FD8', '#FFB3C7',
+  '#FF5A5F', '#FF9F43', '#FFD28A', '#F7E7B4', '#B7F7C1', '#5FD4A0', '#00F5D4', '#FFFFFF'
+];
 
 const HOST_MANAGEMENT_FEATURE: string = 'pro.hostManagement';
 const WORKSPACES_FEATURE: string = 'pro.workspaces';
@@ -373,46 +385,196 @@ export struct ProFeatureDetailPanel {
   }
 }
 
-/** Settings sheet for the Pro marker itself: whether it shows and whether its colors flow. */
+/** Settings sheet for the Pro marker itself: style, motion, visibility and two custom colors. */
 @Component
 export struct ProBadgeSettingsPanel {
   @StorageProp('currentTheme') theme: string = 'light';
   @StorageProp('accentColor') accent: string = '#007DFF';
-  @StorageProp('proBadgeFlow') flow: boolean = true;
   @StorageProp('proBadgeVisible') visible: boolean = true;
-  aboutToAppear(): void { ProBadgePreferences.load(getContext(this)); }
-  private pal(): Palette { return this.theme === 'light' ? buildLight(this.accent) : buildDark(this.accent); }
-  @Builder private switchRow(title: string, detail: string, isOn: boolean, enabled: boolean,
-    onChange: (on: boolean) => void) {
-    Row({ space: 12 }) {
-      Column({ space: 3 }) {
-        Text(title).fontSize(15).fontColor(this.pal().text).fontFamily(AppConfig.fontFamily).width('100%')
-        Text(detail).fontSize(12).fontColor(this.pal().text3).fontFamily(AppConfig.fontFamily).lineHeight(17).width('100%')
-      }.layoutWeight(1).alignItems(HorizontalAlign.Start)
-      Toggle({ type: ToggleType.Switch, isOn }).selectedColor(this.accent).enabled(enabled)
-        .accessibilityText(title).onChange(onChange)
-    }.width('100%').padding(16).opacity(enabled ? 1 : 0.5)
+  @State badgeStyle: ProBadgeStyle = 'capsule';
+  @State badgeMotion: ProBadgeMotion = 'sweep';
+  @State palette: string = 'aurora';
+  @State colors: string[] = [];
+  /** Which custom color the swatches and hex field edit: 0 = 起始色, 1 = 结束色. */
+  @State slot: number = 0;
+  @State hexDraft: string = '';
+
+  aboutToAppear(): void {
+    ProBadgePreferences.load(getContext(this));
+    const settings: ProBadgeSettings = ProBadgePreferences.snapshot();
+    this.badgeStyle = settings.style; this.badgeMotion = settings.motion;
+    this.palette = settings.palette; this.colors = settings.colors;
+    this.hexDraft = this.colors[0];
   }
-  build() {
+
+  private pal(): Palette { return this.theme === 'light' ? buildLight(this.accent) : buildDark(this.accent); }
+  private colorsJson(): string { return JSON.stringify(this.colors); }
+  private save(): void {
+    ProBadgePreferences.save(getContext(this), { visible: this.visible, style: this.badgeStyle,
+      motion: this.badgeMotion, palette: this.palette, colors: this.colors });
+  }
+  private pickStyle(style: ProBadgeStyle): void { this.badgeStyle = style; this.save(); }
+  private pickMotion(motion: ProBadgeMotion): void { this.badgeMotion = motion; this.save(); }
+  private pickPalette(item: ProBadgePalette): void {
+    this.palette = item.id; this.colors = item.colors.slice(); this.hexDraft = this.colors[this.slot === 0 ? 0 : 1];
+    this.save();
+  }
+  /** Custom colors: a start and an end color, blended into a four-color loop. */
+  private setCustom(index: number, color: string): void {
+    if (!validBadgeHex(color)) { return; }
+    const start: string = index === 0 ? color.toUpperCase() : this.colors[0];
+    const end: string = index === 1 ? color.toUpperCase() : (this.colors.length > 1 ? this.colors[1] : this.colors[0]);
+    this.palette = 'custom';
+    this.colors = [start, end, mixHex(end, start, 0.45), mixHex(start, end, 0.45)];
+    this.hexDraft = index === 0 ? start : end;
+    this.save();
+  }
+  private pickSlot(index: number): void {
+    this.slot = index; this.hexDraft = this.colors[index === 0 ? 0 : Math.min(1, this.colors.length - 1)];
+  }
+
+  @Builder private stage(dark: boolean) {
     Column({ space: 14 }) {
-      Text('Pro 标识').fontSize(20).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
-        .fontFamily(AppConfig.fontFamily).width('100%')
-      Row({ space: 12 }) {
-        if (this.visible) {
-          ProBadge()
-          ProBadge({ large: true })
-        } else {
-          Text('Pro 标识已隐藏').fontSize(13).fontColor(this.pal().text3).fontFamily(AppConfig.fontFamily)
-        }
-      }.width('100%').height(64).justifyContent(FlexAlign.Center)
-      .backgroundColor(this.pal().card).borderRadius(16)
+      if (this.visible) {
+        ProBadge({ large: true, previewStyle: this.badgeStyle, previewMotion: this.badgeMotion,
+          previewColors: this.colorsJson() })
+        ProBadge({ previewStyle: this.badgeStyle, previewMotion: this.badgeMotion, previewColors: this.colorsJson() })
+      } else {
+        Text('已隐藏').fontSize(12).fontColor(dark ? '#99FFFFFF' : this.pal().text3)
+      }
+    }
+    .layoutWeight(1).height(112).justifyContent(FlexAlign.Center).borderRadius(18)
+    .backgroundColor(dark ? '#0E0E12' : this.pal().card)
+    .border({ width: 0.5, color: dark ? '#22FFFFFF' : this.pal().cardBorder })
+  }
+
+  @Builder private styleCard(option: ProBadgeStyleOption) {
+    Column({ space: 8 }) {
       Column() {
-        this.switchRow('显示 Pro 标识', '关闭后应用内的 Pro 标识都不显示；Pro 功能和入口不受影响',
-          this.visible, true, (on: boolean): void => { ProBadgePreferences.update(getContext(this), this.flow, on); })
-        Divider().strokeWidth(0.5).color(this.pal().cardBorder).margin({ left: 16, right: 16 })
-        this.switchRow('幻彩流动', '关闭后保持静态幻彩配色', this.flow, this.visible,
-          (on: boolean): void => { ProBadgePreferences.update(getContext(this), on, this.visible); })
-      }.width('100%').backgroundColor(this.pal().card).borderRadius(16)
-    }.width('100%').padding({ left: 20, right: 20, top: 20, bottom: 28 })
+        ProBadge({ large: true, previewStyle: option.id, previewMotion: 'static', previewColors: this.colorsJson() })
+      }.height(34).justifyContent(FlexAlign.Center)
+      Text(option.label).fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
+      Text(option.detail).fontSize(10).fontColor(this.pal().text3).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+    }
+    .width(108).padding({ top: 12, bottom: 10, left: 6, right: 6 }).margin({ right: 8, bottom: 8 })
+    .borderRadius(16).backgroundColor(this.badgeStyle === option.id ? this.pal().surface : this.pal().card)
+    .border({ width: this.badgeStyle === option.id ? 1.5 : 0.5,
+      color: this.badgeStyle === option.id ? this.accent : this.pal().cardBorder })
+    .onClick((): void => { this.pickStyle(option.id); })
+    .accessibilityText(option.label + (this.badgeStyle === option.id ? '，使用中' : '，选择'))
+  }
+
+  @Builder private motionRow(option: ProBadgeMotionOption) {
+    Row({ space: 12 }) {
+      Column() {
+        ProBadge({ previewStyle: this.badgeStyle, previewMotion: option.id, previewColors: this.colorsJson() })
+      }.width(64).height(32).justifyContent(FlexAlign.Center)
+      Column({ space: 2 }) {
+        Text(option.label).fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
+        Text(option.detail).fontSize(11).fontColor(this.pal().text3)
+      }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+      if (this.badgeMotion === option.id) {
+        SymbolGlyph($r('sys.symbol.checkmark_circle_fill')).fontSize(18).fontColor([this.accent])
+      }
+    }.width('100%').padding({ left: 12, right: 14, top: 10, bottom: 10 })
+    .onClick((): void => { this.pickMotion(option.id); })
+    .accessibilityText(option.label + (this.badgeMotion === option.id ? '，使用中' : '，选择'))
+  }
+
+  @Builder private paletteChip(item: ProBadgePalette) {
+    Column({ space: 6 }) {
+      Row().width(56).height(28).borderRadius(10).linearGradient({ angle: 90, colors: proBadgePaletteStops(item.colors) })
+        .border({ width: this.palette === item.id ? 2 : 0.5,
+          color: this.palette === item.id ? this.pal().text : this.pal().cardBorder })
+      Text(item.label).fontSize(11).fontColor(this.palette === item.id ? this.pal().text : this.pal().text3)
+    }.margin({ right: 10, bottom: 10 }).onClick((): void => { this.pickPalette(item); })
+  }
+
+  build() {
+    Scroll() {
+      Column({ space: 14 }) {
+        Column({ space: 3 }) {
+          Text('Pro 标识').fontSize(20).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
+            .fontFamily(AppConfig.fontFamily)
+          Text('选择样式、动效和颜色，所有 Pro 入口会统一使用').fontSize(12).fontColor(this.pal().text3)
+        }.alignItems(HorizontalAlign.Start).width('100%')
+        Row({ space: 10 }) {
+          this.stage(false)
+          this.stage(true)
+        }.width('100%')
+        Row({ space: 12 }) {
+          Column({ space: 3 }) {
+            Text('显示 Pro 标识').fontSize(15).fontColor(this.pal().text)
+            Text('关闭后只隐藏标记，不影响 Pro 功能或权益').fontSize(12).fontColor(this.pal().text3)
+          }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+          Toggle({ type: ToggleType.Switch, isOn: this.visible }).selectedColor(this.accent)
+            .onChange((on: boolean): void => {
+              ProBadgePreferences.save(getContext(this), { visible: on, style: this.badgeStyle,
+                motion: this.badgeMotion, palette: this.palette, colors: this.colors });
+            })
+        }.width('100%').padding(16).backgroundColor(this.pal().card).borderRadius(16)
+
+        Text('样式').fontSize(13).fontColor(this.pal().text2).width('100%')
+        Flex({ wrap: FlexWrap.Wrap }) {
+          ForEach(PRO_BADGE_STYLE_OPTIONS, (option: ProBadgeStyleOption): void => { this.styleCard(option) },
+            (option: ProBadgeStyleOption): string => option.id + this.colorsJson())
+        }.width('100%')
+
+        Text('动效').fontSize(13).fontColor(this.pal().text2).width('100%')
+        Column() {
+          ForEach(PRO_BADGE_MOTION_OPTIONS, (option: ProBadgeMotionOption, index: number): void => {
+            if (index > 0) { Divider().strokeWidth(0.5).color(this.pal().cardBorder).margin({ left: 88, right: 12 }) }
+            this.motionRow(option)
+          }, (option: ProBadgeMotionOption): string => option.id)
+        }.width('100%').backgroundColor(this.pal().card).borderRadius(16)
+
+        Text('颜色').fontSize(13).fontColor(this.pal().text2).width('100%')
+        Flex({ wrap: FlexWrap.Wrap }) {
+          ForEach(PRO_BADGE_PALETTES, (item: ProBadgePalette): void => { this.paletteChip(item) },
+            (item: ProBadgePalette): string => item.id)
+        }.width('100%')
+
+        Column({ space: 12 }) {
+          Row({ space: 8 }) {
+            Text('自定义').fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.pal().text).layoutWeight(1)
+            if (this.palette === 'custom') {
+              Text('使用中').fontSize(11).fontColor(this.accent)
+            }
+          }.width('100%')
+          Row({ space: 8 }) {
+            ForEach([0, 1], (index: number): void => {
+              Row({ space: 8 }) {
+                Column().width(18).height(18).borderRadius(6)
+                  .backgroundColor(this.colors[index === 0 ? 0 : Math.min(1, this.colors.length - 1)])
+                Text(index === 0 ? '起始色' : '结束色').fontSize(13)
+                  .fontColor(this.slot === index ? this.pal().text : this.pal().text2)
+              }.layoutWeight(1).height(36).padding({ left: 10, right: 10 }).borderRadius(10)
+              .backgroundColor(this.slot === index ? this.pal().surface : Color.Transparent)
+              .border({ width: this.slot === index ? 1.2 : 0.5, color: this.slot === index ? this.accent : this.pal().cardBorder })
+              .onClick((): void => { this.pickSlot(index); })
+            }, (index: number): string => 'slot' + index.toString())
+          }.width('100%')
+          Flex({ wrap: FlexWrap.Wrap }) {
+            ForEach(PRO_BADGE_CUSTOM_SWATCHES, (color: string): void => {
+              Column().width(30).height(30).borderRadius(10).backgroundColor(color).margin({ right: 8, bottom: 8 })
+                .border({ width: this.hexDraft.toUpperCase() === color ? 2 : 0, color: this.pal().text })
+                .onClick((): void => { this.setCustom(this.slot, color); })
+            }, (color: string): string => color)
+          }.width('100%')
+          Row({ space: 8 }) {
+            Text('#').fontSize(14).fontColor(this.pal().text3)
+            TextInput({ text: this.hexDraft.replace('#', ''), placeholder: 'RRGGBB' }).fontSize(13).height(36)
+              .layoutWeight(1).maxLength(6).backgroundColor(this.pal().surface).borderRadius(9)
+              .onChange((value: string): void => {
+                const hex: string = '#' + value.trim();
+                this.hexDraft = hex;
+                if (validBadgeHex(hex)) { this.setCustom(this.slot, hex); }
+              })
+          }.width('100%')
+          Text('起始色和结束色会混合成四色循环。颜色只改变 Pro 标识的外观，不影响功能权限。')
+            .fontSize(11).fontColor(this.pal().text3).lineHeight(16).width('100%')
+        }.width('100%').padding(14).backgroundColor(this.pal().card).borderRadius(16)
+      }.width('100%').padding({ left: 20, right: 20, top: 20, bottom: 28 })
+    }.width('100%').constraintSize({ maxHeight: 760 }).scrollBar(BarState.Off)
   }
 }

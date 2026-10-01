@@ -222,4 +222,33 @@ test('Pro badge flow: stops are ordered, bounded and continuous across phases an
   assert.ok(worst < 12, 'adjacent frames differ by at most a few levels, including 1 -> 0: ' + worst);
 });
 
+test('Pro badge styles: palettes, alpha order, meteors, shimmer and readable ink', () => {
+  const b = load('entry/src/main/ets/services/pro/ProBadgeFlowPolicy.ets');
+  for (const palette of b.PRO_BADGE_PALETTES) {
+    assert.ok(palette.colors.length >= 2 && palette.colors.length <= 4, palette.id);
+    palette.colors.forEach(c => assert.ok(b.validBadgeHex(c), palette.id + c));
+  }
+  assert.equal(b.withAlpha('#112233', '59'), '#59112233');
+  assert.equal(b.cleanBadgeColors(['#ffffff', 'bad']).length, 4, 'fewer than two valid colors falls back');
+  assert.equal(b.cleanBadgeColors(['#ffffff', '#000000', '#111111', '#222222', '#333333']).length, 4);
+  assert.equal(b.badgeInkFor(['#B9F3EA', '#CDC9FF']), '#29223F');
+  assert.equal(b.badgeInkFor(['#1A1A40', '#3A0050']), '#FFFFFF');
+  let lastPulse = b.proBadgePulse(0);
+  for (let f = 1; f <= 200; f++) {
+    const value = b.proBadgePulse(f / 200);
+    assert.ok(Math.abs(value - lastPulse) < 0.05, 'pulse is continuous'); lastPulse = value;
+  }
+  const aurora = b.PRO_BADGE_PALETTES[0].colors;
+  for (let f = 0; f <= 100; f++) {
+    const stops = b.proBadgeShimmerStops(f / 100, aurora);
+    assert.equal(stops[0][1], 0); assert.equal(stops[stops.length - 1][1], 1);
+    for (let i = 1; i < stops.length; i++) assert.ok(stops[i][1] >= stops[i - 1][1], 'shimmer stops ordered at ' + f);
+    const meteors = b.proBadgeMeteors(f / 100, aurora);
+    assert.equal(meteors.length, 6, 'six streaks every frame');
+    meteors.forEach(m => { assert.ok(m.opacity >= 0 && m.opacity <= 1); assert.ok(m.travel >= 0 && m.length > 0); });
+  }
+  const seamA = b.proBadgeMeteors(0.9999, aurora), seamB = b.proBadgeMeteors(0, aurora);
+  seamA.forEach((m, i) => assert.ok(Math.abs(m.opacity - seamB[i].opacity) < 0.05, 'no jump at the loop seam'));
+});
+
 console.log(passed + ' personalization checks passed');
