@@ -436,5 +436,5 @@ diagnosticAiEmailBundle
 - `default@OhosTestCompileArkTS`：通过，Provider 可用性修复后 `BUILD SUCCESSFUL in 1 min 33 s 355 ms`，使用项目本地 `.remotedesk-build-cache`；输出仅包含既有依赖/API 警告。
 - `assembleHap`：通过，Provider 可用性修复后 `BUILD SUCCESSFUL in 2 min 22 s 34 ms`，签名阶段约 2.8 s；使用项目本地 `.remotedesk-build-cache`，输出发布到 `entry/build/default/outputs`。
 - Light 开源合规门：通过；`git diff --check`：通过。
-- 现有 Node Pro 策略回归：`test_pro_entry_gating.cjs` 通过；`test_pro_runtime.cjs`、`test_pro_feature_visibility.cjs` 因环境缺少 `typescript` 模块未能启动，需在完整开发环境补跑。
+- 现有 Node Pro 策略回归：使用 DevEco Hvigor 内置 TypeScript 运行 `test_pro_entry_gating.cjs`、`test_pro_runtime.cjs`、`test_pro_feature_visibility.cjs`、`test_pro_feature_status.cjs`，全部通过；默认 Node 环境未设置 `NODE_PATH` 时会报告缺少 `typescript`，不影响带工具链路径的结果。
 - Provider、真机、邮件客户端和生产权益验收：代码链路已具备，真实环境证据仍待执行；国际 Provider 不在首发范围。

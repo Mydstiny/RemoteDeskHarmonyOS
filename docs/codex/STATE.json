@@ -21,7 +21,7 @@
     "status": "implemented-provider-availability-guard-build-pass-review-pending",
     "reviewTaskId": "/root/diagnostic_ai_review",
     "reviewResult": "initial findings fixed; corrective re-review pending",
-    "validation": "default@OhosTestCompileArkTS BUILD SUCCESSFUL 1 min 33.355 s; assembleHap BUILD SUCCESSFUL 2 min 22.034 s; Light/diff PASS; test_pro_entry_gating PASS; three existing Node tests could not start because typescript is absent; real Provider/device/mail acceptance not run"
+    "validation": "default@OhosTestCompileArkTS BUILD SUCCESSFUL 1 min 33.355 s; assembleHap BUILD SUCCESSFUL 2 min 22.034 s; Light/diff PASS; Pro entry/runtime/visibility/status Node tests PASS with DevEco Hvigor TypeScript; real Provider/device/mail acceptance not run"
   },
   "next": "完成诊断 AI 独立复核；随后在 Phone/Pad/PC 验证 orb、抓取停止、账号切换、邮件预览，并用真实国内 Provider 验证模型列表/分析；保留 experimental 直到证据齐全。",
   "blockers": [
