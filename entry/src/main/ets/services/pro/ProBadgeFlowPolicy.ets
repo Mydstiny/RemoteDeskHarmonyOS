@@ -174,10 +174,11 @@ function rayJitter(index: number, salt: number): number {
  * the same number of rays so the layout never reshuffles; the loop seam is invisible because a ray's opacity is 0
  * at both ends of its cycle.
  */
-export function proBadgeWarpRays(phase: number, animated: boolean): ProBadgeWarpRay[] {
+export function proBadgeWarpRays(phase: number, animated: boolean, count: number = WARP_RAY_COUNT): ProBadgeWarpRay[] {
   const result: ProBadgeWarpRay[] = [];
-  for (let index: number = 0; index < WARP_RAY_COUNT; index++) {
-    const angle: number = index * 360 / WARP_RAY_COUNT + (rayJitter(index, 1) - 0.5) * 9;
+  const total: number = Math.max(8, Math.min(WARP_RAY_COUNT, Math.floor(count)));
+  for (let index: number = 0; index < total; index++) {
+    const angle: number = index * 360 / total + (rayJitter(index, 1) - 0.5) * 9;
     const offset: number = rayJitter(index, 2);
     const weight: number = 0.6 + rayJitter(index, 3) * 0.6;
     if (!animated) {

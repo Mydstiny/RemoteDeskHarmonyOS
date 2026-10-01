@@ -183,21 +183,18 @@ export class ProBadgePreferences {
 }
 
 const FLOW_PERIOD_MS: number = 2800;
-const FLOW_FRAME_MS: number = 33;
+const FLOW_FRAME_MS: number = 40;
 const PRO_BADGE_PHASE: string = 'proBadgePhase';
 
 /** One shared frame clock for every visible animated badge; it stops when none is on screen. */
 class ProBadgeFlowClock {
   private static users: number = 0;
   private static timer: number = -1;
-  /** Scrolling lists pause the clock so badges do not re-render while the user drags. */
-  static pausedBy: number = 0;
 
   static acquire(): void {
     ProBadgeFlowClock.users++;
     if (ProBadgeFlowClock.timer !== -1) { return; }
     ProBadgeFlowClock.timer = setInterval((): void => {
-      if (ProBadgeFlowClock.pausedBy > 0) { return; }
       AppStorage.setOrCreate(PRO_BADGE_PHASE, (Date.now() % FLOW_PERIOD_MS) / FLOW_PERIOD_MS);
     }, FLOW_FRAME_MS);
   }
@@ -209,14 +206,6 @@ class ProBadgeFlowClock {
       ProBadgeFlowClock.timer = -1;
     }
   }
-}
-
-/**
- * Freezes every Pro badge animation while a scroll is in progress (call with true on scroll start, false on stop).
- * Each badge keeps its current frame, so pausing is invisible apart from the motion holding still.
- */
-export function setProBadgeAnimationPaused(paused: boolean): void {
-  ProBadgeFlowClock.pausedBy = paused ? 1 : 0;
 }
 
 /** Product marker only; never grants access or represents a payment status on its own. */
@@ -232,11 +221,15 @@ export struct ProBadge {
   @StorageProp(PRO_BADGE_STYLE) @Watch('onLookChange') style: string = 'capsule';
   @StorageProp(PRO_BADGE_MOTION) @Watch('onLookChange') motion: string = 'sweep';
   @StorageProp(PRO_BADGE_COLORS) @Watch('onLookChange') colorsJson: string = '';
-  @StorageProp(PRO_BADGE_PHASE) @Watch('drawRays') phase: number = 0;
+  /** Shared clock; only animated badges copy it into `frame`, so still badges never re-render on its ticks. */
+  @StorageProp(PRO_BADGE_PHASE) @Watch('onClockTick') phase: number = 0;
+  @State frame: number = 0;
   /** Rays are painted on a canvas each frame; ForEach over same-keyed items would never repaint them. */
   private rayContext: CanvasRenderingContext2D = new CanvasRenderingContext2D(new RenderingContextSettings(true));
   private rayCanvasReady: boolean = false;
   private ticking: boolean = false;
+  /** Whether any part of the badge is on screen; hidden tabs, closed sheets and scrolled-away rows do not animate. */
+  private onScreen: boolean = false;
 
   aboutToAppear(): void {
     ProBadgePreferences.load(getContext(this));
@@ -250,8 +243,15 @@ export struct ProBadge {
   /** Style, motion or colors changed: re-evaluate the clock and repaint a still canvas. */
   onLookChange(): void { this.syncClock(); this.drawRays(); }
 
+  /** Clock tick: animated badges advance their frame (and moving rays repaint); still badges ignore it. */
+  onClockTick(): void {
+    if (!this.onScreen || !this.shown() || this.activeMotion() === 'static') { return; }
+    this.frame = this.phase;
+    if (this.showsRays()) { this.drawRays(); }
+  }
+
   syncClock(): void {
-    const wanted: boolean = this.shown() && this.activeMotion() !== 'static';
+    const wanted: boolean = this.onScreen && this.shown() && this.activeMotion() !== 'static';
     if (wanted && !this.ticking) { ProBadgeFlowClock.acquire(); this.ticking = true; }
     if (!wanted && this.ticking) { ProBadgeFlowClock.release(); this.ticking = false; }
   }
@@ -275,21 +275,23 @@ export struct ProBadge {
   private showsRays(): boolean { return this.activeStyle() === 'warp' || this.activeMotion() === 'meteor'; }
   /** Rays fly outward with every motion except 静态, where the plate shows its fixed burst. */
   private raysMove(): boolean { return this.activeMotion() !== 'static'; }
-  private rays(): ProBadgeWarpRay[] { return proBadgeWarpRays(this.phase, this.raysMove()); }
+  /** Small badges carry fewer rays: same look at their size, much less to paint. */
+  private rayCount(): number { return this.large ? 40 : 24; }
+  private rays(): ProBadgeWarpRay[] { return proBadgeWarpRays(this.frame, this.raysMove(), this.rayCount()); }
   /** The plate keeps a faint fixed burst underneath the moving rays, like the engraved lines of the badge. */
   private engravedRays(): ProBadgeWarpRay[] {
-    return this.activeStyle() === 'warp' && this.raysMove() ? proBadgeWarpRays(0, false) : [];
+    return this.activeStyle() === 'warp' && this.raysMove() ? proBadgeWarpRays(0, false, this.rayCount()) : [];
   }
   /** Silver-white on the plate with every fourth ray tinted by the palette; white over light fills. */
   private rayColor(index: number): string {
     if (!this.darkBody()) { return '#FFFFFF'; }
-    return index % 4 === 0 ? cycleColor(this.phase + index / 40, this.colors()) : '#E8EEF8';
+    return index % 4 === 0 ? cycleColor(this.frame + index / this.rayCount(), this.colors()) : '#E8EEF8';
   }
 
   private fillStops(): Array<[ResourceColor, number]> {
     const motion: ProBadgeMotion = this.activeMotion();
-    if (motion === 'shimmer') { return proBadgeShimmerStops(this.phase, this.colors()); }
-    if (motion === 'sweep') { return proBadgeCycleStops(this.phase, this.colors()); }
+    if (motion === 'shimmer') { return proBadgeShimmerStops(this.frame, this.colors()); }
+    if (motion === 'sweep') { return proBadgeCycleStops(this.frame, this.colors()); }
     return proBadgeStaticStops(this.colors());
   }
   /** Body fill: a dark metal for carbon/emblem, transparent for outline, otherwise the animated colors. */
@@ -301,14 +303,14 @@ export struct ProBadge {
   }
   /** Current single accent color (outline ring, carbon text, emblem stripe, glow). */
   private liveColor(): string {
-    return this.activeMotion() === 'static' ? this.colors()[0] : cycleColor(this.phase, this.colors());
+    return this.activeMotion() === 'static' ? this.colors()[0] : cycleColor(this.frame, this.colors());
   }
   /** Outline ring and text: pastel palettes are deepened a little so they stay visible on light surfaces. */
   private ringColor(): string {
     const color: string = this.liveColor();
     return badgeLuminance(color) > 0.55 ? mixHex(color, '#1E1A3A', 0.32) : color;
   }
-  private pulse(): number { return this.activeMotion() === 'pulse' ? proBadgePulse(this.phase) : 0; }
+  private pulse(): number { return this.activeMotion() === 'pulse' ? proBadgePulse(this.frame) : 0; }
 
   private w(): number {
     const style: ProBadgeStyle = this.activeStyle();
@@ -348,15 +350,20 @@ export struct ProBadge {
         const y0: number = h / 2 + Math.sin(rad) * inner;
         const x1: number = w / 2 + Math.cos(rad) * outer;
         const y1: number = h / 2 + Math.sin(rad) * outer;
-        const color: string = this.rayColor(index);
-        const gradient: CanvasGradient = ctx.createLinearGradient(x0, y0, x1, y1);
-        gradient.addColorStop(0, withAlpha(color, '00'));
-        gradient.addColorStop(1, withAlpha(color, 'FF'));
-        ctx.globalAlpha = Math.min(1, opacity);
-        ctx.strokeStyle = gradient;
+        // Two solid strokes (faint inner half, bright outer half) read as a tapered streak without allocating a
+        // gradient object per ray per frame.
+        const xm: number = (x0 + x1) / 2;
+        const ym: number = (y0 + y1) / 2;
+        ctx.strokeStyle = this.rayColor(index);
         ctx.lineWidth = (this.large ? 1 : 0.8) * item.weight;
+        ctx.globalAlpha = Math.min(1, opacity) * 0.35;
         ctx.beginPath();
         ctx.moveTo(x0, y0);
+        ctx.lineTo(xm, ym);
+        ctx.stroke();
+        ctx.globalAlpha = Math.min(1, opacity);
+        ctx.beginPath();
+        ctx.moveTo(xm, ym);
         ctx.lineTo(x1, y1);
         ctx.stroke();
       });
@@ -417,6 +424,12 @@ export struct ProBadge {
         this.body()
       }
       .width(this.w()).height(this.h())
+      .onVisibleAreaChange([0.0, 0.01], (visible: boolean, _ratio: number): void => {
+        if (visible === this.onScreen) { return; }
+        this.onScreen = visible;
+        this.syncClock();
+        if (visible) { this.onClockTick(); }
+      })
       .accessibilityText('Pro 功能标识，' + proBadgeStyleLabel(this.activeStyle()))
     }
   }

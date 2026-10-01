@@ -4,7 +4,7 @@ import { AppConfig, Palette, buildDark, buildLight } from '../common/Theme';
 import {
   ProBadge, ProBadgePreferences, ProBadgeSettings, ProBadgeStyle, ProBadgeMotion,
   ProBadgeStyleOption, ProBadgeMotionOption, PRO_BADGE_STYLE_OPTIONS,
-  PRO_BADGE_MOTION_OPTIONS, proBadgePaletteStops, PRO_BADGE_PRESETS, ProBadgePreset, setProBadgeAnimationPaused
+  PRO_BADGE_MOTION_OPTIONS, proBadgePaletteStops, PRO_BADGE_PRESETS, ProBadgePreset
 } from './ProBadge';
 import { display } from '@kit.ArkUI';
 import { badgePalette, mixHex, PRO_BADGE_PALETTES, ProBadgePalette, validBadgeHex } from '../services/pro/ProBadgeFlowPolicy';
@@ -418,7 +418,6 @@ export struct ProBadgeSettingsPanel {
       return 560;
     }
   }
-  aboutToDisappear(): void { setProBadgeAnimationPaused(false); }
   private save(): void {
     ProBadgePreferences.save(getContext(this), { visible: this.visible, style: this.badgeStyle,
       motion: this.badgeMotion, palette: this.palette, colors: this.colors });
@@ -512,7 +511,9 @@ export struct ProBadgeSettingsPanel {
   @Builder private motionRow(option: ProBadgeMotionOption) {
     Row({ space: 12 }) {
       Column() {
-        ProBadge({ previewStyle: this.badgeStyle, previewMotion: option.id, previewColors: this.colorsJson() })
+        // Only the chosen motion plays; the others show their still frame to keep the sheet light.
+        ProBadge({ previewStyle: this.badgeStyle, previewMotion: this.badgeMotion === option.id ? option.id : 'static',
+          previewColors: this.colorsJson() })
       }.width(64).height(32).justifyContent(FlexAlign.Center)
       Column({ space: 2 }) {
         Text(option.label).fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
@@ -637,7 +638,5 @@ export struct ProBadgeSettingsPanel {
     // Fit inside the sheet on every device; a fixed 760 made the bottom unreachable on Pad and PC.
     .width('100%').constraintSize({ maxHeight: this.maxPanelHeight() }).scrollBar(BarState.Off)
     .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: false })
-    .onScrollStart((): void => { setProBadgeAnimationPaused(true); })
-    .onScrollStop((): void => { setProBadgeAnimationPaused(false); })
   }
 }
