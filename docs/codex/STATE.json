@@ -2007,8 +2007,8 @@
     "releasePlan": "1.1.6 Release shows Pro and sandbox testing as coming soon (敬请期待) and closed; Pro completes in 1.2.0"
   },
   "feedbackProQr": {
-    "commit": "f468f24b",
-    "status": "deployed-to-three-devices-qr-rotation-task-active",
+    "commit": "613b5126",
+    "status": "qr-aspect-ratio-fix-deployed-to-three-devices-qr-rotation-task-active",
     "feature": "pro.feedback",
     "app": "Feedback settings keeps email and ordinary Chanlian for free users; valid Pro users get a third tab with the flowing Pro badge and Chanlian/QQ QR cards; revocation clears QR state.",
     "endpoints": [
@@ -2017,8 +2017,9 @@
     ],
     "serverValidation": "HTTP 200 manifests/images; issuedAt-to-expiresAt is 7 days; declared image hashes and byte counts match downloaded JPEGs; existing chanlian.json remains reachable.",
     "appValidation": "default@OhosTestCompileArkTS BUILD SUCCESSFUL; assembleHap BUILD SUCCESSFUL; Light and git diff --check PASS; Pro gating/status/visibility tests PASS.",
+    "qrFix": "QQ 1284x2283 image now decodes with longest edge <= 640 while preserving aspect ratio; no 640x640 stretch.",
     "deviceDeployment": {
-      "hapSha256": "f0e6f88d7d7c3c9d8e9c0241223a26582935a931f2fa64b3c4f8de6d3fb11750",
+      "hapSha256": "c9994659784238ea5dd3d7782af2be05348f19e86245a68bbb309e7300943812",
       "targets": [
         "127.0.0.1:5555 emulator",
         "192.168.31.118:40123 MLR-AL10",
