@@ -3,7 +3,7 @@
   "task": "pro-purchase-foundation",
   "branch": "codex/pro-purchase-foundation",
   "base": "8edc187868e94ed41634e8a6c4c4c072e3a48679",
-  "head": "cea057c9",
+  "head": "5f3c6994",
   "phase": "Full acceptance active; Pro 工作区与高级主机管理基础层及工作区编辑器已实现，设备/跨端验收待完成",
   "currentFocus": "RDP/RustDesk 高级显示计划：P0–P4 实现、本地门禁与设备安装已完成；等待真实远端矩阵和独立复核",
   "status": "in-progress",
