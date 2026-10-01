@@ -251,6 +251,21 @@ test('Pro badge styles: palettes, alpha order, meteors, shimmer and readable ink
   seamA.forEach((r, i) => assert.ok(Math.abs(r.opacity - seamB[i].opacity) < 0.05, 'no jump at the loop seam'));
   const still = b.proBadgeWarpRays(0.3, false), still2 = b.proBadgeWarpRays(0.8, false);
   assert.equal(JSON.stringify(still), JSON.stringify(still2), 'static plate does not move');
+  // Flying 星爆 layers: painted once near the center, interleaved angles, valid opacity.
+  assert.equal(b.PRO_BADGE_RAY_LAYERS, 3);
+  const angles = [];
+  for (let k = 0; k < 3; k++) {
+    const layer = b.proBadgeRayLayer(k, 9);
+    assert.equal(layer.length, 9, 'rays per layer');
+    assert.equal(JSON.stringify(layer), JSON.stringify(b.proBadgeRayLayer(k + 3, 9)), 'layer index wraps');
+    layer.forEach(r => {
+      assert.ok(r.opacity > 0 && r.opacity <= 1);
+      assert.ok(r.radius + r.length / 2 < 0.5, 'starts near the center so scaling reaches the edges');
+      angles.push(((r.angle % 360) + 360) % 360);
+    });
+  }
+  angles.sort((x, y) => x - y);
+  for (let i = 1; i < angles.length; i++) assert.ok(angles[i] - angles[i - 1] < 40, 'layers fill the circle evenly');
 });
 
 console.log(passed + ' personalization checks passed');

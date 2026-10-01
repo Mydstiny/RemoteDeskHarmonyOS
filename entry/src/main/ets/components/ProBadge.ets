@@ -3,8 +3,8 @@ import { preferences } from '@kit.ArkData';
 import { AppConfig } from '../common/Theme';
 import {
   badgeInkFor, badgeLuminance, cleanBadgeColors, cycleColor, mixHex, PRO_BADGE_DEFAULT_PRIMARY, PRO_BADGE_DEFAULT_SECONDARY,
-  proBadgeCycleStops, proBadgePulse, ProBadgeWarpRay, proBadgeWarpRays, proBadgeShimmerStops, proBadgeStaticStops,
-  validBadgeHex, withAlpha
+  PRO_BADGE_RAY_LAYERS, proBadgeCycleStops, proBadgePulse, proBadgeRayLayer, ProBadgeWarpRay, proBadgeWarpRays,
+  proBadgeShimmerStops, proBadgeStaticStops, validBadgeHex, withAlpha
 } from '../services/pro/ProBadgeFlowPolicy';
 
 const PRO_BADGE_PREFS_KEY: string = 'proBadgeV3';
@@ -185,6 +185,8 @@ export class ProBadgePreferences {
 const FLOW_PERIOD_MS: number = 2800;
 const FLOW_FRAME_MS: number = 40;
 const PRO_BADGE_PHASE: string = 'proBadgePhase';
+/** One 星爆 layer's flight from the center to the edges. */
+const RAY_FLIGHT_MS: number = 1500;
 
 /** One shared frame clock for every visible animated badge; it stops when none is on screen. */
 class ProBadgeFlowClock {
@@ -224,9 +226,21 @@ export struct ProBadge {
   /** Shared clock; only animated badges copy it into `frame`, so still badges never re-render on its ticks. */
   @StorageProp(PRO_BADGE_PHASE) @Watch('onClockTick') phase: number = 0;
   @State frame: number = 0;
-  /** Rays are painted on a canvas each frame; ForEach over same-keyed items would never repaint them. */
+  /**
+   * 星爆 rays never repaint per frame: the still burst is painted once, and the moving rays are painted once onto three
+   * layers that the system scales outward and fades on the render thread (no JS clock, no canvas redraw per frame).
+   */
   private rayContext: CanvasRenderingContext2D = new CanvasRenderingContext2D(new RenderingContextSettings(true));
   private rayCanvasReady: boolean = false;
+  private layerContexts: CanvasRenderingContext2D[] = [];
+  /** Moving layers exist only while flying; removing them is what stops their endless animations. */
+  @State raysFlying: boolean = false;
+  @State rayScale0: number = 0.5;
+  @State rayScale1: number = 0.5;
+  @State rayScale2: number = 0.5;
+  @State rayFade0: number = 0;
+  @State rayFade1: number = 0;
+  @State rayFade2: number = 0;
   private ticking: boolean = false;
   /** Whether any part of the badge is on screen; hidden tabs, closed sheets and scrolled-away rows do not animate. */
   private onScreen: boolean = false;
@@ -238,22 +252,72 @@ export struct ProBadge {
 
   aboutToDisappear(): void {
     if (this.ticking) { ProBadgeFlowClock.release(); this.ticking = false; }
+    this.raysFlying = false;
   }
 
-  /** Style, motion or colors changed: re-evaluate the clock and repaint a still canvas. */
-  onLookChange(): void { this.syncClock(); this.drawRays(); }
+  /** Style, motion or colors changed: re-evaluate the clock and rays, and repaint the canvases once. */
+  onLookChange(): void {
+    this.syncClock();
+    this.drawRays();
+    for (let k: number = 0; k < this.layerContexts.length; k++) { this.drawLayer(k); }
+  }
 
-  /** Clock tick: animated badges advance their frame (and moving rays repaint); still badges ignore it. */
+  /** Clock tick: color-flow badges advance their frame; still and 星爆-only badges ignore it. */
   onClockTick(): void {
-    if (!this.onScreen || !this.shown() || this.activeMotion() === 'static') { return; }
+    if (!this.onScreen || !this.shown() || !this.clocked()) { return; }
     this.frame = this.phase;
-    if (this.showsRays()) { this.drawRays(); }
   }
 
   syncClock(): void {
-    const wanted: boolean = this.onScreen && this.shown() && this.activeMotion() !== 'static';
+    const wanted: boolean = this.onScreen && this.shown() && this.clocked();
     if (wanted && !this.ticking) { ProBadgeFlowClock.acquire(); this.ticking = true; }
     if (!wanted && this.ticking) { ProBadgeFlowClock.release(); this.ticking = false; }
+    this.syncRays();
+  }
+
+  /** Only the color motions need the JS frame clock; 星爆 runs entirely as render-thread layer animations. */
+  private clocked(): boolean {
+    const motion: ProBadgeMotion = this.activeMotion();
+    return motion === 'sweep' || motion === 'shimmer' || motion === 'pulse';
+  }
+
+  private syncRays(): void {
+    const wanted: boolean = this.onScreen && this.shown() && this.showsRays() && this.raysMove();
+    if (wanted === this.raysFlying) { return; }
+    if (wanted) {
+      // Fresh contexts for the fresh canvases; each layer starts flying once its canvas is ready.
+      this.layerContexts = [];
+      for (let k: number = 0; k < PRO_BADGE_RAY_LAYERS; k++) {
+        this.layerContexts.push(new CanvasRenderingContext2D(new RenderingContextSettings(true)));
+      }
+      this.rayScale0 = 0.5; this.rayScale1 = 0.5; this.rayScale2 = 0.5;
+      this.rayFade0 = 0; this.rayFade1 = 0; this.rayFade2 = 0;
+    } else {
+      this.layerContexts = [];
+    }
+    this.raysFlying = wanted;
+  }
+
+  /** Endless flight of one layer: fade in near the center, then accelerate outward and fade at the edges. */
+  private flyLayer(k: number): void {
+    const near: number = 1.15;
+    const far: number = 3.0;
+    this.getUIContext().keyframeAnimateTo({ iterations: -1, delay: Math.round(k * RAY_FLIGHT_MS / PRO_BADGE_RAY_LAYERS) }, [
+      {
+        duration: Math.round(RAY_FLIGHT_MS * 0.3), curve: Curve.EaseOut,
+        event: (): void => { this.setLayer(k, near, 1); }
+      },
+      {
+        duration: Math.round(RAY_FLIGHT_MS * 0.7), curve: Curve.EaseIn,
+        event: (): void => { this.setLayer(k, far, 0); }
+      }
+    ]);
+  }
+
+  private setLayer(k: number, scale: number, fade: number): void {
+    if (k === 0) { this.rayScale0 = scale; this.rayFade0 = fade; }
+    else if (k === 1) { this.rayScale1 = scale; this.rayFade1 = fade; }
+    else { this.rayScale2 = scale; this.rayFade2 = fade; }
   }
 
   private shown(): boolean { return this.visible || this.previewStyle.length > 0; }
@@ -277,15 +341,11 @@ export struct ProBadge {
   private raysMove(): boolean { return this.activeMotion() !== 'static'; }
   /** Small badges carry fewer rays: same look at their size, much less to paint. */
   private rayCount(): number { return this.large ? 40 : 24; }
-  private rays(): ProBadgeWarpRay[] { return proBadgeWarpRays(this.frame, this.raysMove(), this.rayCount()); }
-  /** The plate keeps a faint fixed burst underneath the moving rays, like the engraved lines of the badge. */
-  private engravedRays(): ProBadgeWarpRay[] {
-    return this.activeStyle() === 'warp' && this.raysMove() ? proBadgeWarpRays(0, false, this.rayCount()) : [];
-  }
+  private raysPerLayer(): number { return this.large ? 14 : 9; }
   /** Silver-white on the plate with every fourth ray tinted by the palette; white over light fills. */
-  private rayColor(index: number): string {
+  private rayColor(index: number, count: number): string {
     if (!this.darkBody()) { return '#FFFFFF'; }
-    return index % 4 === 0 ? cycleColor(this.frame + index / this.rayCount(), this.colors()) : '#E8EEF8';
+    return index % 4 === 0 ? cycleColor(index / count, this.colors()) : '#E8EEF8';
   }
 
   private fillStops(): Array<[ResourceColor, number]> {
@@ -303,7 +363,7 @@ export struct ProBadge {
   }
   /** Current single accent color (outline ring, carbon text, emblem stripe, glow). */
   private liveColor(): string {
-    return this.activeMotion() === 'static' ? this.colors()[0] : cycleColor(this.frame, this.colors());
+    return this.clocked() ? cycleColor(this.frame, this.colors()) : this.colors()[0];
   }
   /** Outline ring and text: pastel palettes are deepened a little so they stay visible on light surfaces. */
   private ringColor(): string {
@@ -331,46 +391,69 @@ export struct ProBadge {
   /** Half the badge diagonal: the unit the rays are measured in, so they reach every corner. */
   private reach(): number { return Math.sqrt(this.w() * this.w() + this.h() * this.h()) / 2; }
 
-  /** Paints the engraved burst (plate only) and the moving rays for the current phase. */
-  drawRays(): void {
-    if (!this.rayCanvasReady || !this.showsRays()) { return; }
-    const ctx: CanvasRenderingContext2D = this.rayContext;
+  /** Strokes rays as tapered streaks: two solid halves (faint inner, bright outer), no gradient objects. */
+  private paintRays(ctx: CanvasRenderingContext2D, items: ProBadgeWarpRay[], strength: number, width: number): void {
     const w: number = this.w();
     const h: number = this.h();
     const reach: number = this.reach();
-    ctx.clearRect(0, 0, w, h);
-    const paint = (items: ProBadgeWarpRay[], strength: number): void => {
-      items.forEach((item: ProBadgeWarpRay, index: number): void => {
-        const opacity: number = item.opacity * strength * (this.darkBody() ? 1 : 0.7);
-        if (opacity <= 0.01) { return; }
-        const rad: number = item.angle * Math.PI / 180;
-        const inner: number = (item.radius - item.length / 2) * reach;
-        const outer: number = (item.radius + item.length / 2) * reach;
-        const x0: number = w / 2 + Math.cos(rad) * inner;
-        const y0: number = h / 2 + Math.sin(rad) * inner;
-        const x1: number = w / 2 + Math.cos(rad) * outer;
-        const y1: number = h / 2 + Math.sin(rad) * outer;
-        // Two solid strokes (faint inner half, bright outer half) read as a tapered streak without allocating a
-        // gradient object per ray per frame.
-        const xm: number = (x0 + x1) / 2;
-        const ym: number = (y0 + y1) / 2;
-        ctx.strokeStyle = this.rayColor(index);
-        ctx.lineWidth = (this.large ? 1 : 0.8) * item.weight;
-        ctx.globalAlpha = Math.min(1, opacity) * 0.35;
-        ctx.beginPath();
-        ctx.moveTo(x0, y0);
-        ctx.lineTo(xm, ym);
-        ctx.stroke();
-        ctx.globalAlpha = Math.min(1, opacity);
-        ctx.beginPath();
-        ctx.moveTo(xm, ym);
-        ctx.lineTo(x1, y1);
-        ctx.stroke();
-      });
-    };
-    paint(this.engravedRays(), 0.35);
-    paint(this.rays(), 1);
+    items.forEach((item: ProBadgeWarpRay, index: number): void => {
+      const opacity: number = Math.min(1, item.opacity * strength * (this.darkBody() ? 1 : 0.7));
+      if (opacity <= 0.01) { return; }
+      const rad: number = item.angle * Math.PI / 180;
+      const inner: number = (item.radius - item.length / 2) * reach;
+      const outer: number = (item.radius + item.length / 2) * reach;
+      const x0: number = w / 2 + Math.cos(rad) * inner;
+      const y0: number = h / 2 + Math.sin(rad) * inner;
+      const x1: number = w / 2 + Math.cos(rad) * outer;
+      const y1: number = h / 2 + Math.sin(rad) * outer;
+      const xm: number = (x0 + x1) / 2;
+      const ym: number = (y0 + y1) / 2;
+      ctx.strokeStyle = this.rayColor(index, items.length);
+      ctx.lineWidth = width * item.weight;
+      ctx.globalAlpha = opacity * 0.35;
+      ctx.beginPath();
+      ctx.moveTo(x0, y0);
+      ctx.lineTo(xm, ym);
+      ctx.stroke();
+      ctx.globalAlpha = opacity;
+      ctx.beginPath();
+      ctx.moveTo(xm, ym);
+      ctx.lineTo(x1, y1);
+      ctx.stroke();
+    });
     ctx.globalAlpha = 1;
+  }
+
+  /** The still burst: the full plate when 静态, a faint engraving under the flying rays otherwise. Painted once. */
+  drawRays(): void {
+    if (!this.rayCanvasReady || !this.showsRays()) { return; }
+    const ctx: CanvasRenderingContext2D = this.rayContext;
+    ctx.clearRect(0, 0, this.w(), this.h());
+    if (!this.raysMove()) {
+      this.paintRays(ctx, proBadgeWarpRays(0, false, this.rayCount()), 1, this.large ? 1 : 0.8);
+    } else if (this.activeStyle() === 'warp') {
+      this.paintRays(ctx, proBadgeWarpRays(0, false, this.rayCount()), 0.35, this.large ? 1 : 0.8);
+    }
+  }
+
+  /** One flying layer, painted once near the center; thinner strokes because the layer is scaled up as it flies. */
+  private drawLayer(k: number): void {
+    if (k >= this.layerContexts.length) { return; }
+    const ctx: CanvasRenderingContext2D = this.layerContexts[k];
+    ctx.clearRect(0, 0, this.w(), this.h());
+    this.paintRays(ctx, proBadgeRayLayer(k, this.raysPerLayer()), 1, this.large ? 0.55 : 0.45);
+  }
+
+  private layerScale(k: number): number { return k === 0 ? this.rayScale0 : k === 1 ? this.rayScale1 : this.rayScale2; }
+  private layerFade(k: number): number { return k === 0 ? this.rayFade0 : k === 1 ? this.rayFade1 : this.rayFade2; }
+
+  @Builder private rayLayer(k: number) {
+    Canvas(this.layerContexts[k])
+      .width('100%').height('100%')
+      .hitTestBehavior(HitTestMode.None)
+      .scale({ x: this.layerScale(k), y: this.layerScale(k) })
+      .opacity(this.layerFade(k))
+      .onReady((): void => { this.drawLayer(k); this.flyLayer(k); })
   }
 
   @Builder private body() {
@@ -386,6 +469,11 @@ export struct ProBadge {
           .width('100%').height('100%')
           .hitTestBehavior(HitTestMode.None)
           .onReady((): void => { this.rayCanvasReady = true; this.drawRays(); })
+      }
+      if (this.raysFlying && this.layerContexts.length === PRO_BADGE_RAY_LAYERS) {
+        this.rayLayer(0)
+        this.rayLayer(1)
+        this.rayLayer(2)
       }
       Text(this.activeStyle() === 'emblem' ? 'PRO' : 'Pro')
         .fontSize(this.activeStyle() === 'emblem' ? (this.large ? 12 : 9) : (this.large ? 13 : 10))

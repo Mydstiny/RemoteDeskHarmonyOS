@@ -199,3 +199,30 @@ export function proBadgeWarpRays(phase: number, animated: boolean, count: number
   }
   return result;
 }
+
+/** Number of ray layers the animated 星爆 cycles through (each a third of a cycle apart). */
+export const PRO_BADGE_RAY_LAYERS: number = 3;
+
+/**
+ * Rays of one animated 星爆 layer, laid out close to the center. The layer is painted once and the system then scales
+ * it outward and fades it, so the rays fly from the center to the edges without any per-frame drawing. Layers
+ * interleave their angles so the burst stays even as they take turns.
+ */
+export function proBadgeRayLayer(layer: number, perLayer: number): ProBadgeWarpRay[] {
+  const result: ProBadgeWarpRay[] = [];
+  const total: number = Math.max(4, Math.min(20, Math.floor(perLayer)));
+  const slot: number = 360 / total;
+  const k: number = ((Math.floor(layer) % PRO_BADGE_RAY_LAYERS) + PRO_BADGE_RAY_LAYERS) % PRO_BADGE_RAY_LAYERS;
+  for (let index: number = 0; index < total; index++) {
+    const seed: number = index * PRO_BADGE_RAY_LAYERS + k + 101;
+    const weight: number = 0.6 + rayJitter(seed, 3) * 0.6;
+    result.push({
+      angle: index * slot + k * slot / PRO_BADGE_RAY_LAYERS + (rayJitter(seed, 1) - 0.5) * slot * 0.5,
+      radius: 0.16 + rayJitter(seed, 2) * 0.2,
+      length: 0.08 + rayJitter(seed, 4) * 0.12,
+      opacity: Math.min(1, 0.55 + weight * 0.4),
+      weight
+    });
+  }
+  return result;
+}
