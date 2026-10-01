@@ -56,6 +56,9 @@ struct Fixture {
     }
     ~Fixture() { engine.reset(); if(writer.joinable()) writer.join(); close(peer); }
     bool receive(std::string& error, bool& pipeline) { return engine->receiveUpdateForTesting(pipeline,error); }
+    void armMonitorSwitch(int monitor=1, int phase=1) {
+        engine->armMonitorSwitchForTesting(monitor, phase);
+    }
     void good(size_t frameCount, bool expectedPipeline=false) {
         std::string error; bool pipeline=false; CHECK(receive(error,pipeline)); CHECK(error.empty());
         CHECK(pipeline==expectedPipeline); CHECK(frames.size()==frameCount);
@@ -96,6 +99,19 @@ int main() {
     test("ZRLE in LastRect update does not pipeline early",[]{ Bytes b; header(b,65535); zrle(b); last(b); Fixture f(b); f.good(1); CHECK(f.frames[0][0]==0x33); });
     test("single ZRLE retains next-request pipeline",[]{ Bytes b; header(b,1); zrle(b); Fixture f(b); f.good(1,true); });
     test("ZRLE compressed bound retained",[]{ Bytes b; header(b,65535); rectangle(b,16); u32(b,0xffffffff); Fixture f(b); f.bad("VNC ZRLE compressed length exceeds the rectangle-safe limit"); });
+    test("monitor switch drains baseline before confirmation",[]{
+        Bytes b; header(b,1); raw(b,0x44); header(b,1); raw(b,0x77);
+        Fixture f(b); f.armMonitorSwitch();
+        f.good(1); CHECK(f.engine->pendingMonitor()==1);
+        CHECK(f.engine->monitorSwitchInputBlocked());
+        f.good(2); CHECK(f.engine->currentMonitor()==1);
+        CHECK(!f.engine->monitorSwitchInputBlocked());
+    });
+    test("empty monitor response does not confirm",[]{
+        Bytes b; header(b,0); Fixture f(b); f.armMonitorSwitch(); f.good(0);
+        CHECK(f.engine->pendingMonitor()==1);
+        CHECK(f.engine->monitorSwitchInputBlocked());
+    });
     test("ERROR message published before delayed external callback",[]{
         std::promise<void> entered, release;
         auto enteredFuture=entered.get_future(); auto releaseFuture=release.get_future();

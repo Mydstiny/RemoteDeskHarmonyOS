@@ -11,8 +11,12 @@ M0/M1/M3/M4 evidence (2026-10-01): UltraVNC's public `rfbproto.h` defines the
 with a one-byte monitor count plus three-byte message payload, and client
 message 254 with monitor number plus two padding bytes. The implementation
 advertises the pseudo-encoding, parses the bounded count, exposes native/NAPI
-capability and switch calls, releases held input before the switch, blocks
-input until the first complete post-request framebuffer update, and fences
+capability and switch calls, releases held input before the switch, sends an
+ordered baseline full-update request before `SetMonitor` and a target request
+after it, and blocks input until a later non-empty target pixel update group
+(empty, cursor-only and LastRect-only groups do not confirm). This is the
+strongest confirmation available from UltraVNC's monitor contract; the server
+does not return a request ID or active-monitor acknowledgement.
 the ArkUI session generation. The VNC toolbar adds a conditional display
 action and a scrollable, session-only monitor panel; single-screen and
 unsupported servers keep the action hidden. TigerVNC has no corresponding

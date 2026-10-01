@@ -85,6 +85,7 @@ public:
     // Own a connected test stream and exercise the production FBU decoder.
     bool initializeUpdateStreamForTesting(int socketFd, int width, int height);
     bool receiveUpdateForTesting(bool& requestPipelined, std::string& error);
+    void armMonitorSwitchForTesting(int monitor, int fencePhase = 1);
 #endif
 
 private:
@@ -181,6 +182,9 @@ private:
     std::atomic<int> pendingMonitor_ {-1};
     std::atomic<uint64_t> monitorSwitchGeneration_ {0};
     std::atomic<bool> monitorSwitchInputBlocked_ {false};
+    // 0=idle, 1=draining the baseline update request sent before SetMonitor,
+    // 2=waiting for the target update request sent after SetMonitor.
+    std::atomic<int> monitorSwitchFencePhase_ {0};
     mutable std::mutex monitorSwitchMutex_;
     std::string monitorSwitchLastResult_ = "idle";
 };

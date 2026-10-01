@@ -265,6 +265,7 @@ void VncRfbEngine::requestStop() {
     const bool wasRequested = stopRequested_.exchange(true, std::memory_order_acq_rel);
     pendingMonitor_.store(-1, std::memory_order_release);
     monitorSwitchInputBlocked_.store(false, std::memory_order_release);
+    monitorSwitchFencePhase_.store(0, std::memory_order_release);
     {
         std::lock_guard<std::mutex> lock(monitorSwitchMutex_);
         monitorSwitchLastResult_ = "disconnected";
@@ -862,6 +863,7 @@ bool VncRfbEngine::receiveFramebufferUpdate(bool& requestPipelined,
     }
     bool dirty = false;
     bool fullFrame = false;
+    bool hasPixelFrame = false;
     int dirtyLeft = framebufferWidth_;
     int dirtyTop = framebufferHeight_;
     int dirtyRight = 0;
@@ -915,12 +917,14 @@ bool VncRfbEngine::receiveFramebufferUpdate(bool& requestPipelined,
         }
         if (encoding == VncRfbProtocol::kRawEncoding) {
             if (!receiveRawRectangle(x, y, width, height, error)) return rejectUpdate(3, encoding);
+            hasPixelFrame = true;
             markDirty(x, y, width, height, false);
             if (frameEncoding != VncRfbProtocol::kZrleEncoding) {
                 frameEncoding = VncRfbProtocol::kRawEncoding;
             }
         } else if (encoding == VncRfbProtocol::kCopyRectEncoding) {
             if (!receiveCopyRectangle(x, y, width, height, error)) return rejectUpdate(3, encoding);
+            hasPixelFrame = true;
             markDirty(x, y, width, height, false);
             if (frameEncoding < 0) {
                 frameEncoding = VncRfbProtocol::kCopyRectEncoding;
@@ -929,6 +933,7 @@ bool VncRfbEngine::receiveFramebufferUpdate(bool& requestPipelined,
             if (!receiveZrleRectangle(x, y, width, height,
                                       count == 1 && index == 0,
                                       requestPipelined, error)) return rejectUpdate(3, encoding);
+            hasPixelFrame = true;
             markDirty(x, y, width, height, false);
             frameEncoding = VncRfbProtocol::kZrleEncoding;
         } else if (encoding == VncCursorProtocol::kEncoding) {
@@ -955,16 +960,23 @@ bool VncRfbEngine::receiveFramebufferUpdate(bool& requestPipelined,
             emitFrame(dirtyLeft, dirtyTop, dirtyRight - dirtyLeft, dirtyBottom - dirtyTop);
         }
     }
-    // UltraVNC does not send a separate acknowledgement for SetMonitor.
-    // Treat the first complete framebuffer update after the request as the
-    // bounded confirmation point; stale generations are still fenced by the
-    // pending monitor and switch generation state.
-    if (pendingMonitor_.load(std::memory_order_acquire) >= 0) {
-        const int confirmed = pendingMonitor_.exchange(-1, std::memory_order_acq_rel);
-        currentMonitor_.store(confirmed, std::memory_order_release);
-        monitorSwitchInputBlocked_.store(false, std::memory_order_release);
-        std::lock_guard<std::mutex> lock(monitorSwitchMutex_);
-        monitorSwitchLastResult_ = "confirmed";
+    // UltraVNC does not send a separate acknowledgement for SetMonitor. The
+    // client sends a baseline full update request before SetMonitor and a
+    // second full request after it. A pixel FBU in phase 1 only drains the
+    // baseline/queued data; only a later pixel FBU in phase 2 can confirm.
+    // Empty, cursor-only and LastRect-only groups never confirm.
+    if (hasPixelFrame && pendingMonitor_.load(std::memory_order_acquire) >= 0) {
+        const int phase = monitorSwitchFencePhase_.load(std::memory_order_acquire);
+        if (phase == 1) {
+            monitorSwitchFencePhase_.store(2, std::memory_order_release);
+        } else if (phase == 2) {
+            const int confirmed = pendingMonitor_.exchange(-1, std::memory_order_acq_rel);
+            monitorSwitchFencePhase_.store(0, std::memory_order_release);
+            currentMonitor_.store(confirmed, std::memory_order_release);
+            monitorSwitchInputBlocked_.store(false, std::memory_order_release);
+            std::lock_guard<std::mutex> lock(monitorSwitchMutex_);
+            monitorSwitchLastResult_ = "confirmed";
+        }
     }
     return true;
 }
@@ -1517,13 +1529,19 @@ bool VncRfbEngine::requestMonitorSwitch(int monitor) {
     }
     pendingMonitor_.store(monitor, std::memory_order_release);
     monitorSwitchInputBlocked_.store(true, std::memory_order_release);
+    monitorSwitchFencePhase_.store(1, std::memory_order_release);
     {
         std::lock_guard<std::mutex> lock(monitorSwitchMutex_);
         monitorSwitchLastResult_ = "requested";
     }
-    if (!writeBytes(packet.data(), packet.size(), error)) {
+    // Establish an ordered baseline request before SetMonitor. The receive
+    // loop drains its response in phase 1, so queued old-monitor pixels cannot
+    // directly confirm the new target.
+    if (!sendFramebufferUpdateRequest(false, error) ||
+        !writeBytes(packet.data(), packet.size(), error)) {
         pendingMonitor_.store(-1, std::memory_order_release);
         monitorSwitchInputBlocked_.store(false, std::memory_order_release);
+        monitorSwitchFencePhase_.store(0, std::memory_order_release);
         std::lock_guard<std::mutex> lock(monitorSwitchMutex_);
         monitorSwitchLastResult_ = "rejected";
         VNC_DIAG_WARN("[VNC-DIAG] UltraVNC monitor switch failed: %{public}s", error.c_str());
@@ -1532,6 +1550,7 @@ bool VncRfbEngine::requestMonitorSwitch(int monitor) {
     if (!sendFramebufferUpdateRequest(false, error)) {
         pendingMonitor_.store(-1, std::memory_order_release);
         monitorSwitchInputBlocked_.store(false, std::memory_order_release);
+        monitorSwitchFencePhase_.store(0, std::memory_order_release);
         std::lock_guard<std::mutex> lock(monitorSwitchMutex_);
         monitorSwitchLastResult_ = "rejected";
         return false;
@@ -1552,6 +1571,12 @@ bool VncRfbEngine::initializeUpdateStreamForTesting(int socketFd, int width, int
 
 bool VncRfbEngine::receiveUpdateForTesting(bool& requestPipelined, std::string& error) {
     return receiveFramebufferUpdate(requestPipelined, error);
+}
+
+void VncRfbEngine::armMonitorSwitchForTesting(int monitor, int fencePhase) {
+    pendingMonitor_.store(monitor, std::memory_order_release);
+    monitorSwitchInputBlocked_.store(true, std::memory_order_release);
+    monitorSwitchFencePhase_.store(fencePhase, std::memory_order_release);
 }
 
 bool VncRfbEngine::invokeFrameCallbackForTesting(const VideoFrame& frame) {
