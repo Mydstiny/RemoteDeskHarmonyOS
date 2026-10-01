@@ -4,9 +4,10 @@ import { AppConfig, Palette, buildDark, buildLight } from '../common/Theme';
 import {
   ProBadge, ProBadgePreferences, ProBadgeSettings, ProBadgeStyle, ProBadgeMotion,
   ProBadgeStyleOption, ProBadgeMotionOption, PRO_BADGE_STYLE_OPTIONS,
-  PRO_BADGE_MOTION_OPTIONS, proBadgePaletteStops
+  PRO_BADGE_MOTION_OPTIONS, proBadgePaletteStops, PRO_BADGE_PRESETS, ProBadgePreset, setProBadgeAnimationPaused
 } from './ProBadge';
-import { mixHex, PRO_BADGE_PALETTES, ProBadgePalette, validBadgeHex } from '../services/pro/ProBadgeFlowPolicy';
+import { display } from '@kit.ArkUI';
+import { badgePalette, mixHex, PRO_BADGE_PALETTES, ProBadgePalette, validBadgeHex } from '../services/pro/ProBadgeFlowPolicy';
 
 import { ProEntries } from '../services/pro/ProEntries';
 import { ProFeature } from '../services/pro/ProFeatureCatalog';
@@ -409,11 +410,35 @@ export struct ProBadgeSettingsPanel {
 
   private pal(): Palette { return this.theme === 'light' ? buildLight(this.accent) : buildDark(this.accent); }
   private colorsJson(): string { return JSON.stringify(this.colors); }
+  private maxPanelHeight(): number {
+    try {
+      const screen: display.Display = display.getDefaultDisplaySync();
+      return Math.max(360, Math.round(screen.height / Math.max(1, screen.densityPixels) * 0.82));
+    } catch (_error) {
+      return 560;
+    }
+  }
+  aboutToDisappear(): void { setProBadgeAnimationPaused(false); }
   private save(): void {
     ProBadgePreferences.save(getContext(this), { visible: this.visible, style: this.badgeStyle,
       motion: this.badgeMotion, palette: this.palette, colors: this.colors });
   }
   private pickStyle(style: ProBadgeStyle): void { this.badgeStyle = style; this.save(); }
+  /** One tap applies the preset's style, motion and palette together and saves them. */
+  private applyPreset(preset: ProBadgePreset): void {
+    const palette: ProBadgePalette | null = badgePalette(preset.palette);
+    this.badgeStyle = preset.style; this.badgeMotion = preset.motion;
+    if (palette !== null) { this.palette = palette.id; this.colors = palette.colors.slice(); }
+    this.hexDraft = this.colors[this.slot === 0 ? 0 : 1];
+    this.save();
+  }
+  private presetActive(preset: ProBadgePreset): boolean {
+    return this.badgeStyle === preset.style && this.badgeMotion === preset.motion && this.palette === preset.palette;
+  }
+  private presetColors(preset: ProBadgePreset): string {
+    const palette: ProBadgePalette | null = badgePalette(preset.palette);
+    return JSON.stringify(palette === null ? this.colors : palette.colors);
+  }
   private pickMotion(motion: ProBadgeMotion): void { this.badgeMotion = motion; this.save(); }
   private pickPalette(item: ProBadgePalette): void {
     this.palette = item.id; this.colors = item.colors.slice(); this.hexDraft = this.colors[this.slot === 0 ? 0 : 1];
@@ -429,6 +454,7 @@ export struct ProBadgeSettingsPanel {
     this.hexDraft = index === 0 ? start : end;
     this.save();
   }
+  private slotColor(): string { return this.colors[this.slot === 0 ? 0 : Math.min(1, this.colors.length - 1)] ?? ''; }
   private pickSlot(index: number): void {
     this.slot = index; this.hexDraft = this.colors[index === 0 ? 0 : Math.min(1, this.colors.length - 1)];
   }
@@ -446,6 +472,25 @@ export struct ProBadgeSettingsPanel {
     .layoutWeight(1).height(112).justifyContent(FlexAlign.Center).borderRadius(18)
     .backgroundColor(dark ? '#0E0E12' : this.pal().card)
     .border({ width: 0.5, color: dark ? '#22FFFFFF' : this.pal().cardBorder })
+  }
+
+  @Builder private presetCard(preset: ProBadgePreset) {
+    Column({ space: 8 }) {
+      Column() {
+        // Presets preview as still images; the stages above show the live motion.
+        ProBadge({ large: true, previewStyle: preset.style, previewMotion: 'static',
+          previewColors: this.presetColors(preset) })
+      }.width('100%').height(44).justifyContent(FlexAlign.Center).borderRadius(12)
+      .backgroundColor(preset.style === 'outline' || preset.style === 'warp' || preset.style === 'carbon' ? '#0E0E12' :
+        this.pal().surface)
+      Text(preset.label).fontSize(12).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
+    }
+    .width(108).padding(8).margin({ right: 10 }).borderRadius(16)
+    .backgroundColor(this.pal().card)
+    .border({ width: this.presetActive(preset) ? 1.5 : 0.5,
+      color: this.presetActive(preset) ? this.accent : this.pal().cardBorder })
+    .onClick((): void => { this.applyPreset(preset); })
+    .accessibilityText('预设 ' + preset.label + (this.presetActive(preset) ? '，使用中' : ''))
   }
 
   @Builder private styleCard(option: ProBadgeStyleOption) {
@@ -514,6 +559,17 @@ export struct ProBadgeSettingsPanel {
             })
         }.width('100%').padding(16).backgroundColor(this.pal().card).borderRadius(16)
 
+        Row() {
+          Text('一键预设').fontSize(13).fontColor(this.pal().text2).layoutWeight(1)
+          Text('点选即可整套应用').fontSize(11).fontColor(this.pal().text3)
+        }.width('100%')
+        Scroll() {
+          Row() {
+            ForEach(PRO_BADGE_PRESETS, (preset: ProBadgePreset): void => { this.presetCard(preset) },
+              (preset: ProBadgePreset): string => preset.id)
+          }
+        }.scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off).width('100%').align(Alignment.Start)
+
         Text('样式').fontSize(13).fontColor(this.pal().text2).width('100%')
         Flex({ wrap: FlexWrap.Wrap }) {
           ForEach(PRO_BADGE_STYLE_OPTIONS, (option: ProBadgeStyleOption): void => { this.styleCard(option) },
@@ -566,7 +622,9 @@ export struct ProBadgeSettingsPanel {
             TextInput({ text: this.hexDraft.replace('#', ''), placeholder: 'RRGGBB' }).fontSize(13).height(36)
               .layoutWeight(1).maxLength(6).backgroundColor(this.pal().surface).borderRadius(9)
               .onChange((value: string): void => {
-                const hex: string = '#' + value.trim();
+                const hex: string = '#' + value.trim().toUpperCase();
+                // The field also reports its initial text; only a real edit switches to a custom palette.
+                if (hex === this.slotColor().toUpperCase()) { return; }
                 this.hexDraft = hex;
                 if (validBadgeHex(hex)) { this.setCustom(this.slot, hex); }
               })
@@ -575,6 +633,11 @@ export struct ProBadgeSettingsPanel {
             .fontSize(11).fontColor(this.pal().text3).lineHeight(16).width('100%')
         }.width('100%').padding(14).backgroundColor(this.pal().card).borderRadius(16)
       }.width('100%').padding({ left: 20, right: 20, top: 20, bottom: 28 })
-    }.width('100%').constraintSize({ maxHeight: 760 }).scrollBar(BarState.Off)
+    }
+    // Fit inside the sheet on every device; a fixed 760 made the bottom unreachable on Pad and PC.
+    .width('100%').constraintSize({ maxHeight: this.maxPanelHeight() }).scrollBar(BarState.Off)
+    .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: false })
+    .onScrollStart((): void => { setProBadgeAnimationPaused(true); })
+    .onScrollStop((): void => { setProBadgeAnimationPaused(false); })
   }
 }

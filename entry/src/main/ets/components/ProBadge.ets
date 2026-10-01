@@ -52,6 +52,20 @@ export const PRO_BADGE_MOTION_OPTIONS: ProBadgeMotionOption[] = [
   { id: 'static', label: '静态', detail: '固定渐变，不播放动效' }
 ];
 
+/** A one-tap look: style, motion and palette chosen to go together. */
+export interface ProBadgePreset { id: string; label: string; style: ProBadgeStyle; motion: ProBadgeMotion; palette: string; }
+
+export const PRO_BADGE_PRESETS: ProBadgePreset[] = [
+  { id: 'default', label: '极光流彩', style: 'capsule', motion: 'sweep', palette: 'aurora' },
+  { id: 'warp', label: '星际穿越', style: 'warp', motion: 'meteor', palette: 'glacier' },
+  { id: 'neon', label: '霓虹夜行', style: 'outline', motion: 'sweep', palette: 'neon' },
+  { id: 'gold', label: '暗金典藏', style: 'carbon', motion: 'shimmer', palette: 'gold' },
+  { id: 'crimson', label: '赤焰性能', style: 'emblem', motion: 'shimmer', palette: 'crimson' },
+  { id: 'sunset', label: '落日星爆', style: 'warp', motion: 'meteor', palette: 'sunset' },
+  { id: 'sakura', label: '樱花呼吸', style: 'soft', motion: 'pulse', palette: 'sakura' },
+  { id: 'forest', label: '森野静谧', style: 'soft', motion: 'static', palette: 'forest' }
+];
+
 export function proBadgeStyleLabel(style: string): string {
   const found: ProBadgeStyleOption | undefined = PRO_BADGE_STYLE_OPTIONS.find((item: ProBadgeStyleOption): boolean =>
     item.id === style);
@@ -176,11 +190,14 @@ const PRO_BADGE_PHASE: string = 'proBadgePhase';
 class ProBadgeFlowClock {
   private static users: number = 0;
   private static timer: number = -1;
+  /** Scrolling lists pause the clock so badges do not re-render while the user drags. */
+  static pausedBy: number = 0;
 
   static acquire(): void {
     ProBadgeFlowClock.users++;
     if (ProBadgeFlowClock.timer !== -1) { return; }
     ProBadgeFlowClock.timer = setInterval((): void => {
+      if (ProBadgeFlowClock.pausedBy > 0) { return; }
       AppStorage.setOrCreate(PRO_BADGE_PHASE, (Date.now() % FLOW_PERIOD_MS) / FLOW_PERIOD_MS);
     }, FLOW_FRAME_MS);
   }
@@ -194,20 +211,31 @@ class ProBadgeFlowClock {
   }
 }
 
+/**
+ * Freezes every Pro badge animation while a scroll is in progress (call with true on scroll start, false on stop).
+ * Each badge keeps its current frame, so pausing is invisible apart from the motion holding still.
+ */
+export function setProBadgeAnimationPaused(paused: boolean): void {
+  ProBadgeFlowClock.pausedBy = paused ? 1 : 0;
+}
+
 /** Product marker only; never grants access or represents a payment status on its own. */
 @Component
 export struct ProBadge {
   @Prop large: boolean = false;
   /** Optional preview overrides used by the Pro 标识 settings. */
-  @Prop previewStyle: string = '';
-  @Prop previewMotion: string = '';
+  @Prop @Watch('onLookChange') previewStyle: string = '';
+  @Prop @Watch('onLookChange') previewMotion: string = '';
   /** JSON array of colors for previews; empty uses the saved colors. */
-  @Prop previewColors: string = '';
+  @Prop @Watch('onLookChange') previewColors: string = '';
   @StorageProp(PRO_BADGE_VISIBLE) @Watch('syncClock') visible: boolean = true;
-  @StorageProp(PRO_BADGE_STYLE) style: string = 'capsule';
-  @StorageProp(PRO_BADGE_MOTION) @Watch('syncClock') motion: string = 'sweep';
-  @StorageProp(PRO_BADGE_COLORS) colorsJson: string = '';
-  @StorageProp(PRO_BADGE_PHASE) phase: number = 0;
+  @StorageProp(PRO_BADGE_STYLE) @Watch('onLookChange') style: string = 'capsule';
+  @StorageProp(PRO_BADGE_MOTION) @Watch('onLookChange') motion: string = 'sweep';
+  @StorageProp(PRO_BADGE_COLORS) @Watch('onLookChange') colorsJson: string = '';
+  @StorageProp(PRO_BADGE_PHASE) @Watch('drawRays') phase: number = 0;
+  /** Rays are painted on a canvas each frame; ForEach over same-keyed items would never repaint them. */
+  private rayContext: CanvasRenderingContext2D = new CanvasRenderingContext2D(new RenderingContextSettings(true));
+  private rayCanvasReady: boolean = false;
   private ticking: boolean = false;
 
   aboutToAppear(): void {
@@ -219,6 +247,9 @@ export struct ProBadge {
     if (this.ticking) { ProBadgeFlowClock.release(); this.ticking = false; }
   }
 
+  /** Style, motion or colors changed: re-evaluate the clock and repaint a still canvas. */
+  onLookChange(): void { this.syncClock(); this.drawRays(); }
+
   syncClock(): void {
     const wanted: boolean = this.shown() && this.activeMotion() !== 'static';
     if (wanted && !this.ticking) { ProBadgeFlowClock.acquire(); this.ticking = true; }
@@ -228,17 +259,26 @@ export struct ProBadge {
   private shown(): boolean { return this.visible || this.previewStyle.length > 0; }
   private activeStyle(): ProBadgeStyle { return styleOr(this.previewStyle.length > 0 ? this.previewStyle : this.style); }
   private activeMotion(): ProBadgeMotion { return motionOr(this.previewMotion.length > 0 ? this.previewMotion : this.motion); }
-  private colors(): string[] { return parseColors(this.previewColors.length > 0 ? this.previewColors : this.colorsJson); }
+  /** Parsed colors, cached by their JSON so a frame (and each of its 40 rays) does not re-parse them. */
+  private colorsKey: string = '\u0000';
+  private colorsCache: string[] = [];
+  private colors(): string[] {
+    const key: string = this.previewColors.length > 0 ? this.previewColors : this.colorsJson;
+    if (key !== this.colorsKey) { this.colorsKey = key; this.colorsCache = parseColors(key); }
+    return this.colorsCache;
+  }
   /** Light styles fill with the colors; carbon, emblem and the warp plate sit on a dark body. */
   private darkBody(): boolean {
     return this.activeStyle() === 'carbon' || this.activeStyle() === 'emblem' || this.activeStyle() === 'warp';
   }
-  /** The 星爆 rays: always on the warp plate (still unless the motion is 星爆), and on any style with 星爆 motion. */
+  /** The 星爆 rays: always on the warp plate, and on any style with the 星爆 motion. */
   private showsRays(): boolean { return this.activeStyle() === 'warp' || this.activeMotion() === 'meteor'; }
-  private rays(): ProBadgeWarpRay[] { return proBadgeWarpRays(this.phase, this.activeMotion() === 'meteor'); }
+  /** Rays fly outward with every motion except 静态, where the plate shows its fixed burst. */
+  private raysMove(): boolean { return this.activeMotion() !== 'static'; }
+  private rays(): ProBadgeWarpRay[] { return proBadgeWarpRays(this.phase, this.raysMove()); }
   /** The plate keeps a faint fixed burst underneath the moving rays, like the engraved lines of the badge. */
   private engravedRays(): ProBadgeWarpRay[] {
-    return this.activeStyle() === 'warp' && this.activeMotion() === 'meteor' ? proBadgeWarpRays(0, false) : [];
+    return this.activeStyle() === 'warp' && this.raysMove() ? proBadgeWarpRays(0, false) : [];
   }
   /** Silver-white on the plate with every fourth ray tinted by the palette; white over light fills. */
   private rayColor(index: number): string {
@@ -289,21 +329,41 @@ export struct ProBadge {
   /** Half the badge diagonal: the unit the rays are measured in, so they reach every corner. */
   private reach(): number { return Math.sqrt(this.w() * this.w() + this.h() * this.h()) / 2; }
 
-  @Builder private ray(item: ProBadgeWarpRay, index: number, strength: number) {
-    Row()
-      .width(Math.max(1.5, item.length * this.reach()))
-      .height((this.large ? 1 : 0.8) * item.weight)
-      .borderRadius(1)
-      .linearGradient({ angle: 90, colors: [[withAlpha(this.rayColor(index), '00'), 0],
-        [withAlpha(this.rayColor(index), 'FF'), 1]] })
-      .opacity(item.opacity * strength * (this.darkBody() ? 1 : 0.7))
-      .position({
-        x: this.w() / 2 + Math.cos(item.angle * Math.PI / 180) * item.radius * this.reach() -
-          item.length * this.reach() / 2,
-        y: this.h() / 2 + Math.sin(item.angle * Math.PI / 180) * item.radius * this.reach() - 0.5
-      })
-      .rotate({ angle: item.angle })
-      .hitTestBehavior(HitTestMode.None)
+  /** Paints the engraved burst (plate only) and the moving rays for the current phase. */
+  drawRays(): void {
+    if (!this.rayCanvasReady || !this.showsRays()) { return; }
+    const ctx: CanvasRenderingContext2D = this.rayContext;
+    const w: number = this.w();
+    const h: number = this.h();
+    const reach: number = this.reach();
+    ctx.clearRect(0, 0, w, h);
+    const paint = (items: ProBadgeWarpRay[], strength: number): void => {
+      items.forEach((item: ProBadgeWarpRay, index: number): void => {
+        const opacity: number = item.opacity * strength * (this.darkBody() ? 1 : 0.7);
+        if (opacity <= 0.01) { return; }
+        const rad: number = item.angle * Math.PI / 180;
+        const inner: number = (item.radius - item.length / 2) * reach;
+        const outer: number = (item.radius + item.length / 2) * reach;
+        const x0: number = w / 2 + Math.cos(rad) * inner;
+        const y0: number = h / 2 + Math.sin(rad) * inner;
+        const x1: number = w / 2 + Math.cos(rad) * outer;
+        const y1: number = h / 2 + Math.sin(rad) * outer;
+        const color: string = this.rayColor(index);
+        const gradient: CanvasGradient = ctx.createLinearGradient(x0, y0, x1, y1);
+        gradient.addColorStop(0, withAlpha(color, '00'));
+        gradient.addColorStop(1, withAlpha(color, 'FF'));
+        ctx.globalAlpha = Math.min(1, opacity);
+        ctx.strokeStyle = gradient;
+        ctx.lineWidth = (this.large ? 1 : 0.8) * item.weight;
+        ctx.beginPath();
+        ctx.moveTo(x0, y0);
+        ctx.lineTo(x1, y1);
+        ctx.stroke();
+      });
+    };
+    paint(this.engravedRays(), 0.35);
+    paint(this.rays(), 1);
+    ctx.globalAlpha = 1;
   }
 
   @Builder private body() {
@@ -314,11 +374,11 @@ export struct ProBadge {
           .radialGradient({ center: ['50%', '50%'], radius: this.w() * 0.55,
             colors: [['#663A5BC8', 0], ['#00000000', 1]] })
       }
-      ForEach(this.engravedRays(), (item: ProBadgeWarpRay, index: number): void => { this.ray(item, index, 0.35) },
-        (_item: ProBadgeWarpRay, index: number): string => 'e' + index.toString())
       if (this.showsRays()) {
-        ForEach(this.rays(), (item: ProBadgeWarpRay, index: number): void => { this.ray(item, index, 1) },
-          (_item: ProBadgeWarpRay, index: number): string => 'r' + index.toString())
+        Canvas(this.rayContext)
+          .width('100%').height('100%')
+          .hitTestBehavior(HitTestMode.None)
+          .onReady((): void => { this.rayCanvasReady = true; this.drawRays(); })
       }
       Text(this.activeStyle() === 'emblem' ? 'PRO' : 'Pro')
         .fontSize(this.activeStyle() === 'emblem' ? (this.large ? 12 : 9) : (this.large ? 13 : 10))
