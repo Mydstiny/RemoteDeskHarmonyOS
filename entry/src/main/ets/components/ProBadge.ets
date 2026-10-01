@@ -3,7 +3,7 @@ import { preferences } from '@kit.ArkData';
 import { AppConfig } from '../common/Theme';
 import {
   badgeInkFor, badgeLuminance, cleanBadgeColors, cycleColor, mixHex, PRO_BADGE_DEFAULT_PRIMARY, PRO_BADGE_DEFAULT_SECONDARY,
-  proBadgeCycleStops, ProBadgeMeteor, proBadgeMeteors, proBadgePulse, proBadgeShimmerStops, proBadgeStaticStops,
+  proBadgeCycleStops, proBadgePulse, ProBadgeWarpRay, proBadgeWarpRays, proBadgeShimmerStops, proBadgeStaticStops,
   validBadgeHex, withAlpha
 } from '../services/pro/ProBadgeFlowPolicy';
 
@@ -20,7 +20,7 @@ const PRO_BADGE_SECONDARY: string = 'proBadgeSecondary';
 const PRO_BADGE_COLORS: string = 'proBadgeColors';
 const PRO_BADGE_PALETTE: string = 'proBadgePalette';
 
-export type ProBadgeStyle = 'capsule' | 'soft' | 'outline' | 'carbon' | 'emblem';
+export type ProBadgeStyle = 'capsule' | 'soft' | 'outline' | 'carbon' | 'emblem' | 'warp';
 export type ProBadgeMotion = 'sweep' | 'pulse' | 'shimmer' | 'meteor' | 'static';
 
 export interface ProBadgeSettings {
@@ -40,12 +40,13 @@ export const PRO_BADGE_STYLE_OPTIONS: ProBadgeStyleOption[] = [
   { id: 'soft', label: '柔光卡片', detail: '更饱满的圆角徽章' },
   { id: 'outline', label: '霓虹描边', detail: '透明底，发光轮廓' },
   { id: 'carbon', label: '曜黑金属', detail: '深色底，彩色字' },
-  { id: 'emblem', label: '性能徽记', detail: '斜体字标，底部光带' }
+  { id: 'emblem', label: '性能徽记', detail: '斜体字标，底部光带' },
+  { id: 'warp', label: '星爆铭牌', detail: '深蓝底板，放射光线' }
 ];
 
 export const PRO_BADGE_MOTION_OPTIONS: ProBadgeMotionOption[] = [
   { id: 'sweep', label: '流彩', detail: '颜色沿徽章缓慢流动' },
-  { id: 'meteor', label: '流星', detail: '光尾从徽章向两侧发散' },
+  { id: 'meteor', label: '星爆', detail: '光线从中心向四周放射流动' },
   { id: 'shimmer', label: '高光', detail: '一束光掠过后稍作停顿' },
   { id: 'pulse', label: '呼吸', detail: '亮度与辉光柔和起伏' },
   { id: 'static', label: '静态', detail: '固定渐变，不播放动效' }
@@ -64,7 +65,7 @@ export function proBadgeMotionLabel(motion: string): string {
 }
 
 function styleOr(value: Object): ProBadgeStyle {
-  return value === 'soft' || value === 'outline' || value === 'carbon' || value === 'emblem' ?
+  return value === 'soft' || value === 'outline' || value === 'carbon' || value === 'emblem' || value === 'warp' ?
     value as ProBadgeStyle : 'capsule';
 }
 function motionOr(value: Object): ProBadgeMotion {
@@ -228,17 +229,32 @@ export struct ProBadge {
   private activeStyle(): ProBadgeStyle { return styleOr(this.previewStyle.length > 0 ? this.previewStyle : this.style); }
   private activeMotion(): ProBadgeMotion { return motionOr(this.previewMotion.length > 0 ? this.previewMotion : this.motion); }
   private colors(): string[] { return parseColors(this.previewColors.length > 0 ? this.previewColors : this.colorsJson); }
-  /** Light styles fill with the colors; carbon and emblem sit on a dark body. */
-  private darkBody(): boolean { return this.activeStyle() === 'carbon' || this.activeStyle() === 'emblem'; }
+  /** Light styles fill with the colors; carbon, emblem and the warp plate sit on a dark body. */
+  private darkBody(): boolean {
+    return this.activeStyle() === 'carbon' || this.activeStyle() === 'emblem' || this.activeStyle() === 'warp';
+  }
+  /** The 星爆 rays: always on the warp plate (still unless the motion is 星爆), and on any style with 星爆 motion. */
+  private showsRays(): boolean { return this.activeStyle() === 'warp' || this.activeMotion() === 'meteor'; }
+  private rays(): ProBadgeWarpRay[] { return proBadgeWarpRays(this.phase, this.activeMotion() === 'meteor'); }
+  /** The plate keeps a faint fixed burst underneath the moving rays, like the engraved lines of the badge. */
+  private engravedRays(): ProBadgeWarpRay[] {
+    return this.activeStyle() === 'warp' && this.activeMotion() === 'meteor' ? proBadgeWarpRays(0, false) : [];
+  }
+  /** Silver-white on the plate with every fourth ray tinted by the palette; white over light fills. */
+  private rayColor(index: number): string {
+    if (!this.darkBody()) { return '#FFFFFF'; }
+    return index % 4 === 0 ? cycleColor(this.phase + index / 40, this.colors()) : '#E8EEF8';
+  }
 
   private fillStops(): Array<[ResourceColor, number]> {
     const motion: ProBadgeMotion = this.activeMotion();
     if (motion === 'shimmer') { return proBadgeShimmerStops(this.phase, this.colors()); }
-    if (motion === 'sweep' || motion === 'meteor') { return proBadgeCycleStops(this.phase * (motion === 'meteor' ? 0.5 : 1), this.colors()); }
+    if (motion === 'sweep') { return proBadgeCycleStops(this.phase, this.colors()); }
     return proBadgeStaticStops(this.colors());
   }
   /** Body fill: a dark metal for carbon/emblem, transparent for outline, otherwise the animated colors. */
   private bodyStops(): Array<[ResourceColor, number]> {
+    if (this.activeStyle() === 'warp') { return [['#1D2856', 0], ['#0B1028', 0.55], ['#121A3C', 1]]; }
     if (this.darkBody()) { return [['#2B2B35', 0], ['#121217', 1]]; }
     if (this.activeStyle() === 'outline') { return [['#00000000', 0], ['#00000000', 1]]; }
     return this.fillStops();
@@ -257,7 +273,7 @@ export struct ProBadge {
   private w(): number {
     const style: ProBadgeStyle = this.activeStyle();
     if (style === 'soft') { return this.large ? 52 : 36; }
-    if (style === 'emblem') { return this.large ? 56 : 40; }
+    if (style === 'emblem' || style === 'warp') { return this.large ? 56 : 40; }
     return this.large ? 48 : 34;
   }
   private h(): number {
@@ -266,22 +282,25 @@ export struct ProBadge {
   }
   private radius(): number {
     const style: ProBadgeStyle = this.activeStyle();
-    if (style === 'outline' || style === 'emblem') { return this.large ? 7 : 5; }
+    if (style === 'outline' || style === 'emblem' || style === 'warp') { return this.large ? 7 : 5; }
     return this.large ? 10 : 8;
   }
 
-  @Builder private meteor(item: ProBadgeMeteor) {
+  /** Half the badge diagonal: the unit the rays are measured in, so they reach every corner. */
+  private reach(): number { return Math.sqrt(this.w() * this.w() + this.h() * this.h()) / 2; }
+
+  @Builder private ray(item: ProBadgeWarpRay, index: number, strength: number) {
     Row()
-      .width(Math.max(2, item.length * this.h()))
-      .height(this.large ? 2 : 1.6)
+      .width(Math.max(1.5, item.length * this.reach()))
+      .height((this.large ? 1 : 0.8) * item.weight)
       .borderRadius(1)
-      .linearGradient({ angle: 90, colors: [[withAlpha(item.color, '00'), 0], [withAlpha(item.color, 'F2'), 0.62],
-        ['#FFFFFFFF', 1]] })
-      .opacity(item.opacity)
+      .linearGradient({ angle: 90, colors: [[withAlpha(this.rayColor(index), '00'), 0],
+        [withAlpha(this.rayColor(index), 'FF'), 1]] })
+      .opacity(item.opacity * strength * (this.darkBody() ? 1 : 0.7))
       .position({
-        x: this.w() / 2 + Math.cos(item.angle * Math.PI / 180) * (this.w() / 2 + item.travel * this.h()) -
-          item.length * this.h() / 2,
-        y: this.h() / 2 + Math.sin(item.angle * Math.PI / 180) * (this.h() / 2 + item.travel * this.h() * 0.35) - 0.7
+        x: this.w() / 2 + Math.cos(item.angle * Math.PI / 180) * item.radius * this.reach() -
+          item.length * this.reach() / 2,
+        y: this.h() / 2 + Math.sin(item.angle * Math.PI / 180) * item.radius * this.reach() - 0.5
       })
       .rotate({ angle: item.angle })
       .hitTestBehavior(HitTestMode.None)
@@ -289,6 +308,18 @@ export struct ProBadge {
 
   @Builder private body() {
     Stack({ alignContent: Alignment.Bottom }) {
+      if (this.activeStyle() === 'warp') {
+        // Brighter core so the rays seem to come out of the plate's depth.
+        Column().width('100%').height('100%')
+          .radialGradient({ center: ['50%', '50%'], radius: this.w() * 0.55,
+            colors: [['#663A5BC8', 0], ['#00000000', 1]] })
+      }
+      ForEach(this.engravedRays(), (item: ProBadgeWarpRay, index: number): void => { this.ray(item, index, 0.35) },
+        (_item: ProBadgeWarpRay, index: number): string => 'e' + index.toString())
+      if (this.showsRays()) {
+        ForEach(this.rays(), (item: ProBadgeWarpRay, index: number): void => { this.ray(item, index, 1) },
+          (_item: ProBadgeWarpRay, index: number): string => 'r' + index.toString())
+      }
       Text(this.activeStyle() === 'emblem' ? 'PRO' : 'Pro')
         .fontSize(this.activeStyle() === 'emblem' ? (this.large ? 12 : 9) : (this.large ? 13 : 10))
         .fontWeight(this.activeStyle() === 'emblem' ? FontWeight.Bolder : FontWeight.Bold)
@@ -296,7 +327,9 @@ export struct ProBadge {
         .letterSpacing(this.activeStyle() === 'emblem' ? 1.6 : 0)
         .fontFamily(AppConfig.fontFamily).maxLines(1).textAlign(TextAlign.Center)
         .fontColor(this.activeStyle() === 'outline' ? this.ringColor() : this.activeStyle() === 'carbon' ? this.liveColor() :
-          this.activeStyle() === 'emblem' ? '#FFFFFF' : badgeInkFor(this.colors()))
+          this.activeStyle() === 'emblem' || this.activeStyle() === 'warp' ? '#FFFFFF' : badgeInkFor(this.colors()))
+        .textShadow(this.showsRays() ? { radius: 3, color: this.darkBody() ? '#CC0B1028' : '#66FFFFFF', offsetX: 0, offsetY: 0 } :
+          { radius: 0, color: '#00000000', offsetX: 0, offsetY: 0 })
         .width('100%').height('100%')
       if (this.activeStyle() === 'emblem') {
         // The light stripe under the letters carries the colors.
@@ -304,7 +337,7 @@ export struct ProBadge {
           .linearGradient({ angle: 90, colors: this.fillStops() })
       }
     }
-    .width(this.w()).height(this.h()).borderRadius(this.radius())
+    .width(this.w()).height(this.h()).borderRadius(this.radius()).clip(true)
     .linearGradient({ angle: this.darkBody() ? 160 : 90, colors: this.bodyStops() })
     .border({ width: this.activeStyle() === 'outline' ? 1.2 : 0.5,
       color: this.activeStyle() === 'outline' ? this.ringColor() :
@@ -321,13 +354,9 @@ export struct ProBadge {
   build() {
     if (this.shown()) {
       Stack() {
-        if (this.activeMotion() === 'meteor') {
-          ForEach(proBadgeMeteors(this.phase, this.colors()), (item: ProBadgeMeteor): void => { this.meteor(item) },
-            (_item: ProBadgeMeteor, index: number): string => 'm' + index.toString())
-        }
         this.body()
       }
-      .width(this.w()).height(this.h()).clip(false)
+      .width(this.w()).height(this.h())
       .accessibilityText('Pro 功能标识，' + proBadgeStyleLabel(this.activeStyle()))
     }
   }

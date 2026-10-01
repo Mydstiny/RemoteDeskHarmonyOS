@@ -147,42 +147,54 @@ export function proBadgeShimmerStops(phase: number, colors: string[]): Array<[Re
   return result;
 }
 
-/** One light streak of the 流星 motion, relative to the badge center. */
-export interface ProBadgeMeteor {
-  /** Direction in degrees (0 = right, 180 = left). */
+/** One ray of the 星爆 pattern inside the badge, in units of the badge's half-diagonal from its center. */
+export interface ProBadgeWarpRay {
+  /** Direction in degrees (0 = right, 90 = down). */
   angle: number;
-  /** Distance from the badge edge to the streak's center, in badge heights. */
-  travel: number;
-  /** Streak length in badge heights. */
+  /** Distance from the center to the middle of the ray. */
+  radius: number;
+  /** Ray length. */
   length: number;
   opacity: number;
-  color: string;
+  /** Ray thickness factor (0.6–1.2) so the burst has depth. */
+  weight: number;
 }
 
-/** Directions of the streaks: a fan to each side, like light trails leaving a performance badge. */
-const METEOR_ANGLES: number[] = [180, 196, 164, 0, -16, 16];
+/** Fixed, irregular layout of the rays so the burst looks like the badge plate rather than a clock face. */
+const WARP_RAY_COUNT: number = 40;
+
+function rayJitter(index: number, salt: number): number {
+  const x: number = Math.sin(index * 12.9898 + salt * 78.233) * 43758.5453;
+  return x - Math.floor(x);
+}
 
 /**
- * 流星: streaks burst outward from the badge in a fan, each on its own staggered cycle. A streak accelerates out,
- * grows, then fades; between bursts it is invisible, so the loop never jumps. Always returns six streaks.
+ * 星爆: rays radiate from the badge center like a jump to light speed. With `animated` each ray flies outward, grows
+ * and fades on its own staggered cycle; without it the rays sit at a fixed spread (the static plate). Always returns
+ * the same number of rays so the layout never reshuffles; the loop seam is invisible because a ray's opacity is 0
+ * at both ends of its cycle.
  */
-export function proBadgeMeteors(phase: number, colors: string[]): ProBadgeMeteor[] {
-  const list: string[] = cleanBadgeColors(colors);
-  const result: ProBadgeMeteor[] = [];
-  METEOR_ANGLES.forEach((angle: number, index: number): void => {
-    const offset: number = (index % 3) / 3 + (index >= 3 ? 1 / 6 : 0);
-    const t: number = (((phase + offset) % 1) + 1) % 1;
-    const active: number = 0.62;
-    // Resting streaks stay in the list (invisible) so every frame has the same six streaks.
-    const progress: number = Math.min(1, t / active);
-    const eased: number = 1 - Math.pow(1 - progress, 3);
+export function proBadgeWarpRays(phase: number, animated: boolean): ProBadgeWarpRay[] {
+  const result: ProBadgeWarpRay[] = [];
+  for (let index: number = 0; index < WARP_RAY_COUNT; index++) {
+    const angle: number = index * 360 / WARP_RAY_COUNT + (rayJitter(index, 1) - 0.5) * 9;
+    const offset: number = rayJitter(index, 2);
+    const weight: number = 0.6 + rayJitter(index, 3) * 0.6;
+    if (!animated) {
+      const reach: number = 0.35 + offset * 0.55;
+      result.push({ angle, radius: reach, length: 0.25 + offset * 0.45, opacity: 0.35 + weight * 0.45, weight });
+      continue;
+    }
+    const speed: number = 1 + Math.floor(rayJitter(index, 4) * 2);
+    const t: number = (((phase * speed + offset) % 1) + 1) % 1;
+    const eased: number = t * (0.6 + 0.4 * t);
     result.push({
       angle,
-      travel: 0.2 + eased * 1.6,
-      length: 0.5 + eased * 1.4,
-      opacity: t >= active ? 0 : Math.sin(progress * Math.PI) * (index % 3 === 0 ? 1 : 0.75),
-      color: cycleColor(phase + index / METEOR_ANGLES.length, list)
+      radius: 0.1 + eased * 1.0,
+      length: 0.16 + eased * 0.5,
+      opacity: Math.min(1, Math.pow(Math.sin(t * Math.PI), 0.6) * (0.6 + weight * 0.33)),
+      weight
     });
-  });
+  }
   return result;
 }

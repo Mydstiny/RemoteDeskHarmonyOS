@@ -243,12 +243,14 @@ test('Pro badge styles: palettes, alpha order, meteors, shimmer and readable ink
     const stops = b.proBadgeShimmerStops(f / 100, aurora);
     assert.equal(stops[0][1], 0); assert.equal(stops[stops.length - 1][1], 1);
     for (let i = 1; i < stops.length; i++) assert.ok(stops[i][1] >= stops[i - 1][1], 'shimmer stops ordered at ' + f);
-    const meteors = b.proBadgeMeteors(f / 100, aurora);
-    assert.equal(meteors.length, 6, 'six streaks every frame');
-    meteors.forEach(m => { assert.ok(m.opacity >= 0 && m.opacity <= 1); assert.ok(m.travel >= 0 && m.length > 0); });
+    const rays = b.proBadgeWarpRays(f / 100, true);
+    assert.equal(rays.length, 40, 'same rays every frame');
+    rays.forEach(r => { assert.ok(r.opacity >= 0 && r.opacity <= 1); assert.ok(r.radius >= 0 && r.length > 0); });
   }
-  const seamA = b.proBadgeMeteors(0.9999, aurora), seamB = b.proBadgeMeteors(0, aurora);
-  seamA.forEach((m, i) => assert.ok(Math.abs(m.opacity - seamB[i].opacity) < 0.05, 'no jump at the loop seam'));
+  const seamA = b.proBadgeWarpRays(0.99999, true), seamB = b.proBadgeWarpRays(0, true);
+  seamA.forEach((r, i) => assert.ok(Math.abs(r.opacity - seamB[i].opacity) < 0.05, 'no jump at the loop seam'));
+  const still = b.proBadgeWarpRays(0.3, false), still2 = b.proBadgeWarpRays(0.8, false);
+  assert.equal(JSON.stringify(still), JSON.stringify(still2), 'static plate does not move');
 });
 
 console.log(passed + ' personalization checks passed');
