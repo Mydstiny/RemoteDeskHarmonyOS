@@ -271,8 +271,12 @@ export function rustDeskCustomResolutionDecision(
 }
 
 export function remoteDisplayProfileRequiresPro(profile: RemoteDisplayProfile): boolean {
-  return profile.resolution.mode === 'custom' ||
-    profile.rdpScale.desktopMode === 'custom' || profile.rdpScale.desktopPercent < 100;
+  const customDesktopScale: boolean = profile.rdpScale.desktopMode === 'custom' ||
+    (profile.rdpScale.desktopMode === 'preset' &&
+      profile.rdpScale.desktopPercent !== 100 &&
+      profile.rdpScale.desktopPercent !== 140 &&
+      profile.rdpScale.desktopPercent !== 180);
+  return profile.resolution.mode === 'custom' || customDesktopScale;
 }
 
 export function remoteDisplayRequestStateLabel(state: string): string {

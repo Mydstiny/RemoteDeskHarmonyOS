@@ -3012,10 +3012,17 @@ RustDeskDisplayCapabilities RustDeskBridge::getDisplayCapabilities() const {
             candidate.peerPlatform.assign(
                 reinterpret_cast<const char*>(snapshot.peerPlatform), peerPlatformLength);
             candidate.hasDisplayIndex = snapshot.currentDisplay >= 0;
-            candidate.hasPermission = !candidate.displays.empty() ||
-                snapshot.width > 0 || snapshot.height > 0;
-            candidate.hasVirtualDisplay = candidate.peerPlatform.find("windows") != std::string::npos ||
-                candidate.peerPlatform.find("linux") != std::string::npos;
+            // Display geometry is capability evidence only.  The current
+            // RustDesk PermissionInfo protocol has no display-settings bit,
+            // so never infer permission from a non-empty monitor catalog.
+            // Keep custom requests fail-closed until an explicit peer-side
+            // permission signal is added to the FFI snapshot.
+            candidate.hasPermission = false;
+            std::string platformLower = candidate.peerPlatform;
+            std::transform(platformLower.begin(), platformLower.end(), platformLower.begin(),
+                [](unsigned char character) { return static_cast<char>(std::tolower(character)); });
+            candidate.hasVirtualDisplay = platformLower.find("x11") != std::string::npos ||
+                platformLower.find("virtual") != std::string::npos;
             const size_t count = std::min<size_t>(snapshot.resolutionCount, 32);
             candidate.resolutions.reserve(count);
             for (size_t index = 0; index < count; ++index) {

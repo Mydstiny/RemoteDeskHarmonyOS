@@ -202,9 +202,9 @@ RemoteDisplayProfile {
 - P0 契约已冻结：远端桌面大小、RDP Windows 界面缩放、本地查看缩放使用独立字段；RDP v1 只处理单远端显示器，RustDesk 自定义请求按 `display index` 处理。
 - P1 已落盘：新增版本化 `RemoteDisplayProfilePolicy`，覆盖几何范围、旧 RDP 字段迁移、RDP desktop/device scale 分离、RustDesk peer 能力判断和请求状态文案；RDP/RustDesk 两个 Pro feature ID 已进入共享目录，当前保持 `experimental`，Release 不开放。
 - P2 已落盘：RDP 设置页、会话控制中心和 `SessionConfig` 已接通自定义宽高；native 接受 desktop 100–500%、device 100/140/180% 的分离校验；Display Control 动态请求继续使用原有 caps、latest-wins、超时和输入几何 fence。
-- P3 已落盘：RustDesk FFI display snapshot 升级到 v2，携带 peer 版本/平台；ArkTS 会在 Windows 或 Linux X11、版本至少 1.2.4、显示器索引和权限证据齐全时才提交 Pro 自定义请求，Wayland/mobile/能力未知保持候选列表降级。
+- P3 已落盘：RustDesk FFI display snapshot 升级到 v2，携带 peer 版本/平台；ArkTS 只接受精确的 Windows/Linux X11 平台标识、版本至少 1.2.4、显示器索引和显式权限证据，Wayland/mobile/能力未知保持候选列表降级。当前 RustDesk `PermissionInfo` 没有显示设置权限位，native 对 `hasPermission` 保持 false，故自定义请求继续封闭到后续补齐明确权限信号。
 - P4 已落盘：设置与会话菜单已区分远端分辨率和本地画布缩放，custom 草稿不写入凭据；RDP 在冷启动、重连、窗口变化和动态请求前重新检查 entitlement，失效时回退 Auto/免费标准档。
-- 本地验证：`default@OhosTestCompileArkTS` 通过（1 min 35 s 204 ms）；强制并行 `assembleHap` 通过（1 min 408 ms）；RDP display policy 原生策略测试 15/15 通过；Rust host `--no-default-features` 319/319 通过；arm64 Rust 交叉编译、双 ABI native 编译、Light 合规、`git diff --check` 和 state validation 通过。
+- 本地验证：修复后 `default@OhosTestCompileArkTS` 通过（40 s 341 ms）；强制并行 `assembleHap` 通过（51 s 904 ms）；RDP display policy 原生策略测试 15/15 通过；Rust host `--no-default-features` 319/319 通过；arm64 Rust 交叉编译、双 ABI native 编译、Pro entry gating、Light 合规、`git diff --check` 和 state validation 通过。未配置 `PRO_TYPESCRIPT_PATH` 时的 Node Pro runtime 脚本只因缺少本地 `typescript` 模块无法启动；使用 DevEco 内置 TypeScript 后，既有 workspace 断言仍失败，属于并行 workspace 增量的既有测试预期，不是本次显示策略测试失败。
 - 未关闭项：Windows 10/11/Server 实机 DPI 与 Display Control、RustDesk 新旧 peer/Windows 虚拟显示器/X11/Wayland/mobile 矩阵、Phone/Pad/PC 交互与恢复、真实 Pro 购买/退款/账号切换回归、独立代码 review、PR/required check/merge。生产能力继续由 `experimental` 和 capability/entitlement 双重门控。
 
 ### P5：自动化、真机和远端矩阵

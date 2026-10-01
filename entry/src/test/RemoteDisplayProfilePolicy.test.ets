@@ -67,6 +67,11 @@ export default function remoteDisplayProfilePolicyTest(): void {
       profile.rdpScale.desktopMode = 'custom';
       profile.rdpScale.desktopPercent = 125;
       expect(remoteDisplayProfileRequiresPro(profile)).assertTrue();
+      profile.rdpScale.desktopMode = 'preset';
+      profile.rdpScale.desktopPercent = 150;
+      expect(remoteDisplayProfileRequiresPro(profile)).assertTrue();
+      profile.rdpScale.desktopPercent = 140;
+      expect(remoteDisplayProfileRequiresPro(profile)).assertFalse();
     });
 
     it('fails_closed_for_unknown_or_unsupported_rustdesk_peers', 0, (): void => {

@@ -6006,11 +6006,20 @@ struct RemoteDesktop {
     const capabilities: RustDeskDisplayCapabilities = this.rustDeskDisplayCapabilities;
     const capability: RustDeskCustomResolutionCapability = {
       peerVersion: capabilities.peerVersion ?? '',
-      platform: (capabilities.peerPlatform ?? '').toLowerCase().indexOf('windows') >= 0 ? 'windows' :
-        (capabilities.peerPlatform ?? '').toLowerCase().indexOf('linux') >= 0 ? 'linux_x11' : 'unknown',
+      platform: (() => {
+        const peerPlatform: string = (capabilities.peerPlatform ?? '').trim().toLowerCase();
+        if (peerPlatform === 'windows' || peerPlatform.indexOf('windows ') === 0) {
+          return 'windows';
+        }
+        if ((peerPlatform.indexOf('linux') >= 0 && peerPlatform.indexOf('x11') >= 0) ||
+            peerPlatform === 'x11') {
+          return 'linux_x11';
+        }
+        return 'unknown';
+      })(),
       hasDisplayIndex: capabilities.hasDisplayIndex === true || capabilities.currentDisplay >= 0,
-      hasPermission: capabilities.hasPermission !== false && capabilities.supported,
-      hasVirtualDisplay: capabilities.hasVirtualDisplay === true || capabilities.displays.length > 0
+      hasPermission: capabilities.hasPermission === true,
+      hasVirtualDisplay: capabilities.hasVirtualDisplay === true
     };
     const support = rustDeskCustomResolutionDecision(capability);
     if (!support.allowed) {
@@ -10387,7 +10396,8 @@ struct RemoteDesktop {
           legacyAdaptive.colorDepth = colorDepth;
           const mobileDisplay: RdpAdaptiveDisplayResult | null = this.resolveRdpDisplayLayout(
             legacyAdaptive.width, legacyAdaptive.height,
-            shouldUseRdpInitialDpiScale(false, resolutionId), resolutionId);
+            shouldUseRdpInitialDpiScale(false, resolutionId), resolutionId,
+            this.rdpCustomWidth, this.rdpCustomHeight, allowAdvancedDisplay);
           if (mobileDisplay !== null) {
             // The forced-landscape virtual monitor may not match the panel's
             // current physical orientation, so leave physical millimetres

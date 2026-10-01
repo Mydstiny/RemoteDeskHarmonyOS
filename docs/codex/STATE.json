@@ -2039,7 +2039,7 @@
       "RustDesk peer identity/capability snapshot v2 and guarded custom resolution",
       "shared Pro catalog, settings/session UI and entitlement fallback"
     ],
-    "validation": "default@OhosTestCompileArkTS PASS 1m35.204s; parallel assembleHap PASS 1m1.408s; RDP native policy 15/15; Rust host no-default-features 319/319; arm64 Rust cross-build, dual ABI native, Light, diff and state validation PASS",
+    "validation": "default@OhosTestCompileArkTS PASS 40.341s; parallel assembleHap PASS 51.904s; RDP native policy 15/15; Rust host no-default-features 319/319; Pro entry gating PASS; arm64 Rust cross-build, dual ABI native, Light, diff and state validation PASS; RustDesk custom request remains fail-closed until explicit display permission evidence",
     "availability": "RDP/RustDesk features remain experimental and Release-gated",
     "open": [
       "Windows 10/11/Server DPI and Display Control matrix",
