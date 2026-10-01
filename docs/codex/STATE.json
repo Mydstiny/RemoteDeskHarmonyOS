@@ -3,7 +3,7 @@
   "task": "pro-purchase-foundation",
   "branch": "codex/pro-purchase-foundation",
   "base": "8edc187868e94ed41634e8a6c4c4c072e3a48679",
-  "head": "d9a066ec",
+  "head": "f468f24b",
   "phase": "Full acceptance active; Pro 工作区与高级主机管理基础层及工作区编辑器已实现，设备/跨端验收待完成",
   "status": "in-progress",
   "latestIncrement": {
@@ -2004,6 +2004,19 @@
     "versionCode": 1001007,
     "releaseNotes": "pending",
     "releasePlan": "1.1.6 Release shows Pro and sandbox testing as coming soon (敬请期待) and closed; Pro completes in 1.2.0"
+  },
+  "feedbackProQr": {
+    "commit": "f468f24b",
+    "status": "implemented-server-and-app-build-pass-device-acceptance-pending",
+    "feature": "pro.feedback",
+    "app": "Feedback settings keeps email and ordinary Chanlian for free users; valid Pro users get a third tab with the flowing Pro badge and Chanlian/QQ QR cards; revocation clears QR state.",
+    "endpoints": [
+      "https://lijiong.online/feedback/pro-chanlian.json",
+      "https://lijiong.online/feedback/pro-qq.json"
+    ],
+    "serverValidation": "HTTP 200 manifests/images; issuedAt-to-expiresAt is 7 days; declared image hashes and byte counts match downloaded JPEGs; existing chanlian.json remains reachable.",
+    "appValidation": "default@OhosTestCompileArkTS BUILD SUCCESSFUL; assembleHap BUILD SUCCESSFUL; Light and git diff --check PASS; Pro gating/status/visibility tests PASS.",
+    "deviceAcceptance": "NOT RUN"
   },
   "futurePlans": []
 }
