@@ -1,4 +1,5 @@
 import { display } from '@kit.ArkUI';
+import { ProSymbolIcon } from '../ProSymbolIcon';
 import { AppConfig, buildDark, buildLight, Palette } from '../../../common/Theme';
 import { ProBadge } from '../../ProBadge';
 import { ProEntries } from '../../../services/pro/ProEntries';
@@ -24,7 +25,7 @@ export struct WorkspaceStrip {
   onOpen: (workspace: Workspace) => void = (_workspace: Workspace): void => {};
   @State revision: number = 0;
   @State showEditor: boolean = false;
-  @State editing: Workspace = newWorkspace('', '', '#007DFF', '🖥️', 0, 0);
+  @State editing: Workspace = newWorkspace('', '', '#007DFF', 'sym.desktop_fill', 0, 0);
   private stop: (() => void) | null = null;
 
   aboutToAppear(): void {
@@ -60,7 +61,7 @@ export struct WorkspaceStrip {
 
   @Builder private card(workspace: Workspace) {
     Row({ space: 10 }) {
-      Text(workspace.icon).fontSize(17).width(34).height(34).textAlign(TextAlign.Center).borderRadius(11)
+      Column() { ProSymbolIcon({ icon: workspace.icon, glyphSize: 17, color: workspace.color }) }.width(34).height(34).justifyContent(FlexAlign.Center).borderRadius(11)
         .backgroundColor(workspaceTint(workspace.color, '2E'))
       Column({ space: 2 }) {
         Text(workspace.name).fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.pal().text)

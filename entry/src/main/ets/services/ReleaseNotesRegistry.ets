@@ -6,6 +6,17 @@ export interface ReleaseNotePage {
   symbol: ResourceStr;
   title: string;
   desc: string;
+  /** 新功能 / 改进 / 修复 / 即将推出 — shown as a small label. */
+  tag?: string;
+  points?: string[];
+  /** HarmonyOS system symbol drawn instead of `symbol` when present. */
+  glyph?: Resource;
+}
+
+/** One-line summary shown under the version in the 1.1.6+ 「新功能」 list. */
+export function releaseHeadline(version: string): string {
+  if (version === '1.1.6') { return 'RDP 会话内传文件、VNC 多显示器切换，连接与终端体验全面打磨。'; }
+  return '';
 }
 
 export function pagesForReleasedVersion(version: string): ReleaseNotePage[] {
@@ -21,10 +32,55 @@ export function currentReleasePageCount(): number {
   return currentReleasePages().length;
 }
 
-// 1.1.6 notes are still being written. Without pages the startup swiper is
-// skipped and settings shows that the notes are pending.
+// Release builds keep Pro closed, so Pro features appear only as a 即将推出 preview.
 function currentReleasePages(): ReleaseNotePage[] {
-  return [];
+  return [
+    {
+      id: 'release-rdp-file-transfer', symbol: $rawfile('icons/folder-open.svg'), glyph: $r('sys.symbol.folder_fill'),
+      tag: '新功能', title: 'RDP 会话里直接传文件',
+      desc: '会话工具栏新增文件传输入口；远端只允许下载时也能打开文件面板，剪贴板文件的接收状态会实时显示。'
+    },
+    {
+      id: 'release-vnc-monitors', symbol: $rawfile('icons/computer-desktop.svg'), glyph: $r('sys.symbol.display'),
+      tag: '新功能', title: 'VNC 多显示器切换',
+      desc: '连接 UltraVNC 时可以从侧栏选择要查看的显示器，切换失败或超时后可以直接重试。'
+    },
+    {
+      id: 'release-portrait-display', symbol: $rawfile('icons/computer-desktop.svg'), glyph: $r('sys.symbol.rectangle_rotate'),
+      tag: '新功能', title: '手机竖屏可选显示方式',
+      desc: 'RDP、RustDesk、VNC 与 Moonlight 在手机竖屏时可分别选择画面显示方式，并能开关会话侧栏。'
+    },
+    {
+      id: 'release-rdp-connect', symbol: $rawfile('icons/globe-alt.svg'), glyph: $r('sys.symbol.link'),
+      tag: '改进', title: 'RDP 更容易连上',
+      desc: '域名解析失败时自动改用备用解析；连接前检查与实际连接走同一条线路；检查未通过时也可以确认风险后直接连接。'
+    },
+    {
+      id: 'release-ssh-polish', symbol: $rawfile('icons/command-line.svg'), glyph: $r('sys.symbol.code_square'),
+      tag: '改进', title: 'SSH 终端更清爽',
+      desc: '手机默认字号更合适，登录后不再多出空行；终端里的弹窗按内容自动调整高度，标签栏与按钮重新对齐。'
+    },
+    {
+      id: 'release-rustdesk-fixes', symbol: $rawfile('icons/cog-6-tooth.svg'), glyph: $r('sys.symbol.bolt_fill'),
+      tag: '修复', title: 'RustDesk 画质与文件传输',
+      desc: '画质档位重新对齐并在诊断中实时显示；修复手机上的文件传输面板，远端路径改用文件浏览器选择。'
+    },
+    {
+      id: 'release-offline-account', symbol: $rawfile('icons/shield-check.svg'), glyph: $r('sys.symbol.person_crop_circle_fill'),
+      tag: '修复', title: '没有网络也能进入应用',
+      desc: '离线启动时保留上次登录的华为账号，主机列表和本机数据照常可用；VNC 新主机默认记住你输入的密码。'
+    },
+    {
+      id: 'release-diagnostics', symbol: $rawfile('icons/cloud.svg'), glyph: $r('sys.symbol.performance'),
+      tag: '改进', title: '诊断信息更完整',
+      desc: '日志新增完整抓取档位，覆盖连接前的各项检查，排查问题更快；导出内容仍会自动脱敏。'
+    },
+    {
+      id: 'release-pro-preview', symbol: $rawfile('icons/key.svg'), glyph: $r('sys.symbol.star_fill'),
+      tag: '即将推出', title: 'RemoteDesktop Pro 预告',
+      desc: '同账号接续、自定义组合键与 SSH 终端皮肤、工作区与布局、高级主机管理正在打磨，开放后可在「设置」中查看。'
+    }
+  ];
 }
 
 function release1151Pages(): ReleaseNotePage[] {

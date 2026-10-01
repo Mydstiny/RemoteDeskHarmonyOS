@@ -1,4 +1,5 @@
 import { common } from '@kit.AbilityKit';
+import { ProSymbolIcon } from './pro/ProSymbolIcon';
 import { AppConfig, Palette, buildDark, buildLight } from '../common/Theme';
 import { ProBadge, ProBadgePreferences } from './ProBadge';
 import { ProEntries } from '../services/pro/ProEntries';
@@ -249,7 +250,7 @@ export struct ProFeatureDetailPanel {
             if (index > 0) { Divider().strokeWidth(0.5).color(this.pal().cardBorder).margin({ left: 16, right: 16 }) }
             Column() {
               Row({ space: 10 }) {
-                Text(workspace.icon).fontSize(18).width(30).height(30).textAlign(TextAlign.Center).borderRadius(9)
+                Column() { ProSymbolIcon({ icon: workspace.icon, glyphSize: 18, color: workspace.color }) }.width(30).height(30).justifyContent(FlexAlign.Center).borderRadius(9)
                   .backgroundColor(this.colorTint(workspace.color))
                 Column({ space: 2 }) {
                   Text(workspace.name).fontSize(15).fontColor(this.pal().text).maxLines(1)

@@ -11,10 +11,12 @@ export const HOST_GROUP_COLORS: string[] = [
   '#007DFF', '#34C759', '#FF9500', '#FF3B30', '#AF52DE', '#5856D6',
   '#00C7BE', '#FF2D55', '#A2845E', '#30B0C7', '#FFCC00', '#8E8E93'
 ];
-/** Group icons are plain glyphs so they sync as text and render on every device. */
+/** Group icons are system symbol keys (see ProSymbolIcon) so they sync as text. */
 export const HOST_GROUP_ICONS: string[] = [
-  '📁', '💼', '🏠', '🏢', '🖥️', '💻', '🧪', '🚀', '⚙️', '🛠️', '🔒', '☁️',
-  '🌐', '📡', '🗄️', '🎮', '🎬', '📊', '🧩', '⭐', '🔥', '🌱', '🏷️', '🧭'
+  'sym.folder_fill', 'sym.desktop_fill', 'sym.computer_host_fill', 'sym.display', 'sym.code_square', 'sym.house_fill',
+  'sym.person_2_fill', 'sym.lock_shield_fill', 'sym.checkmark_shield', 'sym.cloud_fill', 'sym.bolt_fill', 'sym.star_fill',
+  'sym.gamecontroller_fill', 'sym.camera_fill', 'sym.paintpalette_fill', 'sym.performance', 'sym.link', 'sym.pin_fill',
+  'sym.key_fill', 'sym.gearshape_fill', 'sym.envelope_fill', 'sym.moon_fill', 'sym.sun_max_fill', 'sym.timer'
 ];
 /** Smart chips shown on the home bar unless the user hides them. */
 export const HOST_SMART_FILTER_KINDS: string[] = ['recent', 'online', 'offline', 'unassigned'];

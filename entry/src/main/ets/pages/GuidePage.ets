@@ -12,7 +12,10 @@ import {
   shouldPresentGuideAsCenterSheet,
   StartupMode
 } from '../services/ReleaseNotesPolicy';
-import { CURRENT_RELEASE_VERSION, pagesForReleasedVersion, ReleaseNotePage } from '../services/ReleaseNotesRegistry';
+import {
+  CURRENT_RELEASE_VERSION, pagesForReleasedVersion, releaseHeadline, ReleaseNotePage
+} from '../services/ReleaseNotesRegistry';
+import { GuideShowcase, WhatsNewList } from '../components/guide/GuideShowcase';
 import {
   clampGuidePageIndex,
   ensureGuidePages,
@@ -47,6 +50,7 @@ struct GuidePage {
   @State showGuideSheet: boolean = false;
   @State mode: StartupMode = StartupMode.FIRST_INSTALL_GUIDE;
   @State activePages: GuideContentPage[] = firstInstallGuidePages();
+  @State releaseItems: ReleaseNotePage[] = [];
   private tutorialPages: GuideContentPage[] = firstInstallGuidePages();
   private isFinishing: boolean = false;
   private guideSheetEnterTimer: number = -1;
@@ -66,8 +70,8 @@ struct GuidePage {
         router.replaceUrl({ url: 'pages/LoginPage' });
         return;
       }
-      this.replaceActivePages(
-        this.mode === StartupMode.RELEASE_NOTES ? releasePages : this.tutorialPages);
+      this.releaseItems = releasePages;
+      this.replaceActivePages(this.tutorialPages);
     } catch (_e) { /* 出错继续显示 */ }
     this.replaceActivePages(this.activePages);
     this.cancelGuideSheetEnter();
@@ -171,129 +175,32 @@ struct GuidePage {
     // Keep the content below the usable window height on phones and small
     // freeform windows. The pages are intentionally short so the Sheet never
     // needs to grow beyond the viewport just to fit a paragraph.
-    if (this.presentGuideAsBottomSheet()) { return '82%'; }
-    return this.breakpoint === 'xl' ? 620 : 580;
+    if (this.presentGuideAsBottomSheet()) { return '86%'; }
+    return this.breakpoint === 'xl' ? 680 : 620;
   }
 
+  /** First-install intro fills the page; the post-update 「新功能」 list lives in a sheet. */
   @Builder guidePanel(isSheet: boolean) {
-    Column() {
-      if (this.activePages.length > 0) {
-        Swiper(this.swiperController) {
-          ForEach(this.activePages, (page: GuideContentPage, index: number) => {
-            Column() {
-              Column() {
-                Column() {
-                  Image(page.symbol).width(50).height(50).fillColor(this.accentColor)
-                }
-                .width(this.currentIndex === index ? 104 : 92)
-                .height(this.currentIndex === index ? 104 : 92)
-                .borderRadius(28)
-                .backgroundColor(this.pal().card)
-                .justifyContent(FlexAlign.Center)
-                .margin({ bottom: 20 })
-                .shadow({ radius: 24, color: this.pal().fabGlow, offsetY: 8 })
-                .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
-                .scale({ x: this.currentIndex === index ? 1 : 0.8,
-                         y: this.currentIndex === index ? 1 : 0.8 })
-                .animation({ duration: 250, curve: Curve.EaseOut })
-
-                Text(page.title)
-                  .fontSize(24).fontWeight(FontWeight.Bold)
-                  .fontColor(this.pal().text).textAlign(TextAlign.Center)
-                  .margin({ bottom: 12 })
-                  .animation({ duration: 200, curve: Curve.EaseOut })
-
-                Text(page.desc)
-                  .fontSize(15).fontColor(this.pal().text2).textAlign(TextAlign.Center)
-                  .lineHeight(22).width('88%')
-                  .animation({ duration: 200, curve: Curve.EaseOut })
-              }
-              .width('100%')
-            }
-            .width('100%').height('100%')
-            .justifyContent(FlexAlign.Center)
-          }, (page: GuideContentPage) => page.id)
-        }
-        .loop(false).indicator(false)
-        .duration(250).curve(Curve.EaseOut)
-        .onChange((i: number) => {
-          this.currentIndex = clampGuidePageIndex(i, this.activePages.length);
-        })
-        .layoutWeight(1)
-      } else {
-        // 理论上 ensureGuidePages 已阻止空数组；这里保留最终可见兜底，
-        // 即使未来注册表或框架状态异常，新用户也不会只看到白屏。
-        Column() {
-          Image($rawfile('icons/computer-desktop.svg'))
-            .width(50).height(50).fillColor(this.accentColor).margin({ bottom: 20 })
-          Text('欢迎使用 RemoteDesktop')
-            .fontSize(24).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
-            .textAlign(TextAlign.Center).margin({ bottom: 12 })
-          Text('引导内容暂时无法载入，你仍可立即进入工作台，并从“设置 → 教程”重新打开。')
-            .fontSize(15).fontColor(this.pal().text2).textAlign(TextAlign.Center)
-            .lineHeight(22).width('88%')
-        }
-        .width('100%').layoutWeight(1).justifyContent(FlexAlign.Center)
-      }
-
-      Row() {
-        Text(this.currentIndex > 0 ? '上一步' :
-          (this.mode === StartupMode.FIRST_INSTALL_GUIDE ? '跳过' : ''))
-          .fontSize(15).fontColor(this.pal().text3)
-          .width(64).textAlign(TextAlign.Start)
-          .onClick(() => {
-            if (this.currentIndex > 0) { this.swiperController.showPrevious(); }
-            else if (this.mode === StartupMode.FIRST_INSTALL_GUIDE) { this.finish(); }
-          })
-
-        Blank()
-
-        if (this.activePages.length <= 10) {
-          Row({ space: 8 }) {
-            ForEach(this.activePages, (_: GuideContentPage, i: number) => {
-              Column()
-                .width(this.currentIndex === i ? 24 : 8).height(8)
-                .borderRadius(4)
-                .backgroundColor(this.currentIndex === i ? this.accentColor : this.pal().divider)
-                .animation({ duration: 200, curve: Curve.EaseOut })
-            }, (page: GuideContentPage) => page.id)
-          }
-        } else {
-          Text((this.currentIndex + 1).toString() + ' / ' + this.activePages.length.toString())
-            .fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text3)
-        }
-
-        Blank()
-
-        Row() {
-          Text(this.currentIndex < this.activePages.length - 1 ? '下一步' :
-            (this.mode === StartupMode.RELEASE_NOTES ? '继续' : '立即体验'))
-            .fontSize(15).fontWeight(FontWeight.Medium).fontColor(this.accentColor)
-          Text(' >').fontSize(14).fontColor(this.accentColor).margin({ left: 2 })
-        }
-        .width(64).justifyContent(FlexAlign.End)
-        .onClick(() => {
-          if (this.currentIndex < this.activePages.length - 1) {
-            this.swiperController.showNext();
-          } else { this.finish(); }
-        })
-        .opacity(this.showContent ? 1 : 0)
-        .animation({ duration: 200, curve: Curve.EaseOut })
-      }
-      .width('100%').padding({ left: 24, right: 24, bottom: 24, top: 8 })
-      }
-      // CENTER Sheet 的外框宽度由系统按窗口尺寸决定；这里只设置上限，
-      // 不让内部内容在 Pad/PC 小窗口中反向撑大 Sheet。
-      .width('100%')
-      .height('100%')
-      .constraintSize({ maxWidth: 640, maxHeight: 720 })
-      .clip(true)
+    if (this.mode === StartupMode.RELEASE_NOTES) {
+      WhatsNewList({
+        version: CURRENT_RELEASE_VERSION,
+        headline: releaseHeadline(CURRENT_RELEASE_VERSION),
+        items: this.releaseItems,
+        primaryLabel: '继续',
+        onPrimary: (): void => { this.finish(); }
+      })
+      .width('100%').height('100%')
       .backgroundColor(isSheet ? this.pal().sheetBg : this.pal().bg)
-      .borderRadius(this.presentGuideAsCenterSheet() ? 24 : 0)
-      .border(this.presentGuideAsCenterSheet() ?
-        { width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid } :
-        { width: 0, color: Color.Transparent, style: BorderStyle.Solid })
-      .align(Alignment.Center)
+    } else {
+      GuideShowcase({
+        pages: this.activePages,
+        skipLabel: '跳过',
+        finishLabel: '开始使用',
+        onFinish: (): void => { this.finish(); },
+        onSkip: (): void => { this.finish(); }
+      })
+      .width('100%').height('100%')
+    }
   }
 
   @Builder guideSheet() {
@@ -312,7 +219,9 @@ struct GuidePage {
     }
     .width('100%').height('100%')
     .backgroundColor(this.pal().bg)
-    .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
+    // The full-page intro keeps its buttons clear of the status and navigation bars.
+    .expandSafeArea(this.usesGuideSheet() ? [SafeAreaType.SYSTEM] : [],
+      this.usesGuideSheet() ? [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM] : [])
     .bindSheet($$this.showGuideSheet, this.guideSheet(), {
       height: this.guideSheetHeight(),
       preferType: this.presentGuideAsBottomSheet() ? SheetType.BOTTOM : SheetType.CENTER,

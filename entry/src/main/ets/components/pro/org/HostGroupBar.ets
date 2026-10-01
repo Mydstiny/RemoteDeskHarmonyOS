@@ -1,4 +1,6 @@
+import { display } from '@kit.ArkUI';
 import { AppConfig, buildDark, buildLight, Palette } from '../../../common/Theme';
+import { ProSymbolIcon } from '../ProSymbolIcon';
 import {
   HostFilter, HostGroupDefinition, hostMatchesFilter, parseHostFilterKey
 } from '../../../services/pro/org/HostOrganizationPolicy';
@@ -8,6 +10,16 @@ import {
   HOST_SMART_FILTER_REVISION_KEY, HostSmartFilterPreferences
 } from '../../../services/pro/org/HostSmartFilterPreferences';
 import { HostOrganizationManager } from './HostOrganizationManager';
+
+/** Sheet content scrolls beyond 85% of the screen minus the title row. */
+function sheetBodyMaxHeight(): number {
+  try {
+    const screen: display.Display = display.getDefaultDisplaySync();
+    return Math.round(screen.height / Math.max(1, screen.densityPixels) * 0.85) - 70;
+  } catch (_error) {
+    return 560;
+  }
+}
 
 /**
  * Home-page chip bar for Pro 高级主机管理: 全部, the chosen smart chips and every user group with live counts.
@@ -64,7 +76,7 @@ export struct HostGroupBar {
   @Builder private chip(key: string, label: string, icon: string, color: string) {
     Row({ space: 5 }) {
       if (icon.length > 0) {
-        Text(icon).fontSize(13)
+        ProSymbolIcon({ icon: icon, glyphSize: 13, color: color.length > 0 ? color : this.accent })
       } else if (color.length > 0) {
         Circle().width(8).height(8).fill(color)
       }
@@ -103,8 +115,9 @@ export struct HostGroupBar {
             onSelectHosts: (refs: string[]): void => { this.showManager = false; this.onSelectHosts(refs); }
           })
         }.padding({ left: 16, right: 16, bottom: 28 })
-      }.layoutWeight(1).scrollBar(BarState.Off).align(Alignment.Top).edgeEffect(EdgeEffect.Spring)
-    }.width('100%').height('100%').backgroundColor(this.pal().sheetBg)
+      }.constraintSize({ maxHeight: sheetBodyMaxHeight() }).scrollBar(BarState.Off).align(Alignment.Top)
+      .edgeEffect(EdgeEffect.Spring)
+    }.width('100%').backgroundColor(this.pal().sheetBg)
   }
 
   build() {
@@ -135,7 +148,7 @@ export struct HostGroupBar {
     }
     .width('100%').padding({ top: 2, bottom: 6 })
     .bindSheet($$this.showManager, this.managerSheet(), {
-      height: SheetSize.LARGE, dragBar: true, showClose: false, backgroundColor: this.pal().sheetBg,
+      height: SheetSize.FIT_CONTENT, dragBar: true, showClose: false, backgroundColor: this.pal().sheetBg,
       onWillDismiss: (action: DismissSheetAction): void => { action.dismiss(); }
     })
   }

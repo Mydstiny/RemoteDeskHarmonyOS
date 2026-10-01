@@ -900,6 +900,8 @@ const REMOTE_HOST_SHEET_MOONLIGHT_CATALOG = 10;
 const REMOTE_HOST_SHEET_MOONLIGHT_EDIT = 11;
 const REMOTE_HOST_SHEET_RDP_CREDENTIAL = 12;
 const DESKTOP_MOONLIGHT_TAB = 7;
+/** PC large-screen sidebar page for Pro 工作区与布局. */
+const DESKTOP_WORKSPACE_TAB = 9;
 
 interface RdpCertificateDnsProbeResult {
   info: RdpCertificateInfo;
@@ -918,12 +920,12 @@ struct HostListPage {
   @State proOrgVisible: boolean = false;
   @State proWorkspacesVisible: boolean = false;
   @State hostOrgFilterKey: string = 'all';
-/** PC large-screen sidebar page for Pro 工作区与布局. */
-const DESKTOP_WORKSPACE_TAB = 9;
   @State hostOrgRevision: number = 0;
   @State hostBatchProbing: boolean = false;
   @State proWorkspaceRun: WorkspaceRun | null = null;
   @State showHostImportSheet: boolean = false;
+  @State showWorkspaceEditor: boolean = false;
+  @State workspaceEditorTarget: Workspace = newWorkspace('', '', '#007DFF', 'sym.desktop_fill', 0, 0);
   @State hostImportDocument: HostExportDocument = { schemaVersion: 1, exportedAt: 0, groups: [], hosts: [] };
   private proWorkspacePageHidden: boolean = false;
   private proWorkspaceRunTimer: number = -1;
@@ -942,8 +944,6 @@ const DESKTOP_WORKSPACE_TAB = 9;
   private hostDataSignature: string = '';
   private hostDataUnsubscribe: (() => void) | null = null;
   private vncHostDataUnsubscribe: (() => void) | null = null;
-  @State showWorkspaceEditor: boolean = false;
-  @State workspaceEditorTarget: Workspace = newWorkspace('', '', '#007DFF', '🖥️', 0, 0);
   private vncTrustDataUnsubscribe: (() => void) | null = null;
   private cryptoStateUnsubscribe: (() => void) | null = null;
   private secretPresentationUnsubscribe: (() => void) | null = null;
@@ -3039,8 +3039,11 @@ const DESKTOP_WORKSPACE_TAB = 9;
 
   private visibleMoonlightHosts(): MoonlightHostLocalView[] {
     const query: string = this.searchText.trim().toLowerCase();
-    if (query === '') { return this.moonlightHosts.slice(); }
-    return this.moonlightHosts.filter((view: MoonlightHostLocalView): boolean => {
+    // The Pro group/tag/smart filter applies to Moonlight on both the classic and categorized pages.
+    const organized: MoonlightHostLocalView[] = this.moonlightHosts.filter((view: MoonlightHostLocalView): boolean =>
+      view.host === null || !this.proOrgVisible || this.orgMoonlightVisible(view.host as MoonlightHost));
+    if (query === '') { return organized; }
+    return organized.filter((view: MoonlightHostLocalView): boolean => {
       const host: MoonlightHost | null = view.host;
       if (host === null) { return false; }
       if (host.displayName.toLowerCase().indexOf(query) >= 0 ||
@@ -6067,7 +6070,11 @@ const DESKTOP_WORKSPACE_TAB = 9;
       unifiedMoonlightHostCardKey(ref.substring('moonlight:'.length)) : remoteHostCardKey(ref));
     this.hostOrgFilterKey = 'all';
     this.refreshFilteredHostView();
+    // On the categorized page the selected hosts sit inside a category; open it so the selection is visible.
+    const first: OrgHostRow | undefined = this.orgRows(this.hostViewRevision)
+      .find((row: OrgHostRow): boolean => refs.indexOf(row.ref) >= 0);
     animateTo({ duration: 250, curve: Curve.FastOutSlowIn }, (): void => {
+      if (this.groupedHostCardsActive() && first !== undefined) { this.expandedHostGroup = first.protocol; }
       this.hostSelectionMode = true;
       this.hostReorderEnabled = false;
       this.hostSelectedIds = new Set<string>(keys);
@@ -13487,6 +13494,11 @@ const DESKTOP_WORKSPACE_TAB = 9;
 
   build() {
     Stack() {
+      // Page-level host for the Pro workspace editor (see workspaceEditorSheet).
+      Column().width(0).height(0)
+        .bindSheet($$this.showWorkspaceEditor, this.workspaceEditorSheet(), {
+          height: SheetSize.FIT_CONTENT, dragBar: true, showClose: false, backgroundColor: this.pal().sheetBg
+        })
       Column().width('100%').height('100%').backgroundColor(this.pal().bg)
       // 所有连接/安全弹窗共用一个 bindSheet 宿主。面板内容由 mode 路由，
       // 关闭和路由统一在宿主 onDisappear 后完成，避免多个 native Sheet 同时退场。
@@ -13541,11 +13553,6 @@ const DESKTOP_WORKSPACE_TAB = 9;
         }
       })
       Column() {
-      // Page-level host for the Pro workspace editor (see workspaceEditorSheet).
-      Column().width(0).height(0)
-        .bindSheet($$this.showWorkspaceEditor, this.workspaceEditorSheet(), {
-          height: SheetSize.FIT_CONTENT, dragBar: true, showClose: false, backgroundColor: this.pal().sheetBg
-        })
         Column()
           .width('100%').height('100%')
           .backgroundColor(this.getCurrentWallpaperColor())
@@ -13568,6 +13575,9 @@ const DESKTOP_WORKSPACE_TAB = 9;
                 }
                 this.sidebarMoonlightTab()
                 if (this.aiProVisible) { this.sidebarTab('远程 AI · Pro', protocolIcon('ai'), 8) }
+                if (this.proWorkspacesVisible) {
+                  this.sidebarTab('工作区 · Pro', $r('sys.symbol.rectangle_on_rectangle'), DESKTOP_WORKSPACE_TAB)
+                }
                 this.sidebarTab('密钥保险库', protocolIcon('key_vault'), 4)
                 this.sidebarTab('2FA 验证器', protocolIcon('totp'), 5)
                 this.sidebarRelayTab('中继服务器', 6)
@@ -13582,6 +13592,7 @@ const DESKTOP_WORKSPACE_TAB = 9;
             // 主内容区 (hostContent 使用 updateHostFilter 预过滤的数据源)
             Column() {
               if (this.curTab <= 3 || this.curTab === DESKTOP_MOONLIGHT_TAB || this.curTab === 8) { this.hostContent() }
+              else if (this.curTab === DESKTOP_WORKSPACE_TAB) { this.workspaceBoardContent() }
               else if (this.curTab === 6) { this.relayContent() }
               else { this.keyVaultContent() }
             }.layoutWeight(1).height('100%')
@@ -13622,9 +13633,6 @@ const DESKTOP_WORKSPACE_TAB = 9;
           .divider({ mode: DividerMode.FOLLOW_SCROLL })
           .animationDuration(300)
           .onChange((i: number) => {
-                if (this.proWorkspacesVisible) {
-                  this.sidebarTab('工作区 · Pro', $r('sys.symbol.rectangle_on_rectangle'), DESKTOP_WORKSPACE_TAB)
-                }
             this.curTab = i;
             this.lastScrollY = 0;
             if (this.tabBarHidden) {
@@ -13639,7 +13647,6 @@ const DESKTOP_WORKSPACE_TAB = 9;
 
       // Start ArkWeb/xterm while the host list is visible so opening an SSH
       // host does not pay the first WebView/vendor-script cold-start cost.
-              else if (this.curTab === DESKTOP_WORKSPACE_TAB) { this.workspaceBoardContent() }
       if (this.sshCount > 0) {
         SshXtermPrewarmSurface({ prewarmEnabled: true })
           .width(1).height(1)
@@ -14331,6 +14338,16 @@ const DESKTOP_WORKSPACE_TAB = 9;
             .fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
             .layoutWeight(1).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
           if (host.protocol === 'ai') { ProBadge().margin({ left: 6 }).alignSelf(ItemAlign.Center) }
+          if (this.proOrgVisible && this.orgGroupFor(host.id, this.hostOrgRevision) !== null) {
+            Row({ space: 3 }) {
+              Circle().width(6).height(6)
+                .fill((this.orgGroupFor(host.id, this.hostOrgRevision) as HostGroupDefinition).color)
+              Text((this.orgGroupFor(host.id, this.hostOrgRevision) as HostGroupDefinition).name).fontSize(10)
+                .fontColor((this.orgGroupFor(host.id, this.hostOrgRevision) as HostGroupDefinition).color).maxLines(1)
+                .constraintSize({ maxWidth: 72 }).textOverflow({ overflow: TextOverflow.Ellipsis })
+            }.padding({ left: 6, right: 6, top: 2, bottom: 2 }).borderRadius(6).backgroundColor(this.pal().surface)
+            .margin({ left: 6 }).flexShrink(0)
+          }
         }.width('100%')
         if (this.hostGroupStatusLine(host) !== '') {
           Text(this.hostGroupStatusLine(host))
@@ -14649,46 +14666,6 @@ const DESKTOP_WORKSPACE_TAB = 9;
     }.width('100%').margin({ bottom: 10 })
   }
 
-  @Builder hostGroupedContent() {
-    Column() {
-      if (this.breakpoint === 'sm') {
-        this.hostGroupedPhoneGroup('rdp')
-        this.hostGroupedPhoneGroup('rustdesk')
-        this.hostGroupedPhoneGroup('ssh')
-        this.hostGroupedPhoneGroup('vnc')
-        this.moonlightGroupedPhoneGroup()
-        if (isHostGroupTypeVisibleByPro('ai', this.aiProVisible ? ['ai'] : [])) {
-          this.hostGroupedPhoneGroup('ai')
-        }
-      } else {
-        this.hostGroupedDesktopRow('rdp', 'rustdesk')
-        this.hostGroupedDesktopRow('ssh', 'vnc')
-        this.moonlightGroupedDesktopRow(isHostGroupTypeVisibleByPro('ai', this.aiProVisible ? ['ai'] : []))
-      }
-    }
-    .width('100%').padding({ top: 8 })
-  }
-
-  @Builder moonlightFlatHostCard(view: MoonlightHostLocalView) {
-    if (view.host !== null) {
-      Row() {
-        if (this.hostSelectionMode) {
-          Checkbox()
-            .select(this.hostSelectedIds.has(unifiedMoonlightHostCardKey(view.host.id)))
-            .selectedColor(this.accentColor).margin({ right: 8 })
-            .onChange((checked: boolean): void => {
-              this.toggleHostSelect(unifiedMoonlightHostCardKey(view.host?.id || ''), checked);
-            })
-        }
-        Column() {
-          MoonlightBrandIcon({ iconSize: this.breakpoint === 'sm' ? 24 : 26,
-            tint: '#FFFFFF', accessibilityLabel: 'Moonlight 主机' })
-        }
-        .width(this.breakpoint === 'sm' ? 42 : 46)
-        .height(this.breakpoint === 'sm' ? 42 : 46)
-        .borderRadius(this.breakpoint === 'sm' ? 21 : 14)
-        .backgroundColor(this.accentColor)
-        .justifyContent(FlexAlign.Center)
   private toggleWorkspaceGroup(): void {
     animateTo({ duration: 220, curve: Curve.FastOutSlowIn }, (): void => {
       this.expandedHostGroup = this.expandedHostGroup === 'workspace' ? '' : 'workspace';
@@ -14768,17 +14745,17 @@ const DESKTOP_WORKSPACE_TAB = 9;
     }.width('100%').height('100%')
   }
 
-        .margin({ right: this.breakpoint === 'sm' ? 10 : 12 })
-        .onClick((): void => {
-          this.handleMoonlightHostCardClick(view.host?.id || '');
-        })
-        Column() {
-          Row() {
-            Text(view.host.displayName)
-              .fontSize(this.breakpoint === 'sm' ? (AppTheme.fontSize.body as number) : 17)
-              .fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
-              .layoutWeight(1).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-            if (view.host.locked === true) {
+  @Builder hostGroupedContent() {
+    Column() {
+      if (this.breakpoint === 'sm') {
+        this.hostGroupedPhoneGroup('rdp')
+        this.hostGroupedPhoneGroup('rustdesk')
+        this.hostGroupedPhoneGroup('ssh')
+        this.hostGroupedPhoneGroup('vnc')
+        this.moonlightGroupedPhoneGroup()
+        if (isHostGroupTypeVisibleByPro('ai', this.aiProVisible ? ['ai'] : [])) {
+          this.hostGroupedPhoneGroup('ai')
+        }
         // 工作区 sits below the remote-AI module and expands in place like the protocol cards.
         if (this.proWorkspacesVisible) {
           Column() {
@@ -14788,10 +14765,10 @@ const DESKTOP_WORKSPACE_TAB = 9;
             }
           }.width('100%').margin({ bottom: 10 })
         }
-              SymbolGlyph($r('sys.symbol.ohos_lock'))
-                .fontSize(this.breakpoint === 'sm' ? 14 : 18).fontColor([this.pal().danger])
-                .margin({ left: this.breakpoint === 'sm' ? 6 : 8 })
-            }
+      } else {
+        this.hostGroupedDesktopRow('rdp', 'rustdesk')
+        this.hostGroupedDesktopRow('ssh', 'vnc')
+        this.moonlightGroupedDesktopRow(isHostGroupTypeVisibleByPro('ai', this.aiProVisible ? ['ai'] : []))
         // Keep the two-column grid: 工作区 takes the left half of its own row under remote AI.
         if (this.proWorkspacesVisible) {
           Column() {
@@ -14805,6 +14782,46 @@ const DESKTOP_WORKSPACE_TAB = 9;
             }
           }.width('100%').margin({ bottom: 10 })
         }
+      }
+    }
+    .width('100%').padding({ top: 8 })
+  }
+
+  @Builder moonlightFlatHostCard(view: MoonlightHostLocalView) {
+    if (view.host !== null) {
+      Row() {
+        if (this.hostSelectionMode) {
+          Checkbox()
+            .select(this.hostSelectedIds.has(unifiedMoonlightHostCardKey(view.host.id)))
+            .selectedColor(this.accentColor).margin({ right: 8 })
+            .onChange((checked: boolean): void => {
+              this.toggleHostSelect(unifiedMoonlightHostCardKey(view.host?.id || ''), checked);
+            })
+        }
+        Column() {
+          MoonlightBrandIcon({ iconSize: this.breakpoint === 'sm' ? 24 : 26,
+            tint: '#FFFFFF', accessibilityLabel: 'Moonlight 主机' })
+        }
+        .width(this.breakpoint === 'sm' ? 42 : 46)
+        .height(this.breakpoint === 'sm' ? 42 : 46)
+        .borderRadius(this.breakpoint === 'sm' ? 21 : 14)
+        .backgroundColor(this.accentColor)
+        .justifyContent(FlexAlign.Center)
+        .margin({ right: this.breakpoint === 'sm' ? 10 : 12 })
+        .onClick((): void => {
+          this.handleMoonlightHostCardClick(view.host?.id || '');
+        })
+        Column() {
+          Row() {
+            Text(view.host.displayName)
+              .fontSize(this.breakpoint === 'sm' ? (AppTheme.fontSize.body as number) : 17)
+              .fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
+              .layoutWeight(1).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+            if (view.host.locked === true) {
+              SymbolGlyph($r('sys.symbol.ohos_lock'))
+                .fontSize(this.breakpoint === 'sm' ? 14 : 18).fontColor([this.pal().danger])
+                .margin({ left: this.breakpoint === 'sm' ? 6 : 8 })
+            }
           }.width('100%')
           if (view.host.locked === true) {
             Text('已锁定 · 需验证')
@@ -15856,7 +15873,7 @@ const DESKTOP_WORKSPACE_TAB = 9;
           .padding({ left: 16, right: 16 })
           .position({ x: 0, y: '100%' })
           .markAnchor({ x: 0, y: '100%' })
-          .translate({ y: -(this.hostSelectionMode && this.proOrgVisible ? hostListFabLiftVp(this.breakpoint) - 40 :
+          .translate({ y: -(this.hostSelectionMode && this.proOrgVisible ? hostListFabLiftVp(this.breakpoint) :
             hostListFabLiftVp(this.breakpoint) + hostListFabSizeVp(this.breakpoint) + 12) })
           .transition(TransitionEffect.translate({ y: 80 }).combine(TransitionEffect.OPACITY)
             .animation({ duration: 250, curve: Curve.FastOutSlowIn }))

@@ -1,0 +1,334 @@
+import { AppConfig, buildDark, buildLight, Palette } from '../../common/Theme';
+import { GuideContentPage } from '../../services/GuideContentRegistry';
+import { ReleaseNotePage } from '../../services/ReleaseNotesRegistry';
+
+/** Layouts at or above this width split each slide into a hero panel and a content column. */
+const WIDE_LAYOUT_MIN_WIDTH: number = 560;
+const KEY_LEFT: number = 2014;
+const KEY_RIGHT: number = 2015;
+const KEY_ENTER: number = 2054;
+const KEY_NUMPAD_ENTER: number = 2124;
+const KEY_ESCAPE: number = 2070;
+
+function tint(color: string, alpha: string): string {
+  return /^#[0-9A-Fa-f]{6}$/.test(color) ? '#' + alpha + color.substring(1) : color;
+}
+
+/**
+ * Slide-by-slide introduction used by the first-install guide and 「设置 → 教程 → 快速认识应用」.
+ * Phones stack a hero above the text with a full-width button; Pad/PC split hero and text side by side.
+ * Arrow keys, Enter and Esc work on PC.
+ */
+@Component
+export struct GuideShowcase {
+  @StorageProp('currentTheme') theme: string = 'light';
+  @StorageProp('accentColor') accent: string = '#007DFF';
+  @Prop pages: GuideContentPage[] = [];
+  /** Shown on the first slide's top-right; empty hides it. */
+  @Prop skipLabel: string = '跳过';
+  @Prop finishLabel: string = '开始使用';
+  /** Inside a sheet: sheet background, tighter paddings and a close button. */
+  @Prop embedded: boolean = false;
+  @Prop heading: string = '';
+  onFinish: () => void = (): void => {};
+  onSkip: () => void = (): void => {};
+  @State index: number = 0;
+  @State areaWidth: number = 360;
+  private controller: SwiperController = new SwiperController();
+
+  private pal(): Palette { return this.theme === 'light' ? buildLight(this.accent) : buildDark(this.accent); }
+  private wide(): boolean { return this.areaWidth >= WIDE_LAYOUT_MIN_WIDTH; }
+  private last(): boolean { return this.index >= this.pages.length - 1; }
+  private next(): void { if (this.last()) { this.onFinish(); } else { this.controller.showNext(); } }
+  private previous(): void { if (this.index > 0) { this.controller.showPrevious(); } }
+  private handleKey(event: KeyEvent): void {
+    if (event.type !== KeyType.Down) { return; }
+    if (event.keyCode === KEY_RIGHT) { this.next(); }
+    else if (event.keyCode === KEY_LEFT) { this.previous(); }
+    else if (event.keyCode === KEY_ENTER || event.keyCode === KEY_NUMPAD_ENTER) { this.next(); }
+    else if (event.keyCode === KEY_ESCAPE && this.skipLabel.length > 0) { this.onSkip(); }
+  }
+
+  @Builder private icon(page: GuideContentPage, size: number) {
+    if (page.glyph !== undefined) {
+      SymbolGlyph(page.glyph).fontSize(size).fontColor([Color.White])
+    } else {
+      Image(page.symbol).width(size).height(size).fillColor(Color.White)
+    }
+  }
+
+  @Builder private hero(page: GuideContentPage, scale: number, active: boolean) {
+    Stack() {
+      Circle().width(232 * scale).height(232 * scale).fill(Color.Transparent)
+        .stroke(tint(this.accent, '1F')).strokeWidth(1)
+      Circle().width(176 * scale).height(176 * scale).fill(tint(this.accent, '0F'))
+        .stroke(tint(this.accent, '29')).strokeWidth(1)
+      Column() { this.icon(page, Math.round(48 * scale)) }
+        .width(108 * scale).height(108 * scale).borderRadius(32 * scale).justifyContent(FlexAlign.Center)
+        .linearGradient({ angle: 135, colors: [[this.accent, 0], [tint(this.accent, 'B3'), 1]] })
+        .shadow({ radius: 28, color: tint(this.accent, '55'), offsetY: 12 })
+        .scale({ x: active ? 1 : 0.86, y: active ? 1 : 0.86 })
+        .animation({ duration: 320, curve: Curve.FastOutSlowIn })
+    }.width(240 * scale).height(240 * scale)
+  }
+
+  @Builder private tagChip(text: string) {
+    if (text.length > 0) {
+      Text(text).fontSize(12).fontWeight(FontWeight.Medium).fontColor(this.accent).fontFamily(AppConfig.fontFamily)
+        .padding({ left: 10, right: 10, top: 4, bottom: 4 }).borderRadius(12)
+        .backgroundColor(tint(this.accent, '1A'))
+    }
+  }
+
+  @Builder private points(page: GuideContentPage, wide: boolean) {
+    if ((page.points ?? []).length > 0) {
+      Column({ space: wide ? 12 : 10 }) {
+        ForEach(page.points ?? [], (point: string): void => {
+          Row({ space: 10 }) {
+            SymbolGlyph($r('sys.symbol.checkmark_circle_fill')).fontSize(17).fontColor([this.accent])
+            Text(point).fontSize(wide ? 15 : 14).fontColor(this.pal().text).fontFamily(AppConfig.fontFamily)
+              .lineHeight(wide ? 21 : 20).layoutWeight(1)
+          }.width('100%').alignItems(VerticalAlign.Top)
+        }, (point: string, at: number): string => at.toString() + point)
+      }
+      .width('100%').padding(wide ? 18 : 16).borderRadius(20)
+      .backgroundColor(this.embedded ? this.pal().card : tint(this.pal().card, 'CC'))
+      .border({ width: 0.5, color: this.pal().cardBorder })
+    }
+  }
+
+  @Builder private narrowSlide(page: GuideContentPage, at: number) {
+    Scroll() {
+      Column() {
+        this.hero(page, this.embedded ? 0.72 : 0.92, this.index === at)
+        Column({ space: 10 }) {
+          this.tagChip(page.tag ?? '')
+          Text(page.title).fontSize(this.embedded ? 22 : 26).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
+            .fontFamily(AppConfig.fontFamily).textAlign(TextAlign.Center)
+          Text(page.desc).fontSize(this.embedded ? 14 : 15).fontColor(this.pal().text2).fontFamily(AppConfig.fontFamily)
+            .lineHeight(this.embedded ? 21 : 23).textAlign(TextAlign.Center)
+        }.alignItems(HorizontalAlign.Center).width('100%').margin({ top: this.embedded ? 4 : 12, bottom: 18 })
+        this.points(page, false)
+      }.width('100%').padding({ left: 24, right: 24, top: 8, bottom: 16 }).alignItems(HorizontalAlign.Center)
+      .constraintSize({ maxWidth: 520 })
+    }.width('100%').height('100%').scrollBar(BarState.Off).align(Alignment.Center).edgeEffect(EdgeEffect.None)
+  }
+
+  @Builder private wideSlide(page: GuideContentPage, at: number) {
+    Row({ space: 32 }) {
+      Stack() {
+        this.hero(page, this.embedded ? 0.85 : 1.1, this.index === at)
+        Text((at + 1).toString().padStart(2, '0') + ' / ' + this.pages.length.toString().padStart(2, '0'))
+          .fontSize(12).fontColor(tint(this.accent, 'B3')).fontFamily(AppConfig.fontFamily)
+          .position({ x: 20, y: 18 })
+      }
+      .layoutWeight(1).height('100%').borderRadius(28)
+      .linearGradient({ angle: 160, colors: [[tint(this.accent, '24'), 0], [tint(this.accent, '08'), 1]] })
+      .border({ width: 0.5, color: tint(this.accent, '29') })
+      Scroll() {
+        Column({ space: 14 }) {
+          this.tagChip(page.tag ?? '')
+          Text(page.title).fontSize(this.embedded ? 24 : 30).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
+            .fontFamily(AppConfig.fontFamily)
+          Text(page.desc).fontSize(this.embedded ? 15 : 16).fontColor(this.pal().text2).fontFamily(AppConfig.fontFamily)
+            .lineHeight(this.embedded ? 22 : 25)
+          this.points(page, true)
+        }.alignItems(HorizontalAlign.Start).width('100%')
+      }.layoutWeight(1.15).height('100%').scrollBar(BarState.Off).align(Alignment.Center).edgeEffect(EdgeEffect.None)
+    }.width('100%').height('100%').padding({ left: this.embedded ? 20 : 40, right: this.embedded ? 20 : 40,
+      top: 4, bottom: 4 })
+  }
+
+  @Builder private dots() {
+    Row({ space: 6 }) {
+      ForEach(this.pages, (_page: GuideContentPage, at: number): void => {
+        Column().width(this.index === at ? 22 : 7).height(7).borderRadius(4)
+          .backgroundColor(this.index === at ? this.accent : this.pal().divider)
+          .animation({ duration: 220, curve: Curve.FastOutSlowIn })
+      }, (page: GuideContentPage): string => page.id)
+    }
+  }
+
+  @Builder private primaryButton(fill: boolean) {
+    Button(this.last() ? this.finishLabel : '下一步')
+      .height(this.embedded ? 42 : 48).fontSize(16).fontWeight(FontWeight.Medium).fontColor(Color.White)
+      .backgroundColor(this.accent).borderRadius(this.embedded ? 21 : 24)
+      .padding({ left: 28, right: 28 })
+      .width(fill ? '100%' : undefined)
+      .shadow({ radius: 16, color: tint(this.accent, '40'), offsetY: 6 })
+      .onClick((): void => { this.next(); })
+  }
+
+  build() {
+    Stack() {
+      // Soft radial glows; blur() on shapes renders hard edges on some devices.
+      Column().width(420).height(420).position({ x: -170, y: -160 })
+        .radialGradient({ center: ['50%', '50%'], radius: 210,
+          colors: [[tint(this.accent, '26'), 0], [tint(this.accent, '00'), 1]] })
+      Column().width(380).height(380).position({ x: this.areaWidth - 210, y: '58%' })
+        .radialGradient({ center: ['50%', '50%'], radius: 190,
+          colors: [[tint(this.accent, '1A'), 0], [tint(this.accent, '00'), 1]] })
+      Column() {
+        Row() {
+          if (this.heading.length > 0) {
+            Text(this.heading).fontSize(18).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
+              .fontFamily(AppConfig.fontFamily)
+          } else if (!this.wide()) {
+            Text((this.index + 1).toString() + ' / ' + this.pages.length.toString()).fontSize(13)
+              .fontColor(this.pal().text3).fontFamily(AppConfig.fontFamily)
+          }
+          Blank()
+          if (this.skipLabel.length > 0 && !this.last()) {
+            Text(this.skipLabel).fontSize(15).fontColor(this.pal().text2).padding(8)
+              .onClick((): void => { this.onSkip(); })
+          }
+        }.width('100%').height(48).padding({ left: this.wide() && !this.embedded ? 40 : 22, right: 14 })
+        Swiper(this.controller) {
+          ForEach(this.pages, (page: GuideContentPage, at: number): void => {
+            if (this.wide()) { this.wideSlide(page, at) } else { this.narrowSlide(page, at) }
+          }, (page: GuideContentPage): string => page.id + (this.wide() ? ':w' : ':n'))
+        }
+        .loop(false).indicator(false).duration(320).curve(Curve.FastOutSlowIn)
+        .onChange((at: number): void => { this.index = at; })
+        .layoutWeight(1).width('100%')
+        if (this.wide()) {
+          Row({ space: 12 }) {
+            this.dots()
+            Blank()
+            if (this.index > 0) {
+              Button('上一步').height(this.embedded ? 42 : 48).fontSize(15).fontColor(this.pal().text)
+                .backgroundColor(this.pal().surface).borderRadius(this.embedded ? 21 : 24).padding({ left: 22, right: 22 })
+                .onClick((): void => { this.previous(); })
+            }
+            this.primaryButton(false)
+          }.width('100%').padding({ left: this.embedded ? 22 : 40, right: this.embedded ? 22 : 40, top: 12,
+            bottom: this.embedded ? 20 : 32 })
+        } else {
+          Column({ space: 16 }) {
+            this.dots()
+            this.primaryButton(true)
+            Text('上一步').fontSize(14).fontColor(this.index > 0 ? this.pal().text2 : Color.Transparent)
+              .onClick((): void => { this.previous(); })
+          }.width('100%').padding({ left: 24, right: 24, top: 8, bottom: this.embedded ? 14 : 22 })
+          .constraintSize({ maxWidth: 520 })
+        }
+      }.width('100%').height('100%')
+    }
+    .width('100%').height('100%').clip(true)
+    .backgroundColor(this.embedded ? this.pal().sheetBg : this.pal().bg)
+    .focusable(true).defaultFocus(true)
+    .onKeyEvent((event: KeyEvent): void => { this.handleKey(event); })
+    .onAreaChange((_old: Area, area: Area): void => {
+      const width: number = Number(area.width);
+      if (width > 0 && Math.abs(width - this.areaWidth) > 1) { this.areaWidth = width; }
+    })
+  }
+}
+
+function tagColor(tag: string, accent: string): string {
+  if (tag === '改进') { return '#30A46C'; }
+  if (tag === '修复') { return '#F08C00'; }
+  if (tag === '即将推出') { return '#9B5DE5'; }
+  return accent;
+}
+
+/**
+ * 「新功能」 list for a release: version, a one-line headline and every change with a colored tag. Two columns on
+ * wide windows. Used by the post-update sheet and 「设置 → 本版本更新日志」.
+ */
+@Component
+export struct WhatsNewList {
+  @StorageProp('currentTheme') theme: string = 'light';
+  @StorageProp('accentColor') accent: string = '#007DFF';
+  @Prop version: string = '';
+  @Prop headline: string = '';
+  @Prop items: ReleaseNotePage[] = [];
+  @Prop primaryLabel: string = '继续';
+  @Prop showClose: boolean = false;
+  onPrimary: () => void = (): void => {};
+  onClose: () => void = (): void => {};
+  @State areaWidth: number = 360;
+
+  private pal(): Palette { return this.theme === 'light' ? buildLight(this.accent) : buildDark(this.accent); }
+  private wide(): boolean { return this.areaWidth >= WIDE_LAYOUT_MIN_WIDTH; }
+  private rows(): ReleaseNotePage[][] {
+    const size: number = this.wide() ? 2 : 1;
+    const result: ReleaseNotePage[][] = [];
+    for (let start: number = 0; start < this.items.length; start += size) {
+      result.push(this.items.slice(start, start + size));
+    }
+    return result;
+  }
+
+  @Builder private item(note: ReleaseNotePage) {
+    Row({ space: 14 }) {
+      Column() {
+        if (note.glyph !== undefined) {
+          SymbolGlyph(note.glyph).fontSize(22).fontColor([tagColor(note.tag ?? '', this.accent)])
+        } else {
+          Image(note.symbol).width(22).height(22).fillColor(tagColor(note.tag ?? '', this.accent))
+        }
+      }.width(44).height(44).borderRadius(14).justifyContent(FlexAlign.Center)
+      .backgroundColor(tint(tagColor(note.tag ?? '', this.accent), '1F'))
+      Column({ space: 5 }) {
+        Row({ space: 8 }) {
+          Text(note.title).fontSize(16).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
+            .fontFamily(AppConfig.fontFamily).layoutWeight(1).maxLines(2)
+          if ((note.tag ?? '').length > 0) {
+            Text(note.tag).fontSize(11).fontColor(tagColor(note.tag ?? '', this.accent))
+              .padding({ left: 7, right: 7, top: 2, bottom: 2 }).borderRadius(8)
+              .backgroundColor(tint(tagColor(note.tag ?? '', this.accent), '1A'))
+          }
+        }.width('100%').alignItems(VerticalAlign.Top)
+        Text(note.desc).fontSize(13).fontColor(this.pal().text2).fontFamily(AppConfig.fontFamily).lineHeight(20)
+      }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+    }
+    .width('100%').padding(14).borderRadius(18).alignItems(VerticalAlign.Top)
+    .backgroundColor(this.pal().card).border({ width: 0.5, color: this.pal().cardBorder })
+  }
+
+  build() {
+    Column() {
+      Row() {
+        Text('版本 ' + this.version).fontSize(12).fontWeight(FontWeight.Medium).fontColor(Color.White)
+          .padding({ left: 10, right: 10, top: 4, bottom: 4 }).borderRadius(12)
+          .linearGradient({ angle: 120, colors: [[this.accent, 0], [tint(this.accent, 'B3'), 1]] })
+        Blank()
+        if (this.showClose) {
+          SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor([this.pal().text2]).padding(8)
+            .onClick((): void => { this.onClose(); })
+        }
+      }.width('100%').height(40)
+      Text('新功能').fontSize(this.wide() ? 30 : 28).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
+        .fontFamily(AppConfig.fontFamily).width('100%').margin({ top: 6 })
+      if (this.headline.length > 0) {
+        Text(this.headline).fontSize(14).fontColor(this.pal().text2).fontFamily(AppConfig.fontFamily).lineHeight(21)
+          .width('100%').margin({ top: 6 })
+      }
+      Scroll() {
+        Column({ space: 10 }) {
+          ForEach(this.rows(), (line: ReleaseNotePage[]): void => {
+            Row({ space: 10 }) {
+              ForEach(line, (note: ReleaseNotePage): void => {
+                Column() { this.item(note) }.layoutWeight(1)
+              }, (note: ReleaseNotePage): string => note.id)
+              if (line.length === 1 && this.wide()) { Blank().layoutWeight(1) }
+            }.width('100%').alignItems(VerticalAlign.Top)
+          }, (line: ReleaseNotePage[], at: number): string => at.toString() + (this.wide() ? 'w' : 'n') +
+            line.map((note: ReleaseNotePage): string => note.id).join(','))
+        }.width('100%').padding({ top: 16, bottom: 12 })
+      }.layoutWeight(1).width('100%').scrollBar(BarState.Off).align(Alignment.Top).edgeEffect(EdgeEffect.Spring)
+      Button(this.primaryLabel).width('100%').height(48).fontSize(16).fontWeight(FontWeight.Medium)
+        .fontColor(Color.White).backgroundColor(this.accent).borderRadius(24)
+        .shadow({ radius: 16, color: tint(this.accent, '40'), offsetY: 6 })
+        .onClick((): void => { this.onPrimary(); })
+      Text('可在「设置 → 教程 → 本版本更新日志」随时回看').fontSize(11).fontColor(this.pal().text3)
+        .fontFamily(AppConfig.fontFamily).margin({ top: 10 })
+    }
+    .width('100%').height('100%').padding({ left: 22, right: 22, top: 14, bottom: 20 })
+    .onAreaChange((_old: Area, area: Area): void => {
+      const width: number = Number(area.width);
+      if (width > 0 && Math.abs(width - this.areaWidth) > 1) { this.areaWidth = width; }
+    })
+  }
+}

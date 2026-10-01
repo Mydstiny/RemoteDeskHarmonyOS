@@ -28,8 +28,10 @@ import {
 import {
   CURRENT_RELEASE_VERSION,
   pagesForReleasedVersion,
+  releaseHeadline,
   ReleaseNotePage
 } from '../services/ReleaseNotesRegistry';
+import { GuideShowcase, WhatsNewList } from './guide/GuideShowcase';
 
 @Component
 export struct AboutSettingsSheet {
@@ -164,166 +166,50 @@ export struct AboutSettingsSheet {
 
   @Builder releaseNotesSheet() {
     Column() {
-      Row() {
-        Text('本版本更新日志').fontSize(20).fontWeight(FontWeight.Bold)
-          .fontColor(this.pal().text).fontFamily(this.font())
-        Blank()
-        SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor([this.pal().text2])
-          .width(36).height(36).onClick((): void => { this.onClose(); })
-      }.width('100%').padding({ left: 24, right: 20, top: 20 }).margin({ bottom: 4 })
-
-      Swiper(this.releaseNotesController) {
-        ForEach(this.releaseNotesItems, (item: ReleaseNotePage, index: number) => {
-          Column() {
-            Column() {
-              Image(item.symbol).width(48).height(48).fillColor(this.accentColor)
-            }
-            .width(96).height(96).borderRadius(26)
-            .justifyContent(FlexAlign.Center)
-            .backgroundColor(this.pal().surface)
-            .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
-            .margin({ bottom: 18 })
-            .scale({
-              x: this.releaseNotesIndex === index ? 1 : 0.86,
-              y: this.releaseNotesIndex === index ? 1 : 0.86
-            })
-            .animation({ duration: 240, curve: Curve.EaseOut })
-
-            Text(item.title)
-              .fontSize(22).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
-              .textAlign(TextAlign.Center).fontFamily(this.font()).margin({ bottom: 10 })
-
-            Text(item.desc)
-              .fontSize(14).fontColor(this.pal().text2).textAlign(TextAlign.Center)
-              .lineHeight(21).width('88%').fontFamily(this.font())
-          }
-          .width('100%').justifyContent(FlexAlign.Center)
-          .padding({ bottom: 40 })
-        }, (item: ReleaseNotePage) => item.id)
+      if (this.releaseNotesItems.length === 0) {
+        Column({ space: 10 }) {
+          Text('本版本更新日志').fontSize(20).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
+          Text(CURRENT_RELEASE_VERSION + ' 的更新说明正在整理，发布后会显示在这里。').fontSize(14)
+            .fontColor(this.pal().text2).textAlign(TextAlign.Center)
+        }.width('100%').padding(32)
+      } else {
+        WhatsNewList({
+          version: CURRENT_RELEASE_VERSION,
+          headline: releaseHeadline(CURRENT_RELEASE_VERSION),
+          items: this.releaseNotesItems,
+          primaryLabel: '完成',
+          showClose: true,
+          onPrimary: (): void => { this.onClose(); },
+          onClose: (): void => { this.onClose(); }
+        })
       }
-      .loop(false).indicator(false).duration(250).curve(Curve.EaseOut)
-      .onChange((i: number): void => { this.releaseNotesIndex = i; })
-      .height(this.usageGuideHeight())
-
-      Row() {
-        Text(this.releaseNotesIndex > 0 ? '上一步' : '关闭')
-          .fontSize(14).fontColor(this.pal().text2).width(72).textAlign(TextAlign.Start)
-          .onClick((): void => {
-            if (this.releaseNotesIndex > 0) {
-              this.releaseNotesController.showPrevious();
-            } else {
-              this.onClose();
-            }
-          })
-        Blank()
-        Text((this.releaseNotesIndex + 1).toString() + ' / ' +
-          this.releaseNotesItems.length.toString())
-          .fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text3)
-        Blank()
-        Text(this.releaseNotesIndex < this.releaseNotesItems.length - 1 ? '下一步' : '完成')
-          .fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.accentColor)
-          .width(72).textAlign(TextAlign.End)
-          .onClick((): void => {
-            if (this.releaseNotesIndex < this.releaseNotesItems.length - 1) {
-              this.releaseNotesController.showNext();
-            } else {
-              this.onClose();
-            }
-          })
-      }.width('100%').padding({ left: 28, right: 28, bottom: 28, top: 8 })
     }
     .width('100%')
-    .constraintSize({ maxWidth: 620, maxHeight: this.breakpoint === 'sm' ? 500 : 560 })
+    .height(this.releaseNotesItems.length === 0 ? 180 : (this.breakpoint === 'sm' ? 600 : 640))
+    .constraintSize({ maxWidth: 760 })
     .clip(true)
     .backgroundColor(this.pal().sheetBg)
-    .backgroundBlurStyle(BlurStyle.Regular)
     .borderRadius(this.breakpoint === 'sm' ?
       { topLeft: 22, topRight: 22, bottomLeft: 0, bottomRight: 0 } : 24)
   }
 
   @Builder usageGuideSheet() {
     Column() {
-      Row() {
-        Text('快速认识应用').fontSize(20).fontWeight(FontWeight.Bold)
-          .fontColor(this.pal().text).fontFamily(this.font())
-        Blank()
-        SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor([this.pal().text2])
-          .width(36).height(36).onClick((): void => { this.onClose(); })
-      }.width('100%').padding({ left: 24, right: 20, top: 20 }).margin({ bottom: 4 })
-
-      Swiper(this.usageGuideController) {
-        ForEach(this.usageGuideItems(), (item: GuideContentPage, index: number) => {
-          Column() {
-            Column() {
-              Image(item.symbol).width(48).height(48).fillColor(this.accentColor)
-            }
-            .width(96).height(96).borderRadius(26)
-            .justifyContent(FlexAlign.Center)
-            .backgroundColor(this.pal().surface)
-            .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
-            .margin({ bottom: 18 })
-            .scale({
-              x: this.usageGuideIndex === index ? 1 : 0.86,
-              y: this.usageGuideIndex === index ? 1 : 0.86
-            })
-            .animation({ duration: 240, curve: Curve.EaseOut })
-
-            Text(item.title)
-              .fontSize(22).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
-              .textAlign(TextAlign.Center).fontFamily(this.font()).margin({ bottom: 10 })
-
-            Scroll() {
-              Text(item.desc)
-                .fontSize(14).fontColor(this.pal().text2).textAlign(TextAlign.Center)
-                .lineHeight(21).width('100%').fontFamily(this.font())
-            }
-            .width('88%').layoutWeight(1).scrollBar(BarState.Off)
-          }
-          .width('100%').justifyContent(FlexAlign.Center)
-          .padding({ bottom: 40 })
-        }, (item: GuideContentPage) => item.id)
-      }
-      .loop(false).indicator(false).duration(250).curve(Curve.EaseOut)
-      .onChange((i: number): void => { this.usageGuideIndex = i; })
-      .height(this.usageGuideHeight())
-
-      Row() {
-        Text(this.usageGuideIndex > 0 ? '上一步' : '关闭')
-          .fontSize(14).fontColor(this.pal().text2).width(72).textAlign(TextAlign.Start)
-          .onClick((): void => {
-            if (this.usageGuideIndex > 0) {
-              this.usageGuideController.showPrevious();
-            } else {
-              this.onClose();
-            }
-          })
-        Blank()
-        Row({ space: 7 }) {
-          ForEach(this.usageGuideItems(), (_dot: GuideContentPage, i: number) => {
-            Column()
-              .width(this.usageGuideIndex === i ? 22 : 7).height(7).borderRadius(4)
-              .backgroundColor(this.usageGuideIndex === i ? this.accentColor : this.pal().divider)
-              .animation({ duration: 200, curve: Curve.EaseOut })
-          }, (_dot: GuideContentPage) => _dot.id)
-        }
-        Blank()
-        Text(this.usageGuideIndex < this.usageGuideItems().length - 1 ? '下一步' : '完成')
-          .fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.accentColor)
-          .width(72).textAlign(TextAlign.End)
-          .onClick((): void => {
-            if (this.usageGuideIndex < this.usageGuideItems().length - 1) {
-              this.usageGuideController.showNext();
-            } else {
-              this.onClose();
-            }
-          })
-      }.width('100%').padding({ left: 28, right: 28, bottom: 28, top: 8 })
+      GuideShowcase({
+        pages: this.usageGuideItems(),
+        heading: '快速认识应用',
+        skipLabel: '关闭',
+        finishLabel: '完成',
+        embedded: true,
+        onFinish: (): void => { this.onClose(); },
+        onSkip: (): void => { this.onClose(); }
+      })
     }
     .width('100%')
-    .constraintSize({ maxWidth: 620, maxHeight: this.breakpoint === 'sm' ? 500 : 560 })
+    .height(this.breakpoint === 'sm' ? 600 : 500)
+    .constraintSize({ maxWidth: 760 })
     .clip(true)
     .backgroundColor(this.pal().sheetBg)
-    .backgroundBlurStyle(BlurStyle.Regular)
     .borderRadius(this.breakpoint === 'sm' ?
       { topLeft: 22, topRight: 22, bottomLeft: 0, bottomRight: 0 } : 24)
   }

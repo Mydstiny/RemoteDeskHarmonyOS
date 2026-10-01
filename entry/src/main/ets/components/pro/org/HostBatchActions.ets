@@ -1,4 +1,6 @@
+import { display } from '@kit.ArkUI';
 import { AppConfig, buildDark, buildLight, Palette } from '../../../common/Theme';
+import { ProSymbolIcon } from '../ProSymbolIcon';
 import { RemoteHost } from '../../../model/RemoteHost';
 import { SshKey } from '../../../model/SshKey';
 import { HostSyncService } from '../../../services/HostSyncService';
@@ -14,6 +16,15 @@ import {
 } from '../../../services/pro/org/HostOrganizationPolicy';
 import { HostOrganizationStore } from '../../../services/pro/org/HostOrganizationStore';
 import { orgProtocolLabel, OrgHostRow } from '../../../services/pro/org/HostOrganizationDirectory';
+
+function sheetBodyMaxHeight(): number {
+  try {
+    const screen: display.Display = display.getDefaultDisplaySync();
+    return Math.round(screen.height / Math.max(1, screen.densityPixels) * 0.85) - 80;
+  } catch (_error) {
+    return 560;
+  }
+}
 
 type BatchSheet = 'group' | 'tags' | 'edit';
 
@@ -268,7 +279,7 @@ export struct HostBatchActions {
         ForEach(this.groups(this.revision), (group: HostGroupDefinition, index: number): void => {
           if (index > 0) { Divider().strokeWidth(0.5).color(this.pal().cardBorder).margin({ left: 16, right: 16 }) }
           Row({ space: 10 }) {
-            Text(group.icon).fontSize(17).width(32).height(32).textAlign(TextAlign.Center).borderRadius(10)
+            Column() { ProSymbolIcon({ icon: group.icon, glyphSize: 17, color: group.color }) }.width(32).height(32).justifyContent(FlexAlign.Center).borderRadius(10)
               .backgroundColor(this.tint(group.color, '26'))
             Text(group.name).fontSize(15).fontColor(this.pal().text).layoutWeight(1).maxLines(1)
               .textOverflow({ overflow: TextOverflow.Ellipsis })
@@ -439,8 +450,9 @@ export struct HostBatchActions {
           if (this.sheet === 'tags') { this.tagSheet() }
           if (this.sheet === 'edit') { this.editSheet() }
         }.padding({ left: 16, right: 16, bottom: 28 })
-      }.layoutWeight(1).scrollBar(BarState.Off).align(Alignment.Top).edgeEffect(EdgeEffect.Spring)
-    }.width('100%').height('100%').backgroundColor(this.pal().sheetBg)
+      }.constraintSize({ maxHeight: sheetBodyMaxHeight() }).scrollBar(BarState.Off).align(Alignment.Top)
+      .edgeEffect(EdgeEffect.Spring)
+    }.width('100%').backgroundColor(this.pal().sheetBg)
   }
 
   build() {
@@ -473,7 +485,7 @@ export struct HostBatchActions {
     .border({ width: 0.5, color: this.pal().floatBorder })
     .shadow({ radius: 18, color: '#22000000', offsetY: 6 })
     .bindSheet($$this.showSheet, this.sheetBody(), {
-      height: this.sheet === 'edit' ? SheetSize.LARGE : SheetSize.MEDIUM, dragBar: true, showClose: false,
+      height: SheetSize.FIT_CONTENT, dragBar: true, showClose: false,
       backgroundColor: this.pal().sheetBg
     })
   }

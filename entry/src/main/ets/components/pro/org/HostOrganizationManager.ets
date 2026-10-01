@@ -1,4 +1,5 @@
 import { common } from '@kit.AbilityKit';
+import { ProSymbolIcon } from '../ProSymbolIcon';
 import { AppConfig, buildDark, buildLight, Palette } from '../../../common/Theme';
 import {
   danglingRefs, duplicateHostGroups, HOST_GROUP_COLORS, HOST_GROUP_ICONS, HostDuplicateGroup, HostGroupDefinition,
@@ -234,7 +235,7 @@ export struct HostOrganizationManager {
       Text('图标').fontSize(12).fontColor(this.pal().text3).width('100%')
       Flex({ wrap: FlexWrap.Wrap }) {
         ForEach(HOST_GROUP_ICONS, (icon: string): void => {
-          Text(icon).fontSize(20).width(40).height(40).textAlign(TextAlign.Center).borderRadius(12)
+          Column() { ProSymbolIcon({ icon: icon, glyphSize: 20, color: group.icon === icon ? group.color : this.pal().text2 }) }.width(40).height(40).justifyContent(FlexAlign.Center).borderRadius(12)
             .backgroundColor(group.icon === icon ? this.tint(group.color, '33') : Color.Transparent)
             .border({ width: group.icon === icon ? 1.5 : 0, color: group.color })
             .onClick((): void => { HostOrganizationStore.getInstance().updateGroup(group.id, '', '', icon); })
@@ -261,7 +262,7 @@ export struct HostOrganizationManager {
           if (index > 0) { Divider().strokeWidth(0.5).color(this.pal().cardBorder).margin({ left: 16, right: 16 }) }
           Column() {
             Row({ space: 10 }) {
-              Text(group.icon).fontSize(18).width(34).height(34).textAlign(TextAlign.Center).borderRadius(10)
+              Column() { ProSymbolIcon({ icon: group.icon, glyphSize: 18, color: group.color }) }.width(34).height(34).justifyContent(FlexAlign.Center).borderRadius(10)
                 .backgroundColor(this.tint(group.color, '26'))
               Column({ space: 2 }) {
                 Text(group.name).fontSize(15).fontColor(this.pal().text).fontFamily(AppConfig.fontFamily).maxLines(1)

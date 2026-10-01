@@ -1,4 +1,5 @@
 import { AppConfig, buildDark, buildLight, Palette } from '../../../common/Theme';
+import { ProSymbolIcon } from '../ProSymbolIcon';
 import { ProBadge } from '../../ProBadge';
 import { ProEntries } from '../../../services/pro/ProEntries';
 import { Workspace } from '../../../services/pro/workspace/WorkspacePolicy';
@@ -155,7 +156,7 @@ export struct WorkspacePanel {
 
   @Builder private listRow(workspace: Workspace) {
     Row({ space: 12 }) {
-      Text(workspace.icon).fontSize(19).width(40).height(40).textAlign(TextAlign.Center).borderRadius(13)
+      Column() { ProSymbolIcon({ icon: workspace.icon, glyphSize: 19, color: workspace.color }) }.width(40).height(40).justifyContent(FlexAlign.Center).borderRadius(13)
         .backgroundColor(workspaceTint(workspace.color, '2E'))
       Column({ space: 3 }) {
         Text(workspace.name).fontSize(15).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
@@ -174,7 +175,7 @@ export struct WorkspacePanel {
   @Builder private gridCard(workspace: Workspace) {
     Column({ space: 8 }) {
       Row() {
-        Text(workspace.icon).fontSize(22).width(44).height(44).textAlign(TextAlign.Center).borderRadius(14)
+        Column() { ProSymbolIcon({ icon: workspace.icon, glyphSize: 22, color: workspace.color }) }.width(44).height(44).justifyContent(FlexAlign.Center).borderRadius(14)
           .backgroundColor(workspaceTint(workspace.color, '2E'))
         Blank()
         SymbolGlyph($r('sys.symbol.line_3_horizontal')).fontSize(16).fontColor([this.pal().text3]).padding(6)

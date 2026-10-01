@@ -1,4 +1,5 @@
 import { AppConfig, buildDark, buildLight, Palette } from '../common/Theme';
+import { ProSymbolIcon } from './pro/ProSymbolIcon';
 import { ProEntries } from '../services/pro/ProEntries';
 import {
   addWorkspaceEntries, applyLayoutPreset, copyWorkspace, MAX_WORKSPACE_ENTRIES, MAX_WORKSPACE_NAME_LENGTH,
@@ -20,12 +21,12 @@ const CANVAS_RATIO: number = 10 / 16;
 export struct ProWorkspaceEditorPanel {
   @StorageProp('currentTheme') theme: string = 'light';
   @StorageProp('accentColor') accent: string = '#007DFF';
-  @Prop workspace: Workspace = newWorkspace('', '', '#007DFF', '🖥️', 0, 0);
+  @Prop workspace: Workspace = newWorkspace('', '', '#007DFF', 'sym.desktop_fill', 0, 0);
   /** Hosts the stores cannot list on their own (Moonlight, from the home page). */
   @Prop extraRows: OrgHostRow[] = [];
   @Prop showClose: boolean = true;
   onClose: () => void = (): void => {};
-  @State draft: Workspace = newWorkspace('', '', '#007DFF', '🖥️', 0, 0);
+  @State draft: Workspace = newWorkspace('', '', '#007DFF', 'sym.desktop_fill', 0, 0);
   @State nameDraft: string = '';
   @State tab: EditorTab = 'sessions';
   @State openRef: string = '';
@@ -153,7 +154,7 @@ export struct ProWorkspaceEditorPanel {
   @Builder private identity() {
     Column({ space: 12 }) {
       Row({ space: 10 }) {
-        Text(this.draft.icon).fontSize(22).width(44).height(44).textAlign(TextAlign.Center).borderRadius(14)
+        Column() { ProSymbolIcon({ icon: this.draft.icon, glyphSize: 22, color: this.draft.color }) }.width(44).height(44).justifyContent(FlexAlign.Center).borderRadius(14)
           .backgroundColor(this.tint(this.draft.color, '2E'))
         TextInput({ text: this.nameDraft, placeholder: '工作区名称' }).height(42).layoutWeight(1)
           .maxLength(MAX_WORKSPACE_NAME_LENGTH).backgroundColor(this.pal().surface).borderRadius(12)
@@ -171,7 +172,7 @@ export struct ProWorkspaceEditorPanel {
       }.width('100%')
       Flex({ wrap: FlexWrap.Wrap }) {
         ForEach(WORKSPACE_ICONS, (icon: string): void => {
-          Text(icon).fontSize(19).width(38).height(38).textAlign(TextAlign.Center).borderRadius(11)
+          Column() { ProSymbolIcon({ icon: icon, glyphSize: 19, color: this.draft.icon === icon ? this.draft.color : this.pal().text2 }) }.width(38).height(38).justifyContent(FlexAlign.Center).borderRadius(11)
             .backgroundColor(this.draft.icon === icon ? this.tint(this.draft.color, '2E') : Color.Transparent)
             .onClick((): void => { this.update((next: Workspace): void => { next.icon = icon; }); })
         }, (icon: string): string => icon)

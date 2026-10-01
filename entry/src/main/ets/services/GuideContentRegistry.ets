@@ -9,6 +9,12 @@ export interface GuideContentPage {
   symbol: ResourceStr;
   title: string;
   desc: string;
+  /** Small label above the title, e.g. 「选择协议」 or 「新功能」. */
+  tag?: string;
+  /** Up to five short bullet lines shown under the description. */
+  points?: string[];
+  /** HarmonyOS system symbol drawn instead of `symbol` when present. */
+  glyph?: Resource;
 }
 
 export type GuideDevice = 'phone' | 'tablet' | 'desktop';
@@ -34,7 +40,11 @@ const ALL_DEVICES: GuideDevice[] = ['phone', 'tablet', 'desktop'];
 const TOUCH_DEVICES: GuideDevice[] = ['phone', 'tablet'];
 
 function clonePage(page: GuideContentPage): GuideContentPage {
-  return { id: page.id, symbol: page.symbol, title: page.title, desc: page.desc };
+  const copy: GuideContentPage = { id: page.id, symbol: page.symbol, title: page.title, desc: page.desc };
+  if (page.tag !== undefined) { copy.tag = page.tag; }
+  if (page.points !== undefined) { copy.points = page.points.slice(); }
+  if (page.glyph !== undefined) { copy.glyph = page.glyph; }
+  return copy;
 }
 
 function cloneLesson(lesson: GuideLesson): GuideLesson {
@@ -88,32 +98,47 @@ const SHARED_GUIDE_PAGES: GuideContentPage[] = [
   {
     id: 'welcome-five-protocols',
     symbol: $rawfile('icons/computer-desktop.svg'),
-    title: '欢迎来到五协议工作台',
-    desc: 'RDP 连接 Windows，RustDesk 负责跨平台远控，SSH/SFTP 管理服务器与文件，VNC 兼容标准远控服务，Moonlight 连接 Sunshine 进行低延迟串流。'
+    glyph: $r('sys.symbol.desktop_fill'),
+    tag: '欢迎',
+    title: '一个应用，连接你的所有电脑',
+    desc: '远程桌面、服务器终端和游戏串流都在同一个工作台里，手机、平板和鸿蒙 PC 用法一致。',
+    points: ['五种协议：RDP、RustDesk、SSH/SFTP、VNC、Moonlight', '主机、凭据和密钥可选择云同步', '每台设备按自己的屏幕和输入方式排布']
   },
   {
     id: 'choose-by-goal',
     symbol: $rawfile('icons/globe-alt.svg'),
-    title: '先按目标选协议',
-    desc: '要完整 Windows 桌面选 RDP；跨平台协助选 RustDesk；命令与文件选 SSH；已有 VNC Server 选 VNC；游戏、影音或高帧率桌面选 Moonlight。'
+    glyph: $r('sys.symbol.list_bullet'),
+    tag: '选择协议',
+    title: '按要做的事选协议',
+    desc: '不确定时就照下面选，之后随时可以给同一台电脑再加一种连接方式。',
+    points: ['RDP · 完整的 Windows 桌面', 'RustDesk · 跨平台远程协助', 'SSH / SFTP · 命令行与文件管理', 'VNC · 已经装好 VNC 服务的电脑', 'Moonlight · 游戏与高帧率串流']
   },
   {
     id: 'connect-safely',
     symbol: $rawfile('icons/shield-check.svg'),
-    title: '先准备服务，再安全连接',
-    desc: '点击底部“+”添加主机，并确认远端服务已开启。首次连接要核对 RDP/VNC 证书、SSH 指纹、RustDesk 被控端信息或 Moonlight 配对码，只信任你能确认的设备。'
+    glyph: $r('sys.symbol.lock_shield_fill'),
+    tag: '安全连接',
+    title: '第一次连接，先核对身份',
+    desc: '远端服务开好后点底部「+」添加主机。首次连接会请你确认对方身份，只信任你能核对的设备。',
+    points: ['RDP / VNC 核对证书，SSH 核对指纹', 'RustDesk 核对被控端，Moonlight 输入配对码', '密码与私钥加密保存，可加主机锁和应用锁']
   },
   {
     id: 'session-toolkit',
     symbol: $rawfile('icons/cog-6-tooth.svg'),
-    title: '会话工具各归其位',
-    desc: 'RDP、RustDesk、VNC 与 Moonlight 从贴边入口打开键盘、快捷键和显示工具；SSH 使用标签、窗格、SFTP 与传输中心。Moonlight 退出时请区分“仅断开”和“结束主机应用”。'
+    glyph: $r('sys.symbol.keyboard'),
+    tag: '会话中',
+    title: '常用工具都在手边',
+    desc: '远程画面的边缘有控制入口，键盘、快捷键、显示和文件传输都从这里打开。',
+    points: ['贴边入口：键盘、组合键、显示与画质', 'SSH：多标签、SFTP 文件和传输中心', 'Moonlight 退出时可选「仅断开」或「结束应用」']
   },
   {
     id: 'data-recovery-and-help',
     symbol: $rawfile('icons/cloud.svg'),
-    title: '数据、恢复和诊断都有边界',
-    desc: '云同步只处理明确勾选的数据，私钥、配对信任和证书按协议分别保存；恢复备份前先确认方向。遇到问题请保留错误码，再从“设置 → 日志”导出脱敏诊断。'
+    glyph: $r('sys.symbol.cloud_fill'),
+    tag: '数据与帮助',
+    title: '数据由你掌控，问题有迹可查',
+    desc: '云同步只同步你勾选的数据；配对信任和证书按协议分别保存在本机。',
+    points: ['设置 → 云同步：选择要同步的数据', '恢复备份前先确认方向，避免覆盖', '遇到问题记下错误码，在「设置 → 日志」导出脱敏诊断']
   }
 ];
 
@@ -123,12 +148,27 @@ function sharedPages(): GuideContentPage[] {
   return pages;
 }
 
+function devicePoints(device: GuideDevice): string[] {
+  if (device === 'desktop') {
+    return ['每个远程会话一个独立窗口，可并排摆放', '实体键鼠直通，鸿蒙快捷键可按需屏蔽', '文件可直接拖放到 SFTP 和远程会话'];
+  }
+  if (device === 'tablet') {
+    return ['触控与外接键鼠可以随时切换', '主机列表和设置按两栏排布', '分屏、悬浮窗里也能保持会话'];
+  }
+  return ['单指移动光标，轻点即点击，双指滚动', '贴边控制柄随时呼出键盘和工具', '横竖屏都能用，输入法弹出时画面自动避让'];
+}
+
 function deviceGuidePage(device: GuideDevice): GuideContentPage {
   return {
     id: 'device-path-' + device,
     symbol: $rawfile('icons/computer-desktop.svg'),
-    title: '已按' + guideDeviceLabel(device) + '准备引导',
-    desc: guideDeviceSummary(device) + '。应用会保留相同的任务入口，但把常用操作放到更适合当前设备的位置。'
+    glyph: device === 'desktop' ? $r('sys.symbol.display') : device === 'tablet' ? $r('sys.symbol.rectangle_on_rectangle') :
+      $r('sys.symbol.mouse'),
+    tag: '为' + guideDeviceLabel(device) + '优化',
+    title: device === 'desktop' ? '在 PC 上，像本地一样操作' : device === 'tablet' ? '在平板上，触控键鼠两相宜' :
+      '在手机上，一只手也能操控',
+    desc: guideDeviceSummary(device) + '。常用操作已放在最顺手的位置。',
+    points: devicePoints(device)
   };
 }
 
@@ -138,8 +178,11 @@ export function firstInstallGuidePages(device: GuideDevice = 'phone'): GuideCont
   pages.push({
     id: 'start-first-host',
     symbol: $rawfile('icons/shield-check.svg'),
-    title: '现在添加第一台主机',
-    desc: '进入工作台，点击“+”并按用途选择协议。高级选项不确定时先保留默认值；需要逐步说明，可到“设置 → 教程 → 操作引导中心”按设备和协议查看。'
+    glyph: $r('sys.symbol.plus_circle_fill'),
+    tag: '开始',
+    title: '添加第一台主机',
+    desc: '准备好了。进入工作台后，三步就能连上第一台电脑。',
+    points: ['点底部「+」，按用途选择协议', '填写地址和登录信息，高级选项先保持默认', '保存后点主机卡片即可连接']
   });
   return pages;
 }
@@ -169,8 +212,11 @@ export function settingsUsageGuidePages(device: GuideDevice = 'phone'): GuideCon
   pages.push({
     id: 'revisit',
     symbol: $rawfile('icons/cog-6-tooth.svg'),
+    glyph: $r('sys.symbol.info_circle_fill'),
+    tag: '随时查看',
     title: '复杂操作不必一次记住',
-    desc: '在“设置 → 教程 → 操作引导中心”选择设备和协议，可查看连接、操控、文件、安全、恢复与排障步骤；服务端部署请打开“连接前准备”。'
+    desc: '在「设置 → 教程」里可以按设备和协议，逐步查看每项操作。',
+    points: ['操作引导中心：连接、操控、文件、安全与排障', '连接前准备：各协议服务端如何开启', '本版本更新日志：这一版改了什么']
   });
   return pages;
 }

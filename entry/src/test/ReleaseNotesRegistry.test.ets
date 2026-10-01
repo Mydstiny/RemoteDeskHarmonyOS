@@ -12,10 +12,16 @@ function containsPage(pages: ReleaseNotePage[], id: string): boolean {
 
 export default function releaseNotesRegistryTest(): void {
   describe('ReleaseNotesRegistry', (): void => {
-    it('keeps_the_1_1_6_notes_pending_so_no_update_swiper_is_shown', 0, (): void => {
+    it('lists_the_1_1_6_changes_with_pro_only_as_a_preview', 0, (): void => {
       expect(CURRENT_RELEASE_VERSION).assertEqual('1.1.6');
-      expect(pagesForReleasedVersion(CURRENT_RELEASE_VERSION).length).assertEqual(0);
-      expect(currentReleasePageCount()).assertEqual(0);
+      const pages: ReleaseNotePage[] = pagesForReleasedVersion(CURRENT_RELEASE_VERSION);
+      expect(pages.length).assertEqual(9);
+      expect(currentReleasePageCount()).assertEqual(9);
+      expect(containsPage(pages, 'release-rdp-file-transfer')).assertTrue();
+      expect(containsPage(pages, 'release-vnc-monitors')).assertTrue();
+      const pro: ReleaseNotePage | undefined = pages.find((page: ReleaseNotePage): boolean => page.id === 'release-pro-preview');
+      expect(pro !== undefined && pro.tag === '即将推出').assertTrue();
+      pages.forEach((page: ReleaseNotePage): void => { expect((page.tag ?? '').length > 0).assertTrue(); });
     });
 
     it('keeps_the_1_1_5_1_release_in_exactly_fourteen_pages', 0, (): void => {

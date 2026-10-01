@@ -91,9 +91,11 @@ export const WORKSPACE_COLORS: string[] = [
   '#007DFF', '#5856D6', '#AF52DE', '#FF2D55', '#FF9500', '#34C759', '#00C7BE', '#30B0C7'
 ];
 export const WORKSPACE_ICONS: string[] = [
-  '🖥️', '💻', '⌨️', '🧑‍💻', '🛠️', '🚀', '📊', '🧪', '🎮', '☁️', '🏢', '🏠',
-  '⭐', '🌙', '☕', '📚', '🎨', '🎬', '🎧', '🔬', '🧠', '🌿', '🔐', '📡',
-  '🗂️', '💡', '🪐', '🧭', '🌊', '🔥', '🍀', '🦊', '🐳', '🌸', '⚡', '🎯'
+  'sym.desktop_fill', 'sym.display', 'sym.computer_host_fill', 'sym.code_square', 'sym.keyboard', 'sym.mouse',
+  'sym.rectangle_on_rectangle', 'sym.folder_fill', 'sym.doc', 'sym.list_bullet', 'sym.performance', 'sym.bolt_fill',
+  'sym.cloud_fill', 'sym.link', 'sym.lock_shield_fill', 'sym.key_fill', 'sym.house_fill', 'sym.person_2_fill',
+  'sym.message', 'sym.envelope_fill', 'sym.gamecontroller_fill', 'sym.camera_fill', 'sym.paintpalette_fill',
+  'sym.star_fill', 'sym.moon_fill', 'sym.sun_max_fill', 'sym.timer', 'sym.hourglass', 'sym.pin_fill', 'sym.gearshape_fill'
 ];
 export const WORKSPACE_LAYOUT_PRESETS: WorkspaceLayoutPreset[] = ['split', 'columns3', 'masterDetail', 'grid4'];
 /** Layout rectangles snap to an 8 × 8 grid. */
