@@ -1497,7 +1497,7 @@ std::string VncRfbEngine::monitorSwitchLastResult() const {
 
 bool VncRfbEngine::requestMonitorSwitch(int monitor) {
     if (monitor < 0 || monitor > 255 || state() != ConnectionState::CONNECTED ||
-        monitorSwitchInputBlocked()) {
+        (monitorSwitchInputBlocked() && monitor != pendingMonitor())) {
         return false;
     }
     const int count = monitorCount();

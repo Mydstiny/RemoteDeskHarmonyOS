@@ -88,7 +88,7 @@ export function shouldRequestVncDisplaySwitch(state: VncDisplaySwitchState,
   // UltraVNC has no request acknowledgement or request cancellation wire
   // contract. Serialize requests until the pending framebuffer is confirmed
   // or times out, so an early frame cannot confirm a later target by mistake.
-  return state.timeoutNotified;
+  return state.timeoutNotified && monitor === state.pendingMonitor;
 }
 
 export function observeVncDisplaySwitch(state: VncDisplaySwitchState,

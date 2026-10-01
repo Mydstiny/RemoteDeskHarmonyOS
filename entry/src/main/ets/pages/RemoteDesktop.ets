@@ -22372,7 +22372,8 @@ struct RemoteDesktop {
             .width('100%').height(50).padding({ left: 12, right: 12, top: 6, bottom: 6 })
             .backgroundColor(this.isVncDisplaySelected(monitor) ? this.accentColor : '#F3F4F6')
             .borderRadius(6)
-            .enabled(!this.vncDisplaySwitchState.inputBlocked && !this.isVncDisplaySelected(monitor))
+            .enabled(!this.vncDisplaySwitchState.inputBlocked ||
+              this.vncDisplaySwitchState.timeoutNotified)
             .onClick((): void => { this.selectVncDisplay(monitor); })
           }, (monitor: number): string => monitor.toString())
         }.width('100%')

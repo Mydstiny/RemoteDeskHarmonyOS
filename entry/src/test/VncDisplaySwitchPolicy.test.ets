@@ -45,6 +45,8 @@ export default function vncDisplaySwitchPolicyTest(): void {
         inputBlocked: true, lastResult: 'requested'
       }, 8000, 5000);
       expect(repeated.notifyTimeout).assertFalse();
+      expect(shouldRequestVncDisplaySwitch(timeout.state, 1, 0)).assertTrue();
+      expect(shouldRequestVncDisplaySwitch(timeout.state, 2, 0)).assertFalse();
     });
 
     it('blocks_same_target_until_timeout_and_releases_input_in_order', 0, (): void => {
