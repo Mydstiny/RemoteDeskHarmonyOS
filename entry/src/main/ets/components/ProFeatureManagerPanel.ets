@@ -14,6 +14,9 @@ import { PRO_CONTINUATION_FEATURE, ProContinuationService } from '../services/pr
 import { HostOrganizationStore } from '../services/pro/org/HostOrganizationStore';
 import { copyWorkspace, Workspace, workspaceLayoutLabel } from '../services/pro/workspace/WorkspacePolicy';
 import { createWorkspace } from './pro/workspace/WorkspaceActions';
+import {
+  WORKSPACE_PHONE_ENABLED_KEY, workspaceDeviceKind, WorkspaceDeviceKind, WorkspacePhonePreference
+} from '../services/pro/workspace/WorkspaceDevicePolicy';
 import { HostOrganizationManager } from './pro/org/HostOrganizationManager';
 import { WorkspaceStore } from '../services/pro/workspace/WorkspaceStore';
 import { ProWorkspaceEditorPanel } from './ProWorkspaceEditorPanel';
@@ -27,6 +30,9 @@ const WORKSPACES_FEATURE: string = 'pro.workspaces';
 export struct ProFeatureDetailPanel {
   @StorageProp('currentTheme') theme: string = 'light';
   @StorageProp('accentColor') accent: string = '#007DFF';
+  @StorageProp('isDesktopDevice') isDesktopDevice: boolean = false;
+  @StorageProp('isPadDevice') isPadDevice: boolean = false;
+  @StorageProp(WORKSPACE_PHONE_ENABLED_KEY) workspacePhoneEnabled: boolean = false;
   @Prop featureId: string = '';
   @State revision: number = 0;
   @State continuation: ProContinuationSettings = ProContinuationPreferences.getInstance().settings();
@@ -56,6 +62,7 @@ export struct ProFeatureDetailPanel {
       this.stopOrg = HostOrganizationStore.getInstance().subscribe((): void => { this.orgRevision++; });
     }
     if (this.featureId === WORKSPACES_FEATURE) {
+      if (this.contextValue !== null) { WorkspacePhonePreference.load(this.contextValue); }
       WorkspaceStore.getInstance().load();
       this.stopWorkspaces = WorkspaceStore.getInstance().subscribe((): void => { this.orgRevision++; });
     }
@@ -240,7 +247,40 @@ export struct ProFeatureDetailPanel {
 
   @Builder private workspaceOptions() {
     Column({ space: 8 }) {
-      this.sectionHeader('工作区', '保存常用的一组会话和布局；在主页工作区卡片中一键依次打开，PC 上按布局摆放窗口')
+      if (this.workspaceDevice() === 'phone') {
+        Column() {
+          this.switchRow('在手机上使用工作区', '受系统限制，手机无法同时显示多个远程会话，工作区只能一个接一个打开',
+            this.workspacePhoneEnabled, (on: boolean): void => { this.setPhoneWorkspaces(on); })
+        }.width('100%').backgroundColor(this.pal().card).borderRadius(16)
+      }
+      if (this.workspaceDevice() !== 'phone' || this.workspacePhoneEnabled) {
+        this.sectionHeader('工作区', this.workspaceDevice() === 'pc' ?
+          '保存常用的一组会话和布局；在主页或侧栏「工作区」中一键打开，并按布局摆放窗口' :
+          this.workspaceDevice() === 'tablet' ? '平板上每个工作区最多 2 台主机；在主页工作区卡片中一键打开' :
+          '保存常用的一组会话；在主页工作区卡片中按顺序依次打开')
+        this.workspaceList()
+      }
+    }.width('100%')
+  }
+
+  private workspaceDevice(): WorkspaceDeviceKind { return workspaceDeviceKind(this.isDesktopDevice, this.isPadDevice); }
+
+  /** Turning workspaces on for a phone asks first, since phones can show only one remote session at a time. */
+  private setPhoneWorkspaces(on: boolean): void {
+    const context = this.contextValue;
+    if (context === null) { return; }
+    if (!on) { WorkspacePhonePreference.set(context, false); return; }
+    this.getUIContext().getPromptAction().showDialog({
+      title: '在手机上使用工作区？',
+      message: '受系统限制，手机不能同时显示多个远程会话，也不能自动分屏。打开工作区时会一个接一个连接：每次从会话返回主页后，才会打开下一台。',
+      buttons: [{ text: '取消', color: this.pal().text2 }, { text: '仍要开启', color: this.accent }]
+    }).then((result): void => {
+      WorkspacePhonePreference.set(context, result.index === 1);
+    }).catch((): void => { WorkspacePhonePreference.set(context, false); });
+  }
+
+  @Builder private workspaceList() {
+    Column({ space: 8 }) {
       if (this.editingWorkspace !== null) {
         ProWorkspaceEditorPanel({ workspace: this.editingWorkspace as Workspace,
           onClose: (): void => { this.editingWorkspace = null; } })

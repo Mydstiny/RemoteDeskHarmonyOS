@@ -155,10 +155,12 @@ export function sortedEntries(entries: WorkspaceEntry[]): WorkspaceEntry[] {
   return entries.slice().sort((left: WorkspaceEntry, right: WorkspaceEntry): number => left.order - right.order);
 }
 
-export function addWorkspaceEntries(entries: WorkspaceEntry[], refs: string[], protocols: string[]): WorkspaceEntry[] {
+export function addWorkspaceEntries(entries: WorkspaceEntry[], refs: string[], protocols: string[],
+  limit: number = MAX_WORKSPACE_ENTRIES): WorkspaceEntry[] {
   const result: WorkspaceEntry[] = renumber(sortedEntries(entries));
+  const cap: number = Math.max(1, Math.min(limit, MAX_WORKSPACE_ENTRIES));
   refs.forEach((hostRef: string, index: number): void => {
-    if (result.length >= MAX_WORKSPACE_ENTRIES ||
+    if (result.length >= cap ||
         result.some((entry: WorkspaceEntry): boolean => entry.hostRef === hostRef)) { return; }
     result.push(newWorkspaceEntry(hostRef, protocols[index] || '', result.length));
   });
@@ -210,8 +212,9 @@ export interface WorkspaceRunItem {
 export interface WorkspaceRun { workspaceId: string; name: string; color: string; items: WorkspaceRunItem[]; startedAt: number; }
 
 /** Builds a run from the entries in order; hosts that no longer exist are skipped up front. */
-export function workspaceRunFor(workspace: Workspace, labels: Record<string, string>, nowMs: number = Date.now()): WorkspaceRun {
-  const items: WorkspaceRunItem[] = sortedEntries(workspace.entries).map((entry: WorkspaceEntry): WorkspaceRunItem => {
+export function workspaceRunFor(workspace: Workspace, labels: Record<string, string>, nowMs: number = Date.now(),
+  limit: number = MAX_WORKSPACE_ENTRIES): WorkspaceRun {
+  const items: WorkspaceRunItem[] = sortedEntries(workspace.entries).slice(0, Math.max(1, limit)).map((entry: WorkspaceEntry): WorkspaceRunItem => {
     const label: string | undefined = labels[entry.hostRef];
     return { hostRef: entry.hostRef, protocol: entry.protocol, label: label !== undefined ? label : '已删除的主机',
       state: label !== undefined ? 'queued' : 'skipped', message: label !== undefined ? '' : '主机不存在',

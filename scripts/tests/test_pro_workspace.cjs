@@ -48,4 +48,18 @@ assert.equal(JSON.stringify(p.workspaceWindowRect({ x: 0.9, y: 0.9, w: 0.125, h:
   JSON.stringify({ left: 1400, top: 800, width: 600, height: 400 }));
 assert.equal(JSON.stringify(p.workspaceWindowRect({ x: 0.5, y: 0.5, w: 0.5, h: 0.5, fullscreen: true }, 2000, 1200, 600, 400)),
   JSON.stringify({ left: 0, top: 0, width: 2000, height: 1200 }));
+assert.equal(p.addWorkspaceEntries([], ['a', 'b', 'c'], ['ssh', 'rdp', 'vnc'], 2).map(e => e.hostRef).join(), 'a,b');
+assert.equal(p.workspaceRunFor({ ...created, entries: p.addWorkspaceEntries([], ['a', 'b', 'c'], ['ssh', 'ssh', 'ssh']) },
+  { a: 'A', b: 'B', c: 'C' }, 1, 2).items.map(i => i.label).join(), 'A,B');
+const d = (() => {
+  const file = path.join(root, 'entry/src/main/ets/services/pro/workspace/WorkspaceDevicePolicy.ets'); const module = { exports: {} };
+  const source = ts.transpileModule(fs.readFileSync(file, 'utf8'), { compilerOptions: { target: ts.ScriptTarget.ES2021, module: ts.ModuleKind.CommonJS } }).outputText;
+  vm.runInNewContext(source, { module, exports: module.exports, require: (id) => id === './WorkspacePolicy' ? p : {} }, { filename: file });
+  return module.exports;
+})();
+assert.equal(d.workspaceDeviceKind(true, true), 'pc'); assert.equal(d.workspaceDeviceKind(false, true), 'tablet');
+assert.equal(d.workspaceDeviceKind(false, false), 'phone');
+assert.equal(d.workspaceEntryLimit('tablet'), 2); assert.equal(d.workspaceEntryLimit('pc'), 16); assert.equal(d.workspaceEntryLimit('phone'), 16);
+assert.equal(d.workspaceUsableOnDevice('phone', false), false); assert.equal(d.workspaceUsableOnDevice('phone', true), true);
+assert.equal(d.workspaceUsableOnDevice('tablet', false), true); assert.equal(d.workspaceUsableOnDevice('pc', false), true);
 console.log('PASS Pro workspace validation, presets and device plans');

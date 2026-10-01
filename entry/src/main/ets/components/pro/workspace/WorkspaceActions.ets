@@ -3,6 +3,7 @@ import { MAX_WORKSPACES, missingWorkspaceRefs, newWorkspace, sortedEntries, Work
 import { WorkspaceStore } from '../../../services/pro/workspace/WorkspaceStore';
 import { captureWorkspace, WorkspaceCaptureSession } from '../../../services/pro/workspace/WorkspaceCapture';
 import { orgProtocolLabel, OrgHostRow } from '../../../services/pro/org/HostOrganizationDirectory';
+import { currentWorkspaceDeviceKind, workspaceEntryLimit } from '../../../services/pro/workspace/WorkspaceDevicePolicy';
 
 /** Shared actions of the home workspace entries (flat strip and category card). */
 export function workspaceTint(color: string, alpha: string): string {
@@ -58,6 +59,11 @@ export function saveCurrentWorkspace(ui: UIContext, rows: OrgHostRow[], activeRe
     if (row !== undefined) { sessions.push({ hostRef: ref, protocol: row.protocol }); }
   });
   if (sessions.length === 0) { toast(ui, '当前没有已连接的会话'); return null; }
+  const limit: number = workspaceEntryLimit(currentWorkspaceDeviceKind());
+  if (sessions.length > limit) {
+    toast(ui, '平板上每个工作区最多 ' + limit.toString() + ' 台主机，已保存前 ' + limit.toString() + ' 个会话');
+    sessions.splice(limit, sessions.length - limit);
+  }
   const count: number = store.list().length;
   try {
     const workspace: Workspace = captureWorkspace('workspace-' + Date.now().toString(36), freeName('当前会话'),

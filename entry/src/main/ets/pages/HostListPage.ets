@@ -32,12 +32,19 @@ import { WorkspaceGroupCard, WorkspacePanel } from '../components/pro/workspace/
 import { ProWorkspaceEditorPanel } from '../components/ProWorkspaceEditorPanel';
 import { WorkspaceRunPanel } from '../components/pro/workspace/WorkspaceRunPanel';
 import {
+import {
+  WorkspaceLaunchPrepPanel, WorkspacePrepCredential, WorkspacePrepRow
+} from '../components/pro/workspace/WorkspaceLaunchPrepPanel';
   connectingRunIndex, newWorkspace, nextQueuedRunIndex, setRunItemState, sortedEntries, Workspace, WorkspaceEntry, workspaceRunFinished,
   workspaceRunFor, WorkspaceRun, WorkspaceRunItem, workspaceRunSummary
 } from '../services/pro/workspace/WorkspacePolicy';
 import { WorkspaceStore } from '../services/pro/workspace/WorkspaceStore';
 import { WorkspaceHandoff } from '../services/pro/workspace/WorkspaceHandoff';
 import {
+import {
+  WORKSPACE_PHONE_ENABLED_KEY, workspaceDeviceKind, WorkspaceDeviceKind, workspaceEntryLimit, WorkspacePhonePreference,
+  workspaceUsableOnDevice
+} from '../services/pro/workspace/WorkspaceDevicePolicy';
   HostFilter, HostGroupDefinition, HostMembership, hostMatchesFilter, parseHostFilterKey
 } from '../services/pro/org/HostOrganizationPolicy';
 import { HostOrganizationStore } from '../services/pro/org/HostOrganizationStore';
@@ -928,6 +935,9 @@ struct HostListPage {
   @State workspaceEditorTarget: Workspace = newWorkspace('', '', '#007DFF', 'sym.desktop_fill', 0, 0);
   @State hostImportDocument: HostExportDocument = { schemaVersion: 1, exportedAt: 0, groups: [], hosts: [] };
   private proWorkspacePageHidden: boolean = false;
+  // Phones show workspaces only after the user opts in; Pad runs at most two sessions per workspace.
+  @StorageProp('isPadDevice') @Watch('onWorkspaceDeviceChange') padDeviceForWorkspace: boolean = false;
+  @StorageProp(WORKSPACE_PHONE_ENABLED_KEY) @Watch('onWorkspaceDeviceChange') workspacePhoneEnabled: boolean = false;
   private proWorkspaceRunTimer: number = -1;
   private hostOrgUnsubscribe: (() => void) | null = null;
   @StorageProp('proBadgeFlow') proBadgeFlow: boolean = true;
@@ -935,6 +945,13 @@ struct HostListPage {
   @State proFeatureRevision: number = 0;
   @State selectedProFeatureId: string = '';
   @State appIconSupported: boolean = false;
+  @State showWorkspacePrep: boolean = false;
+  @State workspacePrepRows: WorkspacePrepRow[] = [];
+  /** Hosts the PC 连接准备 check already unlocked for the current run; each is consumed by one connection. */
+  private workspaceLockCleared: Set<string> = new Set<string>();
+  private workspacePrepStarting: boolean = false;
+  /** RDP 「连接时输入」 credentials from 连接准备, in memory for the current run only. */
+  private workspaceRunCredentials: Map<string, WorkspacePrepCredential> = new Map<string, WorkspacePrepCredential>();
   private proUnsubscribe: (() => void) | null = null;
   private proVisibilityUnsubscribe: (() => void) | null = null;
   @State hosts: RemoteHost[] = [];
@@ -1376,7 +1393,7 @@ struct HostListPage {
   @State sheetRustdeskAdaptiveOrientation: boolean = false;
   @State sheetSshProxyEditorValue: SshProxyEditorValue = defaultSshProxyEditorValue();
   @StorageLink('currentBreakpoint') @Watch('onBreakpointChange') breakpoint: string = 'sm';
-  @StorageProp('isDesktopDevice') isDesktopDevice: boolean = false;
+  @StorageProp('isDesktopDevice') @Watch('onWorkspaceDeviceChange') isDesktopDevice: boolean = false;
   @StorageProp('topRectHeight') topRectHeight: number = 0;
   @State windowW: number = 360;
   @State isFullScreen: boolean = false;
@@ -2078,7 +2095,8 @@ struct HostListPage {
     this.appIconProVisible = ProEntries.visible(id) || (ProEntries.shown(id) && icons.loaded && icons.currentName !== '');
     this.personalizationProVisible = ProEntries.visible(PRO_PERSONALIZATION_FEATURE);
     const orgVisible: boolean = ProEntries.visible('pro.hostManagement');
-    const workspacesVisible: boolean = ProEntries.visible('pro.workspaces');
+    const workspacesVisible: boolean = ProEntries.visible('pro.workspaces') &&
+      workspaceUsableOnDevice(this.workspaceDeviceKind(), this.workspacePhoneEnabled);
     if (orgVisible !== this.proOrgVisible || workspacesVisible !== this.proWorkspacesVisible) {
       this.proOrgVisible = orgVisible;
       this.proWorkspacesVisible = workspacesVisible;
@@ -2109,6 +2127,8 @@ struct HostListPage {
       this.aiProVisible = AiAccess.getInstance().proVisible();
       if (!this.aiProVisible) {
         AiHostService.getInstance().clear();
+    WorkspacePhonePreference.load(getContext(this) as common.UIAbilityContext);
+    this.workspacePhoneEnabled = AppStorage.get<boolean>(WORKSPACE_PHONE_ENABLED_KEY) ?? false;
         this.activeFilterProto = '';
         this.pendingAiConnectId = '';
         this.pendingAiAccount = null;
@@ -6217,7 +6237,62 @@ struct HostListPage {
     }
     const labels: Record<string, string> = {};
     this.orgRows(this.hostViewRevision).forEach((row: OrgHostRow): void => { labels[row.ref] = row.label; });
-    this.proWorkspaceRun = workspaceRunFor(workspace, labels);
+    const limit: number = workspaceEntryLimit(this.workspaceDeviceKind());
+    if (workspace.entries.length > limit) {
+      promptAction.showToast({ message: '平板上每个工作区最多打开 ' + limit.toString() + ' 台主机，已打开前 ' +
+        limit.toString() + ' 台', duration: 2400 });
+    }
+    this.workspaceLockCleared.clear();
+    this.workspaceRunCredentials.clear();
+    this.proWorkspaceRun = workspaceRunFor(workspace, labels, Date.now(), limit);
+    if (this.workspaceDeviceKind() === 'pc') {
+      const rows: WorkspacePrepRow[] = this.workspacePrepRowsFor(this.proWorkspaceRun as WorkspaceRun);
+      if (rows.some((row: WorkspacePrepRow): boolean => row.locked || row.needsRdpCredential)) {
+        this.workspacePrepRows = rows;
+        this.openSheetSafely((): void => { if (this.pageActive) { this.showWorkspacePrep = true; } });
+        return;
+      }
+    }
+    this.advanceProWorkspaceRun(true);
+  }
+
+  /** What each queued entry of a PC run needs from the user, so 连接准备 can ask it all at once. */
+  private workspacePrepRowsFor(run: WorkspaceRun): WorkspacePrepRow[] {
+    const rows: WorkspacePrepRow[] = [];
+    run.items.forEach((item: WorkspaceRunItem): void => {
+      if (item.state !== 'queued') { return; }
+      const host: RemoteHost | undefined = this.hosts.find((candidate: RemoteHost): boolean => candidate.id === item.hostRef);
+      if (host === undefined) { return; }
+      const rdpConnectTime: boolean = host.protocol === 'rdp' && normalizeRdpAuthMode(host.rdpAuthMode) === 'password' &&
+        normalizeRdpCredentialStorageMode(host.rdpCredentialStorageMode) === 'connect_time';
+      const mayAsk: string = host.protocol === 'rustdesk' ? '连接时仍需确认被控端或输入设备密码' :
+        host.protocol === 'ssh' ? '首次连接或未保存凭据时会请你确认指纹或登录' :
+        host.protocol === 'vnc' ? '证书变化或未保存密码时会请你确认' : '';
+      rows.push({ ref: item.hostRef, label: item.label, protocol: item.protocol, locked: host.locked,
+        needsRdpCredential: rdpConnectTime, mayAsk });
+    });
+    return rows;
+  }
+
+  /** 开始连接 in 连接准备: one biometric check for every locked host, then the run proceeds untouched. */
+  private async startPreparedWorkspace(credentials: WorkspacePrepCredential[]): Promise<void> {
+    this.workspacePrepStarting = true;
+    this.showWorkspacePrep = false;
+    const locked: string[] = this.workspacePrepRows.filter((row: WorkspacePrepRow): boolean => row.locked)
+      .map((row: WorkspacePrepRow): string => row.ref);
+    if (locked.length > 0) {
+      const gate: LockGateResult = await showLockGate(locked.length.toString() + ' 台主机', 'biometric');
+      if (!gate.ok) {
+        const message: string = lockGateErrorMessage(gate);
+        promptAction.showToast({ message: message !== '' ? message : '未通过验证，工作区未打开', duration: 2000 });
+        this.endProWorkspaceRun();
+        return;
+      }
+      locked.forEach((ref: string): void => { this.workspaceLockCleared.add(ref); });
+    }
+    credentials.forEach((credential: WorkspacePrepCredential): void => {
+      this.workspaceRunCredentials.set(credential.ref, credential);
+    });
     this.advanceProWorkspaceRun(true);
   }
   private endProWorkspaceRun(): void {
@@ -6243,6 +6318,26 @@ struct HostListPage {
     const run: WorkspaceRun = this.proWorkspaceRun as WorkspaceRun;
     if (connectingRunIndex(run) >= 0) { return; }
     const index: number = nextQueuedRunIndex(run);
+
+  private takeWorkspaceLockClearance(hostId: string): boolean {
+    if (this.proWorkspaceRun === null || !this.workspaceLockCleared.has(hostId)) { return false; }
+    this.workspaceLockCleared.delete(hostId);
+    return true;
+  }
+
+  @Builder workspacePrepSheet() {
+    Column() {
+      Scroll() {
+        WorkspaceLaunchPrepPanel({
+          name: this.proWorkspaceRun === null ? '' : (this.proWorkspaceRun as WorkspaceRun).name,
+          rows: this.workspacePrepRows,
+          onStart: (credentials: WorkspacePrepCredential[]): void => { void this.startPreparedWorkspace(credentials); },
+          onCancel: (): void => { this.showWorkspacePrep = false; this.endProWorkspaceRun(); }
+        })
+      }.constraintSize({ maxHeight: Math.round(this.pageViewportHeight * 0.85) }).scrollBar(BarState.Off)
+      .align(Alignment.Top)
+    }.width('100%').backgroundColor(this.pal().sheetBg)
+  }
     if (index < 0) {
       promptAction.showToast({ message: run.name + ' · ' + workspaceRunSummary(run), duration: 2200 });
       return;
@@ -6252,6 +6347,8 @@ struct HostListPage {
   }
   private connectProWorkspaceItem(index: number): void {
     if (this.proWorkspaceRun === null) { return; }
+    this.workspaceLockCleared.clear();
+    this.workspaceRunCredentials.clear();
     const run: WorkspaceRun = this.proWorkspaceRun as WorkspaceRun;
     const item: WorkspaceRunItem = run.items[index];
     if (item.hostRef.startsWith('moonlight:')) {
@@ -6306,6 +6403,12 @@ struct HostListPage {
   /** Called when the host list shows again: a session page took over, so the entry it opened is done. */
   private resumeProWorkspaceRun(): void {
     if (this.proWorkspaceRun === null) { return; }
+    const credential: WorkspacePrepCredential | undefined = this.workspaceRunCredentials.get(host.id);
+    if (credential !== undefined) {
+      this.workspaceRunCredentials.delete(host.id);
+      ProContinuationCredentialHandoff.getInstance().deposit(host.id, host.userId, { kind: 'password',
+        password: credential.password, privateKeyPem: '', passphrase: '', username: credential.username }, 60000);
+    }
     const run: WorkspaceRun = this.proWorkspaceRun as WorkspaceRun;
     const connecting: number = connectingRunIndex(run);
     if (connecting >= 0 && this.proWorkspacePageHidden) {
@@ -6316,7 +6419,7 @@ struct HostListPage {
     this.proWorkspaceRunTimer = setTimeout((): void => {
       this.proWorkspaceRunTimer = -1;
       this.advanceProWorkspaceRun(false);
-    }, 900);
+    }, this.workspaceDeviceKind() === 'pc' ? 250 : 900);
   }
   private font(): string { return AppConfig.fontFamily; }
 
@@ -7255,7 +7358,8 @@ struct HostListPage {
       }
       return;
     }
-    if (host.locked) {
+    // A PC workspace run may already have verified this host in its single up-front check.
+    if (host.locked && !this.takeWorkspaceLockClearance(host.id)) {
       const r = await showLockGate(host.label, 'biometric');
       if (protocolNeedsArbitration &&
         !this.isCurrentConnectionAttempt(host.id, connectionGeneration)) {
@@ -13525,6 +13629,21 @@ struct HostListPage {
       // The native Sheet needs a normal hit-test owner while visible. Keeping
       // this host transparent made the same tap fall through to the settings
       // list and reload the editor, so choice highlights immediately reverted.
+      // Page-level host for the PC workspace 连接准备 sheet.
+      Column().width(0).height(0)
+        .bindSheet($$this.showWorkspacePrep, this.workspacePrepSheet(), {
+          height: SheetSize.FIT_CONTENT, dragBar: true, showClose: false, backgroundColor: this.pal().sheetBg,
+          onWillDismiss: (action: DismissSheetAction): void => { action.dismiss(); },
+          onDisappear: (): void => {
+            // Dismissed without 开始连接: nothing was started, so the run ends.
+            if (this.proWorkspaceRun !== null && connectingRunIndex(this.proWorkspaceRun as WorkspaceRun) < 0 &&
+              nextQueuedRunIndex(this.proWorkspaceRun as WorkspaceRun) >= 0 && this.workspaceRunCredentials.size === 0 &&
+              this.workspaceLockCleared.size === 0 && !this.workspacePrepStarting) {
+              this.endProWorkspaceRun();
+            }
+            this.workspacePrepStarting = false;
+          }
+        })
       // When the Sheet is closed the empty host must not block the page.
       Column().width('100%').height('100%')
         .hitTestBehavior(this.showSettingsLeafSheet ? HitTestMode.Default : HitTestMode.None)
@@ -14697,6 +14816,12 @@ struct HostListPage {
   private openWorkspaceEditor(workspace: Workspace): void {
     this.workspaceEditorTarget = workspace;
     this.openSheetSafely((): void => { if (this.pageActive) { this.showWorkspaceEditor = true; } });
+  private workspaceDeviceKind(): WorkspaceDeviceKind {
+    return workspaceDeviceKind(this.isDesktopDevice, this.padDeviceForWorkspace);
+  }
+
+  private onWorkspaceDeviceChange(): void { this.refreshAppIconEntry(); }
+
   }
 
   /** Workspace editor sheet, hosted on the page root so list refreshes cannot dismiss it. */

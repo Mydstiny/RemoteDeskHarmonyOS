@@ -8,6 +8,7 @@ import {
   WorkspaceLayoutPreset, workspaceLayoutLabel
 } from '../services/pro/workspace/WorkspacePolicy';
 import { WorkspaceStore } from '../services/pro/workspace/WorkspaceStore';
+import { workspaceDeviceKind, workspaceEntryLimit } from '../services/pro/workspace/WorkspaceDevicePolicy';
 import { orgHostRows, OrgHostRow, orgProtocolLabel, orgRowDetail } from '../services/pro/org/HostOrganizationDirectory';
 
 type EditorTab = 'sessions' | 'layout';
@@ -21,6 +22,8 @@ const CANVAS_RATIO: number = 10 / 16;
 export struct ProWorkspaceEditorPanel {
   @StorageProp('currentTheme') theme: string = 'light';
   @StorageProp('accentColor') accent: string = '#007DFF';
+  @StorageProp('isDesktopDevice') isDesktopDevice: boolean = false;
+  @StorageProp('isPadDevice') isPadDevice: boolean = false;
   @Prop workspace: Workspace = newWorkspace('', '', '#007DFF', 'sym.desktop_fill', 0, 0);
   /** Hosts the stores cannot list on their own (Moonlight, from the home page). */
   @Prop extraRows: OrgHostRow[] = [];
@@ -49,6 +52,8 @@ export struct ProWorkspaceEditorPanel {
     return /^#[0-9A-Fa-f]{6}$/.test(color) ? '#' + alpha + color.substring(1) : color;
   }
   private toast(message: string): void { this.getUIContext().getPromptAction().showToast({ message, duration: 1800 }); }
+  /** Pad pairs two sessions; other devices keep the full limit. */
+  private limit(): number { return workspaceEntryLimit(workspaceDeviceKind(this.isDesktopDevice, this.isPadDevice)); }
   private rows(): OrgHostRow[] { return orgHostRows(this.extraRows); }
   private row(ref: string): OrgHostRow | undefined { return this.rows().find((item: OrgHostRow): boolean => item.ref === ref); }
   private entries(): WorkspaceEntry[] { return sortedEntries(this.draft.entries); }
@@ -75,11 +80,12 @@ export struct ProWorkspaceEditorPanel {
       const row: OrgHostRow | undefined = this.row(ref);
       return row === undefined ? '' : row.protocol;
     });
-    if (this.draft.entries.length + refs.length > MAX_WORKSPACE_ENTRIES) {
-      this.toast('每个工作区最多 ' + MAX_WORKSPACE_ENTRIES.toString() + ' 个会话，多出的未添加');
+    if (this.draft.entries.length + refs.length > this.limit()) {
+      this.toast(this.limit() < MAX_WORKSPACE_ENTRIES ? '平板上每个工作区最多 ' + this.limit().toString() + ' 台主机，多出的未添加' :
+        '每个工作区最多 ' + MAX_WORKSPACE_ENTRIES.toString() + ' 个会话，多出的未添加');
     }
     this.update((next: Workspace): void => {
-      next.entries = addWorkspaceEntries(next.entries, refs, protocols);
+      next.entries = addWorkspaceEntries(next.entries, refs, protocols, this.limit());
       if (next.layout !== undefined && next.layout !== 'custom') { next.entries = applyLayoutPreset(next.entries, next.layout); }
     });
     this.picked = []; this.picking = false; this.pickQuery = '';
@@ -257,10 +263,16 @@ export struct ProWorkspaceEditorPanel {
             .width('100%').padding(16)
         }
       }.width('100%').backgroundColor(this.pal().card).borderRadius(16)
+      if (this.limit() < MAX_WORKSPACE_ENTRIES) {
+        Text(this.draft.entries.length > this.limit() ?
+          '这个工作区来自其他设备，平板上只会打开前 ' + this.limit().toString() + ' 台主机' :
+          '平板上每个工作区最多 ' + this.limit().toString() + ' 台主机')
+          .fontSize(11).fontColor(this.pal().text3).width('100%').padding({ left: 4, right: 4 })
+      }
       if (!this.picking) {
-        Button('＋ 添加主机（' + this.draft.entries.length.toString() + '/' + MAX_WORKSPACE_ENTRIES.toString() + '）')
+        Button('＋ 添加主机（' + this.draft.entries.length.toString() + '/' + this.limit().toString() + '）')
           .width('100%').height(44).fontSize(14).fontColor(this.accent).backgroundColor(this.pal().card)
-          .enabled(this.draft.entries.length < MAX_WORKSPACE_ENTRIES)
+          .enabled(this.draft.entries.length < this.limit())
           .onClick((): void => { this.picking = true; this.picked = []; })
       } else {
         Column({ space: 8 }) {
