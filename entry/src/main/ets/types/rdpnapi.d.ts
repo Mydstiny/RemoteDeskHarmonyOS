@@ -332,6 +332,11 @@ export interface VncDisplayCapabilities {
   supported: boolean;
   mode: 'serverSelection' | 'unsupported';
   monitorCount: number;
+  currentMonitor: number;
+  pendingMonitor: number;
+  switchGeneration: number;
+  inputBlocked: boolean;
+  lastResult: string;
 }
 
 interface SessionVersionInfo {

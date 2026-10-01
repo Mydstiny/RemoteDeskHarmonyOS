@@ -24,6 +24,7 @@ export interface VncSessionToolbarActions {
   onToggleKeyboard: () => void;
   onCycleControlMode: () => void;
   onOpenShortcuts: () => void;
+  onOpenDisplays: () => void;
   onCycleDisplayScale: () => void;
   onResetCanvas: () => void;
   onToggleDiagnostics: () => void;
@@ -44,6 +45,8 @@ export struct VncSessionToolbar {
   @Prop shortcutsOpen: boolean = false;
   @Prop controlModeLabel: string = '触控板';
   @Prop displayScaleLabel: string = '适应';
+  @Prop displayCount: number = 0;
+  @Prop displayLabel: string = '屏幕';
   @Prop diagnosticsEnabled: boolean = false;
   @Prop canvasResetAvailable: boolean = false;
   @Prop collapsed: boolean = false;
@@ -59,6 +62,7 @@ export struct VncSessionToolbar {
     onToggleKeyboard: (): void => {},
     onCycleControlMode: (): void => {},
     onOpenShortcuts: (): void => {},
+    onOpenDisplays: (): void => {},
     onCycleDisplayScale: (): void => {},
     onResetCanvas: (): void => {},
     onToggleDiagnostics: (): void => {},
@@ -97,6 +101,9 @@ export struct VncSessionToolbar {
       this.actionButton($r('sys.symbol.bolt_fill'), this.shortcutsOpen ? '收组合键' : '组合键',
         this.shortcutsOpen,
         (): void => { this.actions.onOpenShortcuts(); })
+    } else if (actionId === 'display') {
+      this.actionButton($r('sys.symbol.display'), this.displayLabel, false,
+        (): void => { this.actions.onOpenDisplays(); })
     } else if (actionId === 'displayScale') {
       this.actionButton($r('sys.symbol.desktop_fill'), this.displayScaleLabel, false,
         (): void => { this.actions.onCycleDisplayScale(); })
@@ -119,7 +126,8 @@ export struct VncSessionToolbar {
   }
 
   private primaryActionRenderKey(actionId: VncToolbarPrimaryActionId): string {
-    return actionId + '|' + (this.keyboardOpen ? '1' : '0') + '|' +
+    return actionId + '|' + this.displayCount.toString() + '|' + this.displayLabel + '|' +
+      (this.keyboardOpen ? '1' : '0') + '|' +
       (this.shortcutsOpen ? '1' : '0') + '|' + (this.diagnosticsEnabled ? '1' : '0') + '|' +
       (this.canvasResetAvailable ? '1' : '0') + '|' + this.controlModeLabel + '|' +
       this.displayScaleLabel;
@@ -129,7 +137,7 @@ export struct VncSessionToolbar {
   private primaryActionButtons(vertical: boolean) {
     if (vertical) {
       Column({ space: 5 }) {
-        ForEach(vncToolbarPrimaryActionIds(),
+        ForEach(vncToolbarPrimaryActionIds(this.displayCount),
           (actionId: VncToolbarPrimaryActionId): void => {
             this.primaryActionButtonWithReset(actionId)
           }, (actionId: VncToolbarPrimaryActionId): string =>
@@ -137,7 +145,7 @@ export struct VncSessionToolbar {
       }
     } else {
       Row({ space: 5 }) {
-        ForEach(vncToolbarPrimaryActionIds(),
+        ForEach(vncToolbarPrimaryActionIds(this.displayCount),
           (actionId: VncToolbarPrimaryActionId): void => {
             this.primaryActionButtonWithReset(actionId)
           }, (actionId: VncToolbarPrimaryActionId): string =>

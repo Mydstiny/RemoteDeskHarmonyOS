@@ -35,6 +35,7 @@ import {
   RustDeskDisplayCapabilities,
   RustDeskDisplaySwitchRequest,
   RustDeskMultiCanvasPreviewSnapshot,
+  VncDisplayCapabilities,
   RustDeskDiagnosticsSnapshot,
   LocalResourceStats,
   RemoteCursorSnapshot,
@@ -2299,6 +2300,35 @@ export class ExtensionLoader implements RustDeskClipboardNative {
         resolutions: [],
         displays: []
       };
+    }
+  }
+
+  getVncDisplayCapabilities(sessionId: number): VncDisplayCapabilities {
+    try {
+      return rdpnapi.getVncDisplayCapabilities(sessionId) as VncDisplayCapabilities;
+    } catch (err) {
+      hilog.warn(DOMAIN, TAG,
+        '[ExtensionLoader] getVncDisplayCapabilities unavailable: ' + JSON.stringify(err));
+      return {
+        supported: false,
+        mode: 'unsupported',
+        monitorCount: 0,
+        currentMonitor: -1,
+        pendingMonitor: -1,
+        switchGeneration: 0,
+        inputBlocked: false,
+        lastResult: 'native_api_unavailable'
+      };
+    }
+  }
+
+  switchVncDisplay(sessionId: number, monitor: number): boolean {
+    try {
+      return rdpnapi.switchVncDisplay(sessionId, monitor) as boolean;
+    } catch (err) {
+      hilog.warn(DOMAIN, TAG,
+        '[ExtensionLoader] switchVncDisplay unavailable: ' + JSON.stringify(err));
+      return false;
     }
   }
 

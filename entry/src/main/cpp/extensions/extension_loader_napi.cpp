@@ -8208,21 +8208,38 @@ napi_value NapiGetVncDisplayCapabilities(napi_env env, napi_callback_info info) 
     if (argc > 0) napi_get_value_int32(env, args[0], &sessionId);
 
     int monitorCount = 0;
+    int currentMonitor = -1;
+    int pendingMonitor = -1;
+    uint64_t switchGeneration = 0;
+    bool inputBlocked = false;
+    std::string lastResult = "disconnected";
     auto it = g_sessionRegistry.find(sessionId);
     const std::shared_ptr<SessionContext> session =
         it == g_sessionRegistry.end() ? nullptr : it->second;
     if (IsSessionCallbackActive(session)) {
         if (auto* vnc = dynamic_cast<VncAdapter*>(session->adapter.get())) {
             monitorCount = vnc->monitorCount();
+            currentMonitor = vnc->currentMonitor();
+            pendingMonitor = vnc->pendingMonitor();
+            switchGeneration = vnc->monitorSwitchGeneration();
+            inputBlocked = vnc->monitorSwitchInputBlocked();
+            lastResult = vnc->monitorSwitchLastResult();
         }
     }
     napi_value result;
     napi_create_object(env, &result);
-    SetObjectBool(env, result, "supported", monitorCount > 0);
+    const bool multiDisplaySupported = monitorCount > 1;
+    SetObjectBool(env, result, "supported", multiDisplaySupported);
     SetObjectString(env, result, "mode",
-                    monitorCount > 0 ? std::string("serverSelection")
+                    multiDisplaySupported ? std::string("serverSelection")
                                      : std::string("unsupported"));
     SetObjectInt32(env, result, "monitorCount", monitorCount);
+    SetObjectInt32(env, result, "currentMonitor", currentMonitor);
+    SetObjectInt32(env, result, "pendingMonitor", pendingMonitor);
+    SetObjectInt64(env, result, "switchGeneration",
+                   static_cast<int64_t>(switchGeneration));
+    SetObjectBool(env, result, "inputBlocked", inputBlocked);
+    SetObjectString(env, result, "lastResult", lastResult);
     return result;
 }
 

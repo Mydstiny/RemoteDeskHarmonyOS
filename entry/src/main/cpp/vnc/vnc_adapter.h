@@ -85,6 +85,11 @@ public:
     void        sendClipboardData(const uint8_t* data, uint32_t len) override;
     void        requestFrameRefresh() override;
     int         monitorCount();
+    int         currentMonitor();
+    int         pendingMonitor();
+    uint64_t    monitorSwitchGeneration();
+    bool        monitorSwitchInputBlocked();
+    std::string monitorSwitchLastResult();
     bool        requestMonitorSwitch(int monitor);
     std::string getClipboardText() override;
     ClipboardSnapshot getClipboardSnapshot() override;

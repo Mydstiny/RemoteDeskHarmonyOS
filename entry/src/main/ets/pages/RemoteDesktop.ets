@@ -597,6 +597,15 @@ import {
   shouldRequestRustDeskDisplaySwitch
 } from '../services/RustDeskDisplaySwitchPolicy';
 import {
+  VncDisplaySwitchState,
+  idleVncDisplaySwitchState,
+  observeVncDisplaySwitch,
+  releaseVncInputForDisplaySwitch,
+  beginVncDisplaySwitchState,
+  shouldRequestVncDisplaySwitch,
+  vncMonitorLabel
+} from '../services/VncDisplaySwitchPolicy';
+import {
   RustDeskMultiCanvasPreviewDecision,
   selectRustDeskMultiCanvasPreview
 } from '../services/RustDeskMultiCanvasPreviewPolicy';
@@ -684,6 +693,7 @@ import {
   RustDeskDisplayResolution,
   RustDeskDisplaySwitchRequest,
   RustDeskMultiCanvasPreviewSnapshot,
+  VncDisplayCapabilities,
   RustDeskDiagnosticsSnapshot,
   SessionConfig,
   SessionTransferStatus,
@@ -1030,8 +1040,19 @@ const EMPTY_RUSTDESK_DISPLAY_RESOLUTION: RustDeskDisplayResolution = {
   width: 0,
   height: 0
 };
+const EMPTY_VNC_DISPLAY_CAPABILITIES: VncDisplayCapabilities = {
+  supported: false,
+  mode: 'unsupported',
+  monitorCount: 0,
+  currentMonitor: -1,
+  pendingMonitor: -1,
+  switchGeneration: 0,
+  inputBlocked: false,
+  lastResult: 'idle'
+};
 const RUSTDESK_DISPLAY_SWITCH_TIMEOUT_MS: number = 5000;
 const RUSTDESK_DISPLAY_RESOLUTION_TIMEOUT_MS: number = 5000;
+const VNC_DISPLAY_SWITCH_TIMEOUT_MS: number = 5000;
 
 const EMPTY_RUSTDESK_MULTI_CANVAS_PREVIEW: RustDeskMultiCanvasPreviewSnapshot = {
   supported: false, active: false, display: -1, status: 'inactive', reason: '',
@@ -1210,6 +1231,8 @@ struct RemoteDesktop {
   @State rdpRenderStats: RdpRenderStats = EMPTY_RDP_RENDER_STATS;
   @State @Watch('onHarmonyShortcutInputOwnerChange') rdpControlCenterVisible: boolean = false;
   @State rustDeskDisplayCapabilities: RustDeskDisplayCapabilities = EMPTY_RUSTDESK_DISPLAY_CAPABILITIES;
+  @State vncDisplayCapabilities: VncDisplayCapabilities = EMPTY_VNC_DISPLAY_CAPABILITIES;
+  @State @Watch('onHarmonyShortcutInputOwnerChange') showVncDisplayMenu: boolean = false;
   @State rustDeskDisplayPendingResolution: RustDeskDisplayResolution = EMPTY_RUSTDESK_DISPLAY_RESOLUTION;
   @State @Watch('onHarmonyShortcutInputOwnerChange')
   showRustDeskDisplayResolutionMenu: boolean = false;
@@ -1866,6 +1889,7 @@ struct RemoteDesktop {
   @State @Watch('onHarmonyShortcutInputOwnerChange')
   rustDeskDisplaySwitchState: RustDeskDisplaySwitchState =
     idleRustDeskDisplaySwitchState();
+  private vncDisplaySwitchState: VncDisplaySwitchState = idleVncDisplaySwitchState();
   private rustDeskDisplayResolutionPendingSinceMs: number = 0;
   private lastBrowseModeBlockedToastMs: number = 0;
   private lastVncViewOnlyBlockedToastMs: number = 0;
@@ -2271,7 +2295,8 @@ struct RemoteDesktop {
       handleSize: vncToolbarRailWidth(deviceClass, true),
       railWidth: vncToolbarRailWidth(deviceClass, collapsed),
       railHeight: vncToolbarRailHeight(
-        deviceClass, this.isVncViewOnlySession(), collapsed, availableHeight),
+        deviceClass, this.isVncViewOnlySession(), collapsed, availableHeight,
+        this.vncDisplayCapabilities.monitorCount),
       menuWidth: 0,
       menuHeight: 0,
       // VNC actions are rendered by the rail itself; there is no secondary
@@ -2291,7 +2316,8 @@ struct RemoteDesktop {
         handleSize: vncToolbarRailWidth(deviceClass, true),
         railWidth: vncToolbarRailWidth(deviceClass, true),
         railHeight: vncToolbarRailHeight(
-          deviceClass, this.isVncViewOnlySession(), true, availableHeight),
+          deviceClass, this.isVncViewOnlySession(), true, availableHeight,
+          this.vncDisplayCapabilities.monitorCount),
         menuWidth: 0,
         menuHeight: 0,
         expanded: false
@@ -2554,6 +2580,11 @@ struct RemoteDesktop {
       onOpenShortcuts: (): void => {
         this.markVncToolbarInteraction();
         this.toggleModifierPanel();
+        this.scheduleVncToolbarAutoCollapse();
+      },
+      onOpenDisplays: (): void => {
+        this.markVncToolbarInteraction();
+        this.openVncDisplayMenu();
         this.scheduleVncToolbarAutoCollapse();
       },
       onCycleDisplayScale: (): void => {
@@ -11388,6 +11419,115 @@ struct RemoteDesktop {
       ' receivedFrames=' + snapshot.receivedFrames.toString());
   }
 
+  private vncDisplayLabel(monitor: number): string {
+    return vncMonitorLabel(monitor);
+  }
+
+  private vncDisplayTargetMonitor(): number {
+    if (this.vncDisplaySwitchState.inputBlocked &&
+      this.vncDisplaySwitchState.pendingMonitor >= 0) {
+      return this.vncDisplaySwitchState.pendingMonitor;
+    }
+    if (this.vncDisplayCapabilities.pendingMonitor >= 0) {
+      return this.vncDisplayCapabilities.pendingMonitor;
+    }
+    return this.vncDisplayCapabilities.currentMonitor;
+  }
+
+  private releaseVncInputBeforeDisplaySwitch(reason: string): void {
+    releaseVncInputForDisplaySwitch({
+      discardPendingMouseMove: (): void => this.discardPendingMouseMove(),
+      releaseCanvasPinchInput: (): void => this.releaseCanvasPinchInput(reason),
+      resetTouchGesture: (): void => this.resetTouchGesture(),
+      releaseAllHeldKeys: (): void => this.releaseAllHeldKeys(),
+      clearHeldPointerState: (): void => {
+        if (this.touchLeftDown) {
+          this.sendMouseNow(this.remoteCursorX, this.remoteCursorY, 0, false);
+          this.touchLeftDown = false;
+        }
+        if (this.physicalMouseDownButton >= 0) {
+          this.sendMouseNow(this.remoteCursorX, this.remoteCursorY,
+            this.physicalMouseDownButton, false);
+          this.physicalMouseDownButton = -1;
+        }
+      },
+      resetAllLatches: (): void => this.resetAllLatches(),
+      resetTouchpadState: (): void => {
+        this.touchpadAnchorValid = false;
+        this.resetTouchpadPointerCurve();
+      },
+      invalidateViewport: (): void => this.invalidateRendererViewportCache()
+    });
+  }
+
+  private selectVncDisplay(monitor: number): void {
+    if (!this.isVncSession() || this.sessionId <= 0 ||
+      !this.vncDisplayCapabilities.supported ||
+      monitor < 0 || monitor >= this.vncDisplayCapabilities.monitorCount) {
+      return;
+    }
+    if (!shouldRequestVncDisplaySwitch(this.vncDisplaySwitchState, monitor,
+      this.vncDisplayCapabilities.currentMonitor)) {
+      return;
+    }
+    this.releaseVncInputBeforeDisplaySwitch('vnc-display-switch');
+    const accepted: boolean = this.loader.switchVncDisplay(this.sessionId, monitor);
+    const capabilities: VncDisplayCapabilities = this.loader.getVncDisplayCapabilities(this.sessionId);
+    this.vncDisplayCapabilities = capabilities;
+    this.vncDisplaySwitchState = beginVncDisplaySwitchState(
+      accepted, capabilities.switchGeneration, monitor, Date.now());
+    if (!accepted) {
+      promptAction.showToast({ message: 'VNC 服务端未接受显示器切换', duration: 1800 });
+      return;
+    }
+    this.showVncDisplayMenu = false;
+    promptAction.showToast({ message: '正在切换到 ' + this.vncDisplayLabel(monitor), duration: 1400 });
+  }
+
+  private openVncDisplayMenu(): void {
+    if (!this.isVncSession() || this.sessionId <= 0) {
+      return;
+    }
+    this.syncVncDisplayCatalog();
+    if (!this.vncDisplayCapabilities.supported || this.vncDisplayCapabilities.monitorCount <= 1) {
+      promptAction.showToast({ message: '当前 VNC 服务端未提供可切换的多显示器目录', duration: 1800 });
+      return;
+    }
+    this.showVncDisplayMenu = true;
+  }
+
+  private syncVncDisplayCatalog(): void {
+    if (!this.isVncSession() || this.sessionId <= 0) {
+      return;
+    }
+    const capabilities: VncDisplayCapabilities =
+      this.loader.getVncDisplayCapabilities(this.sessionId);
+    const observation = observeVncDisplaySwitch(
+      this.vncDisplaySwitchState,
+      {
+        currentMonitor: capabilities.currentMonitor,
+        pendingMonitor: capabilities.pendingMonitor,
+        switchGeneration: capabilities.switchGeneration,
+        inputBlocked: capabilities.inputBlocked,
+        lastResult: capabilities.lastResult
+      },
+      Date.now(), VNC_DISPLAY_SWITCH_TIMEOUT_MS);
+    this.vncDisplaySwitchState = observation.state;
+    if (observation.notifyTimeout) {
+      promptAction.showToast({ message: 'VNC 显示器切换超时，输入保持暂停', duration: 2200 });
+    }
+    if (observation.adopt && capabilities.currentMonitor >= 0 &&
+      capabilities.currentMonitor !== this.vncDisplayCapabilities.currentMonitor) {
+      this.resetVncInputAfterGeometryChange('vnc-display-confirmed');
+      this.vncGeometryReady = false;
+      this.requestRemoteCursorViewRefresh(true);
+      promptAction.showToast({
+        message: '已切换到 ' + this.vncDisplayLabel(capabilities.currentMonitor), duration: 1400
+      });
+    }
+    this.vncDisplayCapabilities = capabilities;
+  }
+
   /**
    * RDP Display Control can upgrade the initial density-readable fallback
    * (for example 1600x1000) to the physical desktop (2880x1800). The renderer
@@ -11774,6 +11914,7 @@ struct RemoteDesktop {
         this.stopVncGeometrySync();
         return;
       }
+      this.syncVncDisplayCatalog();
       this.syncVncLogicalSizeFromFrame(sessionId);
     };
     sync();
@@ -11984,6 +12125,13 @@ struct RemoteDesktop {
       hilog.info(RD_DOMAIN, RD_TAG, 'dropInput ' + source +
         ' vncGeometryReady=0 framebuffer=' + this.remoteWidth.toString() + 'x' +
         this.remoteHeight.toString());
+      return false;
+    }
+    if (this.isVncSession() && this.vncDisplaySwitchState.inputBlocked) {
+      hilog.info(RD_DOMAIN, RD_TAG, 'dropInput ' + source +
+        ' vncDisplaySwitchPending=' +
+        this.vncDisplaySwitchState.pendingMonitor.toString() +
+        ' generation=' + this.vncDisplaySwitchState.generation.toString());
       return false;
     }
     if (this.isRdpRemoteSession() && !this.rdpGeometryReady) {
@@ -14570,6 +14718,9 @@ struct RemoteDesktop {
         this.rustDeskDesktopFlipMode = 'reset';
       }
       this.vncGeometryReady = !isVnc;
+      this.vncDisplaySwitchState = idleVncDisplaySwitchState();
+      this.vncDisplayCapabilities = EMPTY_VNC_DISPLAY_CAPABILITIES;
+      this.showVncDisplayMenu = false;
       this.rustDeskDisplaySwitchState = idleRustDeskDisplaySwitchState();
       this.rustDeskDisplayCapabilities = EMPTY_RUSTDESK_DISPLAY_CAPABILITIES;
       this.rustDeskDisplayPendingResolution = EMPTY_RUSTDESK_DISPLAY_RESOLUTION;
@@ -15432,6 +15583,9 @@ struct RemoteDesktop {
         this.disconnectAndCleanup('connect-failed');
       }
       this.rustDeskDisplaySwitchState = idleRustDeskDisplaySwitchState();
+      this.vncDisplaySwitchState = idleVncDisplaySwitchState();
+      this.vncDisplayCapabilities = EMPTY_VNC_DISPLAY_CAPABILITIES;
+      this.showVncDisplayMenu = false;
       this.rustDeskDisplayPendingResolution = EMPTY_RUSTDESK_DISPLAY_RESOLUTION;
       this.rustDeskDisplayResolutionPendingSinceMs = 0;
       this.resetRustDeskTwoFactorAfterConnectionFailure();
@@ -16330,6 +16484,9 @@ struct RemoteDesktop {
         }
         this.sessionId = -1;
         this.rustDeskDisplaySwitchState = idleRustDeskDisplaySwitchState();
+        this.vncDisplaySwitchState = idleVncDisplaySwitchState();
+        this.vncDisplayCapabilities = EMPTY_VNC_DISPLAY_CAPABILITIES;
+        this.showVncDisplayMenu = false;
         this.rustDeskDisplayPendingResolution = EMPTY_RUSTDESK_DISPLAY_RESOLUTION;
         this.rustDeskDisplayResolutionPendingSinceMs = 0;
         this.rendererHandle = -1;
@@ -22142,6 +22299,96 @@ struct RemoteDesktop {
     return Math.max(64, this.rustDeskDisplayCardHeight() - 72);
   }
 
+  private vncDisplayIds(): Array<number> {
+    const ids: Array<number> = [];
+    const count: number = Math.max(0, Math.min(32,
+      Math.floor(this.vncDisplayCapabilities.monitorCount)));
+    for (let index = 0; index < count; index++) {
+      ids.push(index);
+    }
+    return ids;
+  }
+
+  private vncDisplayCardStatusLabel(): string {
+    if (this.vncDisplaySwitchState.inputBlocked || this.vncDisplayCapabilities.inputBlocked) {
+      return '正在切换到 ' + this.vncDisplayLabel(this.vncDisplayTargetMonitor()) + '，输入已暂停';
+    }
+    if (this.vncDisplayCapabilities.currentMonitor >= 0) {
+      return '当前：' + this.vncDisplayLabel(this.vncDisplayCapabilities.currentMonitor);
+    }
+    return '等待服务端显示器目录';
+  }
+
+  private isVncDisplaySelected(monitor: number): boolean {
+    return monitor === this.vncDisplayTargetMonitor();
+  }
+
+  private vncDisplayCardWidth(): number {
+    const viewportWidth: number = this.surfaceWidth > 0 ? this.surfaceWidth : 360;
+    return remoteSessionFloatingCardWidth(viewportWidth,
+      this.isDesktopDevice ? 360 : (this.isPadDevice ? 340 : 320), 12);
+  }
+
+  private vncDisplayCardHeight(): number {
+    const viewportHeight: number = this.surfaceHeight > 0 ? this.surfaceHeight : 640;
+    return remoteSessionFloatingCardHeight(viewportHeight,
+      this.isDesktopDevice || this.isPadDevice ? 420 : 360, 12,
+      this.kbHeight > 0 ? this.kbHeight + 12 : 12);
+  }
+
+  @Builder
+  private vncDisplayMenu() {
+    Column({ space: 8 }) {
+      Row() {
+        Column() {
+          Text('VNC 显示器').fontSize(15).fontWeight(FontWeight.Medium).fontColor('#1B1B1B')
+          Text(this.vncDisplayCardStatusLabel()).fontSize(11).fontColor('#6B7280')
+            .margin({ top: 2 })
+        }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+        Button() {
+          SymbolGlyph($r('sys.symbol.xmark')).fontSize(16).fontColor(['#4B5563'])
+        }
+        .width(32).height(32).backgroundColor(Color.Transparent)
+        .onClick((): void => { this.showVncDisplayMenu = false; })
+      }.width('100%')
+      Scroll() {
+        Column({ space: 6 }) {
+          ForEach(this.vncDisplayIds(), (monitor: number): void => {
+            Row() {
+              Column() {
+                Text(this.vncDisplayLabel(monitor)).fontSize(13)
+                  .fontColor(this.isVncDisplaySelected(monitor) ? '#FFFFFF' : '#374151').maxLines(1)
+                Text(monitor === 0 ? '主显示器候选 · 服务端未提供独立尺寸' :
+                  'UltraVNC 服务端显示器编号 ' + monitor.toString())
+                  .fontSize(10)
+                  .fontColor(this.isVncDisplaySelected(monitor) ?
+                    'rgba(255,255,255,0.78)' : '#6B7280')
+                  .margin({ top: 2 })
+              }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+              if (this.isVncDisplaySelected(monitor)) {
+                SymbolGlyph($r('sys.symbol.checkmark')).fontSize(15).fontColor(['#FFFFFF'])
+              }
+            }
+            .width('100%').height(50).padding({ left: 12, right: 12, top: 6, bottom: 6 })
+            .backgroundColor(this.isVncDisplaySelected(monitor) ? this.accentColor : '#F3F4F6')
+            .borderRadius(6)
+            .enabled(!this.vncDisplaySwitchState.inputBlocked && !this.isVncDisplaySelected(monitor))
+            .onClick((): void => { this.selectVncDisplay(monitor); })
+          }, (monitor: number): string => monitor.toString())
+        }.width('100%')
+      }.height(Math.max(64, this.vncDisplayCardHeight() - 78))
+        .scrollable(ScrollDirection.Vertical).scrollBar(BarState.Auto)
+      Text('TigerVNC 等普通 RFB 服务端没有通用切屏扩展；该入口只在服务端报告 UltraVNC 目录时显示。')
+        .fontSize(10).fontColor('#6B7280').width('100%')
+    }
+    .width(this.vncDisplayCardWidth()).height(this.vncDisplayCardHeight())
+    .padding(14).backgroundColor('rgba(255,255,255,0.98)').borderRadius(16)
+    .shadow({ radius: 14, color: 'rgba(0,0,0,0.22)', offsetY: 4 })
+    .position({ x: Math.max(12, this.surfaceWidth - this.vncDisplayCardWidth() - 12), y: 12 })
+    .clip(true)
+    .hitTestBehavior(HitTestMode.BLOCK_HIERARCHY)
+  }
+
   @Builder
   private rustDeskDisplayResolutionMenu() {
     Column({ space: 8 }) {
@@ -22459,6 +22706,8 @@ struct RemoteDesktop {
             this.modifierPanelPrepareOnly,
           controlModeLabel: this.vncControlModeLabel(),
           displayScaleLabel: this.vncDisplayScaleLabel(),
+          displayCount: this.vncDisplayCapabilities.monitorCount,
+          displayLabel: this.vncDisplayLabel(this.vncDisplayTargetMonitor()),
           diagnosticsEnabled: this.vncShowDiagnostics,
           canvasResetAvailable: this.canvasTransformGestureModified,
           collapsed: this.vncToolbarCollapsed,
@@ -22632,6 +22881,10 @@ struct RemoteDesktop {
 
       if (this.showRustDeskDisplayResolutionMenu) {
         this.rustDeskDisplayResolutionMenu()
+      }
+
+      if (this.showVncDisplayMenu) {
+        this.vncDisplayMenu()
       }
 
       if (this.shouldShowActiveDiagnostics()) {

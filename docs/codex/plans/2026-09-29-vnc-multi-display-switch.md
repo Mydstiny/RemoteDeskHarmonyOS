@@ -1,20 +1,24 @@
 # VNC 多显示器单屏切换与侧栏优化计划
 
-Status: M1_NATIVE_ULTRAVNC_INCREMENT
+Status: M4_NATIVE_ARKUI_INCREMENT
 Created: 2026-09-29 Asia/Shanghai
 Scope: VNC 连接多显示器电脑时，默认只显示一个远端屏幕，并在会话侧栏中切换屏幕。
-Implementation status: M1 native/NAPI increment implemented for UltraVNC monitor count and monitor selection; TigerVNC remains explicitly unsupported. ArkTS sidebar wiring and real-server acceptance remain open.
+Implementation status: UltraVNC native/NAPI monitor count and selection, generation/input fencing, VNC session geometry lifecycle, and conditional ArkUI sidebar are implemented. TigerVNC remains explicitly unsupported. Real-server/device acceptance remains open.
 Observed workspace: codex/pro-purchase-foundation @ f6fc03dfc；工作树包含本增量修改及并发未跟踪的手机竖屏计划。现有 Pro 任务仍在活动中，本增量继续在该分支并保留并发文件。
 
-M0/M1 evidence (2026-09-30): UltraVNC's public `rfbproto.h` defines the
+M0/M1/M3/M4 evidence (2026-10-01): UltraVNC's public `rfbproto.h` defines the
 `rfbEncodingMonitorInfo` pseudo-encoding (`0xFFFF8005`), server message 252
 with a one-byte monitor count plus three-byte message payload, and client
 message 254 with monitor number plus two padding bytes. The implementation
 advertises the pseudo-encoding, parses the bounded count, exposes native/NAPI
-capability and switch calls, and releases held pointer buttons before sending
-the switch. TigerVNC has no corresponding server extension in its published
-RFB surface, so its capability remains `unsupported`. Host byte tests cover
-the exact request and parser bounds; real TigerVNC/UltraVNC sessions are not
+capability and switch calls, releases held input before the switch, blocks
+input until the first complete post-request framebuffer update, and fences
+the ArkUI session generation. The VNC toolbar adds a conditional display
+action and a scrollable, session-only monitor panel; single-screen and
+unsupported servers keep the action hidden. TigerVNC has no corresponding
+server extension in its published RFB surface, so its capability remains
+`unsupported`. Host byte/policy tests cover the exact request, parser bounds,
+generation state and input release; real TigerVNC/UltraVNC sessions are not
 yet run.
 
 ## 1. 目标和决策结论
@@ -377,7 +381,7 @@ ArkTS/渲染测试：
 4. 是否允许首版只支持一个明确的 VNC Server 产品；
 5. 是否存在可重复的测试电脑或服务端账号。
 
-在这些信息缺失时，保持 PLAN_ONLY，不修改 VNC 协议实现。
+在这些信息缺失时，保持代码能力为安全降级；已实现的 UltraVNC wire contract 和 ArkUI 侧栏不等于真实服务端/设备验收通过。
 
 ## 9. 参考资料
 

@@ -72,6 +72,13 @@ export default function vncSessionUiPolicyTest(): void {
         .assertEqual('keyboard,controlMode,shortcuts,displayScale,diagnostics,disconnect');
     });
 
+    it('adds_display_action_only_for_a_multi_display_capability', 0, (): void => {
+      expect(vncToolbarPrimaryActionIds(1).length).assertEqual(6);
+      const actions = vncToolbarPrimaryActionIds(2);
+      expect(actions.length).assertEqual(7);
+      expect(actions[3]).assertEqual('display');
+    });
+
     it('transitions_cursor_ownership_from_bootstrap_to_protocol_shape', 0, (): void => {
       const initial = resolveVncCursorOwnershipEvidence(false, true, false, false);
       const macBootstrap = resolveVncCursorOwnershipEvidence(true, true, false, true);
@@ -160,6 +167,8 @@ export default function vncSessionUiPolicyTest(): void {
       expect(vncToolbarRailHeight('phone', false, true, 56)).assertEqual(56);
       expect(vncToolbarRailHeight('phone', false, true, 28)).assertEqual(28);
       expect(vncToolbarRailHeight('phone', false, true, 0)).assertEqual(1);
+      expect(vncToolbarRailHeight('phone', false, false, Number.MAX_SAFE_INTEGER, 2))
+        .assertEqual(399);
     });
 
     it('isolates_vnc_position_preferences_by_device_and_orientation', 0, (): void => {

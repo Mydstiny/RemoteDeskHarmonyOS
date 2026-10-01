@@ -1680,6 +1680,26 @@ int VncAdapter::monitorCount() {
     std::lock_guard<std::mutex> lock(impl_->mutex);
     return impl_->engine ? impl_->engine->monitorCount() : 0;
 }
+int VncAdapter::currentMonitor() {
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    return impl_->engine ? impl_->engine->currentMonitor() : -1;
+}
+int VncAdapter::pendingMonitor() {
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    return impl_->engine ? impl_->engine->pendingMonitor() : -1;
+}
+uint64_t VncAdapter::monitorSwitchGeneration() {
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    return impl_->engine ? impl_->engine->monitorSwitchGeneration() : 0;
+}
+bool VncAdapter::monitorSwitchInputBlocked() {
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    return impl_->engine && impl_->engine->monitorSwitchInputBlocked();
+}
+std::string VncAdapter::monitorSwitchLastResult() {
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    return impl_->engine ? impl_->engine->monitorSwitchLastResult() : "disconnected";
+}
 bool VncAdapter::requestMonitorSwitch(int monitor) {
     std::lock_guard<std::mutex> lock(impl_->mutex);
     return impl_->engine && impl_->engine->requestMonitorSwitch(monitor);

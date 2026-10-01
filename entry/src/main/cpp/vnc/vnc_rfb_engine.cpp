@@ -263,6 +263,12 @@ int VncRfbEngine::start() {
 
 void VncRfbEngine::requestStop() {
     const bool wasRequested = stopRequested_.exchange(true, std::memory_order_acq_rel);
+    pendingMonitor_.store(-1, std::memory_order_release);
+    monitorSwitchInputBlocked_.store(false, std::memory_order_release);
+    {
+        std::lock_guard<std::mutex> lock(monitorSwitchMutex_);
+        monitorSwitchLastResult_ = "disconnected";
+    }
 #if defined(RDP_NATIVE_CALLBACK_TESTING)
     if (!wasRequested) {
         std::function<void()> observer;
@@ -949,6 +955,17 @@ bool VncRfbEngine::receiveFramebufferUpdate(bool& requestPipelined,
             emitFrame(dirtyLeft, dirtyTop, dirtyRight - dirtyLeft, dirtyBottom - dirtyTop);
         }
     }
+    // UltraVNC does not send a separate acknowledgement for SetMonitor.
+    // Treat the first complete framebuffer update after the request as the
+    // bounded confirmation point; stale generations are still fenced by the
+    // pending monitor and switch generation state.
+    if (pendingMonitor_.load(std::memory_order_acquire) >= 0) {
+        const int confirmed = pendingMonitor_.exchange(-1, std::memory_order_acq_rel);
+        currentMonitor_.store(confirmed, std::memory_order_release);
+        monitorSwitchInputBlocked_.store(false, std::memory_order_release);
+        std::lock_guard<std::mutex> lock(monitorSwitchMutex_);
+        monitorSwitchLastResult_ = "confirmed";
+    }
     return true;
 }
 
@@ -1187,6 +1204,12 @@ bool VncRfbEngine::receiveUltraVncMonitorInfo(std::string& error) {
         return false;
     }
     monitorCount_.store(static_cast<int>(count), std::memory_order_release);
+    const int current = currentMonitor_.load(std::memory_order_acquire);
+    if (count == 0) {
+        currentMonitor_.store(-1, std::memory_order_release);
+    } else if (current < 0 || current >= static_cast<int>(count)) {
+        currentMonitor_.store(0, std::memory_order_release);
+    }
     VNC_DIAG_INFO("[VNC-DIAG] UltraVNC monitor catalog count=%{public}d", count);
     return true;
 }
@@ -1338,7 +1361,8 @@ uint32_t VncRfbEngine::decodePixel(const uint8_t* data) const {
 }
 
 void VncRfbEngine::sendKey(uint32_t keyCode, bool pressed) {
-    if (config_.vncViewOnly || state() != ConnectionState::CONNECTED) return;
+    if (config_.vncViewOnly || state() != ConnectionState::CONNECTED ||
+        monitorSwitchInputBlocked()) return;
     const uint32_t keySym = keySymForHarmonyCode(keyCode);
     if (keySym == 0) return;
     const uint8_t packet[8] = {4, static_cast<uint8_t>(pressed ? 1 : 0), 0, 0,
@@ -1351,7 +1375,8 @@ void VncRfbEngine::sendKey(uint32_t keyCode, bool pressed) {
 }
 
 void VncRfbEngine::sendMouse(int x, int y, MouseButton button, bool pressed) {
-    if (config_.vncViewOnly || state() != ConnectionState::CONNECTED) return;
+    if (config_.vncViewOnly || state() != ConnectionState::CONNECTED ||
+        monitorSwitchInputBlocked()) return;
     std::lock_guard<std::mutex> lock(inputMutex_);
     x = std::max(0, std::min(x, std::max(0, framebufferWidth_ - 1)));
     y = std::max(0, std::min(y, std::max(0, framebufferHeight_ - 1)));
@@ -1373,7 +1398,8 @@ void VncRfbEngine::sendMouse(int x, int y, MouseButton button, bool pressed) {
 }
 
 void VncRfbEngine::sendMouseWheel(int x, int y, int delta) {
-    if (config_.vncViewOnly || state() != ConnectionState::CONNECTED || delta == 0) return;
+    if (config_.vncViewOnly || state() != ConnectionState::CONNECTED || delta == 0 ||
+        monitorSwitchInputBlocked()) return;
     std::lock_guard<std::mutex> lock(inputMutex_);
     // Keep a logical wheel burst contiguous on the RFB stream and pay for one
     // socket/TLS write instead of up to 128 tiny writes.  This also prevents a
@@ -1389,7 +1415,7 @@ void VncRfbEngine::sendMouseWheel(int x, int y, int delta) {
 void VncRfbEngine::sendText(const std::string& text) {
     if (text.empty() || !VncRfbProtocol::canSendTextInput(
         config_.vncViewOnly, config_.vncClipboardEnabled,
-        state() == ConnectionState::CONNECTED)) {
+        state() == ConnectionState::CONNECTED) || monitorSwitchInputBlocked()) {
         return;
     }
     std::vector<uint8_t> packet;
@@ -1406,7 +1432,7 @@ void VncRfbEngine::sendText(const std::string& text) {
 bool VncRfbEngine::sendClipboard(const uint8_t* data, uint32_t len) {
     if ((data == nullptr && len != 0) || len > 65536 ||
         config_.vncViewOnly || !config_.vncClipboardEnabled ||
-        state() != ConnectionState::CONNECTED) return false;
+        state() != ConnectionState::CONNECTED || monitorSwitchInputBlocked()) return false;
     std::vector<uint8_t> packet;
     packet.reserve(8 + len);
     packet.push_back(6); // ClientCutText
@@ -1448,8 +1474,30 @@ int VncRfbEngine::monitorCount() const {
     return monitorCount_.load(std::memory_order_acquire);
 }
 
+int VncRfbEngine::currentMonitor() const {
+    return currentMonitor_.load(std::memory_order_acquire);
+}
+
+int VncRfbEngine::pendingMonitor() const {
+    return pendingMonitor_.load(std::memory_order_acquire);
+}
+
+uint64_t VncRfbEngine::monitorSwitchGeneration() const {
+    return monitorSwitchGeneration_.load(std::memory_order_acquire);
+}
+
+bool VncRfbEngine::monitorSwitchInputBlocked() const {
+    return monitorSwitchInputBlocked_.load(std::memory_order_acquire);
+}
+
+std::string VncRfbEngine::monitorSwitchLastResult() const {
+    std::lock_guard<std::mutex> lock(monitorSwitchMutex_);
+    return monitorSwitchLastResult_;
+}
+
 bool VncRfbEngine::requestMonitorSwitch(int monitor) {
-    if (monitor < 0 || monitor > 255 || state() != ConnectionState::CONNECTED) {
+    if (monitor < 0 || monitor > 255 || state() != ConnectionState::CONNECTED ||
+        monitorSwitchInputBlocked()) {
         return false;
     }
     const int count = monitorCount();
@@ -1459,17 +1507,38 @@ bool VncRfbEngine::requestMonitorSwitch(int monitor) {
     const std::vector<uint8_t> packet = VncRfbProtocol::buildUltraVncSetMonitor(
         static_cast<uint8_t>(monitor));
     std::string error;
+    const uint64_t generation = monitorSwitchGeneration_.fetch_add(
+        1, std::memory_order_acq_rel) + 1;
     {
         std::lock_guard<std::mutex> lock(inputMutex_);
         // Release any held buttons before changing the server's active
         // monitor so coordinates from the old framebuffer cannot leak.
         buttonMask_ = 0;
     }
+    pendingMonitor_.store(monitor, std::memory_order_release);
+    monitorSwitchInputBlocked_.store(true, std::memory_order_release);
+    {
+        std::lock_guard<std::mutex> lock(monitorSwitchMutex_);
+        monitorSwitchLastResult_ = "requested";
+    }
     if (!writeBytes(packet.data(), packet.size(), error)) {
+        pendingMonitor_.store(-1, std::memory_order_release);
+        monitorSwitchInputBlocked_.store(false, std::memory_order_release);
+        std::lock_guard<std::mutex> lock(monitorSwitchMutex_);
+        monitorSwitchLastResult_ = "rejected";
         VNC_DIAG_WARN("[VNC-DIAG] UltraVNC monitor switch failed: %{public}s", error.c_str());
         return false;
     }
-    return sendFramebufferUpdateRequest(false, error);
+    if (!sendFramebufferUpdateRequest(false, error)) {
+        pendingMonitor_.store(-1, std::memory_order_release);
+        monitorSwitchInputBlocked_.store(false, std::memory_order_release);
+        std::lock_guard<std::mutex> lock(monitorSwitchMutex_);
+        monitorSwitchLastResult_ = "rejected";
+        return false;
+    }
+    VNC_DIAG_INFO("[VNC-DIAG] UltraVNC monitor switch requested monitor=%{public}d generation=%{public}llu",
+                  monitor, static_cast<unsigned long long>(generation));
+    return true;
 }
 
 #if defined(RDP_NATIVE_CALLBACK_TESTING)

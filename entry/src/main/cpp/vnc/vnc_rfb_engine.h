@@ -67,6 +67,11 @@ public:
     bool clipboardReady() const;
     void requestFrameRefresh();
     int monitorCount() const;
+    int currentMonitor() const;
+    int pendingMonitor() const;
+    uint64_t monitorSwitchGeneration() const;
+    bool monitorSwitchInputBlocked() const;
+    std::string monitorSwitchLastResult() const;
     bool requestMonitorSwitch(int monitor);
 
 #if defined(RDP_NATIVE_CALLBACK_TESTING)
@@ -172,6 +177,12 @@ private:
     int effectiveEncoding_ = VncRfbProtocol::kRawEncoding;
     std::atomic<uint64_t> lastFramebufferRequestAtMs_ {0};
     std::atomic<int> monitorCount_ {0};
+    std::atomic<int> currentMonitor_ {-1};
+    std::atomic<int> pendingMonitor_ {-1};
+    std::atomic<uint64_t> monitorSwitchGeneration_ {0};
+    std::atomic<bool> monitorSwitchInputBlocked_ {false};
+    mutable std::mutex monitorSwitchMutex_;
+    std::string monitorSwitchLastResult_ = "idle";
 };
 
 #endif // VNC_RFB_ENGINE_H
