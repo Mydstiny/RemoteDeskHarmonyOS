@@ -433,8 +433,8 @@ diagnosticAiEmailBundle
 - 计划文件：已新增并随实现同步更新；应用实现已落盘，未修改真实密钥、用户数据或生产权益配置。
 - `git diff --check`：通过。
 - Light 开源合规门：通过。
-- `default@OhosTestCompileArkTS`：通过，修复后 `BUILD SUCCESSFUL in 16 s 897 ms`，使用项目本地 `.remotedesk-build-cache`；输出仅包含既有依赖/API 警告。
-- `assembleHap`：通过，修复后 `BUILD SUCCESSFUL in 21 s 885 ms`，签名阶段约 1.9 s；使用项目本地 `.remotedesk-build-cache`，输出发布到 `entry/build/default/outputs`。
+- `default@OhosTestCompileArkTS`：通过，Provider 可用性修复后 `BUILD SUCCESSFUL in 1 min 33 s 355 ms`，使用项目本地 `.remotedesk-build-cache`；输出仅包含既有依赖/API 警告。
+- `assembleHap`：通过，Provider 可用性修复后 `BUILD SUCCESSFUL in 2 min 22 s 34 ms`，签名阶段约 2.8 s；使用项目本地 `.remotedesk-build-cache`，输出发布到 `entry/build/default/outputs`。
 - Light 开源合规门：通过；`git diff --check`：通过。
 - 现有 Node Pro 策略回归：`test_pro_entry_gating.cjs` 通过；`test_pro_runtime.cjs`、`test_pro_feature_visibility.cjs` 因环境缺少 `typescript` 模块未能启动，需在完整开发环境补跑。
 - Provider、真机、邮件客户端和生产权益验收：代码链路已具备，真实环境证据仍待执行；国际 Provider 不在首发范围。

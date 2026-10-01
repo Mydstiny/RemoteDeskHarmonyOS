@@ -3,14 +3,14 @@
   "task": "pro-purchase-foundation",
   "branch": "codex/pro-purchase-foundation",
   "base": "8edc187868e94ed41634e8a6c4c4c072e3a48679",
-  "head": "1e4e4185",
+  "head": "b546152f",
   "phase": "Full acceptance active; Pro 诊断与 AI 帮助客户端 checkpoint 已实现，真实 Provider/设备/邮件验收待完成",
   "currentFocus": "Pro 诊断与 AI 帮助：b8a56f21 基础实现与 1e4e4185 生命周期/端点修复已完成，等待独立复核和真实环境验收",
   "status": "in-progress",
   "latestIncrement": {
     "date": "2026-10-02",
-    "commit": "1e4e4185",
-    "parentCommit": "b8a56f21",
+    "commit": "b546152f",
+    "parentCommit": "1e4e4185",
     "scope": [
       "entry/src/main/ets/components/ProOrganizationWorkspacePanel.ets",
       "entry/src/main/ets/components/ProWorkspaceEditorPanel.ets",
@@ -18,10 +18,10 @@
       "entry/src/main/ets/components/diagnosticAi",
       "entry/src/main/ets/services/diagnosticAi"
     ],
-    "status": "implemented-corrective-fixes-build-pass-review-pending",
+    "status": "implemented-provider-availability-guard-build-pass-review-pending",
     "reviewTaskId": "/root/diagnostic_ai_review",
     "reviewResult": "initial findings fixed; corrective re-review pending",
-    "validation": "default@OhosTestCompileArkTS BUILD SUCCESSFUL 16.897 s; assembleHap BUILD SUCCESSFUL 21.885 s; Light/diff PASS; test_pro_entry_gating PASS; three existing Node tests could not start because typescript is absent; real Provider/device/mail acceptance not run"
+    "validation": "default@OhosTestCompileArkTS BUILD SUCCESSFUL 1 min 33.355 s; assembleHap BUILD SUCCESSFUL 2 min 22.034 s; Light/diff PASS; test_pro_entry_gating PASS; three existing Node tests could not start because typescript is absent; real Provider/device/mail acceptance not run"
   },
   "next": "完成诊断 AI 独立复核；随后在 Phone/Pad/PC 验证 orb、抓取停止、账号切换、邮件预览，并用真实国内 Provider 验证模型列表/分析；保留 experimental 直到证据齐全。",
   "blockers": [
