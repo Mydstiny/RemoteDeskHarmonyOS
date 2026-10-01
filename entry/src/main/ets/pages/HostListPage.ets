@@ -648,6 +648,12 @@ import {
 } from '../services/RemotePortraitDisplayPreferencePolicy';
 import { RemotePortraitDisplayStore } from '../services/RemotePortraitDisplayStore';
 import {
+  REMOTE_PORTRAIT_SIDEBAR_HEIGHT_MODE_KEY,
+  RemotePortraitSidebarHeightMode,
+  remotePortraitSidebarHeightLabel,
+  normalizeRemotePortraitSidebarHeightMode
+} from '../services/RemotePortraitSidebarPolicy';
+import {
   SETTINGS_APP_BUNDLE_NAME,
   SETTINGS_BROWSER_VIEW_ACTION,
   SETTINGS_EMAIL_PANEL_TYPE,
@@ -1370,6 +1376,8 @@ struct HostListPage {
   @StorageLink(VNC_PORTRAIT_DISPLAY_MODE_KEY) vncPortraitDisplayMode: string = 'default';
   @StorageLink(MOONLIGHT_PORTRAIT_DISPLAY_ENABLED_KEY) moonlightPortraitDisplayEnabled: boolean = false;
   @StorageLink(MOONLIGHT_PORTRAIT_DISPLAY_MODE_KEY) moonlightPortraitDisplayMode: string = 'default';
+  @StorageLink(REMOTE_PORTRAIT_SIDEBAR_HEIGHT_MODE_KEY)
+  remotePortraitSidebarHeightMode: RemotePortraitSidebarHeightMode = 'auto';
   @StorageLink(REMOTE_PORTRAIT_DISPLAY_REVISION_KEY) remotePortraitDisplayRevision: number = 0;
   @StorageLink('rdpColorDepth') rdpColorDepth: number = 32;
   @StorageLink('rdpAudioEnabled') rdpAudioEnabled: boolean = true;
@@ -2450,6 +2458,7 @@ struct HostListPage {
       this.moonlightPortraitDisplayEnabled = savedRemotePortraitDisplay.values.moonlight.enabled;
       this.moonlightPortraitDisplayMode = savedRemotePortraitDisplay.values.moonlight.mode;
       this.remotePortraitDisplayRevision = savedRemotePortraitDisplay.revision;
+      this.remotePortraitSidebarHeightMode = savedRemotePortraitDisplay.sidebarHeightMode;
       this.rustdeskSwapMouseButtons = savedRustDeskSwapMouseButtons;
       this.rustdeskTouchpadSpeed =
         Math.max(0.4, Math.min(2.2, savedRustDeskTouchpadSpeed > 0 ? savedRustDeskTouchpadSpeed : 1.0));
@@ -12247,6 +12256,13 @@ struct HostListPage {
       getContext(this) as common.Context, update);
   }
 
+  private saveRemotePortraitSidebarHeightMode(mode: RemotePortraitSidebarHeightMode): boolean {
+    const normalized: RemotePortraitSidebarHeightMode =
+      normalizeRemotePortraitSidebarHeightMode(mode);
+    return RemotePortraitDisplayStore.getInstance().setSidebarHeightMode(
+      getContext(this) as common.Context, normalized);
+  }
+
   private restoreRemoteWheelPreferences(
     prefs: preferences.Preferences
   ): RemoteWheelPreferences {
@@ -16623,9 +16639,13 @@ struct HostListPage {
     } else if (this.settingsLeafSheetMode === SETTINGS_SHEET_REMOTE_PORTRAIT_DISPLAY) {
       RemotePortraitDisplaySettingsSheet({
         initialPreferences: this.remotePortraitDisplayPreferences(),
+        initialSidebarHeightMode: this.remotePortraitSidebarHeightMode,
         onClose: (): void => { this.closeSettingsLeafSheet(); },
-        onSave: (update: RemotePortraitDisplayPreferenceUpdate): boolean =>
-          this.saveRemotePortraitDisplayPreferenceUpdate(update)
+        onSave: (update: RemotePortraitDisplayPreferenceUpdate,
+          heightMode: RemotePortraitSidebarHeightMode): boolean => {
+          if (!this.saveRemotePortraitDisplayPreferenceUpdate(update)) { return false; }
+          return this.saveRemotePortraitSidebarHeightMode(heightMode);
+        }
       })
     } else if (this.settingsLeafSheetMode === SETTINGS_SHEET_SESSION_CONTROL_BAR) {
       RemoteSessionControlBarSettingsSheet({
@@ -20148,7 +20168,8 @@ struct HostListPage {
         Text('竖屏显示').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
           .fontColor(this.pal().text).fontFamily(this.font())
         Text(remotePortraitDisplaySelectionSummary(this.remotePortraitDisplayPreferences()) +
-          ' · 竖屏时建议打开双指缩放')
+          ' · 侧栏：' + remotePortraitSidebarHeightLabel(this.remotePortraitSidebarHeightMode) +
+          ' · 建议打开双指缩放')
           .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
           .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis }).margin({ top: 2 })
       }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })

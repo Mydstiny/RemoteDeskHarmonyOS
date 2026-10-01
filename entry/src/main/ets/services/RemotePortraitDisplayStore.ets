@@ -23,12 +23,18 @@ import {
   VNC_PORTRAIT_DISPLAY_MODE_KEY,
   migrateRemotePortraitDisplayPreferences
 } from './RemotePortraitDisplayPreferencePolicy';
+import {
+  RemotePortraitSidebarHeightMode,
+  REMOTE_PORTRAIT_SIDEBAR_HEIGHT_MODE_KEY,
+  normalizeRemotePortraitSidebarHeightMode
+} from './RemotePortraitSidebarPolicy';
 
 const PREFS_NAME: string = 'RemoteDesktopAppPrefs';
 
 export interface RemotePortraitDisplaySnapshot {
   values: RemotePortraitDisplayPreferences;
   revision: number;
+  sidebarHeightMode: RemotePortraitSidebarHeightMode;
 }
 
 function finiteRevision(value: Object): number {
@@ -108,6 +114,8 @@ function publish(snapshot: RemotePortraitDisplaySnapshot): void {
   AppStorage.setOrCreate(MOONLIGHT_PORTRAIT_DISPLAY_ENABLED_KEY, values.moonlight.enabled);
   AppStorage.setOrCreate(MOONLIGHT_PORTRAIT_DISPLAY_MODE_KEY, values.moonlight.mode);
   AppStorage.setOrCreate(REMOTE_PORTRAIT_DISPLAY_REVISION_KEY, snapshot.revision);
+  AppStorage.setOrCreate<RemotePortraitSidebarHeightMode>(
+    REMOTE_PORTRAIT_SIDEBAR_HEIGHT_MODE_KEY, snapshot.sidebarHeightMode);
 }
 
 function emptyTouched(): RemotePortraitDisplayPreferencePresence {
@@ -138,22 +146,31 @@ export class RemotePortraitDisplayStore {
           prefs.getSync(REMOTE_PORTRAIT_DISPLAY_PREFERENCE_VERSION_KEY, 0) as number);
       const revision: number = finiteRevision(
         prefs.getSync(REMOTE_PORTRAIT_DISPLAY_REVISION_KEY, 0) as Object);
+      const sidebarHeightMode: RemotePortraitSidebarHeightMode =
+        normalizeRemotePortraitSidebarHeightMode(
+          prefs.getSync(REMOTE_PORTRAIT_SIDEBAR_HEIGHT_MODE_KEY, 'auto') as string);
       const shouldPersist: boolean = !prefs.hasSync(REMOTE_PORTRAIT_DISPLAY_PREFERENCE_VERSION_KEY) ||
         !prefs.hasSync(RDP_PORTRAIT_DISPLAY_ENABLED_KEY) ||
         !prefs.hasSync(RUSTDESK_PORTRAIT_DISPLAY_ENABLED_KEY) ||
         !prefs.hasSync(VNC_PORTRAIT_DISPLAY_ENABLED_KEY) ||
         !prefs.hasSync(MOONLIGHT_PORTRAIT_DISPLAY_ENABLED_KEY) ||
+        !prefs.hasSync(REMOTE_PORTRAIT_SIDEBAR_HEIGHT_MODE_KEY) ||
         JSON.stringify(current) !== JSON.stringify(migrated);
       if (shouldPersist) {
         writeValues(prefs, migrated);
+        prefs.putSync(REMOTE_PORTRAIT_SIDEBAR_HEIGHT_MODE_KEY, sidebarHeightMode);
         prefs.putSync(REMOTE_PORTRAIT_DISPLAY_REVISION_KEY, revision);
         prefs.flushSync();
       }
-      const snapshot: RemotePortraitDisplaySnapshot = { values: migrated, revision };
+      const snapshot: RemotePortraitDisplaySnapshot = {
+        values: migrated, revision, sidebarHeightMode
+      };
       publish(snapshot);
       return snapshot;
     } catch (_error) {
-      const snapshot: RemotePortraitDisplaySnapshot = { values: defaults, revision: 0 };
+      const snapshot: RemotePortraitDisplaySnapshot = {
+        values: defaults, revision: 0, sidebarHeightMode: 'auto'
+      };
       publish(snapshot);
       return snapshot;
     }
@@ -169,21 +186,61 @@ export class RemotePortraitDisplayStore {
         previous, update);
       const previousRevision: number = finiteRevision(
         prefs.getSync(REMOTE_PORTRAIT_DISPLAY_REVISION_KEY, 0) as Object);
+      const previousSidebarHeightMode: RemotePortraitSidebarHeightMode =
+        normalizeRemotePortraitSidebarHeightMode(
+          prefs.getSync(REMOTE_PORTRAIT_SIDEBAR_HEIGHT_MODE_KEY, 'auto') as string);
       const nextRevision: number = previousRevision >= Number.MAX_SAFE_INTEGER ?
         1 : previousRevision + 1;
       try {
         writeValues(prefs, current);
+        prefs.putSync(REMOTE_PORTRAIT_SIDEBAR_HEIGHT_MODE_KEY, previousSidebarHeightMode);
         prefs.putSync(REMOTE_PORTRAIT_DISPLAY_REVISION_KEY, nextRevision);
         prefs.flushSync();
       } catch (_writeError) {
         try {
           writeValues(prefs, previous);
+          prefs.putSync(REMOTE_PORTRAIT_SIDEBAR_HEIGHT_MODE_KEY, previousSidebarHeightMode);
           prefs.putSync(REMOTE_PORTRAIT_DISPLAY_REVISION_KEY, previousRevision);
           prefs.flushSync();
         } catch (_rollbackError) {}
         return false;
       }
-      publish({ values: current, revision: nextRevision });
+      publish({ values: current, revision: nextRevision,
+        sidebarHeightMode: previousSidebarHeightMode });
+      return true;
+    } catch (_error) {
+      return false;
+    }
+  }
+
+  setSidebarHeightMode(context: common.Context,
+    mode: RemotePortraitSidebarHeightMode): boolean {
+    const normalized: RemotePortraitSidebarHeightMode =
+      normalizeRemotePortraitSidebarHeightMode(mode);
+    try {
+      const prefs: preferences.Preferences = preferences.getPreferencesSync(
+        context, { name: PREFS_NAME });
+      const values: RemotePortraitDisplayPreferences = readValues(prefs);
+      const previous: RemotePortraitSidebarHeightMode =
+        normalizeRemotePortraitSidebarHeightMode(
+          prefs.getSync(REMOTE_PORTRAIT_SIDEBAR_HEIGHT_MODE_KEY, 'auto') as string);
+      const previousRevision: number = finiteRevision(
+        prefs.getSync(REMOTE_PORTRAIT_DISPLAY_REVISION_KEY, 0) as Object);
+      const nextRevision: number = previousRevision >= Number.MAX_SAFE_INTEGER ?
+        1 : previousRevision + 1;
+      try {
+        prefs.putSync(REMOTE_PORTRAIT_SIDEBAR_HEIGHT_MODE_KEY, normalized);
+        prefs.putSync(REMOTE_PORTRAIT_DISPLAY_REVISION_KEY, nextRevision);
+        prefs.flushSync();
+      } catch (_writeError) {
+        try {
+          prefs.putSync(REMOTE_PORTRAIT_SIDEBAR_HEIGHT_MODE_KEY, previous);
+          prefs.putSync(REMOTE_PORTRAIT_DISPLAY_REVISION_KEY, previousRevision);
+          prefs.flushSync();
+        } catch (_rollbackError) {}
+        return false;
+      }
+      publish({ values, revision: nextRevision, sidebarHeightMode: normalized });
       return true;
     } catch (_error) {
       return false;

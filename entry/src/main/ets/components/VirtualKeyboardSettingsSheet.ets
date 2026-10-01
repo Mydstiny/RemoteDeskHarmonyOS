@@ -61,6 +61,7 @@ export struct VirtualKeyboardSettingsSheet {
   @State private simpleKeyboardEnabled: boolean = false;
   @State private functionKeysVisible: boolean = true;
   @State private closeAfterShortcut: boolean = false;
+  @State private autoOpenOnRemoteClick: boolean = false;
   @State private systemSnapshot: RemoteSystemInputMethodSnapshot = {
     available: false, currentLabel: '', currentSubtype: '', methods: [], error: ''
   };
@@ -111,6 +112,7 @@ export struct VirtualKeyboardSettingsSheet {
     this.simpleKeyboardEnabled = values.simpleKeyboardEnabled;
     this.functionKeysVisible = values.functionKeysVisible;
     this.closeAfterShortcut = values.closePanelAfterShortcut;
+    this.autoOpenOnRemoteClick = values.autoOpenOnRemoteClick;
     this.customShortcuts = this.service.loadCustomShortcuts(context);
     this.harmonyShortcutBlocking = this.service.loadHarmonyShortcutBlocking(context);
     this.selectedHarmonyShortcutDevice = harmonyShortcutDeviceClass(
@@ -155,7 +157,8 @@ export struct VirtualKeyboardSettingsSheet {
       shortcutPlatform: this.platform(),
       simpleKeyboardEnabled: this.simpleKeyboardEnabled,
       functionKeysVisible: this.functionKeysVisible,
-      closePanelAfterShortcut: this.closeAfterShortcut
+      closePanelAfterShortcut: this.closeAfterShortcut,
+      autoOpenOnRemoteClick: this.autoOpenOnRemoteClick
     };
     if (!this.service.savePreferences(values, getContext(this) as common.Context)) {
       promptAction.showToast({ message: '键盘设置保存失败', duration: 2000 });
@@ -872,6 +875,13 @@ export struct VirtualKeyboardSettingsSheet {
       '使用 HarmonyOS API 23 减少软键盘中的非必要扩展区域',
       this.simpleKeyboardEnabled, (enabled: boolean): void => {
         this.simpleKeyboardEnabled = enabled;
+        this.savePreferences();
+      })
+    this.sectionTitle('远端输入框', '在连接中点击远端输入框时自动唤起软键盘。')
+    this.switchRow('点击远端输入框自动弹起键盘',
+      '横屏使用悬浮键盘，竖屏使用正常键盘；仅在虚拟键盘模式下生效',
+      this.autoOpenOnRemoteClick, (enabled: boolean): void => {
+        this.autoOpenOnRemoteClick = enabled;
         this.savePreferences();
       })
     this.sectionTitle('文本发送规则', '这些兼容规则用于避免预编辑文字和远端按键重复。')

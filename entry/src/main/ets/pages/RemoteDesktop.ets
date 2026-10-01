@@ -13,7 +13,7 @@ import {
 /**
  * RemoteDesktop.ets v4 — 全屏远程桌面 + XComponent 生命周期 + 输入转发 + 错误诊断
  */
-import { display, promptAction, router, window } from '@kit.ArkUI';
+import { display, KeyboardAvoidMode, promptAction, router, window } from '@kit.ArkUI';
 import { inputDevice, pointer, KeyCode } from '@kit.InputKit';
 import { common, abilityAccessCtrl, Permissions } from '@kit.AbilityKit';
 import { pasteboard } from '@kit.BasicServicesKit';
@@ -194,6 +194,7 @@ import {
 import {
   normalizeRemoteShortcutPlatform,
   remoteShortcutTransportKeyCode,
+  REMOTE_KEYBOARD_AUTO_OPEN_ON_REMOTE_CLICK_KEY,
   REMOTE_KEYBOARD_SHORTCUT_PLATFORM_KEY
 } from '../services/RemoteKeyboardSettingsPolicy';
 import {
@@ -772,7 +773,11 @@ import {
 import { RemotePortraitDisplayStore } from '../services/RemotePortraitDisplayStore';
 import {
   remotePortraitSidebarPlacement,
-  RemotePortraitSidebarPlacement
+  RemotePortraitSidebarPlacement,
+  REMOTE_PORTRAIT_SIDEBAR_HEIGHT_MODE_KEY,
+  RemotePortraitSidebarHeightMode,
+  remotePortraitSidebarHeightPx,
+  normalizeRemotePortraitSidebarHeightMode
 } from '../services/RemotePortraitSidebarPolicy';
 import {
   accumulateVncPhysicalTouchpadWheel,
@@ -1193,8 +1198,12 @@ struct RemoteDesktop {
   moonlightPortraitDisplayEnabled: boolean = false;
   @StorageLink(MOONLIGHT_PORTRAIT_DISPLAY_MODE_KEY)
   moonlightPortraitDisplayMode: string = 'default';
+  @StorageLink(REMOTE_PORTRAIT_SIDEBAR_HEIGHT_MODE_KEY)
+  remotePortraitSidebarHeightMode: RemotePortraitSidebarHeightMode = 'auto';
   @StorageLink(REMOTE_PORTRAIT_DISPLAY_REVISION_KEY) @Watch('onRemotePortraitDisplayPreferenceChange')
   remotePortraitDisplayRevision: number = 0;
+  @StorageProp(REMOTE_KEYBOARD_AUTO_OPEN_ON_REMOTE_CLICK_KEY)
+  autoOpenKeyboardOnRemoteClick: boolean = false;
   @StorageLink('rustdeskShowLocalCursor') @Watch('onRustDeskLocalCursorChanged') rustdeskShowLocalCursor: boolean = true;
   @StorageLink('rustdeskBrowseMode') @Watch('onHarmonyShortcutInputOwnerChange')
   rustdeskBrowseMode: boolean = false;
@@ -1852,6 +1861,9 @@ struct RemoteDesktop {
   private remoteInputFocusTimer: number = -1;
   private remoteInputFocusAcknowledgementTimer: number = -1;
   private remoteKeyboardFocusLossTimer: number = -1;
+  private remoteKeyboardAutoOpenTimer: number = -1;
+  private keyboardAvoidModeBeforeRemoteOpen: KeyboardAvoidMode | null = null;
+  private keyboardAvoidModeOverrideApplied: boolean = false;
   private remoteInputFocusTarget: string = '';
   private remoteInputFocusRequestPending: boolean = false;
   private remotePointerFocusRecoveryArmed: boolean = false;
@@ -2325,16 +2337,20 @@ struct RemoteDesktop {
     if (collapsed && !this.vncToolbarCollapsed) {
       this.vncToolbarCollapsed = true;
     }
+    const portraitActive: boolean = this.remotePortraitDisplayActiveForCurrentProtocol();
+    const portraitEnabled: boolean = this.remotePortraitDisplayEnabledForCurrentProtocol();
+    const naturalRailHeight: number = vncToolbarRailHeight(
+      deviceClass, this.isVncViewOnlySession(), collapsed, availableHeight,
+      this.vncDisplayCapabilities.monitorCount, portraitEnabled);
+    const railHeight: number = portraitActive ? this.remotePortraitSidebarHeight(
+      availableHeight, naturalRailHeight) : naturalRailHeight;
     const request: OverlayPlacementRequest = {
       ownerId: 'vnc-toolbar',
       preferredSide: this.vncToolbarPreferredSide,
       yRatio: this.vncToolbarPreferredYRatio,
       handleSize: vncToolbarRailWidth(deviceClass, true),
       railWidth: vncToolbarRailWidth(deviceClass, collapsed),
-      railHeight: vncToolbarRailHeight(
-        deviceClass, this.isVncViewOnlySession(), collapsed, availableHeight,
-        this.vncDisplayCapabilities.monitorCount,
-        this.remotePortraitDisplayEnabledForCurrentProtocol()),
+      railHeight,
       menuWidth: 0,
       menuHeight: 0,
       // VNC actions are rendered by the rail itself; there is no secondary
@@ -2353,10 +2369,12 @@ struct RemoteDesktop {
         yRatio: this.vncToolbarPreferredYRatio,
         handleSize: vncToolbarRailWidth(deviceClass, true),
         railWidth: vncToolbarRailWidth(deviceClass, true),
-        railHeight: vncToolbarRailHeight(
-          deviceClass, this.isVncViewOnlySession(), true, availableHeight,
-          this.vncDisplayCapabilities.monitorCount,
-          this.remotePortraitDisplayEnabledForCurrentProtocol()),
+        railHeight: portraitActive ? this.remotePortraitSidebarHeight(
+          availableHeight,
+          vncToolbarRailHeight(deviceClass, this.isVncViewOnlySession(), true,
+            availableHeight, this.vncDisplayCapabilities.monitorCount, portraitEnabled)) :
+          vncToolbarRailHeight(deviceClass, this.isVncViewOnlySession(), true,
+            availableHeight, this.vncDisplayCapabilities.monitorCount, portraitEnabled),
         menuWidth: 0,
         menuHeight: 0,
         expanded: false
@@ -4394,6 +4412,16 @@ struct RemoteDesktop {
       this.currentProtocolName(), this.isDesktopDevice, this.isPadDevice);
   }
 
+  private remotePortraitSidebarHeight(availableHeight: number,
+    naturalHeight: number = availableHeight): number {
+    if (!this.remotePortraitDisplayActiveForCurrentProtocol()) {
+      return availableHeight;
+    }
+    return remotePortraitSidebarHeightPx(
+      normalizeRemotePortraitSidebarHeightMode(this.remotePortraitSidebarHeightMode),
+      availableHeight, naturalHeight);
+  }
+
   private saveRemotePortraitDisplayPreferenceUpdate(
     update: RemotePortraitDisplayPreferenceUpdate): boolean {
     const context = this.getUIContext().getHostContext();
@@ -4427,9 +4455,15 @@ struct RemoteDesktop {
     this.releaseCanvasPinchInput('portrait-display-preference-change');
     this.canvasViewportSnapshot = null;
     this.canvasViewportSnapshotHandle = 0;
+    if (this.isVncSession()) {
+      this.recomputeVncToolbarPlacement('portrait-display-preference');
+    }
     if (this.connected && this.sessionId > 0) {
       this.resetCanvasToDisplayDefault(true);
       void this.applyCurrentProtocolOrientationPolicy('PORTRAIT-DISPLAY-PREFERENCE');
+    }
+    if (this.keyboardOpen || this.keyboardImeActive) {
+      this.applyRemoteKeyboardAvoidMode();
     }
   }
 
@@ -5797,7 +5831,8 @@ struct RemoteDesktop {
     } else if (this.kbHeight > 0) {
       bottom = Math.min(bottom, Math.max(top, height - this.kbHeight));
     }
-    return Math.max(0, bottom - top);
+    const available: number = Math.max(0, bottom - top);
+    return this.remotePortraitSidebarHeight(available, available);
   }
 
   private rdpToolbarTopInset(): number {
@@ -16327,6 +16362,8 @@ struct RemoteDesktop {
     }
     this.clearRemoteInputFocusSchedule();
     this.clearRemoteInputFocusAcknowledgement();
+    this.clearRemoteKeyboardAutoOpen();
+    this.restoreRemoteKeyboardAvoidMode();
     this.remotePointerFocusRecoveryArmed = false;
     this.remotePointerFocusRecoveryNeeded = false;
     this.hardwareKeyboardProxyActive = false;
@@ -20022,9 +20059,11 @@ struct RemoteDesktop {
     if (this.keyboardOpen || this.keyboardImeActive) {
       return;
     }
+    this.clearRemoteKeyboardAutoOpen();
     this.closeRemoteModifierSurfaces();
     this.hardwareKeyboardProxyActive = false;
     this.keyboardOpen = true;
+    this.applyRemoteKeyboardAvoidMode();
     this.startRemoteImeSession();
     hilog.info(RD_DOMAIN, RD_TAG, 'kbd-open');
     try {
@@ -20037,10 +20076,12 @@ struct RemoteDesktop {
   }
 
   private markKeyboardClosed(source: string): void {
+    this.clearRemoteKeyboardAutoOpen();
     this.keyboardOpen = false;
     this.hardwareKeyboardProxyActive = false;
     this.resetRemoteImeSession('closed-' + source);
     this.keyboardSubmitRefocusPending = false;
+    this.restoreRemoteKeyboardAvoidMode();
     hilog.info(RD_DOMAIN, RD_TAG, 'kbd-close source=' + source);
     if (!this.keepKeyboardAfterSheetClose) {
       this.scheduleRemoteInputFocus('keyboard-close-' + source);
@@ -20059,6 +20100,71 @@ struct RemoteDesktop {
     }
     // 将焦点移到 XComponent 以收起键盘
     this.scheduleRemoteInputFocus('keyboard-dismiss');
+  }
+
+  private clearRemoteKeyboardAutoOpen(): void {
+    if (this.remoteKeyboardAutoOpenTimer >= 0) {
+      clearTimeout(this.remoteKeyboardAutoOpenTimer);
+      this.remoteKeyboardAutoOpenTimer = -1;
+    }
+  }
+
+  private remoteKeyboardAutoOpenEligible(): boolean {
+    const host: RemoteHost | null = this.pendingHost;
+    if (!this.autoOpenKeyboardOnRemoteClick || host === null || !this.connected ||
+      this.sessionId <= 0 || !this.inputForwardReady || this.keyboardOpen ||
+      this.keyboardImeActive || this.shouldUseHardwareKeyboardProxy() ||
+      this.isVncViewOnlySession()) {
+      return false;
+    }
+    return host.protocol === 'rdp' || host.protocol === 'rustdesk' || host.protocol === 'vnc';
+  }
+
+  private scheduleRemoteKeyboardAutoOpen(reason: string): void {
+    if (!this.remoteKeyboardAutoOpenEligible()) { return; }
+    this.clearRemoteKeyboardAutoOpen();
+    const scheduledSessionId: number = this.sessionId;
+    this.remoteKeyboardAutoOpenTimer = setTimeout((): void => {
+      this.remoteKeyboardAutoOpenTimer = -1;
+      if (scheduledSessionId !== this.sessionId || !this.remoteKeyboardAutoOpenEligible()) {
+        return;
+      }
+      hilog.info(RD_DOMAIN, RD_TAG, 'remote-keyboard-auto-open reason=' + reason);
+      this.openKeyboard();
+    }, 120);
+  }
+
+  /**
+   * HarmonyOS exposes page keyboard avoidance rather than a portable IME
+   * floating-position API. NONE keeps a landscape session visible under the
+   * keyboard (floating/overlay presentation); RESIZE keeps the portrait page
+   * above a normal fixed keyboard. Restore the page's prior policy afterwards.
+   */
+  private applyRemoteKeyboardAvoidMode(): void {
+    try {
+      const ui = this.getUIContext();
+      if (!this.keyboardAvoidModeOverrideApplied) {
+        this.keyboardAvoidModeBeforeRemoteOpen = ui.getKeyboardAvoidMode();
+        this.keyboardAvoidModeOverrideApplied = true;
+      }
+      const landscape: boolean = this.surfaceWidth > 0 && this.surfaceHeight > 0 ?
+        this.surfaceWidth >= this.surfaceHeight : !this.remotePortraitDisplayActiveForCurrentProtocol();
+      ui.setKeyboardAvoidMode(landscape ? KeyboardAvoidMode.NONE : KeyboardAvoidMode.RESIZE);
+    } catch (_error) {
+      // The keyboard itself remains usable when a window does not expose a
+      // mutable UIContext during an independent session handoff.
+    }
+  }
+
+  private restoreRemoteKeyboardAvoidMode(): void {
+    if (!this.keyboardAvoidModeOverrideApplied) { return; }
+    try {
+      if (this.keyboardAvoidModeBeforeRemoteOpen !== null) {
+        this.getUIContext().setKeyboardAvoidMode(this.keyboardAvoidModeBeforeRemoteOpen);
+      }
+    } catch (_error) {}
+    this.keyboardAvoidModeBeforeRemoteOpen = null;
+    this.keyboardAvoidModeOverrideApplied = false;
   }
 
   private startRemoteImeSession(): void {
@@ -20882,6 +20988,7 @@ struct RemoteDesktop {
               this.sendMouseNow(this.remoteCursorX, this.remoteCursorY, 0, true);
               this.sendMouseNow(this.remoteCursorX, this.remoteCursorY, 0, false);
               this.showRemoteCursorIndicator(0, true);
+              this.scheduleRemoteKeyboardAutoOpen('touchpad-left-click');
               hilog.info(RD_DOMAIN, RD_TAG,
                 'tap left-click remote=' + this.remoteCursorX.toString() + ',' +
                 this.remoteCursorY.toString());
@@ -21117,6 +21224,10 @@ struct RemoteDesktop {
               this.flushMouseMove();
             }
             this.sendMouseNow(mapped.x, mapped.y, 0, false);
+          }
+          if (event.type === TouchType.Up && !this.touchMoved &&
+            this.touchMaxFingers === 1) {
+            this.scheduleRemoteKeyboardAutoOpen('direct-touch-left-click');
           }
         }
         this.touchLeftDown = false;
@@ -22346,6 +22457,9 @@ struct RemoteDesktop {
               sendButton, true);
             this.sendMouseNow(this.physicalMousePressX, this.physicalMousePressY,
               sendButton, false);
+            if (sendButton === 0) {
+              this.scheduleRemoteKeyboardAutoOpen('mouse-left-click');
+            }
             hilog.info(RD_DOMAIN, RD_TAG,
               'physical-mouse transaction sent-click-pulse elapsedMs=' +
                 elapsedMs.toString() + ' remote=' +
@@ -22363,7 +22477,8 @@ struct RemoteDesktop {
           }
           return;
         }
-        if (this.pendingMouseMoveValid) {
+        const hadPendingMouseMove: boolean = this.pendingMouseMoveValid;
+        if (hadPendingMouseMove) {
           // This pending coordinate was observed after DOWN, so it represents
           // an actual drag. Preserve its ordering before the reliable UP.
           this.flushMouseMove();
@@ -22375,6 +22490,10 @@ struct RemoteDesktop {
           this.sendMouseNow(mapped.x, mapped.y, sendButton, false);
           this.physicalMouseButtonsDown = remoteMouseButtonsAfterEvent(
             this.physicalMouseButtonsDown, sendButton, false);
+          if (sendButton === 0 && !hadPendingMouseMove &&
+            !this.physicalMouseRemoteDownSent) {
+            this.scheduleRemoteKeyboardAutoOpen('mouse-left-release');
+          }
         }
         this.physicalMouseDownButton = this.physicalMouseButtonsDown.length > 0 ?
           this.physicalMouseButtonsDown[this.physicalMouseButtonsDown.length - 1] : -1;
@@ -23007,6 +23126,7 @@ struct RemoteDesktop {
           phoneAdaptiveOrientation: this.phoneAdaptiveOrientation,
           portraitDisplayEnabled: this.remotePortraitDisplayEnabledForCurrentProtocol(),
           portraitDisplayActive: this.remotePortraitDisplayActiveForCurrentProtocol(),
+          portraitSidebarHeightMode: this.remotePortraitSidebarHeightMode,
           rustDeskDesktopFlipMode: this.rustDeskDesktopFlipMode,
           keyboardOpen: this.keyboardOpen || this.keyboardImeActive,
           shortcutsOpen: this.modifierPanelVisible || this.shortcutPanelVisible ||

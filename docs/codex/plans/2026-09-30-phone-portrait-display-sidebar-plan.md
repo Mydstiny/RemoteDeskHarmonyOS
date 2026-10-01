@@ -377,7 +377,7 @@ Pad/PC 只需证明新入口不改变既有方向和 PC flip；不能把 Pad/PC 
 - 设备验收只使用实际安装并确认来源的 HAP；编译成功、监听器、模拟器或已有日志不能代替真实手机证据。
 - 本功能未涉及 native/依赖/签名时，不增加 ABI、供应链或 release 级门禁；若实现期跨入这些范围，按 AGENTS.md 补充 clean clone、双 ABI 和发布证据。
 
-本轮只是新增 Markdown 计划文件，不提交应用实现，不声称任何手机、网络、支付或生产验收已通过。实现前仍需等当前 Pro 活动任务完成或由项目维护流程明确交接，遵守“一次只保留一个日常 codex 分支”。
+本计划已进入实现增量；不声称任何手机、网络、支付或生产验收已通过。实现和提交继续沿用当前 Pro 活动任务分支，遵守“一次只保留一个日常 codex 分支”。
 
 ## 12. 风险、决策点和停止条件
 
@@ -417,3 +417,28 @@ Pad/PC 只需证明新入口不改变既有方向和 PC flip；不能把 Pad/PC 
 
 - 尚未在真实手机上安装本轮 HAP，未取得四协议的实际方向、画面比例、触控坐标、侧栏拖动/安全区和重连/PIP 证据；不能把编译或 HAP 打包当作手机验收。
 - 当前分支仍有并发 Pro 任务和未提交改动；提交、独立复核、PR、required check 和 merge 需按现有活动任务流程继续执行。
+
+## 15. 后续增量：可调竖屏侧栏和点击唤起软键盘（2026-10-01）
+
+实现提交：本次功能已独立提交，最终提交哈希以当前分支 `git log -1` 为准。
+
+### 15.1 已实现的交互
+
+- `RemotePortraitSidebarPolicy` 新增 `auto/compact/standard/tall` 四档高度模式。设置页在四协议选择卡片下方显示“竖屏侧栏高度”，模式保存在设备本地 Preferences，并通过 `remotePortraitDisplayRevision` 发布给活动会话。
+- RDP、RustDesk、VNC、Moonlight 的手机竖屏侧栏消费同一高度策略：自动保持内容所需高度，紧凑/标准/高分别限制为安全区域的 45%/65%/85%，始终保留至少 68vp 或当前可用高度。键盘、系统栏、safe-area 和窗口 resize 仍由现有 placement 计算处理。
+- HostListPage 摘要显示当前侧栏高度，设置保存与取消不改变旧草稿；高度键列入设备本地设置名单，不进入云同步。侧栏 action 和设置页继续共享协议 enabled/mode/revision。
+- “键盘 → 输入行为”新增“点击远端输入框自动弹起键盘”开关，默认关闭。RDP、RustDesk、VNC、Moonlight 在单指/左键点击完成后延迟唤起虚拟键盘；拖动、多指、右键、view-only 和实体键盘代理路径不会唤起。该实现使用远端单击作为输入框候选，因为通用协议没有可依赖的控件语义回调。
+- 横屏唤起时临时使用 `KeyboardAvoidMode.NONE`，让软键盘覆盖页面形成悬浮式显示；竖屏使用 `KeyboardAvoidMode.RESIZE`，让页面按正常键盘避让。键盘关闭、断开、后台和窗口切换时恢复原页面避让模式。
+
+### 15.2 本轮验证
+
+- `default@OhosTestCompileArkTS`：通过，exit 0，2026-10-01；编译包含键盘、Moonlight、RemoteDesktop、HostListPage 和策略测试 wiring。
+- `assembleHap`：通过，exit 0，2026-10-01；签名产物为 `entry/build/default/outputs/default/entry-default-signed.hap`，SHA-256 `d281f219a9a29a65b5c472a0ebe07575dee0f58b0e19e86fdf33766840a43bc2`。
+- `git diff --check`：通过。
+- `scripts/verify_open_source_release.ps1 -Mode Light`：通过。
+- 新增侧栏高度边界断言和键盘开关默认值/归一化断言，已注册在既有 ArkTS test list；独立 ohosTest 任务仍未注册，沿用 `00306054 task not found` 边界，不记为通过。
+
+### 15.3 仍需设备验收
+
+- 尚未在真实手机上安装匹配本轮 HAP，因此未证明横屏悬浮式/竖屏正常键盘的系统 IME 实际外观、输入框焦点命中、侧栏高度触控可达性、四协议方向切换、重连和 PIP 行为。
+- “远端点击输入框”当前采用单击候选策略；若某协议能提供稳定的远端文本光标/控件焦点事件，应在设备验收后将候选条件收紧为该协议证据，不能把当前 host-side build 证据写成控件级命中通过。

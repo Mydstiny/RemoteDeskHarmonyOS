@@ -45,6 +45,11 @@ import {
   remoteSessionSidebarMenuWidth,
   remoteSessionSidebarVisibleRailHeight
 } from '../services/RemoteSessionSidebarLayoutPolicy';
+import {
+  RemotePortraitSidebarHeightMode,
+  remotePortraitSidebarHeightPx,
+  normalizeRemotePortraitSidebarHeightMode
+} from '../services/RemotePortraitSidebarPolicy';
 
 const EMPTY_RUSTDESK_DISPLAY_CAPABILITIES: RustDeskDisplayCapabilities = {
   supported: false,
@@ -151,6 +156,7 @@ export struct RemoteSessionTopBar {
   @Prop touchpadSpeed: number = 1.0;
   @Prop portraitDisplayEnabled: boolean = false;
   @Prop portraitDisplayActive: boolean = false;
+  @Prop portraitSidebarHeightMode: RemotePortraitSidebarHeightMode = 'auto';
   @Prop @Watch('onRustDeskPhoneTargetChange') rustDeskPhoneTarget: boolean = false;
   @Prop rustDeskDesktopFlipMode: RustDeskDesktopFlipMode = 'reset';
   @Prop @Watch('onKeyboardSurfaceChange') keyboardOpen: boolean = false;
@@ -433,7 +439,11 @@ export struct RemoteSessionTopBar {
   }
 
   private edgeRailCanvasHeight(): number {
-    return remoteSessionSidebarCanvasHeight(this.viewportHeight);
+    const available: number = remoteSessionSidebarCanvasHeight(this.viewportHeight);
+    if (!this.portraitDisplayActive) { return available; }
+    return remotePortraitSidebarHeightPx(
+      normalizeRemotePortraitSidebarHeightMode(this.portraitSidebarHeightMode),
+      available, this.edgeRailHeight());
   }
 
   private edgeRailVisibleHeight(): number {

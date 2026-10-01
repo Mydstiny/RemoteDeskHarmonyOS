@@ -5,7 +5,7 @@ import {
   recordDiagnosticWindowObservation
 } from '../services/DiagnosticCaptureRuntime';
 import { DiagnosticWindowOrientation } from '../services/DiagnosticCapturePolicy';
-import { display, promptAction, router, window } from '@kit.ArkUI';
+import { display, KeyboardAvoidMode, promptAction, router, window } from '@kit.ArkUI';
 import { common } from '@kit.AbilityKit';
 import { preferences } from '@kit.ArkData';
 import { wifiManager } from '@kit.ConnectivityKit';
@@ -123,6 +123,8 @@ import { applyRemoteWheelDirection, moonlightAxisScrollAmount } from '../service
 import { MOONLIGHT_REVERSE_WHEEL_KEY } from '../services/RemoteWheelPreferencePolicy';
 import { MOONLIGHT_PINCH_ZOOM_ENABLED_KEY } from
   '../services/RemotePinchZoomPreferencePolicy';
+import { REMOTE_KEYBOARD_AUTO_OPEN_ON_REMOTE_CLICK_KEY } from
+  '../services/RemoteKeyboardSettingsPolicy';
 import {
   MOONLIGHT_PORTRAIT_DISPLAY_ENABLED_KEY,
   MOONLIGHT_PORTRAIT_DISPLAY_MODE_KEY,
@@ -133,6 +135,12 @@ import {
   remotePortraitDisplayActionVisible
 } from '../services/RemotePortraitDisplayPreferencePolicy';
 import { RemotePortraitDisplayStore } from '../services/RemotePortraitDisplayStore';
+import {
+  REMOTE_PORTRAIT_SIDEBAR_HEIGHT_MODE_KEY,
+  RemotePortraitSidebarHeightMode,
+  remotePortraitSidebarHeightPx,
+  normalizeRemotePortraitSidebarHeightMode
+} from '../services/RemotePortraitSidebarPolicy';
 import {
   baseCanvasTransform,
   canvasTransformCanPan,
@@ -391,6 +399,10 @@ struct MoonlightStreamPage {
   moonlightPortraitDisplayEnabled: boolean = false;
   @StorageLink(MOONLIGHT_PORTRAIT_DISPLAY_MODE_KEY)
   moonlightPortraitDisplayMode: string = 'default';
+  @StorageLink(REMOTE_PORTRAIT_SIDEBAR_HEIGHT_MODE_KEY)
+  remotePortraitSidebarHeightMode: RemotePortraitSidebarHeightMode = 'auto';
+  @StorageProp(REMOTE_KEYBOARD_AUTO_OPEN_ON_REMOTE_CLICK_KEY)
+  autoOpenKeyboardOnRemoteClick: boolean = false;
   @StorageLink(REMOTE_PORTRAIT_DISPLAY_REVISION_KEY) @Watch('onMoonlightPortraitDisplayPreferenceChange')
   moonlightPortraitDisplayRevision: number = 0;
   @StorageLink(REMOTE_SESSION_CONTROL_BAR_HIDDEN_MOONLIGHT_KEY)
@@ -511,6 +523,9 @@ struct MoonlightStreamPage {
   private keyboardSelectionAckTimer: number = -1;
   private keyboardCommandPumpTimer: number = -1;
   private virtualKeyboardFocusTimer: number = -1;
+  private keyboardAutoOpenTimer: number = -1;
+  private keyboardAvoidModeBeforeRemoteOpen: KeyboardAvoidMode | null = null;
+  private keyboardAvoidModeOverrideApplied: boolean = false;
   private physicalKeyboardFocusTimer: number = -1;
   private physicalKeyboardProxyFocused: boolean = false;
   private customShortcutSequence: number = 0;
@@ -1121,6 +1136,14 @@ struct MoonlightStreamPage {
       'moonlight', this.isDesktopDevice, this.isPadDevice);
   }
 
+  private moonlightToolbarAvailableHeight(): number {
+    const available: number = this.surfaceHeightVp;
+    if (!this.moonlightPortraitDisplayActive()) { return available; }
+    return remotePortraitSidebarHeightPx(
+      normalizeRemotePortraitSidebarHeightMode(this.remotePortraitSidebarHeightMode),
+      available, available);
+  }
+
   private toggleMoonlightPortraitDisplay(): void {
     if (!this.moonlightPortraitDisplayActionVisible()) { return; }
     const context = this.getUIContext().getHostContext();
@@ -1145,6 +1168,9 @@ struct MoonlightStreamPage {
     if (this.rendererHandle > 0) {
       this.bindMoonlightCanvasTransform(this.rendererSurfaceWidthPx,
         this.rendererSurfaceHeightPx, false);
+    }
+    if (this.keyboardOpen || this.keyboardImeActive) {
+      this.applyMoonlightKeyboardAvoidMode();
     }
     void this.applyMoonlightPortraitOrientationPolicy('preference-change');
   }
@@ -1308,6 +1334,8 @@ struct MoonlightStreamPage {
     this.sessionGeneration = 0;
     this.sessionStartedAtMs = 0;
     this.clearElapsedTimer();
+    this.clearMoonlightKeyboardAutoOpen();
+    this.restoreMoonlightKeyboardAvoidMode();
     this.keyboardOpen = false;
     this.showModifierPanel = false;
     this.showShortcutPanel = false;
@@ -2242,6 +2270,8 @@ struct MoonlightStreamPage {
     this.setSurfaceRecovering(false);
     this.surfaceSuspended = false;
     this.flushInput(reason);
+    this.clearMoonlightKeyboardAutoOpen();
+    this.restoreMoonlightKeyboardAvoidMode();
     this.keyboardOpen = false;
     this.showModifierPanel = false;
     this.showShortcutPanel = false;
@@ -2676,6 +2706,8 @@ struct MoonlightStreamPage {
     this.pipRestoreAttempt = 0;
     this.foregroundRestoreInProgress = false;
     this.flushInput('ability-background');
+    this.clearMoonlightKeyboardAutoOpen();
+    this.restoreMoonlightKeyboardAvoidMode();
     this.keyboardOpen = false;
     this.resetMoonlightImeSession('background');
     this.setNativeInputSuspended(true, 'backgrounded');
@@ -3602,9 +3634,11 @@ struct MoonlightStreamPage {
       return;
     }
     this.closeMoonlightModifierSurfaces('open-keyboard');
+    this.clearMoonlightKeyboardAutoOpen();
     this.flushInput('open-keyboard');
     this.clearMoonlightPhysicalKeyboardFocusSchedule();
     this.keyboardOpen = true;
+    this.applyMoonlightKeyboardAvoidMode();
     this.restoreMoonlightSystemPointer('virtual-keyboard-open');
     this.startMoonlightImeSession();
     this.scheduleMoonlightVirtualKeyboardFocus('keyboard-open');
@@ -3612,8 +3646,10 @@ struct MoonlightStreamPage {
 
   private dismissMoonlightKeyboard(): void {
     if (!this.keyboardOpen && !this.keyboardImeActive) { return; }
+    this.clearMoonlightKeyboardAutoOpen();
     this.clearMoonlightVirtualKeyboardFocusSchedule();
     this.keyboardOpen = false;
+    this.restoreMoonlightKeyboardAvoidMode();
     this.flushInput('close-keyboard');
     this.resetMoonlightImeSession('dismiss');
     try {
@@ -3804,6 +3840,60 @@ struct MoonlightStreamPage {
     }
   }
 
+  private clearMoonlightKeyboardAutoOpen(): void {
+    if (this.keyboardAutoOpenTimer >= 0) {
+      clearTimeout(this.keyboardAutoOpenTimer);
+      this.keyboardAutoOpenTimer = -1;
+    }
+  }
+
+  private moonlightKeyboardAutoOpenEligible(): boolean {
+    return this.autoOpenKeyboardOnRemoteClick && this.pageActive && !this.appInBackground &&
+      !this.routeTerminated && !this.inputSuspended && this.inputReady &&
+      this.nativeSessionId > 0 && !this.keyboardOpen && !this.keyboardImeActive &&
+      !this.moonlightPhysicalKeyboardCaptureEnabled() &&
+      this.resolvedMoonlightControlMode() === 'trackpad';
+  }
+
+  private scheduleMoonlightKeyboardAutoOpen(reason: string): void {
+    if (!this.moonlightKeyboardAutoOpenEligible()) { return; }
+    this.clearMoonlightKeyboardAutoOpen();
+    const generation: number = this.sessionGeneration;
+    this.keyboardAutoOpenTimer = setTimeout((): void => {
+      this.keyboardAutoOpenTimer = -1;
+      if (generation !== this.sessionGeneration || !this.moonlightKeyboardAutoOpenEligible()) {
+        return;
+      }
+      hilog.info(0x0014, 'MoonlightStreamUi',
+        'remote-keyboard-auto-open reason=' + reason);
+      this.openMoonlightKeyboard();
+    }, 120);
+  }
+
+  private applyMoonlightKeyboardAvoidMode(): void {
+    try {
+      const ui = this.getUIContext();
+      if (!this.keyboardAvoidModeOverrideApplied) {
+        this.keyboardAvoidModeBeforeRemoteOpen = ui.getKeyboardAvoidMode();
+        this.keyboardAvoidModeOverrideApplied = true;
+      }
+      const landscape: boolean = this.surfaceWidthVp > 0 && this.surfaceHeightVp > 0 ?
+        this.surfaceWidthVp >= this.surfaceHeightVp : !this.moonlightPortraitDisplayActive();
+      ui.setKeyboardAvoidMode(landscape ? KeyboardAvoidMode.NONE : KeyboardAvoidMode.RESIZE);
+    } catch (_error) {}
+  }
+
+  private restoreMoonlightKeyboardAvoidMode(): void {
+    if (!this.keyboardAvoidModeOverrideApplied) { return; }
+    try {
+      if (this.keyboardAvoidModeBeforeRemoteOpen !== null) {
+        this.getUIContext().setKeyboardAvoidMode(this.keyboardAvoidModeBeforeRemoteOpen);
+      }
+    } catch (_error) {}
+    this.keyboardAvoidModeBeforeRemoteOpen = null;
+    this.keyboardAvoidModeOverrideApplied = false;
+  }
+
   private scheduleMoonlightImeCommandPump(delayMs: number = 0): void {
     if (this.keyboardCommandPumpTimer >= 0 || this.keyboardCommandQueue.size() === 0) { return; }
     this.keyboardCommandPumpTimer = setTimeout((): void => {
@@ -3845,6 +3935,8 @@ struct MoonlightStreamPage {
     }
     if (!accepted) {
       this.resetMoonlightImeSession('dispatch-failed');
+      this.clearMoonlightKeyboardAutoOpen();
+      this.restoreMoonlightKeyboardAvoidMode();
       this.keyboardOpen = false;
       return;
     }
@@ -4738,7 +4830,8 @@ struct MoonlightStreamPage {
     if (this.trackpadDragActive) {
       this.sendTrackpadButton(1, false);
     } else if (tap && this.trackpadPeakContactCount === 1) {
-      this.clickTrackpadButton(1);
+      const clicked: boolean = this.clickTrackpadButton(1);
+      if (clicked) { this.scheduleMoonlightKeyboardAutoOpen('touchpad-left-click'); }
     } else if (tap && this.trackpadPeakContactCount === 2 &&
       shouldPreserveCanvasTwoFingerRightClick(this.moonlightTwoFingerState)) {
       this.clickTrackpadButton(3);
@@ -5294,6 +5387,9 @@ struct MoonlightStreamPage {
       if (event.action === MouseAction.Release) {
         this.physicalKeyboardProxyFocused = false;
         this.scheduleMoonlightPhysicalKeyboardFocus('physical-mouse-release');
+        if (button === 1 && accepted) {
+          this.scheduleMoonlightKeyboardAutoOpen('mouse-left-click');
+        }
       }
     }
   }
@@ -6275,7 +6371,7 @@ struct MoonlightStreamPage {
             qualityColor: this.firstFrameSeen ? '#66DD7A' : '#FFCF70',
             qualityLabel: this.firstFrameSeen ? '串流中' : '连接中',
             viewportWidth: this.surfaceWidthVp,
-            availableHeight: this.surfaceHeightVp,
+            availableHeight: this.moonlightToolbarAvailableHeight(),
             onAction: (action: MoonlightToolbarAction): void => {
               this.toolbarAction(action);
             },
@@ -6313,7 +6409,7 @@ struct MoonlightStreamPage {
             qualityColor: this.firstFrameSeen ? '#66DD7A' : '#FFCF70',
             qualityLabel: this.firstFrameSeen ? '串流中' : '连接中',
             viewportWidth: this.surfaceWidthVp,
-            availableHeight: this.surfaceHeightVp,
+            availableHeight: this.moonlightToolbarAvailableHeight(),
             onAction: (action: MoonlightToolbarAction): void => {
               this.toolbarAction(action);
             },
@@ -6468,7 +6564,9 @@ struct MoonlightStreamPage {
           if (editing) { this.keyboardImeEditingObserved = true; return; }
           if (this.keyboardOpen && this.keyboardImeEditingObserved &&
               !this.keyboardProgrammaticSelection) {
+            this.clearMoonlightKeyboardAutoOpen();
             this.keyboardOpen = false;
+            this.restoreMoonlightKeyboardAvoidMode();
             this.flushInput('ime-dismissed');
             this.resetMoonlightImeSession('ime-dismissed');
           }

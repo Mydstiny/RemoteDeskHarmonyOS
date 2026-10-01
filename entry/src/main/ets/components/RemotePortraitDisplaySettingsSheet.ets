@@ -10,6 +10,12 @@ import {
   RemotePortraitProtocol,
   RemotePortraitDisplayMode
 } from '../services/RemotePortraitDisplayPreferencePolicy';
+import {
+  RemotePortraitSidebarHeightMode,
+  remotePortraitSidebarHeightLabel,
+  remotePortraitSidebarHeightModes,
+  normalizeRemotePortraitSidebarHeightMode
+} from '../services/RemotePortraitSidebarPolicy';
 
 @Component
 export struct RemotePortraitDisplaySettingsSheet {
@@ -17,17 +23,23 @@ export struct RemotePortraitDisplaySettingsSheet {
   @StorageProp('accentColor') accentColor: string = '#007DFF';
   @Prop initialPreferences: RemotePortraitDisplayPreferences =
     defaultRemotePortraitDisplayPreferences();
+  @Prop initialSidebarHeightMode: RemotePortraitSidebarHeightMode = 'auto';
   onClose: () => void = (): void => {};
-  onSave: (update: RemotePortraitDisplayPreferenceUpdate) => boolean =
-    (_update: RemotePortraitDisplayPreferenceUpdate): boolean => false;
+  onSave: (update: RemotePortraitDisplayPreferenceUpdate,
+    heightMode: RemotePortraitSidebarHeightMode) => boolean =
+    (_update: RemotePortraitDisplayPreferenceUpdate,
+      _heightMode: RemotePortraitSidebarHeightMode): boolean => false;
 
   @State draft: RemotePortraitDisplayPreferences =
     defaultRemotePortraitDisplayPreferences();
+  @State private draftSidebarHeightMode: RemotePortraitSidebarHeightMode = 'auto';
   private touchedEnabled: Record<string, boolean> = {};
   private touchedMode: Record<string, boolean> = {};
 
   aboutToAppear(): void {
     this.draft = JSON.parse(JSON.stringify(this.initialPreferences)) as RemotePortraitDisplayPreferences;
+    this.draftSidebarHeightMode = normalizeRemotePortraitSidebarHeightMode(
+      this.initialSidebarHeightMode);
     this.touchedEnabled = {};
     this.touchedMode = {};
   }
@@ -76,11 +88,24 @@ export struct RemotePortraitDisplaySettingsSheet {
   }
 
   private save(): void {
-    if (!this.onSave(this.update())) {
+    if (!this.onSave(this.update(), this.draftSidebarHeightMode)) {
       promptAction.showToast({ message: '竖屏显示设置保存失败，请重试', duration: 2200 });
       return;
     }
     this.onClose();
+  }
+
+  private setSidebarHeightMode(mode: RemotePortraitSidebarHeightMode): void {
+    this.draftSidebarHeightMode = normalizeRemotePortraitSidebarHeightMode(mode);
+  }
+
+  @Builder private sidebarHeightButton(mode: RemotePortraitSidebarHeightMode) {
+    Button(remotePortraitSidebarHeightLabel(mode)).height(32).fontSize(11)
+      .padding({ left: 14, right: 14 })
+      .backgroundColor(this.draftSidebarHeightMode === mode ? this.accentColor : this.pal().surface)
+      .fontColor(this.draftSidebarHeightMode === mode ? Color.White : this.pal().text2)
+      .borderRadius(8)
+      .onClick((): void => { this.setSidebarHeightMode(mode); });
   }
 
   @Builder private header() {
@@ -160,6 +185,21 @@ export struct RemotePortraitDisplaySettingsSheet {
             this.divider()
             this.protocolRow('moonlight', 'Moonlight', '串流画面竖屏 fit 与侧栏翻转', protocolIcon('moonlight'))
           }.width('100%').borderRadius(14).backgroundColor(this.pal().card)
+            .border({ width: 0.5, color: this.pal().cardBorder })
+          Column() {
+            Text('竖屏侧栏高度').fontSize(13).fontWeight(FontWeight.Medium)
+              .fontColor(this.pal().text).fontFamily(AppTheme.fontFamily)
+            Text('仅在竖屏显示启用时生效；自动保持内容所需高度，其他选项限制侧栏占用的安全区域。')
+              .fontSize(11).fontColor(this.pal().text3).fontFamily(AppTheme.fontFamily)
+              .lineHeight(16).margin({ top: 4, bottom: 8 })
+            Row({ space: 7 }) {
+              this.sidebarHeightButton(remotePortraitSidebarHeightModes()[0])
+              this.sidebarHeightButton(remotePortraitSidebarHeightModes()[1])
+              this.sidebarHeightButton(remotePortraitSidebarHeightModes()[2])
+              this.sidebarHeightButton(remotePortraitSidebarHeightModes()[3])
+            }.width('100%')
+          }.width('100%').padding(14).margin({ top: 14 })
+            .borderRadius(14).backgroundColor(this.pal().card)
             .border({ width: 0.5, color: this.pal().cardBorder })
           Text('SSH 使用终端内的“切换横竖屏”，不会出现在这里，也不会新增本侧栏入口。')
             .fontSize(11).fontColor(this.pal().text3).fontFamily(AppTheme.fontFamily)

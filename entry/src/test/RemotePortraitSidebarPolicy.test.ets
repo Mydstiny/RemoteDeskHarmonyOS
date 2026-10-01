@@ -1,6 +1,9 @@
 import { describe, it, expect } from '@ohos/hypium';
 import { defaultRemotePortraitDisplayPreferences } from '../main/ets/services/RemotePortraitDisplayPreferencePolicy';
 import {
+  normalizeRemotePortraitSidebarHeightMode,
+  remotePortraitSidebarHeightLabel,
+  remotePortraitSidebarHeightPx,
   remotePortraitSidebarPlacement,
   remotePortraitSidebarProtocol
 } from '../main/ets/services/RemotePortraitSidebarPolicy';
@@ -31,6 +34,15 @@ export default function remotePortraitSidebarPolicyTest(): void {
     it('accepts_only_supported_portrait_protocols', 0, (): void => {
       expect(remotePortraitSidebarProtocol('moonlight')).assertEqual('moonlight');
       expect(remotePortraitSidebarProtocol('ssh')).assertEqual(null);
+    });
+
+    it('bounds_user_selected_sidebar_height_to_the_safe_area', 0, (): void => {
+      expect(normalizeRemotePortraitSidebarHeightMode('bad')).assertEqual('auto');
+      expect(remotePortraitSidebarHeightLabel('standard')).assertEqual('标准');
+      expect(remotePortraitSidebarHeightPx('compact', 800, 500)).assertEqual(360);
+      expect(remotePortraitSidebarHeightPx('tall', 800, 500)).assertEqual(680);
+      expect(remotePortraitSidebarHeightPx('auto', 800, 240)).assertEqual(240);
+      expect(remotePortraitSidebarHeightPx('standard', 40, 500)).assertEqual(40);
     });
   });
 }
