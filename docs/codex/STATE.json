@@ -2043,7 +2043,7 @@
       "RustDesk peer identity/capability snapshot v2 and guarded custom resolution",
       "shared Pro catalog, settings/session UI and entitlement fallback"
     ],
-    "validation": "default@OhosTestCompileArkTS PASS 1m28.996s; parallel assembleHap PASS 5m52.548s; RDP native policy 15/15; Rust host no-default-features 320/320 including peer identity snapshot; Pro entry/runtime PASS; arm64 Rust cross-build, dual ABI native, git diff --check and state validation PASS; ohosTest task unavailable with 00306054; signed HAP SHA-256 d3e0a15eeb18fc1158346e76eefb1abb251db5cd94a6e510bdf75e8af875e40e; installed to emulator 5557, MLR and SGT; SGT launch/UI blocked by locked screen 10106102",
+    "validation": "default@OhosTestCompileArkTS PASS 2m35.306s after display import fix; parallel assembleHap PASS 6.327s; RDP native policy 15/15; Rust host no-default-features 320/320 including peer identity snapshot; Pro entry/runtime PASS; arm64 Rust cross-build, dual ABI native, git diff --check and state validation PASS; ohosTest task unavailable with 00306054; latest signed HAP SHA-256 e410d003cb42bfda09c00a3eb4329126bb49d0a1a7a44b06a1c4cf3b083d6688 installed to emulator 5557; prior d3e0a15e… HAP installed to MLR/SGT before those targets disconnected; SGT prior launch/UI blocked by locked screen 10106102",
     "availability": "RDP/RustDesk features remain experimental and Release-gated",
     "open": [
       "Windows 10/11/Server DPI and Display Control matrix",
