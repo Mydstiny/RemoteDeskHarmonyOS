@@ -10,6 +10,9 @@ import {
   rustDeskCustomResolutionDecision,
   validateRemoteDisplayGeometry
 } from '../main/ets/services/RemoteDisplayProfilePolicy';
+import { PRO_RDP_ADVANCED_DISPLAY_FEATURE, PRO_RUSTDESK_ADVANCED_DISPLAY_FEATURE,
+  proFeatures } from '../main/ets/services/pro/ProFeatureCatalog';
+import { resolveRdpAdaptiveDisplay } from '../main/ets/services/RdpAdaptiveDisplayPolicy';
 
 export default function remoteDisplayProfilePolicyTest(): void {
   describe('RemoteDisplayProfilePolicy', (): void => {
@@ -45,6 +48,17 @@ export default function remoteDisplayProfilePolicyTest(): void {
       const scale = resolveRdpScaleProfile('custom', 175, 'fixed', 140);
       expect(scale.desktopPercent).assertEqual(175);
       expect(scale.devicePercent).assertEqual(140);
+    });
+
+    it('uses_split_rdp_scale_fields_for_the_adaptive_handshake', 0, (): void => {
+      const resolved = resolveRdpAdaptiveDisplay({
+        surfaceWidthPx: 1920, surfaceHeightPx: 1200, densityPixels: 2,
+        densityDpi: 320, uiScalePreference: 'auto', dpiScaleSupported: true,
+        desktopScalePercent: 125, deviceScalePercent: 140
+      });
+      expect(resolved.desktopScaleFactor).assertEqual(125);
+      expect(resolved.deviceScaleFactor).assertEqual(140);
+      expect(resolved.usesDpiScale).assertTrue();
     });
 
     it('migrates_released_rdp_fields_without_creating_a_custom_request', 0, (): void => {
@@ -100,6 +114,18 @@ export default function remoteDisplayProfilePolicyTest(): void {
       });
       expect(windows.allowed).assertTrue();
       expect(x11.allowed).assertTrue();
+    });
+
+    it('registers_both_advanced_display_features_as_experimental_pro_entries', 0, (): void => {
+      const catalog = proFeatures();
+      const rdp = catalog.find((item): boolean => item.id === PRO_RDP_ADVANCED_DISPLAY_FEATURE);
+      const rustDesk = catalog.find((item): boolean => item.id === PRO_RUSTDESK_ADVANCED_DISPLAY_FEATURE);
+      expect(rdp !== undefined).assertTrue();
+      expect(rustDesk !== undefined).assertTrue();
+      expect(rdp?.availability).assertEqual('experimental');
+      expect(rustDesk?.availability).assertEqual('experimental');
+      expect(rdp?.requiredEntitlementId).assertEqual('pro.lifetime');
+      expect(rustDesk?.requiredEntitlementId).assertEqual('pro.lifetime');
     });
   });
 }

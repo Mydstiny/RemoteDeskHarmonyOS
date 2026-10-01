@@ -1,10 +1,10 @@
 # RemoteDesk Queue
 
-Updated: 2026-10-01 Asia/Shanghai
+Updated: 2026-10-02 Asia/Shanghai
 
 ## Now
 
-- RDP/RustDesk 高级显示计划：[2026-10-01 计划](plans/2026-10-01-rdp-rustdesk-pro-display-resolution-scale-plan.md) P0–P4 代码已落盘并通过本地 compile、并行 assemble、RDP 15/15、Rust 319/319、Light/diff/state；Pro feature 保持 experimental。下一步完成 Windows 10/11/Server、RustDesk peer/设备、HarmonyOS UI 与独立 review，确认后再开放 Release。
+- RDP/RustDesk 高级显示计划：[2026-10-01 计划](plans/2026-10-01-rdp-rustdesk-pro-display-resolution-scale-plan.md) P0–P4 代码已落盘；最新 compile、并行 assemble、RDP 15/15、Rust 320/320、Pro entry/runtime、双 ABI、Light/diff/state PASS，签名 HAP 已安装到 emulator 5557、MLR、SGT。`ohosTest` 任务未注册（00306054），真实 Windows/RustDesk peer、完整设备交互与独立 review 仍待完成，Pro feature 继续保持 experimental。
 
 - Pro 工作区与高级主机管理：W0/H1/S1/S2/S3 基础实现已提交准备；继续 H2 分组胶囊/H3 批量操作/H4 导入导出/S3 编辑器/S4 当前会话捕获，并完成设备验收。
 

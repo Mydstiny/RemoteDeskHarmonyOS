@@ -5233,6 +5233,26 @@ mod tests {
     }
 
     #[test]
+    fn display_snapshot_copies_peer_identity_with_utf8_safe_bounds() {
+        let mut client = test_client_with_display_state(RustDeskDisplayState {
+            peer_version: "1.2.4".to_string(),
+            peer_platform: "Windows Desktop".to_string(),
+            ..RustDeskDisplayState::default()
+        });
+        let handle = &mut client as *mut RustDeskClient as *mut c_void;
+        let mut snapshot = RustDeskDisplaySnapshot::default();
+
+        assert!(rustdesk_get_display_snapshot(handle, &mut snapshot, std::ptr::null_mut(), 0));
+        assert_eq!(snapshot.peer_version_len as usize, "1.2.4".len());
+        assert_eq!(snapshot.peer_platform_len as usize, "Windows Desktop".len());
+        assert_eq!(&snapshot.peer_version[..snapshot.peer_version_len as usize], b"1.2.4");
+        assert_eq!(
+            &snapshot.peer_platform[..snapshot.peer_platform_len as usize],
+            b"Windows Desktop"
+        );
+    }
+
+    #[test]
     fn permission_snapshot_exposes_an_explicit_remote_view_only_state() {
         let mut client = test_client_with_display_state(RustDeskDisplayState::default());
         client
