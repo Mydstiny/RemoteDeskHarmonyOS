@@ -3,7 +3,7 @@
   "task": "pro-purchase-foundation",
   "branch": "codex/pro-purchase-foundation",
   "base": "8edc187868e94ed41634e8a6c4c4c072e3a48679",
-  "head": "4f4a9a69",
+  "head": "1a0ba7aa",
   "phase": "Full acceptance active; Pro 诊断与 AI 帮助客户端 checkpoint 已实现，真实 Provider/设备/邮件验收待完成",
   "currentFocus": "Pro 诊断与 AI 帮助：b8a56f21、1e4e4185、b546152f 已实现并通过独立复核；真实 Provider/设备/邮件验收待完成",
   "status": "in-progress",
@@ -20,7 +20,7 @@
     ],
     "status": "implemented-provider-availability-guard-build-pass-review-pending",
     "reviewTaskId": "/root/diagnostic_ai_review",
-    "reviewResult": "initial findings fixed; corrective re-review pending",
+    "reviewResult": "PASS; initial findings fixed and final provider availability guard confirmed",
     "validation": "default@OhosTestCompileArkTS BUILD SUCCESSFUL 1 min 33.355 s; assembleHap BUILD SUCCESSFUL 2 min 22.034 s; Light/diff PASS; Pro entry/runtime/visibility/status Node tests PASS with DevEco Hvigor TypeScript; real Provider/device/mail acceptance not run"
   },
   "next": "完成诊断 AI 独立复核；随后在 Phone/Pad/PC 验证 orb、抓取停止、账号切换、邮件预览，并用真实国内 Provider 验证模型列表/分析；保留 experimental 直到证据齐全。",
