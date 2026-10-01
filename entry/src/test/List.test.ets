@@ -94,6 +94,8 @@ import vncPhysicalWheelPolicyTest from './VncPhysicalWheelPolicy.test';
 import remoteWheelPolicyTest from './RemoteWheelPolicy.test';
 import remoteWheelPreferencePolicyTest from './RemoteWheelPreferencePolicy.test';
 import remotePinchZoomPreferencePolicyTest from './RemotePinchZoomPreferencePolicy.test';
+import remotePortraitDisplayPreferencePolicyTest from './RemotePortraitDisplayPreferencePolicy.test';
+import remotePortraitSidebarPolicyTest from './RemotePortraitSidebarPolicy.test';
 import hostAddSheetLayoutPolicyTest from './HostAddSheetLayoutPolicy.test';
 import cloudSyncCoordinatorPolicyTest from './CloudSyncCoordinatorPolicy.test';
 import localBackupPolicyTest from './LocalBackupPolicy.test';
@@ -366,6 +368,8 @@ export default function testsuite() {
   remoteWheelPolicyTest();
   remoteWheelPreferencePolicyTest();
   remotePinchZoomPreferencePolicyTest();
+  remotePortraitDisplayPreferencePolicyTest();
+  remotePortraitSidebarPolicyTest();
   hostAddSheetLayoutPolicyTest();
   cloudSyncCoordinatorPolicyTest();
   localBackupPolicyTest();

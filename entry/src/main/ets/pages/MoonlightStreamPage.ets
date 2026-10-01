@@ -124,6 +124,16 @@ import { MOONLIGHT_REVERSE_WHEEL_KEY } from '../services/RemoteWheelPreferencePo
 import { MOONLIGHT_PINCH_ZOOM_ENABLED_KEY } from
   '../services/RemotePinchZoomPreferencePolicy';
 import {
+  MOONLIGHT_PORTRAIT_DISPLAY_ENABLED_KEY,
+  MOONLIGHT_PORTRAIT_DISPLAY_MODE_KEY,
+  REMOTE_PORTRAIT_DISPLAY_REVISION_KEY,
+  RemotePortraitDisplayMode,
+  RemotePortraitDisplayPreferences,
+  remotePortraitDisplayActive,
+  remotePortraitDisplayActionVisible
+} from '../services/RemotePortraitDisplayPreferencePolicy';
+import { RemotePortraitDisplayStore } from '../services/RemotePortraitDisplayStore';
+import {
   baseCanvasTransform,
   canvasTransformCanPan,
   canvasTransformDiffersFromBaseline,
@@ -377,6 +387,12 @@ struct MoonlightStreamPage {
   @StorageLink(MOONLIGHT_REVERSE_WHEEL_KEY) moonlightReverseWheel: boolean = false;
   @StorageLink(MOONLIGHT_PINCH_ZOOM_ENABLED_KEY) @Watch('onMoonlightPinchZoomSettingChange')
   moonlightPinchZoomEnabled: boolean = false;
+  @StorageLink(MOONLIGHT_PORTRAIT_DISPLAY_ENABLED_KEY)
+  moonlightPortraitDisplayEnabled: boolean = false;
+  @StorageLink(MOONLIGHT_PORTRAIT_DISPLAY_MODE_KEY)
+  moonlightPortraitDisplayMode: string = 'default';
+  @StorageLink(REMOTE_PORTRAIT_DISPLAY_REVISION_KEY) @Watch('onMoonlightPortraitDisplayPreferenceChange')
+  moonlightPortraitDisplayRevision: number = 0;
   @StorageLink(REMOTE_SESSION_CONTROL_BAR_HIDDEN_MOONLIGHT_KEY)
   @Watch('onMoonlightSessionControlBarVisibilityChanged')
   sessionControlBarHiddenMoonlight: boolean = false;
@@ -1084,6 +1100,66 @@ struct MoonlightStreamPage {
       (this.phase !== 'failed' && this.phase !== 'disconnected'));
   }
 
+  private moonlightPortraitDisplayPreferences(): RemotePortraitDisplayPreferences {
+    const mode: RemotePortraitDisplayMode = this.moonlightPortraitDisplayMode === 'portrait' ?
+      'portrait' : 'default';
+    return {
+      rdp: { enabled: false, mode: 'default' },
+      rustdesk: { enabled: false, mode: 'default' },
+      vnc: { enabled: false, mode: 'default' },
+      moonlight: { enabled: this.moonlightPortraitDisplayEnabled, mode: mode }
+    };
+  }
+
+  private moonlightPortraitDisplayActionVisible(): boolean {
+    return remotePortraitDisplayActionVisible(this.moonlightPortraitDisplayPreferences(),
+      'moonlight', this.isDesktopDevice, this.isPadDevice);
+  }
+
+  private moonlightPortraitDisplayActive(): boolean {
+    return remotePortraitDisplayActive(this.moonlightPortraitDisplayPreferences(),
+      'moonlight', this.isDesktopDevice, this.isPadDevice);
+  }
+
+  private toggleMoonlightPortraitDisplay(): void {
+    if (!this.moonlightPortraitDisplayActionVisible()) { return; }
+    const context = this.getUIContext().getHostContext();
+    if (!context) {
+      promptAction.showToast({ message: '无法读取当前窗口设置，请稍后重试', duration: 1600 });
+      return;
+    }
+    const nextMode: RemotePortraitDisplayMode = this.moonlightPortraitDisplayActive() ?
+      'default' : 'portrait';
+    const saved: boolean = RemotePortraitDisplayStore.getInstance().setProtocolMode(
+      context, 'moonlight', nextMode);
+    if (!saved) {
+      promptAction.showToast({ message: '竖屏显示状态保存失败，请重试', duration: 1800 });
+      return;
+    }
+    promptAction.showToast({ message: nextMode === 'portrait' ? '竖屏显示' : '恢复横屏', duration: 1200 });
+  }
+
+  private onMoonlightPortraitDisplayPreferenceChange(): void {
+    this.cancelActiveMoonlightTouches();
+    this.clearMoonlightPhysicalPointerFollow(true);
+    if (this.rendererHandle > 0) {
+      this.bindMoonlightCanvasTransform(this.rendererSurfaceWidthPx,
+        this.rendererSurfaceHeightPx, false);
+    }
+    void this.applyMoonlightPortraitOrientationPolicy('preference-change');
+  }
+
+  private applyMoonlightPortraitOrientationPolicy(reason: string): void {
+    if (this.isDesktopDevice || this.isPadDevice || this.sessionWindowId.length > 0) {
+      return;
+    }
+    void this.setMoonlightPreferredOrientation(
+      this.moonlightPortraitDisplayActive() ? window.Orientation.PORTRAIT :
+        window.Orientation.LANDSCAPE,
+      this.moonlightPortraitDisplayActive() ? 'MOONLIGHT-PORTRAIT-' + reason :
+        'MOONLIGHT-LANDSCAPE-' + reason);
+  }
+
   private onMoonlightQuickExitDisabledChanged(): void {
     if (!this.remoteSessionQuickExitDisabled) { return; }
     this.sessionControlBarHiddenMoonlight = false;
@@ -1100,6 +1176,8 @@ struct MoonlightStreamPage {
   }
 
   aboutToAppear(): void {
+    RemotePortraitDisplayStore.getInstance().load(getContext(this) as common.Context);
+    this.applyMoonlightPortraitOrientationPolicy('about-to-appear');
     this.restoreMoonlightControlBarVisibilityPreference();
     this.cancelPendingMoonlightDisappearDecision();
     this.refreshMoonlightPipRestorePageId('about-to-appear');
@@ -1309,10 +1387,7 @@ struct MoonlightStreamPage {
     }
     hilog.info(0x0014, 'MoonlightStreamUi', 'aboutToAppear recovery-ready');
     this.recoveryBound = true;
-    if (!this.isDesktopDevice && this.sessionWindowId.length === 0) {
-      void this.setMoonlightPreferredOrientation(
-        window.Orientation.LANDSCAPE, 'MOONLIGHT-LANDSCAPE');
-    }
+    this.applyMoonlightPortraitOrientationPolicy('route-ready');
     this.sessionCoordinator.bindScope(scope.ownerScopeId, scope.generation);
     hilog.info(0x0014, 'MoonlightStreamUi', 'aboutToAppear reserving-session');
     // Reserve the new operation generation before subscribing. A cleanly
@@ -5850,6 +5925,7 @@ struct MoonlightStreamPage {
   private toolbarAction(action: MoonlightToolbarAction): void {
     if (action === 'more') { this.openSheet('control'); return; }
     if (action === 'resetCanvas') { this.resetMoonlightCanvasTransformFromMenu(); return; }
+    if (action === 'portrait') { this.toggleMoonlightPortraitDisplay(); return; }
     if (action === 'disconnect') {
       if (this.terminationBusy) {
         promptAction.showToast({ message: '正在安全退出并释放连接', duration: 1400 });
@@ -6187,6 +6263,8 @@ struct MoonlightStreamPage {
             pipAvailable: this.pipAvailable(),
             keyboardAvailable: this.inputReady,
             controlModeLabel: this.toolbarControlModeLabel(),
+            portraitDisplayEnabled: this.moonlightPortraitDisplayActionVisible(),
+            portraitDisplayActive: this.moonlightPortraitDisplayActive(),
             diagnosticsVisible: this.diagnosticsVisible,
             canvasResetAvailable: this.moonlightCanvasTransformModified,
             terminationBusy: this.terminationBusy,
@@ -6223,6 +6301,8 @@ struct MoonlightStreamPage {
             pipAvailable: this.pipAvailable(),
             keyboardAvailable: this.inputReady,
             controlModeLabel: this.toolbarControlModeLabel(),
+            portraitDisplayEnabled: this.moonlightPortraitDisplayActionVisible(),
+            portraitDisplayActive: this.moonlightPortraitDisplayActive(),
             diagnosticsVisible: this.diagnosticsVisible,
             canvasResetAvailable: this.moonlightCanvasTransformModified,
             terminationBusy: this.terminationBusy,

@@ -100,6 +100,7 @@ export interface RemoteSessionTopBarActions {
   onSetViewScaleMode: (mode: string) => void;
   onResetCanvasTransform: () => void;
   onRotateRemoteDisplay: () => void;
+  onTogglePortraitDisplay: () => void;
   onObserveVideoOrientation: (orientation: number) => void;
   onSetRustDeskDesktopFlipMode: (mode: RustDeskDesktopFlipMode) => void;
   onOpenRustDeskResolution: () => void;
@@ -148,6 +149,8 @@ export struct RemoteSessionTopBar {
   @Prop wheelDirectionFollowsKeyboard: boolean = true;
   @Prop swapMouseButtons: boolean = false;
   @Prop touchpadSpeed: number = 1.0;
+  @Prop portraitDisplayEnabled: boolean = false;
+  @Prop portraitDisplayActive: boolean = false;
   @Prop @Watch('onRustDeskPhoneTargetChange') rustDeskPhoneTarget: boolean = false;
   @Prop rustDeskDesktopFlipMode: RustDeskDesktopFlipMode = 'reset';
   @Prop @Watch('onKeyboardSurfaceChange') keyboardOpen: boolean = false;
@@ -196,6 +199,7 @@ export struct RemoteSessionTopBar {
     onSetViewScaleMode: (_mode: string): void => {},
     onResetCanvasTransform: (): void => {},
     onRotateRemoteDisplay: (): void => {},
+    onTogglePortraitDisplay: (): void => {},
     onObserveVideoOrientation: (_orientation: number): void => {},
     onSetRustDeskDesktopFlipMode: (_mode: RustDeskDesktopFlipMode): void => {},
     onOpenRustDeskResolution: (): void => {},
@@ -1168,6 +1172,11 @@ export struct RemoteSessionTopBar {
       this.iconButton($r('sys.symbol.rectangle_rotate'),
         this.rustDeskDesktopFlipMode === 'reset' ? this.accentColor : '#2A9D8F',
         (): void => { this.toggleMenu('desktopFlip'); }, 18, '打开画面翻转选项')
+    } else if (actionId === 'portrait') {
+      this.iconButton($r('sys.symbol.rectangle_rotate'),
+        this.portraitDisplayActive ? '#2A9D8F' : this.accentColor,
+        (): void => { this.actions.onTogglePortraitDisplay(); }, 18,
+        this.portraitDisplayActive ? '恢复横屏' : '竖屏显示')
     } else if (actionId === 'keyboardMouse') {
       this.iconButton($r('sys.symbol.mouse'), this.accentColor,
         (): void => { this.toggleMenu('keyboardMouse'); }, 18, '打开鼠标与触控设置')
@@ -1204,7 +1213,9 @@ export struct RemoteSessionTopBar {
       (this.rustDeskPhoneTarget ? '1' : '0') + '|' + this.protocol + '|' +
       (this.capabilities.connect.enabled ? '1' : '0') + '|' +
       (this.capabilities.fileUpload.enabled ? '1' : '0') + '|' +
-      (this.capabilities.clipboardSend.enabled ? '1' : '0');
+      (this.capabilities.clipboardSend.enabled ? '1' : '0') + '|' +
+      (this.portraitDisplayEnabled ? '1' : '0') + '|' +
+      (this.portraitDisplayActive ? '1' : '0');
   }
 
   @Builder
@@ -1212,7 +1223,8 @@ export struct RemoteSessionTopBar {
     if (vertical) {
       Column({ space: this.layout.itemGap }) {
         ForEach(remoteSessionPrimaryActionIds(
-          this.protocol, this.layout.deviceClass, this.rustDeskPhoneTarget),
+          this.protocol, this.layout.deviceClass, this.rustDeskPhoneTarget,
+          this.portraitDisplayEnabled),
           (actionId: RemoteSessionPrimaryActionId): void => {
             this.primaryActionButton(actionId)
           }, (actionId: RemoteSessionPrimaryActionId): string =>
@@ -1225,7 +1237,8 @@ export struct RemoteSessionTopBar {
     } else {
       Row({ space: this.layout.itemGap }) {
         ForEach(remoteSessionPrimaryActionIds(
-          this.protocol, this.layout.deviceClass, this.rustDeskPhoneTarget),
+          this.protocol, this.layout.deviceClass, this.rustDeskPhoneTarget,
+          this.portraitDisplayEnabled),
           (actionId: RemoteSessionPrimaryActionId): void => {
             this.primaryActionButton(actionId)
           }, (actionId: RemoteSessionPrimaryActionId): string =>

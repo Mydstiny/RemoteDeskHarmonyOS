@@ -19,7 +19,7 @@ export type MoonlightLaunchBlocker =
 export type MoonlightConnectionQuality = 'good' | 'unstable' | 'poor' | 'reconnecting';
 export type MoonlightToolbarAction =
   'control' | 'keyboard' | 'modifiers' | 'controller' | 'audio' | 'display' |
-  'resetCanvas' | 'diagnostics' | 'more' | 'disconnect';
+  'resetCanvas' | 'portrait' | 'diagnostics' | 'more' | 'disconnect';
 export type MoonlightSettingsSection =
   'video' | 'audio' | 'input' | 'networkSecurity' | 'diagnostics' | 'trust' |
   'data';
@@ -754,7 +754,8 @@ export function moonlightToolbarItems(
   breakpoint: string, audioAvailable: boolean,
   controllerAvailable: boolean, pipAvailable: boolean,
   maxVisibleItems: number = 0, keyboardAvailable: boolean = false,
-  controlModeLabel: string = '触控板'
+  controlModeLabel: string = '触控板', portraitEnabled: boolean = false,
+  portraitActive: boolean = false
 ): MoonlightToolbarItem[] {
   const normalized: string = breakpoint.trim().toLowerCase();
   const keyboard: MoonlightToolbarItem = toolbarItem('keyboard', '键盘');
@@ -764,6 +765,9 @@ export function moonlightToolbarItems(
     toolbarItem('control', controlModeLabel),
     keyboard, toolbarItem('modifiers', '组合键')
   ];
+  if (portraitEnabled) {
+    items.push(toolbarItem('portrait', portraitActive ? '恢复横屏' : '竖屏显示'));
+  }
   const limit: number = maxVisibleItems > 0 ? maxVisibleItems :
     (normalized === 'sm' ? 7 : 8);
   if (limit <= 7) {

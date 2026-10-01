@@ -37,6 +37,8 @@ export struct MoonlightSessionToolbar {
   @Prop keyboardOpen: boolean = false;
   @Prop modifiersOpen: boolean = false;
   @Prop controlModeLabel: string = '触控板';
+  @Prop portraitDisplayEnabled: boolean = false;
+  @Prop portraitDisplayActive: boolean = false;
   @Prop terminationBusy: boolean = false;
   @Prop @Watch('onMenuOpenChange') menuOpen: boolean = false;
   @Prop qualityColor: string = '#66DD7A';
@@ -66,7 +68,8 @@ export struct MoonlightSessionToolbar {
     const layout: MoonlightToolbarLayout = this.layout();
     const items: MoonlightToolbarItem[] = moonlightToolbarItems(
       this.breakpoint, this.audioAvailable, this.controllerAvailable, this.pipAvailable,
-      layout.maxVisibleItems, this.keyboardAvailable, this.controlModeLabel);
+      layout.maxVisibleItems, this.keyboardAvailable, this.controlModeLabel,
+      this.portraitDisplayEnabled, this.portraitDisplayActive);
     if (!this.canvasResetAvailable) { return items; }
     const resetItem: MoonlightToolbarItem = {
       action: 'resetCanvas', label: '复位', dangerous: false,
@@ -115,6 +118,7 @@ export struct MoonlightSessionToolbar {
     if (action === 'audio') { return $r('sys.symbol.speaker_slash_fill'); }
     if (action === 'display') { return $r('sys.symbol.display'); }
     if (action === 'resetCanvas') { return $r('sys.symbol.display'); }
+    if (action === 'portrait') { return $r('sys.symbol.rectangle_rotate'); }
     if (action === 'diagnostics') { return $r('sys.symbol.info_circle'); }
     if (action === 'more') { return $r('sys.symbol.ellipsis_bubble'); }
     return $r('sys.symbol.xmark_circle_fill');
@@ -202,6 +206,7 @@ export struct MoonlightSessionToolbar {
     if (item.action === 'keyboard') { return this.keyboardOpen; }
     if (item.action === 'modifiers') { return this.modifiersOpen; }
     if (item.action === 'resetCanvas') { return this.canvasResetAvailable; }
+    if (item.action === 'portrait') { return this.portraitDisplayActive; }
     return item.action === 'diagnostics' && this.diagnosticsVisible;
   }
 

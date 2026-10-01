@@ -46,6 +46,7 @@ export const SETTINGS_SHEET_REMOTE_WHEEL_DIRECTION: number = 38;
 export const SETTINGS_SHEET_REMOTE_PINCH_ZOOM: number = 39;
 export const SETTINGS_SHEET_SESSION_CONTROL_BAR: number = 40;
 export const SETTINGS_SHEET_HARMONY_SHORTCUT_BLOCKING: number = 41;
+export const SETTINGS_SHEET_REMOTE_PORTRAIT_DISPLAY: number = 50;
 export const SETTINGS_SHEET_APP_ICON: number = 47;
 export const SETTINGS_SHEET_PRO_FEATURE: number = 48;
 export const SETTINGS_SHEET_PRO_BADGE: number = 49;
@@ -146,6 +147,10 @@ export function remoteWheelDirectionSettingsLeafSheetHeight(mode: number): numbe
 
 export function remotePinchZoomSettingsLeafSheetHeight(mode: number): number {
   return mode === SETTINGS_SHEET_REMOTE_PINCH_ZOOM ? 700 : 0;
+}
+
+export function remotePortraitDisplaySettingsLeafSheetHeight(mode: number): number {
+  return mode === SETTINGS_SHEET_REMOTE_PORTRAIT_DISPLAY ? 720 : 0;
 }
 
 export function sessionControlBarSettingsLeafSheetHeight(mode: number): number {

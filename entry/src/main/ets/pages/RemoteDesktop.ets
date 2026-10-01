@@ -756,6 +756,25 @@ import {
   VNC_PINCH_ZOOM_ENABLED_KEY
 } from '../services/RemotePinchZoomPreferencePolicy';
 import {
+  MOONLIGHT_PORTRAIT_DISPLAY_ENABLED_KEY,
+  MOONLIGHT_PORTRAIT_DISPLAY_MODE_KEY,
+  RDP_PORTRAIT_DISPLAY_ENABLED_KEY,
+  RDP_PORTRAIT_DISPLAY_MODE_KEY,
+  REMOTE_PORTRAIT_DISPLAY_REVISION_KEY,
+  RemotePortraitDisplayPreferences,
+  RemotePortraitDisplayPreferenceUpdate,
+  RemotePortraitDisplayMode,
+  RUSTDESK_PORTRAIT_DISPLAY_ENABLED_KEY,
+  RUSTDESK_PORTRAIT_DISPLAY_MODE_KEY,
+  VNC_PORTRAIT_DISPLAY_ENABLED_KEY,
+  VNC_PORTRAIT_DISPLAY_MODE_KEY
+} from '../services/RemotePortraitDisplayPreferencePolicy';
+import { RemotePortraitDisplayStore } from '../services/RemotePortraitDisplayStore';
+import {
+  remotePortraitSidebarPlacement,
+  RemotePortraitSidebarPlacement
+} from '../services/RemotePortraitSidebarPolicy';
+import {
   accumulateVncPhysicalTouchpadWheel,
   resetVncPhysicalWheelState,
   resolveVncPhysicalWheelRoute,
@@ -1158,6 +1177,24 @@ struct RemoteDesktop {
   rustdeskPinchZoomEnabled: boolean = false;
   @StorageLink(VNC_PINCH_ZOOM_ENABLED_KEY) @Watch('onVncPinchZoomSettingChange')
   vncPinchZoomEnabled: boolean = false;
+  @StorageLink(RDP_PORTRAIT_DISPLAY_ENABLED_KEY)
+  rdpPortraitDisplayEnabled: boolean = false;
+  @StorageLink(RDP_PORTRAIT_DISPLAY_MODE_KEY)
+  rdpPortraitDisplayMode: string = 'default';
+  @StorageLink(RUSTDESK_PORTRAIT_DISPLAY_ENABLED_KEY)
+  rustdeskPortraitDisplayEnabled: boolean = false;
+  @StorageLink(RUSTDESK_PORTRAIT_DISPLAY_MODE_KEY)
+  rustdeskPortraitDisplayMode: string = 'default';
+  @StorageLink(VNC_PORTRAIT_DISPLAY_ENABLED_KEY)
+  vncPortraitDisplayEnabled: boolean = false;
+  @StorageLink(VNC_PORTRAIT_DISPLAY_MODE_KEY)
+  vncPortraitDisplayMode: string = 'default';
+  @StorageLink(MOONLIGHT_PORTRAIT_DISPLAY_ENABLED_KEY)
+  moonlightPortraitDisplayEnabled: boolean = false;
+  @StorageLink(MOONLIGHT_PORTRAIT_DISPLAY_MODE_KEY)
+  moonlightPortraitDisplayMode: string = 'default';
+  @StorageLink(REMOTE_PORTRAIT_DISPLAY_REVISION_KEY) @Watch('onRemotePortraitDisplayPreferenceChange')
+  remotePortraitDisplayRevision: number = 0;
   @StorageLink('rustdeskShowLocalCursor') @Watch('onRustDeskLocalCursorChanged') rustdeskShowLocalCursor: boolean = true;
   @StorageLink('rustdeskBrowseMode') @Watch('onHarmonyShortcutInputOwnerChange')
   rustdeskBrowseMode: boolean = false;
@@ -2296,7 +2333,8 @@ struct RemoteDesktop {
       railWidth: vncToolbarRailWidth(deviceClass, collapsed),
       railHeight: vncToolbarRailHeight(
         deviceClass, this.isVncViewOnlySession(), collapsed, availableHeight,
-        this.vncDisplayCapabilities.monitorCount),
+        this.vncDisplayCapabilities.monitorCount,
+        this.remotePortraitDisplayEnabledForCurrentProtocol()),
       menuWidth: 0,
       menuHeight: 0,
       // VNC actions are rendered by the rail itself; there is no secondary
@@ -2317,7 +2355,8 @@ struct RemoteDesktop {
         railWidth: vncToolbarRailWidth(deviceClass, true),
         railHeight: vncToolbarRailHeight(
           deviceClass, this.isVncViewOnlySession(), true, availableHeight,
-          this.vncDisplayCapabilities.monitorCount),
+          this.vncDisplayCapabilities.monitorCount,
+          this.remotePortraitDisplayEnabledForCurrentProtocol()),
         menuWidth: 0,
         menuHeight: 0,
         expanded: false
@@ -2553,6 +2592,10 @@ struct RemoteDesktop {
 
   private vncToolbarActions(): VncSessionToolbarActions {
     return {
+      onTogglePortraitDisplay: (): void => {
+        this.markVncToolbarInteraction();
+        this.toggleRemotePortraitDisplay();
+      },
       onExpand: (): void => { this.expandVncToolbar(); },
       onCollapse: (): void => {
         this.vncToolbarCollapsed = true;
@@ -4319,6 +4362,114 @@ struct RemoteDesktop {
     return host === null ? '' : host.protocol;
   }
 
+  private remotePortraitDisplayPreferences(): RemotePortraitDisplayPreferences {
+    const normalizeMode = (value: string): RemotePortraitDisplayMode =>
+      value === 'portrait' ? 'portrait' : 'default';
+    return {
+      rdp: { enabled: this.rdpPortraitDisplayEnabled, mode: normalizeMode(this.rdpPortraitDisplayMode) },
+      rustdesk: { enabled: this.rustdeskPortraitDisplayEnabled, mode: normalizeMode(this.rustdeskPortraitDisplayMode) },
+      vnc: { enabled: this.vncPortraitDisplayEnabled, mode: normalizeMode(this.vncPortraitDisplayMode) },
+      moonlight: { enabled: this.moonlightPortraitDisplayEnabled, mode: normalizeMode(this.moonlightPortraitDisplayMode) }
+    };
+  }
+
+  private remotePortraitProtocol(): 'rdp' | 'rustdesk' | 'vnc' | 'moonlight' | null {
+    const protocol: string = this.currentProtocolName();
+    if (protocol === 'rdp' || protocol === 'rustdesk' || protocol === 'vnc' || protocol === 'moonlight') {
+      return protocol;
+    }
+    return null;
+  }
+
+  private remotePortraitDisplayEnabledForCurrentProtocol(): boolean {
+    return this.remotePortraitSidebarPlacement().visible;
+  }
+
+  private remotePortraitDisplayActiveForCurrentProtocol(): boolean {
+    return this.remotePortraitSidebarPlacement().active;
+  }
+
+  private remotePortraitSidebarPlacement(): RemotePortraitSidebarPlacement {
+    return remotePortraitSidebarPlacement(this.remotePortraitDisplayPreferences(),
+      this.currentProtocolName(), this.isDesktopDevice, this.isPadDevice);
+  }
+
+  private saveRemotePortraitDisplayPreferenceUpdate(
+    update: RemotePortraitDisplayPreferenceUpdate): boolean {
+    const context = this.getUIContext().getHostContext();
+    if (!context) { return false; }
+    return RemotePortraitDisplayStore.getInstance().savePatch(context, update);
+  }
+
+  private toggleRemotePortraitDisplay(): void {
+    const protocol = this.remotePortraitProtocol();
+    if (protocol === null || !this.remotePortraitDisplayEnabledForCurrentProtocol()) {
+      return;
+    }
+    const context = this.getUIContext().getHostContext();
+    if (!context) {
+      promptAction.showToast({ message: '无法读取当前窗口设置，请稍后重试', duration: 1600 });
+      return;
+    }
+    const nextMode: RemotePortraitDisplayMode =
+      this.remotePortraitDisplayActiveForCurrentProtocol() ? 'default' : 'portrait';
+    const saved: boolean = RemotePortraitDisplayStore.getInstance().setProtocolMode(
+      context, protocol, nextMode);
+    if (!saved) {
+      promptAction.showToast({ message: '竖屏显示状态保存失败，请重试', duration: 1800 });
+      return;
+    }
+    promptAction.showToast({ message: nextMode === 'portrait' ? '竖屏显示' : '恢复横屏', duration: 1200 });
+  }
+
+  private onRemotePortraitDisplayPreferenceChange(): void {
+    this.clearPhysicalPointerCanvasFollow(true);
+    this.releaseCanvasPinchInput('portrait-display-preference-change');
+    this.canvasViewportSnapshot = null;
+    this.canvasViewportSnapshotHandle = 0;
+    if (this.connected && this.sessionId > 0) {
+      this.resetCanvasToDisplayDefault(true);
+      void this.applyCurrentProtocolOrientationPolicy('PORTRAIT-DISPLAY-PREFERENCE');
+    }
+  }
+
+  private async applyPortraitOrientationIfActive(reason: string): Promise<boolean> {
+    if (!this.remotePortraitDisplayActiveForCurrentProtocol()) {
+      return false;
+    }
+    await this.setPreferredOrientation(window.Orientation.PORTRAIT,
+      'REMOTE-PORTRAIT-' + reason);
+    return true;
+  }
+
+  private async applyVncOrientationPolicy(reason: string): Promise<void> {
+    if (await this.applyPortraitOrientationIfActive(reason)) { return; }
+    await this.setPreferredOrientation(
+      this.isDesktopDevice ? window.Orientation.LANDSCAPE :
+        window.Orientation.AUTO_ROTATION_LANDSCAPE,
+      (this.isDesktopDevice ? 'VNC-LANDSCAPE-' : 'VNC-AUTO-ROTATION-LANDSCAPE-') + reason);
+  }
+
+  private async applyCurrentProtocolOrientationPolicy(reason: string): Promise<void> {
+    const protocol: string = this.currentProtocolName();
+    if (protocol === 'rustdesk') {
+      await this.applyRustDeskOrientationPolicy(reason);
+    } else if (protocol === 'rdp') {
+      await this.applyRdpOrientationPolicy(reason);
+    } else if (protocol === 'vnc') {
+      await this.applyVncOrientationPolicy(reason);
+    } else if (protocol === 'moonlight') {
+      await this.setPreferredOrientation(
+        this.remotePortraitDisplayActiveForCurrentProtocol() ? window.Orientation.PORTRAIT :
+          (this.isDesktopDevice ? window.Orientation.LANDSCAPE : window.Orientation.AUTO_ROTATION_LANDSCAPE),
+        'MOONLIGHT-' + (this.remotePortraitDisplayActiveForCurrentProtocol() ? 'PORTRAIT-' : 'LANDSCAPE-') + reason);
+    } else {
+      await this.setPreferredOrientation(
+        this.isDesktopDevice ? window.Orientation.LANDSCAPE : window.Orientation.AUTO_ROTATION_LANDSCAPE,
+        (this.isDesktopDevice ? 'LANDSCAPE-' : 'AUTO-ROTATION-LANDSCAPE-') + reason);
+    }
+  }
+
   private harmonyShortcutBlockingActive(): boolean {
     return harmonyShortcutBlockingEnabled(
       decodeHarmonyShortcutBlockingPreferences(this.harmonyShortcutBlockingEncoded),
@@ -5610,6 +5761,7 @@ struct RemoteDesktop {
   }
 
   private handleRdpToolbarAction(action: RdpToolbarAction): void {
+    if (action === 'portrait') { this.toggleRemotePortraitDisplay(); return; }
     if (action === 'control') { this.toggleRdpControlCenter(); return; }
     if (action === 'fileTransfer') { this.openFileTransferPanel(); return; }
     if (action === 'resetCanvas') { this.resetCanvasTransformFromMenu(); return; }
@@ -6280,7 +6432,8 @@ struct RemoteDesktop {
   }
 
   private currentCanvasFreePanInsetRatio(): number {
-    return this.isRdpRemoteSession() ? RDP_CANVAS_FREE_PAN_INSET_RATIO : 0;
+    return this.isRdpRemoteSession() && !this.remotePortraitDisplayActiveForCurrentProtocol() ?
+      RDP_CANVAS_FREE_PAN_INSET_RATIO : 0;
   }
 
   private resetCanvasToDisplayDefault(forceRendererRead: boolean = false): void {
@@ -7227,6 +7380,7 @@ struct RemoteDesktop {
 
   private remoteSessionTopBarActions(): RemoteSessionTopBarActions {
     return {
+      onTogglePortraitDisplay: (): void => { this.toggleRemotePortraitDisplay(); },
       onPhoneAction: (action: number): void => { this.performExplicitPhoneAction(action); },
       onPhoneOrientation: (enabled: boolean): void => {
         if (!this.isExplicitPhoneSession()) { return; }
@@ -15518,19 +15672,7 @@ struct RemoteDesktop {
         this.syncHarmonyShortcutCapture('connect-success');
         this.scheduleRemoteInputFocus('connect-success');
       }
-      if (host.protocol === 'rustdesk') {
-        await this.applyRustDeskOrientationPolicy('connect-success');
-      } else if (host.protocol === 'rdp') {
-        await this.applyRdpOrientationPolicy('CONNECT-SUCCESS');
-      } else {
-        // Tablets must keep both physical landscape directions. A fixed
-        // LANDSCAPE preference selects one side of the charging port and can
-        // make the remote desktop appear upside down after the device flips.
-        await this.setPreferredOrientation(
-          this.isDesktopDevice ? window.Orientation.LANDSCAPE :
-            window.Orientation.AUTO_ROTATION_LANDSCAPE,
-          this.isDesktopDevice ? 'LANDSCAPE' : 'AUTO-ROTATION-LANDSCAPE');
-      }
+      await this.applyCurrentProtocolOrientationPolicy('CONNECT-SUCCESS');
       await this.setRemoteKeepScreenOn(true);
       await this.setRemoteNavigationHidden(true, 'connect-success');
       // VNC 使用独立的 vncrecordv2 owner，不得把 transient `vnc:<id>` 投影
@@ -15694,6 +15836,7 @@ struct RemoteDesktop {
   }
 
   private async applyRustDeskOrientationPolicy(reason: string, sessionPending: boolean = false): Promise<void> {
+    if (await this.applyPortraitOrientationIfActive(reason)) { return; }
     const host: RemoteHost | null = this.pendingHost;
     const protocol: string = host === null ? '' : host.protocol;
     const adaptiveOrientationEnabled: boolean = this.isExplicitPhoneSession() ?
@@ -15716,6 +15859,7 @@ struct RemoteDesktop {
   }
 
   private async applyRdpOrientationPolicy(reason: string): Promise<void> {
+    if (await this.applyPortraitOrientationIfActive(reason)) { return; }
     const resolutionId: string = normalizeRdpResolutionId(
       this.rdpDesktopResolutionId, this.rdpDesktopPreset);
     if (rdpSessionOrientationPolicy(this.isDesktopDevice, resolutionId) === 'unspecified') {
@@ -22709,6 +22853,8 @@ struct RemoteDesktop {
           displayScaleLabel: this.vncDisplayScaleLabel(),
           displayCount: this.vncDisplayCapabilities.monitorCount,
           displayLabel: this.vncDisplayLabel(this.vncDisplayTargetMonitor()),
+          portraitDisplayEnabled: this.remotePortraitDisplayEnabledForCurrentProtocol(),
+          portraitDisplayActive: this.remotePortraitDisplayActiveForCurrentProtocol(),
           diagnosticsEnabled: this.vncShowDiagnostics,
           canvasResetAvailable: this.canvasTransformGestureModified,
           collapsed: this.vncToolbarCollapsed,
@@ -22736,6 +22882,8 @@ struct RemoteDesktop {
               canvasResetAvailable: this.canvasTransformGestureModified,
               qualityLabel: this.rdpPerformanceSummary().status,
               qualityColor: this.rdpPerformanceSummary().color,
+              portraitDisplayEnabled: this.remotePortraitDisplayEnabledForCurrentProtocol(),
+              portraitDisplayActive: this.remotePortraitDisplayActiveForCurrentProtocol(),
               availableHeight: this.rdpToolbarAvailableHeight(),
               onAction: (action: RdpToolbarAction): void => { this.handleRdpToolbarAction(action); }
             })
@@ -22753,6 +22901,8 @@ struct RemoteDesktop {
               canvasResetAvailable: this.canvasTransformGestureModified,
               qualityLabel: this.rdpPerformanceSummary().status,
               qualityColor: this.rdpPerformanceSummary().color,
+              portraitDisplayEnabled: this.remotePortraitDisplayEnabledForCurrentProtocol(),
+              portraitDisplayActive: this.remotePortraitDisplayActiveForCurrentProtocol(),
               availableHeight: this.rdpToolbarAvailableHeight(),
               onAction: (action: RdpToolbarAction): void => { this.handleRdpToolbarAction(action); }
             })
@@ -22855,6 +23005,8 @@ struct RemoteDesktop {
           phoneStatus: this.explicitPhoneStatus,
           phoneCapabilities: this.explicitPhoneCapabilities,
           phoneAdaptiveOrientation: this.phoneAdaptiveOrientation,
+          portraitDisplayEnabled: this.remotePortraitDisplayEnabledForCurrentProtocol(),
+          portraitDisplayActive: this.remotePortraitDisplayActiveForCurrentProtocol(),
           rustDeskDesktopFlipMode: this.rustDeskDesktopFlipMode,
           keyboardOpen: this.keyboardOpen || this.keyboardImeActive,
           shortcutsOpen: this.modifierPanelVisible || this.shortcutPanelVisible ||

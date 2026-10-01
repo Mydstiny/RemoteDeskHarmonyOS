@@ -4,7 +4,7 @@ export type VncToolbarDeviceClass = 'pc' | 'pad' | 'phone';
 export type VncToolbarOrientation = 'portrait' | 'landscape';
 export type VncToolbarSide = 'left' | 'right';
 export type VncToolbarPrimaryActionId = 'keyboard' | 'controlMode' | 'shortcuts' |
-  'display' | 'displayScale' | 'diagnostics' | 'disconnect';
+  'display' | 'displayScale' | 'portrait' | 'diagnostics' | 'disconnect';
 export type VncCursorOwnershipEvidence = 'bootstrap' | 'protocol_cursor' |
   'framebuffer_composited' | 'protocol_hidden';
 
@@ -13,10 +13,14 @@ const VNC_TOOLBAR_PRIMARY_ACTION_IDS: VncToolbarPrimaryActionId[] = [
 ];
 
 /** PC 顶栏和 Phone/Pad 侧栏必须消费完全相同、顺序一致的动作集合。 */
-export function vncToolbarPrimaryActionIds(displayCount: number = 0): VncToolbarPrimaryActionId[] {
+export function vncToolbarPrimaryActionIds(displayCount: number = 0,
+  portraitEnabled: boolean = false): VncToolbarPrimaryActionId[] {
   const actions: VncToolbarPrimaryActionId[] = VNC_TOOLBAR_PRIMARY_ACTION_IDS.slice();
   if (displayCount > 1) {
     actions.splice(3, 0, 'display');
+  }
+  if (portraitEnabled) {
+    actions.splice(Math.max(0, actions.length - 1), 0, 'portrait');
   }
   return actions;
 }
@@ -78,12 +82,12 @@ export function vncToolbarRailWidth(deviceClass: VncToolbarDeviceClass,
 export function vncToolbarRailHeight(deviceClass: VncToolbarDeviceClass,
   viewOnly: boolean, collapsed: boolean,
   availableHeight: number = Number.MAX_SAFE_INTEGER,
-  displayCount: number = 0): number {
+  displayCount: number = 0, portraitEnabled: boolean = false): number {
   if (deviceClass === 'pc') { return 0; }
   const normalizedAvailable: number = Number.isFinite(availableHeight) ?
     Math.max(1, availableHeight) : Number.MAX_SAFE_INTEGER;
   if (collapsed) { return Math.max(1, Math.min(72, normalizedAvailable)); }
-  const actionCount: number = vncToolbarPrimaryActionIds(displayCount).length;
+  const actionCount: number = vncToolbarPrimaryActionIds(displayCount, portraitEnabled).length;
   const actionHeight: number = actionCount * 44;
   const actionGaps: number = Math.max(0, actionCount - 1) * 5;
   const collapseHandleHeight: number = 44;

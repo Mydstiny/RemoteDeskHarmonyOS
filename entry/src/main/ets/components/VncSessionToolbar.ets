@@ -26,6 +26,7 @@ export interface VncSessionToolbarActions {
   onOpenShortcuts: () => void;
   onOpenDisplays: () => void;
   onCycleDisplayScale: () => void;
+  onTogglePortraitDisplay: () => void;
   onResetCanvas: () => void;
   onToggleDiagnostics: () => void;
   onDisconnect: () => void;
@@ -47,6 +48,8 @@ export struct VncSessionToolbar {
   @Prop displayScaleLabel: string = '适应';
   @Prop displayCount: number = 0;
   @Prop displayLabel: string = '屏幕';
+  @Prop portraitDisplayEnabled: boolean = false;
+  @Prop portraitDisplayActive: boolean = false;
   @Prop diagnosticsEnabled: boolean = false;
   @Prop canvasResetAvailable: boolean = false;
   @Prop collapsed: boolean = false;
@@ -64,6 +67,7 @@ export struct VncSessionToolbar {
     onOpenShortcuts: (): void => {},
     onOpenDisplays: (): void => {},
     onCycleDisplayScale: (): void => {},
+    onTogglePortraitDisplay: (): void => {},
     onResetCanvas: (): void => {},
     onToggleDiagnostics: (): void => {},
     onDisconnect: (): void => {},
@@ -107,6 +111,10 @@ export struct VncSessionToolbar {
     } else if (actionId === 'displayScale') {
       this.actionButton($r('sys.symbol.desktop_fill'), this.displayScaleLabel, false,
         (): void => { this.actions.onCycleDisplayScale(); })
+    } else if (actionId === 'portrait') {
+      this.actionButton($r('sys.symbol.rectangle_rotate'),
+        this.portraitDisplayActive ? '恢复横屏' : '竖屏显示', this.portraitDisplayActive,
+        (): void => { this.actions.onTogglePortraitDisplay(); })
     } else if (actionId === 'diagnostics') {
       this.actionButton($r('sys.symbol.list_bullet'), '性能', this.diagnosticsEnabled,
         (): void => { this.actions.onToggleDiagnostics(); })
@@ -130,14 +138,15 @@ export struct VncSessionToolbar {
       (this.keyboardOpen ? '1' : '0') + '|' +
       (this.shortcutsOpen ? '1' : '0') + '|' + (this.diagnosticsEnabled ? '1' : '0') + '|' +
       (this.canvasResetAvailable ? '1' : '0') + '|' + this.controlModeLabel + '|' +
-      this.displayScaleLabel;
+      this.displayScaleLabel + '|' + (this.portraitDisplayEnabled ? '1' : '0') + '|' +
+      (this.portraitDisplayActive ? '1' : '0');
   }
 
   @Builder
   private primaryActionButtons(vertical: boolean) {
     if (vertical) {
       Column({ space: 5 }) {
-        ForEach(vncToolbarPrimaryActionIds(this.displayCount),
+        ForEach(vncToolbarPrimaryActionIds(this.displayCount, this.portraitDisplayEnabled),
           (actionId: VncToolbarPrimaryActionId): void => {
             this.primaryActionButtonWithReset(actionId)
           }, (actionId: VncToolbarPrimaryActionId): string =>
@@ -145,7 +154,7 @@ export struct VncSessionToolbar {
       }
     } else {
       Row({ space: 5 }) {
-        ForEach(vncToolbarPrimaryActionIds(this.displayCount),
+        ForEach(vncToolbarPrimaryActionIds(this.displayCount, this.portraitDisplayEnabled),
           (actionId: VncToolbarPrimaryActionId): void => {
             this.primaryActionButtonWithReset(actionId)
           }, (actionId: VncToolbarPrimaryActionId): string =>

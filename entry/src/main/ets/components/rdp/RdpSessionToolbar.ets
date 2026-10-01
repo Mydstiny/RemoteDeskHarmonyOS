@@ -24,7 +24,7 @@ import {
 } from '../../services/RdpSessionSidebarPolicy';
 
 export type RdpToolbarAction = 'control' | 'fileTransfer' | 'keyboard' | 'shortcuts' |
-  'ctrlAltDel' | 'resetCanvas' | 'refresh' | 'diagnostics' | 'disconnect';
+  'ctrlAltDel' | 'resetCanvas' | 'refresh' | 'diagnostics' | 'portrait' | 'disconnect';
 
 interface RdpToolbarItem {
   action: RdpToolbarAction;
@@ -45,6 +45,8 @@ export struct RdpSessionToolbar {
   @Prop canvasResetAvailable: boolean = false;
   @Prop qualityLabel: string = '实时';
   @Prop qualityColor: string = RDP_SESSION_CONTROL_ACCENT;
+  @Prop portraitDisplayEnabled: boolean = false;
+  @Prop portraitDisplayActive: boolean = false;
   @Prop @Watch('onAvailableHeightChange') availableHeight: number = 640;
   @State private expanded: boolean = false;
   @State private pinned: boolean = false;
@@ -69,6 +71,11 @@ export struct RdpSessionToolbar {
       { action: 'diagnostics', label: '性能', dangerous: false },
       { action: 'disconnect', label: '断开', dangerous: true }
     ];
+    if (this.portraitDisplayEnabled) {
+      items.splice(items.length - 1, 0, {
+        action: 'portrait', label: this.portraitDisplayActive ? '恢复横屏' : '竖屏显示', dangerous: false
+      });
+    }
     if (this.canvasResetAvailable) {
       items.splice(1, 0, { action: 'resetCanvas', label: '复位', dangerous: false });
     }
@@ -91,6 +98,7 @@ export struct RdpSessionToolbar {
     if (action === 'ctrlAltDel') { return $r('sys.symbol.exclamationmark_triangle'); }
     if (action === 'refresh') { return $r('sys.symbol.bolt_fill'); }
     if (action === 'diagnostics') { return $r('sys.symbol.info_circle'); }
+    if (action === 'portrait') { return $r('sys.symbol.rectangle_rotate'); }
     return $r('sys.symbol.xmark_circle_fill');
   }
 
@@ -99,6 +107,7 @@ export struct RdpSessionToolbar {
     if (action === 'keyboard') { return this.keyboardOpen; }
     if (action === 'shortcuts') { return this.shortcutsOpen; }
     if (action === 'resetCanvas') { return this.canvasResetAvailable; }
+    if (action === 'portrait') { return this.portraitDisplayActive; }
     return action === 'diagnostics' && this.diagnosticsVisible;
   }
 

@@ -263,6 +263,7 @@ import { VncSettingsSheet } from '../components/VncSettingsSheet';
 import { SecretVisibilitySettingsSheet } from '../components/SecretVisibilitySettingsSheet';
 import { RemoteWheelDirectionSettingsSheet } from '../components/RemoteWheelDirectionSettingsSheet';
 import { RemotePinchZoomSettingsSheet } from '../components/RemotePinchZoomSettingsSheet';
+import { RemotePortraitDisplaySettingsSheet } from '../components/RemotePortraitDisplaySettingsSheet';
 import { RemoteSessionControlBarSettingsSheet } from
   '../components/RemoteSessionControlBarSettingsSheet';
 import { VncCertificateTrustManagerSheet } from '../components/VncCertificateTrustManagerSheet';
@@ -529,6 +530,7 @@ import {
   SETTINGS_SHEET_ACCENT_COLOR,
   SETTINGS_SHEET_DIAGNOSTIC_LOG,
   SETTINGS_SHEET_REMOTE_PINCH_ZOOM,
+  SETTINGS_SHEET_REMOTE_PORTRAIT_DISPLAY,
   SETTINGS_SHEET_REMOTE_WHEEL_DIRECTION,
   SETTINGS_SHEET_SESSION_CONTROL_BAR,
   SETTINGS_SHEET_HARMONY_SHORTCUT_BLOCKING,
@@ -573,6 +575,7 @@ import {
   VirtualKeyboardSettingsRouteSpec,
   diagnosticLogSettingsLeafSheetHeight,
   remotePinchZoomSettingsLeafSheetHeight,
+  remotePortraitDisplaySettingsLeafSheetHeight,
   remoteWheelDirectionSettingsLeafSheetHeight,
   sessionControlBarSettingsLeafSheetHeight,
   secretVisibilitySettingsLeafSheetHeight,
@@ -622,6 +625,21 @@ import {
   remotePinchZoomSelectionSummary,
   withRemotePinchZoomPreference
 } from '../services/RemotePinchZoomPreferencePolicy';
+import {
+  MOONLIGHT_PORTRAIT_DISPLAY_ENABLED_KEY,
+  MOONLIGHT_PORTRAIT_DISPLAY_MODE_KEY,
+  RDP_PORTRAIT_DISPLAY_ENABLED_KEY,
+  RDP_PORTRAIT_DISPLAY_MODE_KEY,
+  REMOTE_PORTRAIT_DISPLAY_REVISION_KEY,
+  RemotePortraitDisplayPreferences,
+  RemotePortraitDisplayPreferenceUpdate,
+  RUSTDESK_PORTRAIT_DISPLAY_ENABLED_KEY,
+  RUSTDESK_PORTRAIT_DISPLAY_MODE_KEY,
+  VNC_PORTRAIT_DISPLAY_ENABLED_KEY,
+  VNC_PORTRAIT_DISPLAY_MODE_KEY,
+  remotePortraitDisplaySelectionSummary
+} from '../services/RemotePortraitDisplayPreferencePolicy';
+import { RemotePortraitDisplayStore } from '../services/RemotePortraitDisplayStore';
 import {
   SETTINGS_APP_BUNDLE_NAME,
   SETTINGS_BROWSER_VIEW_ACTION,
@@ -1327,6 +1345,15 @@ const DESKTOP_WORKSPACE_TAB = 9;
   @StorageLink(SSH_PINCH_ZOOM_ENABLED_KEY) sshPinchZoomEnabled: boolean = true;
   @StorageLink(VNC_PINCH_ZOOM_ENABLED_KEY) vncPinchZoomEnabled: boolean = false;
   @StorageLink(MOONLIGHT_PINCH_ZOOM_ENABLED_KEY) moonlightPinchZoomEnabled: boolean = false;
+  @StorageLink(RDP_PORTRAIT_DISPLAY_ENABLED_KEY) rdpPortraitDisplayEnabled: boolean = false;
+  @StorageLink(RDP_PORTRAIT_DISPLAY_MODE_KEY) rdpPortraitDisplayMode: string = 'default';
+  @StorageLink(RUSTDESK_PORTRAIT_DISPLAY_ENABLED_KEY) rustdeskPortraitDisplayEnabled: boolean = false;
+  @StorageLink(RUSTDESK_PORTRAIT_DISPLAY_MODE_KEY) rustdeskPortraitDisplayMode: string = 'default';
+  @StorageLink(VNC_PORTRAIT_DISPLAY_ENABLED_KEY) vncPortraitDisplayEnabled: boolean = false;
+  @StorageLink(VNC_PORTRAIT_DISPLAY_MODE_KEY) vncPortraitDisplayMode: string = 'default';
+  @StorageLink(MOONLIGHT_PORTRAIT_DISPLAY_ENABLED_KEY) moonlightPortraitDisplayEnabled: boolean = false;
+  @StorageLink(MOONLIGHT_PORTRAIT_DISPLAY_MODE_KEY) moonlightPortraitDisplayMode: string = 'default';
+  @StorageLink(REMOTE_PORTRAIT_DISPLAY_REVISION_KEY) remotePortraitDisplayRevision: number = 0;
   @StorageLink('rdpColorDepth') rdpColorDepth: number = 32;
   @StorageLink('rdpAudioEnabled') rdpAudioEnabled: boolean = true;
   @StorageLink('rdpClipboardEnabled') rdpClipboardEnabled: boolean = true;
@@ -2146,6 +2173,8 @@ const DESKTOP_WORKSPACE_TAB = 9;
     // 恢复 TOTP 隐私保护状态 (Preferences 持久化)
     try {
       const prefs = preferences.getPreferencesSync(getContext(this), { name: 'RemoteDesktopAppPrefs' });
+      const savedRemotePortraitDisplay = RemotePortraitDisplayStore.getInstance().load(
+        getContext(this) as common.Context);
       const defaults: PersonalizationDefaults = personalizationDefaults(
         prefs.getSync(PERSONALIZATION_DEFAULTS_FRESH_INSTALL_KEY,
           AppStorage.get<boolean>(PERSONALIZATION_DEFAULTS_FRESH_INSTALL_KEY) ?? false) as boolean,
@@ -2392,6 +2421,15 @@ const DESKTOP_WORKSPACE_TAB = 9;
       this.sshPinchZoomEnabled = savedRemotePinchZoomPreferences.ssh;
       this.vncPinchZoomEnabled = savedRemotePinchZoomPreferences.vnc;
       this.moonlightPinchZoomEnabled = savedRemotePinchZoomPreferences.moonlight;
+      this.rdpPortraitDisplayEnabled = savedRemotePortraitDisplay.values.rdp.enabled;
+      this.rdpPortraitDisplayMode = savedRemotePortraitDisplay.values.rdp.mode;
+      this.rustdeskPortraitDisplayEnabled = savedRemotePortraitDisplay.values.rustdesk.enabled;
+      this.rustdeskPortraitDisplayMode = savedRemotePortraitDisplay.values.rustdesk.mode;
+      this.vncPortraitDisplayEnabled = savedRemotePortraitDisplay.values.vnc.enabled;
+      this.vncPortraitDisplayMode = savedRemotePortraitDisplay.values.vnc.mode;
+      this.moonlightPortraitDisplayEnabled = savedRemotePortraitDisplay.values.moonlight.enabled;
+      this.moonlightPortraitDisplayMode = savedRemotePortraitDisplay.values.moonlight.mode;
+      this.remotePortraitDisplayRevision = savedRemotePortraitDisplay.revision;
       this.rustdeskSwapMouseButtons = savedRustDeskSwapMouseButtons;
       this.rustdeskTouchpadSpeed =
         Math.max(0.4, Math.min(2.2, savedRustDeskTouchpadSpeed > 0 ? savedRustDeskTouchpadSpeed : 1.0));
@@ -12082,6 +12120,22 @@ const DESKTOP_WORKSPACE_TAB = 9;
       this.remotePinchZoomPreferences(), update));
   }
 
+  private remotePortraitDisplayPreferences(): RemotePortraitDisplayPreferences {
+    return {
+      rdp: { enabled: this.rdpPortraitDisplayEnabled, mode: this.rdpPortraitDisplayMode === 'portrait' ? 'portrait' : 'default' },
+      rustdesk: { enabled: this.rustdeskPortraitDisplayEnabled, mode: this.rustdeskPortraitDisplayMode === 'portrait' ? 'portrait' : 'default' },
+      vnc: { enabled: this.vncPortraitDisplayEnabled, mode: this.vncPortraitDisplayMode === 'portrait' ? 'portrait' : 'default' },
+      moonlight: { enabled: this.moonlightPortraitDisplayEnabled, mode: this.moonlightPortraitDisplayMode === 'portrait' ? 'portrait' : 'default' }
+    };
+  }
+
+  private saveRemotePortraitDisplayPreferenceUpdate(
+    update: RemotePortraitDisplayPreferenceUpdate
+  ): boolean {
+    return RemotePortraitDisplayStore.getInstance().savePatch(
+      getContext(this) as common.Context, update);
+  }
+
   private restoreRemoteWheelPreferences(
     prefs: preferences.Preferences
   ): RemoteWheelPreferences {
@@ -16329,6 +16383,9 @@ const DESKTOP_WORKSPACE_TAB = 9;
     const pinchZoomHeight: number =
       remotePinchZoomSettingsLeafSheetHeight(this.settingsLeafSheetMode);
     if (pinchZoomHeight > 0) { return pinchZoomHeight; }
+    const portraitDisplayHeight: number =
+      remotePortraitDisplaySettingsLeafSheetHeight(this.settingsLeafSheetMode);
+    if (portraitDisplayHeight > 0) { return portraitDisplayHeight; }
     const controlBarHeight: number =
       sessionControlBarSettingsLeafSheetHeight(this.settingsLeafSheetMode);
     if (controlBarHeight > 0) { return controlBarHeight; }
@@ -16420,6 +16477,13 @@ const DESKTOP_WORKSPACE_TAB = 9;
         onClose: (): void => { this.closeSettingsLeafSheet(); },
         onSave: (update: RemotePinchZoomPreferenceUpdate): boolean =>
           this.saveRemotePinchZoomPreferenceUpdate(update)
+      })
+    } else if (this.settingsLeafSheetMode === SETTINGS_SHEET_REMOTE_PORTRAIT_DISPLAY) {
+      RemotePortraitDisplaySettingsSheet({
+        initialPreferences: this.remotePortraitDisplayPreferences(),
+        onClose: (): void => { this.closeSettingsLeafSheet(); },
+        onSave: (update: RemotePortraitDisplayPreferenceUpdate): boolean =>
+          this.saveRemotePortraitDisplayPreferenceUpdate(update)
       })
     } else if (this.settingsLeafSheetMode === SETTINGS_SHEET_SESSION_CONTROL_BAR) {
       RemoteSessionControlBarSettingsSheet({
@@ -17055,6 +17119,8 @@ const DESKTOP_WORKSPACE_TAB = 9;
               this.remoteWheelDirectionRow()
               this.cardDivider()
               this.remotePinchZoomRow()
+              this.cardDivider()
+              this.remotePortraitDisplayRow()
               this.cardDivider()
               this.remoteSessionQuickExitRow()
               this.cardDivider()
@@ -19929,6 +19995,29 @@ const DESKTOP_WORKSPACE_TAB = 9;
     }.width('100%').height(62).padding({ left: 16, right: 16 })
       .onClick((): void => {
         this.openSettingsLeafSheet(SETTINGS_SHEET_REMOTE_PINCH_ZOOM);
+      })
+  }
+
+  @Builder remotePortraitDisplayRow() {
+    Row() {
+      Row() { Image($r('app.media.icon_desktop')).width(22).height(22).fillColor(this.pal().text3) }
+        .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
+      Column() {
+        Text('竖屏显示').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
+          .fontColor(this.pal().text).fontFamily(this.font())
+        Text(remotePortraitDisplaySelectionSummary(this.remotePortraitDisplayPreferences()) +
+          ' · 竖屏时建议打开双指缩放')
+          .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
+          .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis }).margin({ top: 2 })
+      }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
+      Button('选择协议').height(34).padding({ left: 12, right: 12 }).fontSize(12)
+        .fontColor(this.accentColor).backgroundColor(this.pal().surface).borderRadius(8)
+        .onClick((): void => {
+          this.openSettingsLeafSheet(SETTINGS_SHEET_REMOTE_PORTRAIT_DISPLAY);
+        })
+    }.width('100%').height(68).padding({ left: 16, right: 16 })
+      .onClick((): void => {
+        this.openSettingsLeafSheet(SETTINGS_SHEET_REMOTE_PORTRAIT_DISPLAY);
       })
   }
 
