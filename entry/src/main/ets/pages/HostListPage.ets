@@ -22,6 +22,8 @@ import { resolveProContinuationHost } from '../services/pro/ProConnectionHostAda
 import { SshConnectionPreflightSheet } from '../components/SshConnectionPreflightSheet';
 import { SshAuthenticatedHandoff } from '../services/ssh/auth/SshAuthenticatedHandoff';
 import { ProAppRuntime } from '../services/pro/ProAppRuntime';
+import { ProDebugMode, ProRuntimeSnapshot } from '../services/pro/ProRuntime';
+import { DEBUG } from 'BuildProfile';
 import { ProFeatureVisibility } from '../services/pro/ProFeatureVisibility';
 import { ProEntries } from '../services/pro/ProEntries';
 import { ProPurchaseLifecycle } from '../services/pro/ProPurchaseLifecycle';
@@ -943,6 +945,9 @@ struct HostListPage {
   @State personalizationProVisible: boolean = false;
   /** RDP custom desktop size and Windows scale: shown only while the account may use them. */
   @State rdpAdvancedDisplayVisible: boolean = false;
+  /** Debug builds only: Pro state override (跟随真实 / 模拟开启 / 模拟关闭) and the real state behind it. */
+  @State proDebugMode: string = 'real';
+  @State proRealStateText: string = '';
   // Pro 高级主机管理 / 工作区与布局 on the home list.
   @State proOrgVisible: boolean = false;
   @State proWorkspacesVisible: boolean = false;
@@ -2157,6 +2162,7 @@ struct HostListPage {
     this.proVisibilityUnsubscribe?.();
     const stopEntries = ProEntries.subscribe((): void => {
       this.refreshAppIconEntry(); this.proManagerVisible = ProEntries.proActive(); this.proFeatureRevision++;
+      this.refreshProDebugState();
     });
     const stopIcons = ProAppIcons.getInstance().subscribe((): void => { this.refreshAppIconEntry(); });
     this.proVisibilityUnsubscribe = (): void => { stopEntries(); stopIcons(); };
@@ -13161,6 +13167,54 @@ struct HostListPage {
     this.persistPref('rdpDesktopPreset', this.rdpDesktopPreset);
   }
 
+  private refreshProDebugState(): void {
+    if (!DEBUG) { return; }
+    const snapshot: ProRuntimeSnapshot = ProAppRuntime.getInstance().runtime.snapshot();
+    this.proDebugMode = snapshot.mode;
+    this.proRealStateText = snapshot.realState === 'active' ? 'Pro 已激活' :
+      snapshot.realState === 'verificationRequired' ? '权益待验证' :
+      snapshot.realState === 'revoked' ? '权益已撤销' : '免费版';
+  }
+
+  private setProDebugMode(mode: string): void {
+    if (!DEBUG) { return; }
+    ProAppRuntime.getInstance().runtime.setDebugMode(mode as ProDebugMode);
+    this.refreshProDebugState();
+  }
+
+  @Builder proDebugModeChip(label: string, mode: string) {
+    Text(label).fontSize(12).maxLines(1).textAlign(TextAlign.Center)
+      .fontColor(this.proDebugMode === mode ? '#FFFFFF' : this.pal().text2)
+      .fontWeight(this.proDebugMode === mode ? FontWeight.Medium : FontWeight.Normal)
+      .padding({ left: 10, right: 10, top: 7, bottom: 7 })
+      .backgroundColor(this.proDebugMode === mode ? this.accentColor : Color.Transparent)
+      .borderRadius(8)
+      .onClick((): void => { this.setProDebugMode(mode); })
+  }
+
+  /** Debug builds only: choose the Pro state for testing; the override lasts until the app restarts. */
+  @Builder proDebugStateRow() {
+    Column({ space: 10 }) {
+      Row() {
+        SymbolGlyph($r('sys.symbol.star')).fontSize(22).fontColor([this.pal().text3])
+          .width(22).height(22).margin({ left: 9, right: 13 })
+        Column() {
+          Text('Pro 状态 · 调试').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
+            .fontColor(this.pal().text).fontFamily(this.font())
+          Text('真实权益：' + this.proRealStateText + ' · 模拟仅本次运行有效')
+            .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font()).margin({ top: 2 })
+            .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+        }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+      }.width('100%')
+      Row({ space: 4 }) {
+        this.proDebugModeChip('跟随真实', 'real')
+        this.proDebugModeChip('模拟开启', 'pro')
+        this.proDebugModeChip('模拟关闭', 'free')
+      }.padding(3).borderRadius(11).backgroundColor(this.pal().surface)
+      .margin({ left: 44 })
+    }.width('100%').alignItems(HorizontalAlign.Start).padding({ left: 16, right: 16, top: 14, bottom: 14 })
+  }
+
   private rdpAdvancedDisplayContext(): ProAccessContext {
     const context: ProAccessContext = ProAppRuntime.getInstance().context('rdp');
     context.capabilities = ['rdp.displayControl'];
@@ -18033,6 +18087,18 @@ struct HostListPage {
           .clip(true).animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
         }
 
+        // Debug builds: while the Pro section is hidden (free or simulated free), keep the state switch reachable.
+        if (DEBUG && !this.proManagerVisible) {
+        ListItem() {
+          Column() {
+            Column() {
+              this.proDebugStateRow()
+            }.borderRadius(24).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
+              .border({ width: 0.5, color: this.pal().cardBorder })
+          }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 20 })
+        }
+        }
+
         // Every Pro feature with its live status and display switch; shown while Pro is active.
         if (this.proManagerVisible) {
         ListItem() {
@@ -18042,6 +18108,10 @@ struct HostListPage {
         ListItem() {
           Column() {
             Column() {
+              if (DEBUG) {
+                this.proDebugStateRow()
+                this.cardDivider()
+              }
               this.proBadgeSettingsRow()
               ForEach(this.proCatalogFeatures(this.proFeatureRevision), (feature: ProFeature): void => {
                 this.cardDivider()

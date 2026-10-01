@@ -106,10 +106,11 @@ export class ProAppRuntime implements ProBillingBackend {
     const usable = !this.transitionActive && scope.kind === 'huawei_account' &&
       (scope.sessionState === 'bound' || scope.sessionState === 'ready' || scope.sessionState === 'offline');
     const owner = usable ? scope.ownerScopeId : '';
-    this.runtime.resetDebugMode();
+    const key = owner + ':' + scope.generation.toString() + ':' + this.environment;
+    // A new account scope never inherits the previous Debug override; a rebind of the same scope keeps it.
+    if (key !== this.boundKey) { this.runtime.resetDebugMode(); }
     this.bridge.client?.bind(owner, scope.generation);
     this.entitlement.bindAccount(owner, this.environment, scope.generation);
-    const key = owner + ':' + scope.generation.toString() + ':' + this.environment;
     if (key !== this.boundKey) {
       this.boundKey = key;
       this.lastReconcileAt = 0;

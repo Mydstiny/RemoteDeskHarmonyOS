@@ -83,8 +83,9 @@ test('debug synchronizes subscribers without changing real entitlement or planne
   assert.equal(JSON.stringify(f.service.snapshot()), before);
   assert.equal(f.runtime.decision('pro.personalization.appIcon', f.context).visible, true);
   assert.equal(f.runtime.decision('pro.personalization.appIcon', { ...f.context, apiVersion: 23 }).visible, false);
-  let calls = 0; f.runtime.run('pro.workspaces', f.context, () => calls++); assert.equal(calls, 0);
-  f.runtime.run('core.connection', f.context, () => calls++); assert.equal(calls, 1);
+  // Debug Pro (simulated or sandbox) reaches implemented experiments such as 工作区 (6774bc584); planned ones stay closed.
+  let calls = 0; f.runtime.run('pro.workspaces', f.context, () => calls++); assert.equal(calls, 1);
+  f.runtime.run('core.connection', f.context, () => calls++); assert.equal(calls, 2);
   stopB(); f.runtime.setDebugMode('free'); assert.equal(b, 2); assert.equal(a, 3);
   f.runtime.setDebugMode('invalid'); assert.equal(f.runtime.snapshot().mode, 'free');
   f.runtime.setDebugMode('real'); assert.equal(f.runtime.snapshot().realState, 'free');
