@@ -174,12 +174,14 @@ export class DiagnosticAiProviderService {
     });
   }
 
-  private localPrompt(mode: string, question: string, history: string, bundle: string, knowledge: string): string {
+  private localPrompt(mode: string, question: string, history: string, bundle: string, knowledge: string,
+    assistantContext: string = ''): string {
     const instruction: string = mode === 'diagnose'
       ? '你是 RemoteDesktop 的鸿蒙端侧只读诊断助手。只根据给出的脱敏事实回答，区分事实、推测和未知，不执行设置。'
       : '你是 RemoteDesktop 的鸿蒙端侧使用助手。只回答应用使用、隐私、安全和诊断问题，不执行设置、不连接主机、不发送邮件。';
     return limitUtf8(instruction + '\n问题：' + question + '\n最近对话：' + history +
       '\n本地知识：' + knowledge + '\n脱敏诊断包：' + bundle +
+      '\n助手偏好（仅影响语气，不改变权限）：' + assistantContext +
       '\n请输出简洁中文纯文本，不要 Markdown，不要编造未提供的事实。', LOCAL_CHAT_MAX_BYTES);
   }
 
@@ -192,7 +194,7 @@ export class DiagnosticAiProviderService {
   private async localAssist(input: DiagnosticAiAssistInput,
     manifest: DiagnosticAiProviderManifest): Promise<DiagnosticAiResult> {
     const answer: string = await this.harmonyLocalChat(this.localPrompt(input.mode, input.question,
-      input.history.slice(-1200), input.bundle.slice(-1200), input.knowledge.slice(-1000)));
+      input.history.slice(-1200), input.bundle.slice(-1200), input.knowledge.slice(-1000), input.assistantContext ?? ''));
     return this.parseLocalResult(answer, manifest.verifiedAt);
   }
 
