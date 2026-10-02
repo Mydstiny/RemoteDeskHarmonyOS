@@ -428,7 +428,7 @@ Phone / Pad / PC 每个平台都要验证：
 
 ## 13. 2026-10-02 实现记录
 
-本轮实现提交：`7f5425ba feat(diagnostics): complete full-app AI assistant flow`。
+本轮实现提交：`7f5425ba feat(diagnostics): complete full-app AI assistant flow`；逐帧岛屿状态与光核组件在 `f7e07378`，卡片展开后的输入聚焦时序修正在 `241092bb`。
 
 已经落地的 P0 行为：
 
