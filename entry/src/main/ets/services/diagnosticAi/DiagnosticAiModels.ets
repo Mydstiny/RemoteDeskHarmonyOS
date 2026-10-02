@@ -68,6 +68,28 @@ export interface DiagnosticAiModelInfo {
   stale: boolean;
 }
 
+/** Token counts returned by an OpenAI-compatible Provider. These are usage facts,
+ * not a billing receipt; the local model catalog is used for the estimate. */
+export interface DiagnosticAiUsageMetadata {
+  promptTokens: number;
+  completionTokens: number;
+  cachedTokens: number;
+}
+
+/** Locally maintained model pricing in CNY per million tokens. A negative value
+ * means the provider did not publish a usable price in the model-list response. */
+export interface DiagnosticAiModelPriceEntry {
+  providerId: string;
+  modelId: string;
+  displayName: string;
+  inputCnyPerMillion: number;
+  outputCnyPerMillion: number;
+  cachedInputCnyPerMillion: number;
+  source: string;
+  sourceKind: 'maintained' | 'provider';
+  updatedAt: number;
+}
+
 export interface DiagnosticAiSettings {
   selectedProviderId: string;
   selectedModelId: string;
@@ -96,6 +118,7 @@ export interface DiagnosticAiResult {
   appActions: string[];
   knowledgeVersion: string;
   createdAt: number;
+  usage?: DiagnosticAiUsageMetadata;
 }
 
 export interface DiagnosticAiSettingProposal {

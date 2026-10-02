@@ -4,11 +4,12 @@ import { AppConfig, Palette, buildDark, buildLight } from '../../common/Theme';
 import { AppSettingsActionRow } from '../AppSettingsActionRow';
 import { AppUiMetrics } from '../../common/AppUiMetrics';
 import { DiagnosticAiAssistantPanel } from './DiagnosticAiAssistantPanel';
-import { DiagnosticAiModelInfo, DiagnosticAiProviderManifest, DiagnosticAiProviderProfile, DiagnosticAiSettings } from '../../services/diagnosticAi/DiagnosticAiModels';
+import { DiagnosticAiModelInfo, DiagnosticAiModelPriceEntry, DiagnosticAiProviderManifest, DiagnosticAiProviderProfile, DiagnosticAiSettings } from '../../services/diagnosticAi/DiagnosticAiModels';
 import { diagnosticAiHarmonyLocalDeviceSupported, diagnosticAiProviderIsHarmonyLocal, diagnosticAiProviderManifests, diagnosticAiProviderSupportsDevice, HARMONY_LOCAL_MODEL_ID } from '../../services/diagnosticAi/DiagnosticAiProviderCatalog';
 import { validateDiagnosticAiEndpoint } from '../../services/diagnosticAi/DiagnosticAiEndpointPolicy';
 import { DiagnosticAiProfileStore } from '../../services/diagnosticAi/DiagnosticAiProfileStore';
 import { DiagnosticAiProviderService, diagnosticAiPrivacySummary } from '../../services/diagnosticAi/DiagnosticAiProviderService';
+import { DiagnosticAiModelCatalog } from '../../services/diagnosticAi/DiagnosticAiModelCatalog';
 import { AccountSessionCoordinator } from '../../services/AccountSessionCoordinator';
 import { ProAppRuntime } from '../../services/pro/ProAppRuntime';
 import { ProEntries } from '../../services/pro/ProEntries';
@@ -49,6 +50,9 @@ export struct DiagnosticAiSettingsSheet {
   onClose: () => void = (): void => {};
   onOpenMailDraft: (subject: string, body: string) => void = (_subject: string, _body: string): void => {};
   onAppAction: (action: DiagnosticAiAppActionId) => void = (_action: DiagnosticAiAppActionId): void => {};
+  /** Replace the current native settings sheet with the assistant sheet for a saved session. */
+  onOpenSession: (sessionId: string) => void = (_sessionId: string): void => {};
+  initialResumeSessionId: string = '';
   /** Which sub-setting this sheet shows: 0 config, 1 assistant, 3 usage, 4 personalization, 5 sessions. */
   @Prop section: number = 0;
   @State manifests: DiagnosticAiProviderManifest[] = [];
@@ -66,10 +70,12 @@ export struct DiagnosticAiSettingsSheet {
   @State usageSnapshot: DiagnosticAiUsageSnapshot = { requestCount: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, estimatedCostCny: 0, updatedAt: 0, providerUsage: [] };
   @State assistantPreferences: DiagnosticAiAssistantPreferences = defaultDiagnosticAiAssistantPreferences();
   @State memoryDraft: string = '';
-  @State assistantNameDraft: string = '小远';
+  @State assistantNameDraft: string = 'RD Assistant';
+  @State sessionMemorySummary: string = '';
+  @State modelPricing: DiagnosticAiModelPriceEntry[] = [];
   @State resumeSessionId: string = '';
   @State usageProviderFilter: string = '';
-  @State sessionDialogVisible: boolean = false;
+  @State updatingModelPricing: boolean = false;
   @State private personalityDraft: 'balanced' | 'warm' | 'concise' | 'technical' = 'balanced';
   @State private verbosityDraft: 'concise' | 'standard' | 'detailed' = 'standard';
   @State private roleDraft: 'remote-expert' | 'beginner-guide' | 'diagnostic-first' | 'privacy-first' = 'remote-expert';
@@ -78,6 +84,7 @@ export struct DiagnosticAiSettingsSheet {
   @State private proactiveSuggestionsDraft: boolean = true;
   @State private confirmBeforeActionsDraft: boolean = true;
   private readonly providerService: DiagnosticAiProviderService = new DiagnosticAiProviderService();
+  private readonly modelCatalog: DiagnosticAiModelCatalog = new DiagnosticAiModelCatalog();
   private readonly conversationStore: DiagnosticAiConversationStore = new DiagnosticAiConversationStore();
   private store: DiagnosticAiProfileStore = new DiagnosticAiProfileStore();
   private owner: string = 'device-local';
@@ -90,8 +97,11 @@ export struct DiagnosticAiSettingsSheet {
     this.owner = scope.ownerScopeId.trim() === '' ? 'device-local' : scope.ownerScopeId.trim();
     this.manifests = diagnosticAiProviderManifests(); this.store.init(getContext(this) as common.UIAbilityContext, this.owner);
     this.conversationStore.init(getContext(this) as common.UIAbilityContext, this.owner);
+    this.modelCatalog.init(getContext(this) as common.UIAbilityContext, this.owner);
     this.profiles = this.store.list(); this.settings = this.store.settingsSnapshot();
     this.sessions = this.conversationStore.listSessions();
+    this.sessionMemorySummary = this.conversationStore.summarizedSessionMemory();
+    this.modelPricing = this.modelCatalog.list();
     this.usageSnapshot = this.conversationStore.usage();
     this.assistantPreferences = this.conversationStore.assistantPreferences();
     this.assistantNameDraft = this.assistantPreferences.name;
@@ -100,13 +110,14 @@ export struct DiagnosticAiSettingsSheet {
     this.roleDraft = this.assistantPreferences.role;
     this.languageDraft = this.assistantPreferences.language;
     this.memoryEnabledDraft = this.assistantPreferences.memoryEnabled;
-    this.memoryDraft = this.assistantPreferences.memorySummary;
+    this.memoryDraft = this.assistantPreferences.manualMemorySummary;
     this.proactiveSuggestionsDraft = this.assistantPreferences.proactiveSuggestions;
     this.confirmBeforeActionsDraft = this.assistantPreferences.confirmBeforeActions;
     if (this.settings.selectedProviderId !== '') { this.selectedProvider = this.settings.selectedProviderId; }
     this.model = this.settings.selectedModelId;
     const selected = this.manifests.find((value: DiagnosticAiProviderManifest): boolean => value.providerId === this.selectedProvider);
     this.endpoint = selected?.endpoint ?? '';
+    this.resumeSessionId = this.initialResumeSessionId.trim();
   }
 
   private allowed(): boolean { return ProEntries.visible(PRO_DIAGNOSTICS_FEATURE, ProAppRuntime.getInstance().context()); }
@@ -215,6 +226,28 @@ export struct DiagnosticAiSettingsSheet {
     finally { this.busy = false; }
   }
 
+  private async updateModelPricing(): Promise<void> {
+    const profile: DiagnosticAiProviderProfile | undefined = this.selectedUsageProvider();
+    if (profile === undefined || this.updatingModelPricing || this.busy) {
+      this.message = '请先保存 Provider 配置和模型'; return;
+    }
+    this.updatingModelPricing = true; this.busy = true; this.message = '正在从 Provider 官方模型清单更新模型与价格…';
+    try {
+      const rows: DiagnosticAiModelPriceEntry[] = await this.providerService.listModelCatalog(profile, this.store.secret(profile));
+      const count: number = this.modelCatalog.updateFromProvider(rows);
+      this.modelPricing = this.modelCatalog.list();
+      this.availableModels = rows.map((item: DiagnosticAiModelPriceEntry): DiagnosticAiModelInfo => ({
+        id: item.modelId, displayName: item.displayName, providerId: item.providerId,
+        supportsStreaming: this.selectedManifest()?.supportsStreaming ?? false,
+        supportsVision: this.selectedManifest()?.supportsVision ?? false,
+        supportsTools: this.selectedManifest()?.supportsTools ?? false, fetchedAt: item.updatedAt, stale: false
+      }));
+      this.message = '已更新 ' + count.toString() + ' 个模型；Provider 未返回单价的项目继续使用本地维护基线，费用仍是估算。';
+    } catch (error) {
+      this.message = this.providerErrorText(error as Object) + '；本地维护价格表未被覆盖';
+    } finally { this.updatingModelPricing = false; this.busy = false; }
+  }
+
   private persistModelSelection(modelId: string): boolean {
     const profile = this.store.list().find((value: DiagnosticAiProviderProfile): boolean => value.providerId === this.selectedProvider);
     if (profile === undefined || modelId.trim() === '') { return false; }
@@ -241,9 +274,10 @@ export struct DiagnosticAiSettingsSheet {
 
   private saveAssistantPreferences(): void {
     const next: DiagnosticAiAssistantPreferences = {
-      name: this.assistantNameDraft.trim() === '' ? '小远' : this.assistantNameDraft.trim().slice(0, 32),
+      name: this.assistantNameDraft.trim() === '' ? 'RD Assistant' : this.assistantNameDraft.trim().slice(0, 32),
       personality: this.personalityDraft, verbosity: this.verbosityDraft, role: this.roleDraft, language: this.languageDraft,
-      memoryEnabled: this.memoryEnabledDraft, memorySummary: this.memoryDraft.trim().slice(0, 4000),
+      memoryEnabled: this.memoryEnabledDraft, memorySummary: this.sessionMemorySummary.slice(0, 4000),
+      manualMemorySummary: this.memoryDraft.trim().slice(0, 4000),
       proactiveSuggestions: this.proactiveSuggestionsDraft, confirmBeforeActions: this.confirmBeforeActionsDraft, updatedAt: Date.now()
     };
     if (this.conversationStore.saveAssistantPreferences(next)) {
@@ -266,6 +300,8 @@ export struct DiagnosticAiSettingsSheet {
   }
 
   private usageRowKey(row: DiagnosticAiProviderUsage): string { return row.providerId + '\u001f' + row.modelId; }
+
+  private priceText(value: number): string { return value < 0 ? '待确认' : '¥' + value.toFixed(2); }
 
   private usageFilterText(): string {
     if (this.usageProviderFilter === '') { return '全部订阅'; }
@@ -441,6 +477,34 @@ export struct DiagnosticAiSettingsSheet {
       } else {
         Text('尚未配置可用的 AI 订阅').fontSize(12).fontColor(this.pal().text3).width('100%')
       }
+      Row({ space: 8 }) {
+        Column({ space: 2 }) {
+          Text('模型与价格维护表').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
+          Text('本地保留完整基线；保存 Provider 后可从其官方 /models 清单刷新').fontSize(11).fontColor(this.pal().text3)
+        }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+        Button(this.updatingModelPricing ? '更新中…' : '联网更新模型与价格').height(36).fontSize(11)
+          .padding({ left: 10, right: 10 }).borderRadius(18).backgroundColor(this.pal().surface).fontColor(this.accent)
+          .enabled(!this.updatingModelPricing && !this.busy && this.selectedUsageProvider() !== undefined)
+          .onClick((): void => { void this.updateModelPricing(); })
+      }.width('100%').padding(10).borderRadius(14).backgroundColor(this.pal().surface)
+      if (this.modelPricing.length > 0) {
+        Text('维护价格表（元 / 百万 Token）').fontSize(12).fontColor(this.pal().text2).width('100%')
+        ForEach(this.modelPricing, (row: DiagnosticAiModelPriceEntry): void => {
+          Row({ space: 8 }) {
+            Column({ space: 2 }) {
+              Text(row.providerId + ' · ' + row.displayName).fontSize(12).fontColor(this.pal().text)
+                .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+              Text(row.modelId + ' · 输入 ' + this.priceText(row.inputCnyPerMillion) + ' · 输出 ' + this.priceText(row.outputCnyPerMillion) +
+                ' · 缓存 ' + this.priceText(row.cachedInputCnyPerMillion)).fontSize(10).fontColor(this.pal().text3)
+                .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
+            }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+            Text((row.sourceKind === 'provider' ? '在线' : '维护') + ' · ' + new Date(row.updatedAt).toLocaleDateString())
+              .fontSize(10).fontColor(row.sourceKind === 'provider' ? '#2BB673' : this.pal().text3)
+          }.width('100%').padding({ top: 5, bottom: 5 })
+        }, (row: DiagnosticAiModelPriceEntry): string => 'price-' + row.providerId + '-' + row.modelId)
+        Text('来源与更新时间以每行标记为准；价格不是 Provider 账单，缺少官方单价时显示“待确认”。').fontSize(10).lineHeight(15)
+          .fontColor(this.pal().text3).width('100%')
+      }
       if (this.profiles.length > 1) {
         Text('已配置订阅（点击切换新请求）').fontSize(12).fontColor(this.pal().text2).width('100%')
         ForEach(this.profiles, (profile: DiagnosticAiProviderProfile): void => {
@@ -480,7 +544,7 @@ export struct DiagnosticAiSettingsSheet {
       Column({ space: 10 }) {
         Column({ space: 4 }) {
           Text('历史会话').fontSize(16).fontWeight(FontWeight.Medium).fontColor(this.pal().text).width('100%')
-          Text('每个会话保留自己的 Provider、模型和上下文。点击后会打开对话框，可以继续提问。').fontSize(12).lineHeight(17).fontColor(this.pal().text3).width('100%')
+          Text('每个会话保留自己的 Provider、模型和上下文。点击后会替换当前设置页，并在原 Provider 上继续提问。').fontSize(12).lineHeight(17).fontColor(this.pal().text3).width('100%')
         }.width('100%').alignItems(HorizontalAlign.Start)
         if (this.sessions.length === 0) {
           Text('还没有已保存的对话。完成一次问答后会自动创建会话。').fontSize(12).fontColor(this.pal().text2).width('100%')
@@ -491,7 +555,7 @@ export struct DiagnosticAiSettingsSheet {
                 const profile: DiagnosticAiProviderProfile | undefined = this.profiles.find((item: DiagnosticAiProviderProfile): boolean =>
                   item.providerId === session.providerId && item.modelId === session.modelId);
                 if (profile !== undefined) { this.useProviderForNewRequests(profile); }
-                this.resumeSessionId = session.id; this.sessionDialogVisible = true;
+                this.onOpenSession(session.id);
               } })
           }, (session: DiagnosticAiConversationSession): string => 'session-' + session.id)
         }
@@ -503,7 +567,7 @@ export struct DiagnosticAiSettingsSheet {
     this.sectionLabel('助手个性与本地记忆')
     Column({ space: 10 }) {
       Text('助手名称').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
-      TextInput({ placeholder: '例如：小远', text: this.assistantNameDraft }).height(42).fontSize(14)
+      TextInput({ placeholder: '例如：RD Assistant', text: this.assistantNameDraft }).height(42).fontSize(14)
         .backgroundColor(this.pal().surface).borderRadius(12).onChange((value: string): void => { this.assistantNameDraft = value; })
       Text('回答风格').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
       Flex({ wrap: FlexWrap.Wrap }) {
@@ -544,7 +608,7 @@ export struct DiagnosticAiSettingsSheet {
           .onClick((): void => { this.languageDraft = 'en-US'; })
       }.width('100%')
       Row({ space: 8 }) {
-        Column({ space: 2 }) { Text('允许本地记忆').fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.pal().text); Text('只把你主动填写的偏好附加到后续请求').fontSize(11).fontColor(this.pal().text3) }.layoutWeight(1)
+        Column({ space: 2 }) { Text('允许本地记忆').fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.pal().text); Text('会话摘要和你手动填写的偏好只附加到后续请求').fontSize(11).fontColor(this.pal().text3) }.layoutWeight(1)
         Toggle({ type: ToggleType.Switch, isOn: this.memoryEnabledDraft }).selectedColor(this.accent).onChange((value: boolean): void => { this.memoryEnabledDraft = value; })
       }.width('100%')
       Row({ space: 8 }) {
@@ -555,6 +619,10 @@ export struct DiagnosticAiSettingsSheet {
         Column({ space: 2 }) { Text('敏感操作先确认').fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.pal().text); Text('断开、传输、隐私、凭据等操作始终建议保持开启').fontSize(11).fontColor(this.pal().text3) }.layoutWeight(1)
         Toggle({ type: ToggleType.Switch, isOn: this.confirmBeforeActionsDraft }).selectedColor(this.accent).onChange((value: boolean): void => { this.confirmBeforeActionsDraft = value; })
       }.width('100%')
+      Text('自动会话摘要').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
+      Text(this.sessionMemorySummary === '' ? '完成问答后，这里会显示最近会话的本机摘要。' : this.sessionMemorySummary)
+        .fontSize(11).lineHeight(16).fontColor(this.pal().text3).width('100%').maxLines(8)
+      Text('手动补充偏好').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
       TextArea({ placeholder: '例如：我主要使用 RDP，回答请先给出最短操作路径。', text: this.memoryDraft }).height(86).fontSize(13)
         .backgroundColor(this.pal().surface).borderRadius(12).onChange((value: string): void => { this.memoryDraft = value; })
       Button('保存助手偏好').width('100%').height(42).borderRadius(21).backgroundColor(this.pal().surface).fontColor(this.accent)
@@ -676,8 +744,7 @@ export struct DiagnosticAiSettingsSheet {
   }
 
   build() {
-    Stack() {
-      Column() {
+    Column() {
         this.header()
         if ((this.section === 1 || this.section === 3 || this.section === 4 || this.section === 5) ? !this.assistantAllowed() : !this.providerAllowed()) {
           this.lockedCard()
@@ -700,26 +767,5 @@ export struct DiagnosticAiSettingsSheet {
         }
       }.width('100%').height('100%').padding({ left: 20, right: 20, top: 18, bottom: 28 })
         .backgroundColor(this.pal().sheetBg)
-      if (this.sessionDialogVisible) {
-        Stack() {
-          Column().width('100%').height('100%').backgroundColor('#66000000')
-          Column() {
-            Row({ space: 8 }) {
-              Text('继续对话').fontSize(16).fontWeight(FontWeight.Medium).fontColor(this.pal().text).layoutWeight(1)
-              SymbolGlyph($r('sys.symbol.xmark')).fontSize(17).fontColor([this.pal().text2]).padding(6)
-                .onClick((): void => { this.sessionDialogVisible = false; this.sessions = this.conversationStore.listSessions(); this.usageSnapshot = this.conversationStore.usage(); })
-            }.width('100%').padding({ left: 14, right: 8, top: 10, bottom: 6 })
-            DiagnosticAiAssistantPanel({
-              embedded: true, resumeSessionId: this.resumeSessionId,
-              onAppAction: (action: DiagnosticAiAppActionId): void => { this.onAppAction(action); },
-              onClose: (): void => { this.sessionDialogVisible = false; this.sessions = this.conversationStore.listSessions(); this.usageSnapshot = this.conversationStore.usage(); },
-              onOpenMailDraft: (subject: string, body: string): void => { this.onOpenMailDraft(subject, body); }
-            }).layoutWeight(1)
-          }.width(this.breakpoint === 'sm' ? '94%' : '78%').height(this.breakpoint === 'sm' ? '88%' : '82%')
-            .backgroundColor(this.pal().sheetBg).borderRadius(24).border({ width: 0.5, color: this.pal().cardBorder })
-            .align(Alignment.Center)
-        }.width('100%').height('100%').zIndex(40)
-      }
-    }.width('100%').height('100%')
   }
 }

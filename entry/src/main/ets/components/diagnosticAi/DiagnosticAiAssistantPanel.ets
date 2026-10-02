@@ -21,6 +21,7 @@ import { PRO_DIAGNOSTICS_ASSISTANT_FEATURE } from '../../services/pro/ProFeature
 import { AccountSessionCoordinator } from '../../services/AccountSessionCoordinator';
 import { DiagnosticAiAppAction, DiagnosticAiAppActionId, diagnosticAiAppActionLabel, diagnosticAiAppActionRequiresConfirmation, diagnosticAiAppActionsForSteps } from '../../services/diagnosticAi/DiagnosticAiAppActionPolicy';
 import { DiagnosticAiAssistantPreferences, DiagnosticAiConversationSession, DiagnosticAiConversationStore, DiagnosticAiConversationTurn } from '../../services/diagnosticAi/DiagnosticAiConversationStore';
+import { DiagnosticAiModelCatalog } from '../../services/diagnosticAi/DiagnosticAiModelCatalog';
 
 /** A suggested question shown as a pill in the island; it follows what the user is asking about. */
 class AiSuggestion {
@@ -245,9 +246,10 @@ export struct DiagnosticAiAssistantPanel {
   private readonly conversationStore: DiagnosticAiConversationStore = new DiagnosticAiConversationStore();
   private sessionId: string = '';
   private assistantPreferences: DiagnosticAiAssistantPreferences = {
-    name: '小远', personality: 'balanced', verbosity: 'standard', role: 'remote-expert', language: 'zh-CN',
-    memoryEnabled: true, memorySummary: '', proactiveSuggestions: true, confirmBeforeActions: true, updatedAt: 0
+    name: 'RD Assistant', personality: 'balanced', verbosity: 'standard', role: 'remote-expert', language: 'zh-CN',
+    memoryEnabled: true, memorySummary: '', manualMemorySummary: '', proactiveSuggestions: true, confirmBeforeActions: true, updatedAt: 0
   };
+  private readonly modelCatalog: DiagnosticAiModelCatalog = new DiagnosticAiModelCatalog();
 
   private onRevealed(): void {
     this.refreshReady();
@@ -336,6 +338,7 @@ export struct DiagnosticAiAssistantPanel {
     this.owner = scope.ownerScopeId.trim() === '' ? 'device-local' : scope.ownerScopeId;
     this.store.init(getContext(this) as common.UIAbilityContext, this.owner);
     this.conversationStore.init(getContext(this) as common.UIAbilityContext, this.owner);
+    this.modelCatalog.init(getContext(this) as common.UIAbilityContext, this.owner);
     if (AiConversationMemory.owner !== this.owner) { AiConversationMemory.clear(this.owner); }
     this.refreshReady();
     this.assistantPreferences = this.conversationStore.assistantPreferences();
@@ -463,6 +466,11 @@ export struct DiagnosticAiAssistantPanel {
     return value;
   }
 
+  private assistantMemoryContext(): string {
+    if (!this.assistantPreferences.memoryEnabled) { return ''; }
+    return this.conversationStore.memoryContext();
+  }
+
   private async sendAgent(mode: DiagnosticAiAgentMode, bundle: string = ''): Promise<void> {
     if (!this.allowed()) { this.status = '当前账号没有诊断与 AI 帮助权限'; return; }
     if (this.busy || this.question.trim() === '') { return; }
@@ -484,8 +492,7 @@ export struct DiagnosticAiAssistantPanel {
         assistantContext: this.assistantPreferences.name + '；语气：' + this.assistantPreferences.personality +
           '；详细程度：' + this.assistantPreferences.verbosity + '；角色：' + this.assistantPreferences.role +
           '；语言：' + this.assistantPreferences.language +
-          (this.assistantPreferences.memoryEnabled && this.assistantPreferences.memorySummary !== '' ?
-            '；用户偏好：' + this.assistantPreferences.memorySummary : '')
+          (this.assistantMemoryContext() !== '' ? '；本机助手记忆：' + this.assistantMemoryContext() : '')
       });
       const currentScope = AccountSessionCoordinator.getInstance().currentScope();
       const currentOwner: string = currentScope.ownerScopeId.trim() === '' ? 'device-local' : currentScope.ownerScopeId;
@@ -559,8 +566,7 @@ export struct DiagnosticAiAssistantPanel {
         assistantContext: this.assistantPreferences.name + '；语气：' + this.assistantPreferences.personality +
           '；详细程度：' + this.assistantPreferences.verbosity + '；角色：' + this.assistantPreferences.role +
           '；语言：' + this.assistantPreferences.language +
-          (this.assistantPreferences.memoryEnabled && this.assistantPreferences.memorySummary !== '' ?
-            '；用户偏好：' + this.assistantPreferences.memorySummary : '')
+          (this.assistantMemoryContext() !== '' ? '；本机助手记忆：' + this.assistantMemoryContext() : '')
       });
       const currentScope = AccountSessionCoordinator.getInstance().currentScope();
       const currentOwner: string = currentScope.ownerScopeId.trim() === '' ? 'device-local' : currentScope.ownerScopeId;
@@ -866,9 +872,14 @@ export struct DiagnosticAiAssistantPanel {
     const previous: DiagnosticAiConversationSession | undefined = this.conversationStore.session(this.sessionId);
     if (previous !== undefined) { session.createdAt = previous.createdAt; }
     this.conversationStore.saveSession(session);
-    const promptTokens: number = Math.ceil((this.question.length + this.conversation.length + this.latestBundleText.length) / 4);
-    const completionTokens: number = Math.ceil(result.summary.length / 4);
-    this.conversationStore.recordUsage(promptTokens, completionTokens, 0, (promptTokens + completionTokens) / 1000000 * 0.3,
+    const estimatedPromptTokens: number = Math.ceil((this.question.length + this.conversation.length + this.latestBundleText.length) / 4);
+    const estimatedCompletionTokens: number = Math.ceil(result.summary.length / 4);
+    const promptTokens: number = result.usage === undefined ? estimatedPromptTokens : result.usage.promptTokens;
+    const completionTokens: number = result.usage === undefined ? estimatedCompletionTokens : result.usage.completionTokens;
+    const cachedTokens: number = result.usage === undefined ? 0 : result.usage.cachedTokens;
+    const estimatedCost: number = this.modelCatalog.estimateCost(profile.providerId, profile.modelId,
+      promptTokens, completionTokens, cachedTokens);
+    this.conversationStore.recordUsage(promptTokens, completionTokens, cachedTokens, estimatedCost,
       profile.providerId, profile.modelId);
     // Show the new answer from its start (its question at the top), not the end of the conversation.
     setTimeout((): void => {

@@ -2,7 +2,7 @@ import { BusinessError, deviceInfo } from '@kit.BasicServicesKit';
 import { util } from '@kit.ArkTS';
 import { localChatModel } from '@kit.DataAugmentationKit';
 import { http } from '@kit.NetworkKit';
-import { DiagnosticAiEvidenceRef, DiagnosticAiModelInfo, DiagnosticAiProviderManifest, DiagnosticAiProviderProfile, DiagnosticAiResult, DiagnosticAiSettingProposal } from './DiagnosticAiModels';
+import { DiagnosticAiEvidenceRef, DiagnosticAiModelInfo, DiagnosticAiModelPriceEntry, DiagnosticAiProviderManifest, DiagnosticAiProviderProfile, DiagnosticAiResult, DiagnosticAiSettingProposal, DiagnosticAiUsageMetadata } from './DiagnosticAiModels';
 import { diagnosticAiHarmonyLocalDeviceSupported, diagnosticAiProviderIsHarmonyLocal, diagnosticAiProviderManifest, HARMONY_LOCAL_MODEL_ID } from './DiagnosticAiProviderCatalog';
 import { validateDiagnosticAiEndpoint } from './DiagnosticAiEndpointPolicy';
 import { diagnosticAiProposalIsSafe, diagnosticAiSettingCatalog } from './DiagnosticAiSettingsActionPolicy';
@@ -15,6 +15,40 @@ const LOCAL_CHAT_TIMEOUT_MS: number = 30000;
 
 function safeText(value: Object | undefined | null, fallback: string = ''): string {
   return typeof value === 'string' ? value as string : fallback;
+}
+
+function nonNegativeNumber(value: Object | undefined): number {
+  return typeof value === 'number' && isFinite(value as number) ? Math.max(0, Math.round(value as number)) : 0;
+}
+
+function nestedNumber(row: Record<string, Object>, parent: string, keys: string[]): number {
+  const nested = row[parent] as Record<string, Object>;
+  if (nested !== undefined && nested !== null && typeof nested === 'object') {
+    for (const key of keys) {
+      if (typeof nested[key] === 'number') { return nonNegativeNumber(nested[key]); }
+    }
+  }
+  return 0;
+}
+
+function usageMetadata(raw: Record<string, Object>): DiagnosticAiUsageMetadata | undefined {
+  const usage = raw['usage'] as Record<string, Object>;
+  if (usage === undefined || usage === null || typeof usage !== 'object') { return undefined; }
+  const prompt: number = nonNegativeNumber(usage['prompt_tokens'] ?? usage['input_tokens']);
+  const completion: number = nonNegativeNumber(usage['completion_tokens'] ?? usage['output_tokens']);
+  const cached: number = nonNegativeNumber(usage['cached_tokens'] ?? usage['cache_read_input_tokens']) ||
+    nestedNumber(usage, 'prompt_tokens_details', ['cached_tokens', 'cache_read_input_tokens']) ||
+    nestedNumber(usage, 'input_tokens_details', ['cached_tokens', 'cache_read_input_tokens']);
+  if (prompt === 0 && completion === 0 && cached === 0) { return undefined; }
+  return { promptTokens: prompt, completionTokens: completion, cachedTokens: Math.min(prompt, cached) };
+}
+
+function priceNumber(row: Record<string, Object>, pricing: Record<string, Object>, keys: string[]): number {
+  for (const key of keys) {
+    const value: Object | undefined = row[key] ?? pricing[key];
+    if (typeof value === 'number' && isFinite(value as number)) { return Math.max(0, value as number); }
+  }
+  return -1;
 }
 
 function responseText(result: Object): string { return typeof result === 'string' ? result as string : JSON.stringify(result); }
@@ -270,6 +304,41 @@ export class DiagnosticAiProviderService {
     return models;
   }
 
+  /**
+   * Read the provider's official model-list response and retain any explicitly
+   * published CNY-per-million pricing fields. Providers that expose only model
+   * IDs still produce rows so the local maintained baseline can keep them in
+   * the usage table; no API key is sent to a third-party pricing site.
+   */
+  async listModelCatalog(profile: DiagnosticAiProviderProfile, secret: string): Promise<DiagnosticAiModelPriceEntry[]> {
+    const manifest = diagnosticAiProviderManifest(profile.providerId);
+    if (manifest !== null && diagnosticAiProviderIsHarmonyLocal(profile.providerId)) {
+      await this.ensureHarmonyLocalModel();
+      return [{ providerId: profile.providerId, modelId: HARMONY_LOCAL_MODEL_ID,
+        displayName: '鸿蒙端侧小模型', inputCnyPerMillion: 0, outputCnyPerMillion: 0,
+        cachedInputCnyPerMillion: 0, source: 'HarmonyOS 端侧模型清单', sourceKind: 'provider', updatedAt: Date.now() }];
+    }
+    if (manifest === null || manifest.modelListPath === '') { throw new Error('DIAGNOSTIC_AI_MODEL_LIST_UNAVAILABLE'); }
+    const raw = JSON.parse(await this.request(profile, secret, manifest.modelListPath, null)) as Record<string, Object>;
+    const rows: Object[] = Array.isArray(raw['data']) ? raw['data'] as Object[] :
+      Array.isArray(raw['models']) ? raw['models'] as Object[] : [];
+    const now: number = Date.now(); const result: DiagnosticAiModelPriceEntry[] = [];
+    rows.slice(0, 256).forEach((value: Object): void => {
+      const row = value as Record<string, Object>;
+      const id: string = safeText(row['id'], safeText(row['name']));
+      if (id === '' || result.some((item: DiagnosticAiModelPriceEntry): boolean => item.modelId === id)) { return; }
+      const pricing = row['pricing'] as Record<string, Object>;
+      const priceRow: Record<string, Object> = pricing === undefined || pricing === null || typeof pricing !== 'object' ? {} : pricing;
+      result.push({ providerId: profile.providerId, modelId: id.slice(0, 160), displayName: safeText(row['display_name'], id).slice(0, 160),
+        inputCnyPerMillion: priceNumber(row, priceRow, ['input_cny_per_million', 'inputPriceCnyPerMillion', 'prompt_cny_per_million']),
+        outputCnyPerMillion: priceNumber(row, priceRow, ['output_cny_per_million', 'outputPriceCnyPerMillion', 'completion_cny_per_million']),
+        cachedInputCnyPerMillion: priceNumber(row, priceRow, ['cached_input_cny_per_million', 'cachedPriceCnyPerMillion', 'cache_cny_per_million']),
+        source: manifest.displayName + ' /models', sourceKind: 'provider', updatedAt: now });
+    });
+    if (result.length === 0) { throw new Error('DIAGNOSTIC_AI_MODEL_LIST_EMPTY'); }
+    return result;
+  }
+
   async analyze(profile: DiagnosticAiProviderProfile, secret: string, input: DiagnosticAiAnalysisInput): Promise<DiagnosticAiResult> {
     const manifest = diagnosticAiProviderManifest(profile.providerId);
     if (manifest !== null && diagnosticAiProviderIsHarmonyLocal(profile.providerId)) {
@@ -288,6 +357,7 @@ export class DiagnosticAiProviderService {
       messages, response_format: { type: 'json_object' }
     };
     const raw = JSON.parse(await this.request(profile, secret, manifest.chatPath, body)) as Record<string, Object>;
+    const usage: DiagnosticAiUsageMetadata | undefined = usageMetadata(raw);
     const choices = Array.isArray(raw['choices']) ? raw['choices'] as Object[] : [];
     let first: Record<string, Object> | null = null;
     if (choices.length > 0) { first = choices[0] as Record<string, Object>; }
@@ -302,7 +372,7 @@ export class DiagnosticAiProviderService {
       return { summary: content.slice(0, 6000), severity: 'unknown', confidence: 0,
         evidenceRefs: [], hypotheses: [], recommendedReadOnlySteps: [], settingProposals: [], appActions: [],
         unknowns: ['Provider 返回的是自由文本，尚未提供结构化证据引用'],
-        knowledgeVersion: manifest.verifiedAt, createdAt: Date.now() };
+        knowledgeVersion: manifest.verifiedAt, createdAt: Date.now(), usage };
     }
     const severityValue: string = safeText(parsed['severity'], 'unknown');
     const severity = ['info', 'low', 'medium', 'high'].indexOf(severityValue) >= 0 ?
@@ -314,7 +384,7 @@ export class DiagnosticAiProviderService {
       settingProposals: safeProposals(parsed['settingProposals']), unknowns: stringArray(parsed['unknowns']),
       appActions: stringArray(parsed['appActions']).map((value: string): string | null => diagnosticAiAppActionId(value))
         .filter((value: string | null): boolean => value !== null).map((value: string | null): string => value as string).slice(0, 16),
-      knowledgeVersion: safeText(parsed['knowledgeVersion'], manifest.verifiedAt).slice(0, 128), createdAt: Date.now() };
+      knowledgeVersion: safeText(parsed['knowledgeVersion'], manifest.verifiedAt).slice(0, 128), createdAt: Date.now(), usage };
   }
 
   /**
@@ -366,6 +436,7 @@ export class DiagnosticAiProviderService {
 
   private parseResult(rawText: string, knowledgeVersion: string): DiagnosticAiResult {
     const raw = JSON.parse(rawText) as Record<string, Object>;
+    const usage: DiagnosticAiUsageMetadata | undefined = usageMetadata(raw);
     const choices = Array.isArray(raw['choices']) ? raw['choices'] as Object[] : [];
     let first: Record<string, Object> | null = null;
     if (choices.length > 0) { first = choices[0] as Record<string, Object>; }
@@ -383,7 +454,7 @@ export class DiagnosticAiProviderService {
       return { summary: content.slice(0, 6000), severity: 'unknown', confidence: 0,
         evidenceRefs: [], hypotheses: [], recommendedReadOnlySteps: [], settingProposals: [], appActions: [],
         unknowns: ['Provider 返回的是自由文本，已显示原文但没有结构化证据引用'],
-        knowledgeVersion, createdAt: Date.now() };
+        knowledgeVersion, createdAt: Date.now(), usage };
     }
     const severityValue: string = safeText(parsed['severity'], 'unknown');
     const severity = ['info', 'low', 'medium', 'high'].indexOf(severityValue) >= 0 ?
@@ -395,7 +466,7 @@ export class DiagnosticAiProviderService {
       settingProposals: safeProposals(parsed['settingProposals']), unknowns: stringArray(parsed['unknowns']),
       appActions: stringArray(parsed['appActions']).map((value: string): string | null => diagnosticAiAppActionId(value))
         .filter((value: string | null): boolean => value !== null).map((value: string | null): string => value as string).slice(0, 16),
-      knowledgeVersion: safeText(parsed['knowledgeVersion'], knowledgeVersion).slice(0, 128), createdAt: Date.now() };
+      knowledgeVersion: safeText(parsed['knowledgeVersion'], knowledgeVersion).slice(0, 128), createdAt: Date.now(), usage };
   }
 }
 

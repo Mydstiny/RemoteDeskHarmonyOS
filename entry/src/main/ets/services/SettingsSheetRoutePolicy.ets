@@ -140,8 +140,13 @@ export function diagnosticLogSettingsLeafSheetHeight(mode: number): number {
   return mode === SETTINGS_SHEET_DIAGNOSTIC_LOG ? 740 : 0;
 }
 
-export function diagnosticAiSettingsLeafSheetHeight(mode: number): number {
-  return mode === SETTINGS_SHEET_DIAGNOSTIC_AI ? 840 : 0;
+export function diagnosticAiSettingsLeafSheetHeight(mode: number, section: number = 0, viewportHeight: number = 0): number {
+  if (mode !== SETTINGS_SHEET_DIAGNOSTIC_AI) { return 0; }
+  // Config is the densest surface. The assistant, usage, personalization and
+  // session leaves each use a smaller native sheet and an inner Scroll.
+  const desired: number = section === 1 ? 720 : section === 3 ? 620 : section === 4 ? 680 : section === 5 ? 620 : 840;
+  if (viewportHeight <= 0) { return desired; }
+  return Math.min(desired, Math.max(360, viewportHeight - 48));
 }
 
 export function secretVisibilitySettingsLeafSheetHeight(mode: number): number {

@@ -964,6 +964,8 @@ struct HostListPage {
   @State diagnosticAiAssistantVisible: boolean = false;
   /** Which sub-setting the diagnostic AI sheet shows: 0 = 辅助 AI 配置, 1 = 启动 AI 辅助. */
   @State diagnosticAiSection: number = 0;
+  /** Session selected from AI history; native sheet replacement carries it into section 1. */
+  @State diagnosticAiResumeSessionId: string = '';
   /** 启动 AI 辅助 opens as the AI island at the top center; it unmounts after folding away. */
   @State aiIslandShown: boolean = false;
   /** The AI island floats as a capsule: its overlay lets every other touch reach the page. */
@@ -4737,6 +4739,7 @@ struct HostListPage {
     // Sheet transition has completed so the outgoing builder remains visible.
     this.closeLegacySettingsSheetFlags();
     this.resetSettingsLeafSheetAfterDismiss();
+    if (dismissedMode === SETTINGS_SHEET_DIAGNOSTIC_AI) { this.diagnosticAiResumeSessionId = ''; }
     this.vncSettingsLeafDirty = false;
     this.moonlightSettingsLeafDirty = false;
     if (moonlightSettingsRouteSpec(dismissedMode) !== null) {
@@ -16847,9 +16850,11 @@ struct HostListPage {
     if (diagnosticHeight > 0) { return diagnosticHeight; }
     const diagnosticAiHeight: number = diagnosticAiSettingsLeafSheetHeight(this.settingsLeafSheetMode);
     if (diagnosticAiHeight > 0) {
-      // AI settings contain variable-length provider lists, session history and personalization controls. Keep one
-      // adaptive native sheet with an inner Scroll instead of a fixed 840vp height that clips the fourth row.
-      return Math.min(900, Math.max(420, this.pageViewportHeight - 48));
+      // The three AI leaves have different density. The policy clamps each
+      // content height to the live viewport while their own Scroll handles
+      // long provider/session lists.
+      return diagnosticAiSettingsLeafSheetHeight(this.settingsLeafSheetMode, this.diagnosticAiSection,
+        this.pageViewportHeight);
     }
     const secretVisibilityHeight: number =
       secretVisibilitySettingsLeafSheetHeight(this.settingsLeafSheetMode);
@@ -16989,7 +16994,9 @@ struct HostListPage {
     } else if (this.settingsLeafSheetMode === SETTINGS_SHEET_DIAGNOSTIC_AI) {
       DiagnosticAiSettingsSheet({
         section: this.diagnosticAiSection,
+        initialResumeSessionId: this.diagnosticAiResumeSessionId,
         onClose: (): void => { this.closeSettingsLeafSheet(); },
+        onOpenSession: (sessionId: string): void => { this.openDiagnosticAiSession(sessionId); },
         onAppAction: (action: DiagnosticAiAppActionId): void => { this.runAssistantAppAction(action); },
         onOpenMailDraft: (subject: string, body: string): void => {
           void this.openFeedbackEmail(subject, body);
@@ -20304,7 +20311,22 @@ struct HostListPage {
       if (this.diagnosticAiAssistantVisible) { this.aiIslandShown = true; this.diagnosticAiOrbState = 'open'; }
       return;
     }
-    this.openSettingsLeafSheet(SETTINGS_SHEET_DIAGNOSTIC_AI, (): void => { this.diagnosticAiSection = section; });
+    this.openSettingsLeafSheet(SETTINGS_SHEET_DIAGNOSTIC_AI, (): void => {
+      this.diagnosticAiSection = section; this.diagnosticAiResumeSessionId = '';
+    });
+  }
+
+  /**
+   * History resumes through the same native bindSheet owner. Calling the
+   * normal replacement path closes the session list sheet first, then mounts
+   * the assistant section with the selected owner-scoped session.
+   */
+  private openDiagnosticAiSession(sessionId: string): void {
+    const id: string = sessionId.trim();
+    if (id === '') { return; }
+    this.openSettingsLeafSheet(SETTINGS_SHEET_DIAGNOSTIC_AI, (): void => {
+      this.diagnosticAiSection = 1; this.diagnosticAiResumeSessionId = id.slice(0, 128);
+    });
   }
 
   /** One AI help setting row: 0 config, 1 assistant, 2 classic logs, 3 usage, 4 personalization, 5 sessions. */

@@ -47,15 +47,18 @@ export interface DiagnosticAiAssistantPreferences {
   role: 'remote-expert' | 'beginner-guide' | 'diagnostic-first' | 'privacy-first';
   language: 'zh-CN' | 'en-US';
   memoryEnabled: boolean;
+  /** Summary generated locally from saved conversation turns. */
   memorySummary: string;
+  /** Optional user-authored memory, kept separate from the generated summary. */
+  manualMemorySummary: string;
   proactiveSuggestions: boolean;
   confirmBeforeActions: boolean;
   updatedAt: number;
 }
 
 export function defaultDiagnosticAiAssistantPreferences(): DiagnosticAiAssistantPreferences {
-  return { name: '小远', personality: 'balanced', verbosity: 'standard', role: 'remote-expert', language: 'zh-CN',
-    memoryEnabled: true, memorySummary: '', proactiveSuggestions: true, confirmBeforeActions: true, updatedAt: 0 };
+  return { name: 'RD Assistant', personality: 'balanced', verbosity: 'standard', role: 'remote-expert', language: 'zh-CN',
+    memoryEnabled: true, memorySummary: '', manualMemorySummary: '', proactiveSuggestions: true, confirmBeforeActions: true, updatedAt: 0 };
 }
 
 export function defaultDiagnosticAiUsageSnapshot(): DiagnosticAiUsageSnapshot {
@@ -111,6 +114,36 @@ export class DiagnosticAiConversationStore {
     rows.unshift(cloneSession(session));
     try { store.putSync('sessions', JSON.stringify(rows.slice(0, 50))); store.flushSync(); return true; }
     catch (_error) { return false; }
+  }
+
+  /**
+   * Produce a bounded, deterministic local summary from recent sessions. This
+   * deliberately does not call a Provider: it is only a compact memory index
+   * for the user to review and the next request to reference.
+   */
+  summarizedSessionMemory(): string {
+    const rows: DiagnosticAiConversationSession[] = this.listSessions().slice(0, 8);
+    if (rows.length === 0) { return ''; }
+    const lines: string[] = ['最近会话摘要（自动生成，仅保存在本机）：'];
+    rows.forEach((session: DiagnosticAiConversationSession): void => {
+      const latest: DiagnosticAiConversationTurn | undefined = session.turns.length === 0 ? undefined : session.turns[session.turns.length - 1];
+      const title: string = (session.title || '未命名会话').replace(/[\r\n]+/g, ' ').trim().slice(0, 80);
+      const question: string = latest === undefined ? '' : latest.question.replace(/[\r\n]+/g, ' ').trim().slice(0, 140);
+      const answer: string = latest === undefined ? '' : latest.answer.replace(/[\r\n]+/g, ' ').trim().slice(0, 180);
+      const detail: string = question === '' ? '' : '：' + question + (answer === '' ? '' : ' → ' + answer);
+      lines.push('• ' + title + detail);
+    });
+    return lines.join('\n').slice(0, 3200);
+  }
+
+  /** Generated and manual memory are kept distinct in storage but joined only
+   * at the request boundary. */
+  memoryContext(): string {
+    const prefs = this.assistantPreferences();
+    const generated: string = this.summarizedSessionMemory();
+    const manual: string = prefs.manualMemorySummary.trim() !== '' ? prefs.manualMemorySummary.trim() :
+      (prefs.memorySummary.trim() !== '' && generated === '' ? prefs.memorySummary.trim() : '');
+    return [generated, manual].filter((value: string): boolean => value !== '').join('\n用户补充偏好：').slice(0, 4000);
   }
 
   usage(): DiagnosticAiUsageSnapshot {
@@ -169,12 +202,18 @@ export class DiagnosticAiConversationStore {
       const verbosity: string[] = ['concise', 'standard', 'detailed'];
       const roles: string[] = ['remote-expert', 'beginner-guide', 'diagnostic-first', 'privacy-first'];
       const languages: string[] = ['zh-CN', 'en-US'];
-      return { name: typeof value.name === 'string' && value.name.trim() !== '' ? value.name.slice(0, 32) : '小远',
+      const storedMemory: string = typeof value.memorySummary === 'string' ? value.memorySummary.slice(0, 4000) : '';
+      const storedManualMemory: string = typeof value.manualMemorySummary === 'string' ? value.manualMemorySummary.slice(0, 4000) : '';
+      const storedName: string = typeof value.name === 'string' ? value.name.trim() : '';
+      return { name: storedName !== '' && storedName !== '小远' ? storedName.slice(0, 32) : 'RD Assistant',
         personality: allowed.indexOf(value.personality) >= 0 ? value.personality : 'balanced',
         verbosity: verbosity.indexOf(value.verbosity) >= 0 ? value.verbosity : 'standard',
         role: roles.indexOf(value.role) >= 0 ? value.role : 'remote-expert',
         language: languages.indexOf(value.language) >= 0 ? value.language : 'zh-CN',
-        memoryEnabled: value.memoryEnabled !== false, memorySummary: typeof value.memorySummary === 'string' ? value.memorySummary.slice(0, 4000) : '',
+        memoryEnabled: value.memoryEnabled !== false, memorySummary: storedMemory,
+        // Builds before the generated summary existed stored the user's text in
+        // memorySummary. Treat it as manual input during the one-way migration.
+        manualMemorySummary: storedManualMemory !== '' ? storedManualMemory : storedMemory,
         proactiveSuggestions: value.proactiveSuggestions !== false, confirmBeforeActions: value.confirmBeforeActions !== false,
         updatedAt: Number(value.updatedAt) || 0 };
     } catch (_error) { return defaultDiagnosticAiAssistantPreferences(); }
@@ -184,7 +223,8 @@ export class DiagnosticAiConversationStore {
     const store = this.prefs(); if (store === null) { return false; }
     try { store.putSync('assistant', JSON.stringify({ name: value.name.slice(0, 32), personality: value.personality,
       verbosity: value.verbosity, role: value.role, language: value.language, memoryEnabled: value.memoryEnabled,
-      memorySummary: value.memorySummary.slice(0, 4000), proactiveSuggestions: value.proactiveSuggestions,
+      memorySummary: value.memorySummary.slice(0, 4000), manualMemorySummary: value.manualMemorySummary.slice(0, 4000),
+      proactiveSuggestions: value.proactiveSuggestions,
       confirmBeforeActions: value.confirmBeforeActions, updatedAt: Date.now() }));
       store.flushSync(); return true;
     } catch (_error) { return false; }
