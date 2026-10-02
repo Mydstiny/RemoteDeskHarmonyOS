@@ -472,3 +472,41 @@ Phone / Pad / PC 每个平台都要验证：
 - 问答、设置引导、诊断和开发者反馈共用一个 Agent 请求入口。模型只能返回结构化建议，应用通过 `DiagnosticAiAppActionPolicy` 白名单打开页面；模型不能输出路由、命令或直接写入 `AppStorage`。
 - 诊断包在 Provider 成功返回后才释放；网络失败、页面重建、密钥回读失败或请求过大都会保留并提供重试/丢弃动作。发送前对 Provider 请求做 48 KiB 有界摘要，完整脱敏包留在本机。
 - 新增功能必须同步更新 `GuideContentRegistry`、`DiagnosticAiKnowledgeBase`、Agent 模式/动作白名单、隐私说明、用量统计和三端浮窗验收用例；构建通过不代表真实 Provider、设备或邮件成功。
+
+## 17. 独立用量监控、个性化与多订阅（2026-10-02）
+
+### 17.1 信息架构
+
+“诊断与 AI 帮助”设置区现在固定为五个入口：
+
+1. 辅助 AI 配置：添加、验证、删除 Provider 和模型；多个配置可以同时保留。
+2. 启动 AI 辅助：Siri 风格对话、应用操作卡、诊断抓取和开发者反馈。
+3. AI 用量监控：订阅切换、会话历史、Provider+模型分项统计和总览。
+4. AI 个性化设置：名称、语气、本地记忆开关、用户画像摘要和清除操作。
+5. 传统日志抓取：与 AI Provider 完全分离的原有脱敏日志工具。
+
+用量监控和个性化不再作为 Provider 配置页底部的附属卡片。这样用户可以分别理解“我用了哪个订阅、花了多少”和“助手应该怎样与我交流”。
+
+### 17.2 多订阅模型
+
+- `DiagnosticAiProfileStore` 保存多个 owner-scoped Provider profile；`DiagnosticAiSettings.selectedProviderId/selectedModelId` 是“下一次新请求”的当前订阅。
+- `DiagnosticAiConversationStore` 以 `providerId + modelId` 记录请求次数、输入/输出 Token、缓存 Token 和估算费用；历史会话保存原始 Provider/模型归属，不随当前订阅切换而迁移。
+- 费用只有在 Provider 返回真实账单时才可标记为账单值；当前客户端使用估算值并明确显示估算口径，不能把估算当作供应商账单。
+- API Key 永远不进入用量记录、会话正文、诊断包、邮件或云同步；删除 Provider 时同时删除对应 Asset Store 密钥。
+
+### 17.3 个性化与记忆边界
+
+- 名称、语气和本地画像摘要是三个独立字段；关闭本地记忆只停止把摘要附加到新请求，不删除历史会话。
+- “清除本地记忆”只清除画像摘要；“删除 AI 数据”才同时删除会话、用量和偏好。账号切换通过 owner scope 隔离，不能读取上一账号的会话或画像。
+- 交互参考主流助手的分层方式：记忆/个性化独立于聊天历史，Provider/订阅独立于个性化；应用额外保留本地优先和可见删除入口。
+
+### 17.4 动作注册表与执行模式
+
+`DiagnosticAiAppActionPolicy` 现在登记设置页、五协议设置、远程会话工具栏和诊断/反馈入口。每个动作有 `execute`、`floating` 或 `inline` 模式及敏感操作确认标记：
+
+- 页面导航、协议设置和普通开关：思考胶囊 → 打开现有设置模块 → 完成胶囊/悬浮球；
+- 日志抓取、会话诊断和长任务：悬浮球模式，保持远程桌面可操作；
+- 断开、凭据、文件传输、隐私、Ctrl+Alt+Delete 和密钥相关操作：二次确认后才调用已有回调；
+- 模型只能返回动作 ID 或解释文本，不能返回路由、AppStorage key、命令或任意代码。
+
+新设置/协议/会话功能的 Definition of Done 必须包括：动作 ID、展示标签、能力门控、确认策略、知识库步骤、GuideContentRegistry 教程、隐私说明、用量归属和 Phone/Pad/PC 浮窗验收用例。
