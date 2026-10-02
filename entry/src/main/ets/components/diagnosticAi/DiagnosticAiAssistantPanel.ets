@@ -416,7 +416,9 @@ export struct DiagnosticAiAssistantPanel {
           .onChange((value: string): void => { this.question = value; })
           .onSubmit((): void => { this.submitQuestion(); })
           .onAppear((): void => {
-            setTimeout((): void => { focusControl.requestFocus('aiIslandQuestion'); }, 160);
+            // The island spends the first two stages as a text-free/status capsule. Focus only after the card has
+            // opened so the keyboard does not jump in front of the F000/F010 processing animation.
+            setTimeout((): void => { focusControl.requestFocus('aiIslandQuestion'); }, 1160);
           })
       } else {
         Text(this.question).fontSize(17).lineHeight(23).fontColor('#FFFFFF').width('100%').maxLines(3)
