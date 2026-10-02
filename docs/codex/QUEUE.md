@@ -8,7 +8,7 @@ Updated: 2026-10-02 Asia/Shanghai
 
 - Pro「诊断与 AI 帮助」复审 checkpoint `7327ac519` 已提交：新增手动/AI 抓取互斥协调器、AI bundle 释放闭环、模型列表选择、Provider revision 迟到响应防护和复审/扩展路线。`default@OhosTestCompileArkTS` 在本轮代码范围曾通过；`ohosTest@OhosTestCompileArkTS` 任务不存在，最新 `assembleHap` 已在隔离生成缓存下通过。真实 Provider/设备/邮件验收未完成，继续保持 experimental。详见 [计划](plans/2026-10-01-pro-diagnostic-ai-help-upgrade.md)。
 
-- RDP/RustDesk 高级显示计划：[2026-10-01 计划](plans/2026-10-01-rdp-rustdesk-pro-display-resolution-scale-plan.md) 独立复审无 P0，但发现 P1：`RemoteDisplayProfile` 尚未接入运行时，当前显示设置仍是全局 AppStorage/Preferences，不能按主机恢复多套方案；CloudSyncSettingsPolicy 已确认字段设备本地。compile、assemble、RDP 15/15、Rust 320/320、Pro entry/runtime、双 ABI、Light/diff/state PASS；ohosTest 为 00306054，先补 host × device profile store/runtime，再进入真实 peer/设备与 Release review。
+- RDP/RustDesk 高级显示计划：[2026-10-01 计划](plans/2026-10-01-rdp-rustdesk-pro-display-resolution-scale-plan.md) 的 P1 运行时闭环已实现，`b69d3c9f` 经 `/root/review_display_final` PASS，并补齐 marker 失败 fail-closed 回归；RDP/RustDesk profile 已按账号×主机×协议×设备隔离，RustDesk 能力/Pro/peer 权限门控保持封闭。编译、assembleHap、显示选择 5/5、Pro entry/runtime、Light/diff/state PASS；ohosTest 为 00306054。下一步是实际 Windows/RustDesk peer/设备矩阵与 Release/PR 验收。
 
 - Pro 工作区与高级主机管理：W0/H1/S1/S2/S3 基础实现已提交准备；继续 H2 分组胶囊/H3 批量操作/H4 导入导出/S3 编辑器/S4 当前会话捕获，并完成设备验收。
 
