@@ -339,24 +339,33 @@ struct ProBadgeRayLayers {
       this.rayWidth, this.rayHeight, this.dark, this.colors());
   }
 
-  /** Endless flight of one layer: fade in near the center, then accelerate outward and fade at the edges. */
+  /**
+   * Endless flight of one layer. The outward motion is one continuous accelerating curve; the fade is a separate
+   * in-then-out animation on the same clock. Splitting the motion into an ease-out leg and an ease-in leg stopped
+   * the rays for a moment at the hand-over (the middle of their path), which read as a stutter.
+   */
   private fly(k: number): void {
-    this.getUIContext().keyframeAnimateTo({ iterations: -1, delay: Math.round(k * RAY_FLIGHT_MS / PRO_BADGE_RAY_LAYERS) }, [
+    const delay: number = Math.round(k * RAY_FLIGHT_MS / PRO_BADGE_RAY_LAYERS);
+    this.getUIContext().animateTo({ duration: RAY_FLIGHT_MS, delay, iterations: -1, curve: Curve.EaseIn },
+      (): void => { this.setScale(k, 3.0); });
+    this.getUIContext().keyframeAnimateTo({ iterations: -1, delay }, [
       {
         duration: Math.round(RAY_FLIGHT_MS * 0.3), curve: Curve.EaseOut,
-        event: (): void => { this.setLayer(k, 1.15, 1); }
+        event: (): void => { this.setFade(k, 1); }
       },
       {
         duration: Math.round(RAY_FLIGHT_MS * 0.7), curve: Curve.EaseIn,
-        event: (): void => { this.setLayer(k, 3.0, 0); }
+        event: (): void => { this.setFade(k, 0); }
       }
     ]);
   }
 
-  private setLayer(k: number, scale: number, fade: number): void {
-    if (k === 0) { this.scale0 = scale; this.fade0 = fade; }
-    else if (k === 1) { this.scale1 = scale; this.fade1 = fade; }
-    else { this.scale2 = scale; this.fade2 = fade; }
+  private setScale(k: number, scale: number): void {
+    if (k === 0) { this.scale0 = scale; } else if (k === 1) { this.scale1 = scale; } else { this.scale2 = scale; }
+  }
+
+  private setFade(k: number, fade: number): void {
+    if (k === 0) { this.fade0 = fade; } else if (k === 1) { this.fade1 = fade; } else { this.fade2 = fade; }
   }
 
   private layerScale(k: number): number { return k === 0 ? this.scale0 : k === 1 ? this.scale1 : this.scale2; }
