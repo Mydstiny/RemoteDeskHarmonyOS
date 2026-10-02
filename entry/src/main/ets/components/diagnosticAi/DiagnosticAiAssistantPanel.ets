@@ -8,7 +8,7 @@ import { DiagnosticModuleId } from '../../services/DiagnosticCapturePolicy';
 import { diagnosticAiModulesForQuestion, diagnosticAiCaptureStatus } from '../../services/diagnosticAi/DiagnosticAiBundlePolicy';
 import { DiagnosticAiCaptureOrchestrator } from '../../services/diagnosticAi/DiagnosticAiCaptureOrchestrator';
 import { DiagnosticAiProfileStore } from '../../services/diagnosticAi/DiagnosticAiProfileStore';
-import { DiagnosticAiProviderService } from '../../services/diagnosticAi/DiagnosticAiProviderService';
+import { DiagnosticAiAgentMode, DiagnosticAiAgentService, diagnosticAiAgentModeForQuestion, diagnosticAiAgentModeLabel } from '../../services/diagnosticAi/DiagnosticAiAgentService';
 import { diagnosticAiMailDraft } from '../../services/diagnosticAi/DiagnosticAiMailPolicy';
 import { diagnosticAiApplyProposal, diagnosticAiSettingActionText } from '../../services/diagnosticAi/DiagnosticAiSettingsActionPolicy';
 import { ProAppRuntime } from '../../services/pro/ProAppRuntime';
@@ -41,6 +41,9 @@ export struct DiagnosticAiAssistantPanel {
   @State private lastActive: boolean = false;
   onOpenMailDraft: (subject: string, body: string) => void = (_subject: string, _body: string): void => {};
   @State question: string = '';
+  @State private agentMode: DiagnosticAiAgentMode = 'answer';
+  @State private awaitingCapture: boolean = false;
+  @State private conversation: string = '';
   @State status: string = '';
   @State busy: boolean = false;
   @State result: DiagnosticAiResult | null = null;
@@ -52,7 +55,7 @@ export struct DiagnosticAiAssistantPanel {
   @State private mailSubject: string = '';
   @State private mailBody: string = '';
   private readonly capture: DiagnosticAiCaptureOrchestrator = DiagnosticAiCaptureOrchestrator.getInstance();
-  private readonly provider: DiagnosticAiProviderService = new DiagnosticAiProviderService();
+  private readonly agent: DiagnosticAiAgentService = new DiagnosticAiAgentService();
   private store: DiagnosticAiProfileStore = new DiagnosticAiProfileStore();
   private owner: string = 'device-local';
   private timer: number = -1;
@@ -121,8 +124,55 @@ export struct DiagnosticAiAssistantPanel {
     return this.accent;
   }
 
+  private selectedProfile(): DiagnosticAiProviderProfile | undefined {
+    const profiles = this.store.list();
+    const settings = this.store.settingsSnapshot();
+    return profiles.find((value: DiagnosticAiProviderProfile): boolean =>
+      value.providerId === settings.selectedProviderId && value.modelId === settings.selectedModelId && value.modelId !== '') ??
+      profiles.find((value: DiagnosticAiProviderProfile): boolean => value.modelId !== '');
+  }
+
+  private errorText(error: Object): string {
+    const value = error instanceof Error ? error.message : 'DIAGNOSTIC_AI_UNKNOWN';
+    if (value.indexOf('HTTP_401') >= 0 || value.indexOf('HTTP_403') >= 0) { return 'AI 服务拒绝了请求，请检查 API Key、套餐权限或模型权限'; }
+    if (value.indexOf('HTTP_400') >= 0 || value.indexOf('HTTP_422') >= 0) { return 'AI 服务不接受当前请求格式，请重新拉取模型或换用兼容模型'; }
+    if (value.indexOf('NETWORK') >= 0) { return 'AI 服务暂时无法连接，请检查网络、地址和证书'; }
+    if (value.indexOf('EMPTY_RESULT') >= 0) { return 'AI 服务返回了空结果，请重试或更换模型'; }
+    if (value.indexOf('ANALYSIS_UNAVAILABLE') >= 0) { return '当前 Provider 尚未完成 AI 请求适配'; }
+    return value;
+  }
+
+  private async sendAgent(mode: DiagnosticAiAgentMode, bundle: string = ''): Promise<void> {
+    if (!this.allowed() || this.busy || this.question.trim() === '') { return; }
+    const selected = this.selectedProfile();
+    if (selected === undefined) { this.status = '请先在辅助 AI 配置中保存 API Key 并选择模型'; return; }
+    const requestGeneration: number = this.lifecycleGeneration;
+    const requestOwner: string = this.owner;
+    const selectedRevision: number = selected.revision;
+    this.agentMode = mode; this.busy = true; this.result = null; this.status = '正在连接 AI…'; this.reportActivity();
+    try {
+      const analyzed: DiagnosticAiResult = await this.agent.respond(selected, this.store.secret(selected), {
+        mode, question: this.question, history: this.conversation, bundle
+      });
+      const currentScope = AccountSessionCoordinator.getInstance().currentScope();
+      const currentOwner: string = currentScope.ownerScopeId.trim() === '' ? 'device-local' : currentScope.ownerScopeId;
+      const latestProfile = this.store.list().find((value: DiagnosticAiProviderProfile): boolean => value.id === selected.id);
+      if (requestGeneration !== this.lifecycleGeneration || currentOwner !== requestOwner || !this.allowed() ||
+        latestProfile === undefined || latestProfile.revision !== selectedRevision) {
+        this.status = '页面或账号作用域已变化，已丢弃旧 AI 结果'; return;
+      }
+      this.result = analyzed;
+      this.conversation = (this.conversation + '\n用户：' + this.question + '\n助手：' + analyzed.summary).slice(-8000);
+      this.status = mode === 'diagnose' ? '诊断完成；请查看证据、建议和可选操作。' : '已收到 AI 回复；请从卡片中选择下一步。';
+    } catch (error) {
+      this.status = this.errorText(error);
+    } finally { this.busy = false; this.reportActivity(); }
+  }
+
   private beginCapture(): void {
     if (!this.allowed() || this.busy || this.question.trim() === '') { return; }
+    if (this.selectedProfile() === undefined) { this.status = '请先在辅助 AI 配置中保存 API Key 并选择模型'; return; }
+    this.agentMode = 'diagnose'; this.awaitingCapture = false;
     this.modules = diagnosticAiModulesForQuestion(this.question);
     const result = this.capture.start(this.owner, { modules: this.modules, durationMinutes: 3, consentId: 'consent-' + Date.now().toString() });
     this.syncCapture();
@@ -151,17 +201,12 @@ export struct DiagnosticAiAssistantPanel {
     }
     this.latestBundleText = bundle.text;
     this.capture.discard(requestOwner, bundle.captureId);
-    const profiles = this.store.list();
-    const settings = this.store.settingsSnapshot();
-    const selected = profiles.find((value: DiagnosticAiProviderProfile): boolean =>
-      value.providerId === settings.selectedProviderId && value.modelId === settings.selectedModelId && value.modelId !== '') ??
-      profiles.find((value: DiagnosticAiProviderProfile): boolean => value.modelId !== '');
-    if (selected === undefined) { this.status = '请先在辅助 AI 配置中保存 Provider 和模型'; this.busy = false; return; }
+    const selected = this.selectedProfile();
+    if (selected === undefined) { this.status = '请先在辅助 AI 配置中保存 API Key 并选择模型'; this.busy = false; return; }
     const selectedRevision: number = selected.revision;
     try {
-      const secret = this.store.secret(selected);
-      const analyzed: DiagnosticAiResult = await this.provider.analyze(selected, secret, {
-        question: this.question, bundle: bundle.text, knowledge: 'RemoteDesktop 使用、隐私和数据安全文档 v1'
+      const analyzed: DiagnosticAiResult = await this.agent.respond(selected, this.store.secret(selected), {
+        mode: 'diagnose', question: this.question, history: this.conversation, bundle: bundle.text
       });
       const currentScope = AccountSessionCoordinator.getInstance().currentScope();
       const currentOwner: string = currentScope.ownerScopeId.trim() === '' ? 'device-local' : currentScope.ownerScopeId;
@@ -172,9 +217,10 @@ export struct DiagnosticAiAssistantPanel {
         return;
       }
       this.result = analyzed;
-      this.status = '分析完成。结果仅供参考，请根据证据和应用提示操作。';
+      this.conversation = (this.conversation + '\n用户：' + this.question + '\n助手：' + analyzed.summary).slice(-8000);
+      this.status = '诊断完成；请查看证据、建议和可选操作。';
     } catch (error) {
-      this.status = error instanceof Error ? error.message : 'AI 分析失败';
+      this.status = this.errorText(error);
     } finally { this.busy = false; this.reportActivity(); }
   }
 
@@ -205,7 +251,8 @@ export struct DiagnosticAiAssistantPanel {
   @Builder private resultCard() {
     Column({ space: 10 }) {
       Row({ space: 8 }) {
-        Text('诊断结果').fontSize(16).fontWeight(FontWeight.Bold).fontColor(this.pal().text).layoutWeight(1)
+        Text(this.agentMode === 'diagnose' ? '诊断结果' : diagnosticAiAgentModeLabel(this.agentMode) + '结果')
+          .fontSize(16).fontWeight(FontWeight.Bold).fontColor(this.pal().text).layoutWeight(1)
         Text('影响 ' + this.severityText()).fontSize(11).fontColor(this.severityColor())
           .padding({ left: 8, right: 8, top: 3, bottom: 3 }).borderRadius(9)
           .backgroundColor('#1A' + this.severityColor().substring(1))
@@ -224,6 +271,16 @@ export struct DiagnosticAiAssistantPanel {
       if ((this.result as DiagnosticAiResult).unknowns.length > 0) {
         Text('尚不确定：' + (this.result as DiagnosticAiResult).unknowns.join('；')).fontSize(12).lineHeight(18)
           .fontColor(this.pal().text2).width('100%')
+      }
+      if ((this.result as DiagnosticAiResult).recommendedReadOnlySteps.length > 0) {
+        Text('建议操作').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text).width('100%')
+        ForEach((this.result as DiagnosticAiResult).recommendedReadOnlySteps, (step: string, index: number): void => {
+          Row({ space: 8 }) {
+            Text((index + 1).toString()).fontSize(11).fontColor(this.accent).width(18).height(18)
+              .textAlign(TextAlign.Center).borderRadius(9).backgroundColor(this.pal().surface)
+            Text(step).fontSize(12).lineHeight(17).fontColor(this.pal().text2).layoutWeight(1)
+          }.width('100%')
+        }, (_step: string, index: number): string => 'step' + index.toString())
       }
       if ((this.result as DiagnosticAiResult).settingProposals.length > 0) {
         Text('可选设置建议 · 逐项确认后才会应用').fontSize(13).fontWeight(FontWeight.Medium)
@@ -244,21 +301,23 @@ export struct DiagnosticAiAssistantPanel {
           }.width('100%').padding(10).backgroundColor(this.pal().surface).borderRadius(12)
         }, (_proposal: DiagnosticAiSettingProposal, index: number): string => index.toString())
       }
-      Divider().color(this.pal().divider).margin({ top: 2, bottom: 2 })
-      Row({ space: 8 }) {
-        SymbolGlyph($r('sys.symbol.envelope_fill')).fontSize(16).fontColor([this.pal().text3])
-        Text('需要人工协助时，可生成邮件草稿；发送前会再预览一次，不会自动发送。').fontSize(12).lineHeight(17)
-          .fontColor(this.pal().text2).layoutWeight(1)
-      }.width('100%')
-      Button('生成邮件草稿').height(42).width('100%').borderRadius(21).backgroundColor(this.pal().surface)
-        .fontColor(this.accent)
-        .onClick((): void => {
-          const draft = diagnosticAiMailDraft(this.question, this.result as DiagnosticAiResult, {
-            captureId: 'latest', schemaVersion: 8, modules: this.modules,
-            text: this.latestBundleText, eventCount: this.eventCount, bytes: this.latestBundleText.length
-          });
-          this.mailSubject = draft.subject; this.mailBody = draft.body; this.mailPreviewVisible = true;
-        })
+      if (this.agentMode === 'diagnose' || this.agentMode === 'feedback' || this.latestBundleText !== '') {
+        Divider().color(this.pal().divider).margin({ top: 2, bottom: 2 })
+        Row({ space: 8 }) {
+          SymbolGlyph($r('sys.symbol.envelope_fill')).fontSize(16).fontColor([this.pal().text3])
+          Text('需要人工协助时，可生成邮件草稿；发送前会再预览一次，不会自动发送。').fontSize(12).lineHeight(17)
+            .fontColor(this.pal().text2).layoutWeight(1)
+        }.width('100%')
+        Button('生成邮件草稿').height(42).width('100%').borderRadius(21).backgroundColor(this.pal().surface)
+          .fontColor(this.accent)
+          .onClick((): void => {
+            const draft = diagnosticAiMailDraft(this.question, this.result as DiagnosticAiResult, {
+              captureId: 'latest', schemaVersion: 8, modules: this.modules,
+              text: this.latestBundleText, eventCount: this.eventCount, bytes: this.latestBundleText.length
+            });
+            this.mailSubject = draft.subject; this.mailBody = draft.body; this.mailPreviewVisible = true;
+          })
+      }
       if (this.mailPreviewVisible) {
         Column({ space: 8 }) {
           Text('邮件预览').fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.pal().text).width('100%')
@@ -301,7 +360,25 @@ export struct DiagnosticAiAssistantPanel {
   private submitQuestion(): void {
     if (this.question.trim() === '' || this.busy || this.capturing()) { return; }
     try { inputMethod.getController().hideTextInput(); } catch (_error) { /* keyboard already down */ }
-    this.beginCapture();
+    const mode = diagnosticAiAgentModeForQuestion(this.question);
+    this.agentMode = mode;
+    if (mode === 'diagnose') {
+      this.modules = diagnosticAiModulesForQuestion(this.question);
+      this.awaitingCapture = true;
+      this.status = '这类问题需要读取一小段脱敏事件；请确认后开始抓取。';
+      return;
+    }
+    this.awaitingCapture = false;
+    void this.sendAgent(mode);
+  }
+
+  private quickQuestion(mode: DiagnosticAiAgentMode, question: string): void {
+    this.question = question;
+    this.agentMode = mode;
+    this.result = null;
+    this.status = '';
+    this.awaitingCapture = mode === 'diagnose';
+    this.modules = mode === 'diagnose' ? diagnosticAiModulesForQuestion(question) : [];
   }
 
   /** The card's text area: the question typed in white, iOS secondary gray for everything else. */
@@ -322,6 +399,19 @@ export struct DiagnosticAiAssistantPanel {
       } else {
         Text(this.question).fontSize(17).lineHeight(23).fontColor('#FFFFFF').width('100%').maxLines(3)
           .textOverflow({ overflow: TextOverflow.Ellipsis })
+      }
+      if (this.result === null && !this.capturing() && !this.busy && !this.awaitingCapture) {
+        Row({ space: 6 }) {
+          this.pill('询问用法', false, (): void => { this.quickQuestion('answer', '如何添加并连接第一台主机？'); })
+          this.pill('帮我设置', false, (): void => { this.quickQuestion('configure', '帮我设置当前应用，让我更容易完成远程连接。'); })
+          this.pill('诊断问题', false, (): void => { this.quickQuestion('diagnose', '我遇到了连接问题，请帮我诊断。'); })
+        }.width('100%').justifyContent(FlexAlign.Center)
+      }
+      if (this.awaitingCapture && !this.capturing() && !this.busy) {
+        Row({ space: 8 }) {
+          AiIslandOrb({ orbSize: 20, working: false })
+          Text('需要用户确认后抓取 ' + this.modules.join('、')).fontSize(13).fontColor('#C7C7CC').layoutWeight(1)
+        }.width('100%')
       }
       if (this.capturing()) {
         Row({ space: 8 }) {
@@ -350,6 +440,12 @@ export struct DiagnosticAiAssistantPanel {
             if ((this.result as DiagnosticAiResult).unknowns.length > 0) {
               Text('尚不确定：' + (this.result as DiagnosticAiResult).unknowns.join('；')).fontSize(13).lineHeight(19)
                 .fontColor('#8E8E93').width('100%')
+            }
+            if ((this.result as DiagnosticAiResult).recommendedReadOnlySteps.length > 0) {
+              Text('建议操作').fontSize(13).fontWeight(FontWeight.Medium).fontColor('#FFFFFF').width('100%')
+              ForEach((this.result as DiagnosticAiResult).recommendedReadOnlySteps, (step: string, index: number): void => {
+                Text((index + 1).toString() + '. ' + step).fontSize(13).lineHeight(19).fontColor('#C7C7CC').width('100%')
+              }, (_step: string, index: number): string => 'siri-step' + index.toString())
             }
             ForEach((this.result as DiagnosticAiResult).settingProposals, (proposal: DiagnosticAiSettingProposal): void => {
               Row({ space: 10 }) {
@@ -385,7 +481,7 @@ export struct DiagnosticAiAssistantPanel {
         } else {
           AiIslandOrb({ orbSize: 18, working: false })
         }
-        Text(this.capturing() ? 'AI 诊断 · 抓取中' : this.busy ? 'AI 诊断 · 思考中' : 'AI 诊断 · 仅分析脱敏信息')
+        Text(this.capturing() ? 'AI 助手 · 抓取中' : this.busy ? 'AI 助手 · 思考中' : this.awaitingCapture ? 'AI 助手 · 等待确认' : 'AI 助手 · 应用帮助')
           .fontSize(12).fontColor('#8E8E93').layoutWeight(1).maxLines(1)
         if (this.result === null && !this.capturing() && !this.busy) {
           Stack() {
@@ -399,7 +495,7 @@ export struct DiagnosticAiAssistantPanel {
             SymbolGlyph($r('sys.symbol.arrow_up')).fontSize(17)
               .fontColor([this.question.trim() !== '' ? '#FFFFFF' : '#8E8E93'])
           }.width(34).height(34)
-          .accessibilityText('开始诊断')
+          .accessibilityText('发送给 AI 助手')
           .onClick((): void => { this.submitQuestion(); })
         }
       }.width('100%').margin({ top: 2 })
@@ -435,22 +531,29 @@ export struct DiagnosticAiAssistantPanel {
             this.onCaptureStateChanged(false); this.syncCapture(); this.status = '已取消抓取';
           })
         }
+        if (this.awaitingCapture && !this.capturing() && !this.busy) {
+          this.pill('开始抓取诊断', true, (): void => { this.beginCapture(); })
+          this.pill('取消', false, (): void => { this.awaitingCapture = false; this.status = ''; })
+        }
         if (this.result !== null) {
-          if (this.mailPreviewVisible) {
+          if (this.agentMode === 'diagnose' || this.agentMode === 'feedback' || this.latestBundleText !== '') {
+            if (this.mailPreviewVisible) {
             this.pill('打开系统邮件', true, (): void => {
               this.onOpenMailDraft(this.mailSubject, this.mailBody); this.mailPreviewVisible = false;
             })
-          } else {
-            this.pill('生成邮件草稿', false, (): void => {
-              const draft = diagnosticAiMailDraft(this.question, this.result as DiagnosticAiResult, {
-                captureId: 'latest', schemaVersion: 8, modules: this.modules,
-                text: this.latestBundleText, eventCount: this.eventCount, bytes: this.latestBundleText.length
-              });
-              this.mailSubject = draft.subject; this.mailBody = draft.body; this.mailPreviewVisible = true;
-            })
+            } else {
+              this.pill('生成邮件草稿', false, (): void => {
+                const draft = diagnosticAiMailDraft(this.question, this.result as DiagnosticAiResult, {
+                  captureId: 'latest', schemaVersion: 8, modules: this.modules,
+                  text: this.latestBundleText, eventCount: this.eventCount, bytes: this.latestBundleText.length
+                });
+                this.mailSubject = draft.subject; this.mailBody = draft.body; this.mailPreviewVisible = true;
+              })
+            }
           }
           this.pill('再问一个', false, (): void => {
             this.result = null; this.question = ''; this.status = ''; this.mailPreviewVisible = false; this.modules = [];
+            this.awaitingCapture = false; this.agentMode = 'answer';
           })
         }
       }.width('100%').justifyContent(FlexAlign.Center)
@@ -503,16 +606,16 @@ export struct DiagnosticAiAssistantPanel {
         Column({ space: 12 }) {
           Row({ space: 10 }) {
             SymbolGlyph($r('sys.symbol.checkmark_shield')).fontSize(18).fontColor(['#2BB673'])
-            Text('只分析脱敏后的结构化事件。抓取可随时取消；不会自动修改设置，也不会自动发送邮件。')
+            Text('可以回答应用用法、协助设置和诊断问题。需要读取诊断事件或生成邮件时，会先让你选择；不会自动执行或发送。')
               .fontSize(12).lineHeight(18).fontColor(this.pal().text2).layoutWeight(1)
           }.width('100%').padding(12).borderRadius(14).backgroundColor('#142BB673').alignItems(VerticalAlign.Top)
           Column({ space: 8 }) {
             Text('遇到了什么问题？').fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.pal().text).width('100%')
-            TextArea({ placeholder: '例如：RDP 连接后黑屏；RustDesk 走中继很慢', text: this.question })
+            TextArea({ placeholder: '问问 RemoteDesktop，或描述你想完成的操作', text: this.question })
               .height(96).fontSize(15).fontFamily(AppConfig.fontFamily)
               .backgroundColor(this.pal().surface).borderRadius(14).enabled(!this.busy && !this.capturing())
               .onChange((value: string): void => { this.question = value; })
-            if (this.modules.length > 0) {
+            if (this.modules.length > 0 && (this.awaitingCapture || this.capturing())) {
               Flex({ wrap: FlexWrap.Wrap }) {
                 Text('抓取范围').fontSize(11).fontColor(this.pal().text3).margin({ right: 6, bottom: 6, top: 4 })
                 ForEach(this.modules, (module: DiagnosticModuleId): void => {
@@ -544,11 +647,16 @@ export struct DiagnosticAiAssistantPanel {
             .onClick((): void => { this.capture.cancel(this.owner); this.captureOwnedByPanel = false;
               this.onCaptureStateChanged(false); this.syncCapture(); this.status = '已取消抓取'; })
         }
-        Button(this.busy ? '分析中…' : this.capturing() ? '结束并分析' : '开始抓取')
+        Button(this.busy ? 'AI 思考中…' : this.capturing() ? '结束并分析' : this.awaitingCapture ? '开始抓取诊断' : this.result !== null ? '再问一个' : '发送给 AI')
           .height(48).layoutWeight(1).borderRadius(24).fontSize(16).fontWeight(FontWeight.Medium)
           .backgroundColor(this.accent).fontColor(Color.White)
           .enabled(!this.busy && this.question.trim() !== '')
-          .onClick((): void => { if (this.capturing()) { void this.finishCapture(); } else { this.beginCapture(); } })
+          .onClick((): void => {
+            if (this.capturing()) { void this.finishCapture(); }
+            else if (this.awaitingCapture) { this.beginCapture(); }
+            else if (this.result !== null) { this.result = null; this.question = ''; this.status = ''; this.mailPreviewVisible = false; }
+            else { this.submitQuestion(); }
+          })
       }.width('100%').margin({ top: 10 })
     }.width('100%').height('100%').padding(this.embedded ? 0 : 20)
     .backgroundColor(this.embedded ? Color.Transparent : this.pal().sheetBg)

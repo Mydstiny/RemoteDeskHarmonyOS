@@ -13,6 +13,19 @@ function safeText(value: Object | undefined | null, fallback: string = ''): stri
 
 function responseText(result: Object): string { return typeof result === 'string' ? result as string : JSON.stringify(result); }
 
+function assistantContent(value: Object | undefined | null): string {
+  if (typeof value === 'string') { return value as string; }
+  if (!Array.isArray(value)) { return ''; }
+  return (value as Object[]).map((item: Object): string => {
+    if (typeof item === 'string') { return item as string; }
+    if (item !== null && typeof item === 'object') {
+      const row = item as Record<string, Object>;
+      return safeText(row['text'], safeText(row['content']));
+    }
+    return '';
+  }).filter((item: string): boolean => item !== '').join('');
+}
+
 function stringArray(value: Object | undefined): string[] {
   return Array.isArray(value) ? (value as Object[]).filter((item: Object): boolean => typeof item === 'string')
     .map((item: Object): string => item as string).slice(0, 32) : [];
@@ -56,7 +69,15 @@ interface DiagnosticAiChatBody {
   model: string;
   stream: boolean;
   messages: DiagnosticAiChatMessage[];
-  response_format: DiagnosticAiResponseFormat;
+  response_format?: DiagnosticAiResponseFormat;
+}
+
+export interface DiagnosticAiAssistInput {
+  mode: 'answer' | 'configure' | 'diagnose' | 'feedback';
+  question: string;
+  history: string;
+  bundle: string;
+  knowledge: string;
 }
 
 export class DiagnosticAiProviderService {
@@ -138,7 +159,8 @@ export class DiagnosticAiProviderService {
     let first: Record<string, Object> | null = null;
     if (choices.length > 0) { first = choices[0] as Record<string, Object>; }
     const message = first === null ? null : first['message'] as Record<string, Object>;
-    const content = safeText(message === null ? null : message['content'], safeText(raw['output']));
+    const content = assistantContent(message === null ? null : message['content']) ||
+      assistantContent(first === null ? null : first['text']) || assistantContent(raw['output']);
     if (content === '') { throw new Error('DIAGNOSTIC_AI_EMPTY_RESULT'); }
     let parsed: Record<string, Object> | null = null;
     try {
@@ -160,6 +182,81 @@ export class DiagnosticAiProviderService {
       hypotheses: stringArray(parsed['hypotheses']), recommendedReadOnlySteps: stringArray(parsed['recommendedReadOnlySteps']),
       settingProposals: safeProposals(parsed['settingProposals']), unknowns: stringArray(parsed['unknowns']),
       knowledgeVersion: safeText(parsed['knowledgeVersion'], manifest.verifiedAt).slice(0, 128), createdAt: Date.now() };
+  }
+
+  /**
+   * General in-app Agent request. This path intentionally does not require a capture bundle:
+   * ordinary usage questions and safe setting requests should receive an answer immediately.
+   * A structured response is preferred, but several OpenAI-compatible domestic endpoints reject
+   * response_format, so the same request is retried once without that optional field.
+   */
+  async assist(profile: DiagnosticAiProviderProfile, secret: string, input: DiagnosticAiAssistInput): Promise<DiagnosticAiResult> {
+    const manifest = diagnosticAiProviderManifest(profile.providerId);
+    if (manifest === null || manifest.chatPath === '') { throw new Error('DIAGNOSTIC_AI_ANALYSIS_UNAVAILABLE'); }
+    const modeInstruction: string = input.mode === 'configure'
+      ? '用户希望你帮助设置 RemoteDesktop。只提出白名单、低风险、可回滚的设置建议；不要假装已经修改。'
+      : input.mode === 'diagnose'
+        ? '用户希望诊断问题。若没有诊断包，只说明需要用户确认抓取；如果有诊断包，只引用其中事实。'
+        : input.mode === 'feedback'
+          ? '用户希望把问题反馈给开发者。先总结需要收集的信息；不要自动发送邮件。'
+          : '用户在询问 RemoteDesktop 的使用方法、隐私、安全或功能。直接回答并给出简短步骤。';
+    const prompt = modeInstruction + '\n问题：' + input.question +
+      '\n最近对话：' + input.history + '\n本地知识：' + input.knowledge +
+      '\n脱敏诊断包（可能为空）：' + input.bundle;
+    const messages: DiagnosticAiChatMessage[] = [
+      { role: 'system', content: '你是 RemoteDesktop 的全应用 AI 助手，不是通用代码代理。只回答应用使用、设置、隐私、安全、诊断和反馈问题。' +
+        '必须区分事实、建议和未知；不能执行工具、修改密码/密钥/网络安全配置、连接主机或发送邮件。' +
+        '只输出 JSON，不要 Markdown。字段为 summary、severity(info/low/medium/high/unknown)、confidence(0到1)、evidenceRefs、hypotheses、recommendedReadOnlySteps、unknowns、settingProposals。' +
+        'settingProposals 每项必须包含 settingId、currentValue、proposedValue、reason、evidenceRefs、risk、requiresUserConfirmation=true、rollbackValue；只提出应用白名单中的可回滚设置。' },
+      { role: 'user', content: prompt }
+    ];
+    const body: DiagnosticAiChatBody = { model: profile.modelId, stream: false, messages,
+      response_format: { type: 'json_object' } };
+    let rawText: string;
+    try {
+      rawText = await this.request(profile, secret, manifest.chatPath, body);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '';
+      if (message.indexOf('DIAGNOSTIC_AI_HTTP_400') < 0 && message.indexOf('DIAGNOSTIC_AI_HTTP_415') < 0 &&
+          message.indexOf('DIAGNOSTIC_AI_HTTP_422') < 0) { throw new Error(message); }
+      const fallbackBody: DiagnosticAiChatBody = { model: profile.modelId, stream: false, messages };
+      rawText = await this.request(profile, secret, manifest.chatPath, fallbackBody);
+    }
+    return this.parseResult(rawText, manifest.verifiedAt);
+  }
+
+  private parseResult(rawText: string, knowledgeVersion: string): DiagnosticAiResult {
+    const raw = JSON.parse(rawText) as Record<string, Object>;
+    const choices = Array.isArray(raw['choices']) ? raw['choices'] as Object[] : [];
+    let first: Record<string, Object> | null = null;
+    if (choices.length > 0) { first = choices[0] as Record<string, Object>; }
+    const message = first === null ? null : first['message'] as Record<string, Object>;
+    let content = assistantContent(message === null ? null : message['content']) ||
+      assistantContent(first === null ? null : first['text']) || assistantContent(raw['output']);
+    if (content.indexOf('```') === 0) {
+      content = content.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
+    }
+    if (content === '') { throw new Error('DIAGNOSTIC_AI_EMPTY_RESULT'); }
+    let parsed: Record<string, Object> | null = null;
+    try {
+      const candidate = JSON.parse(content) as Object;
+      if (candidate !== null && typeof candidate === 'object') { parsed = candidate as Record<string, Object>; }
+    } catch (_error) { parsed = null; }
+    if (parsed === null) {
+      return { summary: content.slice(0, 6000), severity: 'unknown', confidence: 0,
+        evidenceRefs: [], hypotheses: [], recommendedReadOnlySteps: [], settingProposals: [],
+        unknowns: ['Provider 返回的是自由文本，已显示原文但没有结构化证据引用'],
+        knowledgeVersion, createdAt: Date.now() };
+    }
+    const severityValue: string = safeText(parsed['severity'], 'unknown');
+    const severity = ['info', 'low', 'medium', 'high'].indexOf(severityValue) >= 0 ?
+      severityValue as 'info' | 'low' | 'medium' | 'high' : 'unknown';
+    const confidenceValue: number = typeof parsed['confidence'] === 'number' ? parsed['confidence'] as number : 0;
+    return { summary: safeText(parsed['summary'], content).slice(0, 6000), severity,
+      confidence: Math.max(0, Math.min(1, confidenceValue)), evidenceRefs: evidenceRefs(parsed['evidenceRefs']),
+      hypotheses: stringArray(parsed['hypotheses']), recommendedReadOnlySteps: stringArray(parsed['recommendedReadOnlySteps']),
+      settingProposals: safeProposals(parsed['settingProposals']), unknowns: stringArray(parsed['unknowns']),
+      knowledgeVersion: safeText(parsed['knowledgeVersion'], knowledgeVersion).slice(0, 128), createdAt: Date.now() };
   }
 }
 

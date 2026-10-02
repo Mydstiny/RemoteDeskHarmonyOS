@@ -50,8 +50,8 @@ import {
   remotePortraitSidebarHeightPx,
   normalizeRemotePortraitSidebarHeightMode
 } from '../services/RemotePortraitSidebarPolicy';
-import { DiagnosticAiAssistantPanel } from './diagnosticAi/DiagnosticAiAssistantPanel';
 import { DiagnosticAiOrb } from './diagnosticAi/DiagnosticAiOrb';
+import { AiIsland } from './diagnosticAi/AiIsland';
 import { ProAppRuntime } from '../services/pro/ProAppRuntime';
 import { ProEntries } from '../services/pro/ProEntries';
 import { PRO_DIAGNOSTICS_ASSISTANT_FEATURE } from '../services/pro/ProFeatureCatalog';
@@ -169,6 +169,7 @@ export struct RemoteSessionTopBar {
   @Prop diagnosticsEnabled: boolean = false;
   @StorageProp('diagnosticAiOrbEnabled') diagnosticAiOrbEnabled: boolean = false;
   @State private diagnosticAiAssistantVisible: boolean = false;
+  @State private diagnosticAiIslandShown: boolean = false;
   @State private diagnosticAiCaptureActive: boolean = false;
   @Prop canvasResetAvailable: boolean = false;
   @Prop rustDeskDisplayCapabilities: RustDeskDisplayCapabilities = EMPTY_RUSTDESK_DISPLAY_CAPABILITIES;
@@ -1518,27 +1519,20 @@ export struct RemoteSessionTopBar {
           DiagnosticAiOrb({
             visible: true,
             state: this.diagnosticAiState(),
-            onOpen: (): void => { this.diagnosticAiAssistantVisible = true; }
+            onOpen: (): void => { this.diagnosticAiAssistantVisible = true; this.diagnosticAiIslandShown = true; }
           })
         }
         .width('100%').padding({ top: 10, right: 12 }).justifyContent(FlexAlign.End)
         .hitTestBehavior(HitTestMode.Transparent)
       }
-      if (this.diagnosticAiAssistantVisible && this.diagnosticAiVisible()) {
-        Column() {
-          DiagnosticAiAssistantPanel({
-            onClose: (): void => { this.diagnosticAiAssistantVisible = false; },
-            onCaptureStateChanged: (capturing: boolean): void => {
-              this.diagnosticAiCaptureActive = capturing;
-            }
-          })
-        }
-        .width(this.layout.deviceClass === 'phone' ? '92%' : 420)
-        .height(this.layout.deviceClass === 'phone' ? '72%' : 560)
-        .margin({ top: 62, right: 12 })
-        .borderRadius(18)
-        .shadow({ radius: 20, color: 'rgba(0,0,0,0.28)', offsetY: 8 })
-        .hitTestBehavior(HitTestMode.Block)
+      if (this.diagnosticAiAssistantVisible && this.diagnosticAiVisible() && this.diagnosticAiIslandShown) {
+        AiIsland({
+          topInset: 10,
+          onDismissed: (): void => { this.diagnosticAiAssistantVisible = false; this.diagnosticAiIslandShown = false; },
+          onFloatingChanged: (_floating: boolean): void => {},
+          onCaptureStateChanged: (capturing: boolean): void => { this.diagnosticAiCaptureActive = capturing; }
+        }).width('100%').height('100%').position({ x: 0, y: 0 }).zIndex(30)
+          .hitTestBehavior(HitTestMode.Default)
       }
     }
     .width('100%')

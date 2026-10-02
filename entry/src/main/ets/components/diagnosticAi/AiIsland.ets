@@ -23,6 +23,7 @@ export struct AiIsland {
   onDismissed: () => void = (): void => {};
   /** Floating or not: the host lets touches through its overlay node only while the island floats. */
   onFloatingChanged: (floating: boolean) => void = (_floating: boolean): void => {};
+  onCaptureStateChanged: (capturing: boolean) => void = (_capturing: boolean): void => {};
   onOpenMailDraft: (subject: string, body: string) => void = (_subject: string, _body: string): void => {};
   /** 0 hidden · 1 capsule · 2 card. */
   @State private stage: number = 0;
@@ -99,6 +100,7 @@ export struct AiIsland {
         embedded: true,
         compact: this.compact,
         onActivityChanged: (active: boolean): void => { this.onWorkChanged(active); },
+        onCaptureStateChanged: (capturing: boolean): void => { this.onCaptureStateChanged(capturing); },
         onClose: (): void => { this.close(); },
         onOpenMailDraft: (subject: string, body: string): void => { this.onOpenMailDraft(subject, body); }
       }).width('100%')

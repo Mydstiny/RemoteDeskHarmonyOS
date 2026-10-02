@@ -20211,7 +20211,7 @@ struct HostListPage {
         Text(kind === 0 ? '辅助 AI 配置' : kind === 1 ? '启动 AI 辅助' : '传统日志抓取')
           .fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
           .fontColor(this.pal().text).fontFamily(this.font())
-        Text(kind === 0 ? '选择 AI 服务商、保存密钥并选择模型' : kind === 1 ? '描述问题，抓取脱敏事件后由 AI 分析' :
+        Text(kind === 0 ? '选择 AI 服务商、保存密钥并选择模型' : kind === 1 ? '询问应用、协助设置、诊断问题和生成反馈草稿' :
           '脱敏诊断日志的抓取、预览、保存与导出')
           .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
           .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).margin({ top: 2 })

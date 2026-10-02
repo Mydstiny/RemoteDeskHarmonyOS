@@ -137,7 +137,7 @@ export struct DiagnosticAiSettingsSheet {
   }
   private headerTitle(): string { return this.section === 1 ? '启动 AI 辅助' : '辅助 AI 配置'; }
   private headerDetail(): string {
-    return this.section === 1 ? '描述问题，助手分析脱敏诊断事件并给出建议' : '使用你自己的 AI 服务分析脱敏后的诊断信息';
+    return this.section === 1 ? '询问应用、协助设置、诊断问题并生成反馈草稿' : '选择 Provider、模型和数据外发策略';
   }
 
   @Builder private header() {

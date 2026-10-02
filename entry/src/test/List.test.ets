@@ -275,6 +275,7 @@ import diagnosticCaptureCoordinatorTest from './DiagnosticCaptureCoordinator.tes
 import diagnosticCaptureExportServiceTest from './DiagnosticCaptureExportService.test';
 import diagnosticRuntimeSnapshotPolicyTest from './DiagnosticRuntimeSnapshotPolicy.test';
 import diagnosticAiPolicyTest from './DiagnosticAiPolicy.test';
+import diagnosticAiAgentPolicyTest from './DiagnosticAiAgentPolicy.test';
 import appCloneContextTest from './AppCloneContext.test';
 
 export default function testsuite() {
@@ -554,6 +555,7 @@ export default function testsuite() {
   diagnosticCaptureExportServiceTest();
   diagnosticRuntimeSnapshotPolicyTest();
   diagnosticAiPolicyTest();
+  diagnosticAiAgentPolicyTest();
   appCloneContextTest();
   rustDeskRelayHealthPolicyTest();
 }
