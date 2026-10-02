@@ -36,7 +36,7 @@
     "status": "implemented-independent-session-management-provider-bound-resume-adaptive-dialog-usage-filter-and-settings-height-fix-provider-acceptance-pending",
     "reviewTaskId": "/root/diagnostic_ai_review",
     "reviewResult": "PENDING; implementation follows the earlier review scope, independent review not rerun",
-    "validation": "default@OhosTestCompileArkTS BUILD SUCCESSFUL 19.481 s; ohosTest@OhosTestCompileArkTS unavailable with 00306054; assembleHap BUILD SUCCESSFUL 21.029 s; latest signed HAP install PASS on MatePad Mini and Mate 80 Pro Max; git diff --check passed; AI regression scripts were not runnable because the workspace Node runtime lacks the optional typescript module; real Provider/secret cold-start/device visual/mail acceptance not run"
+    "validation": "default@OhosTestCompileArkTS BUILD SUCCESSFUL 19.481 s; ohosTest@OhosTestCompileArkTS unavailable with 00306054; assembleHap BUILD SUCCESSFUL 21.029 s; latest signed HAP install PASS on MatePad Mini and Mate 80 Pro Max; git diff --check passed; AI entries 4/4, lifecycle 8/8, final boundaries and races PASS; UI parity 25/26 with the existing invite-paste assertion failure; real Provider/secret cold-start/device visual/mail acceptance not run"
   },
   "next": "按 2026-10-02 账户登录/Coding Plan/UI 计划核验国内 Provider 的官方认证和套餐用途，并在 Phone/Pad/PC 验证 Siri island、问答、设置确认、抓取释放、账号切换、邮件预览和真实模型列表/分析；保留 experimental 直到证据齐全。",
   "blockers": [
