@@ -3,34 +3,36 @@
   "task": "pro-purchase-foundation",
   "branch": "codex/pro-purchase-foundation",
   "base": "8edc187868e94ed41634e8a6c4c4c072e3a48679",
-  "head": "1a0ba7aa",
-  "phase": "Full acceptance active; Pro 诊断与 AI 帮助客户端 checkpoint 已实现，真实 Provider/设备/邮件验收待完成",
-  "currentFocus": "Pro 诊断与 AI 帮助：b8a56f21、1e4e4185、b546152f 已实现并通过独立复核；真实 Provider/设备/邮件验收待完成",
+  "head": "94df53f75",
+  "phase": "Full acceptance active; Pro 诊断与 AI 帮助复审已提交，HAP/真实 Provider/设备/邮件验收待完成",
+  "currentFocus": "Pro 诊断与 AI 帮助：7327ac519 已加入共享抓取互斥、AI bundle 释放闭环、模型选择和 Provider revision 防旧响应；真实 Provider/设备/邮件验收待完成",
   "status": "in-progress",
   "latestIncrement": {
     "date": "2026-10-02",
-    "commit": "4f4a9a69",
-    "parentCommit": "f635aa2a",
+    "commit": "7327ac519",
+    "parentCommit": "74844bf29",
     "scope": [
-      "entry/src/main/ets/components/ProOrganizationWorkspacePanel.ets",
-      "entry/src/main/ets/components/ProWorkspaceEditorPanel.ets",
       "docs/codex/plans/2026-10-01-pro-diagnostic-ai-help-upgrade.md",
+      "entry/src/main/ets/components/DiagnosticCaptureSettingsSheet.ets",
       "entry/src/main/ets/components/diagnosticAi",
-      "entry/src/main/ets/services/diagnosticAi"
+      "entry/src/main/ets/services/DiagnosticCaptureCoordinator.ets",
+      "entry/src/main/ets/services/diagnosticAi",
+      "entry/src/test/DiagnosticCaptureCoordinator.test.ets"
     ],
-    "status": "implemented-provider-availability-guard-build-pass-review-pending",
+    "status": "implemented-capture-ownership-and-model-selection-build-rerun-pending",
     "reviewTaskId": "/root/diagnostic_ai_review",
     "reviewResult": "PASS; initial findings fixed and final provider availability guard confirmed",
-    "validation": "default@OhosTestCompileArkTS BUILD SUCCESSFUL 1 min 33.355 s; assembleHap BUILD SUCCESSFUL 2 min 22.034 s; Light/diff PASS; Pro entry/runtime/visibility/status Node tests PASS with DevEco Hvigor TypeScript; real Provider/device/mail acceptance not run"
+    "validation": "default@OhosTestCompileArkTS passed for the review code range; ohosTest@OhosTestCompileArkTS unavailable with 00306054; latest assembleHap reruns did not produce a stable success after shared cache/native/ArkTS blockers; git diff --check passed; real Provider/device/mail acceptance not run"
   },
-  "next": "完成诊断 AI 独立复核；随后在 Phone/Pad/PC 验证 orb、抓取停止、账号切换、邮件预览，并用真实国内 Provider 验证模型列表/分析；保留 experimental 直到证据齐全。",
+  "next": "在共享生成缓存锁释放后重跑 default@OhosTestCompileArkTS 和 assembleHap；随后在 Phone/Pad/PC 验证 orb、抓取释放、账号切换、邮件预览，并用真实国内 Provider 验证模型列表/分析；保留 experimental 直到证据齐全。",
   "blockers": [
     "Pad backup and Debug migration complete; same-account sandbox restore PASS without another payment. Remaining offline/cross-account and full protocol/device matrix remain open.",
     "M3/U0-U4 device matrix and M4 PC real Share Kit/SFTP file-integrity acceptance remain unverified.",
     "M5 Share Kit App Linking domain, association and actual fragment delivery remain unverified; ServiceInteraction ACL is a separate path. M6 USB/RDP authenticator and phone-passkey RP/origin proof remain pending.",
     "M5 RustDesk/VNC continuation commit 090be1411 passes focused tests and both mandatory Hvigor gates; real cross-device/device protocol acceptance remains unverified and aggregate review has no matching PASS receipt.",
     "Sandbox core device flow passed. Numeric-version publication, notification endpoint and formal merchant/product release remain open; worker timer disabled.",
-    "RDP domain preflight checkpoints f06bcf620, b17d8d90 and d10db1076: direct/transparent hostname candidates are unified with the live FreeRDP transport after service reachability; testCompile and signed assembleHap pass; optional ohosTest task 00306054 is unavailable; real hostname/device certificate acceptance remains open."
+    "RDP domain preflight checkpoints f06bcf620, b17d8d90 and d10db1076: direct/transparent hostname candidates are unified with the live FreeRDP transport after service reachability; testCompile and signed assembleHap pass; optional ohosTest task 00306054 is unavailable; real hostname/device certificate acceptance remains open.",
+    "本轮 Pro 诊断 AI 最新 assembleHap 仍未形成成功证据：共享生成缓存经历 CMake scratch、arm64 Ninja 中断和临时 ArkTS manifest 校验问题；需独占缓存重跑后再更新状态。"
   ],
   "planPaths": [
     "docs/codex/plans/2026-09-06-pro-purchase-foundation.md",

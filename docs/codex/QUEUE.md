@@ -4,7 +4,9 @@ Updated: 2026-10-02 Asia/Shanghai
 
 ## Now
 
-- Pro「诊断与 AI 帮助」checkpoint `b8a56f21` 已实现：设置页三分区、国内优先 Provider/Asset Store、脱敏诊断编排、结构化 AI 结果和白名单设置建议、HostList/RemoteSession orb、邮件草稿与隐私/用户文档。编译、签名 HAP、Light/diff 已通过；待独立复核、真实 Provider/设备/邮件验收后再决定是否把 experimental 提升为 available。详见 [计划](plans/2026-10-01-pro-diagnostic-ai-help-upgrade.md)。
+- 电脑端 RemoteDesk 插件：Codex/DSH 二维码默认、`remotedesk://pair` 链接回退和 App 解析已实现；本机 Codex/DSH 服务与 loopback 控制面板可达，Claude Code 仅完成 2.1.286 probe-only 骨架，等待独立协议/权限/会话验收后再做功能对齐。
+
+- Pro「诊断与 AI 帮助」复审 checkpoint `7327ac519` 已提交：新增手动/AI 抓取互斥协调器、AI bundle 释放闭环、模型列表选择、Provider revision 迟到响应防护和复审/扩展路线。`default@OhosTestCompileArkTS` 在本轮代码范围曾通过；`ohosTest@OhosTestCompileArkTS` 任务不存在，最新 `assembleHap` 仍需在共享生成缓存稳定后重跑。真实 Provider/设备/邮件验收未完成，继续保持 experimental。详见 [计划](plans/2026-10-01-pro-diagnostic-ai-help-upgrade.md)。
 
 - RDP/RustDesk 高级显示计划：[2026-10-01 计划](plans/2026-10-01-rdp-rustdesk-pro-display-resolution-scale-plan.md) 独立复审无 P0，但发现 P1：`RemoteDisplayProfile` 尚未接入运行时，当前显示设置仍是全局 AppStorage/Preferences，不能按主机恢复多套方案；CloudSyncSettingsPolicy 已确认字段设备本地。compile、assemble、RDP 15/15、Rust 320/320、Pro entry/runtime、双 ABI、Light/diff/state PASS；ohosTest 为 00306054，先补 host × device profile store/runtime，再进入真实 peer/设备与 Release review。
 
