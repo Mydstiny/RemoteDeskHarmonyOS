@@ -6,7 +6,7 @@ Updated: 2026-10-02 Asia/Shanghai
 
 - 电脑端 RemoteDesk 插件：Codex/DSH 二维码默认、`remotedesk://pair` 链接回退和 App 解析已实现；本机 Codex/DSH 服务与 loopback 控制面板可达，Claude Code 仅完成 2.1.286 probe-only 骨架，等待独立协议/权限/会话验收后再做功能对齐。
 
-- Pro「诊断与 AI 帮助」P1 已实现（待独立复核）：在 `56895bc2` 后加入显式认证模式选择、selectedAuthMode 订阅绑定、API/Coding Plan Key 隔离、Manifest 版本/模型白名单/专用端点 fail-closed、条款用途 consent、账号切换重绑和删除/撤销 UI；定向诊断测试 6/6 PASS，隔离缓存双 Hvigor 门禁 PASS（25.289 s / 39.454 s），HAP 已 `install -r` 部署三台 HDC。真实 Provider、官方用途、账号切换实机、三端视觉/邮件验收未完成，继续保持 experimental；OAuth/设备授权仍留在 P2。
+- Pro「诊断与 AI 帮助」P1 已实现（待独立复核）：在 `56895bc2` 后加入显式认证模式选择、selectedAuthMode 订阅绑定、API/Coding Plan Key 隔离、Manifest 版本/模型白名单/专用端点 fail-closed、条款用途 consent、账号切换重绑、删除/撤销 UI，以及 Provider 模型/价格目录的同一用途门禁（`9614dd09`）；定向诊断测试 6/6 PASS，最新双 Hvigor 与 Light 门禁 PASS，HAP 已 `install -r` 部署三台 HDC。真实 Provider、官方用途、账号切换实机、三端视觉/邮件验收未完成，继续保持 experimental；OAuth/设备授权仍留在 P2。
 
 - RDP/RustDesk 高级显示计划：[2026-10-01 计划](plans/2026-10-01-rdp-rustdesk-pro-display-resolution-scale-plan.md) 的 P1 运行时闭环已实现，`b69d3c9f` 经 `/root/review_display_final` PASS，并补齐 marker 失败 fail-closed 回归；RDP/RustDesk profile 已按账号×主机×协议×设备隔离，RustDesk 能力/Pro/peer 权限门控保持封闭。编译、assembleHap、显示选择 5/5、Pro entry/runtime、Light/diff/state PASS；ohosTest 为 00306054。下一步是实际 Windows/RustDesk peer/设备矩阵与 Release/PR 验收。
 
