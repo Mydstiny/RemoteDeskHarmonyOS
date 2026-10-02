@@ -1,4 +1,5 @@
 import { common } from '@kit.AbilityKit';
+import { inputMethod } from '@kit.IMEKit';
 import { AppConfig, Palette, buildDark, buildLight } from '../../common/Theme';
 import { AppUiMetrics } from '../../common/AppUiMetrics';
 import { DiagnosticAiProviderProfile, DiagnosticAiResult, DiagnosticAiSettingProposal } from '../../services/diagnosticAi/DiagnosticAiModels';
@@ -21,10 +22,20 @@ export struct DiagnosticAiAssistantPanel {
   @StorageProp('breakpoint') breakpoint: string = 'md';
   /** Inside the 启动 AI 辅助 sub-setting sheet, which already shows the title and close button. */
   @Prop embedded: boolean = false;
+  /** Inside the dark AI island the panel always uses the dark palette. */
+  @Prop forceDark: boolean = false;
+  /**
+   * Siri-style text mode for the AI island: the question is typed straight into the card with the keyboard up,
+   * small pill actions sit under it, and the result opens in the same card. Same capture and analysis as the panel.
+   */
+  @Prop siriMode: boolean = false;
   @State private pulse: boolean = false;
   @State private captureBytes: number = 0;
   onClose: () => void = (): void => {};
   onCaptureStateChanged: (capturing: boolean) => void = (_capturing: boolean): void => {};
+  /** Capturing or analyzing; drives the edge glow of the sheet around the panel. */
+  onActivityChanged: (active: boolean) => void = (_active: boolean): void => {};
+  private lastActive: boolean = false;
   onOpenMailDraft: (subject: string, body: string) => void = (_subject: string, _body: string): void => {};
   @State question: string = '';
   @State status: string = '';
@@ -45,7 +56,9 @@ export struct DiagnosticAiAssistantPanel {
   private lifecycleGeneration: number = 0;
   private captureOwnedByPanel: boolean = false;
 
-  private pal(): Palette { return this.theme === 'light' ? buildLight(this.accent) : buildDark(this.accent); }
+  private pal(): Palette {
+    return this.theme === 'light' && !this.forceDark ? buildLight(this.accent) : buildDark(this.accent);
+  }
 
   aboutToAppear(): void {
     this.lifecycleGeneration++;
@@ -73,6 +86,7 @@ export struct DiagnosticAiAssistantPanel {
     const snapshot = this.capture.status();
     this.eventCount = snapshot.eventCount; this.elapsed = snapshot.durationMinutes * 60 - snapshot.remainingSeconds;
     this.captureBytes = snapshot.approximateBytes;
+    this.reportActivity();
     if (snapshot.phase === 'capturing') {
       this.status = '正在抓取脱敏诊断事件，复现问题后点「结束并分析」';
       this.pulse = !this.pulse;
@@ -80,6 +94,11 @@ export struct DiagnosticAiAssistantPanel {
   }
 
   private capturing(): boolean { return this.capture.status().phase === 'capturing'; }
+
+  private reportActivity(): void {
+    const active: boolean = this.busy || this.capturing();
+    if (active !== this.lastActive) { this.lastActive = active; this.onActivityChanged(active); }
+  }
   private sizeText(): string {
     return this.captureBytes >= 1024 ? (this.captureBytes / 1024).toFixed(1) + ' KB' : this.captureBytes.toString() + ' B';
   }
@@ -117,7 +136,7 @@ export struct DiagnosticAiAssistantPanel {
     if (this.busy) { return; }
     const requestGeneration: number = this.lifecycleGeneration;
     const requestOwner: string = this.owner;
-    this.busy = true; const stopCode = this.capture.stop(requestOwner); this.captureOwnedByPanel = false;
+    this.busy = true; this.reportActivity(); const stopCode = this.capture.stop(requestOwner); this.captureOwnedByPanel = false;
     this.onCaptureStateChanged(false); this.syncCapture();
     if (stopCode !== 'ok' && stopCode !== 'not_active') {
       this.status = '无法结束抓取：' + stopCode; this.busy = false; return;
@@ -153,7 +172,7 @@ export struct DiagnosticAiAssistantPanel {
       this.status = '分析完成。结果仅供参考，请根据证据和应用提示操作。';
     } catch (error) {
       this.status = error instanceof Error ? error.message : 'AI 分析失败';
-    } finally { this.busy = false; }
+    } finally { this.busy = false; this.reportActivity(); }
   }
 
   @Builder private metric(value: string, label: string) {
@@ -258,7 +277,138 @@ export struct DiagnosticAiAssistantPanel {
     .border({ width: 0.5, color: this.pal().cardBorder })
   }
 
+  @Builder private pill(label: string, primary: boolean, action: () => void) {
+    Text(label).fontSize(13).fontWeight(FontWeight.Medium)
+      .fontColor(primary ? '#FFFFFF' : '#DDE2EC')
+      .padding({ left: 14, right: 14, top: 7, bottom: 7 }).borderRadius(16)
+      .backgroundColor(primary ? '#3D2A7DFF' : '#26FFFFFF')
+      .border({ width: 0.5, color: primary ? '#802A7DFF' : '#33FFFFFF' })
+      .onClick(action)
+  }
+
+  private submitQuestion(): void {
+    if (this.question.trim() === '' || this.busy || this.capturing()) { return; }
+    try { inputMethod.getController().hideTextInput(); } catch (_error) { /* keyboard already down */ }
+    this.beginCapture();
+  }
+
+  @Builder private siriLayout() {
+    Column({ space: 10 }) {
+      if (this.result === null && !this.capturing() && !this.busy) {
+        TextArea({ placeholder: '描述遇到的问题 — 询问 AI', text: this.question })
+          .id('aiIslandQuestion')
+          .fontSize(17).fontColor('#F4F6FA').placeholderColor('#7D8698').placeholderFont({ size: 17 })
+          .caretColor('#42CBF7').backgroundColor(Color.Transparent).padding(0)
+          .constraintSize({ minHeight: 28, maxHeight: 132 })
+          .enterKeyType(EnterKeyType.Go)
+          .onChange((value: string): void => { this.question = value; })
+          .onSubmit((): void => { this.submitQuestion(); })
+          .onAppear((): void => {
+            setTimeout((): void => { focusControl.requestFocus('aiIslandQuestion'); }, 120);
+          })
+      } else {
+        Text(this.question).fontSize(16).lineHeight(22).fontColor('#C8CEDA').width('100%').maxLines(3)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+      }
+      if (this.capturing()) {
+        Row({ space: 8 }) {
+          Circle().width(8).height(8).fill('#FF678C')
+            .opacity(this.pulse ? 1 : 0.35).animation({ duration: 480, curve: Curve.EaseInOut })
+          Text('抓取中 · ' + this.eventCount.toString() + ' 条事件 · ' + this.elapsed.toString() + ' 秒')
+            .fontSize(13).fontColor('#DDE2EC').layoutWeight(1)
+        }.width('100%')
+        Text('现在去复现问题，完成后回来点「结束并分析」').fontSize(12).fontColor('#8D96A8').width('100%')
+      } else if (this.busy) {
+        Text('AI 正在分析脱敏诊断事件…').fontSize(13).fontColor('#DDE2EC').width('100%')
+      } else if (this.status.length > 0 && this.result === null && this.status.indexOf('正在') < 0) {
+        Text(this.status).fontSize(12).lineHeight(17).fontColor('#F0A35E').width('100%')
+      }
+      if (this.result !== null) {
+        Scroll() {
+          Column({ space: 10 }) {
+            Row({ space: 8 }) {
+              Text('影响 ' + this.severityText()).fontSize(11).fontColor(this.severityColor())
+                .padding({ left: 8, right: 8, top: 3, bottom: 3 }).borderRadius(9)
+                .backgroundColor('#1A' + this.severityColor().substring(1))
+              Text('置信度 ' + Math.round((this.result as DiagnosticAiResult).confidence * 100).toString() + '%')
+                .fontSize(11).fontColor('#8D96A8')
+            }.width('100%')
+            Text((this.result as DiagnosticAiResult).summary).fontSize(15).lineHeight(22).fontColor('#F4F6FA')
+              .width('100%').copyOption(CopyOptions.InApp)
+            if ((this.result as DiagnosticAiResult).unknowns.length > 0) {
+              Text('尚不确定：' + (this.result as DiagnosticAiResult).unknowns.join('；')).fontSize(12).lineHeight(18)
+                .fontColor('#8D96A8').width('100%')
+            }
+            ForEach((this.result as DiagnosticAiResult).settingProposals, (proposal: DiagnosticAiSettingProposal): void => {
+              Row({ space: 10 }) {
+                Column({ space: 2 }) {
+                  Text(diagnosticAiSettingActionText(proposal.settingId) + ' → ' + proposal.proposedValue)
+                    .fontSize(13).fontWeight(FontWeight.Medium).fontColor('#F4F6FA').width('100%')
+                  Text(proposal.reason).fontSize(11).lineHeight(16).fontColor('#8D96A8').width('100%')
+                }.layoutWeight(1)
+                if (proposal.requiresUserConfirmation) {
+                  this.pill('应用', true, (): void => {
+                    const applied: boolean = diagnosticAiApplyProposal(proposal);
+                    this.status = applied ? '已应用：' + diagnosticAiSettingActionText(proposal.settingId) : '该建议未通过安全白名单';
+                  })
+                }
+              }.width('100%').padding(10).borderRadius(14).backgroundColor('#14FFFFFF')
+            }, (_proposal: DiagnosticAiSettingProposal, index: number): string => index.toString())
+            if (this.mailPreviewVisible) {
+              Column({ space: 6 }) {
+                Text('邮件预览 · ' + this.mailSubject).fontSize(12).fontColor('#C8CEDA').width('100%')
+                Scroll() {
+                  Text(this.mailBody).fontSize(11).lineHeight(16).fontColor('#DDE2EC').width('100%')
+                    .copyOption(CopyOptions.InApp)
+                }.height(120).width('100%')
+              }.width('100%').padding(10).borderRadius(14).backgroundColor('#14FFFFFF')
+            }
+          }.width('100%')
+        }.constraintSize({ maxHeight: 360 }).scrollBar(BarState.Off).edgeEffect(EdgeEffect.Spring)
+      }
+      // Small pill actions under the text, like 「Show Results」.
+      Row({ space: 8 }) {
+        if (this.result === null && !this.capturing() && !this.busy && this.question.trim() !== '') {
+          this.pill('开始诊断', true, (): void => { this.submitQuestion(); })
+        }
+        if (this.capturing()) {
+          this.pill('结束并分析', true, (): void => { void this.finishCapture(); })
+          this.pill('取消', false, (): void => {
+            this.capture.cancel(this.owner); this.captureOwnedByPanel = false;
+            this.onCaptureStateChanged(false); this.syncCapture(); this.status = '已取消抓取';
+          })
+        }
+        if (this.result !== null) {
+          if (this.mailPreviewVisible) {
+            this.pill('打开系统邮件', true, (): void => {
+              this.onOpenMailDraft(this.mailSubject, this.mailBody); this.mailPreviewVisible = false;
+            })
+          } else {
+            this.pill('生成邮件草稿', false, (): void => {
+              const draft = diagnosticAiMailDraft(this.question, this.result as DiagnosticAiResult, {
+                captureId: 'latest', schemaVersion: 8, modules: this.modules,
+                text: this.latestBundleText, eventCount: this.eventCount, bytes: this.latestBundleText.length
+              });
+              this.mailSubject = draft.subject; this.mailBody = draft.body; this.mailPreviewVisible = true;
+            })
+          }
+          this.pill('再问一个', false, (): void => {
+            this.result = null; this.question = ''; this.status = ''; this.mailPreviewVisible = false; this.modules = [];
+          })
+        }
+      }.width('100%').justifyContent(FlexAlign.Center)
+    }.width('100%')
+  }
+
   build() {
+    if (this.siriMode) {
+      this.siriLayout()
+    } else {
+      this.panelLayout()
+    }
+  }
+
+  @Builder private panelLayout() {
     Column() {
       if (!this.embedded) {
         Row({ space: 10 }) {

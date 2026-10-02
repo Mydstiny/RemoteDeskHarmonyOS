@@ -1,4 +1,5 @@
 import { ProBadge, proBadgeSummary } from '../components/ProBadge';
+import { AiIsland } from '../components/diagnosticAi/AiIsland';
 import { PRO_ORDER_PENDING_KEY } from '../services/ProIntroRegistry';
 import { settingsUsageGuidePages } from '../services/GuideContentRegistry';
 import { ProBadgeSettingsPanel, ProFeatureDetailPanel } from '../components/ProFeatureManagerPanel';
@@ -7,7 +8,6 @@ import { proFeatureCurrentStatus } from '../services/pro/ProFeatureStatusReader'
 import {
   PRO_PERSONALIZATION_FEATURE,
   PRO_RDP_ADVANCED_DISPLAY_FEATURE,
-  PRO_DIAGNOSTICS_FEATURE,
   PRO_DIAGNOSTICS_ASSISTANT_FEATURE,
   PRO_DIAGNOSTICS_PROVIDER_FEATURE,
   ProFeature
@@ -962,6 +962,8 @@ struct HostListPage {
   @State diagnosticAiAssistantVisible: boolean = false;
   /** Which sub-setting the diagnostic AI sheet shows: 0 = 辅助 AI 配置, 1 = 启动 AI 辅助. */
   @State diagnosticAiSection: number = 0;
+  /** 启动 AI 辅助 opens as the AI island at the top center; it unmounts after folding away. */
+  @State aiIslandShown: boolean = false;
   /** Debug builds only: Pro state override (跟随真实 / 模拟开启 / 模拟关闭) and the real state behind it. */
   @State proDebugMode: string = 'real';
   @State proRealStateText: string = '';
@@ -14042,6 +14044,14 @@ struct HostListPage {
         }
       }.width('100%').height('100%')
 
+      if (this.aiIslandShown && this.diagnosticAiAssistantVisible) {
+        AiIsland({
+          topInset: this.topSafeHeightVp(),
+          onDismissed: (): void => { this.aiIslandShown = false; },
+          onOpenMailDraft: (subject: string, body: string): void => { void this.openFeedbackEmail(subject, body); }
+        }).width('100%').height('100%').position({ x: 0, y: 0 }).zIndex(40)
+      }
+
       // Start ArkWeb/xterm while the host list is visible so opening an SSH
       // host does not pay the first WebView/vendor-script cold-start cost.
       if (this.sshCount > 0) {
@@ -14051,13 +14061,7 @@ struct HostListPage {
           .hitTestBehavior(HitTestMode.None);
       }
 
-      if (this.diagnosticAiOrbEnabled && ProEntries.visible(PRO_DIAGNOSTICS_FEATURE,
-        ProAppRuntime.getInstance().context())) {
-        Row() {
-          DiagnosticAiOrb({ visible: true, onOpen: (): void => { this.openDiagnosticAiSection(1); } })
-        }.position({ x: 0, y: this.topRectHeight > 0 ? px2vp(this.topRectHeight) + 8 : 8 })
-          .width('100%').padding({ right: 16 }).justifyContent(FlexAlign.End).zIndex(12)
-      }
+
 
       // FAB — 智感握姿悬浮加号按钮
       // 官方推荐: 对齐驱动 (justifyContent) 而非 translate, .animation() 保证弹簧动画可靠触发
@@ -16209,6 +16213,10 @@ struct HostListPage {
               Row() {
                 Text(this.hostPageTitle).fontSize(27).fontWeight(FontWeight.Bold)
                   .fontColor(this.pal().text).fontFamily(this.font()).layoutWeight(1)
+                if (this.hostAiOrbShown()) {
+                  DiagnosticAiOrb({ visible: true, onOpen: (): void => { this.openDiagnosticAiSection(1); } })
+                    .margin({ right: 12 })
+                }
               Row() {
                 Text('⌕').fontSize(18).fontColor(this.pal().text3).margin({ left: 14, right: 8 })
                 TextInput({ placeholder: '搜索主机...', text: this.searchText })
@@ -16236,7 +16244,10 @@ struct HostListPage {
               Row().width('100%').height(this.topSafeHeightVp() + this.titleOffsetY())
               Row() {
                 Text(this.hostPageTitle).fontSize(27).fontWeight(FontWeight.Bold)
-                  .fontColor(this.pal().text).fontFamily(this.font())
+                  .fontColor(this.pal().text).fontFamily(this.font()).layoutWeight(1)
+                if (this.hostAiOrbShown()) {
+                  DiagnosticAiOrb({ visible: true, onOpen: (): void => { this.openDiagnosticAiSection(1); } })
+                }
               }.width('100%').padding({ left: 24, right: 24, bottom: 8 })
               Row() {
                 Text('⌕').fontSize(18).fontColor(this.pal().text3).margin({ left: 14, right: 8 })
@@ -17084,7 +17095,8 @@ struct HostListPage {
       .alignItems(HorizontalAlign.Start)
       .layoutWeight(1)
 
-      if (section === SETTINGS_SECTION_AI || section === SETTINGS_SECTION_PRO) {
+      if (section === SETTINGS_SECTION_AI || section === SETTINGS_SECTION_PRO ||
+        (section === SETTINGS_SECTION_DIAGNOSTICS && (this.diagnosticAiConfigVisible || this.diagnosticAiAssistantVisible))) {
         ProBadge().margin({ right: 8 }).alignSelf(ItemAlign.Center)
       }
       SymbolGlyph($r('sys.symbol.chevron_right'))
@@ -20168,7 +20180,17 @@ struct HostListPage {
     .onClick((): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_PRO_BADGE); })
   }
 
+  /** The 启动 AI 辅助 entry sits at the right end of the 远程主机 title, on the host list only. */
+  private hostAiOrbShown(): boolean {
+    return this.curTab === 0 && this.diagnosticAiOrbEnabled && this.diagnosticAiAssistantVisible;
+  }
+
   private openDiagnosticAiSection(section: number): void {
+    if (section === 1) {
+      // 启动 AI 辅助 unfolds from the AI island instead of a sheet.
+      if (this.diagnosticAiAssistantVisible) { this.aiIslandShown = true; }
+      return;
+    }
     this.openSettingsLeafSheet(SETTINGS_SHEET_DIAGNOSTIC_AI, (): void => { this.diagnosticAiSection = section; });
   }
 

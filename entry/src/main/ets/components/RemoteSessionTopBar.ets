@@ -1521,7 +1521,7 @@ export struct RemoteSessionTopBar {
             onOpen: (): void => { this.diagnosticAiAssistantVisible = true; }
           })
         }
-        .width('100%').padding({ top: 10, right: 12 })
+        .width('100%').padding({ top: 10, right: 12 }).justifyContent(FlexAlign.End)
         .hitTestBehavior(HitTestMode.Transparent)
       }
       if (this.diagnosticAiAssistantVisible && this.diagnosticAiVisible()) {

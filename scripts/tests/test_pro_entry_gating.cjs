@@ -101,6 +101,10 @@ assert.match(hostSource, /if \(this\.diagnosticAiConfigVisible\) \{\s*this\.diag
 assert.match(hostSource, /if \(this\.diagnosticAiAssistantVisible\) \{\s*this\.diagnosticSubRow\(1\)/);
 assert.match(hostSource, /\}\s*this\.diagnosticSubRow\(2\)\s*\}/);
 assert.match(hostSource, /if \(kind < 2\) \{\s*ProBadge\(\)/);
+// The 诊断与 AI 帮助 header badge shows only while one of its AI sub-settings is visible.
+assert.match(hostSource, /section === SETTINGS_SECTION_DIAGNOSTICS && \(this\.diagnosticAiConfigVisible \|\| this\.diagnosticAiAssistantVisible\)/);
+// The host-page AI entry follows the 启动 AI 辅助 entitlement.
+assert.match(hostSource, /this\.curTab === 0 && this\.diagnosticAiOrbEnabled && this\.diagnosticAiAssistantVisible/);
 
 // 3. Regression: the settings app-icon row follows the entitlement.
 const host = sources.get('pages/HostListPage.ets');
