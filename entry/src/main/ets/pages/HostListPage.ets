@@ -16845,7 +16845,11 @@ struct HostListPage {
     const diagnosticHeight: number = diagnosticLogSettingsLeafSheetHeight(this.settingsLeafSheetMode);
     if (diagnosticHeight > 0) { return diagnosticHeight; }
     const diagnosticAiHeight: number = diagnosticAiSettingsLeafSheetHeight(this.settingsLeafSheetMode);
-    if (diagnosticAiHeight > 0) { return diagnosticAiHeight; }
+    if (diagnosticAiHeight > 0) {
+      // AI settings contain variable-length provider lists, session history and personalization controls. Keep one
+      // adaptive native sheet with an inner Scroll instead of a fixed 840vp height that clips the fourth row.
+      return Math.min(900, Math.max(420, this.pageViewportHeight - 48));
+    }
     const secretVisibilityHeight: number =
       secretVisibilitySettingsLeafSheetHeight(this.settingsLeafSheetMode);
     if (secretVisibilityHeight > 0) { return secretVisibilityHeight; }

@@ -232,7 +232,8 @@ export struct DiagnosticAiAssistantPanel {
   private readonly conversationStore: DiagnosticAiConversationStore = new DiagnosticAiConversationStore();
   private sessionId: string = '';
   private assistantPreferences: DiagnosticAiAssistantPreferences = {
-    name: '小远', personality: 'balanced', memoryEnabled: true, memorySummary: '', updatedAt: 0
+    name: '小远', personality: 'balanced', verbosity: 'standard', role: 'remote-expert', language: 'zh-CN',
+    memoryEnabled: true, memorySummary: '', proactiveSuggestions: true, confirmBeforeActions: true, updatedAt: 0
   };
 
   private onRevealed(): void {
@@ -422,6 +423,8 @@ export struct DiagnosticAiAssistantPanel {
       const analyzed: DiagnosticAiResult = await this.agent.respond(selected, secret, {
         mode, question: this.question, history: this.conversation, bundle,
         assistantContext: this.assistantPreferences.name + '；语气：' + this.assistantPreferences.personality +
+          '；详细程度：' + this.assistantPreferences.verbosity + '；角色：' + this.assistantPreferences.role +
+          '；语言：' + this.assistantPreferences.language +
           (this.assistantPreferences.memoryEnabled && this.assistantPreferences.memorySummary !== '' ?
             '；用户偏好：' + this.assistantPreferences.memorySummary : '')
       });
@@ -495,6 +498,8 @@ export struct DiagnosticAiAssistantPanel {
       const analyzed: DiagnosticAiResult = await this.agent.respond(selected, secret, {
         mode: 'diagnose', question: this.question, history: this.conversation, bundle: bundle.text,
         assistantContext: this.assistantPreferences.name + '；语气：' + this.assistantPreferences.personality +
+          '；详细程度：' + this.assistantPreferences.verbosity + '；角色：' + this.assistantPreferences.role +
+          '；语言：' + this.assistantPreferences.language +
           (this.assistantPreferences.memoryEnabled && this.assistantPreferences.memorySummary !== '' ?
             '；用户偏好：' + this.assistantPreferences.memorySummary : '')
       });

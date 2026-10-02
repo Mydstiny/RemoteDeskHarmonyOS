@@ -21,9 +21,23 @@ class DiagnosticAiPersonalityChoice {
   constructor(id: 'balanced' | 'warm' | 'concise' | 'technical', label: string) { this.id = id; this.label = label; }
 }
 
+class DiagnosticAiChoice {
+  id: string;
+  label: string;
+  constructor(id: string, label: string) { this.id = id; this.label = label; }
+}
+
 const DIAGNOSTIC_AI_PERSONALITY_CHOICES: DiagnosticAiPersonalityChoice[] = [
   new DiagnosticAiPersonalityChoice('balanced', '均衡'), new DiagnosticAiPersonalityChoice('warm', '温和'),
   new DiagnosticAiPersonalityChoice('concise', '简洁'), new DiagnosticAiPersonalityChoice('technical', '技术')
+];
+
+const DIAGNOSTIC_AI_VERBOSITY_CHOICES: DiagnosticAiChoice[] = [
+  new DiagnosticAiChoice('concise', '简洁'), new DiagnosticAiChoice('standard', '标准'), new DiagnosticAiChoice('detailed', '详细')
+];
+const DIAGNOSTIC_AI_ROLE_CHOICES: DiagnosticAiChoice[] = [
+  new DiagnosticAiChoice('remote-expert', '远程桌面专家'), new DiagnosticAiChoice('beginner-guide', '新手引导'),
+  new DiagnosticAiChoice('diagnostic-first', '排障优先'), new DiagnosticAiChoice('privacy-first', '隐私优先')
 ];
 
 @Component
@@ -54,7 +68,12 @@ export struct DiagnosticAiSettingsSheet {
   @State resumeSessionId: string = '';
   @State usageProviderFilter: string = '';
   @State private personalityDraft: 'balanced' | 'warm' | 'concise' | 'technical' = 'balanced';
+  @State private verbosityDraft: 'concise' | 'standard' | 'detailed' = 'standard';
+  @State private roleDraft: 'remote-expert' | 'beginner-guide' | 'diagnostic-first' | 'privacy-first' = 'remote-expert';
+  @State private languageDraft: 'zh-CN' | 'en-US' = 'zh-CN';
   @State private memoryEnabledDraft: boolean = true;
+  @State private proactiveSuggestionsDraft: boolean = true;
+  @State private confirmBeforeActionsDraft: boolean = true;
   private readonly providerService: DiagnosticAiProviderService = new DiagnosticAiProviderService();
   private readonly conversationStore: DiagnosticAiConversationStore = new DiagnosticAiConversationStore();
   private store: DiagnosticAiProfileStore = new DiagnosticAiProfileStore();
@@ -74,8 +93,13 @@ export struct DiagnosticAiSettingsSheet {
     this.assistantPreferences = this.conversationStore.assistantPreferences();
     this.assistantNameDraft = this.assistantPreferences.name;
     this.personalityDraft = this.assistantPreferences.personality;
+    this.verbosityDraft = this.assistantPreferences.verbosity;
+    this.roleDraft = this.assistantPreferences.role;
+    this.languageDraft = this.assistantPreferences.language;
     this.memoryEnabledDraft = this.assistantPreferences.memoryEnabled;
     this.memoryDraft = this.assistantPreferences.memorySummary;
+    this.proactiveSuggestionsDraft = this.assistantPreferences.proactiveSuggestions;
+    this.confirmBeforeActionsDraft = this.assistantPreferences.confirmBeforeActions;
     if (this.settings.selectedProviderId !== '') { this.selectedProvider = this.settings.selectedProviderId; }
     this.model = this.settings.selectedModelId;
     const selected = this.manifests.find((value: DiagnosticAiProviderManifest): boolean => value.providerId === this.selectedProvider);
@@ -215,8 +239,9 @@ export struct DiagnosticAiSettingsSheet {
   private saveAssistantPreferences(): void {
     const next: DiagnosticAiAssistantPreferences = {
       name: this.assistantNameDraft.trim() === '' ? '小远' : this.assistantNameDraft.trim().slice(0, 32),
-      personality: this.personalityDraft, memoryEnabled: this.memoryEnabledDraft,
-      memorySummary: this.memoryDraft.trim().slice(0, 4000), updatedAt: Date.now()
+      personality: this.personalityDraft, verbosity: this.verbosityDraft, role: this.roleDraft, language: this.languageDraft,
+      memoryEnabled: this.memoryEnabledDraft, memorySummary: this.memoryDraft.trim().slice(0, 4000),
+      proactiveSuggestions: this.proactiveSuggestionsDraft, confirmBeforeActions: this.confirmBeforeActionsDraft, updatedAt: Date.now()
     };
     if (this.conversationStore.saveAssistantPreferences(next)) {
       this.assistantPreferences = next; this.message = '助手偏好已保存在本机，仅用于后续对话语气和上下文。';
@@ -460,9 +485,46 @@ export struct DiagnosticAiSettingsSheet {
             .onClick((): void => { this.personalityDraft = item.id; })
         }, (item: DiagnosticAiPersonalityChoice): string => item.id)
       }.width('100%')
+      Text('回答长度').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
+      Flex({ wrap: FlexWrap.Wrap }) {
+        ForEach(DIAGNOSTIC_AI_VERBOSITY_CHOICES, (item: DiagnosticAiChoice): void => {
+          Text(item.label).fontSize(12).fontColor(this.verbosityDraft === item.id ? Color.White : this.pal().text)
+            .padding({ left: 12, right: 12, top: 7, bottom: 7 }).margin({ right: 8, bottom: 6 }).borderRadius(14)
+            .backgroundColor(this.verbosityDraft === item.id ? this.accent : this.pal().surface)
+            .onClick((): void => { this.verbosityDraft = item.id as 'concise' | 'standard' | 'detailed'; })
+        }, (item: DiagnosticAiChoice): string => 'verbosity-' + item.id)
+      }.width('100%')
+      Text('助手角色').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
+      Flex({ wrap: FlexWrap.Wrap }) {
+        ForEach(DIAGNOSTIC_AI_ROLE_CHOICES, (item: DiagnosticAiChoice): void => {
+          Text(item.label).fontSize(12).fontColor(this.roleDraft === item.id ? Color.White : this.pal().text)
+            .padding({ left: 12, right: 12, top: 7, bottom: 7 }).margin({ right: 8, bottom: 6 }).borderRadius(14)
+            .backgroundColor(this.roleDraft === item.id ? this.accent : this.pal().surface)
+            .onClick((): void => { this.roleDraft = item.id as 'remote-expert' | 'beginner-guide' | 'diagnostic-first' | 'privacy-first'; })
+        }, (item: DiagnosticAiChoice): string => 'role-' + item.id)
+      }.width('100%')
+      Text('回答语言').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
+      Row({ space: 8 }) {
+        Text('简体中文').fontSize(12).fontColor(this.languageDraft === 'zh-CN' ? Color.White : this.pal().text)
+          .padding({ left: 12, right: 12, top: 7, bottom: 7 }).borderRadius(14)
+          .backgroundColor(this.languageDraft === 'zh-CN' ? this.accent : this.pal().surface)
+          .onClick((): void => { this.languageDraft = 'zh-CN'; })
+        Text('English').fontSize(12).fontColor(this.languageDraft === 'en-US' ? Color.White : this.pal().text)
+          .padding({ left: 12, right: 12, top: 7, bottom: 7 }).borderRadius(14)
+          .backgroundColor(this.languageDraft === 'en-US' ? this.accent : this.pal().surface)
+          .onClick((): void => { this.languageDraft = 'en-US'; })
+      }.width('100%')
       Row({ space: 8 }) {
         Column({ space: 2 }) { Text('允许本地记忆').fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.pal().text); Text('只把你主动填写的偏好附加到后续请求').fontSize(11).fontColor(this.pal().text3) }.layoutWeight(1)
         Toggle({ type: ToggleType.Switch, isOn: this.memoryEnabledDraft }).selectedColor(this.accent).onChange((value: boolean): void => { this.memoryEnabledDraft = value; })
+      }.width('100%')
+      Row({ space: 8 }) {
+        Column({ space: 2 }) { Text('主动建议').fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.pal().text); Text('在回答末尾显示下一步操作卡片').fontSize(11).fontColor(this.pal().text3) }.layoutWeight(1)
+        Toggle({ type: ToggleType.Switch, isOn: this.proactiveSuggestionsDraft }).selectedColor(this.accent).onChange((value: boolean): void => { this.proactiveSuggestionsDraft = value; })
+      }.width('100%')
+      Row({ space: 8 }) {
+        Column({ space: 2 }) { Text('敏感操作先确认').fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.pal().text); Text('断开、传输、隐私、凭据等操作始终建议保持开启').fontSize(11).fontColor(this.pal().text3) }.layoutWeight(1)
+        Toggle({ type: ToggleType.Switch, isOn: this.confirmBeforeActionsDraft }).selectedColor(this.accent).onChange((value: boolean): void => { this.confirmBeforeActionsDraft = value; })
       }.width('100%')
       TextArea({ placeholder: '例如：我主要使用 RDP，回答请先给出最短操作路径。', text: this.memoryDraft }).height(86).fontSize(13)
         .backgroundColor(this.pal().surface).borderRadius(12).onChange((value: string): void => { this.memoryDraft = value; })

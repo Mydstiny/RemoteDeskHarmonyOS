@@ -40,13 +40,19 @@ export interface DiagnosticAiProviderUsage {
 export interface DiagnosticAiAssistantPreferences {
   name: string;
   personality: 'balanced' | 'warm' | 'concise' | 'technical';
+  verbosity: 'concise' | 'standard' | 'detailed';
+  role: 'remote-expert' | 'beginner-guide' | 'diagnostic-first' | 'privacy-first';
+  language: 'zh-CN' | 'en-US';
   memoryEnabled: boolean;
   memorySummary: string;
+  proactiveSuggestions: boolean;
+  confirmBeforeActions: boolean;
   updatedAt: number;
 }
 
 export function defaultDiagnosticAiAssistantPreferences(): DiagnosticAiAssistantPreferences {
-  return { name: '小远', personality: 'balanced', memoryEnabled: true, memorySummary: '', updatedAt: 0 };
+  return { name: '小远', personality: 'balanced', verbosity: 'standard', role: 'remote-expert', language: 'zh-CN',
+    memoryEnabled: true, memorySummary: '', proactiveSuggestions: true, confirmBeforeActions: true, updatedAt: 0 };
 }
 
 export function defaultDiagnosticAiUsageSnapshot(): DiagnosticAiUsageSnapshot {
@@ -155,9 +161,16 @@ export class DiagnosticAiConversationStore {
     try {
       const value = JSON.parse(store.getSync('assistant', '{}') as string) as DiagnosticAiAssistantPreferences;
       const allowed: string[] = ['balanced', 'warm', 'concise', 'technical'];
+      const verbosity: string[] = ['concise', 'standard', 'detailed'];
+      const roles: string[] = ['remote-expert', 'beginner-guide', 'diagnostic-first', 'privacy-first'];
+      const languages: string[] = ['zh-CN', 'en-US'];
       return { name: typeof value.name === 'string' && value.name.trim() !== '' ? value.name.slice(0, 32) : '小远',
         personality: allowed.indexOf(value.personality) >= 0 ? value.personality : 'balanced',
+        verbosity: verbosity.indexOf(value.verbosity) >= 0 ? value.verbosity : 'standard',
+        role: roles.indexOf(value.role) >= 0 ? value.role : 'remote-expert',
+        language: languages.indexOf(value.language) >= 0 ? value.language : 'zh-CN',
         memoryEnabled: value.memoryEnabled !== false, memorySummary: typeof value.memorySummary === 'string' ? value.memorySummary.slice(0, 4000) : '',
+        proactiveSuggestions: value.proactiveSuggestions !== false, confirmBeforeActions: value.confirmBeforeActions !== false,
         updatedAt: Number(value.updatedAt) || 0 };
     } catch (_error) { return defaultDiagnosticAiAssistantPreferences(); }
   }
@@ -165,7 +178,9 @@ export class DiagnosticAiConversationStore {
   saveAssistantPreferences(value: DiagnosticAiAssistantPreferences): boolean {
     const store = this.prefs(); if (store === null) { return false; }
     try { store.putSync('assistant', JSON.stringify({ name: value.name.slice(0, 32), personality: value.personality,
-      memoryEnabled: value.memoryEnabled, memorySummary: value.memorySummary.slice(0, 4000), updatedAt: Date.now() }));
+      verbosity: value.verbosity, role: value.role, language: value.language, memoryEnabled: value.memoryEnabled,
+      memorySummary: value.memorySummary.slice(0, 4000), proactiveSuggestions: value.proactiveSuggestions,
+      confirmBeforeActions: value.confirmBeforeActions, updatedAt: Date.now() }));
       store.flushSync(); return true;
     } catch (_error) { return false; }
   }
