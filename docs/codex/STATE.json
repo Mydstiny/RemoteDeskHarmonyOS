@@ -3,14 +3,14 @@
   "task": "pro-purchase-foundation",
   "branch": "codex/pro-purchase-foundation",
   "base": "8edc187868e94ed41634e8a6c4c4c072e3a48679",
-  "head": "332e99f4",
+  "head": "9a0f960e",
   "phase": "Full acceptance active; Pro 诊断与 AI 帮助的持久化修复、失败恢复、会话用量与常驻入口已提交，真实 Provider/设备/邮件验收待完成",
   "currentFocus": "Pro 诊断与 AI 帮助：f460f0fa 修复诊断包失败保留/重试、Provider 请求有界摘要、账号隔离会话、Token/费用估算、助手偏好和常驻入口；真实 Provider/设备/邮件验收待完成",
   "status": "in-progress",
   "latestIncrement": {
     "date": "2026-10-02",
-    "commit": "f460f0fa",
-    "parentCommit": "3bd6fc23",
+    "commit": "9a0f960e",
+    "parentCommit": "f460f0fa",
     "scope": [
       "entry/src/main/ets/components/RemoteSessionTopBar.ets",
       "entry/src/main/ets/components/diagnosticAi/AiIsland.ets",
@@ -33,10 +33,10 @@
       "docs/app-store/PRIVACY_POLICY.md",
       "docs/app-store/USER_GUIDE.md"
     ],
-    "status": "implemented-recovery-session-usage-and-resident-ai-entry-provider-acceptance-pending",
+    "status": "implemented-recovery-session-usage-resident-entry-and-local-preferences-provider-acceptance-pending",
     "reviewTaskId": "/root/diagnostic_ai_review",
     "reviewResult": "PENDING; implementation follows the earlier review scope, independent review not rerun",
-    "validation": "default@OhosTestCompileArkTS BUILD SUCCESSFUL 52.983 s; ohosTest@OhosTestCompileArkTS unavailable with 00306054; assembleHap BUILD SUCCESSFUL 1 min 41.070 s with SignHap 2.881 s; git diff --check passed; AI script checks 25/26 UI polish cases passed with one pre-existing invite-paste assertion failure; real Provider/secret cold-start/device visual/mail acceptance not run"
+    "validation": "default@OhosTestCompileArkTS BUILD SUCCESSFUL 6.545 s; ohosTest@OhosTestCompileArkTS unavailable with 00306054; assembleHap BUILD SUCCESSFUL 8.871 s with SignHap 1.338 s; latest signed HAP install PASS on MatePad Mini and Mate 80 Pro Max; git diff --check passed; real Provider/secret cold-start/device visual/mail acceptance not run"
   },
   "next": "按 2026-10-02 账户登录/Coding Plan/UI 计划核验国内 Provider 的官方认证和套餐用途，并在 Phone/Pad/PC 验证 Siri island、问答、设置确认、抓取释放、账号切换、邮件预览和真实模型列表/分析；保留 experimental 直到证据齐全。",
   "blockers": [
