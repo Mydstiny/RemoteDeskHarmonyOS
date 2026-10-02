@@ -23,6 +23,18 @@ export interface DiagnosticAiUsageSnapshot {
   cachedTokens: number;
   estimatedCostCny: number;
   updatedAt: number;
+  providerUsage: DiagnosticAiProviderUsage[];
+}
+
+export interface DiagnosticAiProviderUsage {
+  providerId: string;
+  modelId: string;
+  requestCount: number;
+  promptTokens: number;
+  completionTokens: number;
+  cachedTokens: number;
+  estimatedCostCny: number;
+  updatedAt: number;
 }
 
 export interface DiagnosticAiAssistantPreferences {
@@ -38,7 +50,7 @@ export function defaultDiagnosticAiAssistantPreferences(): DiagnosticAiAssistant
 }
 
 export function defaultDiagnosticAiUsageSnapshot(): DiagnosticAiUsageSnapshot {
-  return { requestCount: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, estimatedCostCny: 0, updatedAt: 0 };
+  return { requestCount: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, estimatedCostCny: 0, updatedAt: 0, providerUsage: [] };
 }
 
 function scopeKey(owner: string): string {
@@ -96,19 +108,43 @@ export class DiagnosticAiConversationStore {
       const value = JSON.parse(store.getSync('usage', '{}') as string) as DiagnosticAiUsageSnapshot;
       return { requestCount: Number(value.requestCount) || 0, promptTokens: Number(value.promptTokens) || 0,
         completionTokens: Number(value.completionTokens) || 0, cachedTokens: Number(value.cachedTokens) || 0,
-        estimatedCostCny: Number(value.estimatedCostCny) || 0, updatedAt: Number(value.updatedAt) || 0 };
+        estimatedCostCny: Number(value.estimatedCostCny) || 0, updatedAt: Number(value.updatedAt) || 0,
+        providerUsage: Array.isArray(value.providerUsage) ? (value.providerUsage as DiagnosticAiProviderUsage[]).slice(0, 32).map((item: DiagnosticAiProviderUsage): DiagnosticAiProviderUsage => ({
+          providerId: typeof item.providerId === 'string' ? item.providerId.slice(0, 64) : '',
+          modelId: typeof item.modelId === 'string' ? item.modelId.slice(0, 128) : '',
+          requestCount: Number(item.requestCount) || 0, promptTokens: Number(item.promptTokens) || 0,
+          completionTokens: Number(item.completionTokens) || 0, cachedTokens: Number(item.cachedTokens) || 0,
+          estimatedCostCny: Number(item.estimatedCostCny) || 0, updatedAt: Number(item.updatedAt) || 0
+        })) : [] };
     } catch (_error) { return defaultDiagnosticAiUsageSnapshot(); }
   }
 
-  recordUsage(promptTokens: number, completionTokens: number, cachedTokens: number, estimatedCostCny: number): boolean {
+  recordUsage(promptTokens: number, completionTokens: number, cachedTokens: number, estimatedCostCny: number,
+    providerId: string = '', modelId: string = ''): boolean {
     const store = this.prefs(); if (store === null) { return false; }
     const previous = this.usage();
+    const providerRows: DiagnosticAiProviderUsage[] = previous.providerUsage.slice();
+    const providerKey: string = providerId.trim() + '\u001f' + modelId.trim();
+    if (providerId.trim() !== '') {
+      const existing: DiagnosticAiProviderUsage | undefined = providerRows.find((item: DiagnosticAiProviderUsage): boolean =>
+        item.providerId + '\u001f' + item.modelId === providerKey);
+      if (existing === undefined) {
+        providerRows.unshift({ providerId: providerId.trim().slice(0, 64), modelId: modelId.trim().slice(0, 128),
+          requestCount: 1, promptTokens: Math.max(0, Math.round(promptTokens)), completionTokens: Math.max(0, Math.round(completionTokens)),
+          cachedTokens: Math.max(0, Math.round(cachedTokens)), estimatedCostCny: Math.max(0, estimatedCostCny), updatedAt: Date.now() });
+      } else {
+        existing.requestCount += 1; existing.promptTokens += Math.max(0, Math.round(promptTokens));
+        existing.completionTokens += Math.max(0, Math.round(completionTokens)); existing.cachedTokens += Math.max(0, Math.round(cachedTokens));
+        existing.estimatedCostCny += Math.max(0, estimatedCostCny); existing.updatedAt = Date.now();
+      }
+    }
     const next: DiagnosticAiUsageSnapshot = {
       requestCount: previous.requestCount + 1,
       promptTokens: previous.promptTokens + Math.max(0, Math.round(promptTokens)),
       completionTokens: previous.completionTokens + Math.max(0, Math.round(completionTokens)),
       cachedTokens: previous.cachedTokens + Math.max(0, Math.round(cachedTokens)),
-      estimatedCostCny: previous.estimatedCostCny + Math.max(0, estimatedCostCny), updatedAt: Date.now()
+      estimatedCostCny: previous.estimatedCostCny + Math.max(0, estimatedCostCny), updatedAt: Date.now(),
+      providerUsage: providerRows.slice(0, 32)
     };
     try { store.putSync('usage', JSON.stringify(next)); store.flushSync(); return true; }
     catch (_error) { return false; }

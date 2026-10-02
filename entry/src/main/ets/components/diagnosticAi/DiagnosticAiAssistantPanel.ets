@@ -19,7 +19,7 @@ import { ProAppRuntime } from '../../services/pro/ProAppRuntime';
 import { ProEntries } from '../../services/pro/ProEntries';
 import { PRO_DIAGNOSTICS_ASSISTANT_FEATURE } from '../../services/pro/ProFeatureCatalog';
 import { AccountSessionCoordinator } from '../../services/AccountSessionCoordinator';
-import { DiagnosticAiAppAction, DiagnosticAiAppActionId, diagnosticAiAppActionsForSteps } from '../../services/diagnosticAi/DiagnosticAiAppActionPolicy';
+import { DiagnosticAiAppAction, DiagnosticAiAppActionId, diagnosticAiAppActionLabel, diagnosticAiAppActionRequiresConfirmation, diagnosticAiAppActionsForSteps } from '../../services/diagnosticAi/DiagnosticAiAppActionPolicy';
 import { DiagnosticAiAssistantPreferences, DiagnosticAiConversationSession, DiagnosticAiConversationStore, DiagnosticAiConversationTurn } from '../../services/diagnosticAi/DiagnosticAiConversationStore';
 
 /** A suggested question shown as a pill in the island; it follows what the user is asking about. */
@@ -220,6 +220,7 @@ export struct DiagnosticAiAssistantPanel {
   private readonly answerScroller: Scroller = new Scroller();
   /** Setting changes from the current answer that were already applied; their pills leave. */
   @State private appliedActions: string[] = [];
+  @State private pendingAppAction: DiagnosticAiAppActionId | null = null;
   private suggestionTimer: number = -1;
   private readonly capture: DiagnosticAiCaptureOrchestrator = DiagnosticAiCaptureOrchestrator.getInstance();
   private readonly agent: DiagnosticAiAgentService = new DiagnosticAiAgentService();
@@ -438,7 +439,7 @@ export struct DiagnosticAiAssistantPanel {
         AiConversationMemory.pendingQuestion = '';
       }
       this.conversation = (this.conversation + '\n用户：' + this.question + '\n助手：' + analyzed.summary).slice(-8000);
-      this.rememberExchange(analyzed);
+      this.rememberExchange(analyzed, selected);
       this.status = mode === 'diagnose' ? '诊断完成；请查看证据、建议和可选操作。' : '已收到 AI 回复；请从卡片中选择下一步。';
     } catch (error) {
       const currentScope = AccountSessionCoordinator.getInstance().currentScope();
@@ -510,7 +511,7 @@ export struct DiagnosticAiAssistantPanel {
       this.pendingCaptureId = '';
       AiConversationMemory.pendingQuestion = '';
       this.conversation = (this.conversation + '\n用户：' + this.question + '\n助手：' + analyzed.summary).slice(-8000);
-      this.rememberExchange(analyzed);
+      this.rememberExchange(analyzed, selected);
       this.status = '诊断完成；请查看证据、建议和可选操作。';
     } catch (error) {
       this.status = this.errorText(error) + '；诊断包已保留，可点击「重试分析」';
@@ -763,7 +764,7 @@ export struct DiagnosticAiAssistantPanel {
   }
 
   /** Keep the finished exchange for the next time the assistant opens, and show the answer from its start. */
-  private rememberExchange(result: DiagnosticAiResult): void {
+  private rememberExchange(result: DiagnosticAiResult, profile: DiagnosticAiProviderProfile): void {
     AiConversationMemory.owner = this.owner;
     AiConversationMemory.history = this.conversation;
     AiConversationMemory.turns = this.turns.concat([new AiTurn(this.question, result.summary)]);
@@ -785,7 +786,8 @@ export struct DiagnosticAiAssistantPanel {
     this.conversationStore.saveSession(session);
     const promptTokens: number = Math.ceil((this.question.length + this.conversation.length + this.latestBundleText.length) / 4);
     const completionTokens: number = Math.ceil(result.summary.length / 4);
-    this.conversationStore.recordUsage(promptTokens, completionTokens, 0, (promptTokens + completionTokens) / 1000000 * 0.3);
+    this.conversationStore.recordUsage(promptTokens, completionTokens, 0, (promptTokens + completionTokens) / 1000000 * 0.3,
+      profile.providerId, profile.modelId);
     setTimeout((): void => {
       if (this.turns.length > 0) { this.answerScroller.scrollEdge(Edge.Bottom); }
     }, 80);
@@ -825,8 +827,21 @@ export struct DiagnosticAiAssistantPanel {
       return;
     }
     if (action.appAction !== null) {
+      if (diagnosticAiAppActionRequiresConfirmation(action.appAction) && this.pendingAppAction !== action.appAction) {
+        this.pendingAppAction = action.appAction;
+        this.status = '请确认是否执行：' + diagnosticAiAppActionLabel(action.appAction);
+        return;
+      }
+      this.pendingAppAction = null;
       this.onAppAction(action.appAction);
     }
+  }
+
+  private confirmPendingAppAction(): void {
+    const action: DiagnosticAiAppActionId | null = this.pendingAppAction;
+    if (action === null) { return; }
+    this.pendingAppAction = null; this.status = '正在执行：' + diagnosticAiAppActionLabel(action);
+    this.onAppAction(action);
   }
 
   @Builder private expandButton() {
@@ -1000,6 +1015,12 @@ export struct DiagnosticAiAssistantPanel {
             this.capture.discard(this.owner, this.pendingCaptureId);
             this.pendingCaptureId = ''; this.latestBundleText = ''; this.modules = []; this.status = '已丢弃待分析诊断包';
           })
+        }.width('100%').justifyContent(FlexAlign.Center)
+      }
+      if (this.pendingAppAction !== null && !this.busy) {
+        Row({ space: 8 }) {
+          this.pill('确认执行：' + diagnosticAiAppActionLabel(this.pendingAppAction), true, (): void => { this.confirmPendingAppAction(); })
+          this.pill('取消', false, (): void => { this.pendingAppAction = null; this.status = '已取消操作'; })
         }.width('100%').justifyContent(FlexAlign.Center)
       }
       if (this.result !== null) {

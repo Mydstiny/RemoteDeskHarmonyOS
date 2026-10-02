@@ -18524,7 +18524,7 @@ struct HostListPage {
               '辅助 AI 配置、启动 AI 辅助与传统日志抓取' : '传统脱敏日志抓取')
         }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 10 })
 
-        // --- 诊断与 AI 帮助: three sub-settings ---
+        // --- 诊断与 AI 帮助: configuration, assistant, monitoring, personalization and classic logs ---
         ListItem() {
           Column() {
             Text('诊断与 AI 帮助').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text3)
@@ -18536,6 +18536,10 @@ struct HostListPage {
               }
               if (this.diagnosticAiAssistantVisible) {
                 this.diagnosticSubRow(1)
+                this.cardDivider()
+                this.diagnosticSubRow(3)
+                this.cardDivider()
+                this.diagnosticSubRow(4)
                 this.cardDivider()
               }
               this.diagnosticSubRow(2)
@@ -20230,6 +20234,49 @@ struct HostListPage {
       case 'ssh.keys': this.openSshKeyVaultFromSettings(); return;
       case 'rdp.credentials': this.openRdpCredentialManager(); return;
       case 'ai.config': this.openDiagnosticAiSection(0); return;
+      case 'settings.account': this.openSettingsLeafSheet(SETTINGS_SHEET_ACCOUNT); return;
+      case 'settings.appearance': this.openSettingsLeafSheet(SETTINGS_SHEET_ACCENT_COLOR); return;
+      case 'settings.wallpaper': this.openSettingsLeafSheet(SETTINGS_SHEET_WALLPAPER); return;
+      case 'settings.haloColor': this.openSettingsLeafSheet(SETTINGS_SHEET_HALO_COLOR); return;
+      case 'settings.terminalColor': this.openSettingsLeafSheet(SETTINGS_SHEET_TERMINAL_FG_COLOR); return;
+      case 'settings.terminalFontSize': this.openSettingsLeafSheet(SETTINGS_SHEET_TERMINAL_FONT_SIZE); return;
+      case 'settings.terminalSpacing': this.openSettingsLeafSheet(SETTINGS_SHEET_TERMINAL_LINE_SPACING); return;
+      case 'settings.popup': this.openSettingsLeafSheet(SETTINGS_SHEET_POPUP); return;
+      case 'settings.keyboard': this.openSettingsLeafSheet(SETTINGS_SHEET_VIRTUAL_KEYBOARD); return;
+      case 'settings.keyboardBehavior': this.openSettingsLeafSheet(SETTINGS_SHEET_VIRTUAL_KEYBOARD_BEHAVIOR); return;
+      case 'settings.keyboardShortcuts': this.openSettingsLeafSheet(SETTINGS_SHEET_VIRTUAL_KEYBOARD_SHORTCUTS); return;
+      case 'settings.keyboardFunctions': this.openSettingsLeafSheet(SETTINGS_SHEET_VIRTUAL_KEYBOARD_FUNCTIONS); return;
+      case 'settings.keyboardCustom': this.openSettingsLeafSheet(SETTINGS_SHEET_VIRTUAL_KEYBOARD_CUSTOM); return;
+      case 'settings.harmonyShortcut': this.openSettingsLeafSheet(SETTINGS_SHEET_HARMONY_SHORTCUT_BLOCKING); return;
+      case 'settings.secretVisibility': this.openSettingsLeafSheet(SETTINGS_SHEET_SECRET_VISIBILITY); return;
+      case 'settings.remotePortrait': this.openSettingsLeafSheet(SETTINGS_SHEET_REMOTE_PORTRAIT_DISPLAY); return;
+      case 'settings.remoteWheel': this.openSettingsLeafSheet(SETTINGS_SHEET_REMOTE_WHEEL_DIRECTION); return;
+      case 'settings.remotePinch': this.openSettingsLeafSheet(SETTINGS_SHEET_REMOTE_PINCH_ZOOM); return;
+      case 'settings.controlBar': this.openSettingsLeafSheet(SETTINGS_SHEET_SESSION_CONTROL_BAR); return;
+      case 'settings.rdpDisplay': this.openSettingsLeafSheet(SETTINGS_SHEET_RDP_DISPLAY_PROFILE); return;
+      case 'settings.sshSkin': this.openSettingsLeafSheet(SETTINGS_SHEET_SSH_SKIN); return;
+      case 'settings.diagnosticAi': this.openDiagnosticAiSection(0); return;
+      case 'settings.aiHosts': this.openSettingsLeafSheet(SETTINGS_SHEET_AI_HOSTS); return;
+      case 'settings.aiDisplay': this.openSettingsLeafSheet(SETTINGS_SHEET_AI_DISPLAY); return;
+      case 'settings.aiData': this.openSettingsLeafSheet(SETTINGS_SHEET_AI_DATA); return;
+      case 'settings.aiInstall': this.openSettingsLeafSheet(SETTINGS_SHEET_AI_INSTALL); return;
+      case 'settings.vncConnection': this.openSettingsLeafSheet(SETTINGS_SHEET_VNC_CONNECTION); return;
+      case 'settings.vncTimeout': this.openSettingsLeafSheet(SETTINGS_SHEET_VNC_TIMEOUT); return;
+      case 'settings.vncSecurity': this.openSettingsLeafSheet(SETTINGS_SHEET_VNC_SECURITY); return;
+      case 'settings.vncDisplay': this.openSettingsLeafSheet(SETTINGS_SHEET_VNC_DISPLAY); return;
+      case 'settings.vncInput': this.openSettingsLeafSheet(SETTINGS_SHEET_VNC_INPUT); return;
+      case 'settings.vncPerformance': this.openSettingsLeafSheet(SETTINGS_SHEET_VNC_PERFORMANCE); return;
+      case 'settings.vncClipboard': this.openSettingsLeafSheet(SETTINGS_SHEET_VNC_CLIPBOARD); return;
+      case 'settings.vncTrust': this.openSettingsLeafSheet(SETTINGS_SHEET_VNC_TRUST); return;
+      case 'settings.vncHosts': this.openSettingsLeafSheet(SETTINGS_SHEET_VNC_HOSTS); return;
+      case 'settings.vncGateway': this.openSettingsLeafSheet(SETTINGS_SHEET_VNC_GATEWAY); return;
+      case 'settings.moonlightVideo': this.openMoonlightSettingsFromSettings(SETTINGS_SHEET_MOONLIGHT_VIDEO); return;
+      case 'settings.moonlightAudio': this.openMoonlightSettingsFromSettings(SETTINGS_SHEET_MOONLIGHT_AUDIO); return;
+      case 'settings.moonlightInput': this.openMoonlightSettingsFromSettings(SETTINGS_SHEET_MOONLIGHT_INPUT); return;
+      case 'settings.moonlightNetwork': this.openMoonlightSettingsFromSettings(SETTINGS_SHEET_MOONLIGHT_NETWORK_SECURITY); return;
+      case 'settings.moonlightDiagnostics': this.openMoonlightSettingsFromSettings(SETTINGS_SHEET_MOONLIGHT_DIAGNOSTICS); return;
+      case 'settings.moonlightTrust': this.openMoonlightSettingsFromSettings(SETTINGS_SHEET_MOONLIGHT_TRUST); return;
+      case 'settings.moonlightData': this.openMoonlightSettingsFromSettings(SETTINGS_SHEET_MOONLIGHT_DATA); return;
     }
   }
 
@@ -20242,25 +20289,25 @@ struct HostListPage {
     this.openSettingsLeafSheet(SETTINGS_SHEET_DIAGNOSTIC_AI, (): void => { this.diagnosticAiSection = section; });
   }
 
-  /**
-   * One 诊断与 AI 帮助 sub-setting: 0 = 辅助 AI 配置 and 1 = 启动 AI 辅助 (Pro, shown only while visible to this
-   * account), 2 = 传统日志抓取 (free, its own sheet).
-   */
+  /** One AI help setting row: 0 config, 1 assistant, 2 classic logs, 3 usage, 4 personalization. */
   @Builder diagnosticSubRow(kind: number) {
     Row() {
       SymbolGlyph(kind === 0 ? $r('sys.symbol.gearshape_fill') : kind === 1 ? $r('sys.symbol.performance') :
-        $r('sys.symbol.doc_plaintext')).fontSize(22).fontColor([this.pal().text3])
+        kind === 2 ? $r('sys.symbol.doc_plaintext') : kind === 3 ? $r('sys.symbol.performance') :
+        $r('sys.symbol.person_crop_circle_fill')).fontSize(22).fontColor([this.pal().text3])
         .width(22).height(22).margin({ left: 9, right: 9 })
       Column() {
-        Text(kind === 0 ? '辅助 AI 配置' : kind === 1 ? '启动 AI 辅助' : '传统日志抓取')
+        Text(kind === 0 ? '辅助 AI 配置' : kind === 1 ? '启动 AI 辅助' : kind === 2 ? '传统日志抓取' :
+          kind === 3 ? 'AI 用量监控' : 'AI 个性化设置')
           .fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
           .fontColor(this.pal().text).fontFamily(this.font())
         Text(kind === 0 ? '选择 AI 服务商、保存密钥并选择模型' : kind === 1 ? '询问应用、协助设置、诊断问题和生成反馈草稿' :
-          '脱敏诊断日志的抓取、预览、保存与导出')
+          kind === 2 ? '脱敏诊断日志的抓取、预览、保存与导出' : kind === 3 ? 'Token、缓存命中率、订阅分项与费用估算' :
+          '助手名称、性格、风格和本机用户画像记忆')
           .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
           .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).margin({ top: 2 })
       }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
-      if (kind < 2) {
+      if (kind !== 2) {
         ProBadge().margin({ right: 8 })
       }
       SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(18).fontColor([this.pal().text3])

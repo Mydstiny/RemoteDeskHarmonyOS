@@ -55,6 +55,7 @@ import { AiIsland } from './diagnosticAi/AiIsland';
 import { ProAppRuntime } from '../services/pro/ProAppRuntime';
 import { ProEntries } from '../services/pro/ProEntries';
 import { PRO_DIAGNOSTICS_ASSISTANT_FEATURE } from '../services/pro/ProFeatureCatalog';
+import { DiagnosticAiAppActionId } from '../services/diagnosticAi/DiagnosticAiAppActionPolicy';
 
 const EMPTY_RUSTDESK_DISPLAY_CAPABILITIES: RustDeskDisplayCapabilities = {
   supported: false,
@@ -344,6 +345,35 @@ export struct RemoteSessionTopBar {
     if (this.diagnosticAiCaptureActive) { return 'capturing'; }
     if (this.diagnosticAiThinking) { return 'thinking'; }
     return this.diagnosticAiAssistantVisible ? 'open' : 'idle';
+  }
+
+  /** Session-level execution modules used by the AI island. They call the same guarded toolbar callbacks as a tap. */
+  private runAssistantAppAction(action: DiagnosticAiAppActionId): void {
+    switch (action) {
+      case 'session.keyboard': this.actions.onOpenKeyboard(); return;
+      case 'session.modifiers': this.actions.onOpenModifiers(); return;
+      case 'session.fileTransfer': this.actions.onOpenFileTransfer(); return;
+      case 'session.ctrlAltDel': this.actions.onCtrlAltDel(); return;
+      case 'session.lock': this.actions.onLockRemote(); return;
+      case 'session.privacy': this.actions.onTogglePrivacy(!this.privacyMode); return;
+      case 'session.audio': this.actions.onToggleAudio(!this.audioEnabled); return;
+      case 'session.clipboard': this.actions.onToggleClipboard(!this.clipboardEnabled); return;
+      case 'session.filePaste': this.actions.onToggleFilePaste(!this.filePasteEnabled); return;
+      case 'session.resetCanvas': this.actions.onResetCanvasTransform(); return;
+      case 'session.rotate': this.actions.onRotateRemoteDisplay(); return;
+      case 'session.portrait': this.actions.onTogglePortraitDisplay(); return;
+      case 'session.display': this.actions.onOpenRustDeskResolution(); return;
+      case 'session.quality': this.actions.onSetRustDeskImageQuality((this.imageQuality + 1) % 3); return;
+      case 'session.codec': this.actions.onSetRustDeskCodec((this.codec + 1) % 3); return;
+      case 'session.cursor': this.actions.onToggleShowLocalCursor(!this.showLocalCursor); return;
+      case 'session.browseMode': this.actions.onToggleBrowseMode(!this.browseMode); return;
+      case 'session.relativeMouse': this.actions.onToggleRelativeMouse(!this.relativeMouseMode); return;
+      case 'session.reverseWheel': this.actions.onToggleReverseWheel(!this.reverseWheel); return;
+      case 'session.swapButtons': this.actions.onToggleSwapMouseButtons(!this.swapMouseButtons); return;
+      case 'session.diagnostics': this.actions.onToggleDiagnostics(!this.diagnosticsEnabled); return;
+      case 'session.disconnect': this.actions.onDisconnect(); return;
+      default: this.actions.onUnsupported(action, '当前 AI 会话动作需要从主机列表设置页执行'); return;
+    }
   }
 
   private onKeyboardSurfaceChange(): void {
@@ -1534,7 +1564,8 @@ export struct RemoteSessionTopBar {
           onDismissed: (): void => { this.diagnosticAiAssistantVisible = false; this.diagnosticAiIslandShown = false; },
           onFloatingChanged: (_floating: boolean): void => {},
           onActivityChanged: (active: boolean): void => { this.diagnosticAiThinking = active; },
-          onCaptureStateChanged: (capturing: boolean): void => { this.diagnosticAiCaptureActive = capturing; }
+          onCaptureStateChanged: (capturing: boolean): void => { this.diagnosticAiCaptureActive = capturing; },
+          onAppAction: (action: DiagnosticAiAppActionId): void => { this.runAssistantAppAction(action); }
         }).width('100%').height('100%').position({ x: 0, y: 0 }).zIndex(30)
           .hitTestBehavior(HitTestMode.Default)
       }
