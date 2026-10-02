@@ -436,7 +436,7 @@ diagnosticAiEmailBundle
 - `default@OhosTestCompileArkTS`：本轮最终重跑成功，`BUILD SUCCESSFUL in 3 min 57.837 s`，使用项目本地 `.remotedesk-build-cache`；输出仅包含既有依赖/API 告警和共享 display profile 的非阻断编译告警。
 - `ohosTest@OhosTestCompileArkTS`：当前 Hvigor 项目没有该任务，退出码 1（`00306054 Task was not found`）；测试模块编译证据保持未完成。
 - `assembleHap`：本轮最终重跑成功，`BUILD SUCCESSFUL in 4 min 25.292 s`，`SignHap` 8.745 s，产物发布到 `entry/build/default/outputs`；此前 CMake/Ninja/生成 profile 问题均通过独占缓存重建恢复。
-- 现有 Node Pro 策略回归：此前 `test_pro_entry_gating.cjs`、`test_pro_runtime.cjs`、`test_pro_feature_visibility.cjs`、`test_pro_feature_status.cjs` 带 DevEco TypeScript 路径全部通过；本轮未把旧结果当作新代码范围的完整验收。
+- 现有 Node Pro 策略回归：带 DevEco TypeScript 路径重跑 `test_pro_entry_gating.cjs`、`test_pro_runtime.cjs`、`test_pro_feature_visibility.cjs`、`test_pro_feature_status.cjs`，4 个脚本全部通过。
 - Provider、真机、邮件客户端和生产权益验收：代码链路已具备，真实环境证据仍待执行；国际 Provider 不在首发范围。
 
 ## 15. 2026-10-02 复审结果与优化增量
