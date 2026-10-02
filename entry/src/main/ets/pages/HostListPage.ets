@@ -803,6 +803,7 @@ import { DiagnosticCaptureSettingsSheet } from '../components/DiagnosticCaptureS
 import { DiagnosticAiSettingsSheet } from '../components/diagnosticAi/DiagnosticAiSettingsSheet';
 import { DiagnosticAiOrb } from '../components/diagnosticAi/DiagnosticAiOrb';
 import { DiagnosticAiProfileStore } from '../services/diagnosticAi/DiagnosticAiProfileStore';
+import { DiagnosticAiOrbState } from '../services/diagnosticAi/DiagnosticAiModels';
 import { recordDiagnosticEvent } from '../services/DiagnosticCaptureRuntime';
 import { FeedbackSettingsSheet } from '../components/FeedbackSettingsSheet';
 import { VirtualKeyboardSettingsSheet } from '../components/VirtualKeyboardSettingsSheet';
@@ -14049,8 +14050,10 @@ struct HostListPage {
       if (this.aiIslandShown && this.diagnosticAiAssistantVisible) {
         AiIsland({
           topInset: this.topSafeHeightVp(),
-          onDismissed: (): void => { this.aiIslandShown = false; this.aiIslandFloating = false; },
+          deviceClass: this.isDesktopDevice ? 'pc' : this.breakpoint === 'sm' ? 'phone' : 'pad',
+          onDismissed: (): void => { this.aiIslandShown = false; this.aiIslandFloating = false; this.diagnosticAiOrbState = 'idle'; },
           onFloatingChanged: (floating: boolean): void => { this.aiIslandFloating = floating; },
+          onActivityChanged: (active: boolean): void => { this.diagnosticAiOrbState = active ? 'thinking' : 'open'; },
           onOpenMailDraft: (subject: string, body: string): void => { void this.openFeedbackEmail(subject, body); }
         }).width('100%').height('100%').position({ x: 0, y: 0 }).zIndex(40)
         .hitTestBehavior(this.aiIslandFloating ? HitTestMode.Transparent : HitTestMode.Default)
@@ -16218,7 +16221,8 @@ struct HostListPage {
                 Text(this.hostPageTitle).fontSize(27).fontWeight(FontWeight.Bold)
                   .fontColor(this.pal().text).fontFamily(this.font()).layoutWeight(1)
                 if (this.hostAiOrbShown()) {
-                  DiagnosticAiOrb({ visible: true, onOpen: (): void => { this.openDiagnosticAiSection(1); } })
+                  DiagnosticAiOrb({ visible: true, state: this.diagnosticAiOrbState as DiagnosticAiOrbState,
+                    onOpen: (): void => { this.openDiagnosticAiSection(1); } })
                     .margin({ right: 12 })
                 }
               Row() {
@@ -16250,7 +16254,8 @@ struct HostListPage {
                 Text(this.hostPageTitle).fontSize(27).fontWeight(FontWeight.Bold)
                   .fontColor(this.pal().text).fontFamily(this.font()).layoutWeight(1)
                 if (this.hostAiOrbShown()) {
-                  DiagnosticAiOrb({ visible: true, onOpen: (): void => { this.openDiagnosticAiSection(1); } })
+                  DiagnosticAiOrb({ visible: true, state: this.diagnosticAiOrbState as DiagnosticAiOrbState,
+                    onOpen: (): void => { this.openDiagnosticAiSection(1); } })
                 }
               }.width('100%').padding({ left: 24, right: 24, bottom: 8 })
               Row() {
@@ -20192,7 +20197,7 @@ struct HostListPage {
   private openDiagnosticAiSection(section: number): void {
     if (section === 1) {
       // 启动 AI 辅助 unfolds from the AI island instead of a sheet.
-      if (this.diagnosticAiAssistantVisible) { this.aiIslandShown = true; }
+      if (this.diagnosticAiAssistantVisible) { this.aiIslandShown = true; this.diagnosticAiOrbState = 'open'; }
       return;
     }
     this.openSettingsLeafSheet(SETTINGS_SHEET_DIAGNOSTIC_AI, (): void => { this.diagnosticAiSection = section; });

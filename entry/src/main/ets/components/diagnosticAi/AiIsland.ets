@@ -8,6 +8,7 @@ const AI_ISLAND_COLORS: Array<[ResourceColor, number]> = [
   ['#42CBF7', 0], ['#2A7DFF', 0.28], ['#A479FF', 0.55], ['#FF678C', 0.8], ['#42CBF7', 1]
 ];
 const AI_ISLAND_MAX_WIDTH: number = 560;
+export type DiagnosticAiDeviceClass = 'phone' | 'pad' | 'pc';
 
 /**
  * 启动 AI 辅助 as an island at the top center of the window, after the iOS 27 Siri text mode: no edge glow; a dark
@@ -20,9 +21,12 @@ const AI_ISLAND_MAX_WIDTH: number = 560;
 export struct AiIsland {
   /** Distance from the window top to the island (status bar / cutout). */
   @Prop topInset: number = 24;
+  @Prop deviceClass: DiagnosticAiDeviceClass = 'phone';
   onDismissed: () => void = (): void => {};
   /** Floating or not: the host lets touches through its overlay node only while the island floats. */
   onFloatingChanged: (floating: boolean) => void = (_floating: boolean): void => {};
+  /** Mirrors provider thinking/capture activity to the persistent entry button on the host page. */
+  onActivityChanged: (active: boolean) => void = (_active: boolean): void => {};
   onCaptureStateChanged: (capturing: boolean) => void = (_capturing: boolean): void => {};
   onOpenMailDraft: (subject: string, body: string) => void = (_subject: string, _body: string): void => {};
   /** 0 hidden · 1 compact kernel capsule · 2 task/status capsule · 3 conversation card. */
@@ -57,8 +61,8 @@ export struct AiIsland {
     this.morph(1);
     // The reference sequence holds the compact processing state before it grows into a task/status capsule,
     // then opens the confirmation/input card. Keep each state observable so users can follow what is happening.
-    this.later(520, (): void => { this.morph(2); });
-    this.later(1040, (): void => { this.morph(3); });
+    this.later(1000, (): void => { this.morph(2); });
+    this.later(2000, (): void => { this.morph(3); });
   }
 
   private setCompact(value: boolean): void {
@@ -75,6 +79,7 @@ export struct AiIsland {
   /** Work starts → float; work ends (result or error) → open the card to show it. */
   private onWorkChanged(active: boolean): void {
     this.working = active;
+    this.onActivityChanged(active);
     this.setCompact(active);
   }
 
@@ -92,7 +97,17 @@ export struct AiIsland {
     this.later(600, (): void => { this.onDismissed(); });
   }
 
-  private cardWidth(): number { return Math.min(this.areaWidth - 16, AI_ISLAND_MAX_WIDTH); }
+  private cardWidth(): number {
+    if (this.deviceClass === 'phone') { return Math.min(Math.max(this.areaWidth - 14, 300), 560); }
+    if (this.deviceClass === 'pad') { return Math.min(Math.max(this.areaWidth - 48, 460), 720); }
+    return Math.min(Math.max(this.areaWidth - 64, 520), 680);
+  }
+
+  private cardMaxHeight(): number {
+    if (this.deviceClass === 'phone') { return this.areaHeight * 0.70; }
+    if (this.deviceClass === 'pad') { return this.areaHeight * 0.76; }
+    return this.areaHeight * 0.82;
+  }
 
   /** The Siri-style text card and its floating pills; the panel draws both. Swipe up anywhere on it to fold away. */
   @Builder private card() {
@@ -102,6 +117,7 @@ export struct AiIsland {
         forceDark: true,
         embedded: true,
         compact: this.compact,
+        deviceClass: this.deviceClass,
         onActivityChanged: (active: boolean): void => { this.onWorkChanged(active); },
         onCaptureStateChanged: (capturing: boolean): void => { this.onCaptureStateChanged(capturing); },
         onClose: (): void => { this.close(); },
@@ -109,7 +125,7 @@ export struct AiIsland {
       }).width('100%')
     }
     .width(this.compact ? Math.min(this.areaWidth - 32, 320) : this.cardWidth())
-    .constraintSize({ maxHeight: this.areaHeight * 0.78 })
+    .constraintSize({ maxHeight: this.cardMaxHeight() })
     .translate({ x: this.compact ? this.dragX : 0, y: this.compact ? this.dragY : 0 })
     .onClick((): void => { if (this.compact) { this.setCompact(false); } })
     .gesture(PanGesture({ direction: this.compact ? PanDirection.All : PanDirection.Up, distance: this.compact ? 8 : 24 })

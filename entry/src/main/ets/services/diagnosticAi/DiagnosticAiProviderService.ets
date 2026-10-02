@@ -26,6 +26,15 @@ function assistantContent(value: Object | undefined | null): string {
   }).filter((item: string): boolean => item !== '').join('');
 }
 
+function responseContent(raw: Record<string, Object>, first: Record<string, Object> | null): string {
+  const message = first === null ? null : first['message'] as Record<string, Object>;
+  const directMessage = raw['message'] as Record<string, Object>;
+  return assistantContent(message === null ? null : message['content']) ||
+    assistantContent(first === null ? null : first['text']) ||
+    assistantContent(directMessage === undefined ? null : directMessage['content']) ||
+    safeText(raw['response']) || safeText(raw['content']) || safeText(raw['output']);
+}
+
 function stringArray(value: Object | undefined): string[] {
   return Array.isArray(value) ? (value as Object[]).filter((item: Object): boolean => typeof item === 'string')
     .map((item: Object): string => item as string).slice(0, 32) : [];
@@ -158,9 +167,7 @@ export class DiagnosticAiProviderService {
     const choices = Array.isArray(raw['choices']) ? raw['choices'] as Object[] : [];
     let first: Record<string, Object> | null = null;
     if (choices.length > 0) { first = choices[0] as Record<string, Object>; }
-    const message = first === null ? null : first['message'] as Record<string, Object>;
-    const content = assistantContent(message === null ? null : message['content']) ||
-      assistantContent(first === null ? null : first['text']) || assistantContent(raw['output']);
+    const content = responseContent(raw, first);
     if (content === '') { throw new Error('DIAGNOSTIC_AI_EMPTY_RESULT'); }
     let parsed: Record<string, Object> | null = null;
     try {
@@ -230,9 +237,7 @@ export class DiagnosticAiProviderService {
     const choices = Array.isArray(raw['choices']) ? raw['choices'] as Object[] : [];
     let first: Record<string, Object> | null = null;
     if (choices.length > 0) { first = choices[0] as Record<string, Object>; }
-    const message = first === null ? null : first['message'] as Record<string, Object>;
-    let content = assistantContent(message === null ? null : message['content']) ||
-      assistantContent(first === null ? null : first['text']) || assistantContent(raw['output']);
+    let content = responseContent(raw, first);
     if (content.indexOf('```') === 0) {
       content = content.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
     }

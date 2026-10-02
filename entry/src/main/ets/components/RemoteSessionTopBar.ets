@@ -171,6 +171,7 @@ export struct RemoteSessionTopBar {
   @State private diagnosticAiAssistantVisible: boolean = false;
   @State private diagnosticAiIslandShown: boolean = false;
   @State private diagnosticAiCaptureActive: boolean = false;
+  @State private diagnosticAiThinking: boolean = false;
   @Prop canvasResetAvailable: boolean = false;
   @Prop rustDeskDisplayCapabilities: RustDeskDisplayCapabilities = EMPTY_RUSTDESK_DISPLAY_CAPABILITIES;
   @Prop rustDeskDisplaySwitchState: RustDeskDisplaySwitchState = EMPTY_RUSTDESK_DISPLAY_SWITCH_STATE;
@@ -339,8 +340,9 @@ export struct RemoteSessionTopBar {
       PRO_DIAGNOSTICS_ASSISTANT_FEATURE, ProAppRuntime.getInstance().context());
   }
 
-  private diagnosticAiState(): 'idle' | 'open' | 'capturing' {
+  private diagnosticAiState(): 'idle' | 'open' | 'capturing' | 'thinking' {
     if (this.diagnosticAiCaptureActive) { return 'capturing'; }
+    if (this.diagnosticAiThinking) { return 'thinking'; }
     return this.diagnosticAiAssistantVisible ? 'open' : 'idle';
   }
 
@@ -1528,8 +1530,10 @@ export struct RemoteSessionTopBar {
       if (this.diagnosticAiAssistantVisible && this.diagnosticAiVisible() && this.diagnosticAiIslandShown) {
         AiIsland({
           topInset: 10,
+          deviceClass: this.layout.deviceClass === 'pc' ? 'pc' : this.layout.deviceClass === 'pad' ? 'pad' : 'phone',
           onDismissed: (): void => { this.diagnosticAiAssistantVisible = false; this.diagnosticAiIslandShown = false; },
           onFloatingChanged: (_floating: boolean): void => {},
+          onActivityChanged: (active: boolean): void => { this.diagnosticAiThinking = active; },
           onCaptureStateChanged: (capturing: boolean): void => { this.diagnosticAiCaptureActive = capturing; }
         }).width('100%').height('100%').position({ x: 0, y: 0 }).zIndex(30)
           .hitTestBehavior(HitTestMode.Default)

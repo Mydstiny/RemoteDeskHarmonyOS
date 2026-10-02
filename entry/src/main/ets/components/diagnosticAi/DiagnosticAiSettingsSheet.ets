@@ -39,7 +39,8 @@ export struct DiagnosticAiSettingsSheet {
   private pal(): Palette { return this.theme === 'light' ? buildLight(this.accent) : buildDark(this.accent); }
 
   aboutToAppear(): void {
-    const scope = AccountSessionCoordinator.getInstance().currentScope(); this.owner = scope.ownerScopeId || 'device-local';
+    const scope = AccountSessionCoordinator.getInstance().currentScope();
+    this.owner = scope.ownerScopeId.trim() === '' ? 'device-local' : scope.ownerScopeId.trim();
     this.manifests = diagnosticAiProviderManifests(); this.store.init(getContext(this) as common.UIAbilityContext, this.owner);
     this.profiles = this.store.list(); this.settings = this.store.settingsSnapshot();
     if (this.settings.selectedProviderId !== '') { this.selectedProvider = this.settings.selectedProviderId; }
@@ -88,14 +89,27 @@ export struct DiagnosticAiSettingsSheet {
     else {
       this.settings.selectedProviderId = profile.providerId;
       this.settings.selectedModelId = profile.modelId;
-      this.store.saveSettings(this.settings);
+      if (!this.store.saveSettings(this.settings)) {
+        this.message = 'Provider 已写入，但选择状态持久化失败，请重试保存';
+        this.busy = false;
+        return;
+      }
+      const persisted = this.store.list().find((value: DiagnosticAiProviderProfile): boolean => value.id === profile.id);
+      const persistedSettings = this.store.settingsSnapshot();
+      if (persisted === undefined || persistedSettings.selectedProviderId !== profile.providerId ||
+        persistedSettings.selectedModelId !== profile.modelId ||
+        (profile.secretFingerprint !== '' && this.store.secret(persisted) === '')) {
+        this.message = '配置回读校验失败，请重新保存 API Key 和模型';
+        this.busy = false;
+        return;
+      }
       this.keyText = ''; this.profiles = this.store.list(); this.message = 'Provider 配置已保存；密钥只保存在本机安全存储。';
     }
     this.busy = false;
   }
 
   private async fetchModels(): Promise<void> {
-    const profile = this.profiles.find((value: DiagnosticAiProviderProfile): boolean => value.providerId === this.selectedProvider);
+    const profile = this.store.list().find((value: DiagnosticAiProviderProfile): boolean => value.providerId === this.selectedProvider);
     if (profile === undefined || this.busy) { this.message = '请先保存 Provider 配置'; return; }
     this.busy = true; this.message = '正在拉取模型列表…';
     try {
@@ -104,9 +118,36 @@ export struct DiagnosticAiSettingsSheet {
       if (models.length > 0 && !models.some((value: DiagnosticAiModelInfo): boolean => value.id === this.model)) {
         this.model = models[0].id;
       }
-      this.message = '已读取 ' + models.length.toString() + ' 个模型；请选择并再次保存。';
+      this.availableModels = models;
+      if (this.model !== '' && models.some((value: DiagnosticAiModelInfo): boolean => value.id === this.model)) {
+        if (this.persistModelSelection(this.model)) {
+          this.message = '已读取并保存 ' + models.length.toString() + ' 个模型；当前模型可直接调用 AI。';
+        } else {
+          this.message = '模型列表已读取，但选择状态持久化失败，请点击保存配置重试';
+        }
+      } else {
+        this.message = '已读取 ' + models.length.toString() + ' 个模型；请选择模型。';
+      }
     } catch (error) { this.message = error instanceof Error ? error.message : '模型列表读取失败'; }
     finally { this.busy = false; }
+  }
+
+  private persistModelSelection(modelId: string): boolean {
+    const profile = this.store.list().find((value: DiagnosticAiProviderProfile): boolean => value.providerId === this.selectedProvider);
+    if (profile === undefined || modelId.trim() === '') { return false; }
+    profile.modelId = modelId.trim();
+    if (!this.store.saveProfile(profile, '')) { return false; }
+    const next = this.store.settingsSnapshot();
+    next.selectedProviderId = profile.providerId; next.selectedModelId = profile.modelId;
+    if (!this.store.saveSettings(next)) { return false; }
+    this.settings = next; this.profiles = this.store.list(); return true;
+  }
+
+  private selectModel(modelId: string): void {
+    this.model = modelId;
+    if (this.persistModelSelection(modelId)) {
+      this.message = '模型已保存，AI 助手可以直接调用。';
+    }
   }
 
   private saveOrbPreference(value: boolean): void {
@@ -252,7 +293,7 @@ export struct DiagnosticAiSettingsSheet {
                   .fontColor(this.model === item.id ? Color.White : this.pal().text)
                   .padding({ left: 10, right: 10, top: 6, bottom: 6 }).margin({ right: 6, bottom: 6 }).borderRadius(10)
                   .backgroundColor(this.model === item.id ? this.accent : this.pal().surface)
-                  .onClick((): void => { this.model = item.id; })
+                  .onClick((): void => { this.selectModel(item.id); })
               }, (item: DiagnosticAiModelInfo): string => item.id)
             }.width('100%')
           }

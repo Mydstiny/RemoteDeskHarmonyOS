@@ -1,6 +1,7 @@
 import { common } from '@kit.AbilityKit';
 import { inputMethod } from '@kit.IMEKit';
 import { AiIslandOrb, AiThinkingRing } from './XiaoyiOrb';
+import { HdsImmersiveEdgeLight } from './HdsImmersiveEdgeLight';
 import { AppConfig, Palette, buildDark, buildLight } from '../../common/Theme';
 import { AppUiMetrics } from '../../common/AppUiMetrics';
 import { DiagnosticAiProviderProfile, DiagnosticAiResult, DiagnosticAiSettingProposal } from '../../services/diagnosticAi/DiagnosticAiModels';
@@ -30,6 +31,7 @@ export struct DiagnosticAiAssistantPanel {
    * small pill actions sit under it, and the result opens in the same card. Same capture and analysis as the panel.
    */
   @Prop siriMode: boolean = false;
+  @Prop deviceClass: 'phone' | 'pad' | 'pc' = 'phone';
   /** In the AI island while a capture or analysis runs: a small floating capsule that leaves the app usable. */
   @Prop compact: boolean = false;
   @State private pulse: boolean = false;
@@ -67,6 +69,13 @@ export struct DiagnosticAiAssistantPanel {
 
   private pal(): Palette {
     return this.theme === 'light' && !this.forceDark ? buildLight(this.accent) : buildDark(this.accent);
+  }
+
+  private siriRadius(): number { return this.deviceClass === 'phone' ? 34 : 30; }
+  private siriSidePadding(): number { return this.deviceClass === 'phone' ? 18 : 24; }
+  private siriResultHeight(): number {
+    if (this.expandedResult) { return this.deviceClass === 'phone' ? 460 : 560; }
+    return this.deviceClass === 'phone' ? 320 : 390;
   }
 
   aboutToAppear(): void {
@@ -149,13 +158,18 @@ export struct DiagnosticAiAssistantPanel {
     if (!this.allowed() || this.busy || this.question.trim() === '') { return; }
     const selected = this.selectedProfile();
     if (selected === undefined) { this.status = '请先在辅助 AI 配置中保存 API Key 并选择模型'; return; }
+    const secret: string = this.store.secret(selected);
+    if (secret.trim() === '') {
+      this.status = '已找到 Provider 配置，但 API Key 无法从本机安全存储读回；请重新保存 API Key';
+      return;
+    }
     const requestGeneration: number = this.lifecycleGeneration;
     const requestOwner: string = this.owner;
     const selectedRevision: number = selected.revision;
     this.agentMode = mode; this.busy = true; this.result = null; this.expandedResult = false;
     this.status = '正在连接 AI…'; this.reportActivity();
     try {
-      const analyzed: DiagnosticAiResult = await this.agent.respond(selected, this.store.secret(selected), {
+      const analyzed: DiagnosticAiResult = await this.agent.respond(selected, secret, {
         mode, question: this.question, history: this.conversation, bundle
       });
       const currentScope = AccountSessionCoordinator.getInstance().currentScope();
@@ -411,14 +425,14 @@ export struct DiagnosticAiAssistantPanel {
           .id('aiIslandQuestion')
           .fontSize(18).fontColor('#FFFFFF').placeholderColor('#8E8E93').placeholderFont({ size: 18 })
           .caretColor('#FFFFFF').backgroundColor(Color.Transparent).padding({ left: 0, right: 0, top: 4, bottom: 4 })
-          .constraintSize({ minHeight: 78, maxHeight: 160 })
+          .constraintSize({ minHeight: this.deviceClass === 'phone' ? 94 : 78, maxHeight: 180 })
           .enterKeyType(EnterKeyType.Go)
           .onChange((value: string): void => { this.question = value; })
           .onSubmit((): void => { this.submitQuestion(); })
           .onAppear((): void => {
             // The island spends the first two stages as a text-free/status capsule. Focus only after the card has
             // opened so the keyboard does not jump in front of the F000/F010 processing animation.
-            setTimeout((): void => { focusControl.requestFocus('aiIslandQuestion'); }, 1160);
+            setTimeout((): void => { focusControl.requestFocus('aiIslandQuestion'); }, 2140);
           })
       } else {
         Text(this.question).fontSize(17).lineHeight(23).fontColor('#FFFFFF').width('100%').maxLines(3)
@@ -466,9 +480,10 @@ export struct DiagnosticAiAssistantPanel {
         Row({ space: 8 }) {
           Text(this.agentMode === 'diagnose' ? '诊断结果' : 'AI 回复')
             .fontSize(13).fontWeight(FontWeight.Medium).fontColor('#FFFFFF').layoutWeight(1)
-          Text(this.expandedResult ? '收起' : '展开')
-            .fontSize(12).fontColor('#C7C7CC').padding({ left: 8, right: 8, top: 5, bottom: 5 })
-            .borderRadius(14).backgroundColor('#1AFFFFFF')
+          Stack() {
+            Circle().width(30).height(30).fill('#1AFFFFFF')
+            Text(this.expandedResult ? '⌃' : '↗').fontSize(17).fontColor('#FFFFFF')
+          }.width(30).height(30).accessibilityText(this.expandedResult ? '收起完整回答' : '展开完整回答')
             .onClick((): void => { this.expandedResult = !this.expandedResult; })
         }.width('100%')
         Scroll() {
@@ -514,7 +529,7 @@ export struct DiagnosticAiAssistantPanel {
               }.width('100%').padding(12).borderRadius(16).backgroundColor('#1AFFFFFF')
             }
           }.width('100%')
-        }.constraintSize({ maxHeight: this.expandedResult ? 520 : 380 }).scrollBar(BarState.Off).edgeEffect(EdgeEffect.Spring)
+        }.constraintSize({ maxHeight: this.siriResultHeight() }).scrollBar(BarState.Off).edgeEffect(EdgeEffect.Spring)
         Row({ space: 8 }) {
           TextInput({ placeholder: '继续询问 RemoteDesktop', text: this.draftQuestion })
             .layoutWeight(1).height(38).fontSize(14).fontColor('#FFFFFF').placeholderColor('#8E8E93')
@@ -559,21 +574,27 @@ export struct DiagnosticAiAssistantPanel {
     Column({ space: 12 }) {
       // The card: dark glass; the system AI colors glow out from under its lower edge.
       Stack({ alignContent: Alignment.Bottom }) {
-        // blur() softens content, not a node's own background, so the gradient sits inside the blurred column.
+        // Keep the HDS-like light constrained to the card's lower edge. It is deliberately not a full-screen rainbow.
         Column() {
-          Row().width('100%').height(22).borderRadius(11)
-            .linearGradient({ angle: 90, colors: [['#42CBF7', 0], ['#2A7DFF', 0.3], ['#A479FF', 0.6], ['#FF678C', 1]] })
-        }.width('74%').height(22).offset({ y: 8 })
-        .blur(30).opacity(this.lastActive ? 0.95 : 0.65)
+          Row().width('100%').height(34).borderRadius(17)
+            .linearGradient({ angle: 90, colors: [['#42CBF7', 0], ['#2A7DFF', 0.28], ['#A479FF', 0.58], ['#FF678C', 1]] })
+          Row().width('82%').height(12).borderRadius(6)
+            .linearGradient({ angle: 90, colors: [['#72E6FF', 0], ['#8C6BFF', 0.55], ['#FFB4C6', 1]] })
+            .margin({ top: -6 })
+        }.width(this.deviceClass === 'phone' ? '92%' : '76%').height(40).offset({ y: 12 })
+        .blur(this.deviceClass === 'phone' ? 32 : 28).opacity(this.lastActive ? 1 : 0.74)
+        HdsImmersiveEdgeLight({ active: this.lastActive || this.result !== null })
+          .width('100%').height(36).offset({ y: 8 })
         Column() { this.siriCardBody() }
-          .width('100%').padding({ left: 20, right: 14, top: 18, bottom: 12 })
-          .borderRadius(30).clip(true)
+          .width('100%').padding({ left: this.siriSidePadding(), right: this.siriSidePadding() - 4,
+            top: this.deviceClass === 'phone' ? 22 : 18, bottom: this.deviceClass === 'phone' ? 16 : 12 })
+          .borderRadius(this.siriRadius()).clip(true)
           .backgroundBlurStyle(BlurStyle.COMPONENT_ULTRA_THICK,
             { colorMode: ThemeColorMode.DARK, adaptiveColor: AdaptiveColor.DEFAULT })
-          .backgroundColor('#D9161618')
+          .backgroundColor(this.deviceClass === 'phone' ? '#EC080A10' : '#E016161B')
           .border({ width: { top: 0.8, left: 0.5, right: 0.5, bottom: 0.5 },
             color: { top: '#4DFFFFFF', left: '#1FFFFFFF', right: '#1FFFFFFF', bottom: '#1FFFFFFF' } })
-          .shadow({ radius: 28, color: '#40000000', offsetY: 10 })
+          .shadow({ radius: this.deviceClass === 'phone' ? 36 : 30, color: '#60000000', offsetY: 12 })
       }.width('100%')
       // Floating pill actions under the card.
       Row({ space: 8 }) {

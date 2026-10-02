@@ -70,16 +70,28 @@ export class DiagnosticAiSecretStore {
     } catch (_error) { /* metadata is a convenience; secret remains protected by Asset Store */ }
   }
 
+  private removeAsset(normalized: string): void {
+    try {
+      const query: asset.AssetMap = new Map();
+      query.set(asset.Tag.ALIAS, this.alias(normalized));
+      asset.removeSync(query);
+    } catch (_error) { /* an absent alias is idempotent */ }
+  }
+
   put(ref: string, secret: string): DiagnosticAiSecretMetadata | null {
     this.load(); const normalized = ref.trim();
     if (normalized === '' || secret === '') { return null; }
     const bytes = new util.TextEncoder().encode(secret);
     if (bytes.length > MAX_SECRET_BYTES) { return null; }
     try {
+      // Replace the existing alias before adding. Re-saving the same key must not create duplicate rows that make a
+      // later query ambiguous after the settings page and the assistant are recreated.
+      this.removeAsset(normalized);
       const attributes: asset.AssetMap = new Map(); attributes.set(asset.Tag.ALIAS, this.alias(normalized));
       attributes.set(asset.Tag.SECRET, bytes); attributes.set(asset.Tag.ACCESSIBILITY, asset.Accessibility.DEVICE_FIRST_UNLOCKED);
       attributes.set(asset.Tag.SYNC_TYPE, asset.SyncType.THIS_DEVICE); attributes.set(asset.Tag.CONFLICT_RESOLUTION, asset.ConflictResolution.OVERWRITE);
       asset.addSync(attributes);
+      if (this.get(normalized) !== secret) { return null; }
       const result: DiagnosticAiSecretMetadata = { secretRef: normalized, fingerprint: this.fingerprint(secret), updatedAt: Date.now() };
       this.metadata[normalized] = result; this.persist(); return result;
     } catch (_error) { return null; }
@@ -89,16 +101,16 @@ export class DiagnosticAiSecretStore {
     this.load(); const normalized = ref.trim(); if (normalized === '') { return ''; }
     try {
       const query: asset.AssetMap = new Map(); query.set(asset.Tag.ALIAS, this.alias(normalized)); query.set(asset.Tag.RETURN_TYPE, asset.ReturnType.ALL);
-      const rows = asset.querySync(query); if (rows.length !== 1) { return ''; }
-      const value = rows[0].get(asset.Tag.SECRET) as Uint8Array;
+      const rows = asset.querySync(query); if (rows.length === 0) { return ''; }
+      // Older saves may have produced duplicate aliases. Prefer the newest row instead of treating the key as absent.
+      const value = rows[rows.length - 1].get(asset.Tag.SECRET) as Uint8Array;
       return value && value.length <= MAX_SECRET_BYTES ? util.TextDecoder.create().decodeToString(value) : '';
     } catch (_error) { return ''; }
   }
 
   remove(ref: string): boolean {
     this.load(); const normalized = ref.trim(); if (normalized === '') { return true; }
-    try { const query: asset.AssetMap = new Map(); query.set(asset.Tag.ALIAS, this.alias(normalized)); asset.removeSync(query); }
-    catch (_error) { /* not-found is idempotent */ }
+    this.removeAsset(normalized);
     const next: Record<string, DiagnosticAiSecretMetadata> = {};
     Object.keys(this.metadata).forEach((key: string): void => {
       if (key !== normalized) { next[key] = this.metadata[key]; }

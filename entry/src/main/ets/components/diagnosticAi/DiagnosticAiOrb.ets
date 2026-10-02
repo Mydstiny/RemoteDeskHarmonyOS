@@ -1,5 +1,5 @@
 import { DiagnosticAiOrbState } from '../../services/diagnosticAi/DiagnosticAiModels';
-import { AiIslandOrb, AiThinkingRing } from './XiaoyiOrb';
+import { AiSystemAgentButton } from './XiaoyiOrb';
 
 /**
  * Entry to 启动 AI 辅助 at the right end of the 远程主机 title row: the 小艺 orb with its immersive light, as in the AI
@@ -24,11 +24,7 @@ export struct DiagnosticAiOrb {
   build() {
     if (this.visible) {
       Stack() {
-        if (this.working()) {
-          AiThinkingRing({ ringSize: 32 })
-        } else {
-          AiIslandOrb({ orbSize: 30, working: false })
-        }
+        AiSystemAgentButton({ buttonSize: 34, active: this.working() })
       }
       .width(40).height(40)
       .responseRegion({ x: -4, y: -4, width: 48, height: 48 })

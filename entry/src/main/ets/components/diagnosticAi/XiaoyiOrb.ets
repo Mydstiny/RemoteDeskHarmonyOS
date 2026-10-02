@@ -33,6 +33,31 @@ export struct AiIslandOrb {
   }
 }
 
+/** Official HarmonyOS assistant glyph wrapped in the app's HDS-compatible glass button. The public SDK exposes the
+ * Celia assistant media glyph, but no embeddable proprietary 小艺 Agent surface; the glyph therefore remains a safe
+ * visual adapter and falls back to the existing local orb treatment around it. */
+@Component
+export struct AiSystemAgentButton {
+  @Prop buttonSize: number = 38;
+  @Prop active: boolean = false;
+
+  build() {
+    Stack() {
+      Circle().width(this.buttonSize).height(this.buttonSize)
+        .backgroundBlurStyle(BlurStyle.COMPONENT_THICK,
+          { colorMode: ThemeColorMode.DARK, adaptiveColor: AdaptiveColor.DEFAULT })
+        .backgroundColor(this.active ? '#CC15151B' : '#B8141419')
+        .border({ width: 0.8, color: this.active ? '#66FFFFFF' : '#33FFFFFF' })
+        .shadow({ radius: this.active ? 20 : 14, color: this.active ? '#663D8BFF' : '#40000000', offsetY: 4 })
+      if (this.active) {
+        AiThinkingRing({ ringSize: this.buttonSize + 7 })
+      }
+      Image($r('sys.media.Celia_fill')).width(this.buttonSize * 0.56).height(this.buttonSize * 0.56)
+        .fillColor('#FFFFFFFF')
+    }.width(this.buttonSize + (this.active ? 8 : 0)).height(this.buttonSize + (this.active ? 8 : 0))
+  }
+}
+
 /** Six-kernel compact indicator used by the reference interaction's processing capsule. */
 @Component
 export struct AiKernelRing {
@@ -81,19 +106,34 @@ struct AiThinkingDot {
   @Prop dotSize: number = 6;
   @Prop phase: number = 0;
   @State private spin: number = 0;
+  @State private stretch: number = 0.9;
+  @State private drift: number = 0;
 
   aboutToAppear(): void {
     setTimeout((): void => {
-      this.getUIContext().animateTo({ duration: 1400, iterations: -1, curve: Curve.Linear,
+      // Each particle has its own orientation, stretch and small drift. The parent ring also orbits, so the result is
+      // a field of independently moving light chips rather than one fixed circular spinner.
+      this.getUIContext().animateTo({ duration: 1700, iterations: -1, curve: Curve.Linear,
         expectedFrameRateRange: { min: 30, max: 60, expected: 60 } }, (): void => { this.spin = -360; });
+      this.getUIContext().animateTo({ duration: 920, iterations: -1, playMode: PlayMode.Alternate,
+        curve: Curve.EaseInOut }, (): void => { this.stretch = 1.35; });
+      this.getUIContext().animateTo({ duration: 1250, iterations: -1, playMode: PlayMode.Alternate,
+        curve: Curve.EaseInOut }, (): void => { this.drift = 1; });
     }, 16);
   }
 
   build() {
-    Circle().width(this.dotSize).height(this.dotSize).fill(Color.Transparent)
-      .sweepGradient({ center: ['50%', '50%'], colors: AI_THINKING_COLORS, rotation: this.phase })
-      .borderRadius(this.dotSize / 2)
-      .rotate({ angle: this.spin })
+    Stack() {
+      Row().width(this.dotSize * 1.55 * this.stretch).height(this.dotSize * 0.72).borderRadius(this.dotSize)
+        .linearGradient({ angle: 90, colors: AI_THINKING_COLORS })
+        .shadow({ radius: this.dotSize * 0.85, color: '#6642CBF7', offsetY: 0 })
+      Circle().width(this.dotSize * 0.34).height(this.dotSize * 0.34).fill('#F8FFFFFF')
+        .position({ x: this.dotSize * 0.62, y: this.dotSize * 0.2 })
+        .opacity(0.5 + this.stretch * 0.35)
+    }
+    .width(this.dotSize * 1.7).height(this.dotSize * 1.25)
+    .translate({ x: this.drift * this.dotSize * 0.18 })
+    .rotate({ angle: this.spin + this.phase })
   }
 }
 

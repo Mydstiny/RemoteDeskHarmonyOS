@@ -26,8 +26,11 @@ export class DiagnosticAiProfileStore {
 
   init(context: common.Context, owner: string): void {
     DiagnosticAiProfileStore.active = this;
-    this.context = context; this.owner = owner.trim() === '' ? 'device-local' : owner.trim(); this.loaded = false; this.load();
+    this.context = context; this.owner = owner.trim() === '' ? 'device-local' : owner.trim(); this.loaded = false;
+    // Load the alias metadata before profile rows so profiles written by the older build (which accidentally omitted
+    // secretRef from Preferences) can be repaired without asking the user to paste the key again.
     DiagnosticAiSecretStore.getInstance().init(context, this.owner);
+    this.load();
   }
 
   private load(): void {
@@ -36,22 +39,32 @@ export class DiagnosticAiProfileStore {
       const prefs = preferences.getPreferencesSync(this.context, { name: STORE_PREFIX + scopeHash(this.owner) });
       const rows = JSON.parse(prefs.getSync('profiles', '[]') as string) as DiagnosticAiProviderProfile[];
       this.profiles = Array.isArray(rows) ? rows.filter((value: DiagnosticAiProviderProfile): boolean => value.owner === this.owner)
-        .map((value: DiagnosticAiProviderProfile): DiagnosticAiProviderProfile => cloneDiagnosticAiProfile(value)) : [];
+        .map((value: DiagnosticAiProviderProfile): DiagnosticAiProviderProfile => {
+          const copy = cloneDiagnosticAiProfile(value);
+          if (copy.secretRef === '') {
+            const metadata = DiagnosticAiSecretStore.getInstance().metadataFor(copy.id);
+            if (metadata !== null) { copy.secretRef = metadata.secretRef; copy.secretFingerprint = metadata.fingerprint; }
+          }
+          return copy;
+        }) : [];
       const candidate = JSON.parse(prefs.getSync('settings', '{}') as string) as DiagnosticAiSettings;
       this.settings = validDiagnosticAiSettings(candidate) ? cloneDiagnosticAiSettings(candidate) : defaultDiagnosticAiSettings();
     } catch (_error) { this.profiles = []; this.settings = defaultDiagnosticAiSettings(); }
     this.loaded = true;
   }
 
-  private persist(): void {
-    if (this.context === null) { return; }
+  private persist(): boolean {
+    if (this.context === null) { return false; }
     try {
       const prefs = preferences.getPreferencesSync(this.context, { name: STORE_PREFIX + scopeHash(this.owner) });
       prefs.putSync('profiles', JSON.stringify(this.profiles.map((value: DiagnosticAiProviderProfile): DiagnosticAiProviderProfile => {
-        const copy = cloneDiagnosticAiProfile(value); copy.secretRef = ''; copy.secretFingerprint = value.secretFingerprint; return copy;
+        // secretRef is an opaque AssetStore alias, not the secret value. Persisting the ref is required so a new
+        // assistant instance can read the same key; only the key material itself stays out of Preferences.
+        const copy = cloneDiagnosticAiProfile(value); copy.secretRef = value.secretRef;
+        copy.secretFingerprint = value.secretFingerprint; return copy;
       })));
-      prefs.putSync('settings', JSON.stringify(this.settings)); prefs.flushSync();
-    } catch (_error) { /* keep current memory state; next explicit save can retry */ }
+      prefs.putSync('settings', JSON.stringify(this.settings)); prefs.flushSync(); return true;
+    } catch (_error) { return false; }
   }
 
   list(): DiagnosticAiProviderProfile[] { this.load(); return this.profiles.map((value: DiagnosticAiProviderProfile): DiagnosticAiProviderProfile => cloneDiagnosticAiProfile(value)); }
@@ -63,11 +76,12 @@ export class DiagnosticAiProfileStore {
     const ref = profile.secretRef === '' ? profile.id : profile.secretRef;
     const meta = secret === '' ? secretStore.metadataFor(ref) : secretStore.put(ref, secret);
     if (secret !== '' && meta === null) { return false; }
+    if (secret !== '' && secretStore.get(ref) !== secret) { return false; }
     const index = this.profiles.findIndex((value: DiagnosticAiProviderProfile): boolean => value.id === profile.id);
     profile.revision = index >= 0 ? Math.max(this.profiles[index].revision + 1, profile.revision) : Math.max(1, profile.revision);
     profile.secretRef = ref; profile.secretFingerprint = meta?.fingerprint ?? profile.secretFingerprint; profile.updatedAt = Date.now();
     if (index >= 0) { this.profiles[index] = cloneDiagnosticAiProfile(profile); } else { this.profiles.push(cloneDiagnosticAiProfile(profile)); }
-    this.persist(); return true;
+    return this.persist();
   }
 
   removeProfile(id: string): boolean {
@@ -76,12 +90,15 @@ export class DiagnosticAiProfileStore {
     DiagnosticAiSecretStore.getInstance().remove(found.secretRef);
     this.profiles = this.profiles.filter((value: DiagnosticAiProviderProfile): boolean => value.id !== id);
     if (this.settings.selectedProviderId === found.providerId) { this.settings.selectedProviderId = ''; this.settings.selectedModelId = ''; }
-    this.persist(); return true;
+    return this.persist();
   }
 
   saveSettings(settings: DiagnosticAiSettings): boolean {
     if (!validDiagnosticAiSettings(settings)) { return false; }
-    this.settings = cloneDiagnosticAiSettings(settings); this.persist(); return true;
+    const previous = this.settings;
+    this.settings = cloneDiagnosticAiSettings(settings);
+    if (!this.persist()) { this.settings = previous; return false; }
+    return true;
   }
 
   secret(profile: DiagnosticAiProviderProfile): string { return DiagnosticAiSecretStore.getInstance().get(profile.secretRef); }
