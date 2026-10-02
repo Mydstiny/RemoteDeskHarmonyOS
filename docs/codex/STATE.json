@@ -2036,7 +2036,7 @@
   "remoteDisplayResolutionScale": {
     "date": "2026-10-02",
     "plan": "docs/codex/plans/2026-10-01-rdp-rustdesk-pro-display-resolution-scale-plan.md",
-    "status": "implemented-local-gates-device-install-real-matrix-pending",
+    "status": "review-findings-p1-host-scoped-profile-runtime-pending",
     "scope": [
       "RDP custom remote geometry",
       "RDP DesktopScaleFactor 100-500 and DeviceScaleFactor 100/140/180",
@@ -2046,13 +2046,14 @@
     "validation": "default@OhosTestCompileArkTS PASS 2m35.306s after display import fix; parallel assembleHap PASS 6.327s; RDP native policy 15/15; Rust host no-default-features 320/320 including peer identity snapshot; Pro entry/runtime PASS; arm64 Rust cross-build, dual ABI native, git diff --check and state validation PASS; ohosTest task unavailable with 00306054; latest signed HAP SHA-256 e410d003cb42bfda09c00a3eb4329126bb49d0a1a7a44b06a1c4cf3b083d6688 installed to emulator 5557; prior d3e0a15e… HAP installed to MLR/SGT before those targets disconnected; SGT prior launch/UI blocked by locked screen 10106102",
     "availability": "RDP/RustDesk features remain experimental and Release-gated",
     "open": [
+      "P1: implement and consume host-scoped, device-local RemoteDisplayProfile storage and restore path",
       "Windows 10/11/Server DPI and Display Control matrix",
       "RustDesk peer/platform/permission/device matrix",
       "Phone/Pad/PC UI, restore and input acceptance",
-      "independent review and PR required checks",
+      "PR required checks and Release decision",
       "ohosTest task registration or an approved test-module equivalent"
     ],
-    "review": "Independent reviewer dispatch attempted and failed because the selected reviewer model was at capacity; no PASS receipt is claimed."
+    "review": "Independent review /root/review_display_final completed on cbb84c552: no P0; P1 host x device profile store/runtime integration remains open. CloudSyncSettingsPolicy confirms display fields are device-local. RustDesk permission fail-closed is an accepted experimental boundary."
   },
   "futurePlans": []
 }
