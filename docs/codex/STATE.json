@@ -3,7 +3,7 @@
   "task": "pro-purchase-foundation",
   "branch": "codex/pro-purchase-foundation",
   "base": "8edc187868e94ed41634e8a6c4c4c072e3a48679",
-  "head": "b69d3c9f",
+  "head": "b959f84f",
   "phase": "Full acceptance active; Pro 诊断与 AI 帮助复审已提交，HAP/真实 Provider/设备/邮件验收待完成",
   "currentFocus": "Pro 诊断与 AI 帮助：7327ac519 已加入共享抓取互斥、AI bundle 释放闭环、模型选择和 Provider revision 防旧响应；真实 Provider/设备/邮件验收待完成",
   "status": "in-progress",
