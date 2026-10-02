@@ -1,5 +1,6 @@
 import { common } from '@kit.AbilityKit';
 import { inputMethod } from '@kit.IMEKit';
+import { AiIslandOrb, AiThinkingRing } from './XiaoyiOrb';
 import { AppConfig, Palette, buildDark, buildLight } from '../../common/Theme';
 import { AppUiMetrics } from '../../common/AppUiMetrics';
 import { DiagnosticAiProviderProfile, DiagnosticAiResult, DiagnosticAiSettingProposal } from '../../services/diagnosticAi/DiagnosticAiModels';
@@ -29,13 +30,15 @@ export struct DiagnosticAiAssistantPanel {
    * small pill actions sit under it, and the result opens in the same card. Same capture and analysis as the panel.
    */
   @Prop siriMode: boolean = false;
+  /** In the AI island while a capture or analysis runs: a small floating capsule that leaves the app usable. */
+  @Prop compact: boolean = false;
   @State private pulse: boolean = false;
   @State private captureBytes: number = 0;
   onClose: () => void = (): void => {};
   onCaptureStateChanged: (capturing: boolean) => void = (_capturing: boolean): void => {};
   /** Capturing or analyzing; drives the edge glow of the sheet around the panel. */
   onActivityChanged: (active: boolean) => void = (_active: boolean): void => {};
-  private lastActive: boolean = false;
+  @State private lastActive: boolean = false;
   onOpenMailDraft: (subject: string, body: string) => void = (_subject: string, _body: string): void => {};
   @State question: string = '';
   @State status: string = '';
@@ -277,13 +280,22 @@ export struct DiagnosticAiAssistantPanel {
     .border({ width: 0.5, color: this.pal().cardBorder })
   }
 
+  /** A floating dark-glass capsule under the card, like Siri's 「Show Results」. */
   @Builder private pill(label: string, primary: boolean, action: () => void) {
-    Text(label).fontSize(13).fontWeight(FontWeight.Medium)
-      .fontColor(primary ? '#FFFFFF' : '#DDE2EC')
-      .padding({ left: 14, right: 14, top: 7, bottom: 7 }).borderRadius(16)
-      .backgroundColor(primary ? '#3D2A7DFF' : '#26FFFFFF')
-      .border({ width: 0.5, color: primary ? '#802A7DFF' : '#33FFFFFF' })
-      .onClick(action)
+    Row({ space: 6 }) {
+      if (primary) {
+        Circle().width(12).height(12).fill(Color.Transparent)
+          .sweepGradient({ center: ['50%', '50%'], colors: [['#42CBF7', 0], ['#2A7DFF', 0.3], ['#A479FF', 0.6],
+            ['#FF678C', 0.85], ['#42CBF7', 1]] }).borderRadius(6)
+      }
+      Text(label).fontSize(13).fontWeight(FontWeight.Medium).fontColor('#FFFFFF')
+    }
+    .height(32).padding({ left: primary ? 10 : 14, right: 14 }).borderRadius(16)
+    .backgroundBlurStyle(BlurStyle.COMPONENT_THICK, { colorMode: ThemeColorMode.DARK, adaptiveColor: AdaptiveColor.DEFAULT })
+    .backgroundColor('#8C1C1C1E')
+    .border({ width: 0.5, color: '#33FFFFFF' })
+    .shadow({ radius: 12, color: '#40000000', offsetY: 4 })
+    .onClick(action)
   }
 
   private submitQuestion(): void {
@@ -292,85 +304,130 @@ export struct DiagnosticAiAssistantPanel {
     this.beginCapture();
   }
 
-  @Builder private siriLayout() {
+  /** The card's text area: the question typed in white, iOS secondary gray for everything else. */
+  @Builder private siriCardBody() {
     Column({ space: 10 }) {
       if (this.result === null && !this.capturing() && !this.busy) {
         TextArea({ placeholder: '描述遇到的问题 — 询问 AI', text: this.question })
           .id('aiIslandQuestion')
-          .fontSize(17).fontColor('#F4F6FA').placeholderColor('#7D8698').placeholderFont({ size: 17 })
-          .caretColor('#42CBF7').backgroundColor(Color.Transparent).padding(0)
-          .constraintSize({ minHeight: 28, maxHeight: 132 })
+          .fontSize(18).fontColor('#FFFFFF').placeholderColor('#8E8E93').placeholderFont({ size: 18 })
+          .caretColor('#FFFFFF').backgroundColor(Color.Transparent).padding({ left: 0, right: 0, top: 4, bottom: 4 })
+          .constraintSize({ minHeight: 78, maxHeight: 160 })
           .enterKeyType(EnterKeyType.Go)
           .onChange((value: string): void => { this.question = value; })
           .onSubmit((): void => { this.submitQuestion(); })
           .onAppear((): void => {
-            setTimeout((): void => { focusControl.requestFocus('aiIslandQuestion'); }, 120);
+            setTimeout((): void => { focusControl.requestFocus('aiIslandQuestion'); }, 160);
           })
       } else {
-        Text(this.question).fontSize(16).lineHeight(22).fontColor('#C8CEDA').width('100%').maxLines(3)
+        Text(this.question).fontSize(17).lineHeight(23).fontColor('#FFFFFF').width('100%').maxLines(3)
           .textOverflow({ overflow: TextOverflow.Ellipsis })
       }
       if (this.capturing()) {
         Row({ space: 8 }) {
-          Circle().width(8).height(8).fill('#FF678C')
+          Circle().width(7).height(7).fill('#FF453A')
             .opacity(this.pulse ? 1 : 0.35).animation({ duration: 480, curve: Curve.EaseInOut })
-          Text('抓取中 · ' + this.eventCount.toString() + ' 条事件 · ' + this.elapsed.toString() + ' 秒')
-            .fontSize(13).fontColor('#DDE2EC').layoutWeight(1)
+          Text('正在抓取 · ' + this.eventCount.toString() + ' 条事件 · ' + this.elapsed.toString() + ' 秒')
+            .fontSize(14).fontColor('#8E8E93').layoutWeight(1)
         }.width('100%')
-        Text('现在去复现问题，完成后回来点「结束并分析」').fontSize(12).fontColor('#8D96A8').width('100%')
+        Text('现在去复现问题，完成后点「结束并分析」').fontSize(13).fontColor('#8E8E93').width('100%')
       } else if (this.busy) {
-        Text('AI 正在分析脱敏诊断事件…').fontSize(13).fontColor('#DDE2EC').width('100%')
+        Row({ space: 10 }) {
+          AiThinkingRing({ ringSize: 30 })
+          Text('正在思考…').fontSize(15).fontColor('#C7C7CC')
+        }.width('100%')
       } else if (this.status.length > 0 && this.result === null && this.status.indexOf('正在') < 0) {
-        Text(this.status).fontSize(12).lineHeight(17).fontColor('#F0A35E').width('100%')
+        Text(this.status).fontSize(13).lineHeight(18).fontColor('#FF9F0A').width('100%')
       }
       if (this.result !== null) {
         Scroll() {
-          Column({ space: 10 }) {
-            Row({ space: 8 }) {
-              Text('影响 ' + this.severityText()).fontSize(11).fontColor(this.severityColor())
-                .padding({ left: 8, right: 8, top: 3, bottom: 3 }).borderRadius(9)
-                .backgroundColor('#1A' + this.severityColor().substring(1))
-              Text('置信度 ' + Math.round((this.result as DiagnosticAiResult).confidence * 100).toString() + '%')
-                .fontSize(11).fontColor('#8D96A8')
-            }.width('100%')
-            Text((this.result as DiagnosticAiResult).summary).fontSize(15).lineHeight(22).fontColor('#F4F6FA')
+          Column({ space: 12 }) {
+            Text((this.result as DiagnosticAiResult).summary).fontSize(16).lineHeight(23).fontColor('#FFFFFF')
               .width('100%').copyOption(CopyOptions.InApp)
+            Text('影响 ' + this.severityText() + ' · 置信度 ' +
+              Math.round((this.result as DiagnosticAiResult).confidence * 100).toString() + '%')
+              .fontSize(12).fontColor('#8E8E93').width('100%')
             if ((this.result as DiagnosticAiResult).unknowns.length > 0) {
-              Text('尚不确定：' + (this.result as DiagnosticAiResult).unknowns.join('；')).fontSize(12).lineHeight(18)
-                .fontColor('#8D96A8').width('100%')
+              Text('尚不确定：' + (this.result as DiagnosticAiResult).unknowns.join('；')).fontSize(13).lineHeight(19)
+                .fontColor('#8E8E93').width('100%')
             }
             ForEach((this.result as DiagnosticAiResult).settingProposals, (proposal: DiagnosticAiSettingProposal): void => {
               Row({ space: 10 }) {
                 Column({ space: 2 }) {
                   Text(diagnosticAiSettingActionText(proposal.settingId) + ' → ' + proposal.proposedValue)
-                    .fontSize(13).fontWeight(FontWeight.Medium).fontColor('#F4F6FA').width('100%')
-                  Text(proposal.reason).fontSize(11).lineHeight(16).fontColor('#8D96A8').width('100%')
+                    .fontSize(14).fontWeight(FontWeight.Medium).fontColor('#FFFFFF').width('100%')
+                  Text(proposal.reason).fontSize(12).lineHeight(17).fontColor('#8E8E93').width('100%')
                 }.layoutWeight(1)
                 if (proposal.requiresUserConfirmation) {
-                  this.pill('应用', true, (): void => {
-                    const applied: boolean = diagnosticAiApplyProposal(proposal);
-                    this.status = applied ? '已应用：' + diagnosticAiSettingActionText(proposal.settingId) : '该建议未通过安全白名单';
-                  })
+                  Text('应用').fontSize(13).fontWeight(FontWeight.Medium).fontColor('#0A84FF').padding(6)
+                    .onClick((): void => {
+                      const applied: boolean = diagnosticAiApplyProposal(proposal);
+                      this.status = applied ? '已应用：' + diagnosticAiSettingActionText(proposal.settingId) : '该建议未通过安全白名单';
+                    })
                 }
-              }.width('100%').padding(10).borderRadius(14).backgroundColor('#14FFFFFF')
+              }.width('100%').padding(12).borderRadius(16).backgroundColor('#1AFFFFFF')
             }, (_proposal: DiagnosticAiSettingProposal, index: number): string => index.toString())
             if (this.mailPreviewVisible) {
               Column({ space: 6 }) {
-                Text('邮件预览 · ' + this.mailSubject).fontSize(12).fontColor('#C8CEDA').width('100%')
+                Text('邮件预览 · ' + this.mailSubject).fontSize(13).fontColor('#FFFFFF').width('100%')
                 Scroll() {
-                  Text(this.mailBody).fontSize(11).lineHeight(16).fontColor('#DDE2EC').width('100%')
+                  Text(this.mailBody).fontSize(12).lineHeight(17).fontColor('#C7C7CC').width('100%')
                     .copyOption(CopyOptions.InApp)
                 }.height(120).width('100%')
-              }.width('100%').padding(10).borderRadius(14).backgroundColor('#14FFFFFF')
+              }.width('100%').padding(12).borderRadius(16).backgroundColor('#1AFFFFFF')
             }
           }.width('100%')
-        }.constraintSize({ maxHeight: 360 }).scrollBar(BarState.Off).edgeEffect(EdgeEffect.Spring)
+        }.constraintSize({ maxHeight: 380 }).scrollBar(BarState.Off).edgeEffect(EdgeEffect.Spring)
       }
-      // Small pill actions under the text, like 「Show Results」.
       Row({ space: 8 }) {
-        if (this.result === null && !this.capturing() && !this.busy && this.question.trim() !== '') {
-          this.pill('开始诊断', true, (): void => { this.submitQuestion(); })
+        if (this.lastActive) {
+          AiThinkingRing({ ringSize: 22 })
+        } else {
+          AiIslandOrb({ orbSize: 18, working: false })
         }
+        Text(this.capturing() ? 'AI 诊断 · 抓取中' : this.busy ? 'AI 诊断 · 思考中' : 'AI 诊断 · 仅分析脱敏信息')
+          .fontSize(12).fontColor('#8E8E93').layoutWeight(1).maxLines(1)
+        if (this.result === null && !this.capturing() && !this.busy) {
+          Stack() {
+            if (this.question.trim() !== '') {
+              Circle().width(34).height(34).fill(Color.Transparent)
+                .sweepGradient({ center: ['50%', '50%'], colors: [['#42CBF7', 0], ['#2A7DFF', 0.3], ['#A479FF', 0.6],
+                  ['#FF678C', 0.85], ['#42CBF7', 1]] }).borderRadius(17)
+            } else {
+              Circle().width(34).height(34).fill('#3A3A3C')
+            }
+            SymbolGlyph($r('sys.symbol.arrow_up')).fontSize(17)
+              .fontColor([this.question.trim() !== '' ? '#FFFFFF' : '#8E8E93'])
+          }.width(34).height(34)
+          .accessibilityText('开始诊断')
+          .onClick((): void => { this.submitQuestion(); })
+        }
+      }.width('100%').margin({ top: 2 })
+    }.width('100%')
+  }
+
+  @Builder private siriLayout() {
+    Column({ space: 12 }) {
+      // The card: dark glass; the system AI colors glow out from under its lower edge.
+      Stack({ alignContent: Alignment.Bottom }) {
+        // blur() softens content, not a node's own background, so the gradient sits inside the blurred column.
+        Column() {
+          Row().width('100%').height(22).borderRadius(11)
+            .linearGradient({ angle: 90, colors: [['#42CBF7', 0], ['#2A7DFF', 0.3], ['#A479FF', 0.6], ['#FF678C', 1]] })
+        }.width('74%').height(22).offset({ y: 8 })
+        .blur(30).opacity(this.lastActive ? 0.95 : 0.65)
+        Column() { this.siriCardBody() }
+          .width('100%').padding({ left: 20, right: 14, top: 18, bottom: 12 })
+          .borderRadius(30).clip(true)
+          .backgroundBlurStyle(BlurStyle.COMPONENT_ULTRA_THICK,
+            { colorMode: ThemeColorMode.DARK, adaptiveColor: AdaptiveColor.DEFAULT })
+          .backgroundColor('#D9161618')
+          .border({ width: { top: 0.8, left: 0.5, right: 0.5, bottom: 0.5 },
+            color: { top: '#4DFFFFFF', left: '#1FFFFFFF', right: '#1FFFFFFF', bottom: '#1FFFFFFF' } })
+          .shadow({ radius: 28, color: '#40000000', offsetY: 10 })
+      }.width('100%')
+      // Floating pill actions under the card.
+      Row({ space: 8 }) {
         if (this.capturing()) {
           this.pill('结束并分析', true, (): void => { void this.finishCapture(); })
           this.pill('取消', false, (): void => {
@@ -400,8 +457,32 @@ export struct DiagnosticAiAssistantPanel {
     }.width('100%')
   }
 
+  /** The floating capsule: thinking ring, what is running, and a quick 结束 while capturing. */
+  @Builder private compactLayout() {
+    Row({ space: 10 }) {
+      AiThinkingRing({ ringSize: 24 })
+      Column({ space: 1 }) {
+        Text(this.capturing() ? '正在抓取' : '正在思考').fontSize(14).fontWeight(FontWeight.Medium).fontColor('#FFFFFF')
+        Text(this.capturing() ? this.eventCount.toString() + ' 条事件 · ' + this.elapsed.toString() + ' 秒' : 'AI 诊断')
+          .fontSize(11).fontColor('#8E8E93').maxLines(1)
+      }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+      if (this.capturing()) {
+        Text('结束').fontSize(13).fontWeight(FontWeight.Medium).fontColor('#FFFFFF')
+          .padding({ left: 12, right: 12, top: 6, bottom: 6 }).borderRadius(14).backgroundColor('#3A3A3C')
+          .onClick((): void => { void this.finishCapture(); })
+      }
+    }
+    .width('100%').height(52).padding({ left: 12, right: 10 }).borderRadius(26)
+    .backgroundBlurStyle(BlurStyle.COMPONENT_ULTRA_THICK, { colorMode: ThemeColorMode.DARK, adaptiveColor: AdaptiveColor.DEFAULT })
+    .backgroundColor('#E6161618')
+    .border({ width: 0.5, color: '#33FFFFFF' })
+    .shadow({ radius: 20, color: '#592A7DFF', offsetY: 6 })
+  }
+
   build() {
-    if (this.siriMode) {
+    if (this.siriMode && this.compact) {
+      this.compactLayout()
+    } else if (this.siriMode) {
       this.siriLayout()
     } else {
       this.panelLayout()

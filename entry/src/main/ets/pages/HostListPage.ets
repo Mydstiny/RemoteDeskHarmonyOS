@@ -964,6 +964,8 @@ struct HostListPage {
   @State diagnosticAiSection: number = 0;
   /** 启动 AI 辅助 opens as the AI island at the top center; it unmounts after folding away. */
   @State aiIslandShown: boolean = false;
+  /** The AI island floats as a capsule: its overlay lets every other touch reach the page. */
+  @State aiIslandFloating: boolean = false;
   /** Debug builds only: Pro state override (跟随真实 / 模拟开启 / 模拟关闭) and the real state behind it. */
   @State proDebugMode: string = 'real';
   @State proRealStateText: string = '';
@@ -14047,9 +14049,11 @@ struct HostListPage {
       if (this.aiIslandShown && this.diagnosticAiAssistantVisible) {
         AiIsland({
           topInset: this.topSafeHeightVp(),
-          onDismissed: (): void => { this.aiIslandShown = false; },
+          onDismissed: (): void => { this.aiIslandShown = false; this.aiIslandFloating = false; },
+          onFloatingChanged: (floating: boolean): void => { this.aiIslandFloating = floating; },
           onOpenMailDraft: (subject: string, body: string): void => { void this.openFeedbackEmail(subject, body); }
         }).width('100%').height('100%').position({ x: 0, y: 0 }).zIndex(40)
+        .hitTestBehavior(this.aiIslandFloating ? HitTestMode.Transparent : HitTestMode.Default)
       }
 
       // Start ArkWeb/xterm while the host list is visible so opening an SSH
