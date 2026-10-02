@@ -6,9 +6,11 @@ import {
 import {
   RemoteDisplayProfilePreferenceAdapter,
   RemoteDisplayProfilePreferenceRead,
+  RemoteDisplayProfileMigrationScope,
   RemoteDisplayProfileScope,
   RemoteDisplayProfileStore,
   deserializeRemoteDisplayProfileEnvelope,
+  remoteDisplayProfileLegacyMigrationKey,
   remoteDisplayProfileStorageKey,
   serializeRemoteDisplayProfileEnvelope,
   setRemoteDisplayProfilePreferenceAdapterForTest
@@ -16,6 +18,7 @@ import {
 
 class MemoryRemoteDisplayProfileAdapter implements RemoteDisplayProfilePreferenceAdapter {
   values: Map<string, string> = new Map<string, string>();
+  failWrites: Set<string> = new Set<string>();
 
   read(_context: common.Context, _storeName: string, key: string): RemoteDisplayProfilePreferenceRead {
     const value: string | undefined = this.values.get(key);
@@ -23,6 +26,9 @@ class MemoryRemoteDisplayProfileAdapter implements RemoteDisplayProfilePreferenc
   }
 
   write(_context: common.Context, _storeName: string, key: string, value: string): boolean {
+    if (this.failWrites.has(key)) {
+      return false;
+    }
     this.values.set(key, value);
     return true;
   }
@@ -108,6 +114,21 @@ export default function remoteDisplayProfileStoreTest(): void {
         .assertTrue();
       expect(store.legacyFallbackConsumed({ ownerScopeId: 'owner-a', deviceScope: 'pc' }))
         .assertTrue();
+      setRemoteDisplayProfilePreferenceAdapterForTest(null);
+    });
+
+    it('fails_closed_when_legacy_marker_cannot_be_persisted', 0, (): void => {
+      const adapter = new MemoryRemoteDisplayProfileAdapter();
+      const migrationScope: RemoteDisplayProfileMigrationScope = {
+        ownerScopeId: 'owner-a', deviceScope: 'pc'
+      };
+      adapter.failWrites.add(remoteDisplayProfileLegacyMigrationKey(migrationScope));
+      setRemoteDisplayProfilePreferenceAdapterForTest(adapter);
+      const store = new RemoteDisplayProfileStore();
+      store.init({} as common.Context);
+      expect(store.legacyFallbackConsumed(migrationScope)).assertFalse();
+      expect(store.tryClaimLegacyFallback(migrationScope)).assertFalse();
+      expect(store.legacyFallbackConsumed(migrationScope)).assertTrue();
       setRemoteDisplayProfilePreferenceAdapterForTest(null);
     });
   });

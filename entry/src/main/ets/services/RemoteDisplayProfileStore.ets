@@ -247,11 +247,13 @@ export class RemoteDisplayProfileStore {
   private context: common.Context | null = null;
   private initialized: boolean = false;
   private readonly cache: Map<string, CachedProfile> = new Map<string, CachedProfile>();
+  private readonly legacyFallbackBlocked: Set<string> = new Set<string>();
 
   init(context: common.Context): boolean {
     this.context = context;
     this.initialized = true;
     this.cache.clear();
+    this.legacyFallbackBlocked.clear();
     return true;
   }
 
@@ -309,19 +311,42 @@ export class RemoteDisplayProfileStore {
     if (!this.initialized || this.context === null || !validMigrationScope(scope)) {
       return true;
     }
+    const key: string = remoteDisplayProfileLegacyMigrationKey(scope);
+    if (this.legacyFallbackBlocked.has(key)) {
+      return true;
+    }
     const read: RemoteDisplayProfilePreferenceRead = remoteDisplayProfilePreferenceAdapter.read(
-      this.context, REMOTE_DISPLAY_PROFILE_STORAGE_NAME,
-      remoteDisplayProfileLegacyMigrationKey(scope));
-    return !read.ok || read.value === '1';
+      this.context, REMOTE_DISPLAY_PROFILE_STORAGE_NAME, key);
+    if (!read.ok) {
+      this.legacyFallbackBlocked.add(key);
+      return true;
+    }
+    return read.value === '1';
   }
 
   markLegacyFallbackConsumed(scope: RemoteDisplayProfileMigrationScope): boolean {
     if (!this.initialized || this.context === null || !validMigrationScope(scope)) {
       return false;
     }
-    return remoteDisplayProfilePreferenceAdapter.write(
-      this.context, REMOTE_DISPLAY_PROFILE_STORAGE_NAME,
-      remoteDisplayProfileLegacyMigrationKey(scope), '1');
+    const key: string = remoteDisplayProfileLegacyMigrationKey(scope);
+    if (this.legacyFallbackBlocked.has(key)) {
+      return false;
+    }
+    const written: boolean = remoteDisplayProfilePreferenceAdapter.write(
+      this.context, REMOTE_DISPLAY_PROFILE_STORAGE_NAME, key, '1');
+    if (!written) {
+      // A failed marker write means the legacy value cannot be safely claimed.
+      // Keep this scope fail-closed for the rest of the process.
+      this.legacyFallbackBlocked.add(key);
+    }
+    return written;
+  }
+
+  tryClaimLegacyFallback(scope: RemoteDisplayProfileMigrationScope): boolean {
+    if (this.legacyFallbackConsumed(scope)) {
+      return false;
+    }
+    return this.markLegacyFallbackConsumed(scope);
   }
 
   remove(scope: RemoteDisplayProfileScope): boolean {

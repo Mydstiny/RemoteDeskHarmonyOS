@@ -5656,19 +5656,14 @@ struct RemoteDesktop {
     const migrationScope: RemoteDisplayProfileMigrationScope = {
       ownerScopeId: scope.ownerScopeId, deviceScope: scope.deviceScope
     };
-    let seed: RemoteDisplayProfile;
-    if (scope.protocol === 'rdp' &&
-      !this.remoteDisplayProfileStore.legacyFallbackConsumed(migrationScope)) {
-      // Consume legacy globals once for the account/device. Future hosts use
-      // safe defaults and can never inherit another host's last values.
-      seed = this.currentRemoteDisplayProfile(scope);
-    } else {
-      seed = this.safeRemoteDisplayProfile(scope);
-    }
+    // Claim the legacy globals before reading them. If the marker cannot be
+    // persisted, the store fails closed and this host receives safe defaults.
+    const canUseLegacySeed: boolean = scope.protocol === 'rdp' &&
+      this.remoteDisplayProfileStore.tryClaimLegacyFallback(migrationScope);
+    const seed: RemoteDisplayProfile = canUseLegacySeed ?
+      this.currentRemoteDisplayProfile(scope) : this.safeRemoteDisplayProfile(scope);
     this.remoteDisplayProfileCreatedAt = seed.createdAt;
-    if (this.remoteDisplayProfileStore.upsert(scope, seed) && scope.protocol === 'rdp') {
-      this.remoteDisplayProfileStore.markLegacyFallbackConsumed(migrationScope);
-    }
+    this.remoteDisplayProfileStore.upsert(scope, seed);
     this.applyRemoteDisplayProfile(seed);
   }
 
