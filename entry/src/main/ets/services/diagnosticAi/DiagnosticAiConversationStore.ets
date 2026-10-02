@@ -48,8 +48,8 @@ function scopeKey(owner: string): string {
 
 function cloneSession(value: DiagnosticAiConversationSession): DiagnosticAiConversationSession {
   return { id: value.id, title: value.title, createdAt: value.createdAt, updatedAt: value.updatedAt,
-    turns: value.turns.map((turn: DiagnosticAiConversationTurn): DiagnosticAiConversationTurn => ({
-      question: turn.question, answer: turn.answer, mode: turn.mode, createdAt: turn.createdAt
+    turns: value.turns.slice(-20).map((turn: DiagnosticAiConversationTurn): DiagnosticAiConversationTurn => ({
+      question: turn.question.slice(0, 4000), answer: turn.answer.slice(0, 6000), mode: turn.mode, createdAt: turn.createdAt
     })) };
 }
 
