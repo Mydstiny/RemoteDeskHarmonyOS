@@ -3,14 +3,14 @@
   "task": "pro-purchase-foundation",
   "branch": "codex/pro-purchase-foundation",
   "base": "8edc187868e94ed41634e8a6c4c4c072e3a48679",
-  "head": "dc70407c",
-  "phase": "Full acceptance active; Pro 诊断与 AI 帮助已增加独立会话管理、原订阅恢复、详细用量筛选与自适应继续对话弹窗，真实 Provider/设备/邮件验收待完成",
-  "currentFocus": "Pro 诊断与 AI 帮助：修复设置卡片截断，拆分 AI 用量监控/个性化/会话管理入口；会话保存 Provider+模型并支持点击继续对话；真实 Provider/设备/邮件验收待完成",
+  "head": "f4a7ab01",
+  "phase": "Full acceptance active; Pro 诊断与 AI 帮助已增加诊断恢复、typed 动作注册表和三种执行模式，真实 Provider/设备/邮件验收待完成",
+  "currentFocus": "Pro 诊断与 AI 帮助：页面重建先回读账号密钥再展示待分析重试；Provider 只能返回白名单 appActions；设置导航使用执行胶囊、日志/长任务使用悬浮球、会话轻量开关原地执行；真实 Provider/设备/邮件验收待完成",
   "status": "in-progress",
   "latestIncrement": {
     "date": "2026-10-02",
-    "commit": "dc70407c",
-    "parentCommit": "69a5bad2",
+    "commit": "f4a7ab01",
+    "parentCommit": "dc70407c",
     "scope": [
       "entry/src/main/ets/components/RemoteSessionTopBar.ets",
       "entry/src/main/ets/components/diagnosticAi/AiIsland.ets",
@@ -33,10 +33,10 @@
       "docs/app-store/PRIVACY_POLICY.md",
       "docs/app-store/USER_GUIDE.md"
     ],
-    "status": "implemented-independent-session-management-provider-bound-resume-adaptive-dialog-usage-filter-and-settings-height-fix-provider-acceptance-pending",
+    "status": "implemented-capture-recovery-typed-app-actions-execution-modes-independent-session-management-provider-acceptance-pending",
     "reviewTaskId": "/root/diagnostic_ai_review",
     "reviewResult": "PENDING; implementation follows the earlier review scope, independent review not rerun",
-    "validation": "default@OhosTestCompileArkTS BUILD SUCCESSFUL 19.481 s; ohosTest@OhosTestCompileArkTS unavailable with 00306054; assembleHap BUILD SUCCESSFUL 21.029 s; latest signed HAP install PASS on MatePad Mini and Mate 80 Pro Max; git diff --check passed; AI entries 4/4, lifecycle 8/8, final boundaries and races PASS; UI parity 25/26 with the existing invite-paste assertion failure; real Provider/secret cold-start/device visual/mail acceptance not run"
+    "validation": "default@OhosTestCompileArkTS BUILD SUCCESSFUL 11.801 s; ohosTest@OhosTestCompileArkTS unavailable with 00306054; assembleHap BUILD SUCCESSFUL 16.019 s; latest signed HAP install PASS on MatePad Mini and Mate 80 Pro Max; git diff --check passed; AI entries 4/4, lifecycle 8/8, final boundaries and races PASS; policy registry covers 81/81 mapped actions; UI parity remains a declaration-only 25/26 due an existing AiSettingsPage assertion; real Provider/secret cold-start/device visual/mail acceptance not run"
   },
   "next": "按 2026-10-02 账户登录/Coding Plan/UI 计划核验国内 Provider 的官方认证和套餐用途，并在 Phone/Pad/PC 验证 Siri island、问答、设置确认、抓取释放、账号切换、邮件预览和真实模型列表/分析；保留 experimental 直到证据齐全。",
   "blockers": [
@@ -47,7 +47,8 @@
     "Sandbox core device flow passed. Numeric-version publication, notification endpoint and formal merchant/product release remain open; worker timer disabled.",
     "RDP domain preflight checkpoints f06bcf620, b17d8d90 and d10db1076: direct/transparent hostname candidates are unified with the live FreeRDP transport after service reachability; testCompile and signed assembleHap pass; optional ohosTest task 00306054 is unavailable; real hostname/device certificate acceptance remains open.",
     "共享生成缓存曾出现 CMake scratch、Ninja 中断和临时 ArkTS manifest 校验问题；本轮使用项目隔离缓存重跑 default@OhosTestCompileArkTS 与 assembleHap 均 PASS，Provider/设备/邮件验收仍未完成。",
-    "AI 会话管理和继续对话已完成代码门禁并安装到两台设备；需在设备上确认六行诊断卡片不再被反馈项截断、会话点击弹窗布局、原订阅恢复和实际 Provider 响应。"
+    "AI 会话管理和继续对话已完成代码门禁并安装到两台设备；需在设备上确认六行诊断卡片不再被反馈项截断、会话点击弹窗布局、原订阅恢复和实际 Provider 响应。",
+    "本轮新增 typed appActions 与 execute/floating/inline 模式，需用真实 Provider 验证结构化动作返回、敏感确认和三端执行动画；构建不能证明真实模型会返回动作或网络可达。"
   ],
   "planPaths": [
     "docs/codex/plans/2026-09-06-pro-purchase-foundation.md",
