@@ -1,5 +1,6 @@
 import { DiagnosticAiBillingMode, DiagnosticAiProviderManifest, DiagnosticAiProviderProfile, DiagnosticAiUseCase } from './DiagnosticAiModels';
 import { diagnosticAiProfileAuthMode } from './DiagnosticAiAuthPolicy';
+import { diagnosticAiProviderCodingPlanAvailable } from './DiagnosticAiProviderCatalog';
 
 const KNOWN_BILLING_MODES: DiagnosticAiBillingMode[] = ['payg_api', 'token_plan', 'coding_plan', 'subscription_chat', 'local'];
 
@@ -29,6 +30,9 @@ export function diagnosticAiBillingDecision(manifest: DiagnosticAiProviderManife
   }
   if (manifest.requiresInteractive || profile.requiresInteractive) {
     return { ok: false, code: 'INTERACTIVE_SESSION_REQUIRED', message: '该套餐需要官方交互式会话，当前助手不能代替该会话' };
+  }
+  if (manifest.billingMode === 'coding_plan' && !diagnosticAiProviderCodingPlanAvailable(manifest)) {
+    return { ok: false, code: 'CODING_PLAN_MANIFEST_UNVERIFIED', message: 'Coding Plan 专用 Manifest 尚未完成官方端点、用途和数据地区核验' };
   }
   if (manifest.billingMode === 'coding_plan' && diagnosticAiProfileAuthMode(profile) !== 'coding_plan_key') {
     return { ok: false, code: 'CODING_PLAN_AUTH_REQUIRED', message: 'Coding Plan 必须使用供应商登记的专用认证方式' };

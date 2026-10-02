@@ -75,6 +75,13 @@ assert.equal(route.diagnosticAiSettingsLeafSheetHeight(route.SETTINGS_SHEET_DIAG
 console.log('PASS AI assistant, usage, personalization and session sheets use adaptive route heights');
 
 const providerCatalog = load('entry/src/main/ets/services/diagnosticAi/DiagnosticAiProviderCatalog');
+const qwenManifest = providerCatalog.diagnosticAiProviderManifest('qwen');
+assert.equal(providerCatalog.diagnosticAiProviderNormalApiAvailable(qwenManifest), true);
+assert.equal(providerCatalog.diagnosticAiProviderCodingPlanAvailable(qwenManifest), false);
+const unverifiedCodingManifest = { ...qwenManifest, billingMode: 'coding_plan', authModes: ['coding_plan_key'],
+  codingPlanModelIds: ['coding-model'] };
+assert.equal(providerCatalog.diagnosticAiProviderCodingPlanAvailable(unverifiedCodingManifest), false);
+console.log('PASS ordinary API availability is independent from the unverified Coding Plan route');
 const authPolicy = load('entry/src/main/ets/services/diagnosticAi/DiagnosticAiAuthPolicy');
 const useCasePolicy = load('entry/src/main/ets/services/diagnosticAi/DiagnosticAiUseCasePolicy');
 const billingPolicy = load('entry/src/main/ets/services/diagnosticAi/DiagnosticAiBillingPolicy');
@@ -97,6 +104,9 @@ assert.equal(authPolicy.diagnosticAiAuthDecision({ ...manifest, authModes: ['oau
 const codingManifest = { ...manifest, billingMode: 'coding_plan', authModes: ['coding_plan_key'],
   allowedUseCases: ['diagnostic_assistant'], codingPlanModelIds: ['coding-model'], requiresOfficialTool: false };
 const codingProfile = { ...profile, authMode: 'coding_plan_key', billingMode: 'coding_plan', modelId: 'other-model' };
+const unverifiedCodingProfile = { ...codingProfile, modelId: 'coding-model' };
+assert.equal(authPolicy.diagnosticAiAuthDecision(unverifiedCodingManifest, unverifiedCodingProfile).code, 'CODING_PLAN_MANIFEST_UNVERIFIED');
+assert.equal(billingPolicy.diagnosticAiBillingDecision(unverifiedCodingManifest, unverifiedCodingProfile, 'diagnostic_assistant').code, 'CODING_PLAN_MANIFEST_UNVERIFIED');
 assert.equal(authPolicy.diagnosticAiAuthDecision(codingManifest, codingProfile).code, 'CODING_PLAN_MODEL_NOT_ALLOWED');
 assert.equal(billingPolicy.diagnosticAiBillingDecision(codingManifest, codingProfile, 'diagnostic_assistant').code, 'CODING_PLAN_MODEL_NOT_ALLOWED');
 assert.equal(authPolicy.diagnosticAiAuthDecision(codingManifest, { ...codingProfile, modelId: 'coding-model' }).ok, true);
@@ -114,6 +124,10 @@ console.log('PASS history replaces the native sheet instead of mounting a floati
 assert.ok(sheetSource.includes('selectedAuthMode'));
 assert.ok(sheetSource.includes('termsAcceptedDraft'));
 assert.ok(sheetSource.includes('Coding Plan 必须使用 Manifest 声明的专用 Base URL'));
+assert.ok(sheetSource.includes('Coding Plan 专用连接待官方核验'));
+assert.ok(sheetSource.includes('普通 API 与 Coding Plan 分开保存'));
+assert.ok(sheetSource.includes('diagnosticAiProviderNormalApiAvailable'));
+assert.ok(sheetSource.includes('diagnosticAiProviderCodingPlanAvailable'));
 assert.ok(sheetSource.includes('删除/撤销 Provider 配置失败'));
 assert.ok(providerSource.includes('diagnosticAiUseCaseDecision(manifest, profile, \'diagnostic_assistant\')'));
 console.log('PASS P1 auth-mode selection, explicit terms consent, dedicated endpoint and revoke UI are fail-closed');

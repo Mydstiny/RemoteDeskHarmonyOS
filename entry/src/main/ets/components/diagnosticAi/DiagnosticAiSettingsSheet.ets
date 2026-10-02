@@ -5,7 +5,7 @@ import { AppSettingsActionRow } from '../AppSettingsActionRow';
 import { AppUiMetrics } from '../../common/AppUiMetrics';
 import { DiagnosticAiAssistantPanel } from './DiagnosticAiAssistantPanel';
 import { DiagnosticAiAuthMode, DiagnosticAiModelInfo, DiagnosticAiModelPriceEntry, DiagnosticAiProviderManifest, DiagnosticAiProviderProfile, DiagnosticAiSettings } from '../../services/diagnosticAi/DiagnosticAiModels';
-import { diagnosticAiHarmonyLocalDeviceSupported, diagnosticAiProviderIsHarmonyLocal, diagnosticAiProviderManifestVerified, diagnosticAiProviderManifests, diagnosticAiProviderSupportsDevice, HARMONY_LOCAL_MODEL_ID } from '../../services/diagnosticAi/DiagnosticAiProviderCatalog';
+import { diagnosticAiHarmonyLocalDeviceSupported, diagnosticAiProviderCodingPlanAvailable, diagnosticAiProviderIsHarmonyLocal, diagnosticAiProviderManifests, diagnosticAiProviderNormalApiAvailable, diagnosticAiProviderSupportsDevice, HARMONY_LOCAL_MODEL_ID } from '../../services/diagnosticAi/DiagnosticAiProviderCatalog';
 import { validateDiagnosticAiEndpoint } from '../../services/diagnosticAi/DiagnosticAiEndpointPolicy';
 import { DiagnosticAiProfileStore } from '../../services/diagnosticAi/DiagnosticAiProfileStore';
 import { DiagnosticAiProviderService, diagnosticAiPrivacySummary } from '../../services/diagnosticAi/DiagnosticAiProviderService';
@@ -114,6 +114,11 @@ export struct DiagnosticAiSettingsSheet {
     return manifest === undefined ? [] : manifest.authModes.slice();
   }
 
+  private extraAuthModesForSelected(): DiagnosticAiAuthMode[] {
+    return this.authModesForSelected().filter((mode: DiagnosticAiAuthMode): boolean =>
+      mode !== 'api_key' && mode !== 'coding_plan_key' && mode !== 'none');
+  }
+
   aboutToAppear(): void {
     try { this.deviceType = deviceInfo.deviceType; } catch (_error) { this.deviceType = 'unknown'; }
     const scope = AccountSessionCoordinator.getInstance().currentScope();
@@ -172,9 +177,32 @@ export struct DiagnosticAiSettingsSheet {
 
   private providerAvailable(manifest: DiagnosticAiProviderManifest): boolean {
     if (!diagnosticAiProviderSupportsDevice(manifest, this.deviceType)) { return false; }
-    if (!diagnosticAiProviderManifestVerified(manifest)) { return false; }
     return diagnosticAiProviderIsHarmonyLocal(manifest.providerId) ||
-      (manifest.endpoint !== '' && manifest.chatPath !== '');
+      diagnosticAiProviderNormalApiAvailable(manifest) || diagnosticAiProviderCodingPlanAvailable(manifest);
+  }
+
+  private selectedNormalApiAvailable(): boolean {
+    const manifest = this.selectedManifest();
+    return manifest !== undefined && diagnosticAiProviderNormalApiAvailable(manifest);
+  }
+
+  private selectedCodingPlanAvailable(): boolean {
+    const manifest = this.selectedManifest();
+    return manifest !== undefined && diagnosticAiProviderCodingPlanAvailable(manifest);
+  }
+
+  private codingPlanDeclared(): boolean {
+    const manifest = this.selectedManifest();
+    return manifest !== undefined && (manifest.authModes.indexOf('coding_plan_key') >= 0 || manifest.billingMode === 'coding_plan');
+  }
+
+  private selectAuthMode(mode: DiagnosticAiAuthMode): void {
+    this.authModeDraft = mode; this.keyText = ''; this.availableModels = [];
+    const saved = this.profiles.find((value: DiagnosticAiProviderProfile): boolean =>
+      value.providerId === this.selectedProvider && value.authMode === mode);
+    this.termsAcceptedDraft = saved !== undefined && saved.consentId !== '' && saved.consentAt > 0;
+    this.model = saved?.modelId ?? '';
+    if (mode === 'coding_plan_key') { this.endpoint = this.selectedManifest()?.endpoint ?? ''; }
   }
 
   private selectProvider(id: string): void {
@@ -191,7 +219,8 @@ export struct DiagnosticAiSettingsSheet {
       return;
     }
     this.endpoint = manifest?.endpoint ?? ''; this.availableModels = []; this.keyText = ''; this.termsAcceptedDraft = false;
-    const existing = this.profiles.find((value: DiagnosticAiProviderProfile): boolean => value.providerId === id);
+    const existing = this.profiles.find((value: DiagnosticAiProviderProfile): boolean => value.providerId === id &&
+      (this.settings.selectedAuthMode === '' || value.authMode === this.settings.selectedAuthMode));
     this.authModeDraft = existing?.authMode ?? manifest?.authModes[0] ?? 'api_key';
     if (existing !== undefined) { this.model = existing.modelId; this.termsAcceptedDraft = existing.consentId !== '' && existing.consentAt > 0; }
     if (manifest !== undefined && diagnosticAiProviderIsHarmonyLocal(id)) { this.model = HARMONY_LOCAL_MODEL_ID; }
@@ -205,6 +234,12 @@ export struct DiagnosticAiSettingsSheet {
     const localProvider: boolean = manifest !== undefined && diagnosticAiProviderIsHarmonyLocal(manifest.providerId);
     if (manifest === undefined || !this.providerAvailable(manifest) || (!localProvider && (manifest.endpoint === '' || manifest.chatPath === ''))) {
       this.message = '该 Provider 尚未完成请求适配'; return;
+    }
+    if (this.authModeDraft === 'api_key' && !this.selectedNormalApiAvailable()) {
+      this.message = '当前 Provider 未声明可用于诊断助手的普通 API 连接'; return;
+    }
+    if (this.authModeDraft === 'coding_plan_key' && !this.selectedCodingPlanAvailable()) {
+      this.message = 'Coding Plan 专用连接尚未完成官方 Manifest 核验，普通 API Key 不会复用到这里'; return;
     }
     if (localProvider && !diagnosticAiHarmonyLocalDeviceSupported(this.deviceType)) {
       this.message = '鸿蒙端侧小模型当前仅支持 PC/2in1；手机和 Pad 暂不可用，后续开放后将上线。'; return;
@@ -562,33 +597,58 @@ export struct DiagnosticAiSettingsSheet {
     }.alignItems(HorizontalAlign.Start).width('100%')
   }
 
+  @Builder private authModeChip(mode: DiagnosticAiAuthMode) {
+    Text(this.authModeLabel(mode)).fontSize(12)
+      .fontColor(this.authModeDraft === mode ? Color.White : this.pal().text)
+      .padding({ left: 10, right: 10, top: 7, bottom: 7 }).margin({ right: 7, bottom: 6 }).borderRadius(14)
+      .backgroundColor(this.authModeDraft === mode ? this.accent : this.pal().surface)
+      .onClick((): void => { this.selectAuthMode(mode); })
+  }
+
   @Builder private authModeSection() {
-    if (this.authModesForSelected().length > 0) {
-      Text('连接方式').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
-      if (this.authModesForSelected().length > 1) {
-        Flex({ wrap: FlexWrap.Wrap }) {
-          ForEach(this.authModesForSelected(), (mode: DiagnosticAiAuthMode): void => {
-            Text(this.authModeLabel(mode)).fontSize(12)
-              .fontColor(this.authModeDraft === mode ? Color.White : this.pal().text)
-              .padding({ left: 10, right: 10, top: 7, bottom: 7 }).margin({ right: 7, bottom: 6 }).borderRadius(14)
-              .backgroundColor(this.authModeDraft === mode ? this.accent : this.pal().surface)
-              .onClick((): void => {
-                this.authModeDraft = mode; this.keyText = ''; this.availableModels = [];
-                const saved = this.profiles.find((value: DiagnosticAiProviderProfile): boolean =>
-                  value.providerId === this.selectedProvider && value.authMode === mode);
-                this.termsAcceptedDraft = saved !== undefined && saved.consentId !== '' && saved.consentAt > 0;
-                if (mode === 'coding_plan_key') { this.endpoint = this.selectedManifest()?.endpoint ?? ''; }
-              })
-          }, (mode: DiagnosticAiAuthMode): string => 'auth-mode-' + mode)
-        }.width('100%')
+    if (!diagnosticAiProviderIsHarmonyLocal(this.selectedProvider)) {
+      Text('普通 API 连接').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
+      if (this.selectedNormalApiAvailable()) {
+        Row({ space: 8 }) {
+          Text('API Key · 独立按量/Token Plan').fontSize(12)
+            .fontColor(this.authModeDraft === 'api_key' ? Color.White : this.pal().text).layoutWeight(1)
+          if (this.authModeDraft === 'api_key') { SymbolGlyph($r('sys.symbol.checkmark_circle_fill')).fontSize(16).fontColor([Color.White]) }
+        }.width('100%').padding(10).borderRadius(12)
+          .backgroundColor(this.authModeDraft === 'api_key' ? this.accent : this.pal().surface)
+          .onClick((): void => { this.selectAuthMode('api_key'); })
       } else {
-        Text('认证方式：' + this.authModeLabel(this.authModeDraft) + ' · 由 Provider Manifest 声明')
-          .fontSize(11).fontColor(this.pal().text3).width('100%')
+        Text('当前 Provider 未声明可用于诊断助手的普通 API 连接').fontSize(11).fontColor(this.pal().text3).width('100%')
+      }
+      Text('Coding Plan 专用连接').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text).margin({ top: 6 })
+      if (this.selectedCodingPlanAvailable()) {
+        Row({ space: 8 }) {
+          Text('Coding Plan Key · 独立密钥、独立模型白名单').fontSize(12)
+            .fontColor(this.authModeDraft === 'coding_plan_key' ? Color.White : this.pal().text).layoutWeight(1)
+          if (this.authModeDraft === 'coding_plan_key') { SymbolGlyph($r('sys.symbol.checkmark_circle_fill')).fontSize(16).fontColor([Color.White]) }
+        }.width('100%').padding(10).borderRadius(12)
+          .backgroundColor(this.authModeDraft === 'coding_plan_key' ? this.accent : this.pal().surface)
+          .onClick((): void => { this.selectAuthMode('coding_plan_key'); })
+      } else {
+        Row({ space: 8 }) {
+          SymbolGlyph($r('sys.symbol.lock_fill')).fontSize(16).fontColor([this.pal().text3])
+          Text(this.codingPlanDeclared() ? 'Coding Plan 已声明但等待官方用途/端点核验' :
+            'Coding Plan 专用连接待官方核验；不会把普通 API Key 当作 Coding Plan')
+            .fontSize(11).lineHeight(16).fontColor(this.pal().text3).layoutWeight(1)
+        }.width('100%').padding(10).borderRadius(12).backgroundColor(this.pal().surface).opacity(0.7)
+      }
+      if (this.extraAuthModesForSelected().length > 0) {
+        Text('官方授权方式').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text).margin({ top: 6 })
+        Flex({ wrap: FlexWrap.Wrap }) {
+          ForEach(this.extraAuthModesForSelected(), (mode: DiagnosticAiAuthMode): void => { this.authModeChip(mode) },
+            (mode: DiagnosticAiAuthMode): string => 'auth-mode-' + mode)
+        }.width('100%')
       }
       Text(this.authModeDraft === 'coding_plan_key'
-        ? '这是供应商专用 Coding Plan Key。只有 Manifest 明确允许 diagnostic_assistant 时才会保存和发送。'
-        : 'RemoteDesktop 不接收账户密码、Cookie 或网页 Session；官方账户授权将在端点核验后开放。')
+        ? 'Coding Plan Key 只可发送到 Manifest 声明的专用 Base URL，并且模型必须在官方白名单内。'
+        : '普通 API 与 Coding Plan 分开保存；RemoteDesktop 不接收账户密码、Cookie 或网页 Session。')
         .fontSize(11).lineHeight(16).fontColor(this.pal().text3).width('100%')
+    } else {
+      Text('连接方式：本机/端侧模型').fontSize(11).fontColor(this.pal().text3).width('100%')
     }
   }
 
