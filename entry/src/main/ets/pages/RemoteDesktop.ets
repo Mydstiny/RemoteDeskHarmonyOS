@@ -528,6 +528,7 @@ import {
 import {
   legacyRdpPresetForResolutionId,
   normalizeRdpResolutionId,
+  rdpResolutionPresetForId,
   resolveRdpResolutionGeometry,
   RdpResolutionGeometry
 } from '../services/RemoteResolutionPresetPolicy';
@@ -558,12 +559,23 @@ import {
 } from '../services/RdpAdaptiveDisplayPolicy';
 import {
   remoteDisplayAspectLabel,
+  defaultRemoteDisplayProfile,
+  RemoteDisplayDeviceScope,
+  RemoteDisplayProfile,
+  RemoteDisplayProtocol,
+  RemoteDisplayResolutionMode,
   RemoteDisplayGeometryValidation,
+  resolveRdpScaleProfile,
   rustDeskCustomResolutionDecision,
   RustDeskCustomResolutionCapability,
   RustDeskCustomResolutionDecision,
   validateRemoteDisplayGeometry
 } from '../services/RemoteDisplayProfilePolicy';
+import {
+  RemoteDisplayProfileMigrationScope,
+  RemoteDisplayProfileScope,
+  RemoteDisplayProfileStore
+} from '../services/RemoteDisplayProfileStore';
 import { ProAccessContext } from '../services/pro/ProAccessPolicy';
 import { ProAccessDecision } from '../services/pro/ProAccessPolicy';
 import {
@@ -1457,6 +1469,15 @@ struct RemoteDesktop {
   private orientationRestoreIssuedGeneration: number = -1;
   private connectAttemptId: number = 0;
   private pendingHost: RemoteHost | null = null;
+  // RDP display choices are effective session values in AppStorage, while
+  // this store keeps the durable source scoped by account, host and device.
+  // The legacy Preferences keys remain the device-level fallback used by the
+  // host-list settings page and by an unprofiled first connection.
+  private readonly remoteDisplayProfileStore: RemoteDisplayProfileStore =
+    new RemoteDisplayProfileStore();
+  private remoteDisplayProfileScope: RemoteDisplayProfileScope | null = null;
+  private remoteDisplayProfileCreatedAt: number = 0;
+  private remoteDisplayProfilePersisting: boolean = false;
   private proRdpIncomingId: string = '';
   private proRdpPageLive: boolean = false;
   private proRdpContinuationEpoch: number = 0;
@@ -1976,6 +1997,16 @@ struct RemoteDesktop {
     idleRustDeskDisplaySwitchState();
   private vncDisplaySwitchState: VncDisplaySwitchState = idleVncDisplaySwitchState();
   private rustDeskDisplayResolutionPendingSinceMs: number = 0;
+  // Desired RustDesk remote display state restored from the host/device
+  // profile. It is applied only after a live capability snapshot arrives;
+  // unsupported/custom requests remain fail-closed at that boundary.
+  private rustDeskProfileTargetDisplay: number = -1;
+  private rustDeskProfileResolutionMode: RemoteDisplayResolutionMode = 'auto';
+  private rustDeskProfileResolutionPresetId: string = 'auto';
+  private rustDeskProfileResolutionWidth: number = 0;
+  private rustDeskProfileResolutionHeight: number = 0;
+  private rustDeskProfilePendingApply: boolean = false;
+  private rustDeskProfileResolutionApplyRequested: boolean = false;
   private lastBrowseModeBlockedToastMs: number = 0;
   private lastVncViewOnlyBlockedToastMs: number = 0;
 
@@ -5427,8 +5458,270 @@ struct RemoteDesktop {
     promptAction.showToast({ message: reason, duration: 2200 });
   }
 
+  private remoteDisplayDeviceScope(): RemoteDisplayDeviceScope {
+    if (this.isDesktopDevice) { return 'pc'; }
+    if (this.isPadDevice) { return 'tablet'; }
+    return 'phone';
+  }
+
+  private remoteDisplayProfileScopeForHost(host: RemoteHost): RemoteDisplayProfileScope | null {
+    const hostId: string = host.id.trim();
+    if (hostId.length === 0 || (host.protocol !== 'rdp' && host.protocol !== 'rustdesk')) {
+      return null;
+    }
+    const protocol: RemoteDisplayProtocol = host.protocol === 'rustdesk' ? 'rustdesk' : 'rdp';
+    const accountScope: string = AccountSessionCoordinator.getInstance().currentScope()
+      .ownerScopeId.trim();
+    return {
+      ownerScopeId: accountScope.length > 0 ? accountScope : 'device-local',
+      hostId,
+      protocol,
+      deviceScope: this.remoteDisplayDeviceScope(),
+      displayScope: 'default',
+      orientationScope: 'any'
+    };
+  }
+
+  private currentRemoteDisplayProfile(scope: RemoteDisplayProfileScope): RemoteDisplayProfile {
+    const now: number = Date.now();
+    const createdAt: number = this.remoteDisplayProfileCreatedAt > 0 ?
+      this.remoteDisplayProfileCreatedAt : now;
+    const profile: RemoteDisplayProfile = defaultRemoteDisplayProfile(
+      scope.hostId, scope.protocol, 'default', createdAt);
+    profile.deviceScope = scope.deviceScope;
+    profile.displayScope = scope.displayScope;
+    profile.orientationScope = scope.orientationScope;
+    if (scope.protocol === 'rustdesk') {
+      profile.targetDisplay = this.rustDeskProfileTargetDisplay >= 0 ?
+        this.rustDeskProfileTargetDisplay : this.rustDeskDisplayCapabilities.currentDisplay;
+      const width: number = this.rustDeskProfileResolutionWidth > 0 ?
+        this.rustDeskProfileResolutionWidth : this.rustDeskDisplayCapabilities.width;
+      const height: number = this.rustDeskProfileResolutionHeight > 0 ?
+        this.rustDeskProfileResolutionHeight : this.rustDeskDisplayCapabilities.height;
+      if (width > 0 && height > 0 && this.rustDeskProfileResolutionMode !== 'auto') {
+        const checked: RemoteDisplayGeometryValidation = validateRemoteDisplayGeometry(width, height);
+        profile.resolution = checked.accepted ? {
+          mode: this.rustDeskProfileResolutionMode,
+          presetId: this.rustDeskProfileResolutionPresetId,
+          width: checked.width,
+          height: checked.height
+        } : { mode: 'auto', presetId: 'auto', width: 1920, height: 1080 };
+      } else {
+        profile.resolution = {
+          mode: 'auto', presetId: 'auto',
+          width: width > 0 ? width : 1920, height: height > 0 ? height : 1080
+        };
+      }
+    } else {
+      const resolutionId: string = normalizeRdpResolutionId(
+        this.rdpDesktopResolutionId, this.rdpDesktopPreset);
+      const preset = rdpResolutionPresetForId(resolutionId);
+      if (resolutionId === 'custom') {
+        const checked: RemoteDisplayGeometryValidation = validateRemoteDisplayGeometry(
+          this.rdpCustomWidth, this.rdpCustomHeight);
+        profile.resolution = checked.accepted ? {
+          mode: 'custom', presetId: 'custom', width: checked.width, height: checked.height
+        } : { mode: 'auto', presetId: 'auto', width: 1920, height: 1080 };
+      } else if (preset !== null) {
+        profile.resolution = {
+          mode: 'preset', presetId: preset.id, width: preset.width, height: preset.height
+        };
+      } else {
+        profile.resolution = { mode: 'auto', presetId: 'auto', width: 1920, height: 1080 };
+      }
+      profile.rdpScale = resolveRdpScaleProfile(
+        this.rdpDesktopScaleMode, this.rdpDesktopScalePercent,
+        this.rdpDeviceScaleMode, this.rdpDeviceScalePercent);
+    }
+    profile.localViewMode = normalizeLocalViewScaleMode(this.remoteDisplayScaleMode);
+    profile.localViewCustomPercent = Number.isFinite(this.remoteDisplayCustomScalePercent) ?
+      Math.max(50, Math.min(300, Math.round(this.remoteDisplayCustomScalePercent))) : 100;
+    profile.updatedAt = now >= createdAt ? now : createdAt;
+    return profile;
+  }
+
+  private applyRemoteDisplayProfile(profile: RemoteDisplayProfile): void {
+    if (profile.protocol === 'rustdesk') {
+      this.rustDeskProfileTargetDisplay = profile.targetDisplay;
+      this.rustDeskProfileResolutionMode = profile.resolution.mode;
+      this.rustDeskProfileResolutionPresetId = profile.resolution.presetId;
+      this.rustDeskProfileResolutionWidth = profile.resolution.width;
+      this.rustDeskProfileResolutionHeight = profile.resolution.height;
+      this.rustDeskProfilePendingApply = profile.targetDisplay >= 0 ||
+        profile.resolution.mode !== 'auto';
+      this.rustDeskProfileResolutionApplyRequested = false;
+    } else if (profile.protocol !== 'rdp') {
+      return;
+    } else {
+    this.rdpDesktopResolutionId = profile.resolution.mode === 'custom' ? 'custom' :
+      profile.resolution.mode === 'auto' ? 'auto' : profile.resolution.presetId;
+    this.rdpDesktopPreset = legacyRdpPresetForResolutionId(this.rdpDesktopResolutionId);
+    this.rdpCustomWidth = profile.resolution.width;
+    this.rdpCustomHeight = profile.resolution.height;
+    this.rdpDesktopScaleMode = profile.rdpScale.desktopMode;
+    this.rdpDesktopScalePercent = profile.rdpScale.desktopPercent;
+    this.rdpDeviceScaleMode = profile.rdpScale.deviceMode;
+    this.rdpDeviceScalePercent = profile.rdpScale.devicePercent;
+    this.rdpRemoteUiScale = profile.rdpScale.desktopMode === 'preset' &&
+      (profile.rdpScale.desktopPercent === 100 || profile.rdpScale.desktopPercent === 140 ||
+        profile.rdpScale.desktopPercent === 180) ?
+      profile.rdpScale.desktopPercent.toString() :
+      profile.rdpScale.desktopMode === 'auto' ? 'auto' : 'auto';
+    }
+    this.remoteDisplayScaleMode = normalizeLocalViewScaleMode(profile.localViewMode);
+    this.remoteDisplayCustomScalePercent = Math.max(50, Math.min(300,
+      Number.isFinite(profile.localViewCustomPercent) ?
+        Math.round(profile.localViewCustomPercent) : 100));
+    AppStorage.setOrCreate('rdpDesktopResolutionId', this.rdpDesktopResolutionId);
+    AppStorage.setOrCreate('rdpDesktopPreset', this.rdpDesktopPreset);
+    AppStorage.setOrCreate('rdpCustomWidth', this.rdpCustomWidth);
+    AppStorage.setOrCreate('rdpCustomHeight', this.rdpCustomHeight);
+    AppStorage.setOrCreate('rdpRemoteUiScale', this.rdpRemoteUiScale);
+    AppStorage.setOrCreate('rdpDesktopScaleMode', this.rdpDesktopScaleMode);
+    AppStorage.setOrCreate('rdpDesktopScalePercent', this.rdpDesktopScalePercent);
+    AppStorage.setOrCreate('rdpDeviceScaleMode', this.rdpDeviceScaleMode);
+    AppStorage.setOrCreate('rdpDeviceScalePercent', this.rdpDeviceScalePercent);
+    AppStorage.setOrCreate('remoteDisplayScaleMode', this.remoteDisplayScaleMode);
+    AppStorage.setOrCreate('remoteDisplayCustomScalePercent', this.remoteDisplayCustomScalePercent);
+  }
+
+  private restoreRdpDisplayPreferencesFromPrefs(): void {
+    try {
+      const prefs: preferences.Preferences = preferences.getPreferencesSync(
+        getContext(this), { name: 'RemoteDesktopAppPrefs' });
+      const legacyPreset: number = prefs.getSync('rdpDesktopPreset', 0) as number;
+      const savedResolutionId: string = prefs.getSync('rdpDesktopResolutionId', '') as string;
+      this.rdpDesktopResolutionId = normalizeRdpResolutionId(savedResolutionId, legacyPreset);
+      this.rdpDesktopPreset = legacyRdpPresetForResolutionId(this.rdpDesktopResolutionId);
+      const customGeometry: RemoteDisplayGeometryValidation = validateRemoteDisplayGeometry(
+        prefs.getSync('rdpCustomWidth', 1920) as number,
+        prefs.getSync('rdpCustomHeight', 1080) as number);
+      this.rdpCustomWidth = customGeometry.accepted ? customGeometry.width : 1920;
+      this.rdpCustomHeight = customGeometry.accepted ? customGeometry.height : 1080;
+      const savedRemoteUiScale: string = prefs.getSync('rdpRemoteUiScale', 'auto') as string;
+      this.rdpRemoteUiScale = normalizeRdpRemoteUiScalePreference(savedRemoteUiScale);
+      const savedDesktopMode: string = prefs.getSync('rdpDesktopScaleMode', 'auto') as string;
+      this.rdpDesktopScaleMode = savedDesktopMode === 'custom' || savedDesktopMode === 'preset' ?
+        savedDesktopMode : (this.rdpRemoteUiScale === 'auto' ? 'auto' : 'preset');
+      this.rdpDesktopScalePercent = normalizeRdpDesktopScalePercent(
+        prefs.getSync('rdpDesktopScalePercent', 100) as number,
+        this.rdpRemoteUiScale === 'auto' ? 100 : Number(this.rdpRemoteUiScale));
+      const savedDeviceMode: string = prefs.getSync('rdpDeviceScaleMode', 'auto') as string;
+      this.rdpDeviceScaleMode = savedDeviceMode === 'fixed' ? 'fixed' :
+        (this.rdpRemoteUiScale === 'auto' ? 'auto' : 'fixed');
+      this.rdpDeviceScalePercent = normalizeRdpDeviceScalePercent(
+        prefs.getSync('rdpDeviceScalePercent', 100) as number,
+        this.rdpRemoteUiScale === 'auto' ? 100 : Number(this.rdpRemoteUiScale));
+    } catch (err) {
+      this.rdpDesktopResolutionId = 'auto';
+      this.rdpDesktopPreset = 0;
+      this.rdpCustomWidth = 1920;
+      this.rdpCustomHeight = 1080;
+      this.rdpRemoteUiScale = 'auto';
+      this.rdpDesktopScaleMode = 'auto';
+      this.rdpDesktopScalePercent = 100;
+      this.rdpDeviceScaleMode = 'auto';
+      this.rdpDeviceScalePercent = 100;
+      hilog.warn(RD_DOMAIN, RD_TAG,
+        'restoreRdpDisplayPreferencesFromPrefs fallback to auto: ' + JSON.stringify(err));
+    }
+    AppStorage.setOrCreate('rdpDesktopResolutionId', this.rdpDesktopResolutionId);
+    AppStorage.setOrCreate('rdpDesktopPreset', this.rdpDesktopPreset);
+    AppStorage.setOrCreate('rdpCustomWidth', this.rdpCustomWidth);
+    AppStorage.setOrCreate('rdpCustomHeight', this.rdpCustomHeight);
+    AppStorage.setOrCreate('rdpRemoteUiScale', this.rdpRemoteUiScale);
+    AppStorage.setOrCreate('rdpDesktopScaleMode', this.rdpDesktopScaleMode);
+    AppStorage.setOrCreate('rdpDesktopScalePercent', this.rdpDesktopScalePercent);
+    AppStorage.setOrCreate('rdpDeviceScaleMode', this.rdpDeviceScaleMode);
+    AppStorage.setOrCreate('rdpDeviceScalePercent', this.rdpDeviceScalePercent);
+  }
+
+  private restoreRemoteDisplayProfileForHost(host: RemoteHost): void {
+    const scope: RemoteDisplayProfileScope | null = this.remoteDisplayProfileScopeForHost(host);
+    this.remoteDisplayProfileScope = scope;
+    this.remoteDisplayProfileCreatedAt = 0;
+    if (scope === null) { return; }
+    this.remoteDisplayProfileStore.init(getContext(this) as common.Context);
+    const stored: RemoteDisplayProfile | null = this.remoteDisplayProfileStore.load(scope);
+    if (stored !== null) {
+      if (scope.protocol === 'rdp') {
+        this.remoteDisplayProfileStore.markLegacyFallbackConsumed({
+          ownerScopeId: scope.ownerScopeId, deviceScope: scope.deviceScope
+        });
+      }
+      this.remoteDisplayProfileCreatedAt = stored.createdAt;
+      this.applyRemoteDisplayProfile(stored);
+      return;
+    }
+    const migrationScope: RemoteDisplayProfileMigrationScope = {
+      ownerScopeId: scope.ownerScopeId, deviceScope: scope.deviceScope
+    };
+    let seed: RemoteDisplayProfile;
+    if (scope.protocol === 'rdp' &&
+      !this.remoteDisplayProfileStore.legacyFallbackConsumed(migrationScope)) {
+      // Consume legacy globals once for the account/device. Future hosts use
+      // safe defaults and can never inherit another host's last values.
+      seed = this.currentRemoteDisplayProfile(scope);
+    } else {
+      seed = this.safeRemoteDisplayProfile(scope);
+    }
+    this.remoteDisplayProfileCreatedAt = seed.createdAt;
+    if (this.remoteDisplayProfileStore.upsert(scope, seed) && scope.protocol === 'rdp') {
+      this.remoteDisplayProfileStore.markLegacyFallbackConsumed(migrationScope);
+    }
+    this.applyRemoteDisplayProfile(seed);
+  }
+
+  private safeRemoteDisplayProfile(scope: RemoteDisplayProfileScope): RemoteDisplayProfile {
+    const profile: RemoteDisplayProfile = defaultRemoteDisplayProfile(
+      scope.hostId, scope.protocol, 'default', Date.now());
+    profile.deviceScope = scope.deviceScope;
+    profile.displayScope = scope.displayScope;
+    profile.orientationScope = scope.orientationScope;
+    profile.localViewMode = normalizeLocalViewScaleMode(this.remoteDisplayScaleMode);
+    profile.localViewCustomPercent = Number.isFinite(this.remoteDisplayCustomScalePercent) ?
+      Math.max(50, Math.min(300, Math.round(this.remoteDisplayCustomScalePercent))) : 100;
+    return profile;
+  }
+
+  private isRemoteDisplayProfileSettingKey(key: string): boolean {
+    return key === 'rdpDesktopResolutionId' || key === 'rdpDesktopPreset' ||
+      key === 'rdpCustomWidth' || key === 'rdpCustomHeight' ||
+      key === 'rdpRemoteUiScale' || key === 'rdpDesktopScaleMode' ||
+      key === 'rdpDesktopScalePercent' || key === 'rdpDeviceScaleMode' ||
+      key === 'rdpDeviceScalePercent' || key === 'remoteDisplayScaleMode' ||
+      key === 'remoteDisplayCustomScalePercent';
+  }
+
+  private persistCurrentRemoteDisplayProfile(): void {
+    const scope: RemoteDisplayProfileScope | null = this.remoteDisplayProfileScope;
+    const host: RemoteHost | null = this.pendingHost;
+    if (scope === null || host === null ||
+      (host.protocol !== 'rdp' && host.protocol !== 'rustdesk') ||
+      this.remoteDisplayProfilePersisting) { return; }
+    const liveScope: RemoteDisplayProfileScope | null = this.remoteDisplayProfileScopeForHost(host);
+    if (liveScope === null || liveScope.ownerScopeId !== scope.ownerScopeId ||
+      liveScope.hostId !== scope.hostId || liveScope.protocol !== scope.protocol ||
+      liveScope.deviceScope !== scope.deviceScope) {
+      return;
+    }
+    this.remoteDisplayProfilePersisting = true;
+    const profile: RemoteDisplayProfile = this.currentRemoteDisplayProfile(scope);
+    const saved: boolean = this.remoteDisplayProfileStore.upsert(scope, profile);
+    if (saved) { this.remoteDisplayProfileCreatedAt = profile.createdAt; }
+    this.remoteDisplayProfilePersisting = false;
+  }
+
   private persistSessionPref(key: string, value: string | number | boolean): void {
     AppStorage.setOrCreate(key, value);
+    const profileOnly: boolean = this.isRemoteDisplayProfileSettingKey(key) &&
+      this.pendingHost !== null &&
+      (this.pendingHost.protocol === 'rdp' || this.pendingHost.protocol === 'rustdesk') &&
+      this.remoteDisplayProfileScope !== null;
+    if (profileOnly) {
+      this.persistCurrentRemoteDisplayProfile();
+      return;
+    }
     try {
       const prefs = preferences.getPreferencesSync(getContext(this), { name: 'RemoteDesktopAppPrefs' });
       prefs.putSync(key, value);
@@ -5537,7 +5830,12 @@ struct RemoteDesktop {
         prefs.getSync(REMOTE_DISPLAY_SCALE_PREFERENCE_VERSION_KEY, 0) as number;
       this.remoteDisplayScaleMode = resolveInitialRemoteDisplayScaleMode(
         storedMode, storedVersion, prefs.hasSync('remoteDisplayScaleMode'));
+      const storedCustomScalePercent: number =
+        prefs.getSync('remoteDisplayCustomScalePercent', 100) as number;
+      this.remoteDisplayCustomScalePercent = Math.max(50, Math.min(300,
+        Number.isFinite(storedCustomScalePercent) ? Math.round(storedCustomScalePercent) : 100));
       AppStorage.setOrCreate('remoteDisplayScaleMode', this.remoteDisplayScaleMode);
+      AppStorage.setOrCreate('remoteDisplayCustomScalePercent', this.remoteDisplayCustomScalePercent);
       if (!Number.isFinite(storedVersion) || storedVersion < REMOTE_DISPLAY_SCALE_PREFERENCE_VERSION) {
         prefs.putSync('remoteDisplayScaleMode', this.remoteDisplayScaleMode);
         prefs.putSync(REMOTE_DISPLAY_SCALE_PREFERENCE_VERSION_KEY,
@@ -5546,7 +5844,9 @@ struct RemoteDesktop {
       }
     } catch (err) {
       this.remoteDisplayScaleMode = 'fit';
+      this.remoteDisplayCustomScalePercent = 100;
       AppStorage.setOrCreate('remoteDisplayScaleMode', this.remoteDisplayScaleMode);
+      AppStorage.setOrCreate('remoteDisplayCustomScalePercent', this.remoteDisplayCustomScalePercent);
       hilog.warn(RD_DOMAIN, RD_TAG,
         'restoreRemoteDisplayScalePreference fallback to fit: ' + JSON.stringify(err));
     }
@@ -6105,6 +6405,15 @@ struct RemoteDesktop {
       promptAction.showToast({ message: '分辨率请求未被远端会话接受', duration: 1800 });
       return;
     }
+    this.rustDeskProfileResolutionMode = candidateListed ? 'preset' : 'custom';
+    this.rustDeskProfileResolutionPresetId = candidateListed ?
+      width.toString() + 'x' + height.toString() : 'custom';
+    this.rustDeskProfileResolutionWidth = width;
+    this.rustDeskProfileResolutionHeight = height;
+    this.rustDeskProfileTargetDisplay = targetDisplay;
+    this.rustDeskProfilePendingApply = false;
+    this.rustDeskProfileResolutionApplyRequested = false;
+    this.persistCurrentRemoteDisplayProfile();
     this.rustDeskDisplayPendingResolution = { width, height };
     this.rustDeskDisplayResolutionPendingSinceMs = Date.now();
     this.showRustDeskDisplayResolutionMenu = false;
@@ -6525,6 +6834,9 @@ struct RemoteDesktop {
       return;
     }
 
+    this.rustDeskProfileTargetDisplay = display.display;
+    this.persistCurrentRemoteDisplayProfile();
+
     this.rustDeskDisplayPendingResolution = EMPTY_RUSTDESK_DISPLAY_RESOLUTION;
     this.rustDeskDisplayResolutionPendingSinceMs = 0;
 
@@ -6555,8 +6867,12 @@ struct RemoteDesktop {
     if (this.rustDeskDisplayPendingResolution.width > 0 &&
       capabilities.width === this.rustDeskDisplayPendingResolution.width &&
       capabilities.height === this.rustDeskDisplayPendingResolution.height) {
+      this.rustDeskProfileResolutionWidth = capabilities.width;
+      this.rustDeskProfileResolutionHeight = capabilities.height;
       this.rustDeskDisplayPendingResolution = EMPTY_RUSTDESK_DISPLAY_RESOLUTION;
       this.rustDeskDisplayResolutionPendingSinceMs = 0;
+      this.rustDeskProfileResolutionApplyRequested = false;
+      this.persistCurrentRemoteDisplayProfile();
     } else if (this.rustDeskDisplayPendingResolution.width > 0 &&
       this.rustDeskDisplayResolutionPendingSinceMs > 0 &&
       nowMs - this.rustDeskDisplayResolutionPendingSinceMs >= RUSTDESK_DISPLAY_RESOLUTION_TIMEOUT_MS) {
@@ -6635,6 +6951,70 @@ struct RemoteDesktop {
     }
     this.syncRustDeskMultiCanvasPreview(
       previous.currentDisplay !== capabilities.currentDisplay ? previous.currentDisplay : -1);
+    this.applyPendingRustDeskDisplayProfile();
+  }
+
+  private applyPendingRustDeskDisplayProfile(): void {
+    if (!this.rustDeskProfilePendingApply || !this.isRustDeskSession() || this.sessionId <= 0 ||
+      !this.rustDeskDisplayCapabilities.supported) {
+      return;
+    }
+    const capabilities: RustDeskDisplayCapabilities = this.rustDeskDisplayCapabilities;
+    if (this.rustDeskProfileTargetDisplay >= 0 &&
+      capabilities.currentDisplay !== this.rustDeskProfileTargetDisplay) {
+      const target: RustDeskDisplayInfo | null = this.rustDeskDisplayById(
+        this.rustDeskProfileTargetDisplay, capabilities.displays);
+      if (target === null || !target.online) {
+        this.rustDeskProfilePendingApply = false;
+        return;
+      }
+      this.selectRustDeskDisplay(target);
+      return;
+    }
+    if (this.rustDeskProfileResolutionMode === 'auto' ||
+      this.rustDeskProfileResolutionWidth <= 0 || this.rustDeskProfileResolutionHeight <= 0) {
+      this.rustDeskProfilePendingApply = false;
+      this.persistCurrentRemoteDisplayProfile();
+      return;
+    }
+    if (capabilities.width === this.rustDeskProfileResolutionWidth &&
+      capabilities.height === this.rustDeskProfileResolutionHeight) {
+      this.rustDeskProfilePendingApply = false;
+      this.rustDeskProfileResolutionApplyRequested = false;
+      this.persistCurrentRemoteDisplayProfile();
+      return;
+    }
+    if (this.rustDeskProfileResolutionApplyRequested ||
+      this.rustDeskDisplaySwitchState.inputBlocked || capabilities.inputBlocked) {
+      return;
+    }
+    const listed: boolean = capabilities.resolutions.some(
+      (item: RustDeskDisplayResolution): boolean =>
+        item.width === this.rustDeskProfileResolutionWidth &&
+        item.height === this.rustDeskProfileResolutionHeight);
+    if (!listed) {
+      const support: RustDeskCustomResolutionDecision = this.rustDeskCustomSupport();
+      const decision: ProAccessDecision = ProAppRuntime.getInstance().runtime.decision(
+        PRO_RUSTDESK_ADVANCED_DISPLAY_FEATURE, this.rustDeskAdvancedDisplayContext());
+      if (!support.allowed || !decision.executable) {
+        // Keep the stored request for a future supported peer, but never send
+        // a custom request without explicit peer permission and Pro access.
+        this.rustDeskProfilePendingApply = false;
+        return;
+      }
+    }
+    const targetDisplay: number = capabilities.currentDisplay;
+    if (!this.loader.changeRustDeskDisplayResolution(this.sessionId, targetDisplay,
+      this.rustDeskProfileResolutionWidth, this.rustDeskProfileResolutionHeight)) {
+      this.rustDeskProfilePendingApply = false;
+      return;
+    }
+    this.rustDeskProfileResolutionApplyRequested = true;
+    this.rustDeskDisplayPendingResolution = {
+      width: this.rustDeskProfileResolutionWidth,
+      height: this.rustDeskProfileResolutionHeight
+    };
+    this.rustDeskDisplayResolutionPendingSinceMs = Date.now();
   }
 
   private isRustDeskDisplayResolutionSelected(resolution: RustDeskDisplayResolution): boolean {
@@ -9841,6 +10221,7 @@ struct RemoteDesktop {
     this.rustDeskPreviewController.setListener(this);
     this.restoreSessionControlBarVisibilityPreferences();
     this.restoreRemoteDisplayScalePreference();
+    this.restoreRdpDisplayPreferencesFromPrefs();
     this.restoreRemoteCustomShortcuts();
     this.registerInputDeviceWatcher();
     this.registerKeyboardAvoidListener();
@@ -9991,6 +10372,9 @@ struct RemoteDesktop {
             }
           }
           this.pendingHost = resolvedHost;
+          if (resolvedHost.protocol === 'rdp' || resolvedHost.protocol === 'rustdesk') {
+            this.restoreRemoteDisplayProfileForHost(resolvedHost);
+          }
           this.stageProRemoteIncoming(routeParams, resolvedHost);
           this.syncHarmonyShortcutCapture('host-route-ready');
           if (restoring) {
