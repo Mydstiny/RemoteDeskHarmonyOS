@@ -4,7 +4,7 @@
 
 - E2EE planning only: [resilience and legacy compatibility plan](plans/2026-09-07-e2ee-resilience-legacy-compatibility.md) has 8 stages and 24 acceptance scenarios; independent /root/review_e2ee_plan PLAN-ONLY PASS. Prioritize local fault isolation, healthy-module availability and old enabled-App data. No application code changed; implementation awaits user authorization and the existing Pro task remains active. Current documentation gates: testCompile BUILD SUCCESSFUL in 11 s 295 ms; signed assembleHap BUILD SUCCESSFUL in 16 s 858 ms, both exit 0; Light/diff PASS. Initial sandbox cache EPERM was resolved by an authorized retry; device/data compatibility tests NOT RUN.
 
-- Task: pro-purchase-foundation; branch codex/pro-purchase-foundation; 当前 HEAD `7f5425ba7`，本轮已把诊断面板升级为全应用 Agent：普通问答直连 Provider，设置/诊断/反馈按意图分流，主机列表与远程会话统一 Siri-style island。默认 ArkTS 编译和签名 HAP 已在隔离生成缓存下通过；ohosTest 任务 `00306054` 不存在，真实 Provider/设备/邮件验收待完成。
+- Task: pro-purchase-foundation; branch codex/pro-purchase-foundation; 当前 HEAD `f7e07378`，本轮在全应用 Agent 基础上完成 Siri 逐帧参考的三段式岛屿转场、六点光核、诊断确认卡、结果展开和连续追问输入。默认 ArkTS 编译和签名 HAP 已在隔离生成缓存下通过；ohosTest 任务 `00306054` 不存在，真实 Provider/设备/邮件验收待完成。
 - Phase: full M1-M7/U0-U4 roadmap active; 2026-09-30 Pro 工作区/高级主机管理基础层已实现，设备与跨端验收待补。
 - Pro stages: M1 eaca0300; M2 2db4ef2d; free U1 ca929ceb; M3 62baa018+fea42b9b; M4 02a8cab6+ee45030b; M5 ed537821+27716d2d+c64efc8e. Each implementation/fix increment is separately committed.
 - M3: default plus supplied white/transparent preset PNGs only. Custom upload cancelled. Paid selection uses shared controller/business checks, restoring default stays free; real device acceptance pending.

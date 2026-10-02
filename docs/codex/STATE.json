@@ -3,14 +3,14 @@
   "task": "pro-purchase-foundation",
   "branch": "codex/pro-purchase-foundation",
   "base": "8edc187868e94ed41634e8a6c4c4c072e3a48679",
-  "head": "7f5425ba7",
-  "phase": "Full acceptance active; Pro 诊断与 AI 帮助复审已提交，HAP/真实 Provider/设备/邮件验收待完成",
-  "currentFocus": "Pro 诊断与 AI 帮助：7f5425ba7 已升级为全应用 Agent；普通问答、设置建议、用户确认诊断、开发者邮件和统一 Siri-style island 已实现，真实 Provider/设备/邮件验收待完成",
+  "head": "f7e07378",
+  "phase": "Full acceptance active; Pro 诊断与 AI 帮助的全应用 Agent 与 Siri 逐帧 UI 已提交，HAP/真实 Provider/设备/邮件验收待完成",
+  "currentFocus": "Pro 诊断与 AI 帮助：f7e07378 已补齐六点光核、任务状态胶囊、诊断确认卡、结果展开和连续追问；真实 Provider/设备/邮件验收待完成",
   "status": "in-progress",
   "latestIncrement": {
     "date": "2026-10-02",
-    "commit": "7f5425ba7",
-    "parentCommit": "83833b104",
+    "commit": "f7e07378",
+    "parentCommit": "20e4ab391",
     "scope": [
       "entry/src/main/ets/components/RemoteSessionTopBar.ets",
       "entry/src/main/ets/components/diagnosticAi/AiIsland.ets",
@@ -21,12 +21,14 @@
       "entry/src/main/ets/services/diagnosticAi/DiagnosticAiKnowledgeBase.ets",
       "entry/src/main/ets/services/diagnosticAi/DiagnosticAiProviderService.ets",
       "entry/src/test/DiagnosticAiAgentPolicy.test.ets",
-      "entry/src/test/List.test.ets"
+      "entry/src/test/List.test.ets",
+      "entry/src/main/ets/components/diagnosticAi/XiaoyiOrb.ets",
+      "docs/codex/plans/2026-10-02-pro-diagnostic-ai-account-coding-plan-upgrade.md"
     ],
-    "status": "implemented-full-app-agent-and-siri-island-build-pass-provider-acceptance-pending",
+    "status": "implemented-full-app-agent-siri-frame-stages-build-pass-provider-acceptance-pending",
     "reviewTaskId": "/root/diagnostic_ai_review",
     "reviewResult": "PENDING; implementation follows the earlier review scope, independent review not rerun",
-    "validation": "default@OhosTestCompileArkTS BUILD SUCCESSFUL 10.138 s; ohosTest@OhosTestCompileArkTS unavailable with 00306054; assembleHap BUILD SUCCESSFUL 1 min 3.717 s with SignHap 1.247 s; git diff --check passed; real Provider/device/mail acceptance not run"
+    "validation": "default@OhosTestCompileArkTS BUILD SUCCESSFUL 21.060 s; ohosTest@OhosTestCompileArkTS unavailable with 00306054; assembleHap BUILD SUCCESSFUL 25.589 s with SignHap 2.088 s; git diff --check passed; real Provider/device/mail acceptance not run"
   },
   "next": "按 2026-10-02 账户登录/Coding Plan/UI 计划核验国内 Provider 的官方认证和套餐用途，并在 Phone/Pad/PC 验证 Siri island、问答、设置确认、抓取释放、账号切换、邮件预览和真实模型列表/分析；保留 experimental 直到证据齐全。",
   "blockers": [
