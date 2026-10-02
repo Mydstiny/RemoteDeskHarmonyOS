@@ -3,33 +3,30 @@
   "task": "pro-purchase-foundation",
   "branch": "codex/pro-purchase-foundation",
   "base": "8edc187868e94ed41634e8a6c4c4c072e3a48679",
-  "head": "9614dd09",
-  "phase": "Full acceptance active; Pro 诊断与 AI 帮助 P0/P1 策略与 UI 已实现，独立复核和真实 Provider/条款/账号/设备/邮件验收待完成",
-  "currentFocus": "Pro 诊断与 AI 帮助：独立复核 P1 auth/profile boundary increment；随后仅在官方资料和端点核验后评估 OAuth/设备授权 P2",
+  "head": "d2d67115",
+  "phase": "Full acceptance active; Pro 诊断与 AI 帮助 P1 ordinary API/Coding Plan separation implemented; independent follow-up review and real Provider/account/device/mail acceptance pending",
+  "currentFocus": "Pro 诊断与 AI 帮助：复核 ordinary API/Coding Plan 分离；真实 Provider、官方用途、账号切换实机和设备/邮件验收保持开放",
   "status": "in-progress",
   "latestIncrement": {
     "date": "2026-10-03",
-    "commit": "9614dd09",
-    "parentCommit": "96bdd311",
+    "commit": "d2d67115",
+    "parentCommit": "9614dd09",
     "scope": [
-      "entry/src/main/ets/components/diagnosticAi/DiagnosticAiAssistantPanel.ets",
       "entry/src/main/ets/components/diagnosticAi/DiagnosticAiSettingsSheet.ets",
-      "entry/src/main/ets/services/diagnosticAi/DiagnosticAiProviderService.ets",
       "entry/src/main/ets/services/diagnosticAi/DiagnosticAiAuthPolicy.ets",
       "entry/src/main/ets/services/diagnosticAi/DiagnosticAiBillingPolicy.ets",
-      "entry/src/main/ets/services/diagnosticAi/DiagnosticAiModels.ets",
-      "entry/src/main/ets/services/diagnosticAi/DiagnosticAiProfileStore.ets",
       "entry/src/main/ets/services/diagnosticAi/DiagnosticAiProviderCatalog.ets",
-      "entry/src/main/ets/services/diagnosticAi/DiagnosticAiSettingsPolicy.ets",
       "scripts/tests/test_diagnostic_ai_settings.cjs",
-      "docs/codex/plans/2026-10-02-pro-diagnostic-ai-account-coding-plan-upgrade.md"
+      "docs/codex/plans/2026-10-02-pro-diagnostic-ai-account-coding-plan-upgrade.md",
+      "docs/codex/CURRENT.md",
+      "docs/codex/QUEUE.md"
     ],
-    "status": "implemented-p1-auth-profile-and-provider-request-boundaries",
+    "status": "ordinary-api-coding-plan-separation",
     "reviewTaskId": "/root/diagnostic_ai_review",
-    "reviewResult": "PENDING; independent P1 review required",
-    "validation": "bundled DevEco TypeScript diagnostic settings test 6/6 PASS; latest isolated-cache default@OhosTestCompileArkTS and signed assembleHap both exit 0; Light compliance PASS; ProviderService-fix HAP f93a064a73d3573b8e80cc6535bcadd16baf7c814ae6fb6072b56937d4eb0b30 installed with hdc install -r on 127.0.0.1:5555 and 192.168.31.156:38451; 192.168.31.118:40123 offline during final update; optional ohosTest 00306054 unavailable; real Provider/terms/account/device visual/mail acceptance not run"
+    "reviewResult": "PENDING; independent follow-up review required",
+    "validation": "bundled DevEco TypeScript diagnostic settings test 7 groups PASS; default@OhosTestCompileArkTS BUILD SUCCESSFUL; signed assembleHap BUILD SUCCESSFUL; git diff --check PASS; Light compliance PASS; signed HAP SHA-256 0e551081daa13646a0c1934531222f1205988d3a544e4a61f6fd1d32a47fe40f installed with hdc install -r on 127.0.0.1:5555 and 192.168.31.156:38451; 192.168.31.118:40123 offline; optional ohosTest 00306054 unavailable; real Provider/official Coding Plan/account/device visual/mail acceptance not run"
   },
-  "next": "先完成 /root/diagnostic_ai_review 对 96bdd311/9614dd09 的独立复核并修复发现；OAuth/设备授权只在官方资料和端点核验后接入。真实 Provider、官方用途、账号切换实机、设备视觉、邮件和生产权益仍保持开放边界。",
+  "next": "先完成 /root/diagnostic_ai_review 对 d2d67115 的独立复核并修复发现；复核通过后同步安全远端分支。真实 Provider、官方用途、账号切换实机、设备视觉、邮件和生产权益仍保持开放边界。",
   "blockers": [
     "Pad backup and Debug migration complete; same-account sandbox restore PASS without another payment. Remaining offline/cross-account and full protocol/device matrix remain open.",
     "M3/U0-U4 device matrix and M4 PC real Share Kit/SFTP file-integrity acceptance remain unverified.",
@@ -41,7 +38,7 @@
     "AI 会话管理和继续对话已完成代码门禁并安装到两台设备；需在设备上确认六行诊断卡片不再被反馈项截断、会话点击弹窗布局、原订阅恢复和实际 Provider 响应。",
     "本轮新增 typed appActions、settingProposals 与 execute/floating/inline 模式，需用真实 Provider 验证结构化动作/设置返回、敏感确认和三端执行动画；构建不能证明真实模型会返回动作或网络可达。",
     "账户/Coding Plan P0 尚未完成独立复核；P1 OAuth/设备授权、官方用途和真实 Provider 条款核验未完成，Coding Plan 保持 review_required/experimental.",
-    "P1 auth/profile and Provider request-boundary increments 96bdd311/9614dd09 independently PASS; overall merge still waits on the preserved user-owned Pro files and external Provider/account/device/mail acceptance."
+    "P1 auth/profile and Provider request-boundary increments 96bdd311/9614dd09 PASS; ordinary API/Coding Plan separation d2d67115 is awaiting independent follow-up review; overall merge still waits on preserved user-owned Pro files and external Provider/account/device/mail acceptance."
   ],
   "planPaths": [
     "docs/codex/plans/2026-09-06-pro-purchase-foundation.md",
