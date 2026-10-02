@@ -515,3 +515,13 @@ Provider 的结构化响应包含 `appActions`，解析器只接受动作注册�
 `settingProposals` 另有独立的可回滚布尔设置目录。应用在写入前读取实时 `AppStorage`，若 Provider 携带的 `currentValue` 已过期则拒绝应用并要求重新询问；凭据、密钥、主机地址、代理、TLS、付款和任意命令永远不进入该目录。
 
 新设置/协议/会话功能的 Definition of Done 必须包括：动作 ID、展示标签、能力门控、确认策略、知识库步骤、GuideContentRegistry 教程、隐私说明、用量归属和 Phone/Pad/PC 浮窗验收用例。个性化和用量弹窗必须按可用视口高度计算原生 Sheet 高度，内部只使用一个滚动容器，禁止固定高度截断设置项或让内容溢出遮罩层。
+
+## 18. 2026-10-02 P0 实现记录
+
+在当前活动分支上，P0 已从计划落到代码 checkpoint `56895bc2`（前一 UI/catalog checkpoint 为 `4884e28e`）：
+
+- `DiagnosticAiProviderManifest` 增加认证能力、计费模式、允许用途、官方工具/交互式要求、条款版本、数据地区和 Coding Plan 模型白名单；既有普通 API Key Provider 保持 `diagnostic_assistant` 允许用途。
+- 新增 `DiagnosticAiAuthPolicy`、`DiagnosticAiBillingPolicy` 和 `DiagnosticAiUseCasePolicy`。Agent 发起诊断请求前统一检查认证方式、套餐用途、授权状态、条款版本、数据地区和 consent；未知认证、用途不匹配、官方工具专用或 Coding Plan 未核验时 fail-closed。
+- 旧 API Key profile 在 owner-scoped ProfileStore 读取时迁移为显式 `api_key`/`payg_api`/`connected` 元数据，并生成 legacy consent 标记；不会读取密码、Cookie 或网页 Session。
+
+本阶段验证：`default@OhosTestCompileArkTS` BUILD SUCCESSFUL（38.347 s），签名 `assembleHap` BUILD SUCCESSFUL（51.381 s），会话/价格/路由与 P0 auth/billing/use-case 策略测试 PASS；`ohosTest@OhosTestCompileArkTS` 任务 `00306054` 仍未注册。P0 HAP 需要重新安装后再做设备回读；真实 Provider 官方条款/用途、账户授权、设备视觉/输入、邮件和生产权益仍未验收。下一步是 P1 认证方式选择 UI、普通 API/Token Plan 与专用 Coding Plan Key 分离及条款同意记录。

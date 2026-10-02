@@ -6,7 +6,7 @@ Updated: 2026-10-02 Asia/Shanghai
 
 - 电脑端 RemoteDesk 插件：Codex/DSH 二维码默认、`remotedesk://pair` 链接回退和 App 解析已实现；本机 Codex/DSH 服务与 loopback 控制面板可达，Claude Code 仅完成 2.1.286 probe-only 骨架，等待独立协议/权限/会话验收后再做功能对齐。
 
-- Pro「诊断与 AI 帮助」全应用 Agent checkpoint `2e6a0c73` 已提交：在 `f4a7ab01` 基础上扩展可回滚 settingProposals 目录（协议音频/剪贴板/驱动器、诊断、显示/输入手势、沉浸光感和主机列表偏好），应用写入前校验实时 AppStorage；TLS、证书预检、地址、凭据、密钥和代理继续排除。`default@OhosTestCompileArkTS` 7.319 s、签名 `assembleHap` 10.295 s 通过；`ohosTest@OhosTestCompileArkTS` 任务 `00306054` 不存在；AI entries 4/4、lifecycle 8/8、final boundaries/races PASS，动作注册 81/81 映射，UI parity 为声明检查 25/26。最新 HAP 已安装到 MatePad Mini 与 Mate 80 Pro Max；真实 Provider/设备/邮件验收未完成，继续保持 experimental。详见[基础计划](plans/2026-10-01-pro-diagnostic-ai-help-upgrade.md)与[账户登录/Coding Plan/UI 计划](plans/2026-10-02-pro-diagnostic-ai-account-coding-plan-upgrade.md)。
+- Pro「诊断与 AI 帮助」已到 `56895bc2`：`4884e28e` 完成自适应设置/会话摘要/价格表，`56895bc2` 完成账户/Coding Plan P0 Manifest 与认证、计费、用途 fail-closed 策略；双 Hvigor 门禁通过（38.347 s / 51.381 s），定向会话/价格/策略测试 PASS。P1 待做认证方式 UI、API/Coding Plan Key 分离和条款同意记录；真实 Provider、官方用途、账号、设备/邮件验收未完成，继续保持 experimental。
 
 - RDP/RustDesk 高级显示计划：[2026-10-01 计划](plans/2026-10-01-rdp-rustdesk-pro-display-resolution-scale-plan.md) 的 P1 运行时闭环已实现，`b69d3c9f` 经 `/root/review_display_final` PASS，并补齐 marker 失败 fail-closed 回归；RDP/RustDesk profile 已按账号×主机×协议×设备隔离，RustDesk 能力/Pro/peer 权限门控保持封闭。编译、assembleHap、显示选择 5/5、Pro entry/runtime、Light/diff/state PASS；ohosTest 为 00306054。下一步是实际 Windows/RustDesk peer/设备矩阵与 Release/PR 验收。
 
