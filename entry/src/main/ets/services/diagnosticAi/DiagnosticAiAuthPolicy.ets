@@ -24,6 +24,9 @@ export interface DiagnosticAiAuthDecision { ok: boolean; code: string; message: 
 export function diagnosticAiAuthDecision(manifest: DiagnosticAiProviderManifest,
   profile: DiagnosticAiProviderProfile): DiagnosticAiAuthDecision {
   const mode: DiagnosticAiAuthMode = diagnosticAiProfileAuthMode(profile);
+  if (profile.manifestVersion !== manifest.schemaVersion) {
+    return { ok: false, code: 'MANIFEST_VERSION_STALE', message: 'Provider 能力声明已更新，请重新保存并确认当前配置' };
+  }
   if (!diagnosticAiAuthModeAllowed(manifest, mode)) {
     return { ok: false, code: 'AUTH_MODE_UNSUPPORTED', message: '当前 Provider 未声明允许该认证方式' };
   }
@@ -32,6 +35,10 @@ export function diagnosticAiAuthDecision(manifest: DiagnosticAiProviderManifest,
   }
   if (mode === 'coding_plan_key' && manifest.codingPlanModelIds.length === 0) {
     return { ok: false, code: 'CODING_PLAN_MODEL_LIST_REQUIRED', message: 'Coding Plan 尚未登记模型白名单' };
+  }
+  if (mode === 'coding_plan_key' &&
+    (profile.modelId.trim() === '' || manifest.codingPlanModelIds.indexOf(profile.modelId.trim()) < 0)) {
+    return { ok: false, code: 'CODING_PLAN_MODEL_NOT_ALLOWED', message: '当前模型不在供应商登记的 Coding Plan 白名单中' };
   }
   return { ok: true, code: '', message: '' };
 }

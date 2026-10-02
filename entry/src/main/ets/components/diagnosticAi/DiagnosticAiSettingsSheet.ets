@@ -4,8 +4,8 @@ import { AppConfig, Palette, buildDark, buildLight } from '../../common/Theme';
 import { AppSettingsActionRow } from '../AppSettingsActionRow';
 import { AppUiMetrics } from '../../common/AppUiMetrics';
 import { DiagnosticAiAssistantPanel } from './DiagnosticAiAssistantPanel';
-import { DiagnosticAiModelInfo, DiagnosticAiModelPriceEntry, DiagnosticAiProviderManifest, DiagnosticAiProviderProfile, DiagnosticAiSettings } from '../../services/diagnosticAi/DiagnosticAiModels';
-import { diagnosticAiHarmonyLocalDeviceSupported, diagnosticAiProviderIsHarmonyLocal, diagnosticAiProviderManifests, diagnosticAiProviderSupportsDevice, HARMONY_LOCAL_MODEL_ID } from '../../services/diagnosticAi/DiagnosticAiProviderCatalog';
+import { DiagnosticAiAuthMode, DiagnosticAiModelInfo, DiagnosticAiModelPriceEntry, DiagnosticAiProviderManifest, DiagnosticAiProviderProfile, DiagnosticAiSettings } from '../../services/diagnosticAi/DiagnosticAiModels';
+import { diagnosticAiHarmonyLocalDeviceSupported, diagnosticAiProviderIsHarmonyLocal, diagnosticAiProviderManifestVerified, diagnosticAiProviderManifests, diagnosticAiProviderSupportsDevice, HARMONY_LOCAL_MODEL_ID } from '../../services/diagnosticAi/DiagnosticAiProviderCatalog';
 import { validateDiagnosticAiEndpoint } from '../../services/diagnosticAi/DiagnosticAiEndpointPolicy';
 import { DiagnosticAiProfileStore } from '../../services/diagnosticAi/DiagnosticAiProfileStore';
 import { DiagnosticAiProviderService, diagnosticAiPrivacySummary } from '../../services/diagnosticAi/DiagnosticAiProviderService';
@@ -57,8 +57,10 @@ export struct DiagnosticAiSettingsSheet {
   @Prop section: number = 0;
   @State manifests: DiagnosticAiProviderManifest[] = [];
   @State profiles: DiagnosticAiProviderProfile[] = [];
-  @State settings: DiagnosticAiSettings = { selectedProviderId: '', selectedModelId: '', showOrbOnHostPage: false, reducedMotion: false, retentionDays: 7 };
+  @State settings: DiagnosticAiSettings = { selectedProviderId: '', selectedModelId: '', selectedAuthMode: '', showOrbOnHostPage: false, reducedMotion: false, retentionDays: 7 };
   @State selectedProvider: string = 'deepseek';
+  @State authModeDraft: DiagnosticAiAuthMode = 'api_key';
+  @State termsAcceptedDraft: boolean = false;
   @State endpoint: string = '';
   @State keyText: string = '';
   @State model: string = '';
@@ -88,13 +90,49 @@ export struct DiagnosticAiSettingsSheet {
   private readonly conversationStore: DiagnosticAiConversationStore = new DiagnosticAiConversationStore();
   private store: DiagnosticAiProfileStore = new DiagnosticAiProfileStore();
   private owner: string = 'device-local';
+  private accountUnsubscribe: (() => void) | null = null;
 
   private pal(): Palette { return this.theme === 'light' ? buildLight(this.accent) : buildDark(this.accent); }
+
+  private authModeLabel(mode: DiagnosticAiAuthMode): string {
+    if (mode === 'api_key') { return 'API Key'; }
+    if (mode === 'coding_plan_key') { return 'Coding Plan 专用 Key'; }
+    if (mode === 'oauth_pkce') { return '官方账户登录'; }
+    if (mode === 'device_authorization') { return '设备授权'; }
+    if (mode === 'official_cli_bridge') { return '官方 CLI Bridge'; }
+    if (mode === 'none') { return '本机/端侧'; }
+    return '暂不可用';
+  }
+
+  private selectedProfileForAuthMode(): DiagnosticAiProviderProfile | undefined {
+    return this.profiles.find((value: DiagnosticAiProviderProfile): boolean =>
+      value.providerId === this.selectedProvider && value.authMode === this.authModeDraft);
+  }
+
+  private authModesForSelected(): DiagnosticAiAuthMode[] {
+    const manifest: DiagnosticAiProviderManifest | undefined = this.selectedManifest();
+    return manifest === undefined ? [] : manifest.authModes.slice();
+  }
 
   aboutToAppear(): void {
     try { this.deviceType = deviceInfo.deviceType; } catch (_error) { this.deviceType = 'unknown'; }
     const scope = AccountSessionCoordinator.getInstance().currentScope();
-    this.owner = scope.ownerScopeId.trim() === '' ? 'device-local' : scope.ownerScopeId.trim();
+    this.reloadScope(scope.ownerScopeId);
+    if (this.accountUnsubscribe === null) {
+      this.accountUnsubscribe = AccountSessionCoordinator.getInstance().onChange((nextScope): void => {
+        this.reloadScope(nextScope.ownerScopeId);
+        this.message = '账号作用域已切换，已重新加载 AI 配置；旧密钥不会继续使用';
+      });
+    }
+  }
+
+  aboutToDisappear(): void {
+    if (this.accountUnsubscribe !== null) { this.accountUnsubscribe(); this.accountUnsubscribe = null; }
+  }
+
+  private reloadScope(ownerScopeId: string): void {
+    this.owner = ownerScopeId.trim() === '' ? 'device-local' : ownerScopeId.trim();
+    this.selectedProvider = 'deepseek'; this.authModeDraft = 'api_key'; this.termsAcceptedDraft = false;
     this.manifests = diagnosticAiProviderManifests(); this.store.init(getContext(this) as common.UIAbilityContext, this.owner);
     this.conversationStore.init(getContext(this) as common.UIAbilityContext, this.owner);
     this.modelCatalog.init(getContext(this) as common.UIAbilityContext, this.owner);
@@ -117,6 +155,12 @@ export struct DiagnosticAiSettingsSheet {
     this.model = this.settings.selectedModelId;
     const selected = this.manifests.find((value: DiagnosticAiProviderManifest): boolean => value.providerId === this.selectedProvider);
     this.endpoint = selected?.endpoint ?? '';
+    const selectedProfile = this.profiles.find((value: DiagnosticAiProviderProfile): boolean =>
+      value.providerId === this.selectedProvider &&
+      (this.settings.selectedAuthMode === '' || value.authMode === this.settings.selectedAuthMode));
+    const savedAuthMode: DiagnosticAiAuthMode | undefined = this.settings.selectedAuthMode === '' ? undefined : this.settings.selectedAuthMode;
+    this.authModeDraft = selectedProfile?.authMode ?? savedAuthMode ?? selected?.authModes[0] ?? 'api_key';
+    if (selectedProfile !== undefined) { this.termsAcceptedDraft = selectedProfile.consentId !== '' && selectedProfile.consentAt > 0; }
     this.resumeSessionId = this.initialResumeSessionId.trim();
   }
 
@@ -128,6 +172,7 @@ export struct DiagnosticAiSettingsSheet {
 
   private providerAvailable(manifest: DiagnosticAiProviderManifest): boolean {
     if (!diagnosticAiProviderSupportsDevice(manifest, this.deviceType)) { return false; }
+    if (!diagnosticAiProviderManifestVerified(manifest)) { return false; }
     return diagnosticAiProviderIsHarmonyLocal(manifest.providerId) ||
       (manifest.endpoint !== '' && manifest.chatPath !== '');
   }
@@ -145,7 +190,10 @@ export struct DiagnosticAiSettingsSheet {
       this.message = '该 Provider 已列入路线图，当前版本尚未开放请求适配';
       return;
     }
-    this.endpoint = manifest?.endpoint ?? ''; this.availableModels = [];
+    this.endpoint = manifest?.endpoint ?? ''; this.availableModels = []; this.keyText = ''; this.termsAcceptedDraft = false;
+    const existing = this.profiles.find((value: DiagnosticAiProviderProfile): boolean => value.providerId === id);
+    this.authModeDraft = existing?.authMode ?? manifest?.authModes[0] ?? 'api_key';
+    if (existing !== undefined) { this.model = existing.modelId; this.termsAcceptedDraft = existing.consentId !== '' && existing.consentAt > 0; }
     if (manifest !== undefined && diagnosticAiProviderIsHarmonyLocal(id)) { this.model = HARMONY_LOCAL_MODEL_ID; }
     else { this.model = ''; }
     this.message = '';
@@ -155,27 +203,51 @@ export struct DiagnosticAiSettingsSheet {
     if (!this.providerAllowed() || this.busy) { return; }
     const manifest = this.manifests.find((value: DiagnosticAiProviderManifest): boolean => value.providerId === this.selectedProvider);
     const localProvider: boolean = manifest !== undefined && diagnosticAiProviderIsHarmonyLocal(manifest.providerId);
-    if (manifest === undefined || (!localProvider && (manifest.endpoint === '' || manifest.chatPath === ''))) {
+    if (manifest === undefined || !this.providerAvailable(manifest) || (!localProvider && (manifest.endpoint === '' || manifest.chatPath === ''))) {
       this.message = '该 Provider 尚未完成请求适配'; return;
     }
     if (localProvider && !diagnosticAiHarmonyLocalDeviceSupported(this.deviceType)) {
       this.message = '鸿蒙端侧小模型当前仅支持 PC/2in1；手机和 Pad 暂不可用，后续开放后将上线。'; return;
+    }
+    if (manifest === undefined || manifest.authModes.indexOf(this.authModeDraft) < 0 || this.authModeDraft === 'unsupported') {
+      this.message = '该认证方式未被 Provider Manifest 声明，已阻止保存'; return;
+    }
+    if (this.authModeDraft === 'oauth_pkce' || this.authModeDraft === 'device_authorization' || this.authModeDraft === 'official_cli_bridge') {
+      this.message = '该官方授权方式尚未完成端点核验，暂不能保存'; return;
+    }
+    if (this.authModeDraft === 'coding_plan_key' &&
+      (manifest.billingMode !== 'coding_plan' || manifest.codingPlanModelIds.length === 0 ||
+        manifest.allowedUseCases.indexOf('diagnostic_assistant') < 0 || manifest.requiresOfficialTool || manifest.termsVersion === '' ||
+        manifest.codingPlanModelIds.indexOf(this.model.trim()) < 0)) {
+      this.message = 'Coding Plan 尚未完成诊断助手用途核验，不能保存为可用配置'; return;
+    }
+    if (this.authModeDraft === 'coding_plan_key' && this.endpoint.trim() !== manifest.endpoint.trim()) {
+      this.message = 'Coding Plan 必须使用 Manifest 声明的专用 Base URL'; return;
+    }
+    if (!localProvider && this.keyText.trim() === '' && !this.selectedHasSecret()) {
+      this.message = '请先输入当前认证方式的 Key；不同认证方式不会共用密钥'; return;
+    }
+    if (!localProvider && !this.termsAcceptedDraft) {
+      this.message = '请先确认当前 Provider 条款版本和诊断助手数据用途'; return;
     }
     if (!localProvider) {
       const endpointDecision = validateDiagnosticAiEndpoint(this.endpoint, manifest.adapterFamily, false);
       if (!endpointDecision.ok) { this.message = '保存失败：' + endpointDecision.message; return; }
     }
     this.busy = true; this.message = '';
-    const existing = this.profiles.find((value: DiagnosticAiProviderProfile): boolean => value.providerId === manifest.providerId);
+    const existing = this.profiles.find((value: DiagnosticAiProviderProfile): boolean =>
+      value.providerId === manifest.providerId && value.authMode === this.authModeDraft);
     const nextRevision: number = existing === undefined ? 1 : Math.max(1, existing.revision + 1);
-    const profile: DiagnosticAiProviderProfile = { id: this.selectedProvider + '-' + this.owner.slice(-8), owner: this.owner,
+    const profile: DiagnosticAiProviderProfile = { id: this.selectedProvider + '-' + this.authModeDraft + '-' + this.owner.slice(-8), owner: this.owner,
       providerId: manifest.providerId, displayName: manifest.displayName, endpoint: localProvider ? '' : this.endpoint.trim(),
       modelId: localProvider ? HARMONY_LOCAL_MODEL_ID : this.model.trim(),
-      authKind: manifest.authKind, authHeader: manifest.authHeader, authMode: localProvider ? 'none' : 'api_key',
+      authKind: manifest.authKind, authHeader: manifest.authHeader, authMode: localProvider ? 'none' : this.authModeDraft,
       billingMode: manifest.billingMode, allowedUseCases: manifest.allowedUseCases.slice(),
       requiresInteractive: manifest.requiresInteractive, requiresOfficialTool: manifest.requiresOfficialTool,
       entitlementEndpoint: manifest.entitlementEndpoint, termsVersion: manifest.termsVersion, dataRegion: manifest.dataRegion,
-      authorizationStatus: 'connected', consentId: 'api-key-' + Date.now().toString(), consentAt: Date.now(),
+      authorizationStatus: localProvider || this.keyText.trim() !== '' || this.selectedHasSecret() ? 'connected' : 'unconfigured',
+      consentId: localProvider || this.termsAcceptedDraft ? 'diagnostic-assistant:' + manifest.providerId + ':' + manifest.termsVersion : '',
+      consentAt: localProvider || this.termsAcceptedDraft ? Date.now() : 0,
       secretRef: '', secretFingerprint: '', manifestVersion: manifest.schemaVersion,
       privacy: { region: manifest.privacy.region, retention: manifest.privacy.retention,
         trainingUse: manifest.privacy.trainingUse, policyRef: manifest.privacy.policyRef },
@@ -184,6 +256,7 @@ export struct DiagnosticAiSettingsSheet {
     else {
       this.settings.selectedProviderId = profile.providerId;
       this.settings.selectedModelId = profile.modelId;
+      this.settings.selectedAuthMode = profile.authMode;
       if (!this.store.saveSettings(this.settings)) {
         this.message = 'Provider 已写入，但选择状态持久化失败，请重试保存';
         this.busy = false;
@@ -200,13 +273,13 @@ export struct DiagnosticAiSettingsSheet {
       }
       this.keyText = ''; this.profiles = this.store.list();
       this.message = localProvider ? '鸿蒙端侧小模型配置已保存；点击“检测端侧模型”确认系统模型可用。' :
-        'Provider 配置已保存；密钥只保存在本机安全存储。';
+        this.authModeLabel(this.authModeDraft) + '配置已保存；密钥只保存在本机安全存储。';
     }
     this.busy = false;
   }
 
   private async fetchModels(): Promise<void> {
-    const profile = this.store.list().find((value: DiagnosticAiProviderProfile): boolean => value.providerId === this.selectedProvider);
+    const profile = this.selectedProfileForAuthMode();
     if (profile === undefined || this.busy) { this.message = '请先保存 Provider 配置'; return; }
     this.busy = true; this.message = '正在拉取模型列表…';
     try {
@@ -254,12 +327,12 @@ export struct DiagnosticAiSettingsSheet {
   }
 
   private persistModelSelection(modelId: string): boolean {
-    const profile = this.store.list().find((value: DiagnosticAiProviderProfile): boolean => value.providerId === this.selectedProvider);
+    const profile = this.selectedProfileForAuthMode();
     if (profile === undefined || modelId.trim() === '') { return false; }
     profile.modelId = modelId.trim();
     if (!this.store.saveProfile(profile, '')) { return false; }
     const next = this.store.settingsSnapshot();
-    next.selectedProviderId = profile.providerId; next.selectedModelId = profile.modelId;
+    next.selectedProviderId = profile.providerId; next.selectedModelId = profile.modelId; next.selectedAuthMode = profile.authMode;
     if (!this.store.saveSettings(next)) { return false; }
     this.settings = next; this.profiles = this.store.list(); return true;
   }
@@ -316,13 +389,18 @@ export struct DiagnosticAiSettingsSheet {
   }
 
   private selectedUsageProvider(): DiagnosticAiProviderProfile | undefined {
-    return this.profiles.find((item: DiagnosticAiProviderProfile): boolean => item.providerId === this.settings.selectedProviderId && item.modelId === this.settings.selectedModelId) ??
-      this.profiles.find((item: DiagnosticAiProviderProfile): boolean => item.providerId === this.settings.selectedProviderId) ?? this.profiles[0];
+    const selected: DiagnosticAiProviderProfile | undefined = this.profiles.find((item: DiagnosticAiProviderProfile): boolean =>
+      item.providerId === this.settings.selectedProviderId && item.modelId === this.settings.selectedModelId &&
+      (this.settings.selectedAuthMode === '' || item.authMode === this.settings.selectedAuthMode));
+    if (selected !== undefined) { return selected; }
+    const candidates: DiagnosticAiProviderProfile[] = this.profiles.filter((item: DiagnosticAiProviderProfile): boolean => item.modelId !== '');
+    return candidates.length === 1 ? candidates[0] : undefined;
   }
 
   private useProviderForNewRequests(profile: DiagnosticAiProviderProfile): void {
     const next: DiagnosticAiSettings = {
       selectedProviderId: profile.providerId, selectedModelId: profile.modelId,
+      selectedAuthMode: profile.authMode,
       showOrbOnHostPage: true, reducedMotion: this.settings.reducedMotion, retentionDays: this.settings.retentionDays
     };
     if (this.store.saveSettings(next)) {
@@ -340,13 +418,30 @@ export struct DiagnosticAiSettingsSheet {
     return manifest !== undefined && this.providerAvailable(manifest);
   }
   private savedProfile(): DiagnosticAiProviderProfile | undefined {
-    return this.profiles.find((value: DiagnosticAiProviderProfile): boolean =>
-      value.providerId === this.settings.selectedProviderId) ?? this.profiles[0];
+    const selected: DiagnosticAiProviderProfile | undefined = this.profiles.find((value: DiagnosticAiProviderProfile): boolean =>
+      value.providerId === this.settings.selectedProviderId &&
+      (this.settings.selectedAuthMode === '' || value.authMode === this.settings.selectedAuthMode));
+    if (selected !== undefined) { return selected; }
+    return this.profiles.length === 1 ? this.profiles[0] : undefined;
   }
   /** The selected provider already has a stored key, so an empty field keeps it (saveProfile reuses the same ref). */
   private selectedHasSecret(): boolean {
     return this.profiles.some((value: DiagnosticAiProviderProfile): boolean =>
-      value.providerId === this.selectedProvider && value.secretFingerprint !== '');
+      value.providerId === this.selectedProvider && value.authMode === this.authModeDraft && value.secretFingerprint !== '');
+  }
+
+  private revokeProfile(profile: DiagnosticAiProviderProfile): void {
+    if (this.busy || !this.store.removeProfile(profile.id)) {
+      this.message = '删除/撤销 Provider 配置失败，请稍后重试'; return;
+    }
+    this.profiles = this.store.list();
+    if (this.settings.selectedProviderId === profile.providerId &&
+      (this.settings.selectedAuthMode === '' || this.settings.selectedAuthMode === profile.authMode)) {
+      const next = this.store.settingsSnapshot();
+      next.selectedProviderId = ''; next.selectedModelId = ''; next.selectedAuthMode = '';
+      this.store.saveSettings(next); this.settings = next; this.model = ''; this.authModeDraft = 'api_key';
+    }
+    this.keyText = ''; this.termsAcceptedDraft = false; this.message = '已删除本机 Provider 配置并撤销其密钥';
   }
   private providerTag(manifest: DiagnosticAiProviderManifest): string {
     if (diagnosticAiProviderIsHarmonyLocal(manifest.providerId) && !this.providerAvailable(manifest)) {
@@ -465,6 +560,36 @@ export struct DiagnosticAiSettingsSheet {
       Text(label).fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
       if (hint.length > 0) { Text(hint).fontSize(11).fontColor(this.pal().text3) }
     }.alignItems(HorizontalAlign.Start).width('100%')
+  }
+
+  @Builder private authModeSection() {
+    if (this.authModesForSelected().length > 0) {
+      Text('连接方式').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
+      if (this.authModesForSelected().length > 1) {
+        Flex({ wrap: FlexWrap.Wrap }) {
+          ForEach(this.authModesForSelected(), (mode: DiagnosticAiAuthMode): void => {
+            Text(this.authModeLabel(mode)).fontSize(12)
+              .fontColor(this.authModeDraft === mode ? Color.White : this.pal().text)
+              .padding({ left: 10, right: 10, top: 7, bottom: 7 }).margin({ right: 7, bottom: 6 }).borderRadius(14)
+              .backgroundColor(this.authModeDraft === mode ? this.accent : this.pal().surface)
+              .onClick((): void => {
+                this.authModeDraft = mode; this.keyText = ''; this.availableModels = [];
+                const saved = this.profiles.find((value: DiagnosticAiProviderProfile): boolean =>
+                  value.providerId === this.selectedProvider && value.authMode === mode);
+                this.termsAcceptedDraft = saved !== undefined && saved.consentId !== '' && saved.consentAt > 0;
+                if (mode === 'coding_plan_key') { this.endpoint = this.selectedManifest()?.endpoint ?? ''; }
+              })
+          }, (mode: DiagnosticAiAuthMode): string => 'auth-mode-' + mode)
+        }.width('100%')
+      } else {
+        Text('认证方式：' + this.authModeLabel(this.authModeDraft) + ' · 由 Provider Manifest 声明')
+          .fontSize(11).fontColor(this.pal().text3).width('100%')
+      }
+      Text(this.authModeDraft === 'coding_plan_key'
+        ? '这是供应商专用 Coding Plan Key。只有 Manifest 明确允许 diagnostic_assistant 时才会保存和发送。'
+        : 'RemoteDesktop 不接收账户密码、Cookie 或网页 Session；官方账户授权将在端点核验后开放。')
+        .fontSize(11).lineHeight(16).fontColor(this.pal().text3).width('100%')
+    }
   }
 
   @Builder private usageAndHistorySection() {
@@ -647,6 +772,7 @@ export struct DiagnosticAiSettingsSheet {
         }.width('100%')
         this.sectionLabel('连接信息')
         Column({ space: 10 }) {
+          this.authModeSection()
           if (diagnosticAiProviderIsHarmonyLocal(this.selectedProvider)) {
             this.field('鸿蒙端侧小模型', '由 HarmonyOS 系统管理，不需要服务地址、API Key 或模型 ID')
             Row({ space: 10 }) {
@@ -661,14 +787,27 @@ export struct DiagnosticAiSettingsSheet {
               .enabled(!this.busy && this.selectedProviderSupported())
               .onClick((): void => { void this.fetchModels(); })
           } else {
-            this.field('服务地址', '可改为兼容的 HTTPS 地址')
+            this.field(this.authModeDraft === 'coding_plan_key' ? 'Coding Plan 专用 Base URL' : '服务地址',
+              this.authModeDraft === 'coding_plan_key' ? '仅使用 Provider Manifest 声明的专用地址，不会把专用 Key 发到自定义端点' : '可改为兼容的 HTTPS 地址')
             TextInput({ placeholder: 'https://', text: this.endpoint }).height(44).fontSize(14)
               .backgroundColor(this.pal().surface).borderRadius(12)
+              .enabled(this.authModeDraft !== 'coding_plan_key')
               .onChange((value: string): void => { this.endpoint = value; })
-            this.field('API Key', '只保存在本机安全存储，不会同步或写入日志')
-            TextInput({ placeholder: this.selectedHasSecret() ? '已保存；留空则保持不变' : '粘贴 API Key', text: this.keyText })
+            this.field(this.authModeDraft === 'coding_plan_key' ? 'Coding Plan 专用 Key' : 'API Key',
+              this.authModeDraft === 'coding_plan_key' ? '与普通 API Key 分开保存；仅用于已核验的 Coding Plan' : '只保存在本机安全存储，不会同步或写入日志')
+            TextInput({ placeholder: this.selectedHasSecret() ? '已保存；留空则保持不变' :
+              (this.authModeDraft === 'coding_plan_key' ? '粘贴 Coding Plan 专用 Key' : '粘贴 API Key'), text: this.keyText })
               .height(44).fontSize(14).type(InputType.Password).backgroundColor(this.pal().surface).borderRadius(12)
               .onChange((value: string): void => { this.keyText = value; })
+            if (this.authModeDraft !== 'none') {
+              Row({ space: 8 }) {
+                Checkbox().select(this.termsAcceptedDraft).selectedColor(this.accent)
+                  .onChange((value: boolean): void => { this.termsAcceptedDraft = value; })
+                Text('我已查看 Provider 条款版本 ' + (this.selectedManifest()?.termsVersion ?? '待核验') +
+                  '，确认当前诊断助手用途和数据处理地区已向我说明。')
+                  .fontSize(11).lineHeight(16).fontColor(this.pal().text3).layoutWeight(1)
+              }.width('100%')
+            }
             this.field('模型', '保存服务后可拉取可用模型列表')
             Row({ space: 8 }) {
               TextInput({ placeholder: '模型 ID', text: this.model }).height(44).fontSize(14).layoutWeight(1)
@@ -696,10 +835,16 @@ export struct DiagnosticAiSettingsSheet {
         if (this.profiles.length > 1) {
           this.sectionLabel('已保存的服务')
           ForEach(this.profiles, (profile: DiagnosticAiProviderProfile): void => {
-            AppSettingsActionRow({ title: profile.displayName, detail: profile.modelId === '' ? '已配置 · 尚未选择模型' :
-              '模型：' + profile.modelId + ' · ' + diagnosticAiPrivacySummary(profile), isEnabled: true,
-              onAction: (): void => { this.selectedProvider = profile.providerId; this.model = profile.modelId;
-                this.endpoint = profile.endpoint; this.availableModels = []; } })
+            Row({ space: 8 }) {
+              AppSettingsActionRow({ title: profile.displayName, detail: (profile.modelId === '' ? '已配置 · 尚未选择模型' :
+                '模型：' + profile.modelId) + ' · ' + this.authModeLabel(profile.authMode) + ' · ' + diagnosticAiPrivacySummary(profile), isEnabled: true,
+                onAction: (): void => { this.selectedProvider = profile.providerId; this.authModeDraft = profile.authMode;
+                  this.termsAcceptedDraft = profile.consentId !== '' && profile.consentAt > 0;
+                this.model = profile.modelId;
+                  this.endpoint = profile.endpoint; this.availableModels = []; } }).layoutWeight(1)
+              Button('删除').height(40).fontSize(12).fontColor(this.pal().danger).backgroundColor(this.pal().surface)
+                .borderRadius(12).onClick((): void => { this.revokeProfile(profile); })
+            }.width('100%')
           }, (profile: DiagnosticAiProviderProfile): string => profile.id)
         }
         Row({ space: 12 }) {

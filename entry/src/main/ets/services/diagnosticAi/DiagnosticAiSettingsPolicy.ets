@@ -4,12 +4,14 @@ export interface DiagnosticAiSettingsSnapshot { profiles: DiagnosticAiProviderPr
 
 export function validDiagnosticAiSettings(value: DiagnosticAiSettings): boolean {
   return typeof value.selectedProviderId === 'string' && typeof value.selectedModelId === 'string' &&
+    (typeof value.selectedAuthMode === 'string' || value.selectedAuthMode === undefined) &&
     typeof value.showOrbOnHostPage === 'boolean' && typeof value.reducedMotion === 'boolean' &&
     Number.isSafeInteger(value.retentionDays) && value.retentionDays >= 1 && value.retentionDays <= 30;
 }
 
 export function cloneDiagnosticAiSettings(value: DiagnosticAiSettings): DiagnosticAiSettings {
   return { selectedProviderId: value.selectedProviderId, selectedModelId: value.selectedModelId,
+    selectedAuthMode: value.selectedAuthMode ?? '',
     showOrbOnHostPage: value.showOrbOnHostPage, reducedMotion: value.reducedMotion, retentionDays: value.retentionDays };
 }
 

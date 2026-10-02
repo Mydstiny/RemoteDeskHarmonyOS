@@ -18,6 +18,9 @@ export function diagnosticAiBillingDecision(manifest: DiagnosticAiProviderManife
   if (!diagnosticAiBillingModeKnown(manifest.billingMode) || profile.billingMode !== manifest.billingMode) {
     return { ok: false, code: 'BILLING_MODE_UNKNOWN', message: 'Provider 的计费模式未完成登记' };
   }
+  if (profile.manifestVersion !== manifest.schemaVersion) {
+    return { ok: false, code: 'MANIFEST_VERSION_STALE', message: 'Provider 能力声明已更新，请重新保存配置' };
+  }
   if (manifest.allowedUseCases.indexOf(useCase) < 0 || profile.allowedUseCases.indexOf(useCase) < 0) {
     return { ok: false, code: 'USE_CASE_NOT_ALLOWED', message: '当前套餐未声明允许诊断助手用途' };
   }
@@ -29,6 +32,10 @@ export function diagnosticAiBillingDecision(manifest: DiagnosticAiProviderManife
   }
   if (manifest.billingMode === 'coding_plan' && diagnosticAiProfileAuthMode(profile) !== 'coding_plan_key') {
     return { ok: false, code: 'CODING_PLAN_AUTH_REQUIRED', message: 'Coding Plan 必须使用供应商登记的专用认证方式' };
+  }
+  if (manifest.billingMode === 'coding_plan' &&
+    (profile.modelId.trim() === '' || manifest.codingPlanModelIds.indexOf(profile.modelId.trim()) < 0)) {
+    return { ok: false, code: 'CODING_PLAN_MODEL_NOT_ALLOWED', message: '当前模型不在供应商登记的 Coding Plan 白名单中' };
   }
   if (manifest.termsVersion.trim() === '' || profile.termsVersion !== manifest.termsVersion) {
     return { ok: false, code: 'TERMS_REVIEW_REQUIRED', message: 'Provider 条款版本尚未核验，暂不能用于诊断助手' };
