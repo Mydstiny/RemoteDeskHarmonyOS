@@ -4,7 +4,7 @@
 
 - E2EE planning only: [resilience and legacy compatibility plan](plans/2026-09-07-e2ee-resilience-legacy-compatibility.md) has 8 stages and 24 acceptance scenarios; independent /root/review_e2ee_plan PLAN-ONLY PASS. Prioritize local fault isolation, healthy-module availability and old enabled-App data. No application code changed; implementation awaits user authorization and the existing Pro task remains active. Current documentation gates: testCompile BUILD SUCCESSFUL in 11 s 295 ms; signed assembleHap BUILD SUCCESSFUL in 16 s 858 ms, both exit 0; Light/diff PASS. Initial sandbox cache EPERM was resolved by an authorized retry; device/data compatibility tests NOT RUN.
 
-- Task: pro-purchase-foundation; branch codex/pro-purchase-foundation; 当前代码 checkpoint `9a0f960e`，在 `f460f0fa` 基础上让端侧模型也使用助手名称/语气/本地记忆偏好。最新 `default@OhosTestCompileArkTS` 6.545 s、签名 `assembleHap` 8.871 s 均成功；新 HAP 已重新安装到 MatePad Mini 与 Mate 80 Pro Max；真实 Provider/密钥冷启动回读/三端视觉/邮件验收待完成。
+- Task: pro-purchase-foundation; branch codex/pro-purchase-foundation; 当前代码 checkpoint `0f042510`，在 `9a0f960e` 基础上限制本地会话为每会话最近 20 轮、每轮有界文本，避免 Preferences 无限增长。最新 `default@OhosTestCompileArkTS` 11.668 s、签名 `assembleHap` 15.340 s 均成功；新 HAP 已重新安装到 MatePad Mini 与 Mate 80 Pro Max；真实 Provider/密钥冷启动回读/三端视觉/邮件验收待完成。
 - Phase: full M1-M7/U0-U4 roadmap active; 2026-09-30 Pro 工作区/高级主机管理基础层已实现，设备与跨端验收待补。
 - Pro stages: M1 eaca0300; M2 2db4ef2d; free U1 ca929ceb; M3 62baa018+fea42b9b; M4 02a8cab6+ee45030b; M5 ed537821+27716d2d+c64efc8e. Each implementation/fix increment is separately committed.
 - M3: default plus supplied white/transparent preset PNGs only. Custom upload cancelled. Paid selection uses shared controller/business checks, restoring default stays free; real device acceptance pending.
