@@ -74,6 +74,28 @@ assert.equal(route.diagnosticAiSettingsLeafSheetHeight(route.SETTINGS_SHEET_DIAG
 assert.equal(route.diagnosticAiSettingsLeafSheetHeight(route.SETTINGS_SHEET_DIAGNOSTIC_AI, 5, 900), 620);
 console.log('PASS AI assistant, usage, personalization and session sheets use adaptive route heights');
 
+const providerCatalog = load('entry/src/main/ets/services/diagnosticAi/DiagnosticAiProviderCatalog');
+const authPolicy = load('entry/src/main/ets/services/diagnosticAi/DiagnosticAiAuthPolicy');
+const useCasePolicy = load('entry/src/main/ets/services/diagnosticAi/DiagnosticAiUseCasePolicy');
+const billingPolicy = load('entry/src/main/ets/services/diagnosticAi/DiagnosticAiBillingPolicy');
+const manifest = providerCatalog.diagnosticAiProviderManifest('deepseek');
+const profile = {
+  id: 'deepseek-fixture', owner: 'fixture-owner', providerId: 'deepseek', displayName: 'DeepSeek', endpoint: 'https://api.deepseek.com', modelId: 'deepseek-chat',
+  authKind: 'bearer', authHeader: 'Authorization', authMode: 'api_key', billingMode: 'payg_api', allowedUseCases: ['diagnostic_assistant'],
+  requiresInteractive: false, requiresOfficialTool: false, entitlementEndpoint: '', termsVersion: '2026-10-02', dataRegion: 'mainland_cn',
+  authorizationStatus: 'connected', consentId: 'fixture-consent', consentAt: 1, secretRef: 'fixture', secretFingerprint: 'fixture', manifestVersion: 1,
+  privacy: manifest.privacy, showOrbOnHostPage: true, revision: 1, updatedAt: 1
+};
+assert.equal(authPolicy.diagnosticAiAuthDecision(manifest, profile).ok, true);
+assert.equal(billingPolicy.diagnosticAiBillingDecision(manifest, profile, 'diagnostic_assistant').ok, true);
+assert.equal(useCasePolicy.diagnosticAiUseCaseDecision(manifest, profile, 'diagnostic_assistant').ok, true);
+const denied = { ...profile, allowedUseCases: ['coding_agent'] };
+assert.equal(useCasePolicy.diagnosticAiUseCaseDecision(manifest, denied, 'diagnostic_assistant').code, 'USE_CASE_NOT_ALLOWED');
+const officialOnly = { ...profile, billingMode: 'coding_plan', authMode: 'coding_plan_key', allowedUseCases: ['coding_agent'], requiresOfficialTool: true };
+assert.equal(billingPolicy.diagnosticAiBillingDecision({ ...manifest, billingMode: 'coding_plan', authModes: ['coding_plan_key'], allowedUseCases: ['coding_agent'], requiresOfficialTool: true }, officialOnly, 'diagnostic_assistant').ok, false);
+assert.equal(authPolicy.diagnosticAiAuthDecision({ ...manifest, authModes: ['oauth_pkce'] }, profile).code, 'AUTH_MODE_UNSUPPORTED');
+console.log('PASS P0 authentication, billing and diagnostic-use-case policies fail closed for unknown or coding-only plans');
+
 const sheetSource = fs.readFileSync(path.join(root, 'entry/src/main/ets/components/diagnosticAi/DiagnosticAiSettingsSheet.ets'), 'utf8');
 const hostSource = fs.readFileSync(path.join(root, 'entry/src/main/ets/pages/HostListPage.ets'), 'utf8');
 assert.equal(sheetSource.includes('sessionDialogVisible'), false);

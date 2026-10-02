@@ -1,0 +1,139 @@
+import { common } from '@kit.AbilityKit';
+import { cryptoFramework } from '@kit.CryptoArchitectureKit';
+import { preferences } from '@kit.ArkData';
+import { util } from '@kit.ArkTS';
+import { DiagnosticAiProviderProfile, DiagnosticAiSettings, cloneDiagnosticAiProfile, defaultDiagnosticAiSettings } from './DiagnosticAiModels';
+import { diagnosticAiProviderManifest } from './DiagnosticAiProviderCatalog';
+import { DiagnosticAiSecretStore } from './DiagnosticAiSecretStore';
+import { cloneDiagnosticAiSettings, validDiagnosticAiSettings } from './DiagnosticAiSettingsPolicy';
+
+const STORE_PREFIX: string = 'RemoteDeskDiagnosticAiProfiles-v1-';
+
+function scopeHash(scope: string): string {
+  const md = cryptoFramework.createMd('SHA256'); md.updateSync({ data: new util.TextEncoder().encode(scope) });
+  const bytes: Uint8Array = md.digestSync().data; let value = '';
+  for (let i = 0; i < bytes.length; i++) { value += bytes[i].toString(16).padStart(2, '0'); }
+  return value.slice(0, 24);
+}
+
+/** Non-secret Provider metadata only. API keys remain in DiagnosticAiSecretStore. */
+export class DiagnosticAiProfileStore {
+  private static active: DiagnosticAiProfileStore | null = null;
+  private context: common.Context | null = null;
+  private owner: string = 'device-local';
+  private profiles: DiagnosticAiProviderProfile[] = [];
+  private settings: DiagnosticAiSettings = defaultDiagnosticAiSettings();
+  private loaded: boolean = false;
+
+  init(context: common.Context, owner: string): void {
+    DiagnosticAiProfileStore.active = this;
+    this.context = context; this.owner = owner.trim() === '' ? 'device-local' : owner.trim(); this.loaded = false;
+    // Load the alias metadata before profile rows so profiles written by the older build (which accidentally omitted
+    // secretRef from Preferences) can be repaired without asking the user to paste the key again.
+    DiagnosticAiSecretStore.getInstance().init(context, this.owner);
+    this.load();
+  }
+
+  private load(): void {
+    if (this.loaded || this.context === null) { return; }
+    try {
+      const prefs = preferences.getPreferencesSync(this.context, { name: STORE_PREFIX + scopeHash(this.owner) });
+      const rows = JSON.parse(prefs.getSync('profiles', '[]') as string) as DiagnosticAiProviderProfile[];
+      this.profiles = Array.isArray(rows) ? rows.filter((value: DiagnosticAiProviderProfile): boolean => value.owner === this.owner)
+        .map((value: DiagnosticAiProviderProfile): DiagnosticAiProviderProfile => {
+          const copy = cloneDiagnosticAiProfile(value);
+          const manifest = diagnosticAiProviderManifest(copy.providerId);
+          if (manifest !== null) {
+            if (copy.authMode === undefined || copy.authMode === 'unsupported') {
+              copy.authMode = manifest.authKind === 'none' ? 'none' : 'api_key';
+            }
+            if (!Array.isArray(copy.allowedUseCases) || copy.allowedUseCases.length === 0) {
+              copy.allowedUseCases = manifest.allowedUseCases.slice();
+            }
+            if (copy.billingMode === undefined) { copy.billingMode = manifest.billingMode; }
+            if (copy.termsVersion === '') { copy.termsVersion = manifest.termsVersion; }
+            if (copy.dataRegion === 'unknown') { copy.dataRegion = manifest.dataRegion; }
+            copy.requiresInteractive = manifest.requiresInteractive;
+            copy.requiresOfficialTool = manifest.requiresOfficialTool;
+            copy.entitlementEndpoint = manifest.entitlementEndpoint;
+          }
+          if (copy.authorizationStatus === 'unconfigured' && (copy.authMode === 'none' || copy.secretFingerprint !== '')) {
+            copy.authorizationStatus = 'connected';
+          }
+          if (copy.consentId === '' && copy.authorizationStatus === 'connected') {
+            copy.consentId = 'legacy-api-key'; copy.consentAt = copy.updatedAt > 0 ? copy.updatedAt : Date.now();
+          }
+          if (copy.secretRef === '') {
+            const metadata = DiagnosticAiSecretStore.getInstance().metadataFor(copy.id);
+            if (metadata !== null) { copy.secretRef = metadata.secretRef; copy.secretFingerprint = metadata.fingerprint; }
+          }
+          return copy;
+        }) : [];
+      const candidate = JSON.parse(prefs.getSync('settings', '{}') as string) as DiagnosticAiSettings;
+      this.settings = validDiagnosticAiSettings(candidate) ? cloneDiagnosticAiSettings(candidate) : defaultDiagnosticAiSettings();
+    } catch (_error) { this.profiles = []; this.settings = defaultDiagnosticAiSettings(); }
+    this.loaded = true;
+  }
+
+  private persist(): boolean {
+    if (this.context === null) { return false; }
+    try {
+      const prefs = preferences.getPreferencesSync(this.context, { name: STORE_PREFIX + scopeHash(this.owner) });
+      prefs.putSync('profiles', JSON.stringify(this.profiles.map((value: DiagnosticAiProviderProfile): DiagnosticAiProviderProfile => {
+        // secretRef is an opaque AssetStore alias, not the secret value. Persisting the ref is required so a new
+        // assistant instance can read the same key; only the key material itself stays out of Preferences.
+        const copy = cloneDiagnosticAiProfile(value); copy.secretRef = value.secretRef;
+        copy.secretFingerprint = value.secretFingerprint; return copy;
+      })));
+      prefs.putSync('settings', JSON.stringify(this.settings)); prefs.flushSync(); return true;
+    } catch (_error) { return false; }
+  }
+
+  list(): DiagnosticAiProviderProfile[] { this.load(); return this.profiles.map((value: DiagnosticAiProviderProfile): DiagnosticAiProviderProfile => cloneDiagnosticAiProfile(value)); }
+  settingsSnapshot(): DiagnosticAiSettings { this.load(); return cloneDiagnosticAiSettings(this.settings); }
+
+  saveProfile(profile: DiagnosticAiProviderProfile, secret: string): boolean {
+    this.load(); if (profile.owner !== this.owner || profile.id === '' || profile.providerId === '') { return false; }
+    const secretStore = DiagnosticAiSecretStore.getInstance();
+    const ref = profile.secretRef === '' ? profile.id : profile.secretRef;
+    const meta = secret === '' ? secretStore.metadataFor(ref) : secretStore.put(ref, secret);
+    if (secret !== '' && meta === null) { return false; }
+    if (secret !== '' && secretStore.get(ref) !== secret) { return false; }
+    const index = this.profiles.findIndex((value: DiagnosticAiProviderProfile): boolean => value.id === profile.id);
+    profile.revision = index >= 0 ? Math.max(this.profiles[index].revision + 1, profile.revision) : Math.max(1, profile.revision);
+    profile.secretRef = ref; profile.secretFingerprint = meta?.fingerprint ?? profile.secretFingerprint; profile.updatedAt = Date.now();
+    if (index >= 0) { this.profiles[index] = cloneDiagnosticAiProfile(profile); } else { this.profiles.push(cloneDiagnosticAiProfile(profile)); }
+    return this.persist();
+  }
+
+  removeProfile(id: string): boolean {
+    this.load(); const found = this.profiles.find((value: DiagnosticAiProviderProfile): boolean => value.id === id);
+    if (found === undefined) { return false; }
+    DiagnosticAiSecretStore.getInstance().remove(found.secretRef);
+    this.profiles = this.profiles.filter((value: DiagnosticAiProviderProfile): boolean => value.id !== id);
+    if (this.settings.selectedProviderId === found.providerId) { this.settings.selectedProviderId = ''; this.settings.selectedModelId = ''; }
+    return this.persist();
+  }
+
+  saveSettings(settings: DiagnosticAiSettings): boolean {
+    if (!validDiagnosticAiSettings(settings)) { return false; }
+    const previous = this.settings;
+    this.settings = cloneDiagnosticAiSettings(settings);
+    if (!this.persist()) { this.settings = previous; return false; }
+    return true;
+  }
+
+  secret(profile: DiagnosticAiProviderProfile): string { return DiagnosticAiSecretStore.getInstance().get(profile.secretRef); }
+  clearForScopeTransition(): void {
+    this.profiles.forEach((value: DiagnosticAiProviderProfile): void => { DiagnosticAiSecretStore.getInstance().remove(value.secretRef); });
+    this.profiles = this.profiles.map((value: DiagnosticAiProviderProfile): DiagnosticAiProviderProfile => {
+      const copy = cloneDiagnosticAiProfile(value); copy.secretRef = ''; copy.secretFingerprint = ''; return copy;
+    });
+    this.settings.showOrbOnHostPage = false;
+    this.persist(); this.loaded = true;
+  }
+
+  static clearActiveScope(): void {
+    DiagnosticAiProfileStore.active?.clearForScopeTransition();
+  }
+}

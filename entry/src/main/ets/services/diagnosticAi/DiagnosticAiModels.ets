@@ -6,6 +6,13 @@ export type DiagnosticAiMarket = 'mainland-cn' | 'local' | 'international' | 'cu
 export type DiagnosticAiAdapterFamily =
   'openai_compatible_http' | 'vendor_native_http' | 'vendor_native_websocket' | 'ollama_local' | 'harmony_local_chat';
 export type DiagnosticAiAuthKind = 'bearer' | 'api_key_header' | 'custom_header' | 'none';
+/** User-facing authentication capabilities declared by a Provider manifest. */
+export type DiagnosticAiAuthMode = 'api_key' | 'oauth_pkce' | 'device_authorization' |
+  'coding_plan_key' | 'official_cli_bridge' | 'none' | 'unsupported';
+export type DiagnosticAiBillingMode = 'payg_api' | 'token_plan' | 'coding_plan' | 'subscription_chat' | 'local';
+export type DiagnosticAiUseCase = 'diagnostic_assistant' | 'coding_agent' | 'interactive_chat' | 'batch';
+export type DiagnosticAiDataRegion = 'mainland_cn' | 'other' | 'local' | 'unknown';
+export type DiagnosticAiAuthorizationStatus = 'unconfigured' | 'connected' | 'pending' | 'review_required' | 'revoked' | 'expired';
 export type DiagnosticAiPrivacyValue = 'mainland' | 'cross-border' | 'device-local' | 'unknown';
 export type DiagnosticAiDeviceType = 'phone' | 'tablet' | 'pc' | '2in1' | 'unknown';
 export type DiagnosticAiCaptureState = 'idle' | 'arming' | 'capturing' | 'ready' | 'error';
@@ -30,6 +37,15 @@ export interface DiagnosticAiProviderManifest {
   chatPath: string;
   authKind: DiagnosticAiAuthKind;
   authHeader: string;
+  authModes: DiagnosticAiAuthMode[];
+  billingMode: DiagnosticAiBillingMode;
+  allowedUseCases: DiagnosticAiUseCase[];
+  requiresInteractive: boolean;
+  requiresOfficialTool: boolean;
+  entitlementEndpoint: string;
+  termsVersion: string;
+  dataRegion: DiagnosticAiDataRegion;
+  codingPlanModelIds: string[];
   supportsStreaming: boolean;
   supportsVision: boolean;
   supportsTools: boolean;
@@ -48,6 +64,17 @@ export interface DiagnosticAiProviderProfile {
   modelId: string;
   authKind: DiagnosticAiAuthKind;
   authHeader: string;
+  authMode: DiagnosticAiAuthMode;
+  billingMode: DiagnosticAiBillingMode;
+  allowedUseCases: DiagnosticAiUseCase[];
+  requiresInteractive: boolean;
+  requiresOfficialTool: boolean;
+  entitlementEndpoint: string;
+  termsVersion: string;
+  dataRegion: DiagnosticAiDataRegion;
+  authorizationStatus: DiagnosticAiAuthorizationStatus;
+  consentId: string;
+  consentAt: number;
   secretRef: string;
   secretFingerprint: string;
   manifestVersion: number;
@@ -145,10 +172,16 @@ export function cloneDiagnosticAiPrivacy(value: DiagnosticAiPrivacyInfo): Diagno
 }
 
 export function cloneDiagnosticAiProfile(value: DiagnosticAiProviderProfile): DiagnosticAiProviderProfile {
+  const allowedUseCases: DiagnosticAiUseCase[] = Array.isArray(value.allowedUseCases) ? value.allowedUseCases.slice() : [];
   return {
     id: value.id, owner: value.owner, providerId: value.providerId,
     displayName: value.displayName, endpoint: value.endpoint, modelId: value.modelId,
-    authKind: value.authKind, authHeader: value.authHeader, secretRef: value.secretRef,
+    authKind: value.authKind, authHeader: value.authHeader, authMode: value.authMode,
+    billingMode: value.billingMode ?? 'payg_api', allowedUseCases,
+    requiresInteractive: value.requiresInteractive === true, requiresOfficialTool: value.requiresOfficialTool === true,
+    entitlementEndpoint: value.entitlementEndpoint ?? '', termsVersion: value.termsVersion ?? '', dataRegion: value.dataRegion ?? 'unknown',
+    authorizationStatus: value.authorizationStatus ?? 'unconfigured', consentId: value.consentId ?? '', consentAt: Number(value.consentAt) || 0,
+    secretRef: value.secretRef,
     secretFingerprint: value.secretFingerprint, manifestVersion: value.manifestVersion,
     privacy: cloneDiagnosticAiPrivacy(value.privacy), showOrbOnHostPage: value.showOrbOnHostPage,
     revision: value.revision, updatedAt: value.updatedAt
