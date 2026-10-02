@@ -4,7 +4,7 @@ import { AppSettingsActionRow } from '../AppSettingsActionRow';
 import { AppUiMetrics } from '../../common/AppUiMetrics';
 import { DiagnosticCaptureSettingsSheet } from '../DiagnosticCaptureSettingsSheet';
 import { DiagnosticAiAssistantPanel } from './DiagnosticAiAssistantPanel';
-import { DiagnosticAiProviderManifest, DiagnosticAiProviderProfile, DiagnosticAiSettings } from '../../services/diagnosticAi/DiagnosticAiModels';
+import { DiagnosticAiModelInfo, DiagnosticAiProviderManifest, DiagnosticAiProviderProfile, DiagnosticAiSettings } from '../../services/diagnosticAi/DiagnosticAiModels';
 import { diagnosticAiProviderManifests } from '../../services/diagnosticAi/DiagnosticAiProviderCatalog';
 import { validateDiagnosticAiEndpoint } from '../../services/diagnosticAi/DiagnosticAiEndpointPolicy';
 import { DiagnosticAiProfileStore } from '../../services/diagnosticAi/DiagnosticAiProfileStore';
@@ -31,7 +31,7 @@ export struct DiagnosticAiSettingsSheet {
   @State model: string = '';
   @State message: string = '';
   @State busy: boolean = false;
-  @State showAssistant: boolean = false;
+  @State availableModels: DiagnosticAiModelInfo[] = [];
   private readonly providerService: DiagnosticAiProviderService = new DiagnosticAiProviderService();
   private store: DiagnosticAiProfileStore = new DiagnosticAiProfileStore();
   private owner: string = 'device-local';
@@ -61,7 +61,7 @@ export struct DiagnosticAiSettingsSheet {
       this.message = '该 Provider 已列入路线图，当前版本尚未开放请求适配';
       return;
     }
-    this.endpoint = manifest?.endpoint ?? ''; this.message = '';
+    this.endpoint = manifest?.endpoint ?? ''; this.availableModels = []; this.message = '';
   }
 
   private async saveProvider(): Promise<void> {
@@ -73,12 +73,14 @@ export struct DiagnosticAiSettingsSheet {
     const endpointDecision = validateDiagnosticAiEndpoint(this.endpoint, manifest.adapterFamily, false);
     if (!endpointDecision.ok) { this.message = '保存失败：' + endpointDecision.message; return; }
     this.busy = true; this.message = '';
+    const existing = this.profiles.find((value: DiagnosticAiProviderProfile): boolean => value.providerId === manifest.providerId);
+    const nextRevision: number = existing === undefined ? 1 : Math.max(1, existing.revision + 1);
     const profile: DiagnosticAiProviderProfile = { id: this.selectedProvider + '-' + this.owner.slice(-8), owner: this.owner,
       providerId: manifest.providerId, displayName: manifest.displayName, endpoint: this.endpoint.trim(), modelId: this.model.trim(),
       authKind: manifest.authKind, authHeader: manifest.authHeader, secretRef: '', secretFingerprint: '', manifestVersion: manifest.schemaVersion,
       privacy: { region: manifest.privacy.region, retention: manifest.privacy.retention,
         trainingUse: manifest.privacy.trainingUse, policyRef: manifest.privacy.policyRef },
-      showOrbOnHostPage: this.settings.showOrbOnHostPage, revision: 0, updatedAt: Date.now() };
+      showOrbOnHostPage: this.settings.showOrbOnHostPage, revision: nextRevision, updatedAt: Date.now() };
     if (!this.store.saveProfile(profile, this.keyText.trim())) { this.message = '保存失败：请检查 API Key 和 Provider 地址'; }
     else {
       this.settings.selectedProviderId = profile.providerId;
@@ -95,7 +97,11 @@ export struct DiagnosticAiSettingsSheet {
     this.busy = true; this.message = '正在拉取模型列表…';
     try {
       const models = await this.providerService.listModels(profile, this.store.secret(profile));
-      this.model = models.length > 0 ? models[0].id : this.model; this.message = '已读取 ' + models.length.toString() + ' 个模型；请选择并再次保存。';
+      this.availableModels = models;
+      if (models.length > 0 && !models.some((value: DiagnosticAiModelInfo): boolean => value.id === this.model)) {
+        this.model = models[0].id;
+      }
+      this.message = '已读取 ' + models.length.toString() + ' 个模型；请选择并再次保存。';
     } catch (error) { this.message = error instanceof Error ? error.message : '模型列表读取失败'; }
     finally { this.busy = false; }
   }
@@ -114,13 +120,6 @@ export struct DiagnosticAiSettingsSheet {
           Text('传统日志仍可单独使用。').fontSize(13).fontColor(this.pal().text2)
           Button('关闭').onClick((): void => { this.onClose(); })
         }.padding(24).width('100%')
-      } else if (this.showAssistant) {
-        DiagnosticAiAssistantPanel({
-          onClose: (): void => { this.showAssistant = false; },
-          onOpenMailDraft: (subject: string, body: string): void => {
-            this.onOpenMailDraft(subject, body);
-          }
-        })
       } else {
       Row({ space: 10 }) {
         Text('诊断与 AI 帮助').fontSize(20).fontWeight(FontWeight.Bold).fontColor(this.pal().text).fontFamily(AppConfig.fontFamily).layoutWeight(1)
@@ -145,15 +144,26 @@ export struct DiagnosticAiSettingsSheet {
                 .opacity(this.providerAvailable(manifest) ? 1 : 0.62)
                 .onClick((): void => { if (this.providerAvailable(manifest)) { this.selectProvider(manifest.providerId); } })
             }, (manifest: DiagnosticAiProviderManifest): string => manifest.providerId)
-            TextInput({ placeholder: 'Provider HTTPS 地址（预设为空时手动填写）', text: this.endpoint }).height(44).onChange((value: string): void => { this.endpoint = value; })
+            TextInput({ placeholder: 'Provider HTTPS 地址（可修改为兼容地址）', text: this.endpoint }).height(44).onChange((value: string): void => { this.endpoint = value; })
             TextInput({ placeholder: 'API Key（仅写入本机安全存储）', text: this.keyText }).height(44).type(InputType.Password).onChange((value: string): void => { this.keyText = value; })
             TextInput({ placeholder: '模型 ID', text: this.model }).height(44).onChange((value: string): void => { this.model = value; })
+            if (this.availableModels.length > 0) {
+              Text('可用模型（点击选择）').fontSize(12).fontColor(this.pal().text2).width('100%')
+              ForEach(this.availableModels, (item: DiagnosticAiModelInfo): void => {
+                Row({ space: 8 }) {
+                  Text(item.displayName + ' · ' + item.id).fontSize(13).fontColor(this.pal().text).layoutWeight(1)
+                  Text(this.model === item.id ? '已选择' : '').fontSize(11).fontColor(this.accent)
+                }.width('100%').height(42).padding({ left: 12, right: 12 }).borderRadius(10)
+                  .backgroundColor(this.model === item.id ? this.pal().surface : this.pal().card)
+                  .onClick((): void => { this.model = item.id; })
+              }, (item: DiagnosticAiModelInfo): string => item.id)
+            }
             Row({ space: 8 }) {
               Button('保存 Provider').layoutWeight(1).height(44).backgroundColor(this.accent).fontColor(Color.White).enabled(!this.busy).onClick((): void => { void this.saveProvider(); })
               Button('拉取模型').layoutWeight(1).height(44).enabled(!this.busy).onClick((): void => { void this.fetchModels(); })
             }.width('100%')
             ForEach(this.profiles, (profile: DiagnosticAiProviderProfile): void => {
-              AppSettingsActionRow({ title: profile.displayName, detail: profile.modelId === '' ? '已配置 · 尚未选择模型' : '模型：' + profile.modelId + ' · ' + diagnosticAiPrivacySummary(profile), isEnabled: true, onAction: (): void => { this.selectedProvider = profile.providerId; this.model = profile.modelId; this.endpoint = profile.endpoint; } })
+              AppSettingsActionRow({ title: profile.displayName, detail: profile.modelId === '' ? '已配置 · 尚未选择模型' : '模型：' + profile.modelId + ' · ' + diagnosticAiPrivacySummary(profile), isEnabled: true, onAction: (): void => { this.selectedProvider = profile.providerId; this.model = profile.modelId; this.endpoint = profile.endpoint; this.availableModels = []; } })
             }, (profile: DiagnosticAiProviderProfile): string => profile.id)
             Row() { Text('远程主机页显示 AI 入口').fontSize(14).fontColor(this.pal().text).layoutWeight(1); Toggle({ type: ToggleType.Switch, isOn: this.settings.showOrbOnHostPage }).selectedColor(this.accent).onChange((value: boolean): void => { this.saveOrbPreference(value); }) }.width('100%').height(52)
             Text(this.message).fontSize(12).fontColor(this.pal().text2).width('100%')

@@ -10,11 +10,12 @@ import {
   diagnosticModuleSpecs,
   normalizeDiagnosticModules
 } from '../services/DiagnosticCapturePolicy';
+import { DiagnosticCapturePhase } from '../services/DiagnosticCaptureRuntime';
 import {
-  DiagnosticCapturePhase,
-  DiagnosticCaptureRuntime,
-  DiagnosticCaptureStatus
-} from '../services/DiagnosticCaptureRuntime';
+  DiagnosticCaptureCoordinator,
+  DiagnosticCaptureCoordinatorStatus,
+  DiagnosticCaptureOwnerKind
+} from '../services/DiagnosticCaptureCoordinator';
 import {
   DiagnosticCaptureExportService,
   DiagnosticSaveResult
@@ -37,10 +38,12 @@ export struct DiagnosticCaptureSettingsSheet {
   @State droppedEventCount: number = 0;
   @State approximateBytes: number = 0;
   @State stopReason: string = '';
+  @State captureOwnerKind: DiagnosticCaptureOwnerKind | '' = '';
   @State message: string = '';
   @State messageIsError: boolean = false;
 
-  private readonly runtime: DiagnosticCaptureRuntime = DiagnosticCaptureRuntime.getInstance();
+  private readonly coordinator: DiagnosticCaptureCoordinator = DiagnosticCaptureCoordinator.getInstance();
+  private readonly ownerId: string = 'manual-diagnostic-sheet';
   private readonly exporter: DiagnosticCaptureExportService =
     DiagnosticCaptureExportService.getInstance();
   private refreshTimer: number = -1;
@@ -68,7 +71,7 @@ export struct DiagnosticCaptureSettingsSheet {
   }
 
   private syncStatus(loadActiveSelection: boolean): void {
-    const status: DiagnosticCaptureStatus = this.runtime.status();
+    const status: DiagnosticCaptureCoordinatorStatus = this.coordinator.status();
     this.phase = status.phase;
     this.captureId = status.captureId;
     this.remainingSeconds = status.remainingSeconds;
@@ -76,6 +79,7 @@ export struct DiagnosticCaptureSettingsSheet {
     this.droppedEventCount = status.droppedEventCount;
     this.approximateBytes = status.approximateBytes;
     this.stopReason = status.stopReason;
+    this.captureOwnerKind = status.ownerKind;
     this.fullLogEnabled = status.fullLog;
     if (loadActiveSelection && status.phase !== 'idle') {
       this.selectedDurationMinutes = status.durationMinutes;
@@ -115,10 +119,16 @@ export struct DiagnosticCaptureSettingsSheet {
 
   private statusTitle(): string {
     if (this.phase === 'capturing') {
+      if (this.captureOwnerKind === 'ai') {
+        return 'AI 正在诊断 · 剩余 ' + this.formatRemaining(this.remainingSeconds);
+      }
       return '抓取中 · 剩余 ' + this.formatRemaining(this.remainingSeconds);
     }
-    if (this.phase === 'saving') { return '正在保存日志…'; }
+    if (this.phase === 'saving') {
+      return this.captureOwnerKind === 'ai' ? 'AI 正在整理日志…' : '正在保存日志…';
+    }
     if (this.phase === 'readyToSave') {
+      if (this.captureOwnerKind === 'ai') { return 'AI 抓取已结束，等待分析'; }
       return this.stopReason === 'deadline' ? '已到时，待保存' : '抓取已结束，待保存';
     }
     return '未开始抓取';
@@ -127,6 +137,9 @@ export struct DiagnosticCaptureSettingsSheet {
   private statusDetail(): string {
     if (this.phase === 'idle') {
       return '选择模组和最长时长后开始；关闭此页面不会停止抓取。';
+    }
+    if (this.captureOwnerKind === 'ai') {
+      return '本次抓取由 AI 诊断控制，请返回 AI 浮窗继续操作。';
     }
     const dropped: string = this.droppedEventCount > 0 ?
       ' · 已丢弃 ' + this.droppedEventCount.toString() + ' 条' : '';
@@ -149,10 +162,16 @@ export struct DiagnosticCaptureSettingsSheet {
   }
 
   private startCapture(): void {
-    const code = this.runtime.start(this.selectedDurationMinutes, this.selectedModules,
-      this.fullLogEnabled);
+    if (this.captureOwnerKind === 'ai') {
+      this.message = 'AI 诊断正在抓取，请先结束 AI 诊断。';
+      this.messageIsError = true;
+      return;
+    }
+    const code = this.coordinator.start(this.ownerId, 'manual', this.selectedDurationMinutes,
+      this.selectedModules, this.fullLogEnabled);
     this.message = code === 'ok' ? '日志抓取已开始，请离开设置复现问题。' :
       code === 'already_active' ? '已有一项抓取正在进行。' :
+        code === 'busy' ? '已有一项诊断正在进行。' :
         code === 'invalid_duration' ? '请选择有效的抓取时长。' : '无法启动日志抓取。';
     this.messageIsError = code !== 'ok';
     this.syncStatus(true);
@@ -161,8 +180,13 @@ export struct DiagnosticCaptureSettingsSheet {
   private async stopAndSave(): Promise<void> {
     this.message = '';
     this.messageIsError = false;
+    if (this.captureOwnerKind !== '' && this.captureOwnerKind !== 'manual') {
+      this.message = '当前抓取由 AI 诊断控制，请在 AI 浮窗中完成操作。';
+      this.messageIsError = true;
+      return;
+    }
     if (this.phase === 'capturing') {
-      const stopCode = this.runtime.stop();
+      const stopCode = this.coordinator.stop(this.ownerId, 'manual');
       if (stopCode !== 'ok') {
         this.message = '无法结束当前抓取，请稍后重试。';
         this.messageIsError = true;
@@ -173,7 +197,7 @@ export struct DiagnosticCaptureSettingsSheet {
     this.syncStatus(false);
     const context: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
     const pending: Promise<DiagnosticSaveResult> =
-      this.exporter.save(this.runtime, context);
+      this.exporter.save(this.coordinator.runtime(), context);
     this.syncStatus(false);
     const result: DiagnosticSaveResult = await pending;
     if (result.ok) {
@@ -190,7 +214,7 @@ export struct DiagnosticCaptureSettingsSheet {
   }
 
   private confirmDiscard(): void {
-    if (this.phase === 'idle' || this.phase === 'saving') { return; }
+    if (this.phase === 'idle' || this.phase === 'saving' || this.captureOwnerKind !== 'manual') { return; }
     const expectedCaptureId: string = this.captureId;
     if (expectedCaptureId.length === 0) { return; }
     promptAction.showDialog({
@@ -203,7 +227,7 @@ export struct DiagnosticCaptureSettingsSheet {
     }).then((result: Object): void => {
       const dialogResult: Record<string, number> = result as Record<string, number>;
       if (dialogResult['index'] !== 1) { return; }
-      const code = this.runtime.discard(expectedCaptureId);
+      const code = this.coordinator.discard(this.ownerId, 'manual', expectedCaptureId);
       if (code === 'ok') {
         this.message = '本次抓取已丢弃。';
         this.messageIsError = false;
@@ -220,6 +244,7 @@ export struct DiagnosticCaptureSettingsSheet {
 
   private primaryButtonText(): string {
     if (this.phase === 'idle') { return '开始抓取'; }
+    if (this.captureOwnerKind === 'ai') { return 'AI 正在诊断…'; }
     if (this.phase === 'capturing') { return '结束并保存'; }
     if (this.phase === 'saving') { return '正在保存…'; }
     return '保存日志';
@@ -231,6 +256,11 @@ export struct DiagnosticCaptureSettingsSheet {
       return;
     }
     if (this.phase === 'saving') { return; }
+    if (this.captureOwnerKind === 'ai') {
+      this.message = '当前抓取由 AI 诊断控制，请在 AI 浮窗中完成操作。';
+      this.messageIsError = true;
+      return;
+    }
     void this.stopAndSave();
   }
 

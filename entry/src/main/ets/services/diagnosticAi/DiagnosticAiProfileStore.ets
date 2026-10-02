@@ -63,8 +63,9 @@ export class DiagnosticAiProfileStore {
     const ref = profile.secretRef === '' ? profile.id : profile.secretRef;
     const meta = secret === '' ? secretStore.metadataFor(ref) : secretStore.put(ref, secret);
     if (secret !== '' && meta === null) { return false; }
-    profile.secretRef = ref; profile.secretFingerprint = meta?.fingerprint ?? profile.secretFingerprint; profile.updatedAt = Date.now();
     const index = this.profiles.findIndex((value: DiagnosticAiProviderProfile): boolean => value.id === profile.id);
+    profile.revision = index >= 0 ? Math.max(this.profiles[index].revision + 1, profile.revision) : Math.max(1, profile.revision);
+    profile.secretRef = ref; profile.secretFingerprint = meta?.fingerprint ?? profile.secretFingerprint; profile.updatedAt = Date.now();
     if (index >= 0) { this.profiles[index] = cloneDiagnosticAiProfile(profile); } else { this.profiles.push(cloneDiagnosticAiProfile(profile)); }
     this.persist(); return true;
   }

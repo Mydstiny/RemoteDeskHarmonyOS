@@ -270,6 +270,7 @@ import moonlightNetworkHandlePolicyTest from './MoonlightNetworkHandlePolicy.tes
 import moonlightLanDiscoveryServiceTest from './MoonlightLanDiscoveryService.test';
 import diagnosticCapturePolicyTest from './DiagnosticCapturePolicy.test';
 import diagnosticCaptureRuntimeTest from './DiagnosticCaptureRuntime.test';
+import diagnosticCaptureCoordinatorTest from './DiagnosticCaptureCoordinator.test';
 import diagnosticCaptureExportServiceTest from './DiagnosticCaptureExportService.test';
 import diagnosticRuntimeSnapshotPolicyTest from './DiagnosticRuntimeSnapshotPolicy.test';
 import diagnosticAiPolicyTest from './DiagnosticAiPolicy.test';
@@ -547,6 +548,7 @@ export default function testsuite() {
   moonlightLanDiscoveryServiceTest();
   diagnosticCapturePolicyTest();
   diagnosticCaptureRuntimeTest();
+  diagnosticCaptureCoordinatorTest();
   diagnosticCaptureExportServiceTest();
   diagnosticRuntimeSnapshotPolicyTest();
   diagnosticAiPolicyTest();

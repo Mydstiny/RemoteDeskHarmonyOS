@@ -55,7 +55,7 @@ export struct DiagnosticAiAssistantPanel {
     this.lifecycleGeneration++;
     if (this.timer >= 0) { clearInterval(this.timer); this.timer = -1; }
     if (this.captureOwnedByPanel) {
-      this.capture.stop(this.owner);
+      this.capture.cancel(this.owner);
       this.captureOwnedByPanel = false;
       this.onCaptureStateChanged(false);
     }
@@ -88,13 +88,25 @@ export struct DiagnosticAiAssistantPanel {
     if (this.busy) { return; }
     const requestGeneration: number = this.lifecycleGeneration;
     const requestOwner: string = this.owner;
-    this.busy = true; this.capture.stop(requestOwner); this.captureOwnedByPanel = false;
+    this.busy = true; const stopCode = this.capture.stop(requestOwner); this.captureOwnedByPanel = false;
     this.onCaptureStateChanged(false); this.syncCapture();
+    if (stopCode !== 'ok' && stopCode !== 'not_active') {
+      this.status = '无法结束抓取：' + stopCode; this.busy = false; return;
+    }
     const bundle = this.capture.bundle(requestOwner);
-    if (bundle === null) { this.status = '没有可分析的诊断事件'; this.busy = false; return; }
+    if (bundle === null) {
+      this.capture.cancel(requestOwner);
+      this.status = '没有可分析的诊断事件'; this.busy = false; return;
+    }
     this.latestBundleText = bundle.text;
-    const profiles = this.store.list(); const selected = profiles.find((value: DiagnosticAiProviderProfile): boolean => value.modelId !== '');
+    this.capture.discard(requestOwner, bundle.captureId);
+    const profiles = this.store.list();
+    const settings = this.store.settingsSnapshot();
+    const selected = profiles.find((value: DiagnosticAiProviderProfile): boolean =>
+      value.providerId === settings.selectedProviderId && value.modelId === settings.selectedModelId && value.modelId !== '') ??
+      profiles.find((value: DiagnosticAiProviderProfile): boolean => value.modelId !== '');
     if (selected === undefined) { this.status = '请先在辅助 AI 配置中保存 Provider 和模型'; this.busy = false; return; }
+    const selectedRevision: number = selected.revision;
     try {
       const secret = this.store.secret(selected);
       const analyzed: DiagnosticAiResult = await this.provider.analyze(selected, secret, {
@@ -102,7 +114,9 @@ export struct DiagnosticAiAssistantPanel {
       });
       const currentScope = AccountSessionCoordinator.getInstance().currentScope();
       const currentOwner: string = currentScope.ownerScopeId.trim() === '' ? 'device-local' : currentScope.ownerScopeId;
-      if (requestGeneration !== this.lifecycleGeneration || currentOwner !== requestOwner || !this.allowed()) {
+      const latestProfile = this.store.list().find((value: DiagnosticAiProviderProfile): boolean => value.id === selected.id);
+      if (requestGeneration !== this.lifecycleGeneration || currentOwner !== requestOwner || !this.allowed() ||
+        latestProfile === undefined || latestProfile.revision !== selectedRevision) {
         this.status = '页面或账号作用域已变化，已丢弃旧诊断结果';
         return;
       }
@@ -135,7 +149,7 @@ export struct DiagnosticAiAssistantPanel {
           .onClick((): void => { if (this.capture.status().phase === 'capturing') { void this.finishCapture(); } else { this.beginCapture(); } })
         Button('取消').height(46).layoutWeight(1).borderRadius(14).backgroundColor(this.pal().surface).fontColor(this.pal().text)
           .enabled(!this.busy && this.capture.status().phase === 'capturing')
-          .onClick((): void => { this.capture.stop(this.owner); this.captureOwnedByPanel = false; this.onCaptureStateChanged(false); this.syncCapture(); })
+          .onClick((): void => { this.capture.cancel(this.owner); this.captureOwnedByPanel = false; this.onCaptureStateChanged(false); this.syncCapture(); })
       }.width('100%')
       Text(this.status).fontSize(12).lineHeight(18).fontColor(this.pal().text2).width('100%')
       if (this.capture.status().phase === 'capturing') {

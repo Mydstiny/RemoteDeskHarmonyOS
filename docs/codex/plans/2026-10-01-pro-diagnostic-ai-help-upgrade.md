@@ -432,9 +432,31 @@ diagnosticAiEmailBundle
 
 - 计划文件：已新增并随实现同步更新；应用实现已落盘，未修改真实密钥、用户数据或生产权益配置。
 - `git diff --check`：通过。
-- Light 开源合规门：通过。
-- `default@OhosTestCompileArkTS`：通过，Provider 可用性修复后 `BUILD SUCCESSFUL in 1 min 33 s 355 ms`，使用项目本地 `.remotedesk-build-cache`；输出仅包含既有依赖/API 警告。
-- `assembleHap`：通过，Provider 可用性修复后 `BUILD SUCCESSFUL in 2 min 22 s 34 ms`，签名阶段约 2.8 s；使用项目本地 `.remotedesk-build-cache`，输出发布到 `entry/build/default/outputs`。
-- Light 开源合规门：通过；`git diff --check`：通过。
-- 现有 Node Pro 策略回归：使用 DevEco Hvigor 内置 TypeScript 运行 `test_pro_entry_gating.cjs`、`test_pro_runtime.cjs`、`test_pro_feature_visibility.cjs`、`test_pro_feature_status.cjs`，全部通过；默认 Node 环境未设置 `NODE_PATH` 时会报告缺少 `typescript`，不影响带工具链路径的结果。
+- Light 开源合规门：沿用已有 checkpoint 记录；本轮代码范围仍需新的独立 receipt。
+- `default@OhosTestCompileArkTS`：本轮协调器、AI 释放闭环和模型选择改动曾成功通过，使用项目本地 `.remotedesk-build-cache`；共享工作区后续 onboarding 改动触发过一次全量编译错误，已修正 `GuideShowcase` 的不支持曲线 API，需在缓存锁释放后重跑完整门禁。
+- `ohosTest@OhosTestCompileArkTS`：当前 Hvigor 项目没有该任务，退出码 1（`00306054 Task was not found`）；测试模块编译证据保持未完成。
+- `assembleHap`：本轮最新重跑未形成可接受的成功证据；先后出现原生 CMake scratch 缺失、arm64 Ninja 无细节中断和 ArkTS 临时 manifest 校验错误。旧 checkpoint 的成功 HAP 不覆盖本轮代码变化，发布状态保持未完成。
+- 现有 Node Pro 策略回归：此前 `test_pro_entry_gating.cjs`、`test_pro_runtime.cjs`、`test_pro_feature_visibility.cjs`、`test_pro_feature_status.cjs` 带 DevEco TypeScript 路径全部通过；本轮未把旧结果当作新代码范围的完整验收。
 - Provider、真机、邮件客户端和生产权益验收：代码链路已具备，真实环境证据仍待执行；国际 Provider 不在首发范围。
+
+## 15. 2026-10-02 复审结果与优化增量
+
+本次复审发现并已落地三项客户端级完善：
+
+1. `DiagnosticCaptureCoordinator` 统一仲裁手动日志和 AI 抓取。两者现在使用 `manual/ai` owner，不能互相停止、丢弃或接管；账号/注销边界会统一失效共享运行时。
+2. AI 抓取补齐“停止 → 复制 bundle → 丢弃运行时冻结副本”的闭环。取消、页面销毁、无事件和分析失败都不会遗留 `readyToSave` 占用，传统日志可继续使用。
+3. Provider 配置页补上模型列表选择；Provider revision 在保存时单调递增，后续异步请求可用 revision 丢弃旧配置响应；清理了配置页永远不可达的助手死分支。
+
+复审确认的后续优化按优先级执行：
+
+| 优先级 | 优化项 | 具体落地 | 验收证据 |
+|---|---|---|---|
+| P0 | Provider 请求能力收敛 | 将 `supportsStreaming` 与真实 adapter 对齐；对不支持 `response_format=json_object` 的兼容服务做一次受控降级；认证方式增加 raw key/header prefix 能力；请求增加取消、超时、429/5xx 预算和 request generation | 国内每个 Provider 的真实模型/分析/慢流/429/坏响应合同测试 |
+| P0 | 邮件附件化 | 诊断包写入应用沙箱临时文件，展示大小、hash、模块和 TTL；系统邮件支持附件时附加文件，否则在大小上限内退化为正文并明确提示 | 真机邮件应用、无邮件应用、取消、超限和清理矩阵 |
+| P0 | 本地知识注册表 | 用版本化的使用、隐私、安全和设置片段替代当前单一 knowledge label；结果携带章节引用和文档 hash | 文档 hash、prompt 范围、结果引用和隐私回归 |
+| P1 | 全局 AI 状态 | 用共享 session state 驱动 HostList 与会话页 orb，使 `thinking/capturing/result/error` 跨页面一致；传入脱敏的 protocol/host label，避免 UI 宣称“当前会话”但实际只按关键词分类 | Phone/Pad/PC 前后台、跨页面、窗口销毁和输入命中测试 |
+| P1 | 设置可逆性 | 将白名单设置建议接入 typed adapter，保存旧值、变更记录和短时撤销；不扩大到代理、凭据、证书或 Shell | 每个 settingId 的 apply/rollback/撤权测试 |
+| P1 | Provider 可信度与成本 | Manifest 增加 capabilities、verifiedAt、数据地区/留存/训练说明和预算；未核验国内 Provider 继续显示“可配置但未验证” | Provider manifest 审核、费用/限流和隐私文案证据 |
+| P2 | 自有协议与国际 Provider | 豆包、文心、星火、MiniMax 等独立 adapter；再评估 OpenAI/Anthropic/Gemini/Azure/OpenRouter | 每个 adapter 独立合同、隐私和跨境审查 |
+
+当前仍明确未完成：真实国内 Provider 请求、真机浮窗/动画、真实邮件客户端、Pro 撤权/退款生产矩阵。`assembleHap` 旧 checkpoint 的成功记录不能替代本轮代码变化后的重新验证；本轮最新构建还受共享工作区生成缓存和 DevEco/CMake 任务状态影响，直到新的完整 HAP 成功退出前，发布状态保持未完成。
