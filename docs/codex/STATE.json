@@ -19,12 +19,12 @@
       "entry/src/main/ets/services/diagnosticAi",
       "entry/src/test/DiagnosticCaptureCoordinator.test.ets"
     ],
-    "status": "implemented-capture-ownership-and-model-selection-build-rerun-pending",
+    "status": "implemented-capture-ownership-and-model-selection-build-pass-provider-acceptance-pending",
     "reviewTaskId": "/root/diagnostic_ai_review",
     "reviewResult": "PASS; initial findings fixed and final provider availability guard confirmed",
-    "validation": "default@OhosTestCompileArkTS passed for the review code range; ohosTest@OhosTestCompileArkTS unavailable with 00306054; latest assembleHap reruns did not produce a stable success after shared cache/native/ArkTS blockers; git diff --check passed; real Provider/device/mail acceptance not run"
+    "validation": "default@OhosTestCompileArkTS BUILD SUCCESSFUL 3 min 57.837 s; ohosTest@OhosTestCompileArkTS unavailable with 00306054; assembleHap BUILD SUCCESSFUL 4 min 25.292 s with SignHap 8.745 s; git diff --check passed; real Provider/device/mail acceptance not run"
   },
-  "next": "在共享生成缓存锁释放后重跑 default@OhosTestCompileArkTS 和 assembleHap；随后在 Phone/Pad/PC 验证 orb、抓取释放、账号切换、邮件预览，并用真实国内 Provider 验证模型列表/分析；保留 experimental 直到证据齐全。",
+  "next": "随后在 Phone/Pad/PC 验证 orb、抓取释放、账号切换、邮件预览，并用真实国内 Provider 验证模型列表/分析；保留 experimental 直到证据齐全。",
   "blockers": [
     "Pad backup and Debug migration complete; same-account sandbox restore PASS without another payment. Remaining offline/cross-account and full protocol/device matrix remain open.",
     "M3/U0-U4 device matrix and M4 PC real Share Kit/SFTP file-integrity acceptance remain unverified.",

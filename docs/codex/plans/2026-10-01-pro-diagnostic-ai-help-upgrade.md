@@ -433,9 +433,9 @@ diagnosticAiEmailBundle
 - 计划文件：已新增并随实现同步更新；应用实现已落盘，未修改真实密钥、用户数据或生产权益配置。
 - `git diff --check`：通过。
 - Light 开源合规门：沿用已有 checkpoint 记录；本轮代码范围仍需新的独立 receipt。
-- `default@OhosTestCompileArkTS`：本轮协调器、AI 释放闭环和模型选择改动曾成功通过，使用项目本地 `.remotedesk-build-cache`；共享工作区后续 onboarding 改动触发过一次全量编译错误，已修正 `GuideShowcase` 的不支持曲线 API，需在缓存锁释放后重跑完整门禁。
+- `default@OhosTestCompileArkTS`：本轮最终重跑成功，`BUILD SUCCESSFUL in 3 min 57.837 s`，使用项目本地 `.remotedesk-build-cache`；输出仅包含既有依赖/API 告警和共享 display profile 的非阻断编译告警。
 - `ohosTest@OhosTestCompileArkTS`：当前 Hvigor 项目没有该任务，退出码 1（`00306054 Task was not found`）；测试模块编译证据保持未完成。
-- `assembleHap`：本轮最新重跑未形成可接受的成功证据；先后出现原生 CMake scratch 缺失、arm64 Ninja 无细节中断和 ArkTS 临时 manifest 校验错误。旧 checkpoint 的成功 HAP 不覆盖本轮代码变化，发布状态保持未完成。
+- `assembleHap`：本轮最终重跑成功，`BUILD SUCCESSFUL in 4 min 25.292 s`，`SignHap` 8.745 s，产物发布到 `entry/build/default/outputs`；此前 CMake/Ninja/生成 profile 问题均通过独占缓存重建恢复。
 - 现有 Node Pro 策略回归：此前 `test_pro_entry_gating.cjs`、`test_pro_runtime.cjs`、`test_pro_feature_visibility.cjs`、`test_pro_feature_status.cjs` 带 DevEco TypeScript 路径全部通过；本轮未把旧结果当作新代码范围的完整验收。
 - Provider、真机、邮件客户端和生产权益验收：代码链路已具备，真实环境证据仍待执行；国际 Provider 不在首发范围。
 
@@ -459,4 +459,4 @@ diagnosticAiEmailBundle
 | P1 | Provider 可信度与成本 | Manifest 增加 capabilities、verifiedAt、数据地区/留存/训练说明和预算；未核验国内 Provider 继续显示“可配置但未验证” | Provider manifest 审核、费用/限流和隐私文案证据 |
 | P2 | 自有协议与国际 Provider | 豆包、文心、星火、MiniMax 等独立 adapter；再评估 OpenAI/Anthropic/Gemini/Azure/OpenRouter | 每个 adapter 独立合同、隐私和跨境审查 |
 
-当前仍明确未完成：真实国内 Provider 请求、真机浮窗/动画、真实邮件客户端、Pro 撤权/退款生产矩阵。`assembleHap` 旧 checkpoint 的成功记录不能替代本轮代码变化后的重新验证；本轮最新构建还受共享工作区生成缓存和 DevEco/CMake 任务状态影响，直到新的完整 HAP 成功退出前，发布状态保持未完成。
+当前仍明确未完成：真实国内 Provider 请求、真机浮窗/动画、真实邮件客户端、Pro 撤权/退款生产矩阵。HAP 门禁已在本轮代码和共享 display profile 状态下重新通过，但它不替代这些外部环境验收。
