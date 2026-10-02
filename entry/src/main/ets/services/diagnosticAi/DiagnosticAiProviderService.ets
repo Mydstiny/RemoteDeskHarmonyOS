@@ -7,6 +7,7 @@ import { diagnosticAiHarmonyLocalDeviceSupported, diagnosticAiProviderIsHarmonyL
 import { validateDiagnosticAiEndpoint } from './DiagnosticAiEndpointPolicy';
 import { diagnosticAiProposalIsSafe, diagnosticAiSettingCatalog } from './DiagnosticAiSettingsActionPolicy';
 import { diagnosticAiAppActionCatalog, diagnosticAiAppActionId } from './DiagnosticAiAppActionPolicy';
+import { diagnosticAiUseCaseDecision, diagnosticAiUseCaseError } from './DiagnosticAiUseCasePolicy';
 
 const TIMEOUT_MS: number = 15000;
 const MAX_RESPONSE_BYTES: number = 2 * 1024 * 1024;
@@ -255,6 +256,8 @@ export class DiagnosticAiProviderService {
     body: Object | null): Promise<string> {
     const manifest = diagnosticAiProviderManifest(profile.providerId);
     if (manifest === null) { throw new Error('DIAGNOSTIC_AI_PROVIDER_UNKNOWN'); }
+    const policy = diagnosticAiUseCaseDecision(manifest, profile, 'diagnostic_assistant');
+    if (!policy.ok) { throw diagnosticAiUseCaseError(policy); }
     const endpoint = this.endpoint(profile, path);
     const decision = validateDiagnosticAiEndpoint(endpoint, manifest.adapterFamily, false);
     if (!decision.ok) { throw new Error('DIAGNOSTIC_AI_ENDPOINT_INVALID'); }

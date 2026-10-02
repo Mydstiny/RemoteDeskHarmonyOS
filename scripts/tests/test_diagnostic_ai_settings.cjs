@@ -105,6 +105,7 @@ console.log('PASS P0 authentication, billing and diagnostic-use-case policies fa
 
 const sheetSource = fs.readFileSync(path.join(root, 'entry/src/main/ets/components/diagnosticAi/DiagnosticAiSettingsSheet.ets'), 'utf8');
 const hostSource = fs.readFileSync(path.join(root, 'entry/src/main/ets/pages/HostListPage.ets'), 'utf8');
+const providerSource = fs.readFileSync(path.join(root, 'entry/src/main/ets/services/diagnosticAi/DiagnosticAiProviderService.ets'), 'utf8');
 assert.equal(sheetSource.includes('sessionDialogVisible'), false);
 assert.ok(sheetSource.includes('onOpenSession(session.id)'));
 assert.ok(hostSource.includes('private openDiagnosticAiSession(sessionId: string)'));
@@ -114,6 +115,7 @@ assert.ok(sheetSource.includes('selectedAuthMode'));
 assert.ok(sheetSource.includes('termsAcceptedDraft'));
 assert.ok(sheetSource.includes('Coding Plan 必须使用 Manifest 声明的专用 Base URL'));
 assert.ok(sheetSource.includes('删除/撤销 Provider 配置失败'));
+assert.ok(providerSource.includes('diagnosticAiUseCaseDecision(manifest, profile, \'diagnostic_assistant\')'));
 console.log('PASS P1 auth-mode selection, explicit terms consent, dedicated endpoint and revoke UI are fail-closed');
 
 void models;
