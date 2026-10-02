@@ -33,7 +33,10 @@ export default function guideContentRegistryTest(): void {
       const phone: GuideContentPage[] = firstInstallGuidePages('phone');
       const desktop: GuideContentPage[] = firstInstallGuidePages('desktop');
       const settings: GuideContentPage[] = settingsUsageGuidePages('phone');
-      expect(phone.length).assertEqual(7);
+      expect(phone.length).assertEqual(9);
+      expect(containsPage(phone, 'home-at-a-glance')).assertTrue();
+      expect(containsPage(phone, 'security-locks')).assertTrue();
+      phone.forEach((page: GuideContentPage): void => { expect(/^#[0-9A-F]{6}$/.test(page.hue ?? '')).assertTrue(); });
       expect(settings.length).assertEqual(phone.length);
       expect(containsPage(phone, 'welcome-five-protocols')).assertTrue();
       expect(containsPage(phone, 'device-path-phone')).assertTrue();
@@ -64,7 +67,7 @@ export default function guideContentRegistryTest(): void {
     it('keeps_swiper_content_non_empty_and_index_in_range', 0, (): void => {
       const empty: GuideContentPage[] = [];
       const fallback: GuideContentPage[] = ensureGuidePages(empty, 'desktop');
-      expect(fallback.length).assertEqual(7);
+      expect(fallback.length).assertEqual(9);
       expect(containsPage(fallback, 'device-path-desktop')).assertTrue();
       expect(clampGuidePageIndex(-1, fallback.length)).assertEqual(0);
       expect(clampGuidePageIndex(99, fallback.length)).assertEqual(fallback.length - 1);

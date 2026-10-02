@@ -32,6 +32,7 @@ import {
   ReleaseNotePage
 } from '../services/ReleaseNotesRegistry';
 import { GuideShowcase, WhatsNewList } from './guide/GuideShowcase';
+import { ProShowcase } from './guide/ProShowcase';
 
 @Component
 export struct AboutSettingsSheet {
@@ -159,6 +160,8 @@ export struct AboutSettingsSheet {
       this.privacyPolicySheet();
     } else if (this.aboutSheetMode === 3) {
       this.preRequisiteSheet();
+    } else if (this.aboutSheetMode === 6) {
+      this.proIntroSheet();
     } else {
       this.releaseNotesSheet();
     }
@@ -186,6 +189,25 @@ export struct AboutSettingsSheet {
     }
     .width('100%')
     .height(this.releaseNotesItems.length === 0 ? 180 : (this.breakpoint === 'sm' ? 600 : 640))
+    .constraintSize({ maxWidth: 760 })
+    .clip(true)
+    .backgroundColor(this.pal().sheetBg)
+    .borderRadius(this.breakpoint === 'sm' ?
+      { topLeft: 22, topRight: 22, bottomLeft: 0, bottomRight: 0 } : 24)
+  }
+
+  /** 「设置 → 教程 → Pro 功能介绍」: the same sheet the startup guide ends with. */
+  @Builder proIntroSheet() {
+    Column() {
+      ProShowcase({
+        primaryLabel: '完成',
+        showClose: true,
+        onPrimary: (): void => { this.onClose(); },
+        onClose: (): void => { this.onClose(); }
+      })
+    }
+    .width('100%')
+    .height(this.breakpoint === 'sm' ? 640 : 680)
     .constraintSize({ maxWidth: 760 })
     .clip(true)
     .backgroundColor(this.pal().sheetBg)

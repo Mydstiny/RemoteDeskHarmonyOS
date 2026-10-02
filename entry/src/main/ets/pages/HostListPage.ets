@@ -1,4 +1,5 @@
 import { ProBadge, proBadgeSummary } from '../components/ProBadge';
+import { settingsUsageGuidePages } from '../services/GuideContentRegistry';
 import { ProBadgeSettingsPanel, ProFeatureDetailPanel } from '../components/ProFeatureManagerPanel';
 import { SshSkinSettingsPanel } from '../components/ssh/skin/SshSkinSettingsPanel';
 import { proFeatureCurrentStatus } from '../services/pro/ProFeatureStatusReader';
@@ -5351,7 +5352,8 @@ struct HostListPage {
       return settingsSecurityExpandedMaxHeight(SETTINGS_SECURITY_ACTION_ROW_COUNT);
     }
     if (section === SETTINGS_SECTION_TUTORIAL) {
-      return 300;
+      // Five action rows (更新日志, 快速认识, Pro 介绍, 操作引导, 连接前准备) plus the card title.
+      return 380;
     }
     if (section === SETTINGS_SECTION_ABOUT) {
       return 300;
@@ -18373,10 +18375,19 @@ struct HostListPage {
                   });
                 })
               this.cardDivider()
-              this.cardActionRow($r('app.media.icon_info'), '快速认识应用', '用 7 页了解协议、设备、安全与数据',
+              this.cardActionRow($r('app.media.icon_info'), '快速认识应用',
+                '用 ' + settingsUsageGuidePages().length.toString() + ' 页了解协议、主页、设备、安全与数据',
                 (): void => {
                   this.openSettingsLeafSheet(SETTINGS_SHEET_POPUP, (): void => {
                     this.aboutSheetMode = 0;
+                    this.popupSheetMode = 1;
+                  });
+                })
+              this.cardDivider()
+              this.cardActionRow($r('app.media.icon_pro'), 'Pro 功能介绍', '工作区、主机管理、接续、显示方案与个性化',
+                (): void => {
+                  this.openSettingsLeafSheet(SETTINGS_SHEET_POPUP, (): void => {
+                    this.aboutSheetMode = 6;
                     this.popupSheetMode = 1;
                   });
                 })

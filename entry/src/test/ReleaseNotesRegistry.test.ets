@@ -15,8 +15,12 @@ export default function releaseNotesRegistryTest(): void {
     it('lists_the_1_1_6_changes_with_pro_only_as_a_preview', 0, (): void => {
       expect(CURRENT_RELEASE_VERSION).assertEqual('1.1.6');
       const pages: ReleaseNotePage[] = pagesForReleasedVersion(CURRENT_RELEASE_VERSION);
-      expect(pages.length).assertEqual(9);
-      expect(currentReleasePageCount()).assertEqual(9);
+      expect(pages.length).assertEqual(14);
+      expect(currentReleasePageCount()).assertEqual(14);
+      expect(containsPage(pages, 'release-portrait-sidebar')).assertTrue();
+      expect(containsPage(pages, 'release-tap-keyboard')).assertTrue();
+      expect(containsPage(pages, 'release-rdp-cert-preflight')).assertTrue();
+      expect(pages[pages.length - 1].id).assertEqual('release-pro-preview');
       expect(containsPage(pages, 'release-rdp-file-transfer')).assertTrue();
       expect(containsPage(pages, 'release-vnc-monitors')).assertTrue();
       const pro: ReleaseNotePage | undefined = pages.find((page: ReleaseNotePage): boolean => page.id === 'release-pro-preview');

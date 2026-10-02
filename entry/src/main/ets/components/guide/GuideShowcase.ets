@@ -1,6 +1,8 @@
+import { curves } from '@kit.ArkUI';
 import { AppConfig, buildDark, buildLight, Palette } from '../../common/Theme';
 import { GuideContentPage } from '../../services/GuideContentRegistry';
 import { ReleaseNotePage } from '../../services/ReleaseNotesRegistry';
+import { mixHex } from '../../services/pro/ProBadgeFlowPolicy';
 
 /** Layouts at or above this width split each slide into a hero panel and a content column. */
 const WIDE_LAYOUT_MIN_WIDTH: number = 560;
@@ -34,9 +36,27 @@ export struct GuideShowcase {
   onSkip: () => void = (): void => {};
   @State index: number = 0;
   @State areaWidth: number = 360;
+  /** Angle of the slowly turning orbit around each hero (render-thread animation, started once). */
+  @State orbit: number = 0;
   private controller: SwiperController = new SwiperController();
 
+  aboutToAppear(): void {
+    setTimeout((): void => {
+      this.getUIContext().animateTo({ duration: 24000, iterations: -1, curve: Curve.Linear,
+        expectedFrameRateRange: { min: 15, max: 30, expected: 30 } }, (): void => { this.orbit = 360; });
+    }, 60);
+  }
+
   private pal(): Palette { return this.theme === 'light' ? buildLight(this.accent) : buildDark(this.accent); }
+  /** Each slide carries its own color; the app accent fills in for pages without one. */
+  private hueOf(page: GuideContentPage): string {
+    return /^#[0-9A-Fa-f]{6}$/.test(page.hue ?? '') ? (page.hue as string) : this.accentHex();
+  }
+  private accentHex(): string { return /^#[0-9A-Fa-f]{6}$/.test(this.accent) ? this.accent : '#007DFF'; }
+  private currentHue(): string {
+    return this.pages.length > 0 ? this.hueOf(this.pages[Math.min(this.index, this.pages.length - 1)]) : this.accentHex();
+  }
+  private light(hue: string): string { return mixHex(hue, '#FFFFFF', 0.35); }
   private wide(): boolean { return this.areaWidth >= WIDE_LAYOUT_MIN_WIDTH; }
   private last(): boolean { return this.index >= this.pages.length - 1; }
   private next(): void { if (this.last()) { this.onFinish(); } else { this.controller.showNext(); } }
@@ -57,43 +77,75 @@ export struct GuideShowcase {
     }
   }
 
-  @Builder private hero(page: GuideContentPage, scale: number, active: boolean) {
-    Stack() {
-      Circle().width(232 * scale).height(232 * scale).fill(Color.Transparent)
-        .stroke(tint(this.accent, '1F')).strokeWidth(1)
-      Circle().width(176 * scale).height(176 * scale).fill(tint(this.accent, '0F'))
-        .stroke(tint(this.accent, '29')).strokeWidth(1)
-      Column() { this.icon(page, Math.round(48 * scale)) }
-        .width(108 * scale).height(108 * scale).borderRadius(32 * scale).justifyContent(FlexAlign.Center)
-        .linearGradient({ angle: 135, colors: [[this.accent, 0], [tint(this.accent, 'B3'), 1]] })
-        .shadow({ radius: 28, color: tint(this.accent, '55'), offsetY: 12 })
-        .scale({ x: active ? 1 : 0.86, y: active ? 1 : 0.86 })
-        .animation({ duration: 320, curve: Curve.FastOutSlowIn })
-    }.width(240 * scale).height(240 * scale)
+  @Builder private orbitDot(hue: string, size: number, x: number, y: number) {
+    Circle().width(size).height(size).fill(hue).position({ x: x - size / 2, y: y - size / 2 })
+      .shadow({ radius: 6, color: tint(hue, '80'), offsetY: 0 })
   }
 
-  @Builder private tagChip(text: string) {
+  @Builder private hero(page: GuideContentPage, scale: number, active: boolean) {
+    Stack() {
+      // Glow, a slowly turning orbit with three lights, an inner disc and a glassy icon tile.
+      Column().width(260 * scale).height(260 * scale).borderRadius(130 * scale)
+        .radialGradient({ center: ['50%', '50%'], radius: 130 * scale,
+          colors: [[tint(this.hueOf(page), '33'), 0], [tint(this.hueOf(page), '00'), 1]] })
+      Stack() {
+        Circle().width(220 * scale).height(220 * scale).fill(Color.Transparent)
+          .stroke(tint(this.hueOf(page), '2E')).strokeWidth(1).strokeDashArray([4, 6])
+        this.orbitDot(this.hueOf(page), 10 * scale, 110 * scale, 0)
+        this.orbitDot(this.light(this.hueOf(page)), 7 * scale, 220 * scale * 0.93, 220 * scale * 0.75)
+        this.orbitDot(tint(this.hueOf(page), 'B3'), 6 * scale, 220 * scale * 0.07, 220 * scale * 0.75)
+      }.width(220 * scale).height(220 * scale).rotate({ angle: this.orbit })
+      Circle().width(164 * scale).height(164 * scale)
+        .fill(tint(this.hueOf(page), '14')).stroke(tint(this.hueOf(page), '2E')).strokeWidth(1)
+      Stack() {
+        Column().width('100%').height('100%')
+          .linearGradient({ angle: 135, colors: [[this.light(this.hueOf(page)), 0], [this.hueOf(page), 0.55],
+            [mixHex(this.hueOf(page), '#000000', 0.18), 1]] })
+        // Glass highlight across the top half.
+        Column().width('100%').height('50%').position({ x: 0, y: 0 })
+          .linearGradient({ angle: 180, colors: [['#40FFFFFF', 0], ['#00FFFFFF', 1]] })
+        this.icon(page, Math.round(50 * scale))
+      }
+      .width(112 * scale).height(112 * scale).borderRadius(34 * scale).clip(true)
+      .border({ width: 1, color: '#33FFFFFF' })
+      .shadow({ radius: 30, color: tint(this.hueOf(page), '66'), offsetY: 14 })
+      .scale({ x: active ? 1 : 0.84, y: active ? 1 : 0.84 })
+      .rotate({ angle: active ? 0 : -8 })
+      .animation({ duration: 420, curve: curves.interpolatingSpring(0, 0.8, 300, 20) })
+    }.width(260 * scale).height(260 * scale)
+  }
+
+  @Builder private tagChip(text: string, hue: string) {
     if (text.length > 0) {
-      Text(text).fontSize(12).fontWeight(FontWeight.Medium).fontColor(this.accent).fontFamily(AppConfig.fontFamily)
+      Text(text).fontSize(12).fontWeight(FontWeight.Medium).fontColor(hue).fontFamily(AppConfig.fontFamily)
         .padding({ left: 10, right: 10, top: 4, bottom: 4 }).borderRadius(12)
-        .backgroundColor(tint(this.accent, '1A'))
+        .backgroundColor(tint(hue, '1A')).border({ width: 0.5, color: tint(hue, '33') })
     }
   }
 
-  @Builder private points(page: GuideContentPage, wide: boolean) {
+  /** The active slide's text rises in; others wait below so swiping in replays it. */
+  private textShift(at: number): number { return this.index === at ? 0 : 14; }
+  private textOpacity(at: number): number { return this.index === at ? 1 : 0; }
+
+  @Builder private points(page: GuideContentPage, wide: boolean, at: number) {
     if ((page.points ?? []).length > 0) {
       Column({ space: wide ? 12 : 10 }) {
-        ForEach(page.points ?? [], (point: string): void => {
-          Row({ space: 10 }) {
-            SymbolGlyph($r('sys.symbol.checkmark_circle_fill')).fontSize(17).fontColor([this.accent])
+        ForEach(page.points ?? [], (point: string, row: number): void => {
+          Row({ space: 12 }) {
+            Text((row + 1).toString()).fontSize(11).fontWeight(FontWeight.Bold).fontColor(Color.White)
+              .width(20).height(20).borderRadius(10).textAlign(TextAlign.Center)
+              .linearGradient({ angle: 135, colors: [[this.light(this.hueOf(page)), 0], [this.hueOf(page), 1]] })
+              .margin({ top: 1 })
             Text(point).fontSize(wide ? 15 : 14).fontColor(this.pal().text).fontFamily(AppConfig.fontFamily)
               .lineHeight(wide ? 21 : 20).layoutWeight(1)
           }.width('100%').alignItems(VerticalAlign.Top)
-        }, (point: string, at: number): string => at.toString() + point)
+        }, (point: string, row: number): string => row.toString() + point)
       }
       .width('100%').padding(wide ? 18 : 16).borderRadius(20)
       .backgroundColor(this.embedded ? this.pal().card : tint(this.pal().card, 'CC'))
-      .border({ width: 0.5, color: this.pal().cardBorder })
+      .border({ width: 0.5, color: tint(this.hueOf(page), '26') })
+      .opacity(this.textOpacity(at)).translate({ y: this.textShift(at) })
+      .animation({ duration: 420, delay: 140, curve: Curve.FastOutSlowIn })
     }
   }
 
@@ -102,13 +154,15 @@ export struct GuideShowcase {
       Column() {
         this.hero(page, this.embedded ? 0.72 : 0.92, this.index === at)
         Column({ space: 10 }) {
-          this.tagChip(page.tag ?? '')
+          this.tagChip(page.tag ?? '', this.hueOf(page))
           Text(page.title).fontSize(this.embedded ? 22 : 26).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
             .fontFamily(AppConfig.fontFamily).textAlign(TextAlign.Center)
           Text(page.desc).fontSize(this.embedded ? 14 : 15).fontColor(this.pal().text2).fontFamily(AppConfig.fontFamily)
             .lineHeight(this.embedded ? 21 : 23).textAlign(TextAlign.Center)
         }.alignItems(HorizontalAlign.Center).width('100%').margin({ top: this.embedded ? 4 : 12, bottom: 18 })
-        this.points(page, false)
+        .opacity(this.textOpacity(at)).translate({ y: this.textShift(at) })
+        .animation({ duration: 420, delay: 60, curve: Curve.FastOutSlowIn })
+        this.points(page, false, at)
       }.width('100%').padding({ left: 24, right: 24, top: 8, bottom: 16 }).alignItems(HorizontalAlign.Center)
       .constraintSize({ maxWidth: 520 })
     }.width('100%').height('100%').scrollBar(BarState.Off).align(Alignment.Center).edgeEffect(EdgeEffect.None)
@@ -119,20 +173,24 @@ export struct GuideShowcase {
       Stack() {
         this.hero(page, this.embedded ? 0.85 : 1.1, this.index === at)
         Text((at + 1).toString().padStart(2, '0') + ' / ' + this.pages.length.toString().padStart(2, '0'))
-          .fontSize(12).fontColor(tint(this.accent, 'B3')).fontFamily(AppConfig.fontFamily)
-          .position({ x: 20, y: 18 })
+          .fontSize(12).fontWeight(FontWeight.Medium).fontColor(tint(this.hueOf(page), 'CC'))
+          .fontFamily(AppConfig.fontFamily).position({ x: 20, y: 18 })
       }
       .layoutWeight(1).height('100%').borderRadius(28)
-      .linearGradient({ angle: 160, colors: [[tint(this.accent, '24'), 0], [tint(this.accent, '08'), 1]] })
-      .border({ width: 0.5, color: tint(this.accent, '29') })
+      .linearGradient({ angle: 160, colors: [[tint(this.hueOf(page), '2A'), 0], [tint(this.hueOf(page), '08'), 1]] })
+      .border({ width: 0.5, color: tint(this.hueOf(page), '33') })
       Scroll() {
         Column({ space: 14 }) {
-          this.tagChip(page.tag ?? '')
-          Text(page.title).fontSize(this.embedded ? 24 : 30).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
-            .fontFamily(AppConfig.fontFamily)
-          Text(page.desc).fontSize(this.embedded ? 15 : 16).fontColor(this.pal().text2).fontFamily(AppConfig.fontFamily)
-            .lineHeight(this.embedded ? 22 : 25)
-          this.points(page, true)
+          Column({ space: 14 }) {
+            this.tagChip(page.tag ?? '', this.hueOf(page))
+            Text(page.title).fontSize(this.embedded ? 24 : 30).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
+              .fontFamily(AppConfig.fontFamily)
+            Text(page.desc).fontSize(this.embedded ? 15 : 16).fontColor(this.pal().text2).fontFamily(AppConfig.fontFamily)
+              .lineHeight(this.embedded ? 22 : 25)
+          }.alignItems(HorizontalAlign.Start).width('100%')
+          .opacity(this.textOpacity(at)).translate({ y: this.textShift(at) })
+          .animation({ duration: 420, delay: 60, curve: Curve.FastOutSlowIn })
+          this.points(page, true, at)
         }.alignItems(HorizontalAlign.Start).width('100%')
       }.layoutWeight(1.15).height('100%').scrollBar(BarState.Off).align(Alignment.Center).edgeEffect(EdgeEffect.None)
     }.width('100%').height('100%').padding({ left: this.embedded ? 20 : 40, right: this.embedded ? 20 : 40,
@@ -143,41 +201,53 @@ export struct GuideShowcase {
     Row({ space: 6 }) {
       ForEach(this.pages, (_page: GuideContentPage, at: number): void => {
         Column().width(this.index === at ? 22 : 7).height(7).borderRadius(4)
-          .backgroundColor(this.index === at ? this.accent : this.pal().divider)
-          .animation({ duration: 220, curve: Curve.FastOutSlowIn })
+          .backgroundColor(at <= this.index ? this.currentHue() : this.pal().divider)
+          .opacity(at < this.index ? 0.45 : 1)
+          .animation({ duration: 260, curve: Curve.FastOutSlowIn })
       }, (page: GuideContentPage): string => page.id)
     }
+  }
+
+  /** Thin segmented progress for the top bar on phones. */
+  @Builder private progress() {
+    Row({ space: 4 }) {
+      ForEach(this.pages, (_page: GuideContentPage, at: number): void => {
+        Column().layoutWeight(1).height(3).borderRadius(2)
+          .backgroundColor(at <= this.index ? this.currentHue() : this.pal().divider)
+          .animation({ duration: 260, curve: Curve.FastOutSlowIn })
+      }, (page: GuideContentPage): string => 'p' + page.id)
+    }.layoutWeight(1).margin({ right: 12 })
   }
 
   @Builder private primaryButton(fill: boolean) {
     Button(this.last() ? this.finishLabel : '下一步')
       .height(this.embedded ? 42 : 48).fontSize(16).fontWeight(FontWeight.Medium).fontColor(Color.White)
-      .backgroundColor(this.accent).borderRadius(this.embedded ? 21 : 24)
+      .borderRadius(this.embedded ? 21 : 24)
+      .linearGradient({ angle: 100, colors: [[this.light(this.currentHue()), 0], [this.currentHue(), 1]] })
       .padding({ left: 28, right: 28 })
       .width(fill ? '100%' : undefined)
-      .shadow({ radius: 16, color: tint(this.accent, '40'), offsetY: 6 })
+      .shadow({ radius: 16, color: tint(this.currentHue(), '4D'), offsetY: 6 })
       .onClick((): void => { this.next(); })
   }
 
   build() {
     Stack() {
       // Soft radial glows; blur() on shapes renders hard edges on some devices.
-      Column().width(420).height(420).position({ x: -170, y: -160 })
-        .radialGradient({ center: ['50%', '50%'], radius: 210,
-          colors: [[tint(this.accent, '26'), 0], [tint(this.accent, '00'), 1]] })
-      Column().width(380).height(380).position({ x: this.areaWidth - 210, y: '58%' })
-        .radialGradient({ center: ['50%', '50%'], radius: 190,
-          colors: [[tint(this.accent, '1A'), 0], [tint(this.accent, '00'), 1]] })
+      Column().width(440).height(440).position({ x: -180, y: -170 })
+        .radialGradient({ center: ['50%', '50%'], radius: 220,
+          colors: [[tint(this.currentHue(), '2B'), 0], [tint(this.currentHue(), '00'), 1]] })
+      Column().width(400).height(400).position({ x: this.areaWidth - 220, y: '56%' })
+        .radialGradient({ center: ['50%', '50%'], radius: 200,
+          colors: [[tint(this.light(this.currentHue()), '22'), 0], [tint(this.currentHue(), '00'), 1]] })
       Column() {
         Row() {
           if (this.heading.length > 0) {
             Text(this.heading).fontSize(18).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
               .fontFamily(AppConfig.fontFamily)
           } else if (!this.wide()) {
-            Text((this.index + 1).toString() + ' / ' + this.pages.length.toString()).fontSize(13)
-              .fontColor(this.pal().text3).fontFamily(AppConfig.fontFamily)
+            this.progress()
           }
-          Blank()
+          if (this.heading.length > 0 || this.wide()) { Blank() }
           if (this.skipLabel.length > 0 && !this.last()) {
             Text(this.skipLabel).fontSize(15).fontColor(this.pal().text2).padding(8)
               .onClick((): void => { this.onSkip(); })

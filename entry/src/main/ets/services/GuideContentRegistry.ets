@@ -15,6 +15,8 @@ export interface GuideContentPage {
   points?: string[];
   /** HarmonyOS system symbol drawn instead of `symbol` when present. */
   glyph?: Resource;
+  /** Theme color (#RRGGBB) of this slide's artwork; the app accent is used when absent. */
+  hue?: string;
 }
 
 export type GuideDevice = 'phone' | 'tablet' | 'desktop';
@@ -44,6 +46,7 @@ function clonePage(page: GuideContentPage): GuideContentPage {
   if (page.tag !== undefined) { copy.tag = page.tag; }
   if (page.points !== undefined) { copy.points = page.points.slice(); }
   if (page.glyph !== undefined) { copy.glyph = page.glyph; }
+  if (page.hue !== undefined) { copy.hue = page.hue; }
   return copy;
 }
 
@@ -100,6 +103,7 @@ const SHARED_GUIDE_PAGES: GuideContentPage[] = [
     symbol: $rawfile('icons/computer-desktop.svg'),
     glyph: $r('sys.symbol.desktop_fill'),
     tag: '欢迎',
+    hue: '#4F7CFF',
     title: '一个应用，连接你的所有电脑',
     desc: '远程桌面、服务器终端和游戏串流都在同一个工作台里，手机、平板和鸿蒙 PC 用法一致。',
     points: ['五种协议：RDP、RustDesk、SSH/SFTP、VNC、Moonlight', '主机、凭据和密钥可选择云同步', '每台设备按自己的屏幕和输入方式排布']
@@ -109,33 +113,57 @@ const SHARED_GUIDE_PAGES: GuideContentPage[] = [
     symbol: $rawfile('icons/globe-alt.svg'),
     glyph: $r('sys.symbol.list_bullet'),
     tag: '选择协议',
+    hue: '#7B61FF',
     title: '按要做的事选协议',
     desc: '不确定时就照下面选，之后随时可以给同一台电脑再加一种连接方式。',
     points: ['RDP · 完整的 Windows 桌面', 'RustDesk · 跨平台远程协助', 'SSH / SFTP · 命令行与文件管理', 'VNC · 已经装好 VNC 服务的电脑', 'Moonlight · 游戏与高帧率串流']
+  },
+  {
+    id: 'home-at-a-glance',
+    symbol: $rawfile('icons/computer-desktop.svg'),
+    glyph: $r('sys.symbol.house_fill'),
+    tag: '工作台',
+    hue: '#FF8A3D',
+    title: '主机一目了然',
+    desc: '主页按协议把主机分好类，搜索和在线状态帮你很快找到要连的那一台。',
+    points: ['按协议分类展示，也可以换回传统列表', '搜索名称或地址，按在线、离线筛选', 'RustDesk 主机会自动检测是否在线', '局域网发现：找到附近已开启的远程服务']
   },
   {
     id: 'connect-safely',
     symbol: $rawfile('icons/shield-check.svg'),
     glyph: $r('sys.symbol.lock_shield_fill'),
     tag: '安全连接',
+    hue: '#2BB673',
     title: '第一次连接，先核对身份',
     desc: '远端服务开好后点底部「+」添加主机。首次连接会请你确认对方身份，只信任你能核对的设备。',
-    points: ['RDP / VNC 核对证书，SSH 核对指纹', 'RustDesk 核对被控端，Moonlight 输入配对码', '密码与私钥加密保存，可加主机锁和应用锁']
+    points: ['RDP / VNC 核对证书，SSH 核对指纹', 'RustDesk 核对被控端，Moonlight 输入配对码', '密码与私钥加密保存在本机']
+  },
+  {
+    id: 'security-locks',
+    symbol: $rawfile('icons/shield-check.svg'),
+    glyph: $r('sys.symbol.lock_fill'),
+    tag: '隐私与安全',
+    hue: '#E25B8A',
+    title: '应用锁、主机锁与 2FA',
+    desc: '给整个应用或单台主机加一道验证；常用的两步验证码也能放在这里，随手复制。',
+    points: ['应用锁：打开应用时验证身份', '主机锁：连接重要主机前再验证一次', '内置 2FA 验证码，可选加密云同步', '敏感信息默认隐藏，需要时再显示']
   },
   {
     id: 'session-toolkit',
     symbol: $rawfile('icons/cog-6-tooth.svg'),
     glyph: $r('sys.symbol.keyboard'),
     tag: '会话中',
+    hue: '#00A3A3',
     title: '常用工具都在手边',
     desc: '远程画面的边缘有控制入口，键盘、快捷键、显示和文件传输都从这里打开。',
-    points: ['贴边入口：键盘、组合键、显示与画质', 'SSH：多标签、SFTP 文件和传输中心', 'Moonlight 退出时可选「仅断开」或「结束应用」']
+    points: ['贴边入口：键盘、组合键、显示与画质', 'RDP 与 RustDesk 会话里直接收发文件', 'SSH：多标签、SFTP 文件和传输中心', 'Moonlight 退出时可选「仅断开」或「结束应用」']
   },
   {
     id: 'data-recovery-and-help',
     symbol: $rawfile('icons/cloud.svg'),
     glyph: $r('sys.symbol.cloud_fill'),
     tag: '数据与帮助',
+    hue: '#3BA7FF',
     title: '数据由你掌控，问题有迹可查',
     desc: '云同步只同步你勾选的数据；配对信任和证书按协议分别保存在本机。',
     points: ['设置 → 云同步：选择要同步的数据', '恢复备份前先确认方向，避免覆盖', '遇到问题记下错误码，在「设置 → 日志」导出脱敏诊断']
@@ -165,6 +193,7 @@ function deviceGuidePage(device: GuideDevice): GuideContentPage {
     glyph: device === 'desktop' ? $r('sys.symbol.display') : device === 'tablet' ? $r('sys.symbol.rectangle_on_rectangle') :
       $r('sys.symbol.mouse'),
     tag: '为' + guideDeviceLabel(device) + '优化',
+    hue: '#00A3FF',
     title: device === 'desktop' ? '在 PC 上，像本地一样操作' : device === 'tablet' ? '在平板上，触控键鼠两相宜' :
       '在手机上，一只手也能操控',
     desc: guideDeviceSummary(device) + '。常用操作已放在最顺手的位置。',
@@ -180,6 +209,7 @@ export function firstInstallGuidePages(device: GuideDevice = 'phone'): GuideCont
     symbol: $rawfile('icons/shield-check.svg'),
     glyph: $r('sys.symbol.plus_circle_fill'),
     tag: '开始',
+    hue: '#4F7CFF',
     title: '添加第一台主机',
     desc: '准备好了。进入工作台后，三步就能连上第一台电脑。',
     points: ['点底部「+」，按用途选择协议', '填写地址和登录信息，高级选项先保持默认', '保存后点主机卡片即可连接']
@@ -214,6 +244,7 @@ export function settingsUsageGuidePages(device: GuideDevice = 'phone'): GuideCon
     symbol: $rawfile('icons/cog-6-tooth.svg'),
     glyph: $r('sys.symbol.info_circle_fill'),
     tag: '随时查看',
+    hue: '#9B5DE5',
     title: '复杂操作不必一次记住',
     desc: '在「设置 → 教程」里可以按设备和协议，逐步查看每项操作。',
     points: ['操作引导中心：连接、操控、文件、安全与排障', '连接前准备：各协议服务端如何开启', '本版本更新日志：这一版改了什么']

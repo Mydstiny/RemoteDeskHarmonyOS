@@ -15,7 +15,7 @@ export interface ReleaseNotePage {
 
 /** One-line summary shown under the version in the 1.1.6+ 「新功能」 list. */
 export function releaseHeadline(version: string): string {
-  if (version === '1.1.6') { return 'RDP 会话内传文件、VNC 多显示器切换，连接与终端体验全面打磨。'; }
+  if (version === '1.1.6') { return 'RDP 会话内传文件、VNC 多显示器切换、竖屏会话更顺手，连接、终端与设置体验全面打磨。'; }
   return '';
 }
 
@@ -51,6 +51,21 @@ function currentReleasePages(): ReleaseNotePage[] {
       desc: 'RDP、RustDesk、VNC 与 Moonlight 在手机竖屏时可分别选择画面显示方式，并能开关会话侧栏。'
     },
     {
+      id: 'release-portrait-sidebar', symbol: $rawfile('icons/computer-desktop.svg'), glyph: $r('sys.symbol.rectangle_on_rectangle'),
+      tag: '新功能', title: '竖屏侧栏高度可调',
+      desc: '手机竖屏会话的侧栏提供自动、紧凑、标准、高四档高度，在「设置 → 显示与交互」里按习惯选择。'
+    },
+    {
+      id: 'release-tap-keyboard', symbol: $rawfile('icons/command-line.svg'), glyph: $r('sys.symbol.keyboard'),
+      tag: '新功能', title: '点按输入框自动弹出键盘',
+      desc: '在「键盘 → 输入行为」打开后，点按远端输入位置会自动弹出软键盘；横屏悬浮显示，竖屏正常避让。默认关闭。'
+    },
+    {
+      id: 'release-rdp-cert-preflight', symbol: $rawfile('icons/shield-check.svg'), glyph: $r('sys.symbol.checkmark_shield'),
+      tag: '新功能', title: 'RDP 证书预检可以跳过',
+      desc: '在「设置 → Windows RDP」可关闭连接前的证书预检，直连更快；连接时仍会核验证书，未知或异常证书需要你确认。'
+    },
+    {
       id: 'release-rdp-connect', symbol: $rawfile('icons/globe-alt.svg'), glyph: $r('sys.symbol.link'),
       tag: '改进', title: 'RDP 更容易连上',
       desc: '域名解析失败时自动改用备用解析；连接前检查与实际连接走同一条线路；检查未通过时也可以确认风险后直接连接。'
@@ -76,9 +91,19 @@ function currentReleasePages(): ReleaseNotePage[] {
       desc: '日志新增完整抓取档位，覆盖连接前的各项检查，排查问题更快；导出内容仍会自动脱敏。'
     },
     {
+      id: 'release-smooth-settings', symbol: $rawfile('icons/cog-6-tooth.svg'), glyph: $r('sys.symbol.gearshape_fill'),
+      tag: '改进', title: '设置页更流畅',
+      desc: '设置页滑动更顺滑；动效只在屏幕上看得见时运行，并与屏幕刷新同步，更省电也不再卡顿。'
+    },
+    {
+      id: 'release-onboarding', symbol: $rawfile('icons/computer-desktop.svg'), glyph: $r('sys.symbol.sun_max_fill'),
+      tag: '改进', title: '新手引导焕新',
+      desc: '引导扩充到 9 页，按手机、平板和 PC 分别排版；主页、安全锁与 2FA 都有介绍，随时可在「设置 → 教程」回看。'
+    },
+    {
       id: 'release-pro-preview', symbol: $rawfile('icons/key.svg'), glyph: $r('sys.symbol.star_fill'),
       tag: '即将推出', title: 'RemoteDesktop Pro 预告',
-      desc: '同账号接续、自定义组合键与 SSH 终端皮肤、工作区与布局、高级主机管理正在打磨，开放后可在「设置」中查看。'
+      desc: '同账号接续、工作区与布局、高级主机管理、远端显示方案、个性化与远程 AI 正在打磨，读完更新说明即可预览 Pro 功能介绍。'
     }
   ];
 }

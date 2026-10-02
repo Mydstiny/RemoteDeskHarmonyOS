@@ -16,6 +16,7 @@ import {
   CURRENT_RELEASE_VERSION, pagesForReleasedVersion, releaseHeadline, ReleaseNotePage
 } from '../services/ReleaseNotesRegistry';
 import { GuideShowcase, WhatsNewList } from '../components/guide/GuideShowcase';
+import { ProShowcase } from '../components/guide/ProShowcase';
 import {
   clampGuidePageIndex,
   ensureGuidePages,
@@ -51,8 +52,12 @@ struct GuidePage {
   @State mode: StartupMode = StartupMode.FIRST_INSTALL_GUIDE;
   @State activePages: GuideContentPage[] = firstInstallGuidePages();
   @State releaseItems: ReleaseNotePage[] = [];
+  /** 'main' shows the guide or the 「新功能」 list; 'pro' shows the Pro 功能介绍 sheet that closes either flow. */
+  @State stage: string = 'main';
   private tutorialPages: GuideContentPage[] = firstInstallGuidePages();
   private isFinishing: boolean = false;
+  /** The sheet is being closed only to reopen at a new breakpoint, not dismissed by the user. */
+  private reflowingSheet: boolean = false;
   private guideSheetEnterTimer: number = -1;
   private guideSheetReopenTimer: number = -1;
 
@@ -110,6 +115,7 @@ struct GuidePage {
     if (!this.usesGuideSheet() || !this.showGuideSheet) { return; }
     // preferType 在 Sheet 已显示时不会可靠地从 BOTTOM 切换为 CENTER，
     // 折叠/展开或跨窗口断点时先完成原生退出，再按新断点重新打开。
+    this.reflowingSheet = true;
     this.showGuideSheet = false;
   }
 
@@ -123,7 +129,15 @@ struct GuidePage {
     // 首次安装引导必须先作为页面首屏渲染。冷启动时系统 bindSheet 可能
     // 尚未完成宿主挂载，若把首屏完全交给 Sheet，挂载竞态会再次呈现白屏。
     // 版本更新说明继续使用既有 Sheet，不改变更新弹窗的显示路径。
-    return this.mode === StartupMode.RELEASE_NOTES;
+    // 引导结束后的 Pro 功能介绍也用同一个 Sheet 弹出，此时页面已经有可见内容。
+    return this.mode === StartupMode.RELEASE_NOTES || this.stage === 'pro';
+  }
+
+  /** Both flows end with the Pro 功能介绍 sheet; its button or dismissal completes the startup guide. */
+  private showProIntro(): void {
+    if (this.isFinishing || this.stage === 'pro') { return; }
+    this.stage = 'pro';
+    this.showGuideSheet = true;
   }
 
   private onBackgroundFlagChange(): void {
@@ -175,19 +189,34 @@ struct GuidePage {
     // Keep the content below the usable window height on phones and small
     // freeform windows. The pages are intentionally short so the Sheet never
     // needs to grow beyond the viewport just to fit a paragraph.
-    if (this.presentGuideAsBottomSheet()) { return '86%'; }
+    if (this.presentGuideAsBottomSheet() || this.proIntroOnPhone()) { return '86%'; }
     return this.breakpoint === 'xl' ? 680 : 620;
   }
 
-  /** First-install intro fills the page; the post-update 「新功能」 list lives in a sheet. */
+  /** The Pro sheet after the first-install guide follows the window size like the release sheet does. */
+  private proIntroOnPhone(): boolean {
+    return this.stage === 'pro' && this.mode === StartupMode.FIRST_INSTALL_GUIDE && this.breakpoint === 'sm';
+  }
+
+  /**
+   * First-install intro fills the page; the post-update 「新功能」 list lives in a sheet. Both continue into the
+   * Pro 功能介绍 sheet.
+   */
   @Builder guidePanel(isSheet: boolean) {
-    if (this.mode === StartupMode.RELEASE_NOTES) {
+    if (isSheet && this.stage === 'pro') {
+      ProShowcase({
+        primaryLabel: '开始使用',
+        onPrimary: (): void => { this.finish(); }
+      })
+      .width('100%').height('100%')
+      .backgroundColor(this.pal().sheetBg)
+    } else if (this.mode === StartupMode.RELEASE_NOTES) {
       WhatsNewList({
         version: CURRENT_RELEASE_VERSION,
         headline: releaseHeadline(CURRENT_RELEASE_VERSION),
         items: this.releaseItems,
         primaryLabel: '继续',
-        onPrimary: (): void => { this.finish(); }
+        onPrimary: (): void => { this.showProIntro(); }
       })
       .width('100%').height('100%')
       .backgroundColor(isSheet ? this.pal().sheetBg : this.pal().bg)
@@ -196,8 +225,8 @@ struct GuidePage {
         pages: this.activePages,
         skipLabel: '跳过',
         finishLabel: '开始使用',
-        onFinish: (): void => { this.finish(); },
-        onSkip: (): void => { this.finish(); }
+        onFinish: (): void => { this.showProIntro(); },
+        onSkip: (): void => { this.showProIntro(); }
       })
       .width('100%').height('100%')
     }
@@ -209,7 +238,7 @@ struct GuidePage {
 
   build() {
     Stack() {
-      if (this.usesGuideSheet()) {
+      if (this.mode === StartupMode.RELEASE_NOTES) {
         // 更新说明由系统 Sheet 承载，底层只需要提供全屏宿主节点。
         Column().width('100%').height('100%').backgroundColor(this.pal().bg)
       } else {
@@ -220,12 +249,12 @@ struct GuidePage {
     .width('100%').height('100%')
     .backgroundColor(this.pal().bg)
     // The full-page intro keeps its buttons clear of the status and navigation bars.
-    .expandSafeArea(this.usesGuideSheet() ? [SafeAreaType.SYSTEM] : [],
-      this.usesGuideSheet() ? [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM] : [])
+    .expandSafeArea(this.mode === StartupMode.RELEASE_NOTES ? [SafeAreaType.SYSTEM] : [],
+      this.mode === StartupMode.RELEASE_NOTES ? [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM] : [])
     .bindSheet($$this.showGuideSheet, this.guideSheet(), {
       height: this.guideSheetHeight(),
-      preferType: this.presentGuideAsBottomSheet() ? SheetType.BOTTOM : SheetType.CENTER,
-      dragBar: this.presentGuideAsBottomSheet(),
+      preferType: this.presentGuideAsBottomSheet() || this.proIntroOnPhone() ? SheetType.BOTTOM : SheetType.CENTER,
+      dragBar: this.presentGuideAsBottomSheet() || this.proIntroOnPhone(),
       backgroundColor: this.pal().sheetBg,
       blurStyle: BlurStyle.NONE,
       showClose: false,
@@ -253,7 +282,14 @@ struct GuidePage {
       router.replaceUrl({ url: 'pages/LoginPage' });
       return;
     }
+    if (this.stage === 'pro' && !this.appInBackground && !this.reflowingSheet) {
+      // Swiping the Pro 功能介绍 away is the same as tapping 开始使用.
+      this.finish();
+      router.replaceUrl({ url: 'pages/LoginPage' });
+      return;
+    }
     // 系统弹窗、后台切换或断点变化都可能让 Sheet 先消失；这不代表用户完成了引导。
+    this.reflowingSheet = false;
     this.showGuideSheet = false;
     this.scheduleGuideSheetReopen();
   }
