@@ -401,12 +401,12 @@ export struct AiHostEditor {
     }
     Text('配对邀请').fontSize(14).fontFamily(AppConfig.fontFamily).fontWeight(FontWeight.Medium)
       .fontColor(this.pal().text).width('100%')
-    TextArea({ text: this.invite, placeholder: '粘贴电脑生成的邀请内容；留空可先保存主机' })
+    TextArea({ text: this.invite, placeholder: '粘贴电脑生成的 JSON、二维码扫描结果或配对链接；留空可先保存主机' })
       .constraintSize({ minHeight: 112, maxHeight: 180 }).fontSize(13).fontFamily(AppConfig.fontFamily)
       .fontColor(this.pal().text).backgroundColor(this.pal().surface).borderRadius(12)
       .enabled(!this.busy && !this.defaultsPending && this.allowed && !this.inBackground).accessibilityText('配对邀请')
       .onChange((v: string): void => { if (this.alive && !this.inBackground && !this.busy && !this.defaultsPending && this.allowed) { this.invite = v; } }).maxLength(70000)
-    AiActionButton({ label: '从剪贴板粘贴邀请', isEnabled: !this.busy && !this.defaultsPending && this.allowed && !this.inBackground,
+    AiActionButton({ label: '从剪贴板读取二维码/链接邀请', isEnabled: !this.busy && !this.defaultsPending && this.allowed && !this.inBackground,
       onAction: (): void => { void this.pasteInvite(); } })
     if (this.inviteStatus !== '') {
       Text(this.inviteStatus).fontSize(12).fontFamily(AppConfig.fontFamily).fontColor(this.pal().text2).width('100%')
@@ -417,7 +417,7 @@ export struct AiHostEditor {
       'Codex：在插件目录运行 node bin/remotedesk-codex.mjs invite --state "$STATE" --projects <项目ID> --role operator --out "$STATE/invite.json"' :
       'DSH：在插件目录运行 node bin/remotedesk-dsh.mjs invite --state "$STATE" --projects <项目ID> --role operator --out "$STATE/invite.json"')
       .fontSize(11).fontFamily('monospace').fontColor(this.pal().text2).width('100%')
-    Text('邀请由电脑端本地签发，有效 120 秒且只能使用一次；生成后通过可信方式把 invite.json 全文带到手机，完成配对后删除传输副本。')
+    Text('电脑端设置页默认显示二维码；扫描结果可以直接粘贴，二维码不可用时切换到链接配对并复制链接。邀请由电脑端本地签发，有效 120 秒且只能使用一次；完成配对后删除传输副本。')
       .fontSize(12).fontFamily(AppConfig.fontFamily).fontColor(this.pal().text2).width('100%')
     Text('已配对主机可直接保存并连接。未配对主机请填写邀请，或先保存、稍后配对。')
       .fontSize(12).fontFamily(AppConfig.fontFamily).fontColor(this.pal().text2).width('100%')

@@ -1,4 +1,5 @@
 import { AiEvent, AiInvite, aiIdValid } from './AiModels';
+import { util } from '@kit.ArkTS';
 
 export function aiRecord(value: Object | undefined | null): Record<string, Object> {
   if (value === null || value === undefined || typeof value !== 'object' || Array.isArray(value)) {
@@ -15,15 +16,7 @@ export function aiNumber(value: Object | undefined | null, fallback: number = 0)
 export function aiArray(value: Object | undefined | null): Object[] {
   return Array.isArray(value) ? value as Object[] : [];
 }
-export function parseAiInvite(text: string, now: number = Date.now()): AiInvite {
-  if (text.length > 70000) { throw new Error('AI_INVITE_INVALID'); }
-  let parsed: Object;
-  try {
-    parsed = JSON.parse(text) as Object;
-  } catch (_error) {
-    throw new Error('AI_INVITE_INVALID');
-  }
-  const raw = aiRecord(parsed);
+function parseRawAiInvite(raw: Record<string, Object>, now: number): AiInvite {
   const keys = Object.keys(raw).sort().join(',');
   if (keys !== 'ca,code,expires,serverInstance') { throw new Error('AI_INVITE_INVALID'); }
   const invite: AiInvite = { ca: aiString(raw['ca']), code: aiString(raw['code']),
@@ -34,6 +27,35 @@ export function parseAiInvite(text: string, now: number = Date.now()): AiInvite 
     throw new Error('AI_INVITE_EXPIRED_OR_INVALID');
   }
   return invite;
+}
+
+function unwrapPairingLink(text: string): string {
+  const match: RegExpExecArray | null = /^remotedesk:\/\/pair\?data=([A-Za-z0-9_-]+)$/.exec(text.trim());
+  if (match === null || match[1].length > 120000) { throw new Error('AI_INVITE_INVALID'); }
+  const padded: string = match[1] + '='.repeat((4 - match[1].length % 4) % 4);
+  try {
+    const decoded: Uint8Array = new util.Base64Helper().decodeSync(padded);
+    const parsed: Object = JSON.parse(new util.TextDecoder().decodeToString(decoded)) as Object;
+    const envelope = aiRecord(parsed);
+    if (envelope['type'] !== 'remotedesk-pair' || envelope['version'] !== 1) {
+      throw new Error('AI_INVITE_INVALID');
+    }
+    return JSON.stringify(aiRecord(envelope['invite']));
+  } catch (_error) {
+    throw new Error('AI_INVITE_INVALID');
+  }
+}
+
+export function parseAiInvite(text: string, now: number = Date.now()): AiInvite {
+  if (text.length > 120000) { throw new Error('AI_INVITE_INVALID'); }
+  const normalized: string = text.trim().startsWith('remotedesk://pair?data=') ? unwrapPairingLink(text) : text;
+  let parsed: Object;
+  try {
+    parsed = JSON.parse(normalized) as Object;
+  } catch (_error) {
+    throw new Error('AI_INVITE_INVALID');
+  }
+  return parseRawAiInvite(aiRecord(parsed), now);
 }
 /** Handles fragmented SSE and multiline data; HTTP framing is owned by native. */
 export class AiEventDecoder {
