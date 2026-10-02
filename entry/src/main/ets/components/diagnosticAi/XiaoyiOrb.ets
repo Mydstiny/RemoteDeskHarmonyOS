@@ -33,6 +33,44 @@ export struct AiIslandOrb {
   }
 }
 
+/** Six-kernel compact indicator used by the reference interaction's processing capsule. */
+@Component
+export struct AiKernelRing {
+  @Prop ringSize: number = 24;
+  @State private turn: number = 0;
+  private readonly count: number = 6;
+
+  aboutToAppear(): void {
+    setTimeout((): void => {
+      this.getUIContext().animateTo({ duration: 1800, iterations: -1, curve: Curve.Linear }, (): void => {
+        this.turn = 360;
+      });
+    }, 16);
+  }
+
+  private x(i: number): number {
+    const radius = this.ringSize * 0.28;
+    return this.ringSize / 2 + Math.cos(i * Math.PI * 2 / this.count) * radius - this.dot(i) / 2;
+  }
+
+  private y(i: number): number {
+    const radius = this.ringSize * 0.28;
+    return this.ringSize / 2 + Math.sin(i * Math.PI * 2 / this.count) * radius - this.dot(i) / 2;
+  }
+
+  private dot(i: number): number { return this.ringSize * (i % 2 === 0 ? 0.22 : 0.16); }
+
+  build() {
+    Stack() {
+      ForEach([0, 1, 2, 3, 4, 5], (i: number): void => {
+        Circle().width(this.dot(i)).height(this.dot(i)).fill('#F6FBFF')
+          .shadow({ radius: this.ringSize * 0.28, color: ['#42CBF7', '#A479FF', '#FF678C'][i % 3] })
+          .position({ x: this.x(i), y: this.y(i) })
+      }, (i: number): string => 'kernel' + i.toString())
+    }.width(this.ringSize).height(this.ringSize).rotate({ angle: this.turn })
+  }
+}
+
 const AI_THINKING_COLORS: Array<[ResourceColor, number]> = [
   ['#42CBF7', 0], ['#2A7DFF', 0.3], ['#A479FF', 0.6], ['#FF678C', 0.85], ['#42CBF7', 1]
 ];

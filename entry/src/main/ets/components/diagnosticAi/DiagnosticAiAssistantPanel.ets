@@ -54,6 +54,9 @@ export struct DiagnosticAiAssistantPanel {
   @State private mailPreviewVisible: boolean = false;
   @State private mailSubject: string = '';
   @State private mailBody: string = '';
+  /** The result starts as a compact answer; the expand control reveals the full conversation surface. */
+  @State private expandedResult: boolean = false;
+  @State private draftQuestion: string = '';
   private readonly capture: DiagnosticAiCaptureOrchestrator = DiagnosticAiCaptureOrchestrator.getInstance();
   private readonly agent: DiagnosticAiAgentService = new DiagnosticAiAgentService();
   private store: DiagnosticAiProfileStore = new DiagnosticAiProfileStore();
@@ -149,7 +152,8 @@ export struct DiagnosticAiAssistantPanel {
     const requestGeneration: number = this.lifecycleGeneration;
     const requestOwner: string = this.owner;
     const selectedRevision: number = selected.revision;
-    this.agentMode = mode; this.busy = true; this.result = null; this.status = '正在连接 AI…'; this.reportActivity();
+    this.agentMode = mode; this.busy = true; this.result = null; this.expandedResult = false;
+    this.status = '正在连接 AI…'; this.reportActivity();
     try {
       const analyzed: DiagnosticAiResult = await this.agent.respond(selected, this.store.secret(selected), {
         mode, question: this.question, history: this.conversation, bundle
@@ -372,10 +376,28 @@ export struct DiagnosticAiAssistantPanel {
     void this.sendAgent(mode);
   }
 
+  /** Submit a follow-up from the result surface while keeping the conversation summary in the request. */
+  private submitDraftQuestion(): void {
+    const value: string = this.draftQuestion.trim();
+    if (value === '' || this.busy || this.capturing()) { return; }
+    this.question = value;
+    this.draftQuestion = '';
+    this.result = null;
+    this.expandedResult = false;
+    this.mailPreviewVisible = false;
+    this.latestBundleText = '';
+    this.modules = [];
+    this.awaitingCapture = false;
+    this.status = '';
+    this.submitQuestion();
+  }
+
   private quickQuestion(mode: DiagnosticAiAgentMode, question: string): void {
     this.question = question;
     this.agentMode = mode;
     this.result = null;
+    this.expandedResult = false;
+    this.draftQuestion = '';
     this.status = '';
     this.awaitingCapture = mode === 'diagnose';
     this.modules = mode === 'diagnose' ? diagnosticAiModulesForQuestion(question) : [];
@@ -408,10 +430,19 @@ export struct DiagnosticAiAssistantPanel {
         }.width('100%').justifyContent(FlexAlign.Center)
       }
       if (this.awaitingCapture && !this.capturing() && !this.busy) {
-        Row({ space: 8 }) {
-          AiIslandOrb({ orbSize: 20, working: false })
-          Text('需要用户确认后抓取 ' + this.modules.join('、')).fontSize(13).fontColor('#C7C7CC').layoutWeight(1)
-        }.width('100%')
+        Column({ space: 8 }) {
+          Row({ space: 8 }) {
+            AiIslandOrb({ orbSize: 20, working: false })
+            Column({ space: 2 }) {
+              Text('要开始诊断吗？').fontSize(14).fontWeight(FontWeight.Medium).fontColor('#FFFFFF')
+              Text('只读取脱敏事件：' + this.modules.join('、')).fontSize(12).fontColor('#C7C7CC')
+                .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
+            }.layoutWeight(1)
+          }.width('100%')
+          Text('你可以先复现问题；点击「开始抓取诊断」后才会读取这部分日志。')
+            .fontSize(12).lineHeight(17).fontColor('#8E8E93').width('100%')
+        }.width('100%').padding(12).borderRadius(18).backgroundColor('#1AFFFFFF')
+          .border({ width: 0.5, color: '#26FFFFFF' })
       }
       if (this.capturing()) {
         Row({ space: 8 }) {
@@ -430,6 +461,14 @@ export struct DiagnosticAiAssistantPanel {
         Text(this.status).fontSize(13).lineHeight(18).fontColor('#FF9F0A').width('100%')
       }
       if (this.result !== null) {
+        Row({ space: 8 }) {
+          Text(this.agentMode === 'diagnose' ? '诊断结果' : 'AI 回复')
+            .fontSize(13).fontWeight(FontWeight.Medium).fontColor('#FFFFFF').layoutWeight(1)
+          Text(this.expandedResult ? '收起' : '展开')
+            .fontSize(12).fontColor('#C7C7CC').padding({ left: 8, right: 8, top: 5, bottom: 5 })
+            .borderRadius(14).backgroundColor('#1AFFFFFF')
+            .onClick((): void => { this.expandedResult = !this.expandedResult; })
+        }.width('100%')
         Scroll() {
           Column({ space: 12 }) {
             Text((this.result as DiagnosticAiResult).summary).fontSize(16).lineHeight(23).fontColor('#FFFFFF')
@@ -473,7 +512,19 @@ export struct DiagnosticAiAssistantPanel {
               }.width('100%').padding(12).borderRadius(16).backgroundColor('#1AFFFFFF')
             }
           }.width('100%')
-        }.constraintSize({ maxHeight: 380 }).scrollBar(BarState.Off).edgeEffect(EdgeEffect.Spring)
+        }.constraintSize({ maxHeight: this.expandedResult ? 520 : 380 }).scrollBar(BarState.Off).edgeEffect(EdgeEffect.Spring)
+        Row({ space: 8 }) {
+          TextInput({ placeholder: '继续询问 RemoteDesktop', text: this.draftQuestion })
+            .layoutWeight(1).height(38).fontSize(14).fontColor('#FFFFFF').placeholderColor('#8E8E93')
+            .backgroundColor('#1AFFFFFF').borderRadius(19).padding({ left: 14, right: 12 })
+            .onChange((value: string): void => { this.draftQuestion = value; })
+            .onSubmit((): void => { this.submitDraftQuestion(); })
+          Stack() {
+            Circle().width(34).height(34).fill(this.draftQuestion.trim() === '' ? '#3A3A3C' : '#0A84FF')
+            SymbolGlyph($r('sys.symbol.arrow_up')).fontSize(16)
+              .fontColor([this.draftQuestion.trim() === '' ? '#8E8E93' : '#FFFFFF'])
+          }.width(34).height(34).onClick((): void => { this.submitDraftQuestion(); })
+        }.width('100%').margin({ top: 2 })
       }
       Row({ space: 8 }) {
         if (this.lastActive) {
@@ -553,7 +604,7 @@ export struct DiagnosticAiAssistantPanel {
           }
           this.pill('再问一个', false, (): void => {
             this.result = null; this.question = ''; this.status = ''; this.mailPreviewVisible = false; this.modules = [];
-            this.awaitingCapture = false; this.agentMode = 'answer';
+            this.awaitingCapture = false; this.agentMode = 'answer'; this.expandedResult = false; this.draftQuestion = '';
           })
         }
       }.width('100%').justifyContent(FlexAlign.Center)

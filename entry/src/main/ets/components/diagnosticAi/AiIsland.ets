@@ -1,7 +1,7 @@
 import { curves } from '@kit.ArkUI';
 import { inputMethod } from '@kit.IMEKit';
 import { DiagnosticAiAssistantPanel } from './DiagnosticAiAssistantPanel';
-import { AiIslandOrb } from './XiaoyiOrb';
+import { AiKernelRing } from './XiaoyiOrb';
 
 /** System AI gradient colors (ai_intelligent_gradient_color1–4). */
 const AI_ISLAND_COLORS: Array<[ResourceColor, number]> = [
@@ -25,7 +25,7 @@ export struct AiIsland {
   onFloatingChanged: (floating: boolean) => void = (_floating: boolean): void => {};
   onCaptureStateChanged: (capturing: boolean) => void = (_capturing: boolean): void => {};
   onOpenMailDraft: (subject: string, body: string) => void = (_subject: string, _body: string): void => {};
-  /** 0 hidden · 1 capsule · 2 card. */
+  /** 0 hidden · 1 compact kernel capsule · 2 task/status capsule · 3 conversation card. */
   @State private stage: number = 0;
   @State private working: boolean = false;
   /**
@@ -55,7 +55,10 @@ export struct AiIsland {
 
   private open(): void {
     this.morph(1);
-    this.later(300, (): void => { this.morph(2); });
+    // The reference sequence holds the compact processing state before it grows into a task/status capsule,
+    // then opens the confirmation/input card. Keep each state observable so users can follow what is happening.
+    this.later(520, (): void => { this.morph(2); });
+    this.later(1040, (): void => { this.morph(3); });
   }
 
   private setCompact(value: boolean): void {
@@ -131,23 +134,36 @@ export struct AiIsland {
         Column().width('100%').height('100%').backgroundColor(Color.Transparent)
           .onClick((): void => { this.close(); })
       }
-      // The capsule the card grows out of.
-      Row() { AiIslandOrb({ orbSize: 20, working: this.working }) }
+      // F000: compact six-kernel processing capsule. It stays text-free while the assistant is waking up.
+      Row() { AiKernelRing({ ringSize: 24 }) }
         .width(126).height(37).borderRadius(18.5).justifyContent(FlexAlign.Center)
         .backgroundColor('#000000')
         .shadow({ radius: 16, color: '#40000000', offsetY: 6 })
         .margin({ top: this.topInset + 6 })
         .opacity(this.stage === 1 ? 1 : 0)
-        .scale({ x: this.stage === 1 ? 1 : (this.stage >= 2 ? 1.6 : 0.6), y: this.stage === 1 ? 1 : (this.stage >= 2 ? 1.4 : 0.6) })
-      // The card, opening from the capsule at the top center; its height follows its content.
+        .scale({ x: this.stage === 1 ? 1 : 0.6, y: this.stage === 1 ? 1 : 0.6 })
+      // F010: a wider status capsule gives the user a short explanation before controls appear.
+      Row({ space: 9 }) {
+        AiKernelRing({ ringSize: 22 })
+        Text(this.working ? '正在处理诊断请求' : '正在准备 RemoteDesktop 助手')
+          .fontSize(13).fontColor('#FFFFFF').maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+      }.width(258).height(42).padding({ left: 13, right: 13 }).borderRadius(21)
+        .backgroundBlurStyle(BlurStyle.COMPONENT_THICK, { colorMode: ThemeColorMode.DARK, adaptiveColor: AdaptiveColor.DEFAULT })
+        .backgroundColor('#E6000000').border({ width: 0.5, color: '#33FFFFFF' })
+        .shadow({ radius: 18, color: '#40000000', offsetY: 6 })
+        .margin({ top: this.topInset + 6 })
+        .opacity(this.stage === 2 ? 1 : 0)
+        .scale({ x: this.stage === 2 ? 1 : 0.6, y: this.stage === 2 ? 1 : 0.6 })
+      // F020: the card opens from the top center; its height follows its content.
       Column() { this.card() }
         .margin({ top: this.topInset + 6 })
-        .opacity(this.stage >= 2 ? 1 : 0)
-        .scale({ x: this.stage >= 2 ? 1 : 0.24, y: this.stage >= 2 ? 1 : 0.12, centerX: '50%', centerY: 0 })
-        .hitTestBehavior(this.stage >= 2 ? HitTestMode.Default : HitTestMode.None)
+        .opacity(this.stage >= 3 ? 1 : 0)
+        .scale({ x: this.stage >= 3 ? 1 : 0.24, y: this.stage >= 3 ? 1 : 0.12, centerX: '50%', centerY: 0 })
+        .hitTestBehavior(this.stage >= 3 ? HitTestMode.Default : HitTestMode.None)
     }
     .width('100%').height('100%')
-    .hitTestBehavior(this.stage === 0 ? HitTestMode.None : this.compact ? HitTestMode.Transparent : HitTestMode.Default)
+    .hitTestBehavior(this.stage === 0 ? HitTestMode.None : this.compact ? HitTestMode.Transparent :
+      this.stage >= 3 ? HitTestMode.Default : HitTestMode.Transparent)
     .onAreaChange((_old: Area, area: Area): void => {
       const w: number = Number(area.width);
       const h: number = Number(area.height);
