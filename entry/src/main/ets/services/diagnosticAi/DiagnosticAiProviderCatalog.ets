@@ -133,12 +133,28 @@ export function diagnosticAiProviderIsDomestic(providerId: string): boolean {
   return found !== null && found.market === 'mainland-cn';
 }
 
-/** External manifests stay hidden until their endpoint, terms and data region
- * have a dated verification record. Local providers do not need a remote
- * contract but still keep their data-region declaration explicit. */
+/** A Coding Plan or official-account flow must have a dated verification
+ * record before it can be exposed as a usable protected route. */
 export function diagnosticAiProviderManifestVerified(manifest: DiagnosticAiProviderManifest): boolean {
   if (manifest.market === 'local' || diagnosticAiProviderIsHarmonyLocal(manifest.providerId)) { return true; }
   return manifest.verifiedAt.trim() !== '' && manifest.dataRegion !== 'unknown' && manifest.privacy.region !== 'unknown';
+}
+
+/** Ordinary API/Token Plan remains independently usable when its normal
+ * OpenAI-compatible route, declared purpose, terms and data region exist.
+ * Coding Plan verification must not hide this separate billing path. */
+export function diagnosticAiProviderNormalApiAvailable(manifest: DiagnosticAiProviderManifest): boolean {
+  return manifest.authModes.indexOf('api_key') >= 0 && manifest.billingMode !== 'coding_plan' &&
+    manifest.endpoint.trim() !== '' && manifest.chatPath.trim() !== '' &&
+    manifest.allowedUseCases.indexOf('diagnostic_assistant') >= 0 && manifest.termsVersion.trim() !== '' &&
+    manifest.dataRegion !== 'unknown' && manifest.privacy.region !== 'unknown';
+}
+
+export function diagnosticAiProviderCodingPlanAvailable(manifest: DiagnosticAiProviderManifest): boolean {
+  return diagnosticAiProviderManifestVerified(manifest) && manifest.authModes.indexOf('coding_plan_key') >= 0 &&
+    manifest.billingMode === 'coding_plan' && manifest.codingPlanModelIds.length > 0 &&
+    manifest.allowedUseCases.indexOf('diagnostic_assistant') >= 0 && !manifest.requiresOfficialTool &&
+    manifest.termsVersion.trim() !== '' && manifest.endpoint.trim() !== '' && manifest.chatPath.trim() !== '';
 }
 
 export function diagnosticAiProviderIsHarmonyLocal(providerId: string): boolean {

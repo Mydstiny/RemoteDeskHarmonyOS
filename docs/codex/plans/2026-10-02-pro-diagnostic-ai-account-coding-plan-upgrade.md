@@ -537,3 +537,13 @@ P1 code is implemented on top of the P0 checkpoint, pending independent review a
 - Follow-up fix `9614dd09` applies the same diagnostic-use-case/auth/consent/Manifest-version gate inside `DiagnosticAiProviderService.request`, so model-list and price-refresh calls cannot bypass the Agent gate after revoke, account change or stale-profile migration.
 
 Validation: bundled DevEco TypeScript runner `test_diagnostic_ai_settings.cjs` 6/6 PASS; latest isolated-cache `default@OhosTestCompileArkTS` and signed `assembleHap` both exit 0; ProviderService-fix HAP SHA-256 `f93a064a73d3573b8e80cc6535bcadd16baf7c814ae6fb6072b56937d4eb0b30`; `hdc install -r` succeeded on 127.0.0.1:5555 and 192.168.31.156:38451, while 192.168.31.118:40123 was offline during the final update (it had the prior checkpoint). Optional `ohosTest@OhosTestCompileArkTS` remains unavailable because task `00306054` is not registered.
+
+## 20. 2026-10-03 普通 API 与 Coding Plan 分离修复
+
+本轮修复了 P1 配置入口把普通 API 误套用 Coding Plan `verifiedAt` 门禁的问题：
+
+- `diagnosticAiProviderNormalApiAvailable` 单独检查 `api_key`、非 Coding Plan 计费、兼容端点、`diagnostic_assistant` 用途、条款版本和数据地区；因此 Qwen、智谱、Kimi 等已有完整普通 API Manifest 的 Provider 可以按普通 API 配置，数据地区仍为 `unknown` 的 Provider 继续阻断。
+- `diagnosticAiProviderCodingPlanAvailable` 单独检查日期核验、`coding_plan_key`、专用计费模式、诊断用途、专用端点、条款和模型白名单。认证与计费策略再次执行同一核验，未核验 Coding Plan 不会因模型列表或价格刷新而绕过门禁。
+- 配置页分成“普通 API 连接”和“Coding Plan 专用连接”两个入口。没有官方核验 Manifest 时，Coding Plan 入口显示锁定原因；普通 API Key、专用 Key、模型和端点不会共用。
+
+定向测试新增普通 API 可用性与未核验 Coding Plan 的负向断言，全部 7 组 PASS。`default@OhosTestCompileArkTS` 与签名 `assembleHap` 均 BUILD SUCCESSFUL，`git diff --check` 通过；本轮没有声称 Coding Plan 已取得供应商许可或已完成真实 Provider 请求，仍需外部官方资料、账户、设备视觉和邮件验收。

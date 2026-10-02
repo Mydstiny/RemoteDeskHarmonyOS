@@ -1,4 +1,5 @@
 import { DiagnosticAiAuthMode, DiagnosticAiProviderManifest, DiagnosticAiProviderProfile } from './DiagnosticAiModels';
+import { diagnosticAiProviderCodingPlanAvailable } from './DiagnosticAiProviderCatalog';
 
 const KNOWN_AUTH_MODES: DiagnosticAiAuthMode[] = ['api_key', 'oauth_pkce', 'device_authorization',
   'coding_plan_key', 'official_cli_bridge', 'none', 'unsupported'];
@@ -32,6 +33,9 @@ export function diagnosticAiAuthDecision(manifest: DiagnosticAiProviderManifest,
   }
   if (mode === 'oauth_pkce' || mode === 'device_authorization' || mode === 'official_cli_bridge') {
     return { ok: false, code: 'AUTH_FLOW_NOT_IMPLEMENTED', message: '该官方授权流程尚未完成接入，暂不能发送请求' };
+  }
+  if (mode === 'coding_plan_key' && !diagnosticAiProviderCodingPlanAvailable(manifest)) {
+    return { ok: false, code: 'CODING_PLAN_MANIFEST_UNVERIFIED', message: 'Coding Plan 专用 Manifest 尚未完成官方端点、用途和数据地区核验' };
   }
   if (mode === 'coding_plan_key' && manifest.codingPlanModelIds.length === 0) {
     return { ok: false, code: 'CODING_PLAN_MODEL_LIST_REQUIRED', message: 'Coding Plan 尚未登记模型白名单' };
