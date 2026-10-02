@@ -9,6 +9,7 @@ import { DiagnosticModuleId } from '../../services/DiagnosticCapturePolicy';
 import { diagnosticAiModulesForQuestion, diagnosticAiCaptureStatus } from '../../services/diagnosticAi/DiagnosticAiBundlePolicy';
 import { DiagnosticAiCaptureOrchestrator } from '../../services/diagnosticAi/DiagnosticAiCaptureOrchestrator';
 import { DiagnosticAiProfileStore } from '../../services/diagnosticAi/DiagnosticAiProfileStore';
+import { diagnosticAiProviderIsHarmonyLocal } from '../../services/diagnosticAi/DiagnosticAiProviderCatalog';
 import { DiagnosticAiAgentMode, DiagnosticAiAgentService, diagnosticAiAgentModeForQuestion, diagnosticAiAgentModeLabel } from '../../services/diagnosticAi/DiagnosticAiAgentService';
 import { diagnosticAiMailDraft } from '../../services/diagnosticAi/DiagnosticAiMailPolicy';
 import { diagnosticAiApplyProposal, diagnosticAiSettingActionText } from '../../services/diagnosticAi/DiagnosticAiSettingsActionPolicy';
@@ -146,6 +147,9 @@ export struct DiagnosticAiAssistantPanel {
 
   private errorText(error: Object): string {
     const value = error instanceof Error ? error.message : 'DIAGNOSTIC_AI_UNKNOWN';
+    if (value.indexOf('LOCAL_MODEL_PC_ONLY') >= 0) { return '鸿蒙端侧小模型当前仅支持 PC/2in1，手机和 Pad 暂不可用'; }
+    if (value.indexOf('LOCAL_MODEL_BUSY') >= 0) { return '鸿蒙端侧小模型正在处理其他请求，请稍后重试'; }
+    if (value.indexOf('LOCAL_MODEL') >= 0) { return '鸿蒙端侧小模型当前不可用，请在 Provider 设置中重新检测'; }
     if (value.indexOf('HTTP_401') >= 0 || value.indexOf('HTTP_403') >= 0) { return 'AI 服务拒绝了请求，请检查 API Key、套餐权限或模型权限'; }
     if (value.indexOf('HTTP_400') >= 0 || value.indexOf('HTTP_422') >= 0) { return 'AI 服务不接受当前请求格式，请重新拉取模型或换用兼容模型'; }
     if (value.indexOf('NETWORK') >= 0) { return 'AI 服务暂时无法连接，请检查网络、地址和证书'; }
@@ -159,7 +163,7 @@ export struct DiagnosticAiAssistantPanel {
     const selected = this.selectedProfile();
     if (selected === undefined) { this.status = '请先在辅助 AI 配置中保存 API Key 并选择模型'; return; }
     const secret: string = this.store.secret(selected);
-    if (secret.trim() === '') {
+    if (!diagnosticAiProviderIsHarmonyLocal(selected.providerId) && secret.trim() === '') {
       this.status = '已找到 Provider 配置，但 API Key 无法从本机安全存储读回；请重新保存 API Key';
       return;
     }

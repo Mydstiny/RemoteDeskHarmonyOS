@@ -1,4 +1,7 @@
-import { DiagnosticAiProviderManifest } from './DiagnosticAiModels';
+import { DiagnosticAiProviderManifest, DiagnosticAiDeviceType } from './DiagnosticAiModels';
+
+export const HARMONY_LOCAL_PROVIDER_ID: string = 'harmony_local_chat';
+export const HARMONY_LOCAL_MODEL_ID: string = 'harmonyos-system-local-chat';
 
 /**
  * The first catalog is intentionally conservative. URLs and capability claims
@@ -49,6 +52,16 @@ const PROVIDERS: DiagnosticAiProviderManifest[] = [
     privacy: { region: 'device-local', retention: 'documented', trainingUse: 'off', policyRef: '' }, verifiedAt: ''
   },
   {
+    schemaVersion: 1, providerId: HARMONY_LOCAL_PROVIDER_ID, displayName: '鸿蒙端侧小模型', market: 'local',
+    adapterFamily: 'harmony_local_chat', endpoint: '', modelListPath: '', chatPath: '',
+    authKind: 'none', authHeader: '', supportsStreaming: true,
+    supportsVision: false, supportsTools: false,
+    privacy: {
+      region: 'device-local', retention: 'unknown', trainingUse: 'unknown',
+      policyRef: 'https://developer.huawei.com/consumer/cn/doc/doccenter-references/api/dataaugmentation-localchatmodel-api'
+    }, verifiedAt: '2026-10-02', supportedDeviceTypes: ['pc', '2in1']
+  },
+  {
     schemaVersion: 1, providerId: 'doubao', displayName: '字节豆包 / 火山引擎', market: 'mainland-cn',
     adapterFamily: 'vendor_native_http', endpoint: '', modelListPath: '', chatPath: '',
     authKind: 'api_key_header', authHeader: 'Authorization', supportsStreaming: true,
@@ -82,7 +95,8 @@ function cloneManifest(value: DiagnosticAiProviderManifest): DiagnosticAiProvide
     authHeader: value.authHeader, supportsStreaming: value.supportsStreaming,
     supportsVision: value.supportsVision, supportsTools: value.supportsTools,
     privacy: { region: value.privacy.region, retention: value.privacy.retention,
-      trainingUse: value.privacy.trainingUse, policyRef: value.privacy.policyRef }, verifiedAt: value.verifiedAt };
+      trainingUse: value.privacy.trainingUse, policyRef: value.privacy.policyRef }, verifiedAt: value.verifiedAt,
+    supportedDeviceTypes: value.supportedDeviceTypes === undefined ? undefined : value.supportedDeviceTypes.slice() };
 }
 
 export function diagnosticAiProviderManifest(providerId: string): DiagnosticAiProviderManifest | null {
@@ -93,4 +107,18 @@ export function diagnosticAiProviderManifest(providerId: string): DiagnosticAiPr
 export function diagnosticAiProviderIsDomestic(providerId: string): boolean {
   const found = diagnosticAiProviderManifest(providerId);
   return found !== null && found.market === 'mainland-cn';
+}
+
+export function diagnosticAiProviderIsHarmonyLocal(providerId: string): boolean {
+  return providerId === HARMONY_LOCAL_PROVIDER_ID;
+}
+
+export function diagnosticAiHarmonyLocalDeviceSupported(deviceType: string): boolean {
+  return deviceType === 'pc' || deviceType === '2in1';
+}
+
+export function diagnosticAiProviderSupportsDevice(manifest: DiagnosticAiProviderManifest,
+  deviceType: string): boolean {
+  if (manifest.supportedDeviceTypes === undefined || manifest.supportedDeviceTypes.length === 0) { return true; }
+  return manifest.supportedDeviceTypes.indexOf(deviceType as DiagnosticAiDeviceType) >= 0;
 }

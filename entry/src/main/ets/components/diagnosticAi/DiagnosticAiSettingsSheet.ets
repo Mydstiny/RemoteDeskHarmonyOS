@@ -1,10 +1,11 @@
 import { common } from '@kit.AbilityKit';
+import { deviceInfo } from '@kit.BasicServicesKit';
 import { AppConfig, Palette, buildDark, buildLight } from '../../common/Theme';
 import { AppSettingsActionRow } from '../AppSettingsActionRow';
 import { AppUiMetrics } from '../../common/AppUiMetrics';
 import { DiagnosticAiAssistantPanel } from './DiagnosticAiAssistantPanel';
 import { DiagnosticAiModelInfo, DiagnosticAiProviderManifest, DiagnosticAiProviderProfile, DiagnosticAiSettings } from '../../services/diagnosticAi/DiagnosticAiModels';
-import { diagnosticAiProviderManifests } from '../../services/diagnosticAi/DiagnosticAiProviderCatalog';
+import { diagnosticAiHarmonyLocalDeviceSupported, diagnosticAiProviderIsHarmonyLocal, diagnosticAiProviderManifests, diagnosticAiProviderSupportsDevice, HARMONY_LOCAL_MODEL_ID } from '../../services/diagnosticAi/DiagnosticAiProviderCatalog';
 import { validateDiagnosticAiEndpoint } from '../../services/diagnosticAi/DiagnosticAiEndpointPolicy';
 import { DiagnosticAiProfileStore } from '../../services/diagnosticAi/DiagnosticAiProfileStore';
 import { DiagnosticAiProviderService, diagnosticAiPrivacySummary } from '../../services/diagnosticAi/DiagnosticAiProviderService';
@@ -32,6 +33,7 @@ export struct DiagnosticAiSettingsSheet {
   @State message: string = '';
   @State busy: boolean = false;
   @State availableModels: DiagnosticAiModelInfo[] = [];
+  @State deviceType: string = 'unknown';
   private readonly providerService: DiagnosticAiProviderService = new DiagnosticAiProviderService();
   private store: DiagnosticAiProfileStore = new DiagnosticAiProfileStore();
   private owner: string = 'device-local';
@@ -39,6 +41,7 @@ export struct DiagnosticAiSettingsSheet {
   private pal(): Palette { return this.theme === 'light' ? buildLight(this.accent) : buildDark(this.accent); }
 
   aboutToAppear(): void {
+    try { this.deviceType = deviceInfo.deviceType; } catch (_error) { this.deviceType = 'unknown'; }
     const scope = AccountSessionCoordinator.getInstance().currentScope();
     this.owner = scope.ownerScopeId.trim() === '' ? 'device-local' : scope.ownerScopeId.trim();
     this.manifests = diagnosticAiProviderManifests(); this.store.init(getContext(this) as common.UIAbilityContext, this.owner);
@@ -56,31 +59,50 @@ export struct DiagnosticAiSettingsSheet {
   }
 
   private providerAvailable(manifest: DiagnosticAiProviderManifest): boolean {
-    return manifest.endpoint !== '' && manifest.chatPath !== '';
+    if (!diagnosticAiProviderSupportsDevice(manifest, this.deviceType)) { return false; }
+    return diagnosticAiProviderIsHarmonyLocal(manifest.providerId) ||
+      (manifest.endpoint !== '' && manifest.chatPath !== '');
   }
 
   private selectProvider(id: string): void {
-    this.selectedProvider = id; const manifest = this.manifests.find((value: DiagnosticAiProviderManifest): boolean => value.providerId === id);
-    if (manifest !== undefined && (manifest.endpoint === '' || manifest.chatPath === '')) {
+    const manifest = this.manifests.find((value: DiagnosticAiProviderManifest): boolean => value.providerId === id);
+    if (manifest !== undefined && diagnosticAiProviderIsHarmonyLocal(id) &&
+      !diagnosticAiHarmonyLocalDeviceSupported(this.deviceType)) {
+      this.message = '鸿蒙端侧小模型当前仅支持 PC/2in1；手机和 Pad 暂不可用，后续开放后将上线。';
+      return;
+    }
+    this.selectedProvider = id;
+    if (manifest !== undefined && !diagnosticAiProviderIsHarmonyLocal(id) &&
+      (manifest.endpoint === '' || manifest.chatPath === '')) {
       this.message = '该 Provider 已列入路线图，当前版本尚未开放请求适配';
       return;
     }
-    this.endpoint = manifest?.endpoint ?? ''; this.availableModels = []; this.message = '';
+    this.endpoint = manifest?.endpoint ?? ''; this.availableModels = [];
+    if (manifest !== undefined && diagnosticAiProviderIsHarmonyLocal(id)) { this.model = HARMONY_LOCAL_MODEL_ID; }
+    else { this.model = ''; }
+    this.message = '';
   }
 
   private async saveProvider(): Promise<void> {
     if (!this.providerAllowed() || this.busy) { return; }
     const manifest = this.manifests.find((value: DiagnosticAiProviderManifest): boolean => value.providerId === this.selectedProvider);
-    if (manifest === undefined || manifest.endpoint === '' || manifest.chatPath === '') {
+    const localProvider: boolean = manifest !== undefined && diagnosticAiProviderIsHarmonyLocal(manifest.providerId);
+    if (manifest === undefined || (!localProvider && (manifest.endpoint === '' || manifest.chatPath === ''))) {
       this.message = '该 Provider 尚未完成请求适配'; return;
     }
-    const endpointDecision = validateDiagnosticAiEndpoint(this.endpoint, manifest.adapterFamily, false);
-    if (!endpointDecision.ok) { this.message = '保存失败：' + endpointDecision.message; return; }
+    if (localProvider && !diagnosticAiHarmonyLocalDeviceSupported(this.deviceType)) {
+      this.message = '鸿蒙端侧小模型当前仅支持 PC/2in1；手机和 Pad 暂不可用，后续开放后将上线。'; return;
+    }
+    if (!localProvider) {
+      const endpointDecision = validateDiagnosticAiEndpoint(this.endpoint, manifest.adapterFamily, false);
+      if (!endpointDecision.ok) { this.message = '保存失败：' + endpointDecision.message; return; }
+    }
     this.busy = true; this.message = '';
     const existing = this.profiles.find((value: DiagnosticAiProviderProfile): boolean => value.providerId === manifest.providerId);
     const nextRevision: number = existing === undefined ? 1 : Math.max(1, existing.revision + 1);
     const profile: DiagnosticAiProviderProfile = { id: this.selectedProvider + '-' + this.owner.slice(-8), owner: this.owner,
-      providerId: manifest.providerId, displayName: manifest.displayName, endpoint: this.endpoint.trim(), modelId: this.model.trim(),
+      providerId: manifest.providerId, displayName: manifest.displayName, endpoint: localProvider ? '' : this.endpoint.trim(),
+      modelId: localProvider ? HARMONY_LOCAL_MODEL_ID : this.model.trim(),
       authKind: manifest.authKind, authHeader: manifest.authHeader, secretRef: '', secretFingerprint: '', manifestVersion: manifest.schemaVersion,
       privacy: { region: manifest.privacy.region, retention: manifest.privacy.retention,
         trainingUse: manifest.privacy.trainingUse, policyRef: manifest.privacy.policyRef },
@@ -103,7 +125,9 @@ export struct DiagnosticAiSettingsSheet {
         this.busy = false;
         return;
       }
-      this.keyText = ''; this.profiles = this.store.list(); this.message = 'Provider 配置已保存；密钥只保存在本机安全存储。';
+      this.keyText = ''; this.profiles = this.store.list();
+      this.message = localProvider ? '鸿蒙端侧小模型配置已保存；点击“检测端侧模型”确认系统模型可用。' :
+        'Provider 配置已保存；密钥只保存在本机安全存储。';
     }
     this.busy = false;
   }
@@ -121,14 +145,16 @@ export struct DiagnosticAiSettingsSheet {
       this.availableModels = models;
       if (this.model !== '' && models.some((value: DiagnosticAiModelInfo): boolean => value.id === this.model)) {
         if (this.persistModelSelection(this.model)) {
-          this.message = '已读取并保存 ' + models.length.toString() + ' 个模型；当前模型可直接调用 AI。';
+          this.message = diagnosticAiProviderIsHarmonyLocal(this.selectedProvider) ?
+            '端侧模型已就绪；当前请求将在本机处理。' :
+            '已读取并保存 ' + models.length.toString() + ' 个模型；当前模型可直接调用 AI。';
         } else {
           this.message = '模型列表已读取，但选择状态持久化失败，请点击保存配置重试';
         }
       } else {
         this.message = '已读取 ' + models.length.toString() + ' 个模型；请选择模型。';
       }
-    } catch (error) { this.message = error instanceof Error ? error.message : '模型列表读取失败'; }
+    } catch (error) { this.message = this.providerErrorText(error as Object); }
     finally { this.busy = false; }
   }
 
@@ -159,6 +185,10 @@ export struct DiagnosticAiSettingsSheet {
   private selectedManifest(): DiagnosticAiProviderManifest | undefined {
     return this.manifests.find((value: DiagnosticAiProviderManifest): boolean => value.providerId === this.selectedProvider);
   }
+  private selectedProviderSupported(): boolean {
+    const manifest = this.selectedManifest();
+    return manifest !== undefined && this.providerAvailable(manifest);
+  }
   private savedProfile(): DiagnosticAiProviderProfile | undefined {
     return this.profiles.find((value: DiagnosticAiProviderProfile): boolean =>
       value.providerId === this.settings.selectedProviderId) ?? this.profiles[0];
@@ -169,12 +199,25 @@ export struct DiagnosticAiSettingsSheet {
       value.providerId === this.selectedProvider && value.secretFingerprint !== '');
   }
   private providerTag(manifest: DiagnosticAiProviderManifest): string {
+    if (diagnosticAiProviderIsHarmonyLocal(manifest.providerId) && !this.providerAvailable(manifest)) {
+      return '仅 PC/2in1';
+    }
     if (!this.providerAvailable(manifest)) { return '后续适配'; }
-    return manifest.market === 'local' ? '本机' : '大陆';
+    return diagnosticAiProviderIsHarmonyLocal(manifest.providerId) ? '端侧' : manifest.market === 'local' ? '本机' : '大陆';
   }
   /** Messages that report a failure are tinted; everything else reads as information. */
   private messageIsError(): boolean {
     return this.message.indexOf('失败') >= 0 || this.message.indexOf('请先') >= 0 || this.message.indexOf('尚未') >= 0;
+  }
+  private providerErrorText(error: Object): string {
+    const value = error instanceof Error ? error.message : '';
+    if (value.indexOf('LOCAL_MODEL_PC_ONLY') >= 0) {
+      return '鸿蒙端侧小模型当前仅支持 PC/2in1；手机和 Pad 暂不可用，后续开放后将上线。';
+    }
+    if (value.indexOf('LOCAL_MODEL') >= 0) {
+      return '端侧模型暂不可用，请确认当前是 PC/2in1，并稍后重新检测。';
+    }
+    return value === '' ? '模型列表读取失败' : value;
   }
   private headerTitle(): string { return this.section === 1 ? '启动 AI 辅助' : '辅助 AI 配置'; }
   private headerDetail(): string {
@@ -248,7 +291,13 @@ export struct DiagnosticAiSettingsSheet {
     .border({ width: this.selectedProvider === manifest.providerId ? 1.5 : 0.5,
       color: this.selectedProvider === manifest.providerId ? this.accent : this.pal().cardBorder })
     .opacity(this.providerAvailable(manifest) ? 1 : 0.55)
-    .onClick((): void => { if (this.providerAvailable(manifest)) { this.selectProvider(manifest.providerId); } })
+    .onClick((): void => {
+      if (diagnosticAiProviderIsHarmonyLocal(manifest.providerId) && !this.providerAvailable(manifest)) {
+        this.message = '鸿蒙端侧小模型当前仅支持 PC/2in1；手机和 Pad 暂不可用，后续开放后将上线。';
+      } else if (this.providerAvailable(manifest)) {
+        this.selectProvider(manifest.providerId);
+      }
+    })
   }
 
   @Builder private field(label: string, hint: string) {
@@ -269,23 +318,38 @@ export struct DiagnosticAiSettingsSheet {
         }.width('100%')
         this.sectionLabel('连接信息')
         Column({ space: 10 }) {
-          this.field('服务地址', '可改为兼容的 HTTPS 地址')
-          TextInput({ placeholder: 'https://', text: this.endpoint }).height(44).fontSize(14)
-            .backgroundColor(this.pal().surface).borderRadius(12)
-            .onChange((value: string): void => { this.endpoint = value; })
-          this.field('API Key', '只保存在本机安全存储，不会同步或写入日志')
-          TextInput({ placeholder: this.selectedHasSecret() ? '已保存；留空则保持不变' : '粘贴 API Key', text: this.keyText })
-            .height(44).fontSize(14).type(InputType.Password).backgroundColor(this.pal().surface).borderRadius(12)
-            .onChange((value: string): void => { this.keyText = value; })
-          this.field('模型', '保存服务后可拉取可用模型列表')
-          Row({ space: 8 }) {
-            TextInput({ placeholder: '模型 ID', text: this.model }).height(44).fontSize(14).layoutWeight(1)
-              .backgroundColor(this.pal().surface).borderRadius(12)
-              .onChange((value: string): void => { this.model = value; })
-            Button('拉取模型').height(44).fontSize(13).padding({ left: 14, right: 14 }).borderRadius(12)
-              .backgroundColor(this.pal().surface).fontColor(this.accent).enabled(!this.busy)
+          if (diagnosticAiProviderIsHarmonyLocal(this.selectedProvider)) {
+            this.field('鸿蒙端侧小模型', '由 HarmonyOS 系统管理，不需要服务地址、API Key 或模型 ID')
+            Row({ space: 10 }) {
+              SymbolGlyph($r('sys.symbol.lock_shield_fill')).fontSize(22).fontColor([this.accent])
+              Text(this.selectedProviderSupported() ?
+                '当前设备允许使用 PC/2in1 端侧问答模型' :
+                '当前设备不可用：手机和 Pad 暂未开放').fontSize(13).lineHeight(19)
+                .fontColor(this.pal().text).layoutWeight(1)
+            }.width('100%').padding(12).borderRadius(14).backgroundColor(this.pal().surface)
+            Button(this.busy ? '检测中…' : '检测端侧模型').height(44).fontSize(13).borderRadius(12)
+              .backgroundColor(this.pal().surface).fontColor(this.accent)
+              .enabled(!this.busy && this.selectedProviderSupported())
               .onClick((): void => { void this.fetchModels(); })
-          }.width('100%')
+          } else {
+            this.field('服务地址', '可改为兼容的 HTTPS 地址')
+            TextInput({ placeholder: 'https://', text: this.endpoint }).height(44).fontSize(14)
+              .backgroundColor(this.pal().surface).borderRadius(12)
+              .onChange((value: string): void => { this.endpoint = value; })
+            this.field('API Key', '只保存在本机安全存储，不会同步或写入日志')
+            TextInput({ placeholder: this.selectedHasSecret() ? '已保存；留空则保持不变' : '粘贴 API Key', text: this.keyText })
+              .height(44).fontSize(14).type(InputType.Password).backgroundColor(this.pal().surface).borderRadius(12)
+              .onChange((value: string): void => { this.keyText = value; })
+            this.field('模型', '保存服务后可拉取可用模型列表')
+            Row({ space: 8 }) {
+              TextInput({ placeholder: '模型 ID', text: this.model }).height(44).fontSize(14).layoutWeight(1)
+                .backgroundColor(this.pal().surface).borderRadius(12)
+                .onChange((value: string): void => { this.model = value; })
+              Button('拉取模型').height(44).fontSize(13).padding({ left: 14, right: 14 }).borderRadius(12)
+                .backgroundColor(this.pal().surface).fontColor(this.accent).enabled(!this.busy)
+                .onClick((): void => { void this.fetchModels(); })
+            }.width('100%')
+          }
           if (this.availableModels.length > 0) {
             Flex({ wrap: FlexWrap.Wrap }) {
               ForEach(this.availableModels, (item: DiagnosticAiModelInfo): void => {

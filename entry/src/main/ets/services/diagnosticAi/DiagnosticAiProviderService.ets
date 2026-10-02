@@ -1,17 +1,40 @@
+import { BusinessError, deviceInfo } from '@kit.BasicServicesKit';
+import { util } from '@kit.ArkTS';
+import { localChatModel } from '@kit.DataAugmentationKit';
 import { http } from '@kit.NetworkKit';
 import { DiagnosticAiEvidenceRef, DiagnosticAiModelInfo, DiagnosticAiProviderManifest, DiagnosticAiProviderProfile, DiagnosticAiResult, DiagnosticAiSettingProposal } from './DiagnosticAiModels';
-import { diagnosticAiProviderManifest } from './DiagnosticAiProviderCatalog';
+import { diagnosticAiHarmonyLocalDeviceSupported, diagnosticAiProviderIsHarmonyLocal, diagnosticAiProviderManifest, HARMONY_LOCAL_MODEL_ID } from './DiagnosticAiProviderCatalog';
 import { validateDiagnosticAiEndpoint } from './DiagnosticAiEndpointPolicy';
 import { diagnosticAiProposalIsSafe } from './DiagnosticAiSettingsActionPolicy';
 
 const TIMEOUT_MS: number = 15000;
 const MAX_RESPONSE_BYTES: number = 2 * 1024 * 1024;
+const LOCAL_CHAT_MAX_BYTES: number = 4300;
+const LOCAL_CHAT_TIMEOUT_MS: number = 30000;
 
 function safeText(value: Object | undefined | null, fallback: string = ''): string {
   return typeof value === 'string' ? value as string : fallback;
 }
 
 function responseText(result: Object): string { return typeof result === 'string' ? result as string : JSON.stringify(result); }
+
+function limitUtf8(value: string, maxBytes: number): string {
+  const encoder = new util.TextEncoder();
+  if (encoder.encode(value).length <= maxBytes) { return value; }
+  let result: string = '';
+  for (let i = 0; i < value.length; i++) {
+    const next: string = result + value.charAt(i);
+    if (encoder.encode(next).length > maxBytes) { break; }
+    result = next;
+  }
+  return result;
+}
+
+function errorCode(error: Object): string {
+  if (error instanceof Error) { return error.message; }
+  const row = error as Record<string, Object>;
+  return typeof row['code'] === 'number' ? (row['code'] as number).toString() : 'unknown';
+}
 
 function assistantContent(value: Object | undefined | null): string {
   if (typeof value === 'string') { return value as string; }
@@ -90,6 +113,95 @@ export interface DiagnosticAiAssistInput {
 }
 
 export class DiagnosticAiProviderService {
+  private localInit: Promise<boolean> | null = null;
+  private localQuestionId: number = 0;
+
+  private async ensureHarmonyLocalModel(): Promise<void> {
+    let type: string = 'unknown';
+    let api: number = 0;
+    try { type = deviceInfo.deviceType; api = deviceInfo.sdkApiVersion; } catch (_error) { /* fail closed */ }
+    if (api < 20 || !diagnosticAiHarmonyLocalDeviceSupported(type)) {
+      throw new Error('DIAGNOSTIC_AI_LOCAL_MODEL_PC_ONLY');
+    }
+    if (this.localInit === null) {
+      this.localInit = localChatModel.init();
+    }
+    try {
+      const ready: boolean = await this.localInit;
+      if (!ready) { throw new Error('DIAGNOSTIC_AI_LOCAL_MODEL_UNAVAILABLE'); }
+    } catch (error) {
+      this.localInit = null;
+      const message: string = errorCode(error as Object);
+      if (message.indexOf('DIAGNOSTIC_AI_') === 0) { throw new Error(message); }
+      throw new Error('DIAGNOSTIC_AI_LOCAL_MODEL_INIT_' + message);
+    }
+  }
+
+  private nextLocalQuestionId(): number {
+    this.localQuestionId = (this.localQuestionId + 1) % 65536;
+    return this.localQuestionId === 0 ? 1 : this.localQuestionId;
+  }
+
+  private async harmonyLocalChat(content: string): Promise<string> {
+    await this.ensureHarmonyLocalModel();
+    const questionId: number = this.nextLocalQuestionId();
+    const info: localChatModel.QuestionInfo = { questionId, content: limitUtf8(content, LOCAL_CHAT_MAX_BYTES) };
+    const config: localChatModel.Config = { isStream: true };
+    return await new Promise<string>((resolve: (value: string) => void, reject: (reason?: Object) => void): void => {
+      let settled: boolean = false;
+      let answerText: string = '';
+      let timer: number = setTimeout((): void => {
+        if (!settled) { settled = true; reject(new Error('DIAGNOSTIC_AI_LOCAL_MODEL_TIMEOUT')); }
+      }, LOCAL_CHAT_TIMEOUT_MS);
+      const finishError = (error: Object): void => {
+        if (settled) { return; }
+        settled = true; clearTimeout(timer);
+        const message: string = errorCode(error);
+        reject(new Error(message.indexOf('DIAGNOSTIC_AI_') === 0 ? message : 'DIAGNOSTIC_AI_LOCAL_MODEL_' + message));
+      };
+      const callback = (error: BusinessError, answer: localChatModel.Answer): void => {
+        if (settled) { return; }
+        if (error !== undefined && error !== null) { finishError(error as Object); return; }
+        if (answer === undefined || answer === null || answer.questionId !== questionId) { return; }
+        answerText += answer.content;
+        if (!answer.isFinished) { return; }
+        settled = true; clearTimeout(timer);
+        if (answerText.trim() === '') { reject(new Error('DIAGNOSTIC_AI_EMPTY_RESULT')); }
+        else { resolve(answerText); }
+      };
+      localChatModel.chat(info, config, callback).catch((error: Object): void => { finishError(error); });
+    });
+  }
+
+  private localPrompt(mode: string, question: string, history: string, bundle: string, knowledge: string): string {
+    const instruction: string = mode === 'diagnose'
+      ? '你是 RemoteDesktop 的鸿蒙端侧只读诊断助手。只根据给出的脱敏事实回答，区分事实、推测和未知，不执行设置。'
+      : '你是 RemoteDesktop 的鸿蒙端侧使用助手。只回答应用使用、隐私、安全和诊断问题，不执行设置、不连接主机、不发送邮件。';
+    return limitUtf8(instruction + '\n问题：' + question + '\n最近对话：' + history +
+      '\n本地知识：' + knowledge + '\n脱敏诊断包：' + bundle +
+      '\n请输出简洁中文纯文本，不要 Markdown，不要编造未提供的事实。', LOCAL_CHAT_MAX_BYTES);
+  }
+
+  private parseLocalResult(answer: string, knowledgeVersion: string): DiagnosticAiResult {
+    // The system API returns text chunks instead of the HTTP Provider envelope. Wrapping it
+    // lets the existing safe free-text parser preserve the same result contract.
+    return this.parseResult(JSON.stringify({ response: answer }), knowledgeVersion);
+  }
+
+  private async localAssist(input: DiagnosticAiAssistInput,
+    manifest: DiagnosticAiProviderManifest): Promise<DiagnosticAiResult> {
+    const answer: string = await this.harmonyLocalChat(this.localPrompt(input.mode, input.question,
+      input.history.slice(-1200), input.bundle.slice(-1200), input.knowledge.slice(-1000)));
+    return this.parseLocalResult(answer, manifest.verifiedAt);
+  }
+
+  private async localAnalyze(input: DiagnosticAiAnalysisInput,
+    manifest: DiagnosticAiProviderManifest): Promise<DiagnosticAiResult> {
+    const answer: string = await this.harmonyLocalChat(this.localPrompt('diagnose', input.question,
+      '', input.bundle.slice(-1800), input.knowledge.slice(-800)));
+    return this.parseLocalResult(answer, manifest.verifiedAt);
+  }
+
   private authHeaders(profile: DiagnosticAiProviderProfile, secret: string): Record<string, string> {
     const headers: Record<string, string> = { 'Accept': 'application/json', 'Content-Type': 'application/json' };
     if (profile.authKind === 'bearer' || profile.authKind === 'api_key_header') { headers[profile.authHeader || 'Authorization'] = 'Bearer ' + secret; }
@@ -133,6 +245,11 @@ export class DiagnosticAiProviderService {
 
   async listModels(profile: DiagnosticAiProviderProfile, secret: string): Promise<DiagnosticAiModelInfo[]> {
     const manifest = diagnosticAiProviderManifest(profile.providerId);
+    if (manifest !== null && diagnosticAiProviderIsHarmonyLocal(profile.providerId)) {
+      await this.ensureHarmonyLocalModel();
+      return [{ id: HARMONY_LOCAL_MODEL_ID, displayName: '系统管理的鸿蒙端侧模型', providerId: profile.providerId,
+        supportsStreaming: true, supportsVision: false, supportsTools: false, fetchedAt: Date.now(), stale: false }];
+    }
     if (manifest === null || manifest.modelListPath === '') { throw new Error('DIAGNOSTIC_AI_MODEL_LIST_UNAVAILABLE'); }
     const raw = JSON.parse(await this.request(profile, secret, manifest.modelListPath, null)) as Record<string, Object>;
     const rows: Object[] = Array.isArray(raw['data']) ? raw['data'] as Object[] :
@@ -151,6 +268,9 @@ export class DiagnosticAiProviderService {
 
   async analyze(profile: DiagnosticAiProviderProfile, secret: string, input: DiagnosticAiAnalysisInput): Promise<DiagnosticAiResult> {
     const manifest = diagnosticAiProviderManifest(profile.providerId);
+    if (manifest !== null && diagnosticAiProviderIsHarmonyLocal(profile.providerId)) {
+      return await this.localAnalyze(input, manifest);
+    }
     if (manifest === null || manifest.chatPath === '') { throw new Error('DIAGNOSTIC_AI_ANALYSIS_UNAVAILABLE'); }
     const prompt = '你是 RemoteDesktop 的只读诊断助手。只使用提供的结构化事件和本地知识。' +
       '必须区分事实、假设和未知，不执行任何工具或设置操作。问题：' + input.question +
@@ -199,6 +319,9 @@ export class DiagnosticAiProviderService {
    */
   async assist(profile: DiagnosticAiProviderProfile, secret: string, input: DiagnosticAiAssistInput): Promise<DiagnosticAiResult> {
     const manifest = diagnosticAiProviderManifest(profile.providerId);
+    if (manifest !== null && diagnosticAiProviderIsHarmonyLocal(profile.providerId)) {
+      return await this.localAssist(input, manifest);
+    }
     if (manifest === null || manifest.chatPath === '') { throw new Error('DIAGNOSTIC_AI_ANALYSIS_UNAVAILABLE'); }
     const modeInstruction: string = input.mode === 'configure'
       ? '用户希望你帮助设置 RemoteDesktop。只提出白名单、低风险、可回滚的设置建议；不要假装已经修改。'

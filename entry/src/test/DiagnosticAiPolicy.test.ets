@@ -7,7 +7,7 @@ import {
   diagnosticAiOrbVisible
 } from '../main/ets/services/diagnosticAi/DiagnosticAiOrbPolicy';
 import { validateDiagnosticAiEndpoint } from '../main/ets/services/diagnosticAi/DiagnosticAiEndpointPolicy';
-import { diagnosticAiProviderManifests } from '../main/ets/services/diagnosticAi/DiagnosticAiProviderCatalog';
+import { diagnosticAiHarmonyLocalDeviceSupported, diagnosticAiProviderIsHarmonyLocal, diagnosticAiProviderManifests } from '../main/ets/services/diagnosticAi/DiagnosticAiProviderCatalog';
 import { diagnosticAiProposalIsSafe } from '../main/ets/services/diagnosticAi/DiagnosticAiSettingsActionPolicy';
 
 export default function diagnosticAiPolicyTest(): void {
@@ -16,6 +16,11 @@ export default function diagnosticAiPolicyTest(): void {
       const providers = diagnosticAiProviderManifests();
       expect(providers.some((value) => value.providerId === 'deepseek')).assertTrue();
       expect(providers.some((value) => value.providerId === 'ollama')).assertTrue();
+      expect(providers.some((value) => diagnosticAiProviderIsHarmonyLocal(value.providerId) &&
+        value.supportedDeviceTypes !== undefined && value.supportedDeviceTypes.indexOf('pc') >= 0 &&
+        value.supportedDeviceTypes.indexOf('2in1') >= 0)).assertTrue();
+      expect(diagnosticAiHarmonyLocalDeviceSupported('pc')).assertTrue();
+      expect(diagnosticAiHarmonyLocalDeviceSupported('tablet')).assertFalse();
     });
     it('endpoint_rejects_query_credentials_and_plain_public_http', 0, (): void => {
       expect(validateDiagnosticAiEndpoint('http://example.com?key=x', 'openai_compatible_http').ok).assertFalse();

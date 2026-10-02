@@ -176,6 +176,17 @@ export struct AiSettingsSurface {
       this.editing = host; this.showEditor = true;
     } catch (error) { this.error = aiErrorText((error as Error).message); }
   }
+  @Builder private backendChoiceCard(backend: AiBackend, title: string, subtitle: string) {
+    AiBackendChoiceCard({ backend: backend, title: title, subtitle: subtitle,
+      isSelected: this.settings.defaultBackend === backend,
+      onSelect: (): void => { if (!this.busy && this.settingsReady) { this.settings.defaultBackend = backend; this.save(); } } })
+      .width('100%').enabled(!this.busy && this.settingsReady)
+  }
+  @Builder private hostActionRow(host: AiHost) {
+    AppSettingsActionRow({ icon: protocolIcon('ai'), title: host.label,
+      detail: (host.backend === 'codex' ? 'Codex' : 'DSH') + ' · ' + host.address + ':' + host.port + ' · 编辑与配对',
+      isEnabled: !this.busy, onAction: (): void => { this.openEditor(host); } })
+  }
   @Builder private editor() {
     AiHostEditor({ host: this.editing, modern: resolveFabAddStyle(this.fabAddStyle, this.isDesktopDevice) === 'modern',
       onClose: (): void => { this.showEditor = false; },
@@ -221,12 +232,10 @@ export struct AiSettingsSurface {
           this.sectionTitle('默认 AI', '仅影响新主机，已有连接保持原来的 AI。')
           Column({ space: 10 }) {
             ProFeatureGate({ featureId: this.backendFeature('codex'), context: ProAppRuntime.getInstance().context('ai'), content: (): void => {
-              AiBackendChoiceCard({ backend: 'codex', title: 'Codex', subtitle: 'OpenAI Codex · 9443', isSelected: this.settings.defaultBackend === 'codex',
-                onSelect: (): void => { if (!this.busy && this.settingsReady) { this.settings.defaultBackend = 'codex'; this.save(); } } }).width('100%').enabled(!this.busy && this.settingsReady)
+              this.backendChoiceCard('codex', 'Codex', 'OpenAI Codex · 9443');
             } })
             ProFeatureGate({ featureId: this.backendFeature('dsh'), context: ProAppRuntime.getInstance().context('ai'), content: (): void => {
-              AiBackendChoiceCard({ backend: 'dsh', title: 'DSH', subtitle: 'DeepSeek Harness · 9444', isSelected: this.settings.defaultBackend === 'dsh',
-                onSelect: (): void => { if (!this.busy && this.settingsReady) { this.settings.defaultBackend = 'dsh'; this.save(); } } }).width('100%').enabled(!this.busy && this.settingsReady)
+              this.backendChoiceCard('dsh', 'DSH', 'DeepSeek Harness · 9444');
             } })
           }.width('100%')
           this.sectionTitle('主机与配对', '局域网连接 · RustDesk 中继将在后续版本开放')
@@ -236,9 +245,7 @@ export struct AiSettingsSurface {
           }
           ForEach(this.hosts, (host: AiHost): void => {
             ProFeatureGate({ featureId: this.backendFeature(host.backend), context: ProAppRuntime.getInstance().context('ai'), content: (): void => {
-              AppSettingsActionRow({ icon: protocolIcon('ai'), title: host.label,
-                detail: (host.backend === 'codex' ? 'Codex' : 'DSH') + ' · ' + host.address + ':' + host.port + ' · 编辑与配对',
-                isEnabled: !this.busy, onAction: (): void => { this.openEditor(host); } })
+              this.hostActionRow(host);
             } })
           }, (host: AiHost): string => host.id + ':' + host.revision.toString())
           AppSettingsActionRow({ icon: protocolIcon('ai'), title: '添加主机', detail: '沿用当前经典／全新添加偏好',

@@ -4,9 +4,10 @@
  */
 export type DiagnosticAiMarket = 'mainland-cn' | 'local' | 'international' | 'custom';
 export type DiagnosticAiAdapterFamily =
-  'openai_compatible_http' | 'vendor_native_http' | 'vendor_native_websocket' | 'ollama_local';
+  'openai_compatible_http' | 'vendor_native_http' | 'vendor_native_websocket' | 'ollama_local' | 'harmony_local_chat';
 export type DiagnosticAiAuthKind = 'bearer' | 'api_key_header' | 'custom_header' | 'none';
 export type DiagnosticAiPrivacyValue = 'mainland' | 'cross-border' | 'device-local' | 'unknown';
+export type DiagnosticAiDeviceType = 'phone' | 'tablet' | 'pc' | '2in1' | 'unknown';
 export type DiagnosticAiCaptureState = 'idle' | 'arming' | 'capturing' | 'ready' | 'error';
 export type DiagnosticAiOrbState = 'hidden' | 'idle' | 'opening' | 'open' | 'thinking' |
   'capturePreparing' | 'capturing' | 'result' | 'waitingConfirmation' | 'error';
@@ -34,6 +35,8 @@ export interface DiagnosticAiProviderManifest {
   supportsTools: boolean;
   privacy: DiagnosticAiPrivacyInfo;
   verifiedAt: string;
+  /** Optional physical device allowlist. An unsupported local provider remains visible but disabled. */
+  supportedDeviceTypes?: DiagnosticAiDeviceType[];
 }
 
 export interface DiagnosticAiProviderProfile {
