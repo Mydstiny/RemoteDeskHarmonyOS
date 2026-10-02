@@ -1,16 +1,16 @@
 import { DiagnosticAiOrbState } from '../../services/diagnosticAi/DiagnosticAiModels';
-import { AiSystemAgentButton } from './XiaoyiOrb';
+import { AiLiquidGlassButton } from './AiIslandChrome';
 
 /**
- * Entry to 启动 AI 辅助 at the right end of the 远程主机 title row: the 小艺 orb with its immersive light, as in the AI
- * island. It breathes at rest and glows brighter
- * while a capture or an analysis runs.
+ * Entry to 启动 AI 辅助 at the right end of the 远程主机 title row: a liquid-glass (沉浸光感) round button with the
+ * assistant's looping light glyph. The glyph turns and the glass glows while a capture or an analysis runs.
  */
 @Component
 export struct DiagnosticAiOrb {
   @Prop visible: boolean = false;
   @Prop state: DiagnosticAiOrbState = 'idle';
   @Prop reducedMotion: boolean = false;
+  @StorageProp('currentTheme') theme: string = 'light';
   onOpen: () => void = (): void => {};
 
   private label(): string {
@@ -24,7 +24,7 @@ export struct DiagnosticAiOrb {
   build() {
     if (this.visible) {
       Stack() {
-        AiSystemAgentButton({ buttonSize: 34, active: this.working() })
+        AiLiquidGlassButton({ buttonSize: 36, dark: this.theme === 'dark', active: this.working() })
       }
       .width(40).height(40)
       .responseRegion({ x: -4, y: -4, width: 48, height: 48 })

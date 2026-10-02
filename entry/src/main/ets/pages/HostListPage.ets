@@ -1,5 +1,6 @@
 import { ProBadge, proBadgeSummary } from '../components/ProBadge';
 import { AiIsland } from '../components/diagnosticAi/AiIsland';
+import { DiagnosticAiAppActionId } from '../services/diagnosticAi/DiagnosticAiAppActionPolicy';
 import { PRO_ORDER_PENDING_KEY } from '../services/ProIntroRegistry';
 import { settingsUsageGuidePages } from '../services/GuideContentRegistry';
 import { ProBadgeSettingsPanel, ProFeatureDetailPanel } from '../components/ProFeatureManagerPanel';
@@ -14054,7 +14055,13 @@ struct HostListPage {
           onDismissed: (): void => { this.aiIslandShown = false; this.aiIslandFloating = false; this.diagnosticAiOrbState = 'idle'; },
           onFloatingChanged: (floating: boolean): void => { this.aiIslandFloating = floating; },
           onActivityChanged: (active: boolean): void => { this.diagnosticAiOrbState = active ? 'thinking' : 'open'; },
-          onOpenMailDraft: (subject: string, body: string): void => { void this.openFeedbackEmail(subject, body); }
+          onOpenMailDraft: (subject: string, body: string): void => { void this.openFeedbackEmail(subject, body); },
+          onAppAction: (action: DiagnosticAiAppActionId): void => { this.runAssistantAppAction(action); },
+          isAppActionScreenOpen: (): boolean => this.showAddSheet || this.showSettingsLeafSheet,
+          closeAppActionScreen: (): void => {
+            if (this.showAddSheet) { this.requestAddSheetClose(); }
+            if (this.showSettingsLeafSheet) { this.closeSettingsLeafSheet(); }
+          }
         }).width('100%').height('100%').position({ x: 0, y: 0 }).zIndex(40)
         .hitTestBehavior(this.aiIslandFloating ? HitTestMode.Transparent : HitTestMode.Default)
       }
@@ -16220,10 +16227,12 @@ struct HostListPage {
               Row() {
                 Text(this.hostPageTitle).fontSize(27).fontWeight(FontWeight.Bold)
                   .fontColor(this.pal().text).fontFamily(this.font()).layoutWeight(1)
-                if (this.hostAiOrbShown()) {
+                // Kept in the layout on every tab (hidden off the host list) so the title row never changes height.
+                if (this.hostAiOrbAvailable()) {
                   DiagnosticAiOrb({ visible: true, state: this.diagnosticAiOrbState as DiagnosticAiOrbState,
                     onOpen: (): void => { this.openDiagnosticAiSection(1); } })
                     .margin({ right: 12 })
+                    .visibility(this.hostAiOrbShown() ? Visibility.Visible : Visibility.Hidden)
                 }
               Row() {
                 Text('⌕').fontSize(18).fontColor(this.pal().text3).margin({ left: 14, right: 8 })
@@ -16253,9 +16262,10 @@ struct HostListPage {
               Row() {
                 Text(this.hostPageTitle).fontSize(27).fontWeight(FontWeight.Bold)
                   .fontColor(this.pal().text).fontFamily(this.font()).layoutWeight(1)
-                if (this.hostAiOrbShown()) {
+                if (this.hostAiOrbAvailable()) {
                   DiagnosticAiOrb({ visible: true, state: this.diagnosticAiOrbState as DiagnosticAiOrbState,
                     onOpen: (): void => { this.openDiagnosticAiSection(1); } })
+                    .visibility(this.hostAiOrbShown() ? Visibility.Visible : Visibility.Hidden)
                 }
               }.width('100%').padding({ left: 24, right: 24, bottom: 8 })
               Row() {
@@ -20191,7 +20201,33 @@ struct HostListPage {
 
   /** The 启动 AI 辅助 entry sits at the right end of the 远程主机 title, on the host list only. */
   private hostAiOrbShown(): boolean {
-    return this.curTab === 0 && this.diagnosticAiOrbEnabled && this.diagnosticAiAssistantVisible;
+    return this.curTab === 0 && this.hostAiOrbAvailable();
+  }
+
+  /** The entry exists for this account; whether it shows depends on the tab. */
+  private hostAiOrbAvailable(): boolean {
+    return this.diagnosticAiOrbEnabled && this.diagnosticAiAssistantVisible;
+  }
+
+  /**
+   * An app screen an AI answer pointed to (whitelisted in DiagnosticAiAppActionPolicy). The island floats while the
+   * user works in it; nothing is changed on the user's behalf, the screen is only opened.
+   */
+  private runAssistantAppAction(action: DiagnosticAiAppActionId): void {
+    switch (action) {
+      case 'host.add':
+        this.resetForm();
+        this.addSheetShowsModernPicker = resolveFabAddStyle(this.fabAddStyle, this.isDesktopDevice) === 'modern';
+        if (this.addSheetShowsModernPicker) { this.probeMoonlightCapabilityForPicker(); }
+        this.modernAddProtocol = '';
+        this.openSheetSafely((): void => { this.showAddSheet = true; });
+        return;
+      case 'cloud.sync': this.openCloudSyncSheet(); return;
+      case 'diagnostic.log': this.openSettingsLeafSheet(SETTINGS_SHEET_DIAGNOSTIC_LOG); return;
+      case 'feedback': this.openFeedbackSheet(); return;
+      case 'ssh.keys': this.openSshKeyVaultFromSettings(); return;
+      case 'rdp.credentials': this.openRdpCredentialManager(); return;
+    }
   }
 
   private openDiagnosticAiSection(section: number): void {

@@ -340,15 +340,39 @@ struct ProBadgeRayLayers {
   }
 
   /**
-   * Endless flight of one layer. The outward motion is one continuous accelerating curve; the fade is a separate
-   * in-then-out animation on the same clock. Splitting the motion into an ease-out leg and an ease-in leg stopped
-   * the rays for a moment at the hand-over (the middle of their path), which read as a stutter.
+   * Endless flight of one layer, on the wall clock: a badge that is created again (lists rebuild their rows) picks up
+   * the flight where the clock says it is instead of starting over from the center, and every badge flies in step.
+   * The layer first finishes the current flight from that point, then loops whole flights. The outward motion is one
+   * continuous accelerating curve; the fade is a separate in-then-out animation on the same clock.
    */
   private fly(k: number): void {
-    const delay: number = Math.round(k * RAY_FLIGHT_MS / PRO_BADGE_RAY_LAYERS);
-    this.getUIContext().animateTo({ duration: RAY_FLIGHT_MS, delay, iterations: -1, curve: Curve.EaseIn },
+    const period: number = RAY_FLIGHT_MS;
+    const offset: number = Math.round(k * period / PRO_BADGE_RAY_LAYERS);
+    const p: number = ((Date.now() - offset) % period + period) % period / period;
+    // Where this layer is in its flight right now (ease-in motion, fade in over the first 30 %, out after).
+    this.setScale(k, 0.5 + 2.5 * p * p);
+    this.setFade(k, p < 0.3 ? 1 - Math.pow(1 - p / 0.3, 2) : 1 - Math.pow((p - 0.3) / 0.7, 2));
+    const rest: number = Math.max(16, Math.round((1 - p) * period));
+    this.getUIContext().animateTo({ duration: rest, curve: Curve.Linear,
+      onFinish: (): void => { this.loop(k); } }, (): void => { this.setScale(k, 3.0); });
+    if (p < 0.3) {
+      this.getUIContext().keyframeAnimateTo({ iterations: 1 }, [
+        { duration: Math.max(16, Math.round((0.3 - p) * period)), curve: Curve.EaseOut,
+          event: (): void => { this.setFade(k, 1); } },
+        { duration: Math.round(period * 0.7), curve: Curve.EaseIn, event: (): void => { this.setFade(k, 0); } }
+      ]);
+    } else {
+      this.getUIContext().animateTo({ duration: rest, curve: Curve.EaseIn }, (): void => { this.setFade(k, 0); });
+    }
+  }
+
+  /** Whole flights from the center, forever. */
+  private loop(k: number): void {
+    this.setScale(k, 0.5);
+    this.setFade(k, 0);
+    this.getUIContext().animateTo({ duration: RAY_FLIGHT_MS, iterations: -1, curve: Curve.EaseIn },
       (): void => { this.setScale(k, 3.0); });
-    this.getUIContext().keyframeAnimateTo({ iterations: -1, delay }, [
+    this.getUIContext().keyframeAnimateTo({ iterations: -1 }, [
       {
         duration: Math.round(RAY_FLIGHT_MS * 0.3), curve: Curve.EaseOut,
         event: (): void => { this.setFade(k, 1); }
