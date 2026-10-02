@@ -453,3 +453,15 @@ Phone / Pad / PC 每个平台都要验证：
 - F091/F101：结果卡提供展开/收起、建议设置的逐项确认、邮件草稿预览，以及“继续询问 RemoteDesktop”的输入框，输入后沿用对话摘要再次请求 Provider。
 
 动画时序采用可观察的三段式弹簧转场（紧凑光核 → 任务胶囊 → 会话卡片），用 ArkUI 动画和现有 HDS 沉浸材质实现；具体帧率和曲线仍以 Phone/Pad/PC 真机视觉验收为准。附件中“发送成功”的画面只作为卡片层级参考，邮件仍必须由用户预览并通过系统邮件显式发送，代码构建不等于邮件或 Provider 成功证据。
+
+## 15. 持久化修复与三端质感升级（2026-10-02）
+
+本轮修复提交：`3bd6fc23 fix(diagnostics): persist AI credentials and refine Siri surfaces`。
+
+- 修复根因：旧版 `DiagnosticAiProfileStore.persist()` 把非秘密的 `secretRef` 清空，导致设置页本次运行可以拉取模型，重建助手后却无法读回 API Key；现在持久化 opaque alias，并对旧记录用 SecretStore metadata 自动回填。
+- AssetStore 写入改为先替换旧 alias、写入后立即回读校验；Preferences/Profile 与 selected provider/model 做保存后回读校验；拉取模型或点击模型卡片会自动保存最终模型选择。
+- Provider 解析兼容 OpenAI choices、Ollama `message.content`、`response` 和自由文本；助手在密钥读回失败时显示明确的重新保存提示，不再泛化为“未配置”。
+- Phone/Pad/PC 通过 `deviceClass` 分配卡片宽度、高度、圆角和安全区；唤起时序调整为参考 GIF 的约 0/1/2 秒三阶段；思考环改为每个独立椭圆光片自旋、伸缩、漂移并叠加外环公转。
+- 卡片底缘加入 HDS `HdsVisualComponent` 双边流光适配器，手写渐变作为兼容回退；入口按钮使用 SDK 可见的 `Celia_fill` 助手 glyph 包装为沉浸玻璃按钮。SDK 没有公开可嵌入的专有“小艺 Agent”按钮 API，因此不宣称调用了系统私有浮窗。
+
+最新验证：`default@OhosTestCompileArkTS` BUILD SUCCESSFUL（15.734 秒），签名 `assembleHap` BUILD SUCCESSFUL（19.059 秒）；HAP SHA-256 为 `05e1bcade50852069cf62e13340514f7032c9179ed839b2dce39ee310cfaa18d`。该 HAP 已通过 `hdc install -r` 部署到 MatePad Mini `192.168.31.118:40123` 与 Mate 80 Pro Max `192.168.31.156:38451`，两台均回读 `com.example.remotedesktop` 1.1.6 / 1001007。`ohosTest@OhosTestCompileArkTS` 仍因任务 `00306054` 不存在而不可执行；真实 Provider 发送、密钥跨重启回读和三端视觉仍需设备操作验收。
