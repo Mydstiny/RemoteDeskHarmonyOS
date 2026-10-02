@@ -20227,6 +20227,7 @@ struct HostListPage {
       case 'feedback': this.openFeedbackSheet(); return;
       case 'ssh.keys': this.openSshKeyVaultFromSettings(); return;
       case 'rdp.credentials': this.openRdpCredentialManager(); return;
+      case 'ai.config': this.openDiagnosticAiSection(0); return;
     }
   }
 

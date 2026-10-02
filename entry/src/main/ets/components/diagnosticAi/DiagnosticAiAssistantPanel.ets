@@ -165,7 +165,9 @@ export struct DiagnosticAiAssistantPanel {
   @Prop siriMode: boolean = false;
   @Prop deviceClass: 'phone' | 'pad' | 'pc' = 'phone';
   /** In the AI island while a capture or analysis runs: a small floating capsule that leaves the app usable. */
-  @Prop compact: boolean = false;
+  @Prop @Watch('refreshReady') compact: boolean = false;
+  /** An AI service is set up (a model chosen, and its API Key saved unless it runs on the device). */
+  @State private aiReady: boolean = true;
   /**
    * Inside the AI island the island draws the glass, rim and edge light around the card, so the panel only lays out
    * the content and reports the card's size for the island to morph to.
@@ -222,12 +224,20 @@ export struct DiagnosticAiAssistantPanel {
   private captureOwnedByPanel: boolean = false;
 
   private onRevealed(): void {
+    this.refreshReady();
     if (this.revealed) { this.focusQuestion(); }
+  }
+
+  /** Checked whenever the panel shows again: the user may have just set the service up from the guide card. */
+  private refreshReady(): void {
+    const selected: DiagnosticAiProviderProfile | undefined = this.selectedProfile();
+    this.aiReady = selected !== undefined &&
+      (diagnosticAiProviderIsHarmonyLocal(selected.providerId) || this.store.secret(selected).trim() !== '');
   }
 
   private focusQuestion(): void {
     setTimeout((): void => {
-      if (this.revealed && this.result === null && !this.busy && !this.capturing()) {
+      if (this.revealed && this.aiReady && this.result === null && !this.busy && !this.capturing()) {
         focusControl.requestFocus('aiIslandQuestion');
       }
     }, 280);
@@ -269,6 +279,7 @@ export struct DiagnosticAiAssistantPanel {
     this.owner = scope.ownerScopeId.trim() === '' ? 'device-local' : scope.ownerScopeId;
     this.store.init(getContext(this) as common.UIAbilityContext, this.owner);
     if (AiConversationMemory.owner !== this.owner) { AiConversationMemory.clear(this.owner); }
+    this.refreshReady();
     this.conversation = AiConversationMemory.history;
     this.turns = AiConversationMemory.turns.slice();
     this.timer = setInterval((): void => { this.syncCapture(); }, 500);
@@ -771,7 +782,43 @@ export struct DiagnosticAiAssistantPanel {
   }
 
   /** The card's text area: the question typed in white, iOS secondary gray for everything else. */
+  /**
+   * No AI service yet: instead of a question field the assistant offers one card that takes the user to 辅助 AI 配置
+   * (it opens like any app action: done check, then the floating orb until the settings are closed).
+   */
+  @Builder private setupGuide() {
+    Column({ space: 14 }) {
+      Text('先配置 AI 服务').fontSize(20).fontWeight(FontWeight.Medium).fontColor('#FFFFFF').width('100%')
+      Text('AI 助手需要一个模型服务才能回答。选择服务商并保存 API Key 后就可以提问了。')
+        .fontSize(14).lineHeight(20).fontColor('#8E8E93').width('100%')
+      if (this.revealed) {
+        Row({ space: 12 }) {
+          Stack() {
+            SymbolGlyph($r('sys.symbol.gearshape_fill')).fontSize(20).fontColor(['#FFFFFF'])
+          }.width(40).height(40).borderRadius(20).backgroundColor('#2E3A3A3C')
+          Column({ space: 2 }) {
+            Text('前往 AI 配置').fontSize(16).fontWeight(FontWeight.Medium).fontColor('#FFFFFF')
+            Text('选择服务商、模型并保存 API Key').fontSize(12).fontColor('#8E8E93')
+          }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+          SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(16).fontColor(['#8E8E93'])
+        }
+        .width('100%').padding(14).borderRadius(24).backgroundColor('#F01C1C1F')
+        .border({ width: 0.5, color: '#1FFFFFFF' })
+        .transition(this.pillTransition(0))
+        .onClick((): void => { this.onAppAction('ai.config'); })
+      }
+    }.width('100%')
+  }
+
   @Builder private siriCardBody() {
+    if (!this.aiReady && this.result === null && !this.busy && !this.capturing()) {
+      this.setupGuide()
+    } else {
+      this.chatBody()
+    }
+  }
+
+  @Builder private chatBody() {
     Column({ space: 12 }) {
       // First question: Siri's text mode — typed straight into the card in large type, no field around it.
       if (this.result === null && !this.capturing() && !this.busy && !this.awaitingCapture) {

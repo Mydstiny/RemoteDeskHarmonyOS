@@ -4,7 +4,7 @@
  * that pretends to run. Every action only opens a screen the user then operates themselves.
  */
 export type DiagnosticAiAppActionId =
-  'host.add' | 'cloud.sync' | 'diagnostic.log' | 'feedback' | 'ssh.keys' | 'rdp.credentials';
+  'host.add' | 'cloud.sync' | 'diagnostic.log' | 'feedback' | 'ssh.keys' | 'rdp.credentials' | 'ai.config';
 
 export class DiagnosticAiAppAction {
   id: DiagnosticAiAppActionId;
@@ -55,6 +55,8 @@ export function diagnosticAiAppActionsForSteps(steps: string[]): DiagnosticAiApp
 
 /** Short label of an app action, as shown while it runs. */
 export function diagnosticAiAppActionLabel(id: DiagnosticAiAppActionId): string {
+  // Not matched from answers: offered by the assistant itself when no AI service is set up yet.
+  if (id === 'ai.config') { return '前往 AI 配置'; }
   const rule: ActionRule | undefined = RULES.find((r: ActionRule): boolean => r.id === id);
   return rule !== undefined ? rule.label : '执行操作';
 }
