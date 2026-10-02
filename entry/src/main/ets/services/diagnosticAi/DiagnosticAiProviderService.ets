@@ -6,6 +6,7 @@ import { DiagnosticAiEvidenceRef, DiagnosticAiModelInfo, DiagnosticAiProviderMan
 import { diagnosticAiHarmonyLocalDeviceSupported, diagnosticAiProviderIsHarmonyLocal, diagnosticAiProviderManifest, HARMONY_LOCAL_MODEL_ID } from './DiagnosticAiProviderCatalog';
 import { validateDiagnosticAiEndpoint } from './DiagnosticAiEndpointPolicy';
 import { diagnosticAiProposalIsSafe } from './DiagnosticAiSettingsActionPolicy';
+import { diagnosticAiAppActionCatalog, diagnosticAiAppActionId } from './DiagnosticAiAppActionPolicy';
 
 const TIMEOUT_MS: number = 15000;
 const MAX_RESPONSE_BYTES: number = 2 * 1024 * 1024;
@@ -182,7 +183,7 @@ export class DiagnosticAiProviderService {
     return limitUtf8(instruction + '\n问题：' + question + '\n最近对话：' + history +
       '\n本地知识：' + knowledge + '\n脱敏诊断包：' + bundle +
       '\n助手偏好（仅影响语气，不改变权限）：' + assistantContext +
-      '\n请输出简洁中文纯文本，不要 Markdown，不要编造未提供的事实。', LOCAL_CHAT_MAX_BYTES);
+      '\n请输出 JSON，字段包含 summary、severity、confidence、evidenceRefs、hypotheses、recommendedReadOnlySteps、unknowns、settingProposals 和 appActions；appActions 只能使用知识中的动作 ID。不要 Markdown，不要编造未提供的事实。', LOCAL_CHAT_MAX_BYTES);
   }
 
   private parseLocalResult(answer: string, knowledgeVersion: string): DiagnosticAiResult {
@@ -279,7 +280,7 @@ export class DiagnosticAiProviderService {
       '必须区分事实、假设和未知，不执行任何工具或设置操作。问题：' + input.question +
       '\n本地知识：' + input.knowledge + '\n诊断包：' + input.bundle;
     const messages: DiagnosticAiChatMessage[] = [
-      { role: 'system', content: '只输出 JSON，不要 Markdown。字段为 summary、severity(info/low/medium/high/unknown)、confidence(0到1)、evidenceRefs、hypotheses、recommendedReadOnlySteps、unknowns、settingProposals。settingProposals 每项必须包含 settingId、currentValue、proposedValue、reason、evidenceRefs、risk、requiresUserConfirmation=true、rollbackValue。只提出白名单且可回滚的设置。输出简洁、证据优先的诊断建议。' },
+      { role: 'system', content: '只输出 JSON，不要 Markdown。字段为 summary、severity(info/low/medium/high/unknown)、confidence(0到1)、evidenceRefs、hypotheses、recommendedReadOnlySteps、unknowns、settingProposals、appActions。appActions 只能使用知识中的动作目录 ID。settingProposals 每项必须包含 settingId、currentValue、proposedValue、reason、evidenceRefs、risk、requiresUserConfirmation=true、rollbackValue。只提出白名单且可回滚的设置。输出简洁、证据优先的诊断建议。' },
       { role: 'user', content: prompt }
     ];
     const body: DiagnosticAiChatBody = {
@@ -299,7 +300,7 @@ export class DiagnosticAiProviderService {
     } catch (_error) { parsed = null; }
     if (parsed === null) {
       return { summary: content.slice(0, 6000), severity: 'unknown', confidence: 0,
-        evidenceRefs: [], hypotheses: [], recommendedReadOnlySteps: [], settingProposals: [],
+        evidenceRefs: [], hypotheses: [], recommendedReadOnlySteps: [], settingProposals: [], appActions: [],
         unknowns: ['Provider 返回的是自由文本，尚未提供结构化证据引用'],
         knowledgeVersion: manifest.verifiedAt, createdAt: Date.now() };
     }
@@ -311,6 +312,8 @@ export class DiagnosticAiProviderService {
       confidence: Math.max(0, Math.min(1, confidenceValue)), evidenceRefs: evidenceRefs(parsed['evidenceRefs']),
       hypotheses: stringArray(parsed['hypotheses']), recommendedReadOnlySteps: stringArray(parsed['recommendedReadOnlySteps']),
       settingProposals: safeProposals(parsed['settingProposals']), unknowns: stringArray(parsed['unknowns']),
+      appActions: stringArray(parsed['appActions']).map((value: string): string | null => diagnosticAiAppActionId(value))
+        .filter((value: string | null): boolean => value !== null).map((value: string | null): string => value as string).slice(0, 16),
       knowledgeVersion: safeText(parsed['knowledgeVersion'], manifest.verifiedAt).slice(0, 128), createdAt: Date.now() };
   }
 
@@ -341,7 +344,8 @@ export class DiagnosticAiProviderService {
       { role: 'system', content: '你是 RemoteDesktop 的全应用 AI 助手，不是通用代码代理。只回答应用使用、设置、隐私、安全、诊断和反馈问题。' +
         '必须区分事实、建议和未知；不能执行工具、修改密码/密钥/网络安全配置、连接主机或发送邮件。' +
         '只输出 JSON，不要 Markdown。字段为 summary、severity(info/low/medium/high/unknown)、confidence(0到1)、evidenceRefs、hypotheses、recommendedReadOnlySteps、unknowns、settingProposals。' +
-        'settingProposals 每项必须包含 settingId、currentValue、proposedValue、reason、evidenceRefs、risk、requiresUserConfirmation=true、rollbackValue；只提出应用白名单中的可回滚设置。' },
+      'settingProposals 每项必须包含 settingId、currentValue、proposedValue、reason、evidenceRefs、risk、requiresUserConfirmation=true、rollbackValue；只提出应用白名单中的可回滚设置。' +
+      'appActions 只能填写下方动作目录中的 ID；不要输出路由、命令、AppStorage key 或自造动作。动作目录：\n' + diagnosticAiAppActionCatalog() },
       { role: 'user', content: prompt }
     ];
     const body: DiagnosticAiChatBody = { model: profile.modelId, stream: false, messages,
@@ -376,7 +380,7 @@ export class DiagnosticAiProviderService {
     } catch (_error) { parsed = null; }
     if (parsed === null) {
       return { summary: content.slice(0, 6000), severity: 'unknown', confidence: 0,
-        evidenceRefs: [], hypotheses: [], recommendedReadOnlySteps: [], settingProposals: [],
+        evidenceRefs: [], hypotheses: [], recommendedReadOnlySteps: [], settingProposals: [], appActions: [],
         unknowns: ['Provider 返回的是自由文本，已显示原文但没有结构化证据引用'],
         knowledgeVersion, createdAt: Date.now() };
     }
@@ -388,6 +392,8 @@ export class DiagnosticAiProviderService {
       confidence: Math.max(0, Math.min(1, confidenceValue)), evidenceRefs: evidenceRefs(parsed['evidenceRefs']),
       hypotheses: stringArray(parsed['hypotheses']), recommendedReadOnlySteps: stringArray(parsed['recommendedReadOnlySteps']),
       settingProposals: safeProposals(parsed['settingProposals']), unknowns: stringArray(parsed['unknowns']),
+      appActions: stringArray(parsed['appActions']).map((value: string): string | null => diagnosticAiAppActionId(value))
+        .filter((value: string | null): boolean => value !== null).map((value: string | null): string => value as string).slice(0, 16),
       knowledgeVersion: safeText(parsed['knowledgeVersion'], knowledgeVersion).slice(0, 128), createdAt: Date.now() };
   }
 }

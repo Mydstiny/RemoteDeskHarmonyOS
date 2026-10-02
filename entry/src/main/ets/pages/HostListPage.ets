@@ -16990,6 +16990,7 @@ struct HostListPage {
       DiagnosticAiSettingsSheet({
         section: this.diagnosticAiSection,
         onClose: (): void => { this.closeSettingsLeafSheet(); },
+        onAppAction: (action: DiagnosticAiAppActionId): void => { this.runAssistantAppAction(action); },
         onOpenMailDraft: (subject: string, body: string): void => {
           void this.openFeedbackEmail(subject, body);
         }
@@ -20240,6 +20241,10 @@ struct HostListPage {
       case 'feedback': this.openFeedbackSheet(); return;
       case 'ssh.keys': this.openSshKeyVaultFromSettings(); return;
       case 'rdp.credentials': this.openRdpCredentialManager(); return;
+      case 'settings.appIcon': this.openSettingsLeafSheet(SETTINGS_SHEET_APP_ICON); return;
+      case 'settings.keyVault': this.openSshKeyVaultFromSettings(); return;
+      case 'settings.rdpCredentialEditor': this.openRdpCredentialManager(); return;
+      case 'settings.proBadge': this.openSettingsLeafSheet(SETTINGS_SHEET_PRO_BADGE); return;
       case 'ai.config': this.openDiagnosticAiSection(0); return;
       case 'settings.account': this.openSettingsLeafSheet(SETTINGS_SHEET_ACCOUNT); return;
       case 'settings.appearance': this.openSettingsLeafSheet(SETTINGS_SHEET_ACCENT_COLOR); return;
@@ -20263,6 +20268,11 @@ struct HostListPage {
       case 'settings.rdpDisplay': this.openSettingsLeafSheet(SETTINGS_SHEET_RDP_DISPLAY_PROFILE); return;
       case 'settings.sshSkin': this.openSettingsLeafSheet(SETTINGS_SHEET_SSH_SKIN); return;
       case 'settings.diagnosticAi': this.openDiagnosticAiSection(0); return;
+      case 'diagnosticAi.assistant': this.openDiagnosticAiSection(1); return;
+      case 'diagnosticAi.usage': this.openDiagnosticAiSection(3); return;
+      case 'diagnosticAi.personalization': this.openDiagnosticAiSection(4); return;
+      case 'diagnosticAi.sessions': this.openDiagnosticAiSection(5); return;
+      case 'diagnosticAi.classicLogs': this.openSettingsLeafSheet(SETTINGS_SHEET_DIAGNOSTIC_LOG); return;
       case 'settings.aiHosts': this.openSettingsLeafSheet(SETTINGS_SHEET_AI_HOSTS); return;
       case 'settings.aiDisplay': this.openSettingsLeafSheet(SETTINGS_SHEET_AI_DISPLAY); return;
       case 'settings.aiData': this.openSettingsLeafSheet(SETTINGS_SHEET_AI_DATA); return;

@@ -248,6 +248,16 @@ export struct DiagnosticAiAssistantPanel {
       (diagnosticAiProviderIsHarmonyLocal(selected.providerId) || this.store.secret(selected).trim() !== '');
   }
 
+  /** Re-read owner-scoped metadata and the Asset Store alias when a page is recreated after capture. */
+  private refreshProfileStore(): void {
+    try {
+      this.store.init(getContext(this) as common.UIAbilityContext, this.owner);
+    } catch (_error) {
+      // refreshReady() will fail closed; the frozen diagnostic bundle remains retryable locally.
+    }
+    this.refreshReady();
+  }
+
   private focusQuestion(): void {
     setTimeout((): void => {
       if (this.revealed && this.aiReady && this.result === null && !this.busy && !this.capturing()) {
@@ -378,6 +388,9 @@ export struct DiagnosticAiAssistantPanel {
     if (snapshot.phase !== 'readyToSave') { return; }
     const bundle = this.capture.bundle(this.owner);
     if (bundle === null) { return; }
+    // The settings sheet and the island can be recreated independently. Rebind the profile/secret store before
+    // deciding whether to show the setup guide so a retained bundle is never hidden behind a stale readiness bit.
+    this.refreshProfileStore();
     this.latestBundleText = bundle.text;
     this.pendingCaptureId = bundle.captureId;
     this.modules = bundle.modules;
@@ -681,6 +694,11 @@ export struct DiagnosticAiAssistantPanel {
 
   private retryPendingDiagnosis(): void {
     if (this.pendingCaptureId === '' || this.latestBundleText === '' || this.busy) { return; }
+    this.refreshProfileStore();
+    if (!this.aiReady) {
+      this.status = '已保留诊断包，但当前 Provider 密钥暂不可读；请先回到辅助 AI 配置重新保存后再重试';
+      return;
+    }
     this.agentMode = 'diagnose';
     void this.sendAgent('diagnose', this.latestBundleText);
   }
@@ -760,6 +778,12 @@ export struct DiagnosticAiAssistantPanel {
       .forEach((action: DiagnosticAiAppAction): void => {
         actions.push(new AiAction('app-' + action.id, action.label, null, action.id));
       });
+    result.appActions.forEach((id: string): void => {
+      const typedId: DiagnosticAiAppActionId = id as DiagnosticAiAppActionId;
+      if (!actions.some((action: AiAction): boolean => action.appAction === typedId)) {
+        actions.push(new AiAction('app-explicit-' + id, diagnosticAiAppActionLabel(typedId), null, typedId));
+      }
+    });
     if (this.agentMode === 'diagnose' || this.agentMode === 'feedback' || this.latestBundleText !== '') {
       actions.push(this.mailPreviewVisible ? new AiAction('mail-open', '打开系统邮件', null, null, 'mailOpen') :
         new AiAction('mail-draft', '生成邮件草稿', null, null, 'mail'));
@@ -929,7 +953,7 @@ export struct DiagnosticAiAssistantPanel {
   }
 
   @Builder private siriCardBody() {
-    if (!this.aiReady && this.result === null && !this.busy && !this.capturing()) {
+    if (!this.aiReady && this.result === null && !this.busy && !this.capturing() && this.pendingCaptureId === '') {
       this.setupGuide()
     } else {
       this.chatBody()

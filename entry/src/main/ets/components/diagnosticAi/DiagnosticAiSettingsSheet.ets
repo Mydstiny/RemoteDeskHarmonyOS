@@ -14,6 +14,7 @@ import { ProAppRuntime } from '../../services/pro/ProAppRuntime';
 import { ProEntries } from '../../services/pro/ProEntries';
 import { PRO_DIAGNOSTICS_ASSISTANT_FEATURE, PRO_DIAGNOSTICS_FEATURE, PRO_DIAGNOSTICS_PROVIDER_FEATURE } from '../../services/pro/ProFeatureCatalog';
 import { DiagnosticAiAssistantPreferences, DiagnosticAiConversationSession, DiagnosticAiConversationStore, DiagnosticAiProviderUsage, DiagnosticAiUsageSnapshot, defaultDiagnosticAiAssistantPreferences } from '../../services/diagnosticAi/DiagnosticAiConversationStore';
+import { DiagnosticAiAppActionId } from '../../services/diagnosticAi/DiagnosticAiAppActionPolicy';
 
 class DiagnosticAiPersonalityChoice {
   id: 'balanced' | 'warm' | 'concise' | 'technical';
@@ -47,6 +48,7 @@ export struct DiagnosticAiSettingsSheet {
   @StorageProp('breakpoint') breakpoint: string = 'md';
   onClose: () => void = (): void => {};
   onOpenMailDraft: (subject: string, body: string) => void = (_subject: string, _body: string): void => {};
+  onAppAction: (action: DiagnosticAiAppActionId) => void = (_action: DiagnosticAiAppActionId): void => {};
   /** Which sub-setting this sheet shows: 0 config, 1 assistant, 3 usage, 4 personalization, 5 sessions. */
   @Prop section: number = 0;
   @State manifests: DiagnosticAiProviderManifest[] = [];
@@ -683,6 +685,7 @@ export struct DiagnosticAiSettingsSheet {
           DiagnosticAiAssistantPanel({
             embedded: true,
             resumeSessionId: this.resumeSessionId,
+            onAppAction: (action: DiagnosticAiAppActionId): void => { this.onAppAction(action); },
             onClose: (): void => { this.onClose(); },
             onOpenMailDraft: (subject: string, body: string): void => { this.onOpenMailDraft(subject, body); }
           }).layoutWeight(1)
@@ -708,6 +711,7 @@ export struct DiagnosticAiSettingsSheet {
             }.width('100%').padding({ left: 14, right: 8, top: 10, bottom: 6 })
             DiagnosticAiAssistantPanel({
               embedded: true, resumeSessionId: this.resumeSessionId,
+              onAppAction: (action: DiagnosticAiAppActionId): void => { this.onAppAction(action); },
               onClose: (): void => { this.sessionDialogVisible = false; this.sessions = this.conversationStore.listSessions(); this.usageSnapshot = this.conversationStore.usage(); },
               onOpenMailDraft: (subject: string, body: string): void => { this.onOpenMailDraft(subject, body); }
             }).layoutWeight(1)

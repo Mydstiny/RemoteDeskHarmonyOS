@@ -406,7 +406,7 @@ export struct AiHostEditor {
       .fontColor(this.pal().text).backgroundColor(this.pal().surface).borderRadius(12)
       .enabled(!this.busy && !this.defaultsPending && this.allowed && !this.inBackground).accessibilityText('配对邀请')
       .onChange((v: string): void => { if (this.alive && !this.inBackground && !this.busy && !this.defaultsPending && this.allowed) { this.invite = v; } }).maxLength(70000)
-    AiActionButton({ label: '从剪贴板读取二维码/链接邀请', isEnabled: !this.busy && !this.defaultsPending && this.allowed && !this.inBackground,
+    AiActionButton({ label: '从剪贴板粘贴邀请（二维码/链接）', isEnabled: !this.busy && !this.defaultsPending && this.allowed && !this.inBackground,
       onAction: (): void => { void this.pasteInvite(); } })
     if (this.inviteStatus !== '') {
       Text(this.inviteStatus).fontSize(12).fontFamily(AppConfig.fontFamily).fontColor(this.pal().text2).width('100%')

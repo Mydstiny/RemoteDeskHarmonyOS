@@ -14,6 +14,9 @@ export type DiagnosticAiAppActionId =
   | 'settings.remotePortrait' | 'settings.remoteWheel' | 'settings.remotePinch' | 'settings.controlBar'
   | 'settings.rdpDisplay' | 'settings.sshSkin' | 'settings.diagnosticAi' | 'settings.aiHosts'
   | 'settings.aiDisplay' | 'settings.aiData' | 'settings.aiInstall'
+  | 'settings.appIcon' | 'settings.keyVault' | 'settings.rdpCredentialEditor' | 'settings.proBadge'
+  | 'diagnosticAi.assistant' | 'diagnosticAi.usage' | 'diagnosticAi.personalization' | 'diagnosticAi.sessions'
+  | 'diagnosticAi.classicLogs'
   | 'settings.vncConnection' | 'settings.vncTimeout' | 'settings.vncSecurity' | 'settings.vncDisplay'
   | 'settings.vncInput' | 'settings.vncPerformance' | 'settings.vncClipboard' | 'settings.vncTrust'
   | 'settings.vncHosts' | 'settings.vncGateway'
@@ -58,6 +61,10 @@ const RULES: ActionRule[] = [
   new ActionRule('feedback', '提交反馈', [['反馈', '联系开发', '联系我们']], 'execute', true),
   new ActionRule('ssh.keys', '打开 SSH 密钥库', [['密钥', '公钥', '私钥', 'key']]),
   new ActionRule('rdp.credentials', '管理 RDP 凭据', [['凭据', '账号密码', '用户名和密码', '登录凭证']], 'execute', true),
+  new ActionRule('settings.appIcon', '打开应用图标设置', [['应用图标', '图标主题', '图标样式']]),
+  new ActionRule('settings.keyVault', '打开密钥库', [['密钥库', 'SSH 密钥', '密钥管理']]),
+  new ActionRule('settings.rdpCredentialEditor', '打开 RDP 凭据编辑器', [['RDP', '凭据'], ['编辑', '新增', '修改']],'execute', true),
+  new ActionRule('settings.proBadge', '打开 Pro 标识设置', [['Pro 标识', 'Pro 徽章', '专业版标识']]),
   new ActionRule('ai.config', '打开 AI 配置', [['AI', 'ai', '模型', 'Provider', '服务商'], ['配置', '设置', '密钥', 'API Key', 'apikey']]),
 
   new ActionRule('settings.account', '打开账号设置', [['账号', '登录', '账户'], ['设置', '管理', '切换']]),
@@ -81,7 +88,7 @@ const RULES: ActionRule[] = [
   new ActionRule('settings.controlBar', '打开会话控制栏设置', [['控制栏', '会话栏', '工具栏显示']]),
   new ActionRule('settings.rdpDisplay', '打开 RDP 显示设置', [['RDP', '分辨率', '显示缩放']]),
   new ActionRule('settings.sshSkin', '打开 SSH 外观设置', [['SSH', '终端皮肤', '终端外观']]),
-  new ActionRule('settings.diagnosticAi', '打开诊断与 AI 帮助', [['诊断与 AI', '诊断AI', 'AI 帮助']]),
+  new ActionRule('settings.diagnosticAi', '打开诊断与 AI 帮助', [['诊断与 AI', '诊断AI', 'AI 帮助'], ['设置', '页面', '入口', '帮助']]),
   new ActionRule('settings.aiHosts', '打开远程 AI 主机设置', [['远程 AI', 'AI 主机', '电脑端 AI']]),
   new ActionRule('settings.aiDisplay', '打开远程 AI 显示设置', [['远程 AI', 'AI 显示', '显示入口']]),
   new ActionRule('settings.aiData', '打开远程 AI 数据设置', [['远程 AI', 'AI 数据', '数据策略']]),
@@ -104,27 +111,32 @@ const RULES: ActionRule[] = [
   new ActionRule('settings.moonlightDiagnostics', '打开 Moonlight 诊断设置', [['Moonlight', '诊断', '性能']]),
   new ActionRule('settings.moonlightTrust', '打开 Moonlight 信任设置', [['Moonlight', '信任', '配对']]),
   new ActionRule('settings.moonlightData', '打开 Moonlight 数据设置', [['Moonlight', '数据', '同步']]),
+  new ActionRule('diagnosticAi.assistant', '启动 AI 辅助', [['启动 AI 辅助', 'AI 助手', '询问 AI']]),
+  new ActionRule('diagnosticAi.usage', '打开 AI 用量监控', [['AI 用量', 'Token 用量', '缓存命中', '费用估算']]),
+  new ActionRule('diagnosticAi.personalization', '打开 AI 个性化设置', [['AI 个性化', '助手名字', '助手性格', '本地记忆']]),
+  new ActionRule('diagnosticAi.sessions', '打开 AI 会话管理', [['AI 会话', '历史对话', '继续对话']]),
+  new ActionRule('diagnosticAi.classicLogs', '打开传统日志抓取', [['传统日志', '手动抓日志', '导出诊断日志']]),
 
-  new ActionRule('session.keyboard', '打开远程键盘', [['键盘', '打字', '输入']]),
-  new ActionRule('session.modifiers', '打开组合键面板', [['组合键', '修饰键', 'Ctrl', 'Alt', 'Shift']]),
-  new ActionRule('session.fileTransfer', '打开文件传输', [['文件传输', '传文件', '上传文件', '下载文件']], 'execute', true),
+  new ActionRule('session.keyboard', '打开远程键盘', [['键盘', '打字', '输入']], 'inline'),
+  new ActionRule('session.modifiers', '打开组合键面板', [['组合键', '修饰键', 'Ctrl', 'Alt', 'Shift']], 'inline'),
+  new ActionRule('session.fileTransfer', '打开文件传输', [['文件传输', '传文件', '上传文件', '下载文件']], 'floating', true),
   new ActionRule('session.ctrlAltDel', '发送 Ctrl+Alt+Delete', [['Ctrl+Alt+Delete', 'Ctrl Alt Del', '安全登录']], 'execute', true),
   new ActionRule('session.lock', '锁定远程设备', [['锁定远程', '锁屏远程']], 'execute', true),
   new ActionRule('session.privacy', '切换隐私模式', [['隐私模式', '隐藏远端画面']], 'execute', true),
-  new ActionRule('session.audio', '切换远程音频', [['远程音频', '声音']]),
-  new ActionRule('session.clipboard', '切换剪贴板', [['剪贴板同步', '远程剪贴板']]),
-  new ActionRule('session.filePaste', '切换文件粘贴', [['文件粘贴', '粘贴文件']]),
-  new ActionRule('session.resetCanvas', '重置画面位置', [['重置画面', '恢复画布', '画面位置']]),
-  new ActionRule('session.rotate', '旋转远程画面', [['旋转画面', '画面旋转']]),
-  new ActionRule('session.portrait', '切换竖屏显示', [['竖屏显示', '纵向显示']]),
-  new ActionRule('session.display', '打开远程显示选择', [['远程显示器', '显示器选择', '分辨率']]),
-  new ActionRule('session.quality', '打开画质设置', [['画质', '清晰度', '流畅度']]),
-  new ActionRule('session.codec', '打开编码设置', [['编码', 'H.264', 'H.265', 'AV1']]),
-  new ActionRule('session.cursor', '切换本地光标', [['本地光标', '鼠标光标']]),
-  new ActionRule('session.browseMode', '切换浏览模式', [['浏览模式', '查看模式']]),
-  new ActionRule('session.relativeMouse', '切换相对鼠标', [['相对鼠标', '相对模式']]),
-  new ActionRule('session.reverseWheel', '切换反向滚轮', [['反向滚轮', '滚轮反向']]),
-  new ActionRule('session.swapButtons', '切换鼠标按键', [['交换鼠标按键', '左右键']]),
+  new ActionRule('session.audio', '切换远程音频', [['远程音频', '声音']], 'inline'),
+  new ActionRule('session.clipboard', '切换剪贴板', [['剪贴板同步', '远程剪贴板']], 'inline'),
+  new ActionRule('session.filePaste', '切换文件粘贴', [['文件粘贴', '粘贴文件']], 'inline'),
+  new ActionRule('session.resetCanvas', '重置画面位置', [['重置画面', '恢复画布', '画面位置']], 'inline'),
+  new ActionRule('session.rotate', '旋转远程画面', [['旋转画面', '画面旋转']], 'inline'),
+  new ActionRule('session.portrait', '切换竖屏显示', [['竖屏显示', '纵向显示']], 'inline'),
+  new ActionRule('session.display', '打开远程显示选择', [['远程显示器', '显示器选择', '分辨率']], 'inline'),
+  new ActionRule('session.quality', '打开画质设置', [['画质', '清晰度', '流畅度']], 'inline'),
+  new ActionRule('session.codec', '打开编码设置', [['编码', 'H.264', 'H.265', 'AV1']], 'inline'),
+  new ActionRule('session.cursor', '切换本地光标', [['本地光标', '鼠标光标']], 'inline'),
+  new ActionRule('session.browseMode', '切换浏览模式', [['浏览模式', '查看模式']], 'inline'),
+  new ActionRule('session.relativeMouse', '切换相对鼠标', [['相对鼠标', '相对模式']], 'inline'),
+  new ActionRule('session.reverseWheel', '切换反向滚轮', [['反向滚轮', '滚轮反向']], 'inline'),
+  new ActionRule('session.swapButtons', '切换鼠标按键', [['交换鼠标按键', '左右键']], 'inline'),
   new ActionRule('session.diagnostics', '打开会话诊断', [['会话诊断', '性能面板', '连接诊断']], 'floating'),
   new ActionRule('session.disconnect', '断开远程连接', [['断开连接', '退出远程会话']], 'execute', true)
 ];
@@ -157,4 +169,15 @@ export function diagnosticAiAppActionMode(id: DiagnosticAiAppActionId): Diagnost
 export function diagnosticAiAppActionRequiresConfirmation(id: DiagnosticAiAppActionId): boolean {
   const rule: ActionRule | undefined = RULES.find((r: ActionRule): boolean => r.id === id);
   return rule !== undefined && rule.requiresConfirmation;
+}
+
+/** Stable catalog injected into the Provider prompt; the model may only return one of these IDs. */
+export function diagnosticAiAppActionCatalog(): string {
+  return RULES.map((rule: ActionRule): string =>
+    rule.id + '|' + rule.label + '|' + rule.mode + '|' + (rule.requiresConfirmation ? 'confirm' : 'direct')).join('\n');
+}
+
+export function diagnosticAiAppActionId(value: string): DiagnosticAiAppActionId | null {
+  const rule: ActionRule | undefined = RULES.find((item: ActionRule): boolean => item.id === value.trim());
+  return rule === undefined ? null : rule.id;
 }

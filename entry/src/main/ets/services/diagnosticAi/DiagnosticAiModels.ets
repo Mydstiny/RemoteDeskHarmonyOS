@@ -92,6 +92,8 @@ export interface DiagnosticAiResult {
   recommendedReadOnlySteps: string[];
   unknowns: string[];
   settingProposals: DiagnosticAiSettingProposal[];
+  /** Explicit typed action IDs returned by a Provider; unknown IDs are discarded at parse time. */
+  appActions: string[];
   knowledgeVersion: string;
   createdAt: number;
 }

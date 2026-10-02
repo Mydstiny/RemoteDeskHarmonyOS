@@ -1,7 +1,7 @@
 import { ComponentContent, curves, display, promptAction, window } from '@kit.ArkUI';
 import { inputMethod } from '@kit.IMEKit';
 import { DiagnosticAiAssistantPanel } from './DiagnosticAiAssistantPanel';
-import { DiagnosticAiAppActionId, diagnosticAiAppActionLabel } from '../../services/diagnosticAi/DiagnosticAiAppActionPolicy';
+import { DiagnosticAiAppActionId, diagnosticAiAppActionLabel, diagnosticAiAppActionMode } from '../../services/diagnosticAi/DiagnosticAiAppActionPolicy';
 import { AiKernelRing } from './XiaoyiOrb';
 import { AI_FLOAT_ORB, AiCheckmark, AiIslandGlass, AiSiriOrb } from './AiIslandChrome';
 
@@ -283,6 +283,18 @@ export struct AiIsland {
 
   private runAppAction(action: DiagnosticAiAppActionId): void {
     if (this.executing !== '') { return; }
+    const mode = diagnosticAiAppActionMode(action);
+    if (mode === 'inline') {
+      // Inline actions keep the Siri card open and reuse the same guarded callback as a normal tap.
+      this.onAppAction(action);
+      return;
+    }
+    if (mode === 'floating') {
+      // Long-running work and diagnostic surfaces leave the page usable; the user can tap the orb to reopen the card.
+      this.setCompact(true);
+      this.later(220, (): void => { this.onAppAction(action); });
+      return;
+    }
     try { inputMethod.getController().hideTextInput(); } catch (_error) { /* keyboard already down */ }
     this.setStatusBarHidden(false);
     this.fade(120, 0, (): void => { this.contentOpacity = 0; this.contentBlur = 10; });
