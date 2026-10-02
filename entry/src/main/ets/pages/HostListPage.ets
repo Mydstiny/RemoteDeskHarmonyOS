@@ -20206,7 +20206,9 @@ struct HostListPage {
 
   /** The entry exists for this account; whether it shows depends on the tab. */
   private hostAiOrbAvailable(): boolean {
-    return this.diagnosticAiOrbEnabled && this.diagnosticAiAssistantVisible;
+    // The assistant entrance is a Pro surface and is intentionally always resident. The old preference is retained
+    // only for migration; it must not hide the entry after a settings/profile reload.
+    return this.diagnosticAiAssistantVisible;
   }
 
   /**

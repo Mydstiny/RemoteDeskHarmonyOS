@@ -20,6 +20,7 @@ import { ProEntries } from '../../services/pro/ProEntries';
 import { PRO_DIAGNOSTICS_ASSISTANT_FEATURE } from '../../services/pro/ProFeatureCatalog';
 import { AccountSessionCoordinator } from '../../services/AccountSessionCoordinator';
 import { DiagnosticAiAppAction, DiagnosticAiAppActionId, diagnosticAiAppActionsForSteps } from '../../services/diagnosticAi/DiagnosticAiAppActionPolicy';
+import { DiagnosticAiAssistantPreferences, DiagnosticAiConversationSession, DiagnosticAiConversationStore, DiagnosticAiConversationTurn } from '../../services/diagnosticAi/DiagnosticAiConversationStore';
 
 /** A suggested question shown as a pill in the island; it follows what the user is asking about. */
 class AiSuggestion {
@@ -74,11 +75,13 @@ class AiConversationMemory {
   static owner: string = '';
   static turns: AiTurn[] = [];
   static history: string = '';
+  static pendingQuestion: string = '';
 
   static clear(owner: string): void {
     AiConversationMemory.owner = owner;
     AiConversationMemory.turns = [];
     AiConversationMemory.history = '';
+    AiConversationMemory.pendingQuestion = '';
   }
 }
 
@@ -164,6 +167,8 @@ export struct DiagnosticAiAssistantPanel {
    */
   @Prop siriMode: boolean = false;
   @Prop deviceClass: 'phone' | 'pad' | 'pc' = 'phone';
+  /** A settings history item can reopen this local-only conversation. */
+  @Prop resumeSessionId: string = '';
   /** In the AI island while a capture or analysis runs: a small floating capsule that leaves the app usable. */
   @Prop @Watch('refreshReady') compact: boolean = false;
   /** An AI service is set up (a model chosen, and its API Key saved unless it runs on the device). */
@@ -201,6 +206,7 @@ export struct DiagnosticAiAssistantPanel {
   @State eventCount: number = 0;
   @State elapsed: number = 0;
   @State private latestBundleText: string = '';
+  @State private pendingCaptureId: string = '';
   @State private mailPreviewVisible: boolean = false;
   @State private mailSubject: string = '';
   @State private mailBody: string = '';
@@ -222,6 +228,11 @@ export struct DiagnosticAiAssistantPanel {
   private timer: number = -1;
   private lifecycleGeneration: number = 0;
   private captureOwnedByPanel: boolean = false;
+  private readonly conversationStore: DiagnosticAiConversationStore = new DiagnosticAiConversationStore();
+  private sessionId: string = '';
+  private assistantPreferences: DiagnosticAiAssistantPreferences = {
+    name: '小远', personality: 'balanced', memoryEnabled: true, memorySummary: '', updatedAt: 0
+  };
 
   private onRevealed(): void {
     this.refreshReady();
@@ -278,10 +289,25 @@ export struct DiagnosticAiAssistantPanel {
     const scope = AccountSessionCoordinator.getInstance().currentScope();
     this.owner = scope.ownerScopeId.trim() === '' ? 'device-local' : scope.ownerScopeId;
     this.store.init(getContext(this) as common.UIAbilityContext, this.owner);
+    this.conversationStore.init(getContext(this) as common.UIAbilityContext, this.owner);
     if (AiConversationMemory.owner !== this.owner) { AiConversationMemory.clear(this.owner); }
     this.refreshReady();
-    this.conversation = AiConversationMemory.history;
-    this.turns = AiConversationMemory.turns.slice();
+    this.assistantPreferences = this.conversationStore.assistantPreferences();
+    const resumed: DiagnosticAiConversationSession | undefined = this.resumeSessionId.trim() === '' ? undefined :
+      this.conversationStore.session(this.resumeSessionId.trim());
+    if (resumed !== undefined) {
+      this.sessionId = resumed.id;
+      this.turns = resumed.turns.map((turn): AiTurn => new AiTurn(turn.question, turn.answer));
+      this.conversation = this.turns.map((turn: AiTurn): string => '\\n用户：' + turn.question + '\\n助手：' + turn.answer).join('').slice(-8000);
+      AiConversationMemory.owner = this.owner;
+      AiConversationMemory.turns = this.turns.slice();
+      AiConversationMemory.history = this.conversation;
+    } else {
+      this.sessionId = '';
+      this.conversation = AiConversationMemory.history;
+      this.turns = AiConversationMemory.turns.slice();
+    }
+    this.recoverPendingBundle();
     this.timer = setInterval((): void => { this.syncCapture(); }, 500);
   }
 
@@ -344,12 +370,31 @@ export struct DiagnosticAiAssistantPanel {
       profiles.find((value: DiagnosticAiProviderProfile): boolean => value.modelId !== '');
   }
 
+  /** A panel can be recreated while the frozen AI capture is waiting for Provider analysis. Keep it retryable. */
+  private recoverPendingBundle(): void {
+    const snapshot = this.capture.status();
+    if (snapshot.phase !== 'readyToSave') { return; }
+    const bundle = this.capture.bundle(this.owner);
+    if (bundle === null) { return; }
+    this.latestBundleText = bundle.text;
+    this.pendingCaptureId = bundle.captureId;
+    this.modules = bundle.modules;
+    this.agentMode = 'diagnose';
+    this.question = AiConversationMemory.pendingQuestion === '' ? '请分析刚刚抓取的诊断日志。' : AiConversationMemory.pendingQuestion;
+    this.status = '上次诊断包已保留；可以继续分析或重新提问。';
+  }
+
   private errorText(error: Object): string {
     const value = error instanceof Error ? error.message : 'DIAGNOSTIC_AI_UNKNOWN';
     if (value.indexOf('LOCAL_MODEL_PC_ONLY') >= 0) { return '鸿蒙端侧小模型当前仅支持 PC/2in1，手机和 Pad 暂不可用'; }
     if (value.indexOf('LOCAL_MODEL_BUSY') >= 0) { return '鸿蒙端侧小模型正在处理其他请求，请稍后重试'; }
     if (value.indexOf('LOCAL_MODEL') >= 0) { return '鸿蒙端侧小模型当前不可用，请在 Provider 设置中重新检测'; }
     if (value.indexOf('HTTP_401') >= 0 || value.indexOf('HTTP_403') >= 0) { return 'AI 服务拒绝了请求，请检查 API Key、套餐权限或模型权限'; }
+    if (value.indexOf('HTTP_413') >= 0) { return '诊断包超出 Provider 请求限制；已保留本地诊断包，请重试分析'; }
+    if (value.indexOf('HTTP_429') >= 0) { return 'Provider 当前限流，请稍后重试；本地诊断包已保留'; }
+    if (value.indexOf('HTTP_500') >= 0 || value.indexOf('HTTP_502') >= 0 || value.indexOf('HTTP_503') >= 0) {
+      return 'Provider 暂时不可用；本地诊断包已保留，请稍后重试';
+    }
     if (value.indexOf('HTTP_400') >= 0 || value.indexOf('HTTP_422') >= 0) { return 'AI 服务不接受当前请求格式，请重新拉取模型或换用兼容模型'; }
     if (value.indexOf('NETWORK') >= 0) { return 'AI 服务暂时无法连接，请检查网络、地址和证书'; }
     if (value.indexOf('EMPTY_RESULT') >= 0) { return 'AI 服务返回了空结果，请重试或更换模型'; }
@@ -358,7 +403,8 @@ export struct DiagnosticAiAssistantPanel {
   }
 
   private async sendAgent(mode: DiagnosticAiAgentMode, bundle: string = ''): Promise<void> {
-    if (!this.allowed() || this.busy || this.question.trim() === '') { return; }
+    if (!this.allowed()) { this.status = '当前账号没有诊断与 AI 帮助权限'; return; }
+    if (this.busy || this.question.trim() === '') { return; }
     const selected = this.selectedProfile();
     if (selected === undefined) { this.status = '请先在辅助 AI 配置中保存 API Key 并选择模型'; return; }
     const secret: string = this.store.secret(selected);
@@ -373,7 +419,10 @@ export struct DiagnosticAiAssistantPanel {
     this.status = '正在连接 AI…'; this.reportActivity();
     try {
       const analyzed: DiagnosticAiResult = await this.agent.respond(selected, secret, {
-        mode, question: this.question, history: this.conversation, bundle
+        mode, question: this.question, history: this.conversation, bundle,
+        assistantContext: this.assistantPreferences.name + '；语气：' + this.assistantPreferences.personality +
+          (this.assistantPreferences.memoryEnabled && this.assistantPreferences.memorySummary !== '' ?
+            '；用户偏好：' + this.assistantPreferences.memorySummary : '')
       });
       const currentScope = AccountSessionCoordinator.getInstance().currentScope();
       const currentOwner: string = currentScope.ownerScopeId.trim() === '' ? 'device-local' : currentScope.ownerScopeId;
@@ -383,11 +432,20 @@ export struct DiagnosticAiAssistantPanel {
         this.status = '页面或账号作用域已变化，已丢弃旧 AI 结果'; return;
       }
       this.result = analyzed;
+      if (mode === 'diagnose' && bundle !== '' && this.pendingCaptureId !== '') {
+        this.capture.discard(requestOwner, this.pendingCaptureId);
+        this.pendingCaptureId = '';
+        AiConversationMemory.pendingQuestion = '';
+      }
       this.conversation = (this.conversation + '\n用户：' + this.question + '\n助手：' + analyzed.summary).slice(-8000);
       this.rememberExchange(analyzed);
       this.status = mode === 'diagnose' ? '诊断完成；请查看证据、建议和可选操作。' : '已收到 AI 回复；请从卡片中选择下一步。';
     } catch (error) {
-      this.status = this.errorText(error);
+      const currentScope = AccountSessionCoordinator.getInstance().currentScope();
+      const currentOwner: string = currentScope.ownerScopeId.trim() === '' ? 'device-local' : currentScope.ownerScopeId;
+      if (requestGeneration === this.lifecycleGeneration && currentOwner === requestOwner) {
+        this.status = this.errorText(error);
+      }
     } finally { this.busy = false; this.reportActivity(); }
   }
 
@@ -422,13 +480,22 @@ export struct DiagnosticAiAssistantPanel {
       this.status = '没有可分析的诊断事件'; this.busy = false; return;
     }
     this.latestBundleText = bundle.text;
-    this.capture.discard(requestOwner, bundle.captureId);
+    this.pendingCaptureId = bundle.captureId;
+    AiConversationMemory.pendingQuestion = this.question;
     const selected = this.selectedProfile();
     if (selected === undefined) { this.status = '请先在辅助 AI 配置中保存 API Key 并选择模型'; this.busy = false; return; }
+    const secret: string = this.store.secret(selected);
+    if (!diagnosticAiProviderIsHarmonyLocal(selected.providerId) && secret.trim() === '') {
+      this.status = 'API Key 无法从本机安全存储读回；诊断包已保留，请重新保存 API Key 后重试';
+      this.busy = false; this.reportActivity(); return;
+    }
     const selectedRevision: number = selected.revision;
     try {
-      const analyzed: DiagnosticAiResult = await this.agent.respond(selected, this.store.secret(selected), {
-        mode: 'diagnose', question: this.question, history: this.conversation, bundle: bundle.text
+      const analyzed: DiagnosticAiResult = await this.agent.respond(selected, secret, {
+        mode: 'diagnose', question: this.question, history: this.conversation, bundle: bundle.text,
+        assistantContext: this.assistantPreferences.name + '；语气：' + this.assistantPreferences.personality +
+          (this.assistantPreferences.memoryEnabled && this.assistantPreferences.memorySummary !== '' ?
+            '；用户偏好：' + this.assistantPreferences.memorySummary : '')
       });
       const currentScope = AccountSessionCoordinator.getInstance().currentScope();
       const currentOwner: string = currentScope.ownerScopeId.trim() === '' ? 'device-local' : currentScope.ownerScopeId;
@@ -439,11 +506,14 @@ export struct DiagnosticAiAssistantPanel {
         return;
       }
       this.result = analyzed;
+      this.capture.discard(requestOwner, bundle.captureId);
+      this.pendingCaptureId = '';
+      AiConversationMemory.pendingQuestion = '';
       this.conversation = (this.conversation + '\n用户：' + this.question + '\n助手：' + analyzed.summary).slice(-8000);
       this.rememberExchange(analyzed);
       this.status = '诊断完成；请查看证据、建议和可选操作。';
     } catch (error) {
-      this.status = this.errorText(error);
+      this.status = this.errorText(error) + '；诊断包已保留，可点击「重试分析」';
     } finally { this.busy = false; this.reportActivity(); }
   }
 
@@ -603,6 +673,12 @@ export struct DiagnosticAiAssistantPanel {
     void this.sendAgent(mode);
   }
 
+  private retryPendingDiagnosis(): void {
+    if (this.pendingCaptureId === '' || this.latestBundleText === '' || this.busy) { return; }
+    this.agentMode = 'diagnose';
+    void this.sendAgent('diagnose', this.latestBundleText);
+  }
+
   /** Submit a follow-up from the result surface while keeping the conversation summary in the request. */
   private submitDraftQuestion(): void {
     const value: string = this.draftQuestion.trim();
@@ -691,6 +767,25 @@ export struct DiagnosticAiAssistantPanel {
     AiConversationMemory.owner = this.owner;
     AiConversationMemory.history = this.conversation;
     AiConversationMemory.turns = this.turns.concat([new AiTurn(this.question, result.summary)]);
+    const now: number = Date.now();
+    if (this.sessionId === '') {
+      this.sessionId = 'ai-' + now.toString() + '-' + Math.floor(Math.random() * 100000).toString();
+    }
+    const session: DiagnosticAiConversationSession = {
+      id: this.sessionId,
+      title: this.question.trim().slice(0, 40) || 'AI 对话',
+      createdAt: now,
+      updatedAt: now,
+      turns: this.turns.concat([new AiTurn(this.question, result.summary)]).map((turn: AiTurn): DiagnosticAiConversationTurn => ({
+        question: turn.question.slice(0, 4000), answer: turn.answer.slice(0, 6000), mode: this.agentMode, createdAt: now
+      }))
+    };
+    const previous: DiagnosticAiConversationSession | undefined = this.conversationStore.session(this.sessionId);
+    if (previous !== undefined) { session.createdAt = previous.createdAt; }
+    this.conversationStore.saveSession(session);
+    const promptTokens: number = Math.ceil((this.question.length + this.conversation.length + this.latestBundleText.length) / 4);
+    const completionTokens: number = Math.ceil(result.summary.length / 4);
+    this.conversationStore.recordUsage(promptTokens, completionTokens, 0, (promptTokens + completionTokens) / 1000000 * 0.3);
     setTimeout((): void => {
       if (this.turns.length > 0) { this.answerScroller.scrollEdge(Edge.Bottom); }
     }, 80);
@@ -703,6 +798,7 @@ export struct DiagnosticAiAssistantPanel {
     this.result = null; this.question = ''; this.status = ''; this.mailPreviewVisible = false; this.modules = [];
     this.awaitingCapture = false; this.agentMode = 'answer'; this.expandedResult = false; this.draftQuestion = '';
     this.appliedActions = [];
+    this.sessionId = '';
     this.focusQuestion();
   }
 
@@ -896,6 +992,15 @@ export struct DiagnosticAiAssistantPanel {
         }.width('100%')
       } else if (this.status.length > 0 && this.result === null && this.status.indexOf('正在') < 0) {
         Text(this.status).fontSize(13).lineHeight(18).fontColor('#FF9F0A').width('100%')
+      }
+      if (this.result === null && !this.busy && !this.capturing() && this.pendingCaptureId !== '') {
+        Row({ space: 8 }) {
+          this.pill('重试分析', true, (): void => { this.retryPendingDiagnosis(); })
+          this.pill('丢弃诊断包', false, (): void => {
+            this.capture.discard(this.owner, this.pendingCaptureId);
+            this.pendingCaptureId = ''; this.latestBundleText = ''; this.modules = []; this.status = '已丢弃待分析诊断包';
+          })
+        }.width('100%').justifyContent(FlexAlign.Center)
       }
       if (this.result !== null) {
         Scroll(this.answerScroller) {

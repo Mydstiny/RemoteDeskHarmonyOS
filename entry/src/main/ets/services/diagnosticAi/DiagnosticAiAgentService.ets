@@ -9,6 +9,7 @@ export interface DiagnosticAiAgentRequest {
   question: string;
   history: string;
   bundle: string;
+  assistantContext?: string;
 }
 
 /** Intent is a safety boundary, not a request to let the model choose arbitrary tools. */
@@ -42,12 +43,22 @@ export function diagnosticAiAgentModeLabel(mode: DiagnosticAiAgentMode): string 
 export class DiagnosticAiAgentService {
   private readonly provider: DiagnosticAiProviderService = new DiagnosticAiProviderService();
 
+  private boundedBundle(bundle: string): string {
+    const limit: number = 48000;
+    if (bundle.length <= limit) { return bundle; }
+    // Keep both the capture header and the newest events. The full redacted bundle remains local for retry/export;
+    // the Provider request must stay below common domestic context/request limits.
+    const half: number = Math.floor(limit / 2);
+    return bundle.slice(0, half) + '\n{"truncatedForProvider":true,"originalBytes":' + bundle.length.toString() + '}\n' +
+      bundle.slice(-half);
+  }
+
   async respond(profile: DiagnosticAiProviderProfile, secret: string,
     request: DiagnosticAiAgentRequest): Promise<DiagnosticAiResult> {
     const input: DiagnosticAiAssistInput = {
       mode: request.mode, question: request.question.trim().slice(0, 4000),
-      history: request.history.slice(-8000), bundle: request.bundle.slice(0, 1024 * 1024),
-      knowledge: diagnosticAiKnowledgeSnapshot()
+      history: request.history.slice(-8000), bundle: this.boundedBundle(request.bundle),
+      knowledge: diagnosticAiKnowledgeSnapshot(), assistantContext: request.assistantContext ?? ''
     };
     return await this.provider.assist(profile, secret, input);
   }

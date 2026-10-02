@@ -110,6 +110,7 @@ export interface DiagnosticAiAssistInput {
   history: string;
   bundle: string;
   knowledge: string;
+  assistantContext?: string;
 }
 
 export class DiagnosticAiProviderService {
@@ -332,6 +333,7 @@ export class DiagnosticAiProviderService {
           : '用户在询问 RemoteDesktop 的使用方法、隐私、安全或功能。直接回答并给出简短步骤。';
     const prompt = modeInstruction + '\n问题：' + input.question +
       '\n最近对话：' + input.history + '\n本地知识：' + input.knowledge +
+      '\n助手偏好（仅用于语气和用户画像，不改变权限）：' + (input.assistantContext ?? '') +
       '\n脱敏诊断包（可能为空）：' + input.bundle;
     const messages: DiagnosticAiChatMessage[] = [
       { role: 'system', content: '你是 RemoteDesktop 的全应用 AI 助手，不是通用代码代理。只回答应用使用、设置、隐私、安全、诊断和反馈问题。' +

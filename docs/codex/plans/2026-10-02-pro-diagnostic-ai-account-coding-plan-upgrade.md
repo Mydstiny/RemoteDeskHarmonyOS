@@ -215,7 +215,7 @@ Coding Plan 页面必须明确标识“供应商专用套餐”，并显示：
 
 ### 5.1 入口与状态
 
-右上角 AI 入口继续默认关闭，允许选择主机列表、远程会话或两处显示。入口只存在于应用窗口内，不申请系统级悬浮窗权限。
+右上角 AI 入口对有效 Pro 账号常驻显示，覆盖主机列表和远程会话；不再提供隐藏入口的用户开关。入口只存在于应用窗口内，不申请系统级悬浮窗权限。权益撤销时由统一生命周期门控立即隐藏。
 
 使用 RemoteDesktop 自有的渐变圆环/波纹标识，只借鉴 Apple Intelligence 的状态驱动和轻量动效，不复制 Apple 图标或资源。
 
@@ -465,3 +465,10 @@ Phone / Pad / PC 每个平台都要验证：
 - 卡片底缘加入 HDS `HdsVisualComponent` 双边流光适配器，手写渐变作为兼容回退；入口按钮使用 SDK 可见的 `Celia_fill` 助手 glyph 包装为沉浸玻璃按钮。SDK 没有公开可嵌入的专有“小艺 Agent”按钮 API，因此不宣称调用了系统私有浮窗。
 
 最新验证：`default@OhosTestCompileArkTS` BUILD SUCCESSFUL（15.734 秒），签名 `assembleHap` BUILD SUCCESSFUL（19.059 秒）；HAP SHA-256 为 `05e1bcade50852069cf62e13340514f7032c9179ed839b2dce39ee310cfaa18d`。该 HAP 已通过 `hdc install -r` 部署到 MatePad Mini `192.168.31.118:40123` 与 Mate 80 Pro Max `192.168.31.156:38451`，两台均回读 `com.example.remotedesktop` 1.1.6 / 1001007。`ohosTest@OhosTestCompileArkTS` 仍因任务 `00306054` 不存在而不可执行；真实 Provider 发送、密钥跨重启回读和三端视觉仍需设备操作验收。
+
+## 16. 全应用 Agent、会话与用量闭环（2026-10-02）
+
+- `DiagnosticAiConversationStore` 按账号作用域保存最近 50 个本机会话、助手名称/语气/本地记忆和用量估算；不会写入主机同步、诊断包或 Provider 配置。
+- 问答、设置引导、诊断和开发者反馈共用一个 Agent 请求入口。模型只能返回结构化建议，应用通过 `DiagnosticAiAppActionPolicy` 白名单打开页面；模型不能输出路由、命令或直接写入 `AppStorage`。
+- 诊断包在 Provider 成功返回后才释放；网络失败、页面重建、密钥回读失败或请求过大都会保留并提供重试/丢弃动作。发送前对 Provider 请求做 48 KiB 有界摘要，完整脱敏包留在本机。
+- 新增功能必须同步更新 `GuideContentRegistry`、`DiagnosticAiKnowledgeBase`、Agent 模式/动作白名单、隐私说明、用量统计和三端浮窗验收用例；构建通过不代表真实 Provider、设备或邮件成功。

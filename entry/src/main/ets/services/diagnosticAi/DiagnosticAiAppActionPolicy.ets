@@ -35,7 +35,8 @@ const RULES: ActionRule[] = [
   new ActionRule('diagnostic.log', '查看诊断日志', [['日志', '诊断记录']]),
   new ActionRule('feedback', '提交反馈', [['反馈', '联系开发', '联系我们']]),
   new ActionRule('ssh.keys', '打开 SSH 密钥库', [['密钥', '公钥', '私钥', 'key']]),
-  new ActionRule('rdp.credentials', '管理 RDP 凭据', [['凭据', '账号密码', '用户名和密码', '登录凭证']])
+  new ActionRule('rdp.credentials', '管理 RDP 凭据', [['凭据', '账号密码', '用户名和密码', '登录凭证']]),
+  new ActionRule('ai.config', '打开 AI 配置', [['AI', 'ai', '模型', 'Provider', '服务商'], ['配置', '设置', '密钥', 'API Key', 'apikey']])
 ];
 
 /** The app actions a list of steps points to, in step order, each at most once. */

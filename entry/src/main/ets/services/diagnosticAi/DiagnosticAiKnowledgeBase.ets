@@ -5,7 +5,7 @@
  * 也不包含密码、主机地址、日志原文或用户资料。后续可以按版本拆成独立文档资源，
  * 但 Agent 必须始终带上知识版本，避免模型把过期操作当成当前 UI。
  */
-export const DIAGNOSTIC_AI_KNOWLEDGE_VERSION: string = 'RemoteDesktop-help-2026-10-02-v1';
+export const DIAGNOSTIC_AI_KNOWLEDGE_VERSION: string = 'RemoteDesktop-help-2026-10-02-v2';
 
 const KNOWLEDGE: string = [
   '产品：RemoteDesktop 是 HarmonyOS 的 RDP、RustDesk、SSH/SFTP、VNC、Moonlight 客户端。',
@@ -21,6 +21,9 @@ const KNOWLEDGE: string = [
   '设置操作：模型只能提出白名单、可回滚的建议；用户必须在卡片中确认后，应用才会写入。密码、密钥、Token、代理、VPN、证书、付款和远端服务不会由模型直接修改。',
   '诊断：只有用户确认后才抓取结构化脱敏事件；可取消；不会读取 raw hilog、屏幕、音频、剪贴板、终端正文、文件内容或凭据。',
   '邮件：诊断结论和脱敏证据先预览，用户确认后打开系统邮件草稿；应用不会自动发送。',
+  '会话：完成问答后会在本机按账号保存最近 50 个会话；配置页可以恢复会话、查看 Token/费用估算并调整助手名称、语气和本地偏好。',
+  '失败恢复：Provider 请求失败或页面重建时，完整脱敏诊断包会保留；启动 AI 辅助后可选择重试分析或丢弃。',
+  '入口：有效 Pro 账号在主机列表和远程会话右上角始终看到 AI 入口，抓取或思考时会变成不遮挡内容的浮动胶囊。',
   '隐私：Provider API Key 只保存在本机安全存储；不进入日志、云同步、备份、导出或邮件。外发前显示数据范围、Provider、模型和地区。',
   'Pro：AI 配置、AI 助手、设置建议和诊断分析属于 Pro；传统脱敏日志保留独立入口。权益失效或账号切换会取消请求并清理内存秘密。',
   '回答约束：先给直接答案，再给操作步骤；不确定时明确说明；不捏造设备、网络、Provider、付款或邮件发送结果。'

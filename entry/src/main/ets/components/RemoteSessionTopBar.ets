@@ -336,8 +336,8 @@ export struct RemoteSessionTopBar {
   }
 
   private diagnosticAiVisible(): boolean {
-    return this.diagnosticAiOrbEnabled && ProEntries.visible(
-      PRO_DIAGNOSTICS_ASSISTANT_FEATURE, ProAppRuntime.getInstance().context());
+    // Keep the AI entrance resident for entitled users; the legacy hide/show preference no longer gates the icon.
+    return ProEntries.visible(PRO_DIAGNOSTICS_ASSISTANT_FEATURE, ProAppRuntime.getInstance().context());
   }
 
   private diagnosticAiState(): 'idle' | 'open' | 'capturing' | 'thinking' {

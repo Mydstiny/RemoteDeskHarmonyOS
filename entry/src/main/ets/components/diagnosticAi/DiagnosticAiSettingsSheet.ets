@@ -13,6 +13,18 @@ import { AccountSessionCoordinator } from '../../services/AccountSessionCoordina
 import { ProAppRuntime } from '../../services/pro/ProAppRuntime';
 import { ProEntries } from '../../services/pro/ProEntries';
 import { PRO_DIAGNOSTICS_ASSISTANT_FEATURE, PRO_DIAGNOSTICS_FEATURE, PRO_DIAGNOSTICS_PROVIDER_FEATURE } from '../../services/pro/ProFeatureCatalog';
+import { DiagnosticAiAssistantPreferences, DiagnosticAiConversationSession, DiagnosticAiConversationStore, DiagnosticAiUsageSnapshot, defaultDiagnosticAiAssistantPreferences } from '../../services/diagnosticAi/DiagnosticAiConversationStore';
+
+class DiagnosticAiPersonalityChoice {
+  id: 'balanced' | 'warm' | 'concise' | 'technical';
+  label: string;
+  constructor(id: 'balanced' | 'warm' | 'concise' | 'technical', label: string) { this.id = id; this.label = label; }
+}
+
+const DIAGNOSTIC_AI_PERSONALITY_CHOICES: DiagnosticAiPersonalityChoice[] = [
+  new DiagnosticAiPersonalityChoice('balanced', '均衡'), new DiagnosticAiPersonalityChoice('warm', '温和'),
+  new DiagnosticAiPersonalityChoice('concise', '简洁'), new DiagnosticAiPersonalityChoice('technical', '技术')
+];
 
 @Component
 export struct DiagnosticAiSettingsSheet {
@@ -34,7 +46,16 @@ export struct DiagnosticAiSettingsSheet {
   @State busy: boolean = false;
   @State availableModels: DiagnosticAiModelInfo[] = [];
   @State deviceType: string = 'unknown';
+  @State sessions: DiagnosticAiConversationSession[] = [];
+  @State usageSnapshot: DiagnosticAiUsageSnapshot = { requestCount: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, estimatedCostCny: 0, updatedAt: 0 };
+  @State assistantPreferences: DiagnosticAiAssistantPreferences = defaultDiagnosticAiAssistantPreferences();
+  @State memoryDraft: string = '';
+  @State assistantNameDraft: string = '小远';
+  @State resumeSessionId: string = '';
+  @State private personalityDraft: 'balanced' | 'warm' | 'concise' | 'technical' = 'balanced';
+  @State private memoryEnabledDraft: boolean = true;
   private readonly providerService: DiagnosticAiProviderService = new DiagnosticAiProviderService();
+  private readonly conversationStore: DiagnosticAiConversationStore = new DiagnosticAiConversationStore();
   private store: DiagnosticAiProfileStore = new DiagnosticAiProfileStore();
   private owner: string = 'device-local';
 
@@ -45,7 +66,15 @@ export struct DiagnosticAiSettingsSheet {
     const scope = AccountSessionCoordinator.getInstance().currentScope();
     this.owner = scope.ownerScopeId.trim() === '' ? 'device-local' : scope.ownerScopeId.trim();
     this.manifests = diagnosticAiProviderManifests(); this.store.init(getContext(this) as common.UIAbilityContext, this.owner);
+    this.conversationStore.init(getContext(this) as common.UIAbilityContext, this.owner);
     this.profiles = this.store.list(); this.settings = this.store.settingsSnapshot();
+    this.sessions = this.conversationStore.listSessions();
+    this.usageSnapshot = this.conversationStore.usage();
+    this.assistantPreferences = this.conversationStore.assistantPreferences();
+    this.assistantNameDraft = this.assistantPreferences.name;
+    this.personalityDraft = this.assistantPreferences.personality;
+    this.memoryEnabledDraft = this.assistantPreferences.memoryEnabled;
+    this.memoryDraft = this.assistantPreferences.memorySummary;
     if (this.settings.selectedProviderId !== '') { this.selectedProvider = this.settings.selectedProviderId; }
     this.model = this.settings.selectedModelId;
     const selected = this.manifests.find((value: DiagnosticAiProviderManifest): boolean => value.providerId === this.selectedProvider);
@@ -182,6 +211,23 @@ export struct DiagnosticAiSettingsSheet {
     this.message = value ? '远程主机页 AI 入口已开启' : '远程主机页 AI 入口已关闭';
   }
 
+  private saveAssistantPreferences(): void {
+    const next: DiagnosticAiAssistantPreferences = {
+      name: this.assistantNameDraft.trim() === '' ? '小远' : this.assistantNameDraft.trim().slice(0, 32),
+      personality: this.personalityDraft, memoryEnabled: this.memoryEnabledDraft,
+      memorySummary: this.memoryDraft.trim().slice(0, 4000), updatedAt: Date.now()
+    };
+    if (this.conversationStore.saveAssistantPreferences(next)) {
+      this.assistantPreferences = next; this.message = '助手偏好已保存在本机，仅用于后续对话语气和上下文。';
+    } else { this.message = '助手偏好保存失败，请稍后重试'; }
+  }
+
+  private costText(): string { return '¥' + this.usageSnapshot.estimatedCostCny.toFixed(4); }
+  private cacheHitText(): string {
+    if (this.usageSnapshot.promptTokens <= 0) { return '0%'; }
+    return Math.round(this.usageSnapshot.cachedTokens / this.usageSnapshot.promptTokens * 100).toString() + '%';
+  }
+
   private selectedManifest(): DiagnosticAiProviderManifest | undefined {
     return this.manifests.find((value: DiagnosticAiProviderManifest): boolean => value.providerId === this.selectedProvider);
   }
@@ -307,6 +353,55 @@ export struct DiagnosticAiSettingsSheet {
     }.alignItems(HorizontalAlign.Start).width('100%')
   }
 
+  @Builder private usageAndHistorySection() {
+    this.sectionLabel('用量与本地会话')
+    Column({ space: 10 }) {
+      Row({ space: 8 }) {
+        Column({ space: 2 }) { Text(this.usageSnapshot.requestCount.toString()).fontSize(18).fontWeight(FontWeight.Bold).fontColor(this.pal().text); Text('请求').fontSize(11).fontColor(this.pal().text3) }.layoutWeight(1)
+        Column({ space: 2 }) { Text((this.usageSnapshot.promptTokens + this.usageSnapshot.completionTokens).toString()).fontSize(18).fontWeight(FontWeight.Bold).fontColor(this.pal().text); Text('估算 Token').fontSize(11).fontColor(this.pal().text3) }.layoutWeight(1)
+        Column({ space: 2 }) { Text(this.cacheHitText()).fontSize(18).fontWeight(FontWeight.Bold).fontColor(this.pal().text); Text('缓存命中').fontSize(11).fontColor(this.pal().text3) }.layoutWeight(1)
+        Column({ space: 2 }) { Text(this.costText()).fontSize(18).fontWeight(FontWeight.Bold).fontColor(this.pal().text); Text('估算费用').fontSize(11).fontColor(this.pal().text3) }.layoutWeight(1)
+      }.width('100%')
+      Text('统计只保存在当前账号的本机偏好中；Provider 未返回真实计费时按 ¥0.30/百万 Token 估算。').fontSize(11).lineHeight(16).fontColor(this.pal().text3).width('100%')
+      if (this.sessions.length === 0) {
+        Text('还没有已保存的对话。每次完成一次问答后会自动创建会话。').fontSize(12).fontColor(this.pal().text2).width('100%')
+      } else {
+        ForEach(this.sessions.slice(0, 8), (session: DiagnosticAiConversationSession): void => {
+          AppSettingsActionRow({ title: session.title, detail: session.turns.length.toString() + ' 轮 · ' + new Date(session.updatedAt).toLocaleString(), isEnabled: true,
+            onAction: (): void => { this.resumeSessionId = session.id; this.message = '已选择会话：' + session.title + '；请切换到「启动 AI 辅助」查看'; } })
+        }, (session: DiagnosticAiConversationSession): string => session.id)
+      }
+    }.width('100%').padding(14).borderRadius(18).backgroundColor(this.pal().card)
+      .border({ width: 0.5, color: this.pal().cardBorder })
+  }
+
+  @Builder private assistantCustomizationSection() {
+    this.sectionLabel('助手个性与本地记忆')
+    Column({ space: 10 }) {
+      Text('助手名称').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
+      TextInput({ placeholder: '例如：小远', text: this.assistantNameDraft }).height(42).fontSize(14)
+        .backgroundColor(this.pal().surface).borderRadius(12).onChange((value: string): void => { this.assistantNameDraft = value; })
+      Text('回答风格').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
+      Flex({ wrap: FlexWrap.Wrap }) {
+        ForEach(DIAGNOSTIC_AI_PERSONALITY_CHOICES, (item: DiagnosticAiPersonalityChoice): void => {
+          Text(item.label).fontSize(12).fontColor(this.personalityDraft === item.id ? Color.White : this.pal().text)
+            .padding({ left: 12, right: 12, top: 7, bottom: 7 }).margin({ right: 8, bottom: 6 }).borderRadius(14)
+            .backgroundColor(this.personalityDraft === item.id ? this.accent : this.pal().surface)
+            .onClick((): void => { this.personalityDraft = item.id; })
+        }, (item: DiagnosticAiPersonalityChoice): string => item.id)
+      }.width('100%')
+      Row({ space: 8 }) {
+        Column({ space: 2 }) { Text('允许本地记忆').fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.pal().text); Text('只把你主动填写的偏好附加到后续请求').fontSize(11).fontColor(this.pal().text3) }.layoutWeight(1)
+        Toggle({ type: ToggleType.Switch, isOn: this.memoryEnabledDraft }).selectedColor(this.accent).onChange((value: boolean): void => { this.memoryEnabledDraft = value; })
+      }.width('100%')
+      TextArea({ placeholder: '例如：我主要使用 RDP，回答请先给出最短操作路径。', text: this.memoryDraft }).height(86).fontSize(13)
+        .backgroundColor(this.pal().surface).borderRadius(12).onChange((value: string): void => { this.memoryDraft = value; })
+      Button('保存助手偏好').width('100%').height(42).borderRadius(21).backgroundColor(this.pal().surface).fontColor(this.accent)
+        .onClick((): void => { this.saveAssistantPreferences(); })
+    }.width('100%').padding(14).borderRadius(18).backgroundColor(this.pal().card)
+      .border({ width: 0.5, color: this.pal().cardBorder })
+  }
+
   @Builder private configSection() {
     Scroll() {
       Column({ space: 10 }) {
@@ -374,15 +469,16 @@ export struct DiagnosticAiSettingsSheet {
           }, (profile: DiagnosticAiProviderProfile): string => profile.id)
         }
         Row({ space: 12 }) {
+          SymbolGlyph($r('sys.symbol.performance')).fontSize(20).fontColor([this.accent])
           Column({ space: 2 }) {
-            Text('远程主机页显示 AI 入口').fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
-            Text('右上角常驻一个入口，随时启动 AI 辅助').fontSize(11).fontColor(this.pal().text3)
+            Text('AI 入口已常驻').fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
+            Text('主机页右上角始终保留入口；点击即可唤起 Siri 风格 AI 浮窗。').fontSize(11).fontColor(this.pal().text3)
           }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-          Toggle({ type: ToggleType.Switch, isOn: this.settings.showOrbOnHostPage }).selectedColor(this.accent)
-            .onChange((value: boolean): void => { this.saveOrbPreference(value); })
-        }
-        .width('100%').padding(14).borderRadius(18).backgroundColor(this.pal().card)
-        .border({ width: 0.5, color: this.pal().cardBorder })
+          Text('已开启').fontSize(11).fontColor('#2BB673').padding({ left: 8, right: 8, top: 3, bottom: 3 }).borderRadius(9).backgroundColor('#1A2BB673')
+        }.width('100%').padding(14).borderRadius(18).backgroundColor(this.pal().card)
+          .border({ width: 0.5, color: this.pal().cardBorder })
+        this.usageAndHistorySection()
+        this.assistantCustomizationSection()
       }.width('100%').padding({ bottom: 12 })
     }.layoutWeight(1).width('100%').scrollBar(BarState.Off).edgeEffect(EdgeEffect.Spring).align(Alignment.Top)
     if (this.message.length > 0) {
@@ -416,6 +512,7 @@ export struct DiagnosticAiSettingsSheet {
       } else if (this.section === 1) {
         DiagnosticAiAssistantPanel({
           embedded: true,
+          resumeSessionId: this.resumeSessionId,
           onClose: (): void => { this.onClose(); },
           onOpenMailDraft: (subject: string, body: string): void => {
             this.onOpenMailDraft(subject, body);
