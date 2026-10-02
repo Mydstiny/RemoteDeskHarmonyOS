@@ -5380,8 +5380,9 @@ struct HostListPage {
       return settingsSecurityExpandedMaxHeight(SETTINGS_SECURITY_ACTION_ROW_COUNT);
     }
     if (section === SETTINGS_SECTION_DIAGNOSTICS) {
-      // Card title plus up to three 62 vp rows.
-      return 260;
+      // Card title plus configuration, assistant, usage, personalization, session history and classic-log rows.
+      // Keep enough room for the complete card; the native settings page remains independently scrollable.
+      return 480;
     }
     if (section === SETTINGS_SECTION_TUTORIAL) {
       // Five action rows (更新日志, 快速认识, Pro 介绍, 操作引导, 连接前准备) plus the card title.
@@ -18545,6 +18546,8 @@ struct HostListPage {
                 this.cardDivider()
                 this.diagnosticSubRow(4)
                 this.cardDivider()
+                this.diagnosticSubRow(5)
+                this.cardDivider()
               }
               this.diagnosticSubRow(2)
             }.borderRadius(24).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
@@ -20293,21 +20296,21 @@ struct HostListPage {
     this.openSettingsLeafSheet(SETTINGS_SHEET_DIAGNOSTIC_AI, (): void => { this.diagnosticAiSection = section; });
   }
 
-  /** One AI help setting row: 0 config, 1 assistant, 2 classic logs, 3 usage, 4 personalization. */
+  /** One AI help setting row: 0 config, 1 assistant, 2 classic logs, 3 usage, 4 personalization, 5 sessions. */
   @Builder diagnosticSubRow(kind: number) {
     Row() {
       SymbolGlyph(kind === 0 ? $r('sys.symbol.gearshape_fill') : kind === 1 ? $r('sys.symbol.performance') :
         kind === 2 ? $r('sys.symbol.doc_plaintext') : kind === 3 ? $r('sys.symbol.performance') :
-        $r('sys.symbol.person_crop_circle_fill')).fontSize(22).fontColor([this.pal().text3])
+        kind === 4 ? $r('sys.symbol.person_crop_circle_fill') : $r('sys.symbol.clock')).fontSize(22).fontColor([this.pal().text3])
         .width(22).height(22).margin({ left: 9, right: 9 })
       Column() {
         Text(kind === 0 ? '辅助 AI 配置' : kind === 1 ? '启动 AI 辅助' : kind === 2 ? '传统日志抓取' :
-          kind === 3 ? 'AI 用量监控' : 'AI 个性化设置')
+          kind === 3 ? 'AI 用量监控' : kind === 4 ? 'AI 个性化设置' : 'AI 会话管理')
           .fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
           .fontColor(this.pal().text).fontFamily(this.font())
         Text(kind === 0 ? '选择 AI 服务商、保存密钥并选择模型' : kind === 1 ? '询问应用、协助设置、诊断问题和生成反馈草稿' :
           kind === 2 ? '脱敏诊断日志的抓取、预览、保存与导出' : kind === 3 ? 'Token、缓存命中率、订阅分项与费用估算' :
-          '助手名称、性格、风格和本机用户画像记忆')
+          kind === 4 ? '助手名称、性格、风格和本机用户画像记忆' : '查看历史对话并继续与 AI 助手交流')
           .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
           .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).margin({ top: 2 })
       }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })

@@ -782,6 +782,8 @@ export struct DiagnosticAiAssistantPanel {
       title: this.question.trim().slice(0, 40) || 'AI 对话',
       createdAt: now,
       updatedAt: now,
+      providerId: profile.providerId,
+      modelId: profile.modelId,
       turns: this.turns.concat([new AiTurn(this.question, result.summary)]).map((turn: AiTurn): DiagnosticAiConversationTurn => ({
         question: turn.question.slice(0, 4000), answer: turn.answer.slice(0, 6000), mode: this.agentMode, createdAt: now
       }))

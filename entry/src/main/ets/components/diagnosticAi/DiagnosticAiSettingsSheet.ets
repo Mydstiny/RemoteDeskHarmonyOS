@@ -47,7 +47,7 @@ export struct DiagnosticAiSettingsSheet {
   @StorageProp('breakpoint') breakpoint: string = 'md';
   onClose: () => void = (): void => {};
   onOpenMailDraft: (subject: string, body: string) => void = (_subject: string, _body: string): void => {};
-  /** Which sub-setting this sheet shows: 0 = 辅助 AI 配置, 1 = 启动 AI 辅助. 传统日志 has its own free sheet. */
+  /** Which sub-setting this sheet shows: 0 config, 1 assistant, 3 usage, 4 personalization, 5 sessions. */
   @Prop section: number = 0;
   @State manifests: DiagnosticAiProviderManifest[] = [];
   @State profiles: DiagnosticAiProviderProfile[] = [];
@@ -67,6 +67,7 @@ export struct DiagnosticAiSettingsSheet {
   @State assistantNameDraft: string = '小远';
   @State resumeSessionId: string = '';
   @State usageProviderFilter: string = '';
+  @State sessionDialogVisible: boolean = false;
   @State private personalityDraft: 'balanced' | 'warm' | 'concise' | 'technical' = 'balanced';
   @State private verbosityDraft: 'concise' | 'standard' | 'detailed' = 'standard';
   @State private roleDraft: 'remote-expert' | 'beginner-guide' | 'diagnostic-first' | 'privacy-first' = 'remote-expert';
@@ -264,6 +265,13 @@ export struct DiagnosticAiSettingsSheet {
 
   private usageRowKey(row: DiagnosticAiProviderUsage): string { return row.providerId + '\u001f' + row.modelId; }
 
+  private usageFilterText(): string {
+    if (this.usageProviderFilter === '') { return '全部订阅'; }
+    const row: DiagnosticAiProviderUsage | undefined = this.usageSnapshot.providerUsage.find((item: DiagnosticAiProviderUsage): boolean =>
+      this.usageRowKey(item) === this.usageProviderFilter);
+    return row === undefined ? '当前订阅筛选' : '当前筛选：' + row.providerId + ' · ' + (row.modelId === '' ? '未知模型' : row.modelId);
+  }
+
   private selectedUsageProvider(): DiagnosticAiProviderProfile | undefined {
     return this.profiles.find((item: DiagnosticAiProviderProfile): boolean => item.providerId === this.settings.selectedProviderId && item.modelId === this.settings.selectedModelId) ??
       this.profiles.find((item: DiagnosticAiProviderProfile): boolean => item.providerId === this.settings.selectedProviderId) ?? this.profiles[0];
@@ -276,7 +284,8 @@ export struct DiagnosticAiSettingsSheet {
     };
     if (this.store.saveSettings(next)) {
       this.settings = next; this.selectedProvider = profile.providerId; this.model = profile.modelId;
-      this.usageProviderFilter = profile.providerId; this.message = '已切换当前 AI 订阅：' + profile.displayName + ' / ' + profile.modelId;
+      this.usageProviderFilter = profile.providerId + '\u001f' + profile.modelId;
+      this.message = '已切换当前 AI 订阅：' + profile.displayName + ' / ' + profile.modelId;
     } else { this.message = '切换当前 AI 订阅失败，请重试'; }
   }
 
@@ -321,12 +330,14 @@ export struct DiagnosticAiSettingsSheet {
     if (this.section === 1) { return '启动 AI 辅助'; }
     if (this.section === 3) { return 'AI 用量监控'; }
     if (this.section === 4) { return 'AI 个性化设置'; }
+    if (this.section === 5) { return 'AI 会话管理'; }
     return '辅助 AI 配置';
   }
   private headerDetail(): string {
     if (this.section === 1) { return '询问应用、协助设置、诊断问题并生成反馈草稿'; }
     if (this.section === 3) { return '按订阅查看 Token、缓存命中和费用估算'; }
     if (this.section === 4) { return '名称、语气和仅保存在本机的助手记忆'; }
+    if (this.section === 5) { return '查看历史对话并在原 Provider 上继续交流'; }
     return '选择 Provider、模型和数据外发策略';
   }
 
@@ -457,17 +468,33 @@ export struct DiagnosticAiSettingsSheet {
         Column({ space: 2 }) { Text(this.cacheHitText()).fontSize(18).fontWeight(FontWeight.Bold).fontColor(this.pal().text); Text('缓存命中').fontSize(11).fontColor(this.pal().text3) }.layoutWeight(1)
         Column({ space: 2 }) { Text(this.costText()).fontSize(18).fontWeight(FontWeight.Bold).fontColor(this.pal().text); Text('估算费用').fontSize(11).fontColor(this.pal().text3) }.layoutWeight(1)
       }.width('100%')
-      Text((this.usageProviderFilter === '' ? '全部订阅' : '当前筛选：' + this.usageProviderFilter) + ' · 统计只保存在当前账号的本机偏好中；Provider 未返回真实计费时按 ¥0.30/百万 Token 估算。').fontSize(11).lineHeight(16).fontColor(this.pal().text3).width('100%')
-      if (this.sessions.length === 0) {
-        Text('还没有已保存的对话。每次完成一次问答后会自动创建会话。').fontSize(12).fontColor(this.pal().text2).width('100%')
-      } else {
-        ForEach(this.sessions.slice(0, 8), (session: DiagnosticAiConversationSession): void => {
-          AppSettingsActionRow({ title: session.title, detail: session.turns.length.toString() + ' 轮 · ' + new Date(session.updatedAt).toLocaleString(), isEnabled: true,
-            onAction: (): void => { this.resumeSessionId = session.id; this.message = '已选择会话：' + session.title + '；请切换到「启动 AI 辅助」查看'; } })
-        }, (session: DiagnosticAiConversationSession): string => session.id)
-      }
+      Text(this.usageFilterText() + ' · 统计只保存在当前账号的本机偏好中；Provider 未返回真实计费时按 ¥0.30/百万 Token 估算。').fontSize(11).lineHeight(16).fontColor(this.pal().text3).width('100%')
     }.width('100%').padding(14).borderRadius(18).backgroundColor(this.pal().card)
       .border({ width: 0.5, color: this.pal().cardBorder })
+  }
+
+  @Builder private sessionManagementSection() {
+    Scroll() {
+      Column({ space: 10 }) {
+        Column({ space: 4 }) {
+          Text('历史会话').fontSize(16).fontWeight(FontWeight.Medium).fontColor(this.pal().text).width('100%')
+          Text('每个会话保留自己的 Provider、模型和上下文。点击后会打开对话框，可以继续提问。').fontSize(12).lineHeight(17).fontColor(this.pal().text3).width('100%')
+        }.width('100%').alignItems(HorizontalAlign.Start)
+        if (this.sessions.length === 0) {
+          Text('还没有已保存的对话。完成一次问答后会自动创建会话。').fontSize(12).fontColor(this.pal().text2).width('100%')
+        } else {
+          ForEach(this.sessions.slice(0, 50), (session: DiagnosticAiConversationSession): void => {
+            AppSettingsActionRow({ title: session.title, detail: session.turns.length.toString() + ' 轮 · ' + new Date(session.updatedAt).toLocaleString(), isEnabled: true,
+              onAction: (): void => {
+                const profile: DiagnosticAiProviderProfile | undefined = this.profiles.find((item: DiagnosticAiProviderProfile): boolean =>
+                  item.providerId === session.providerId && item.modelId === session.modelId);
+                if (profile !== undefined) { this.useProviderForNewRequests(profile); }
+                this.resumeSessionId = session.id; this.sessionDialogVisible = true;
+              } })
+          }, (session: DiagnosticAiConversationSession): string => 'session-' + session.id)
+        }
+      }.width('100%').padding({ bottom: 16 })
+    }.layoutWeight(1).width('100%').scrollBar(BarState.Off).edgeEffect(EdgeEffect.Spring)
   }
 
   @Builder private assistantCustomizationSection() {
@@ -647,27 +674,48 @@ export struct DiagnosticAiSettingsSheet {
   }
 
   build() {
-    Column() {
-      this.header()
-      if ((this.section === 1 || this.section === 3 || this.section === 4) ? !this.assistantAllowed() : !this.providerAllowed()) {
-        this.lockedCard()
-      } else if (this.section === 1) {
-        DiagnosticAiAssistantPanel({
-          embedded: true,
-          resumeSessionId: this.resumeSessionId,
-          onClose: (): void => { this.onClose(); },
-          onOpenMailDraft: (subject: string, body: string): void => {
-            this.onOpenMailDraft(subject, body);
-          }
-        }).layoutWeight(1)
-      } else if (this.section === 3) {
-        this.usageSection()
-      } else if (this.section === 4) {
-        this.personalizationSection()
-      } else {
-        this.configSection()
+    Stack() {
+      Column() {
+        this.header()
+        if ((this.section === 1 || this.section === 3 || this.section === 4 || this.section === 5) ? !this.assistantAllowed() : !this.providerAllowed()) {
+          this.lockedCard()
+        } else if (this.section === 1) {
+          DiagnosticAiAssistantPanel({
+            embedded: true,
+            resumeSessionId: this.resumeSessionId,
+            onClose: (): void => { this.onClose(); },
+            onOpenMailDraft: (subject: string, body: string): void => { this.onOpenMailDraft(subject, body); }
+          }).layoutWeight(1)
+        } else if (this.section === 3) {
+          this.usageSection()
+        } else if (this.section === 4) {
+          this.personalizationSection()
+        } else if (this.section === 5) {
+          this.sessionManagementSection()
+        } else {
+          this.configSection()
+        }
+      }.width('100%').height('100%').padding({ left: 20, right: 20, top: 18, bottom: 28 })
+        .backgroundColor(this.pal().sheetBg)
+      if (this.sessionDialogVisible) {
+        Stack() {
+          Column().width('100%').height('100%').backgroundColor('#66000000')
+          Column() {
+            Row({ space: 8 }) {
+              Text('继续对话').fontSize(16).fontWeight(FontWeight.Medium).fontColor(this.pal().text).layoutWeight(1)
+              SymbolGlyph($r('sys.symbol.xmark')).fontSize(17).fontColor([this.pal().text2]).padding(6)
+                .onClick((): void => { this.sessionDialogVisible = false; this.sessions = this.conversationStore.listSessions(); this.usageSnapshot = this.conversationStore.usage(); })
+            }.width('100%').padding({ left: 14, right: 8, top: 10, bottom: 6 })
+            DiagnosticAiAssistantPanel({
+              embedded: true, resumeSessionId: this.resumeSessionId,
+              onClose: (): void => { this.sessionDialogVisible = false; this.sessions = this.conversationStore.listSessions(); this.usageSnapshot = this.conversationStore.usage(); },
+              onOpenMailDraft: (subject: string, body: string): void => { this.onOpenMailDraft(subject, body); }
+            }).layoutWeight(1)
+          }.width(this.breakpoint === 'sm' ? '94%' : '78%').height(this.breakpoint === 'sm' ? '88%' : '82%')
+            .backgroundColor(this.pal().sheetBg).borderRadius(24).border({ width: 0.5, color: this.pal().cardBorder })
+            .align(Alignment.Center)
+        }.width('100%').height('100%').zIndex(40)
       }
-    }.width('100%').height('100%').padding({ left: 20, right: 20, top: 18, bottom: 28 })
-    .backgroundColor(this.pal().sheetBg)
+    }.width('100%').height('100%')
   }
 }

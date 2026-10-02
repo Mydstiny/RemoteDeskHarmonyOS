@@ -13,6 +13,9 @@ export interface DiagnosticAiConversationSession {
   title: string;
   createdAt: number;
   updatedAt: number;
+  /** Provider/model used by the session so continuing it does not silently switch subscriptions. */
+  providerId: string;
+  modelId: string;
   turns: DiagnosticAiConversationTurn[];
 }
 
@@ -66,6 +69,8 @@ function scopeKey(owner: string): string {
 
 function cloneSession(value: DiagnosticAiConversationSession): DiagnosticAiConversationSession {
   return { id: value.id, title: value.title, createdAt: value.createdAt, updatedAt: value.updatedAt,
+    providerId: typeof value.providerId === 'string' ? value.providerId.slice(0, 64) : '',
+    modelId: typeof value.modelId === 'string' ? value.modelId.slice(0, 128) : '',
     turns: value.turns.slice(-20).map((turn: DiagnosticAiConversationTurn): DiagnosticAiConversationTurn => ({
       question: turn.question.slice(0, 4000), answer: turn.answer.slice(0, 6000), mode: turn.mode, createdAt: turn.createdAt
     })) };
