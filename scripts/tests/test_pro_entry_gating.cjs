@@ -59,7 +59,8 @@ const badges = new Map([
   ['components/pro/workspace/WorkspaceGroupCard.ets', [1, /if \(ProEntries\.visible\('pro\.workspaces'\)\) \{/]],
   // AI cards/section (4) follow aiProVisible; the app-icon row follows ProEntries; the account card
   // marker follows ProEntries.proActive(); the RDP 远端显示方案 row follows rdpAdvancedDisplayVisible.
-  ['pages/HostListPage.ets', [9, /aiProVisible = AiAccess\.getInstance\(\)\.proVisible\(\)/]],
+  // The 诊断与 AI 帮助 sub-rows (one builder) carry the badge only for 辅助 AI 配置 / 启动 AI 辅助.
+  ['pages/HostListPage.ets', [10, /aiProVisible = AiAccess\.getInstance\(\)\.proVisible\(\)/]],
   // RDP session panel: the 远端显示方案 entry exists only while RemoteDesktop passes advancedDisplayVisible.
   ['components/rdp/RdpControlCenter.ets', [1, /if \(this\.advancedDisplayVisible\) \{\s*this\.displayProfileEntry\(\)/]],
   // The 远端显示方案 sheet opens only from those gated entries (settings row and session panel).
@@ -91,6 +92,15 @@ assert.match(sources.get('pages/HostListPage.ets'), /this\.settingsLeafSheetMode
 assert.match(remoteDesktop, /advancedDisplayVisible: this\.rdpAdvancedDisplayVisible\(\)/);
 assert.match(remoteDesktop, /return ProEntries\.visible\(PRO_RDP_ADVANCED_DISPLAY_FEATURE, context\)/);
 assert.match(remoteDesktop, /this\.rustDeskCustomVisible = ProEntries\.visible\(PRO_RUSTDESK_ADVANCED_DISPLAY_FEATURE,/);
+
+// 诊断与 AI 帮助: the two AI sub-settings follow their own features; 传统日志抓取 stays free.
+const hostSource = sources.get('pages/HostListPage.ets');
+assert.match(hostSource, /this\.diagnosticAiConfigVisible = ProEntries\.visible\(PRO_DIAGNOSTICS_PROVIDER_FEATURE\)/);
+assert.match(hostSource, /this\.diagnosticAiAssistantVisible = ProEntries\.visible\(PRO_DIAGNOSTICS_ASSISTANT_FEATURE\)/);
+assert.match(hostSource, /if \(this\.diagnosticAiConfigVisible\) \{\s*this\.diagnosticSubRow\(0\)/);
+assert.match(hostSource, /if \(this\.diagnosticAiAssistantVisible\) \{\s*this\.diagnosticSubRow\(1\)/);
+assert.match(hostSource, /\}\s*this\.diagnosticSubRow\(2\)\s*\}/);
+assert.match(hostSource, /if \(kind < 2\) \{\s*ProBadge\(\)/);
 
 // 3. Regression: the settings app-icon row follows the entitlement.
 const host = sources.get('pages/HostListPage.ets');

@@ -14,6 +14,8 @@ export const SETTINGS_SECTION_VNC: string = 'vnc';
 export const SETTINGS_SECTION_MOONLIGHT: string = 'moonlight';
 export const SETTINGS_SECTION_SECURITY: string = 'security';
 export const SETTINGS_SECTION_TUTORIAL: string = 'tutorial';
+/** 诊断与 AI 帮助: 辅助 AI 配置 and 启动 AI 辅助 (Pro), and the free 传统日志抓取. */
+export const SETTINGS_SECTION_DIAGNOSTICS: string = 'diagnostics';
 export const SETTINGS_SECTION_ABOUT: string = 'about';
 export const SETTINGS_SECTION_FEEDBACK: string = 'feedback';
 export const SETTINGS_SECTION_RATING: string = 'rating';

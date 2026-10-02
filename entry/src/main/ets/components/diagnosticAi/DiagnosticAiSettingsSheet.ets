@@ -2,7 +2,6 @@ import { common } from '@kit.AbilityKit';
 import { AppConfig, Palette, buildDark, buildLight } from '../../common/Theme';
 import { AppSettingsActionRow } from '../AppSettingsActionRow';
 import { AppUiMetrics } from '../../common/AppUiMetrics';
-import { DiagnosticCaptureSettingsSheet } from '../DiagnosticCaptureSettingsSheet';
 import { DiagnosticAiAssistantPanel } from './DiagnosticAiAssistantPanel';
 import { DiagnosticAiModelInfo, DiagnosticAiProviderManifest, DiagnosticAiProviderProfile, DiagnosticAiSettings } from '../../services/diagnosticAi/DiagnosticAiModels';
 import { diagnosticAiProviderManifests } from '../../services/diagnosticAi/DiagnosticAiProviderCatalog';
@@ -12,7 +11,7 @@ import { DiagnosticAiProviderService, diagnosticAiPrivacySummary } from '../../s
 import { AccountSessionCoordinator } from '../../services/AccountSessionCoordinator';
 import { ProAppRuntime } from '../../services/pro/ProAppRuntime';
 import { ProEntries } from '../../services/pro/ProEntries';
-import { PRO_DIAGNOSTICS_FEATURE, PRO_DIAGNOSTICS_PROVIDER_FEATURE } from '../../services/pro/ProFeatureCatalog';
+import { PRO_DIAGNOSTICS_ASSISTANT_FEATURE, PRO_DIAGNOSTICS_FEATURE, PRO_DIAGNOSTICS_PROVIDER_FEATURE } from '../../services/pro/ProFeatureCatalog';
 
 @Component
 export struct DiagnosticAiSettingsSheet {
@@ -21,7 +20,8 @@ export struct DiagnosticAiSettingsSheet {
   @StorageProp('breakpoint') breakpoint: string = 'md';
   onClose: () => void = (): void => {};
   onOpenMailDraft: (subject: string, body: string) => void = (_subject: string, _body: string): void => {};
-  @State tab: number = 0;
+  /** Which sub-setting this sheet shows: 0 = 辅助 AI 配置, 1 = 启动 AI 辅助. 传统日志 has its own free sheet. */
+  @Prop section: number = 0;
   @State manifests: DiagnosticAiProviderManifest[] = [];
   @State profiles: DiagnosticAiProviderProfile[] = [];
   @State settings: DiagnosticAiSettings = { selectedProviderId: '', selectedModelId: '', showOrbOnHostPage: false, reducedMotion: false, retentionDays: 7 };
@@ -50,6 +50,9 @@ export struct DiagnosticAiSettingsSheet {
 
   private allowed(): boolean { return ProEntries.visible(PRO_DIAGNOSTICS_FEATURE, ProAppRuntime.getInstance().context()); }
   private providerAllowed(): boolean { return ProEntries.visible(PRO_DIAGNOSTICS_PROVIDER_FEATURE, ProAppRuntime.getInstance().context()); }
+  private assistantAllowed(): boolean {
+    return ProEntries.visible(PRO_DIAGNOSTICS_ASSISTANT_FEATURE, ProAppRuntime.getInstance().context());
+  }
 
   private providerAvailable(manifest: DiagnosticAiProviderManifest): boolean {
     return manifest.endpoint !== '' && manifest.chatPath !== '';
@@ -112,74 +115,211 @@ export struct DiagnosticAiSettingsSheet {
     this.message = value ? '远程主机页 AI 入口已开启' : '远程主机页 AI 入口已关闭';
   }
 
-  build() {
-    Column() {
-      if (!this.allowed()) {
-        Column({ space: 12 }) {
-          Text('诊断与 AI 帮助需要有效 Pro 权益').fontSize(18).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
-          Text('传统日志仍可单独使用。').fontSize(13).fontColor(this.pal().text2)
-          Button('关闭').onClick((): void => { this.onClose(); })
-        }.padding(24).width('100%')
-      } else {
-      Row({ space: 10 }) {
-        Text('诊断与 AI 帮助').fontSize(20).fontWeight(FontWeight.Bold).fontColor(this.pal().text).fontFamily(AppConfig.fontFamily).layoutWeight(1)
-        Button('关闭').height(40).backgroundColor(Color.Transparent).fontColor(this.accent).onClick((): void => { this.onClose(); })
+  private selectedManifest(): DiagnosticAiProviderManifest | undefined {
+    return this.manifests.find((value: DiagnosticAiProviderManifest): boolean => value.providerId === this.selectedProvider);
+  }
+  private savedProfile(): DiagnosticAiProviderProfile | undefined {
+    return this.profiles.find((value: DiagnosticAiProviderProfile): boolean =>
+      value.providerId === this.settings.selectedProviderId) ?? this.profiles[0];
+  }
+  /** The selected provider already has a stored key, so an empty field keeps it (saveProfile reuses the same ref). */
+  private selectedHasSecret(): boolean {
+    return this.profiles.some((value: DiagnosticAiProviderProfile): boolean =>
+      value.providerId === this.selectedProvider && value.secretFingerprint !== '');
+  }
+  private providerTag(manifest: DiagnosticAiProviderManifest): string {
+    if (!this.providerAvailable(manifest)) { return '后续适配'; }
+    return manifest.market === 'local' ? '本机' : '大陆';
+  }
+  /** Messages that report a failure are tinted; everything else reads as information. */
+  private messageIsError(): boolean {
+    return this.message.indexOf('失败') >= 0 || this.message.indexOf('请先') >= 0 || this.message.indexOf('尚未') >= 0;
+  }
+  private headerTitle(): string { return this.section === 1 ? '启动 AI 辅助' : '辅助 AI 配置'; }
+  private headerDetail(): string {
+    return this.section === 1 ? '描述问题，助手分析脱敏诊断事件并给出建议' : '使用你自己的 AI 服务分析脱敏后的诊断信息';
+  }
+
+  @Builder private header() {
+    Row({ space: 12 }) {
+      Column() {
+        SymbolGlyph(this.section === 1 ? $r('sys.symbol.performance') : $r('sys.symbol.gearshape_fill'))
+          .fontSize(20).fontColor([Color.White])
+      }
+      .width(40).height(40).borderRadius(13).justifyContent(FlexAlign.Center)
+      .linearGradient({ angle: 135, colors: [['#2BB673', 0], ['#00A3A3', 1]] })
+      Column({ space: 2 }) {
+        Text(this.headerTitle()).fontSize(19).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
+          .fontFamily(AppConfig.fontFamily)
+        Text(this.headerDetail()).fontSize(12).fontColor(this.pal().text3).fontFamily(AppConfig.fontFamily)
+          .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+      }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+      SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor([this.pal().text2]).padding(8)
+        .accessibilityText('关闭').onClick((): void => { this.onClose(); })
+    }.width('100%').margin({ bottom: 14 })
+  }
+
+  @Builder private sectionLabel(text: string) {
+    Text(text).fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text2).width('100%')
+      .margin({ top: 6 })
+  }
+
+  @Builder private statusCard() {
+    Row({ space: 12 }) {
+      Column() {
+        SymbolGlyph(this.savedProfile() !== undefined ? $r('sys.symbol.checkmark_shield') : $r('sys.symbol.info_circle_fill'))
+          .fontSize(22).fontColor([this.savedProfile() !== undefined ? '#2BB673' : this.pal().text3])
+      }.width(44).height(44).borderRadius(14).justifyContent(FlexAlign.Center).backgroundColor(this.pal().surface)
+      Column({ space: 3 }) {
+        Text(this.savedProfile() === undefined ? '尚未配置 AI 服务' :
+          (this.savedProfile() as DiagnosticAiProviderProfile).displayName)
+          .fontSize(16).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
+        Text(this.savedProfile() === undefined ? '选择下方的服务商，填写密钥并选择模型' :
+          ((this.savedProfile() as DiagnosticAiProviderProfile).modelId === '' ? '尚未选择模型' :
+            '模型 ' + (this.savedProfile() as DiagnosticAiProviderProfile).modelId) + ' · ' +
+            diagnosticAiPrivacySummary(this.savedProfile() as DiagnosticAiProviderProfile))
+          .fontSize(12).fontColor(this.pal().text2).maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
+      }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+      Text(this.savedProfile() === undefined ? '未配置' : '已配置').fontSize(11)
+        .fontColor(this.savedProfile() === undefined ? this.pal().text3 : '#2BB673')
+        .padding({ left: 8, right: 8, top: 3, bottom: 3 }).borderRadius(9)
+        .backgroundColor(this.savedProfile() === undefined ? this.pal().surface : '#1A2BB673')
+    }
+    .width('100%').padding(14).borderRadius(18).backgroundColor(this.pal().card)
+    .border({ width: 0.5, color: this.pal().cardBorder })
+  }
+
+  @Builder private providerCard(manifest: DiagnosticAiProviderManifest) {
+    Column({ space: 6 }) {
+      Row() {
+        Text(manifest.displayName).fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
+          .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).layoutWeight(1)
+        if (this.selectedProvider === manifest.providerId) {
+          SymbolGlyph($r('sys.symbol.checkmark_circle_fill')).fontSize(16).fontColor([this.accent])
+        }
       }.width('100%')
-      Row({ space: 8 }) {
-        Button('辅助 AI 配置').layoutWeight(1).height(42).enabled(this.tab !== 0).onClick((): void => { this.tab = 0; })
-        Button('启动 AI 辅助').layoutWeight(1).height(42).enabled(this.tab !== 1).onClick((): void => { this.tab = 1; })
-        Button('传统日志').layoutWeight(1).height(42).enabled(this.tab !== 2).onClick((): void => { this.tab = 2; })
-      }.width('100%')
-      if (this.tab === 0) {
-        Scroll() {
-          Column({ space: 12 }) {
-            Text('优先支持中国大陆 Provider；OpenAI 等国际 Provider 后续加入。').fontSize(12).fontColor(this.pal().text2).width('100%')
-            ForEach(this.manifests, (manifest: DiagnosticAiProviderManifest): void => {
-              Row({ space: 8 }) {
-                Text(manifest.displayName).fontSize(14).fontColor(this.pal().text).layoutWeight(1)
-                Text(this.providerAvailable(manifest) ? (manifest.market === 'local' ? '本机' : '大陆') : '后续适配')
-                  .fontSize(11).fontColor(this.providerAvailable(manifest) ? this.accent : this.pal().text3)
-              }.width('100%').height(48).padding({ left: 12, right: 12 }).borderRadius(12)
-                .backgroundColor(this.selectedProvider === manifest.providerId ? this.pal().surface : this.pal().card)
-                .opacity(this.providerAvailable(manifest) ? 1 : 0.62)
-                .onClick((): void => { if (this.providerAvailable(manifest)) { this.selectProvider(manifest.providerId); } })
-            }, (manifest: DiagnosticAiProviderManifest): string => manifest.providerId)
-            TextInput({ placeholder: 'Provider HTTPS 地址（可修改为兼容地址）', text: this.endpoint }).height(44).onChange((value: string): void => { this.endpoint = value; })
-            TextInput({ placeholder: 'API Key（仅写入本机安全存储）', text: this.keyText }).height(44).type(InputType.Password).onChange((value: string): void => { this.keyText = value; })
-            TextInput({ placeholder: '模型 ID', text: this.model }).height(44).onChange((value: string): void => { this.model = value; })
-            if (this.availableModels.length > 0) {
-              Text('可用模型（点击选择）').fontSize(12).fontColor(this.pal().text2).width('100%')
+      Text(this.providerTag(manifest)).fontSize(11)
+        .fontColor(this.providerAvailable(manifest) ? this.accent : this.pal().text3)
+    }
+    .alignItems(HorizontalAlign.Start)
+    .width(this.breakpoint === 'sm' ? '47%' : '31%').padding(12).margin({ right: 8, bottom: 8 }).borderRadius(14)
+    .backgroundColor(this.selectedProvider === manifest.providerId ? this.pal().surface : this.pal().card)
+    .border({ width: this.selectedProvider === manifest.providerId ? 1.5 : 0.5,
+      color: this.selectedProvider === manifest.providerId ? this.accent : this.pal().cardBorder })
+    .opacity(this.providerAvailable(manifest) ? 1 : 0.55)
+    .onClick((): void => { if (this.providerAvailable(manifest)) { this.selectProvider(manifest.providerId); } })
+  }
+
+  @Builder private field(label: string, hint: string) {
+    Column({ space: 2 }) {
+      Text(label).fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
+      if (hint.length > 0) { Text(hint).fontSize(11).fontColor(this.pal().text3) }
+    }.alignItems(HorizontalAlign.Start).width('100%')
+  }
+
+  @Builder private configSection() {
+    Scroll() {
+      Column({ space: 10 }) {
+        this.statusCard()
+        this.sectionLabel('选择服务商 · 优先支持中国大陆服务')
+        Flex({ wrap: FlexWrap.Wrap }) {
+          ForEach(this.manifests, (manifest: DiagnosticAiProviderManifest): void => { this.providerCard(manifest) },
+            (manifest: DiagnosticAiProviderManifest): string => manifest.providerId)
+        }.width('100%')
+        this.sectionLabel('连接信息')
+        Column({ space: 10 }) {
+          this.field('服务地址', '可改为兼容的 HTTPS 地址')
+          TextInput({ placeholder: 'https://', text: this.endpoint }).height(44).fontSize(14)
+            .backgroundColor(this.pal().surface).borderRadius(12)
+            .onChange((value: string): void => { this.endpoint = value; })
+          this.field('API Key', '只保存在本机安全存储，不会同步或写入日志')
+          TextInput({ placeholder: this.selectedHasSecret() ? '已保存；留空则保持不变' : '粘贴 API Key', text: this.keyText })
+            .height(44).fontSize(14).type(InputType.Password).backgroundColor(this.pal().surface).borderRadius(12)
+            .onChange((value: string): void => { this.keyText = value; })
+          this.field('模型', '保存服务后可拉取可用模型列表')
+          Row({ space: 8 }) {
+            TextInput({ placeholder: '模型 ID', text: this.model }).height(44).fontSize(14).layoutWeight(1)
+              .backgroundColor(this.pal().surface).borderRadius(12)
+              .onChange((value: string): void => { this.model = value; })
+            Button('拉取模型').height(44).fontSize(13).padding({ left: 14, right: 14 }).borderRadius(12)
+              .backgroundColor(this.pal().surface).fontColor(this.accent).enabled(!this.busy)
+              .onClick((): void => { void this.fetchModels(); })
+          }.width('100%')
+          if (this.availableModels.length > 0) {
+            Flex({ wrap: FlexWrap.Wrap }) {
               ForEach(this.availableModels, (item: DiagnosticAiModelInfo): void => {
-                Row({ space: 8 }) {
-                  Text(item.displayName + ' · ' + item.id).fontSize(13).fontColor(this.pal().text).layoutWeight(1)
-                  Text(this.model === item.id ? '已选择' : '').fontSize(11).fontColor(this.accent)
-                }.width('100%').height(42).padding({ left: 12, right: 12 }).borderRadius(10)
-                  .backgroundColor(this.model === item.id ? this.pal().surface : this.pal().card)
+                Text(item.displayName.length > 0 ? item.displayName : item.id).fontSize(12).maxLines(1)
+                  .fontColor(this.model === item.id ? Color.White : this.pal().text)
+                  .padding({ left: 10, right: 10, top: 6, bottom: 6 }).margin({ right: 6, bottom: 6 }).borderRadius(10)
+                  .backgroundColor(this.model === item.id ? this.accent : this.pal().surface)
                   .onClick((): void => { this.model = item.id; })
               }, (item: DiagnosticAiModelInfo): string => item.id)
-            }
-            Row({ space: 8 }) {
-              Button('保存 Provider').layoutWeight(1).height(44).backgroundColor(this.accent).fontColor(Color.White).enabled(!this.busy).onClick((): void => { void this.saveProvider(); })
-              Button('拉取模型').layoutWeight(1).height(44).enabled(!this.busy).onClick((): void => { void this.fetchModels(); })
             }.width('100%')
-            ForEach(this.profiles, (profile: DiagnosticAiProviderProfile): void => {
-              AppSettingsActionRow({ title: profile.displayName, detail: profile.modelId === '' ? '已配置 · 尚未选择模型' : '模型：' + profile.modelId + ' · ' + diagnosticAiPrivacySummary(profile), isEnabled: true, onAction: (): void => { this.selectedProvider = profile.providerId; this.model = profile.modelId; this.endpoint = profile.endpoint; this.availableModels = []; } })
-            }, (profile: DiagnosticAiProviderProfile): string => profile.id)
-            Row() { Text('远程主机页显示 AI 入口').fontSize(14).fontColor(this.pal().text).layoutWeight(1); Toggle({ type: ToggleType.Switch, isOn: this.settings.showOrbOnHostPage }).selectedColor(this.accent).onChange((value: boolean): void => { this.saveOrbPreference(value); }) }.width('100%').height(52)
-            Text(this.message).fontSize(12).fontColor(this.pal().text2).width('100%')
-          }.padding(4).width('100%')
-        }.layoutWeight(1).scrollBar(BarState.Auto)
-      } else if (this.tab === 1) {
+          }
+        }
+        .width('100%').padding(14).borderRadius(18).backgroundColor(this.pal().card)
+        .border({ width: 0.5, color: this.pal().cardBorder })
+        if (this.profiles.length > 1) {
+          this.sectionLabel('已保存的服务')
+          ForEach(this.profiles, (profile: DiagnosticAiProviderProfile): void => {
+            AppSettingsActionRow({ title: profile.displayName, detail: profile.modelId === '' ? '已配置 · 尚未选择模型' :
+              '模型：' + profile.modelId + ' · ' + diagnosticAiPrivacySummary(profile), isEnabled: true,
+              onAction: (): void => { this.selectedProvider = profile.providerId; this.model = profile.modelId;
+                this.endpoint = profile.endpoint; this.availableModels = []; } })
+          }, (profile: DiagnosticAiProviderProfile): string => profile.id)
+        }
+        Row({ space: 12 }) {
+          Column({ space: 2 }) {
+            Text('远程主机页显示 AI 入口').fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
+            Text('右上角常驻一个入口，随时启动 AI 辅助').fontSize(11).fontColor(this.pal().text3)
+          }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+          Toggle({ type: ToggleType.Switch, isOn: this.settings.showOrbOnHostPage }).selectedColor(this.accent)
+            .onChange((value: boolean): void => { this.saveOrbPreference(value); })
+        }
+        .width('100%').padding(14).borderRadius(18).backgroundColor(this.pal().card)
+        .border({ width: 0.5, color: this.pal().cardBorder })
+      }.width('100%').padding({ bottom: 12 })
+    }.layoutWeight(1).width('100%').scrollBar(BarState.Off).edgeEffect(EdgeEffect.Spring).align(Alignment.Top)
+    if (this.message.length > 0) {
+      Row({ space: 8 }) {
+        SymbolGlyph($r('sys.symbol.info_circle_fill')).fontSize(15)
+          .fontColor([this.messageIsError() ? '#F08C00' : this.accent])
+        Text(this.message).fontSize(12).lineHeight(17).fontColor(this.pal().text).layoutWeight(1)
+      }
+      .width('100%').padding(10).borderRadius(12).margin({ top: 8 })
+      .backgroundColor(this.messageIsError() ? '#1AF08C00' : this.pal().surface)
+    }
+    Button(this.busy ? '处理中…' : '保存配置').width('100%').height(48).fontSize(16).fontWeight(FontWeight.Medium)
+      .fontColor(Color.White).backgroundColor(this.accent).borderRadius(24).margin({ top: 10 })
+      .enabled(!this.busy).onClick((): void => { void this.saveProvider(); })
+  }
+
+  @Builder private lockedCard() {
+    Column({ space: 10 }) {
+      SymbolGlyph($r('sys.symbol.lock_fill')).fontSize(30).fontColor([this.pal().text3])
+      Text('需要有效的 Pro 权益').fontSize(17).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
+      Text('传统日志抓取不受影响，可在「设置 → 诊断与 AI 帮助 → 传统日志抓取」中使用。')
+        .fontSize(13).lineHeight(19).fontColor(this.pal().text2).textAlign(TextAlign.Center)
+    }.width('100%').padding(28).borderRadius(18).backgroundColor(this.pal().card)
+  }
+
+  build() {
+    Column() {
+      this.header()
+      if (this.section === 1 ? !this.assistantAllowed() : !this.providerAllowed()) {
+        this.lockedCard()
+      } else if (this.section === 1) {
         DiagnosticAiAssistantPanel({
-          onClose: (): void => { this.tab = 0; },
+          embedded: true,
+          onClose: (): void => { this.onClose(); },
           onOpenMailDraft: (subject: string, body: string): void => {
             this.onOpenMailDraft(subject, body);
           }
         }).layoutWeight(1)
       } else {
-        DiagnosticCaptureSettingsSheet({ onClose: (): void => { this.tab = 0; } }).layoutWeight(1)
+        this.configSection()
       }
-      }
-    }.width('100%').height('100%').padding(20).backgroundColor(this.pal().sheetBg)
+    }.width('100%').height('100%').padding({ left: 20, right: 20, top: 18, bottom: 28 })
+    .backgroundColor(this.pal().sheetBg)
   }
 }

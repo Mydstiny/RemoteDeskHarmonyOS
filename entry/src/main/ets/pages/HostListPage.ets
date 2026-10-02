@@ -8,6 +8,8 @@ import {
   PRO_PERSONALIZATION_FEATURE,
   PRO_RDP_ADVANCED_DISPLAY_FEATURE,
   PRO_DIAGNOSTICS_FEATURE,
+  PRO_DIAGNOSTICS_ASSISTANT_FEATURE,
+  PRO_DIAGNOSTICS_PROVIDER_FEATURE,
   ProFeature
 } from '../services/pro/ProFeatureCatalog';
 import { AiHostEditor } from '../components/ai/AiHostEditor';
@@ -688,6 +690,7 @@ import {
   SETTINGS_SECTION_PRO,
   SETTINGS_SECTION_SECURITY,
   SETTINGS_SECTION_TUTORIAL,
+  SETTINGS_SECTION_DIAGNOSTICS,
   SETTINGS_RDP_SWITCH_ROW_COUNT,
   SETTINGS_SECURITY_ACTION_ROW_COUNT,
   SETTINGS_VNC_ACTION_ROW_COUNT,
@@ -954,6 +957,11 @@ struct HostListPage {
   @State personalizationProVisible: boolean = false;
   /** RDP custom desktop size and Windows scale: shown only while the account may use them. */
   @State rdpAdvancedDisplayVisible: boolean = false;
+  /** 诊断与 AI 帮助 sub-settings that need Pro; 传统日志抓取 is always there. */
+  @State diagnosticAiConfigVisible: boolean = false;
+  @State diagnosticAiAssistantVisible: boolean = false;
+  /** Which sub-setting the diagnostic AI sheet shows: 0 = 辅助 AI 配置, 1 = 启动 AI 辅助. */
+  @State diagnosticAiSection: number = 0;
   /** Debug builds only: Pro state override (跟随真实 / 模拟开启 / 模拟关闭) and the real state behind it. */
   @State proDebugMode: string = 'real';
   @State proRealStateText: string = '';
@@ -2147,6 +2155,8 @@ struct HostListPage {
     this.appIconProVisible = ProEntries.visible(id) || (ProEntries.shown(id) && icons.loaded && icons.currentName !== '');
     this.personalizationProVisible = ProEntries.visible(PRO_PERSONALIZATION_FEATURE);
     this.rdpAdvancedDisplayVisible = ProEntries.visible(PRO_RDP_ADVANCED_DISPLAY_FEATURE, this.rdpAdvancedDisplayContext());
+    this.diagnosticAiConfigVisible = ProEntries.visible(PRO_DIAGNOSTICS_PROVIDER_FEATURE);
+    this.diagnosticAiAssistantVisible = ProEntries.visible(PRO_DIAGNOSTICS_ASSISTANT_FEATURE);
     const orgVisible: boolean = ProEntries.visible('pro.hostManagement');
     const workspacesVisible: boolean = ProEntries.visible('pro.workspaces') &&
       workspaceUsableOnDevice(this.workspaceDeviceKind(), this.workspacePhoneEnabled);
@@ -5362,6 +5372,10 @@ struct HostListPage {
     }
     if (section === SETTINGS_SECTION_SECURITY) {
       return settingsSecurityExpandedMaxHeight(SETTINGS_SECURITY_ACTION_ROW_COUNT);
+    }
+    if (section === SETTINGS_SECTION_DIAGNOSTICS) {
+      // Card title plus up to three 62 vp rows.
+      return 260;
     }
     if (section === SETTINGS_SECTION_TUTORIAL) {
       // Five action rows (更新日志, 快速认识, Pro 介绍, 操作引导, 连接前准备) plus the card title.
@@ -14040,9 +14054,7 @@ struct HostListPage {
       if (this.diagnosticAiOrbEnabled && ProEntries.visible(PRO_DIAGNOSTICS_FEATURE,
         ProAppRuntime.getInstance().context())) {
         Row() {
-          DiagnosticAiOrb({ visible: true, onOpen: (): void => {
-            this.openSettingsLeafSheet(SETTINGS_SHEET_DIAGNOSTIC_AI);
-          } })
+          DiagnosticAiOrb({ visible: true, onOpen: (): void => { this.openDiagnosticAiSection(1); } })
         }.position({ x: 0, y: this.topRectHeight > 0 ? px2vp(this.topRectHeight) + 8 : 8 })
           .width('100%').padding({ right: 16 }).justifyContent(FlexAlign.End).zIndex(12)
       }
@@ -16941,6 +16953,7 @@ struct HostListPage {
       })
     } else if (this.settingsLeafSheetMode === SETTINGS_SHEET_DIAGNOSTIC_AI) {
       DiagnosticAiSettingsSheet({
+        section: this.diagnosticAiSection,
         onClose: (): void => { this.closeSettingsLeafSheet(); },
         onOpenMailDraft: (subject: string, body: string): void => {
           void this.openFeedbackEmail(subject, body);
@@ -18475,10 +18488,37 @@ struct HostListPage {
         .animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
 
         ListItem() {
-          this.settingsActionHeader($r('sys.symbol.doc_plaintext'), '诊断与 AI 帮助',
-            '辅助 AI 配置、自动诊断和传统脱敏日志',
-            (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_DIAGNOSTIC_AI); })
+          this.settingsAccordionHeader(SETTINGS_SECTION_DIAGNOSTICS, $r('sys.symbol.performance'),
+            '诊断与 AI 帮助', this.diagnosticAiConfigVisible || this.diagnosticAiAssistantVisible ?
+              '辅助 AI 配置、启动 AI 辅助与传统日志抓取' : '传统脱敏日志抓取')
         }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 10 })
+
+        // --- 诊断与 AI 帮助: three sub-settings ---
+        ListItem() {
+          Column() {
+            Text('诊断与 AI 帮助').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text3)
+              .fontFamily(this.font()).padding({ left: 8, bottom: 8 })
+            Column() {
+              if (this.diagnosticAiConfigVisible) {
+                this.diagnosticSubRow(0)
+                this.cardDivider()
+              }
+              if (this.diagnosticAiAssistantVisible) {
+                this.diagnosticSubRow(1)
+                this.cardDivider()
+              }
+              this.diagnosticSubRow(2)
+            }.borderRadius(24).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
+              .border({ width: 0.5, color: this.pal().cardBorder })
+          }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 20 })
+        }
+        .constraintSize({ maxHeight: this.settingsSectionExpanded(SETTINGS_SECTION_DIAGNOSTICS) ?
+          this.settingsSectionExpandedMaxHeight(SETTINGS_SECTION_DIAGNOSTICS) : 0 })
+        .opacity(this.settingsSectionExpanded(SETTINGS_SECTION_DIAGNOSTICS) ? 1 : 0)
+        .scale({ x: 1, y: this.settingsSectionExpanded(SETTINGS_SECTION_DIAGNOSTICS) ? 1 : 0.98 })
+        .translate({ y: this.settingsSectionExpanded(SETTINGS_SECTION_DIAGNOSTICS) ? 0 : -8 })
+        .clip(true)
+        .animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
 
         ListItem() {
           this.settingsActionHeader($r('sys.symbol.message'), '反馈',
@@ -20126,6 +20166,40 @@ struct HostListPage {
         .margin({ right: 14 })
     }.width('100%').height(62).padding({ left: 16, right: 16 })
     .onClick((): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_PRO_BADGE); })
+  }
+
+  private openDiagnosticAiSection(section: number): void {
+    this.openSettingsLeafSheet(SETTINGS_SHEET_DIAGNOSTIC_AI, (): void => { this.diagnosticAiSection = section; });
+  }
+
+  /**
+   * One 诊断与 AI 帮助 sub-setting: 0 = 辅助 AI 配置 and 1 = 启动 AI 辅助 (Pro, shown only while visible to this
+   * account), 2 = 传统日志抓取 (free, its own sheet).
+   */
+  @Builder diagnosticSubRow(kind: number) {
+    Row() {
+      SymbolGlyph(kind === 0 ? $r('sys.symbol.gearshape_fill') : kind === 1 ? $r('sys.symbol.performance') :
+        $r('sys.symbol.doc_plaintext')).fontSize(22).fontColor([this.pal().text3])
+        .width(22).height(22).margin({ left: 9, right: 9 })
+      Column() {
+        Text(kind === 0 ? '辅助 AI 配置' : kind === 1 ? '启动 AI 辅助' : '传统日志抓取')
+          .fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
+          .fontColor(this.pal().text).fontFamily(this.font())
+        Text(kind === 0 ? '选择 AI 服务商、保存密钥并选择模型' : kind === 1 ? '描述问题，抓取脱敏事件后由 AI 分析' :
+          '脱敏诊断日志的抓取、预览、保存与导出')
+          .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
+          .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).margin({ top: 2 })
+      }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
+      if (kind < 2) {
+        ProBadge().margin({ right: 8 })
+      }
+      SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(18).fontColor([this.pal().text3])
+        .margin({ right: 14 })
+    }.width('100%').height(62).padding({ left: 16, right: 16 })
+    .onClick((): void => {
+      if (kind === 2) { this.openSettingsLeafSheet(SETTINGS_SHEET_DIAGNOSTIC_LOG); }
+      else { this.openDiagnosticAiSection(kind); }
+    })
   }
 
   @Builder cardDivider() {
