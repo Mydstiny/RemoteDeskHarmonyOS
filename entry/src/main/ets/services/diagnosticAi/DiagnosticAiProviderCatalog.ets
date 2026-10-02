@@ -133,6 +133,14 @@ export function diagnosticAiProviderIsDomestic(providerId: string): boolean {
   return found !== null && found.market === 'mainland-cn';
 }
 
+/** External manifests stay hidden until their endpoint, terms and data region
+ * have a dated verification record. Local providers do not need a remote
+ * contract but still keep their data-region declaration explicit. */
+export function diagnosticAiProviderManifestVerified(manifest: DiagnosticAiProviderManifest): boolean {
+  if (manifest.market === 'local' || diagnosticAiProviderIsHarmonyLocal(manifest.providerId)) { return true; }
+  return manifest.verifiedAt.trim() !== '' && manifest.dataRegion !== 'unknown' && manifest.privacy.region !== 'unknown';
+}
+
 export function diagnosticAiProviderIsHarmonyLocal(providerId: string): boolean {
   return providerId === HARMONY_LOCAL_PROVIDER_ID;
 }

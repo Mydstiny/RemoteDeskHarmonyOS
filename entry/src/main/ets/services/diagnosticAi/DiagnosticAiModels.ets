@@ -120,6 +120,8 @@ export interface DiagnosticAiModelPriceEntry {
 export interface DiagnosticAiSettings {
   selectedProviderId: string;
   selectedModelId: string;
+  /** Explicitly binds the next request to one provider authentication profile. */
+  selectedAuthMode: DiagnosticAiAuthMode | '';
   showOrbOnHostPage: boolean;
   reducedMotion: boolean;
   retentionDays: number;
@@ -161,7 +163,7 @@ export interface DiagnosticAiSettingProposal {
 
 export function defaultDiagnosticAiSettings(): DiagnosticAiSettings {
   return {
-    selectedProviderId: '', selectedModelId: '', showOrbOnHostPage: false,
+    selectedProviderId: '', selectedModelId: '', selectedAuthMode: '', showOrbOnHostPage: false,
     reducedMotion: false, retentionDays: 7
   };
 }

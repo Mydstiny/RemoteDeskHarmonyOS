@@ -426,9 +426,12 @@ export struct DiagnosticAiAssistantPanel {
   private selectedProfile(): DiagnosticAiProviderProfile | undefined {
     const profiles = this.store.list();
     const settings = this.store.settingsSnapshot();
-    return profiles.find((value: DiagnosticAiProviderProfile): boolean =>
-      value.providerId === settings.selectedProviderId && value.modelId === settings.selectedModelId && value.modelId !== '') ??
-      profiles.find((value: DiagnosticAiProviderProfile): boolean => value.modelId !== '');
+    const selected: DiagnosticAiProviderProfile | undefined = profiles.find((value: DiagnosticAiProviderProfile): boolean =>
+      value.providerId === settings.selectedProviderId && value.modelId === settings.selectedModelId && value.modelId !== '' &&
+      (settings.selectedAuthMode === '' || value.authMode === settings.selectedAuthMode));
+    if (selected !== undefined) { return selected; }
+    const candidates: DiagnosticAiProviderProfile[] = profiles.filter((value: DiagnosticAiProviderProfile): boolean => value.modelId !== '');
+    return candidates.length === 1 ? candidates[0] : undefined;
   }
 
   /** A panel can be recreated while the frozen AI capture is waiting for Provider analysis. Keep it retryable. */

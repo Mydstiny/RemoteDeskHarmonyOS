@@ -94,6 +94,13 @@ assert.equal(useCasePolicy.diagnosticAiUseCaseDecision(manifest, denied, 'diagno
 const officialOnly = { ...profile, billingMode: 'coding_plan', authMode: 'coding_plan_key', allowedUseCases: ['coding_agent'], requiresOfficialTool: true };
 assert.equal(billingPolicy.diagnosticAiBillingDecision({ ...manifest, billingMode: 'coding_plan', authModes: ['coding_plan_key'], allowedUseCases: ['coding_agent'], requiresOfficialTool: true }, officialOnly, 'diagnostic_assistant').ok, false);
 assert.equal(authPolicy.diagnosticAiAuthDecision({ ...manifest, authModes: ['oauth_pkce'] }, profile).code, 'AUTH_MODE_UNSUPPORTED');
+const codingManifest = { ...manifest, billingMode: 'coding_plan', authModes: ['coding_plan_key'],
+  allowedUseCases: ['diagnostic_assistant'], codingPlanModelIds: ['coding-model'], requiresOfficialTool: false };
+const codingProfile = { ...profile, authMode: 'coding_plan_key', billingMode: 'coding_plan', modelId: 'other-model' };
+assert.equal(authPolicy.diagnosticAiAuthDecision(codingManifest, codingProfile).code, 'CODING_PLAN_MODEL_NOT_ALLOWED');
+assert.equal(billingPolicy.diagnosticAiBillingDecision(codingManifest, codingProfile, 'diagnostic_assistant').code, 'CODING_PLAN_MODEL_NOT_ALLOWED');
+assert.equal(authPolicy.diagnosticAiAuthDecision(codingManifest, { ...codingProfile, modelId: 'coding-model' }).ok, true);
+assert.equal(authPolicy.diagnosticAiAuthDecision({ ...manifest, schemaVersion: 2 }, profile).code, 'MANIFEST_VERSION_STALE');
 console.log('PASS P0 authentication, billing and diagnostic-use-case policies fail closed for unknown or coding-only plans');
 
 const sheetSource = fs.readFileSync(path.join(root, 'entry/src/main/ets/components/diagnosticAi/DiagnosticAiSettingsSheet.ets'), 'utf8');
@@ -103,5 +110,10 @@ assert.ok(sheetSource.includes('onOpenSession(session.id)'));
 assert.ok(hostSource.includes('private openDiagnosticAiSession(sessionId: string)'));
 assert.ok(hostSource.includes('initialResumeSessionId: this.diagnosticAiResumeSessionId'));
 console.log('PASS history replaces the native sheet instead of mounting a floating overlay');
+assert.ok(sheetSource.includes('selectedAuthMode'));
+assert.ok(sheetSource.includes('termsAcceptedDraft'));
+assert.ok(sheetSource.includes('Coding Plan 必须使用 Manifest 声明的专用 Base URL'));
+assert.ok(sheetSource.includes('删除/撤销 Provider 配置失败'));
+console.log('PASS P1 auth-mode selection, explicit terms consent, dedicated endpoint and revoke UI are fail-closed');
 
 void models;

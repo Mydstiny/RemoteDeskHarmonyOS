@@ -51,6 +51,7 @@ export class DiagnosticAiProfileStore {
               copy.allowedUseCases = manifest.allowedUseCases.slice();
             }
             if (copy.billingMode === undefined) { copy.billingMode = manifest.billingMode; }
+            if (copy.manifestVersion === undefined || copy.manifestVersion <= 0) { copy.manifestVersion = manifest.schemaVersion; }
             if (copy.termsVersion === '') { copy.termsVersion = manifest.termsVersion; }
             if (copy.dataRegion === 'unknown') { copy.dataRegion = manifest.dataRegion; }
             copy.requiresInteractive = manifest.requiresInteractive;
@@ -111,7 +112,10 @@ export class DiagnosticAiProfileStore {
     if (found === undefined) { return false; }
     DiagnosticAiSecretStore.getInstance().remove(found.secretRef);
     this.profiles = this.profiles.filter((value: DiagnosticAiProviderProfile): boolean => value.id !== id);
-    if (this.settings.selectedProviderId === found.providerId) { this.settings.selectedProviderId = ''; this.settings.selectedModelId = ''; }
+    if (this.settings.selectedProviderId === found.providerId &&
+      (this.settings.selectedAuthMode === '' || this.settings.selectedAuthMode === found.authMode)) {
+      this.settings.selectedProviderId = ''; this.settings.selectedModelId = ''; this.settings.selectedAuthMode = '';
+    }
     return this.persist();
   }
 
@@ -129,6 +133,7 @@ export class DiagnosticAiProfileStore {
     this.profiles = this.profiles.map((value: DiagnosticAiProviderProfile): DiagnosticAiProviderProfile => {
       const copy = cloneDiagnosticAiProfile(value); copy.secretRef = ''; copy.secretFingerprint = ''; return copy;
     });
+    this.settings.selectedProviderId = ''; this.settings.selectedModelId = ''; this.settings.selectedAuthMode = '';
     this.settings.showOrbOnHostPage = false;
     this.persist(); this.loaded = true;
   }

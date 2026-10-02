@@ -525,3 +525,14 @@ Provider 的结构化响应包含 `appActions`，解析器只接受动作注册�
 - 旧 API Key profile 在 owner-scoped ProfileStore 读取时迁移为显式 `api_key`/`payg_api`/`connected` 元数据，并生成 legacy consent 标记；不会读取密码、Cookie 或网页 Session。
 
 本阶段验证：`default@OhosTestCompileArkTS` BUILD SUCCESSFUL（38.347 s），签名 `assembleHap` BUILD SUCCESSFUL（51.381 s），会话/价格/路由与 P0 auth/billing/use-case 策略测试 PASS；`ohosTest@OhosTestCompileArkTS` 任务 `00306054` 仍未注册。P0 HAP 需要重新安装后再做设备回读；真实 Provider 官方条款/用途、账户授权、设备视觉/输入、邮件和生产权益仍未验收。下一步是 P1 认证方式选择 UI、普通 API/Token Plan 与专用 Coding Plan Key 分离及条款同意记录。
+
+## 19. 2026-10-03 P1 implementation checkpoint
+
+P1 code is implemented on top of the P0 checkpoint, pending independent review and external acceptance:
+
+- The selected subscription now persists `selectedAuthMode`; assistant, usage and settings flows require an exact provider/auth-mode match, so two credentials for one provider cannot silently share a model selection.
+- API Key and Coding Plan profiles use distinct IDs, secrets and revisions. Coding Plan save and request policy require a Manifest-declared model allowlist, the declared dedicated Base URL, matching Manifest schema version, diagnostic-assistant use, and a dated verified Manifest. No current unverified provider is presented as Coding Plan support.
+- Saving a remote profile requires an explicit terms/data-use confirmation; the profile records a non-secret consent ID and time. Official OAuth/device/CLI modes remain visible only when declared and are still blocked until their endpoints are separately verified. Deleting a profile removes its local Asset Store secret and clears the active selection.
+- Settings reloads the owner-scoped profile store on account changes and clears stale selection/key drafts. The provider list remains experimental; provider requests, official terms, quota, account lifecycle and device visual/mail behavior are not inferred from build evidence.
+
+Validation: bundled DevEco TypeScript runner `test_diagnostic_ai_settings.cjs` 6/6 PASS; isolated-cache `default@OhosTestCompileArkTS` BUILD SUCCESSFUL in 25.289 s; signed `assembleHap` BUILD SUCCESSFUL in 39.454 s; HAP SHA-256 `8c61efeb4a514de2a812cf647492298925b1cdc89d2b40e413e845083abdde4c`; `hdc install -r` succeeded on 127.0.0.1:5555, 192.168.31.118:40123 and 192.168.31.156:38451. Optional `ohosTest@OhosTestCompileArkTS` remains unavailable because task `00306054` is not registered.
