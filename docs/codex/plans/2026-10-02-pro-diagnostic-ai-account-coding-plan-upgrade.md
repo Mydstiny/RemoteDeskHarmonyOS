@@ -2,7 +2,7 @@
 
 - 日期：2026-10-02（Asia/Shanghai）
 - 计划版本：1.0
-- 计划状态：设计完成，等待按阶段实现
+- 计划状态：P0 全应用 Agent 与 Siri-style UI 已实现；真实 Provider、真机和邮件客户端验收待执行
 - 关联基线：[Pro 诊断与 AI 帮助完整升级计划](2026-10-01-pro-diagnostic-ai-help-upgrade.md)
 - 当前分支：`codex/pro-purchase-foundation`
 - 目标平台：HarmonyOS Phone / Pad / PC，API 26 开发基准，保留 API 23 安装兼容核对
@@ -425,3 +425,19 @@ Phone / Pad / PC 每个平台都要验证：
 - [关联计划：Pro 诊断与 AI 帮助](2026-10-01-pro-diagnostic-ai-help-upgrade.md)：现有捕获、脱敏、Pro 门控和邮件边界。
 
 外部 Provider 的当前价格、模型目录、OAuth 范围、套餐用途和服务条款都是易变事实；实现和发布前必须重新读取供应商官方资料，并把核验日期、版本和链接写入 Manifest/验收记录。HAP 编译成功只能证明代码可构建，不能证明 Provider 许可、账户登录、配额、设备 UI、邮件或生产支付已经验收。
+
+## 13. 2026-10-02 实现记录
+
+本轮实现提交：`7f5425ba feat(diagnostics): complete full-app AI assistant flow`。
+
+已经落地的 P0 行为：
+
+- 普通应用使用问题直接请求 AI，不再强制启动日志抓取；意图分为询问用法、协助设置、诊断问题和反馈开发者。
+- 诊断意图先在 Siri-style 卡片中说明抓取范围，只有用户点“开始抓取诊断”后才取得 capture lease；结束后再分析脱敏包。
+- 设置意图携带全应用使用知识和对话摘要，只能返回白名单、可回滚的设置建议，卡片确认后才写入。
+- 反馈意图可从结果卡生成开发者邮件草稿；系统邮件打开前仍保留预览，不自动发送。
+- Provider 请求对拒绝 `response_format` 的兼容端点自动重试无该字段，并兼容自由文本、代码围栏 JSON、数组内容和 OpenAI-compatible `choices` 响应。
+- 主机列表和远程会话顶部统一使用同一个 AI island；思考时收缩为浮动胶囊，抓取时显示进度与结束动作，完成后展开结果卡。
+- 新增应用使用、五协议、设置、隐私、安全、诊断和邮件知识基线，版本为 `RemoteDesktop-help-2026-10-02-v1`。
+
+验证记录：`default@OhosTestCompileArkTS` BUILD SUCCESSFUL（10.138 秒），签名 `assembleHap` BUILD SUCCESSFUL（1 分 3.717 秒）；`ohosTest@OhosTestCompileArkTS` 因项目未注册任务 `00306054` 不可执行。真实国内 Provider 请求、真机视觉/输入、系统邮件和账户/Pro 生命周期仍需单独验收。
