@@ -171,7 +171,12 @@ export struct DiagnosticAiSettingsSheet {
     const profile: DiagnosticAiProviderProfile = { id: this.selectedProvider + '-' + this.owner.slice(-8), owner: this.owner,
       providerId: manifest.providerId, displayName: manifest.displayName, endpoint: localProvider ? '' : this.endpoint.trim(),
       modelId: localProvider ? HARMONY_LOCAL_MODEL_ID : this.model.trim(),
-      authKind: manifest.authKind, authHeader: manifest.authHeader, secretRef: '', secretFingerprint: '', manifestVersion: manifest.schemaVersion,
+      authKind: manifest.authKind, authHeader: manifest.authHeader, authMode: localProvider ? 'none' : 'api_key',
+      billingMode: manifest.billingMode, allowedUseCases: manifest.allowedUseCases.slice(),
+      requiresInteractive: manifest.requiresInteractive, requiresOfficialTool: manifest.requiresOfficialTool,
+      entitlementEndpoint: manifest.entitlementEndpoint, termsVersion: manifest.termsVersion, dataRegion: manifest.dataRegion,
+      authorizationStatus: 'connected', consentId: 'api-key-' + Date.now().toString(), consentAt: Date.now(),
+      secretRef: '', secretFingerprint: '', manifestVersion: manifest.schemaVersion,
       privacy: { region: manifest.privacy.region, retention: manifest.privacy.retention,
         trainingUse: manifest.privacy.trainingUse, policyRef: manifest.privacy.policyRef },
       showOrbOnHostPage: this.settings.showOrbOnHostPage, revision: nextRevision, updatedAt: Date.now() };

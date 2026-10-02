@@ -12,49 +12,63 @@ const PROVIDERS: DiagnosticAiProviderManifest[] = [
   {
     schemaVersion: 1, providerId: 'deepseek', displayName: 'DeepSeek', market: 'mainland-cn',
     adapterFamily: 'openai_compatible_http', endpoint: 'https://api.deepseek.com', modelListPath: '/models', chatPath: '/chat/completions',
-    authKind: 'bearer', authHeader: 'Authorization', supportsStreaming: true,
+    authKind: 'bearer', authHeader: 'Authorization', authModes: ['api_key'], billingMode: 'payg_api',
+    allowedUseCases: ['diagnostic_assistant'], requiresInteractive: false, requiresOfficialTool: false,
+    entitlementEndpoint: '', termsVersion: '2026-10-02', dataRegion: 'mainland_cn', codingPlanModelIds: [], supportsStreaming: true,
     supportsVision: false, supportsTools: false,
     privacy: { region: 'mainland', retention: 'unknown', trainingUse: 'unknown', policyRef: 'https://api-docs.deepseek.com/' }, verifiedAt: '2026-10-02'
   },
   {
     schemaVersion: 1, providerId: 'qwen', displayName: '通义千问 / Qwen', market: 'mainland-cn',
     adapterFamily: 'openai_compatible_http', endpoint: 'https://dashscope.aliyuncs.com/compatible-mode/v1', modelListPath: '/models', chatPath: '/chat/completions',
-    authKind: 'bearer', authHeader: 'Authorization', supportsStreaming: true,
+    authKind: 'bearer', authHeader: 'Authorization', authModes: ['api_key'], billingMode: 'payg_api',
+    allowedUseCases: ['diagnostic_assistant'], requiresInteractive: false, requiresOfficialTool: false,
+    entitlementEndpoint: '', termsVersion: '2026-10-02', dataRegion: 'mainland_cn', codingPlanModelIds: [], supportsStreaming: true,
     supportsVision: true, supportsTools: true,
     privacy: { region: 'mainland', retention: 'unknown', trainingUse: 'unknown', policyRef: 'https://help.aliyun.com/zh/model-studio/' }, verifiedAt: ''
   },
   {
     schemaVersion: 1, providerId: 'zhipu', displayName: '智谱 GLM', market: 'mainland-cn',
     adapterFamily: 'openai_compatible_http', endpoint: 'https://open.bigmodel.cn/api/paas/v4', modelListPath: '/models', chatPath: '/chat/completions',
-    authKind: 'bearer', authHeader: 'Authorization', supportsStreaming: true,
+    authKind: 'bearer', authHeader: 'Authorization', authModes: ['api_key'], billingMode: 'payg_api',
+    allowedUseCases: ['diagnostic_assistant'], requiresInteractive: false, requiresOfficialTool: false,
+    entitlementEndpoint: '', termsVersion: '2026-10-02', dataRegion: 'mainland_cn', codingPlanModelIds: [], supportsStreaming: true,
     supportsVision: true, supportsTools: true,
     privacy: { region: 'mainland', retention: 'unknown', trainingUse: 'unknown', policyRef: 'https://open.bigmodel.cn/dev/api' }, verifiedAt: ''
   },
   {
     schemaVersion: 1, providerId: 'kimi', displayName: '月之暗面 / Kimi', market: 'mainland-cn',
     adapterFamily: 'openai_compatible_http', endpoint: 'https://api.moonshot.cn/v1', modelListPath: '/models', chatPath: '/chat/completions',
-    authKind: 'bearer', authHeader: 'Authorization', supportsStreaming: true,
+    authKind: 'bearer', authHeader: 'Authorization', authModes: ['api_key'], billingMode: 'payg_api',
+    allowedUseCases: ['diagnostic_assistant'], requiresInteractive: false, requiresOfficialTool: false,
+    entitlementEndpoint: '', termsVersion: '2026-10-02', dataRegion: 'mainland_cn', codingPlanModelIds: [], supportsStreaming: true,
     supportsVision: true, supportsTools: false,
     privacy: { region: 'mainland', retention: 'unknown', trainingUse: 'unknown', policyRef: 'https://platform.moonshot.cn/docs' }, verifiedAt: ''
   },
   {
     schemaVersion: 1, providerId: 'siliconflow', displayName: '硅基流动', market: 'mainland-cn',
     adapterFamily: 'openai_compatible_http', endpoint: 'https://api.siliconflow.cn/v1', modelListPath: '/models', chatPath: '/chat/completions',
-    authKind: 'bearer', authHeader: 'Authorization', supportsStreaming: true,
+    authKind: 'bearer', authHeader: 'Authorization', authModes: ['api_key'], billingMode: 'payg_api',
+    allowedUseCases: ['diagnostic_assistant'], requiresInteractive: false, requiresOfficialTool: false,
+    entitlementEndpoint: '', termsVersion: '2026-10-02', dataRegion: 'unknown', codingPlanModelIds: [], supportsStreaming: true,
     supportsVision: true, supportsTools: true,
     privacy: { region: 'unknown', retention: 'unknown', trainingUse: 'unknown', policyRef: 'https://docs.siliconflow.cn/' }, verifiedAt: ''
   },
   {
     schemaVersion: 1, providerId: 'ollama', displayName: 'Ollama（本机）', market: 'local',
     adapterFamily: 'ollama_local', endpoint: 'http://127.0.0.1:11434', modelListPath: '/api/tags', chatPath: '/api/chat',
-    authKind: 'none', authHeader: '', supportsStreaming: true,
+    authKind: 'none', authHeader: '', authModes: ['none'], billingMode: 'local',
+    allowedUseCases: ['diagnostic_assistant'], requiresInteractive: false, requiresOfficialTool: false,
+    entitlementEndpoint: '', termsVersion: '2026-10-02', dataRegion: 'local', codingPlanModelIds: [], supportsStreaming: true,
     supportsVision: true, supportsTools: false,
     privacy: { region: 'device-local', retention: 'documented', trainingUse: 'off', policyRef: '' }, verifiedAt: ''
   },
   {
     schemaVersion: 1, providerId: HARMONY_LOCAL_PROVIDER_ID, displayName: '鸿蒙端侧小模型', market: 'local',
     adapterFamily: 'harmony_local_chat', endpoint: '', modelListPath: '', chatPath: '',
-    authKind: 'none', authHeader: '', supportsStreaming: true,
+    authKind: 'none', authHeader: '', authModes: ['none'], billingMode: 'local',
+    allowedUseCases: ['diagnostic_assistant'], requiresInteractive: false, requiresOfficialTool: false,
+    entitlementEndpoint: '', termsVersion: '2026-10-02', dataRegion: 'local', codingPlanModelIds: [], supportsStreaming: true,
     supportsVision: false, supportsTools: false,
     privacy: {
       region: 'device-local', retention: 'unknown', trainingUse: 'unknown',
@@ -64,21 +78,27 @@ const PROVIDERS: DiagnosticAiProviderManifest[] = [
   {
     schemaVersion: 1, providerId: 'doubao', displayName: '字节豆包 / 火山引擎', market: 'mainland-cn',
     adapterFamily: 'vendor_native_http', endpoint: '', modelListPath: '', chatPath: '',
-    authKind: 'api_key_header', authHeader: 'Authorization', supportsStreaming: true,
+    authKind: 'api_key_header', authHeader: 'Authorization', authModes: ['unsupported'], billingMode: 'payg_api',
+    allowedUseCases: [], requiresInteractive: false, requiresOfficialTool: false,
+    entitlementEndpoint: '', termsVersion: '', dataRegion: 'mainland_cn', codingPlanModelIds: [], supportsStreaming: true,
     supportsVision: true, supportsTools: true,
     privacy: { region: 'mainland', retention: 'unknown', trainingUse: 'unknown', policyRef: '' }, verifiedAt: ''
   },
   {
     schemaVersion: 1, providerId: 'wenxin', displayName: '百度文心 / 千帆', market: 'mainland-cn',
     adapterFamily: 'vendor_native_http', endpoint: '', modelListPath: '', chatPath: '',
-    authKind: 'api_key_header', authHeader: 'Authorization', supportsStreaming: true,
+    authKind: 'api_key_header', authHeader: 'Authorization', authModes: ['unsupported'], billingMode: 'payg_api',
+    allowedUseCases: [], requiresInteractive: false, requiresOfficialTool: false,
+    entitlementEndpoint: '', termsVersion: '', dataRegion: 'mainland_cn', codingPlanModelIds: [], supportsStreaming: true,
     supportsVision: true, supportsTools: false,
     privacy: { region: 'mainland', retention: 'unknown', trainingUse: 'unknown', policyRef: '' }, verifiedAt: ''
   },
   {
     schemaVersion: 1, providerId: 'spark', displayName: '讯飞星火', market: 'mainland-cn',
     adapterFamily: 'vendor_native_websocket', endpoint: '', modelListPath: '', chatPath: '',
-    authKind: 'custom_header', authHeader: '', supportsStreaming: true,
+    authKind: 'custom_header', authHeader: '', authModes: ['unsupported'], billingMode: 'payg_api',
+    allowedUseCases: [], requiresInteractive: false, requiresOfficialTool: false,
+    entitlementEndpoint: '', termsVersion: '', dataRegion: 'mainland_cn', codingPlanModelIds: [], supportsStreaming: true,
     supportsVision: false, supportsTools: false,
     privacy: { region: 'mainland', retention: 'unknown', trainingUse: 'unknown', policyRef: '' }, verifiedAt: ''
   }
@@ -92,7 +112,11 @@ function cloneManifest(value: DiagnosticAiProviderManifest): DiagnosticAiProvide
   return { schemaVersion: value.schemaVersion, providerId: value.providerId, displayName: value.displayName,
     market: value.market, adapterFamily: value.adapterFamily, endpoint: value.endpoint,
     modelListPath: value.modelListPath, chatPath: value.chatPath, authKind: value.authKind,
-    authHeader: value.authHeader, supportsStreaming: value.supportsStreaming,
+    authHeader: value.authHeader, authModes: value.authModes.slice(), billingMode: value.billingMode,
+    allowedUseCases: value.allowedUseCases.slice(), requiresInteractive: value.requiresInteractive,
+    requiresOfficialTool: value.requiresOfficialTool, entitlementEndpoint: value.entitlementEndpoint,
+    termsVersion: value.termsVersion, dataRegion: value.dataRegion, codingPlanModelIds: value.codingPlanModelIds.slice(),
+    supportsStreaming: value.supportsStreaming,
     supportsVision: value.supportsVision, supportsTools: value.supportsTools,
     privacy: { region: value.privacy.region, retention: value.privacy.retention,
       trainingUse: value.privacy.trainingUse, policyRef: value.privacy.policyRef }, verifiedAt: value.verifiedAt,

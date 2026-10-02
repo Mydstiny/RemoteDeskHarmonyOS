@@ -3,6 +3,7 @@ import { cryptoFramework } from '@kit.CryptoArchitectureKit';
 import { preferences } from '@kit.ArkData';
 import { util } from '@kit.ArkTS';
 import { DiagnosticAiProviderProfile, DiagnosticAiSettings, cloneDiagnosticAiProfile, defaultDiagnosticAiSettings } from './DiagnosticAiModels';
+import { diagnosticAiProviderManifest } from './DiagnosticAiProviderCatalog';
 import { DiagnosticAiSecretStore } from './DiagnosticAiSecretStore';
 import { cloneDiagnosticAiSettings, validDiagnosticAiSettings } from './DiagnosticAiSettingsPolicy';
 
@@ -41,6 +42,27 @@ export class DiagnosticAiProfileStore {
       this.profiles = Array.isArray(rows) ? rows.filter((value: DiagnosticAiProviderProfile): boolean => value.owner === this.owner)
         .map((value: DiagnosticAiProviderProfile): DiagnosticAiProviderProfile => {
           const copy = cloneDiagnosticAiProfile(value);
+          const manifest = diagnosticAiProviderManifest(copy.providerId);
+          if (manifest !== null) {
+            if (copy.authMode === undefined || copy.authMode === 'unsupported') {
+              copy.authMode = manifest.authKind === 'none' ? 'none' : 'api_key';
+            }
+            if (!Array.isArray(copy.allowedUseCases) || copy.allowedUseCases.length === 0) {
+              copy.allowedUseCases = manifest.allowedUseCases.slice();
+            }
+            if (copy.billingMode === undefined) { copy.billingMode = manifest.billingMode; }
+            if (copy.termsVersion === '') { copy.termsVersion = manifest.termsVersion; }
+            if (copy.dataRegion === 'unknown') { copy.dataRegion = manifest.dataRegion; }
+            copy.requiresInteractive = manifest.requiresInteractive;
+            copy.requiresOfficialTool = manifest.requiresOfficialTool;
+            copy.entitlementEndpoint = manifest.entitlementEndpoint;
+          }
+          if (copy.authorizationStatus === 'unconfigured' && (copy.authMode === 'none' || copy.secretFingerprint !== '')) {
+            copy.authorizationStatus = 'connected';
+          }
+          if (copy.consentId === '' && copy.authorizationStatus === 'connected') {
+            copy.consentId = 'legacy-api-key'; copy.consentAt = copy.updatedAt > 0 ? copy.updatedAt : Date.now();
+          }
           if (copy.secretRef === '') {
             const metadata = DiagnosticAiSecretStore.getInstance().metadataFor(copy.id);
             if (metadata !== null) { copy.secretRef = metadata.secretRef; copy.secretFingerprint = metadata.fingerprint; }

@@ -1,6 +1,8 @@
 import { DiagnosticAiProviderProfile, DiagnosticAiResult } from './DiagnosticAiModels';
 import { DiagnosticAiProviderService, DiagnosticAiAssistInput } from './DiagnosticAiProviderService';
 import { diagnosticAiKnowledgeSnapshot } from './DiagnosticAiKnowledgeBase';
+import { diagnosticAiProviderManifest } from './DiagnosticAiProviderCatalog';
+import { diagnosticAiUseCaseDecision, diagnosticAiUseCaseError } from './DiagnosticAiUseCasePolicy';
 
 export type DiagnosticAiAgentMode = 'answer' | 'configure' | 'diagnose' | 'feedback';
 
@@ -55,6 +57,10 @@ export class DiagnosticAiAgentService {
 
   async respond(profile: DiagnosticAiProviderProfile, secret: string,
     request: DiagnosticAiAgentRequest): Promise<DiagnosticAiResult> {
+    const manifest = diagnosticAiProviderManifest(profile.providerId);
+    if (manifest === null) { throw new Error('DIAGNOSTIC_AI_POLICY_PROVIDER_UNKNOWN'); }
+    const policy = diagnosticAiUseCaseDecision(manifest, profile, 'diagnostic_assistant');
+    if (!policy.ok) { throw diagnosticAiUseCaseError(policy); }
     const input: DiagnosticAiAssistInput = {
       mode: request.mode, question: request.question.trim().slice(0, 4000),
       history: request.history.slice(-8000), bundle: this.boundedBundle(request.bundle),
