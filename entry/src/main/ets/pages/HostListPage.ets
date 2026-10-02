@@ -20212,8 +20212,9 @@ struct HostListPage {
   }
 
   /** The 启动 AI 辅助 entry sits at the right end of the 远程主机 title, on the host list only. */
+  /** The assistant entry sits at the right end of the page title on every tab. */
   private hostAiOrbShown(): boolean {
-    return this.curTab === 0 && this.hostAiOrbAvailable();
+    return this.hostAiOrbAvailable();
   }
 
   /** The entry exists for this account; whether it shows depends on the tab. */

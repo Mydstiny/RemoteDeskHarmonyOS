@@ -11,7 +11,16 @@ export type DiagnosticAiDeviceClass = 'phone' | 'pad' | 'pc';
 class AiLiftParams {
   label: string = '';
   capsuleWidth: number = 300;
+  deviceClass: DiagnosticAiDeviceClass = 'phone';
+  /** Mini chat above the orb (the orb sits low on the screen) instead of below it. */
+  chatAbove: boolean = false;
+  /** Orb and chat aligned to the right edge (the orb is on the right half) instead of the left. */
+  alignEnd: boolean = true;
   onTap: () => void = (): void => {};
+  onDragStart: () => void = (): void => {};
+  onDragMove: (dx: number, dy: number) => void = (_dx: number, _dy: number): void => {};
+  onDragEnd: () => void = (): void => {};
+  onChatHeight: (height: number) => void = (_height: number): void => {};
 }
 
 /** "Done" for an app action, above the screen it opened: Apple's drawn check and what was done. */
@@ -29,13 +38,32 @@ function aiDoneCapsule(params: AiLiftParams) {
   .shadow({ radius: 24, color: '#59000000', offsetY: 8 })
 }
 
-/** The floating orb above an opened screen; a tap closes that screen and brings the conversation back. */
+/**
+ * The floating orb above an opened screen, with a small chat growing out under it so the user can keep talking to
+ * the assistant without leaving that screen. A tap on the orb itself goes back to the island (closing the screen).
+ */
 @Builder
 function aiLiftedOrb(params: AiLiftParams) {
-  Stack() { AiSiriOrb({ orbSize: AI_FLOAT_ORB }) }
-    .width(AI_FLOAT_ORB).height(AI_FLOAT_ORB)
-    .accessibilityText('AI 助手，轻点返回对话')
-    .onClick((): void => { params.onTap(); })
+  // Orb first, chat second; the order reverses when the chat has to open above the orb. One chat instance either
+  // way, so a half-typed question survives the orb being dragged across the screen.
+  Flex({ direction: params.chatAbove ? FlexDirection.ColumnReverse : FlexDirection.Column,
+    alignItems: params.alignEnd ? ItemAlign.End : ItemAlign.Start }) {
+    Stack() { AiSiriOrb({ orbSize: AI_FLOAT_ORB }) }
+      .width(AI_FLOAT_ORB).height(AI_FLOAT_ORB)
+      .accessibilityText('AI 助手，轻点回到完整对话，按住可拖动')
+      .onClick((): void => { params.onTap(); })
+      .gesture(PanGesture({ distance: 6 })
+        .onActionStart((): void => { params.onDragStart(); })
+        .onActionUpdate((event: GestureEvent): void => { params.onDragMove(event.offsetX, event.offsetY); })
+        .onActionEnd((): void => { params.onDragEnd(); }))
+    DiagnosticAiAssistantPanel({ siriMode: true, forceDark: true, embedded: true, mini: true, revealed: true,
+      deviceClass: params.deviceClass,
+      onCardSize: (_width: number, height: number): void => { params.onChatHeight(height); } })
+      .width(params.capsuleWidth)
+      .margin(params.chatAbove ? { bottom: 10 } : { top: 10 })
+      .transition(TransitionEffect.OPACITY.combine(TransitionEffect.scale({ x: 0.6, y: 0.6 }))
+        .animation({ curve: curves.springMotion(0.5, 0.72), delay: 160 }))
+  }.width(params.capsuleWidth)
 }
 
 /**
@@ -250,18 +278,19 @@ export struct AiIsland {
     if (value === this.compact) { return; }
     if (value) {
       try { inputMethod.getController().hideTextInput(); } catch (_error) { /* keyboard already down */ }
-      // The orb floats at the right edge, a third of the way down, out of the way of the page's content.
-      this.dragX = this.areaWidth / 2 - AI_FLOAT_ORB / 2 - 14;
-      this.dragY = this.areaHeight * 0.3;
-    } else {
-      this.dragX = 0; this.dragY = 0;
     }
     this.setStatusBarHidden(!value);
-    // Content loses focus first, the surface gathers or opens, then the new content focuses in.
-    this.fade(120, 0, (): void => { this.contentOpacity = 0; this.contentBlur = 10; });
-    this.later(90, (): void => {
-      this.morph((): void => { this.compact = value; });
-      this.fade(260, 140, (): void => { this.contentOpacity = 1; this.contentBlur = 0; });
+    // Content loses focus first; then in one spring the surface shrinks into the orb while it travels to the right
+    // edge (or grows back from there into the panel at the top), so it reads as one object moving, never a jump.
+    this.fade(110, 0, (): void => { this.contentOpacity = 0; this.contentBlur = 10; });
+    this.later(70, (): void => {
+      this.getUIContext().animateTo({ curve: curves.springMotion(0.55, 0.8) }, (): void => {
+        this.compact = value;
+        // The orb floats at the right edge, a third of the way down, out of the way of the page's content.
+        this.dragX = value ? this.areaWidth / 2 - AI_FLOAT_ORB / 2 - 14 : 0;
+        this.dragY = value ? this.areaHeight * 0.3 : 0;
+      });
+      this.fade(280, value ? 180 : 260, (): void => { this.contentOpacity = 1; this.contentBlur = 0; });
     });
     this.onFloatingChanged(value);
   }
@@ -309,10 +338,8 @@ export struct AiIsland {
     this.executingPoll = setInterval((): void => { this.watchAppAction(); }, 300);
   }
 
-  /**
-   * Done once the opened screen is up (an action that opens no screen of its own, such as a tab switch, is done
-   * after a moment). Afterwards keep watching: when that screen closes, the orb comes back down into the island.
-   */
+  /** Done once the opened screen is up (an action that opens no screen of its own, such as a tab switch, is done
+   * after a moment). */
   private watchAppAction(): void {
     const open: boolean = this.isAppActionScreenOpen();
     if (this.executing !== '') {
@@ -320,17 +347,10 @@ export struct AiIsland {
       if (Date.now() - this.executingStartedAt > 1500) { this.completeAppAction(false); }
       return;
     }
-    if (this.orbDialog === null) { this.stopExecutingPoll(); return; }
-    this.executingClosedTicks = open ? 0 : this.executingClosedTicks + 1;
-    if (this.executingClosedTicks >= 2) {
-      // The screen is closed: the orb drops back into the island, where it can be dragged around.
-      this.closeLift(false);
-      this.lifted = false;
-      this.stopExecutingPoll();
-    }
+    this.stopExecutingPoll();
   }
 
-  private completeAppAction(screenOpen: boolean): void {
+  private completeAppAction(_screenOpen: boolean): void {
     const label: string = this.executing.replace('正在执行：', '已完成：');
     this.liftDone(label);
     this.lifted = true;
@@ -339,12 +359,10 @@ export struct AiIsland {
       this.executing = '';
       this.statusOpacity = 0;
       this.setCompact(true);
-      if (screenOpen && this.isAppActionScreenOpen()) {
-        this.liftOrb();
-      } else {
-        this.lifted = false;
-        this.stopExecutingPoll();
-      }
+      // After an action the orb and its mini chat stay in the dialog layer, above whatever the user opens or taps
+      // next, until the orb itself is tapped to go back to the island.
+      this.liftOrb();
+      this.stopExecutingPoll();
     });
   }
 
@@ -374,9 +392,60 @@ export struct AiIsland {
       .catch((): void => { this.doneDialog = null; });
   }
 
+  /** The lifted orb's own position (left/top of the orb) and the mini chat's last measured height. */
+  private liftX: number = 0;
+  private liftY: number = 0;
+  private liftStartX: number = 0;
+  private liftStartY: number = 0;
+  private liftChatHeight: number = 150;
+  private liftParams: AiLiftParams | null = null;
+
+  /** Where the dialog goes so the orb sits at liftX/liftY with the chat on the side that has room. */
+  private placeLift(): void {
+    const content: ComponentContent<AiLiftParams> | null = this.orbDialog;
+    const params: AiLiftParams | null = this.liftParams;
+    if (content === null || params === null) { return; }
+    const alignEnd: boolean = this.liftX + AI_FLOAT_ORB / 2 > this.areaWidth / 2;
+    const chatAbove: boolean = this.liftY + AI_FLOAT_ORB / 2 > this.areaHeight * 0.55;
+    if (alignEnd !== params.alignEnd || chatAbove !== params.chatAbove) {
+      params.alignEnd = alignEnd;
+      params.chatAbove = chatAbove;
+      content.update(params);
+    }
+    const width: number = params.capsuleWidth;
+    const left: number = Math.max(6, Math.min(this.areaWidth - width - 6,
+      alignEnd ? this.liftX + AI_FLOAT_ORB - width : this.liftX));
+    const top: number = chatAbove ? this.liftY - this.liftChatHeight - 10 : this.liftY;
+    this.getUIContext().getPromptAction().updateCustomDialog(content, {
+      alignment: DialogAlignment.TopStart, offset: { dx: left, dy: Math.max(0, top) }
+    }).catch((): void => { /* dialog already closed */ });
+  }
+
   private liftOrb(): void {
     if (this.orbDialog !== null) { return; }
     const params: AiLiftParams = new AiLiftParams();
+    params.capsuleWidth = Math.min(this.areaWidth - 28, 300);
+    params.deviceClass = this.deviceClass;
+    // Starts at the right edge, halfway down; dragged anywhere, it settles against the nearer side.
+    this.liftX = this.areaWidth - AI_FLOAT_ORB - 14;
+    this.liftY = this.areaHeight * 0.48;
+    params.onDragStart = (): void => { this.liftStartX = this.liftX; this.liftStartY = this.liftY; };
+    params.onDragMove = (dx: number, dy: number): void => {
+      this.liftX = Math.max(6, Math.min(this.areaWidth - AI_FLOAT_ORB - 6, this.liftStartX + dx));
+      this.liftY = Math.max(this.topInset, Math.min(this.areaHeight - AI_FLOAT_ORB - 24, this.liftStartY + dy));
+      this.placeLift();
+    };
+    params.onDragEnd = (): void => {
+      this.liftX = this.liftX + AI_FLOAT_ORB / 2 > this.areaWidth / 2 ? this.areaWidth - AI_FLOAT_ORB - 14 : 14;
+      this.placeLift();
+    };
+    params.onChatHeight = (height: number): void => {
+      if (height > 0 && Math.abs(height - this.liftChatHeight) > 1) {
+        this.liftChatHeight = height;
+        if (params.chatAbove) { this.placeLift(); }
+      }
+    };
+    this.liftParams = params;
     params.onTap = (): void => {
       // Back to the conversation: close the screen the action opened, then open the panel.
       this.closeAppActionScreen();
@@ -389,7 +458,8 @@ export struct AiIsland {
       new ComponentContent(this.getUIContext(), wrapBuilder(aiLiftedOrb), params);
     this.orbDialog = content;
     this.getUIContext().getPromptAction().openCustomDialog(content,
-      this.liftOptions(DialogAlignment.TopEnd, -14, this.topOffset() + this.dragY))
+      this.liftOptions(DialogAlignment.TopStart, Math.max(6, this.liftX + AI_FLOAT_ORB - params.capsuleWidth), this.liftY))
+      .then((): void => { this.placeLift(); })
       .catch((): void => { this.orbDialog = null; });
   }
 

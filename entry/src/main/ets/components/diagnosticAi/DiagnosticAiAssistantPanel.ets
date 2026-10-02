@@ -56,6 +56,9 @@ class AiAction {
   }
 }
 
+/** Most action pills an answer may show (besides 邮件草稿 and 新对话). */
+const AI_MAX_ACTION_PILLS: number = 3;
+
 /** One finished exchange of the conversation. */
 class AiTurn {
   question: string;
@@ -76,12 +79,18 @@ class AiConversationMemory {
   static turns: AiTurn[] = [];
   static history: string = '';
   static pendingQuestion: string = '';
+  /** One saved session for the whole conversation, whichever panel (island or the orb's mini chat) asked. */
+  static sessionId: string = '';
+  /** The latest full answer, so the island can show an exchange that happened in the orb's mini chat. */
+  static lastResult: DiagnosticAiResult | null = null;
 
   static clear(owner: string): void {
     AiConversationMemory.owner = owner;
     AiConversationMemory.turns = [];
     AiConversationMemory.history = '';
     AiConversationMemory.pendingQuestion = '';
+    AiConversationMemory.sessionId = '';
+    AiConversationMemory.lastResult = null;
   }
 }
 
@@ -218,6 +227,10 @@ export struct DiagnosticAiAssistantPanel {
   /** Earlier exchanges of this conversation, shown above the current answer. */
   @State private turns: AiTurn[] = [];
   private readonly answerScroller: Scroller = new Scroller();
+  /** Where the current question starts inside the scrolling conversation. */
+  private answerAnchorY: number = 0;
+  /** The orb's mini chat (above a screen an action opened): latest answer and a one-line field, nothing else. */
+  @Prop mini: boolean = false;
   /** Setting changes from the current answer that were already applied; their pills leave. */
   @State private appliedActions: string[] = [];
   @State private pendingAppAction: DiagnosticAiAppActionId | null = null;
@@ -242,7 +255,28 @@ export struct DiagnosticAiAssistantPanel {
   }
 
   /** Checked whenever the panel shows again: the user may have just set the service up from the guide card. */
+  /**
+   * The orb's mini chat shares the conversation: when the island opens again, pick up exchanges it added (the latest
+   * becomes the current answer, earlier ones the scroll-back).
+   */
+  private catchUpConversation(): void {
+    if (this.mini || this.compact || this.busy || AiConversationMemory.history === this.conversation) { return; }
+    const turns: AiTurn[] = AiConversationMemory.turns;
+    this.conversation = AiConversationMemory.history;
+    this.sessionId = AiConversationMemory.sessionId;
+    if (turns.length > 0 && AiConversationMemory.lastResult !== null) {
+      this.turns = turns.slice(0, turns.length - 1);
+      this.question = turns[turns.length - 1].question;
+      this.result = AiConversationMemory.lastResult;
+      this.agentMode = 'answer';
+      this.appliedActions = [];
+    } else {
+      this.turns = turns.slice();
+    }
+  }
+
   private refreshReady(): void {
+    this.catchUpConversation();
     const selected: DiagnosticAiProviderProfile | undefined = this.selectedProfile();
     this.aiReady = selected !== undefined &&
       (diagnosticAiProviderIsHarmonyLocal(selected.providerId) || this.store.secret(selected).trim() !== '');
@@ -314,12 +348,24 @@ export struct DiagnosticAiAssistantPanel {
       AiConversationMemory.owner = this.owner;
       AiConversationMemory.turns = this.turns.slice();
       AiConversationMemory.history = this.conversation;
+      AiConversationMemory.sessionId = resumed.id;
+      AiConversationMemory.lastResult = null;
     } else {
-      this.sessionId = '';
+      this.sessionId = AiConversationMemory.sessionId;
       this.conversation = AiConversationMemory.history;
       this.turns = AiConversationMemory.turns.slice();
     }
-    this.recoverPendingBundle();
+    if (this.mini) {
+      // The mini chat opens on the conversation's latest answer.
+      const turns: AiTurn[] = AiConversationMemory.turns;
+      if (turns.length > 0 && AiConversationMemory.lastResult !== null) {
+        this.turns = turns.slice(0, turns.length - 1);
+        this.question = turns[turns.length - 1].question;
+        this.result = AiConversationMemory.lastResult;
+      }
+    } else {
+      this.recoverPendingBundle();
+    }
     this.timer = setInterval((): void => { this.syncCapture(); }, 500);
   }
 
@@ -784,12 +830,15 @@ export struct DiagnosticAiAssistantPanel {
         actions.push(new AiAction('app-explicit-' + id, diagnosticAiAppActionLabel(typedId), null, typedId));
       }
     });
+    // Never more pills than the panel holds: at most three things to do (a "what can you do" answer would otherwise
+    // list every module), then the conversation's own actions.
+    const shown: AiAction[] = actions.slice(0, AI_MAX_ACTION_PILLS);
     if (this.agentMode === 'diagnose' || this.agentMode === 'feedback' || this.latestBundleText !== '') {
-      actions.push(this.mailPreviewVisible ? new AiAction('mail-open', '打开系统邮件', null, null, 'mailOpen') :
+      shown.push(this.mailPreviewVisible ? new AiAction('mail-open', '打开系统邮件', null, null, 'mailOpen') :
         new AiAction('mail-draft', '生成邮件草稿', null, null, 'mail'));
     }
-    actions.push(new AiAction('new-conversation', '新对话', null, null, 'new'));
-    return actions;
+    shown.push(new AiAction('new-conversation', '新对话', null, null, 'new'));
+    return shown;
   }
 
   /** Keep the finished exchange for the next time the assistant opens, and show the answer from its start. */
@@ -801,6 +850,8 @@ export struct DiagnosticAiAssistantPanel {
     if (this.sessionId === '') {
       this.sessionId = 'ai-' + now.toString() + '-' + Math.floor(Math.random() * 100000).toString();
     }
+    AiConversationMemory.sessionId = this.sessionId;
+    AiConversationMemory.lastResult = result;
     const session: DiagnosticAiConversationSession = {
       id: this.sessionId,
       title: this.question.trim().slice(0, 40) || 'AI 对话',
@@ -819,9 +870,10 @@ export struct DiagnosticAiAssistantPanel {
     const completionTokens: number = Math.ceil(result.summary.length / 4);
     this.conversationStore.recordUsage(promptTokens, completionTokens, 0, (promptTokens + completionTokens) / 1000000 * 0.3,
       profile.providerId, profile.modelId);
+    // Show the new answer from its start (its question at the top), not the end of the conversation.
     setTimeout((): void => {
-      if (this.turns.length > 0) { this.answerScroller.scrollEdge(Edge.Bottom); }
-    }, 80);
+      if (this.turns.length > 0) { this.answerScroller.scrollTo({ xOffset: 0, yOffset: this.answerAnchorY }); }
+    }, 120);
   }
 
   private startNewConversation(): void {
@@ -1048,12 +1100,6 @@ export struct DiagnosticAiAssistantPanel {
           })
         }.width('100%').justifyContent(FlexAlign.Center)
       }
-      if (this.pendingAppAction !== null && !this.busy) {
-        Row({ space: 8 }) {
-          this.pill('确认执行：' + diagnosticAiAppActionLabel(this.pendingAppAction), true, (): void => { this.confirmPendingAppAction(); })
-          this.pill('取消', false, (): void => { this.pendingAppAction = null; this.status = '已取消操作'; })
-        }.width('100%').justifyContent(FlexAlign.Center)
-      }
       if (this.result !== null) {
         Scroll(this.answerScroller) {
           Column({ space: 12 }) {
@@ -1066,6 +1112,7 @@ export struct DiagnosticAiAssistantPanel {
               .border({ width: { bottom: 0.5 }, color: { bottom: '#26FFFFFF' } })
             }, (turn: AiTurn, index: number): string => 'turn-' + index.toString())
             Text(this.question).fontSize(14).lineHeight(20).fontColor('#8E8E93').width('100%')
+              .onAreaChange((_old: Area, area: Area): void => { this.answerAnchorY = Number(area.position.y); })
             Text((this.result as DiagnosticAiResult).summary).fontSize(17).lineHeight(25).fontColor('#FFFFFF')
               .width('100%').copyOption(CopyOptions.InApp)
             Text('影响 ' + this.severityText() + ' · 置信度 ' +
@@ -1107,8 +1154,16 @@ export struct DiagnosticAiAssistantPanel {
         }.layoutWeight(1).scrollBar(BarState.Off).edgeEffect(EdgeEffect.Spring)
         // Text running past the top or bottom of the answer fades out instead of being cut.
         .fadingEdge(true, { fadingEdgeLength: LengthMetrics.vp(28) })
-        // Over the input bar: what the answer suggests doing — or, while a follow-up is typed, questions that follow it.
-        if (this.revealed && this.draftQuestion.trim() !== '') {
+        // At the foot of the panel, over the input bar: what the answer suggests doing — or the second yes for an
+        // action that needs one, or, while a follow-up is typed, questions that follow it.
+        if (this.pendingAppAction !== null && !this.busy) {
+          Row({ space: 8 }) {
+            this.pill('确认执行：' + diagnosticAiAppActionLabel(this.pendingAppAction), true,
+              (): void => { this.confirmPendingAppAction(); })
+            this.pill('取消', false, (): void => { this.pendingAppAction = null; this.status = '已取消操作'; })
+          }.width('100%')
+          .transition(this.pillTransition(0))
+        } else if (this.revealed && this.draftQuestion.trim() !== '') {
           Flex({ wrap: FlexWrap.Wrap, justifyContent: FlexAlign.Start }) {
             ForEach(this.suggestions, (item: AiSuggestion, index: number): void => {
               Row() {
@@ -1170,7 +1225,6 @@ export struct DiagnosticAiAssistantPanel {
             { radius: this.deviceClass === 'phone' ? 36 : 30, color: '#60000000', offsetY: 12 })
           .onAreaChange((_old: Area, area: Area): void => { this.reportCardSize(area); })
       }.width('100%')
-      // Floating pill actions under the card.
       Row({ space: 8 }) {
         if (this.capturing()) {
           this.pill('结束并分析', true, (): void => { void this.finishCapture(); })
@@ -1201,8 +1255,57 @@ export struct DiagnosticAiAssistantPanel {
     .onAreaChange((_old: Area, area: Area): void => { this.reportCardSize(area); })
   }
 
+  /**
+   * The orb's mini chat, shown under the orb above an opened screen: the latest answer (or the thinking ring) and a
+   * one-line field with the send button. Questions that need a capture are sent back to the island.
+   */
+  @Builder private miniLayout() {
+    Column({ space: 10 }) {
+      if (this.busy) {
+        Row({ space: 10 }) {
+          AiKernelRing({ ringSize: 26 })
+          Text('正在思考…').fontSize(14).fontColor('#C7C7CC')
+        }.width('100%')
+      } else if (this.awaitingCapture) {
+        Text('这个问题需要抓取诊断日志，轻点上方的球回到 AI 助手继续。').fontSize(13).lineHeight(19)
+          .fontColor('#C7C7CC').width('100%')
+      } else if (this.result !== null) {
+        Scroll() {
+          Text((this.result as DiagnosticAiResult).summary).fontSize(15).lineHeight(22).fontColor('#FFFFFF')
+            .width('100%').copyOption(CopyOptions.InApp)
+        }.constraintSize({ maxHeight: 180 }).scrollBar(BarState.Off)
+        .fadingEdge(true, { fadingEdgeLength: LengthMetrics.vp(20) })
+      } else if (this.status.length > 0 && this.status.indexOf('正在') < 0) {
+        Text(this.status).fontSize(13).lineHeight(18).fontColor('#FF9F0A').width('100%')
+      }
+      // Siri's input bar in small: the glass capsule with the field, the send button beside it.
+      Row({ space: 8 }) {
+        AiInputCapsule() {
+          TextInput({ placeholder: '继续问 AI', text: this.draftQuestion })
+            .layoutWeight(1).height(38).fontSize(15).fontColor('#FFFFFF').placeholderColor('#8E8E93')
+            .caretStyle({ width: 2, color: '#FFFFFF' }).backgroundColor(Color.Transparent).padding(0)
+            .onChange((value: string): void => { this.draftQuestion = value; })
+            .onSubmit((): void => { this.submitDraftQuestion(); })
+        }
+        AiSendButton({ active: this.draftQuestion.trim() !== '', buttonSize: 32,
+          onTap: (): void => { this.submitDraftQuestion(); } })
+      }.width('100%').alignItems(VerticalAlign.Center)
+    }
+    // The same material as the island: black where the text is, easing into clear smoky glass at the foot, a soft
+    // even rim and a pale sheen along the bottom.
+    .width('100%').padding({ left: 16, right: 12, top: 16, bottom: 12 }).borderRadius(28)
+    .backdropBlur(26)
+    .linearGradient({ angle: 180, colors: [['#D9030304', 0], ['#B3070708', 0.5], ['#80101012', 1]] })
+    .border({ width: { top: 0.6, left: 0.6, right: 0.6, bottom: 1 },
+      color: { top: '#1FFFFFFF', left: '#17FFFFFF', right: '#17FFFFFF', bottom: '#59FFFFFF' } })
+    .shadow({ radius: 24, color: '#59000000', offsetY: 8 })
+    .onAreaChange((_old: Area, area: Area): void => { this.reportCardSize(area); })
+  }
+
   build() {
-    if (this.siriMode && this.compact) {
+    if (this.mini) {
+      this.miniLayout()
+    } else if (this.siriMode && this.compact) {
       this.compactLayout()
     } else if (this.siriMode) {
       this.siriLayout()

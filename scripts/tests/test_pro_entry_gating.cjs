@@ -104,8 +104,8 @@ assert.match(hostSource, /if \(kind < 2\) \{\s*ProBadge\(\)/);
 // The 诊断与 AI 帮助 header badge shows only while one of its AI sub-settings is visible.
 assert.match(hostSource, /section === SETTINGS_SECTION_DIAGNOSTICS && \(this\.diagnosticAiConfigVisible \|\| this\.diagnosticAiAssistantVisible\)/);
 // The host-page AI entry follows the 启动 AI 辅助 entitlement.
-// The AI entry shows only on the host list tab and only while the account may use the assistant.
-assert.match(hostSource, /hostAiOrbShown\(\): boolean \{\s*return this\.curTab === 0 && this\.hostAiOrbAvailable\(\);/);
+// The AI entry shows on every tab, and only while the account may use the assistant.
+assert.match(hostSource, /hostAiOrbShown\(\): boolean \{\s*return this\.hostAiOrbAvailable\(\);/);
 assert.match(hostSource, /hostAiOrbAvailable\(\): boolean \{\s*return this\.diagnosticAiOrbEnabled && this\.diagnosticAiAssistantVisible;/);
 
 // 3. Regression: the settings app-icon row follows the entitlement.

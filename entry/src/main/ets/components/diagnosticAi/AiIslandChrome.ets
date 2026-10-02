@@ -21,35 +21,36 @@ export struct AiIslandGlass {
   @Prop radius: number = 29;
 
   private tall(): boolean { return this.glassHeight > 90; }
-  /** The page shows through only below the text area; a capsule is solid. */
-  private stops(): Array<[ResourceColor, number]> {
-    if (!this.tall()) {
-      return [['#FF000000', 0], ['#FF000000', 0.7], ['#F0050508', 1]];
-    }
-    // The text area is fully opaque: even a few percent of a white page would show its dark text through.
-    const solid: number = Math.min(0.55, Math.max(0.3, 96 / this.glassHeight));
-    return [['#FF000000', 0], ['#FF000000', solid], ['#DE030305', solid + (1 - solid) * 0.35],
-      ['#A3060609', solid + (1 - solid) * 0.7], ['#590A0A0E', 1]];
-  }
 
   build() {
     Stack({ alignContent: Alignment.Bottom }) {
-      // Light blur of the page behind, then the tint on top of it (separate layers, so the tint always wins).
-      Column().width(this.glassWidth).height(this.glassHeight).backdropBlur(14)
-      Column().width(this.glassWidth).height(this.glassHeight)
-        .linearGradient({ angle: 180, colors: this.stops() })
+      if (this.tall()) {
+        // As Siri's: one piece of smoky glass over a strong blur of the page, darkest only where it grows out of the
+        // Dynamic Island (top center) and lighter everywhere else, so the page stays faintly visible through it.
+        Column().width(this.glassWidth).height(this.glassHeight).backdropBlur(26)
+        Column().width(this.glassWidth).height(this.glassHeight)
+          .linearGradient({ angle: 180, colors: [['#B3050506', 0], ['#990A0A0C', 0.55], ['#6B121214', 1]] })
+        Column().width(this.glassWidth).height(this.glassHeight)
+          .radialGradient({ center: ['50%', 0], radius: Math.max(this.glassWidth * 0.62, this.glassHeight * 0.7),
+            colors: [['#FA000000', 0], ['#C7000000', 0.3], ['#59000000', 0.65], ['#00000000', 1]] })
+      } else {
+        // The small capsule is the island itself: solid black.
+        Column().width(this.glassWidth).height(this.glassHeight)
+          .linearGradient({ angle: 180, colors: [['#FF000000', 0], ['#FF000000', 0.7], ['#F0050508', 1]] })
+      }
       // Clear glass: light gathers up the sides and along the lower edge, as through a thick lens.
       if (this.tall()) {
         Column().width(this.glassWidth).height(this.glassHeight)
           .linearGradient({ angle: 90, colors: [['#17FFFFFF', 0], ['#00FFFFFF', 0.1], ['#00FFFFFF', 0.9],
             ['#17FFFFFF', 1]] })
-        Column().width(this.glassWidth).height(Math.min(36, this.glassHeight * 0.2))
-          .linearGradient({ angle: 180, colors: [['#00FFFFFF', 0], ['#14FFFFFF', 0.7], ['#2EFFFFFF', 1]] })
+        // Siri's lower edge: a soft pale sheen where the glass is thickest, not a colored band.
+        Column().width(this.glassWidth).height(Math.min(56, this.glassHeight * 0.26))
+          .linearGradient({ angle: 180, colors: [['#00FFFFFF', 0], ['#0FFFFFFF', 0.55], ['#29F2F2F7', 1]] })
       }
-      // Fine rim: blue-white along the bottom where the lens is thickest, faint on the sides, none on top.
+      // Fine rim: pale along the bottom where the lens is thickest, faint on the sides, none on top.
       Column().width(this.glassWidth).height(this.glassHeight).borderRadius(this.radius)
         .border({ width: { top: 0, left: 0.6, right: 0.6, bottom: 1.2 },
-          color: { top: '#00FFFFFF', left: '#12FFFFFF', right: '#12FFFFFF', bottom: '#73E6F4FF' } })
+          color: { top: '#00FFFFFF', left: '#14FFFFFF', right: '#14FFFFFF', bottom: '#59FFFFFF' } })
     }
     .width(this.glassWidth).height(this.glassHeight).borderRadius(this.radius).clip(true)
     .shadow({ radius: 24, color: '#40000000', offsetY: 8 })
@@ -183,15 +184,20 @@ export struct AiLiquidGlassButton {
 
   /** Lens light drawn over the material: a specular cap at the top, a soft glow gathering at the bottom, a rim. */
   @Builder private lensLight() {
+    // Dark mode: a lighter, neutral lens with a soft even rim (a bright top edge reads as a black ball, not glass).
+    if (this.dark) {
+      Column().width(this.buttonSize).height(this.buttonSize).borderRadius(this.buttonSize / 2)
+        .linearGradient({ angle: 180, colors: [['#2EFFFFFF', 0], ['#14FFFFFF', 0.55], ['#21FFFFFF', 1]] })
+    }
     Column().width(this.buttonSize).height(this.buttonSize).borderRadius(this.buttonSize / 2)
       .radialGradient({ center: ['50%', '92%'], radius: this.buttonSize * 0.6,
-        colors: [[this.active ? '#598C7BFF' : '#2E42CBF7', 0], ['#0042CBF7', 1]] })
+        colors: [[this.active ? '#598C7BFF' : this.dark ? '#1FFFFFFF' : '#2E42CBF7', 0], ['#00FFFFFF', 1]] })
     Column().width(this.buttonSize).height(this.buttonSize).borderRadius(this.buttonSize / 2)
       .radialGradient({ center: ['50%', '6%'], radius: this.buttonSize * 0.46,
-        colors: [[this.dark ? '#47FFFFFF' : '#E6FFFFFF', 0], ['#00FFFFFF', 1]] })
+        colors: [[this.dark ? '#29FFFFFF' : '#E6FFFFFF', 0], ['#00FFFFFF', 1]] })
     Column().width(this.buttonSize).height(this.buttonSize).borderRadius(this.buttonSize / 2)
-      .border({ width: { top: 1.2, left: 0.8, right: 0.8, bottom: 1 },
-        color: this.dark ? { top: '#E6FFFFFF', left: '#59FFFFFF', right: '#59FFFFFF', bottom: '#73FFFFFF' } :
+      .border({ width: this.dark ? 0.8 : { top: 1.2, left: 0.8, right: 0.8, bottom: 1 },
+        color: this.dark ? { top: '#4DFFFFFF', left: '#2EFFFFFF', right: '#2EFFFFFF', bottom: '#3DFFFFFF' } :
           { top: '#FFFFFFFF', left: '#24000000', right: '#24000000', bottom: '#F2FFFFFF' } })
   }
 
@@ -269,21 +275,43 @@ export struct AiSendButton {
     this.getUIContext().animateTo({ curve: curves.springMotion(0.42, 0.82) }, (): void => { this.lit = this.active ? 1 : 0; });
   }
 
-  private glow(): number { return this.buttonSize * 1.3; }
+  private glow(): number { return this.buttonSize + 12; }
+  private readonly ringSettings: RenderingContextSettings = new RenderingContextSettings(true);
+  private readonly ring: CanvasRenderingContext2D = new CanvasRenderingContext2D(this.ringSettings);
+
+  /**
+   * A narrow ring of Siri's caret colors drawn with its own soft glow on a canvas: no blur layer, so nothing square
+   * shows behind the button on a dark panel.
+   */
+  private paintRing(): void {
+    const w: number = this.ring.width;
+    const h: number = this.ring.height;
+    if (w <= 0 || h <= 0) { return; }
+    this.ring.clearRect(0, 0, w, h);
+    const g: CanvasGradient = this.ring.createConicGradient(0, w / 2, h / 2);
+    g.addColorStop(0, '#FFB547');
+    g.addColorStop(0.25, '#FF5E8A');
+    g.addColorStop(0.5, '#A86BFF');
+    g.addColorStop(0.75, '#4A8DFF');
+    g.addColorStop(1, '#FFB547');
+    this.ring.strokeStyle = g;
+    this.ring.lineWidth = 1.6;
+    this.ring.shadowColor = 'rgba(168,107,255,0.9)';
+    this.ring.shadowBlur = 5;
+    this.ring.beginPath();
+    this.ring.arc(w / 2, h / 2, this.buttonSize / 2 + 2, 0, Math.PI * 2);
+    this.ring.stroke();
+    this.ring.shadowBlur = 0;
+  }
 
   build() {
     Stack() {
-      // blur() softens a node's content, not its own background, so the gradient sits in a container that is
-      // blurred; the container turns, so the colors flow round the button.
-      Stack() {
-        Column().width(this.glow()).height(this.glow()).borderRadius(this.glow() / 2)
-          .sweepGradient({ center: ['50%', '50%'], start: 0, end: 360, colors: AI_CARET_GLOW })
-      }
-        .width(this.glow()).height(this.glow())
-        .blur(this.buttonSize * 0.16)
+      // The canvas turns, so the colors flow round the button.
+      Canvas(this.ring).width(this.glow()).height(this.glow())
+        .onReady((): void => { this.paintRing(); })
         .rotate({ angle: this.flow })
-        .opacity(this.lit * (0.68 + this.breath * 0.22))
-        .scale({ x: 0.8 + this.lit * (0.16 + this.breath * 0.04), y: 0.8 + this.lit * (0.16 + this.breath * 0.04) })
+        .opacity(this.lit * (0.75 + this.breath * 0.25))
+        .scale({ x: 0.9 + this.lit * 0.1, y: 0.9 + this.lit * 0.1 })
       Circle().width(this.buttonSize).height(this.buttonSize)
         .fill(this.active ? '#FFFFFF' : '#3A3A3C')
         .animation({ duration: 200, curve: Curve.EaseOut })
@@ -352,11 +380,14 @@ function aiRgba(hex: string, alpha: number): string {
 
 /** Warm waves ride a little above the center line, cool ones below, a white core in between. */
 const AI_ORB_WAVES: AiOrbWave[] = [
-  new AiOrbWave('#FF3B2F', 0.11, 1.1, 1.7, 0.0, -0.05, 0.075),
-  new AiOrbWave('#FF9A3C', 0.08, 1.4, -2.1, 1.3, -0.025, 0.06),
-  new AiOrbWave('#2F6BFF', 0.12, 0.9, 1.3, 2.4, 0.05, 0.075),
-  new AiOrbWave('#3FD8FF', 0.08, 1.3, -1.8, 3.6, 0.025, 0.055),
-  new AiOrbWave('#FFFFFF', 0.05, 1.2, 2.4, 0.8, 0.0, 0.035)
+  // After Siri's orb: fine bright strands of warm red-orange over a white-hot core over blue and cyan, each with a
+  // luminous halo, flowing briskly in long waves across the orb.
+  new AiOrbWave('#FF3B26', 0.11, 0.8, 2.2, 0.0, -0.055, 0.05),
+  new AiOrbWave('#FF9A3A', 0.09, 0.95, -2.6, 1.1, -0.028, 0.04),
+  new AiOrbWave('#FF5C9A', 0.06, 0.7, 1.9, 2.0, -0.012, 0.03),
+  new AiOrbWave('#2E6BFF', 0.12, 0.75, 2.0, 2.6, 0.055, 0.05),
+  new AiOrbWave('#3CDCFF', 0.09, 0.9, -2.4, 3.7, 0.03, 0.04),
+  new AiOrbWave('#FFFFFF', 0.05, 0.85, 2.8, 0.6, 0.004, 0.025)
 ];
 
 /**
@@ -399,7 +430,7 @@ export struct AiSiriOrb {
     const w: number = this.ctx.width;
     const h: number = this.ctx.height;
     if (w <= 0 || h <= 0) { return; }
-    const t: number = (Date.now() % 600000) / 1000 * (this.active ? 1.6 : 1);
+    const t: number = (Date.now() % 600000) / 1000 * (this.active ? 1.8 : 1.3);
     const lift: number = this.active ? 1.3 : 1;
     this.ctx.clearRect(0, 0, w, h);
     this.ctx.globalCompositeOperation = 'lighter';
@@ -420,10 +451,18 @@ export struct AiSiriOrb {
       g.addColorStop(0.5, aiRgba(wave.color, 1));
       g.addColorStop(1, aiRgba(wave.color, 0));
       this.ctx.strokeStyle = g;
-      this.ctx.lineWidth = Math.max(0.8, w * wave.width);
+      // A wide faint pass for the glow, then the brighter body of the band.
+      // A luminous halo, then the fine bright strand itself.
+      this.ctx.globalAlpha = 0.55;
+      this.ctx.lineWidth = Math.max(1.2, w * wave.width * 2.4);
       this.ctx.shadowColor = wave.color;
-      this.ctx.shadowBlur = w * 0.12;
+      this.ctx.shadowBlur = w * 0.22;
       this.ctx.stroke();
+      this.ctx.globalAlpha = 1;
+      this.ctx.lineWidth = Math.max(0.6, w * wave.width);
+      this.ctx.shadowBlur = w * 0.08;
+      this.ctx.stroke();
+      this.ctx.globalAlpha = 1;
     });
     this.ctx.shadowBlur = 0;
     this.ctx.globalCompositeOperation = 'source-over';
