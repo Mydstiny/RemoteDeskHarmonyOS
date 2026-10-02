@@ -17,6 +17,7 @@ import {
 } from '../services/ReleaseNotesRegistry';
 import { GuideShowcase, WhatsNewList } from '../components/guide/GuideShowcase';
 import { ProShowcase } from '../components/guide/ProShowcase';
+import { PRO_ORDER_PENDING_KEY } from '../services/ProIntroRegistry';
 import {
   clampGuidePageIndex,
   ensureGuidePages,
@@ -205,8 +206,14 @@ struct GuidePage {
   @Builder guidePanel(isSheet: boolean) {
     if (isSheet && this.stage === 'pro') {
       ProShowcase({
-        primaryLabel: '开始使用',
-        onPrimary: (): void => { this.finish(); }
+        primaryLabel: '完成',
+        orderLabel: '现在订购',
+        onPrimary: (): void => { this.finish(); },
+        onOrder: (): void => {
+          // The Pro page lives on the home page: finish the guide and let the home page open it.
+          AppStorage.setOrCreate(PRO_ORDER_PENDING_KEY, true);
+          this.finish();
+        }
       })
       .width('100%').height('100%')
       .backgroundColor(this.pal().sheetBg)

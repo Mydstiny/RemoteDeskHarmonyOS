@@ -45,6 +45,8 @@ export struct AboutSettingsSheet {
   @StorageProp('isPadDevice') isPadDevice: boolean = false;
   @StorageLink(GUIDE_ALWAYS_VISIBLE_STORAGE_KEY) guideAlwaysVisible: boolean = false;
   onClose: () => void = (): void => {};
+  /** 「Pro 功能介绍 → 现在订购」: the host opens the RemoteDesk Pro page in place of this sheet. */
+  onOrderPro: () => void = (): void => {};
 
   @State usageGuideIndex: number = 0;
   private usageGuideController: SwiperController = new SwiperController();
@@ -211,8 +213,10 @@ export struct AboutSettingsSheet {
     Column() {
       ProShowcase({
         primaryLabel: '完成',
+        orderLabel: '现在订购',
         showClose: true,
         onPrimary: (): void => { this.onClose(); },
+        onOrder: (): void => { this.onOrderPro(); },
         onClose: (): void => { this.onClose(); }
       })
     }

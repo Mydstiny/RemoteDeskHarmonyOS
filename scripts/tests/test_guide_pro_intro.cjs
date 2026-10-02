@@ -83,4 +83,17 @@ test('both startup flows continue into the Pro sheet, which also opens from 设�
   assert.equal(/Purchase|Billing|ProAppRuntime|Entitlement/.test(imports), false);
 });
 
+test('Pro 功能介绍 has 完成 on the left and 现在订购 on the right, which reaches the Pro page', () => {
+  const showcase = read('entry/src/main/ets/components/guide/ProShowcase.ets');
+  assert.ok(showcase.indexOf('Button(this.primaryLabel).layoutWeight(1)') < showcase.indexOf('Button(this.orderLabel)'));
+  const about = read('entry/src/main/ets/components/AboutSettingsSheet.ets');
+  assert.match(about, /orderLabel: '现在订购'[\s\S]{0,200}onOrder: \(\): void => \{ this\.onOrderPro\(\); \}/);
+  const host = read('entry/src/main/ets/pages/HostListPage.ets');
+  assert.match(host, /onOrderPro: \(\): void => \{ this\.openSettingsLeafSheet\(SETTINGS_SHEET_PRO\); \}/);
+  assert.match(host, /onPageShow\(\): void \{\s*this\.pageActive = true;\s*this\.openPendingProOrder\(\);/);
+  assert.match(host, /AppStorage\.setOrCreate\(PRO_ORDER_PENDING_KEY, false\);/);
+  const guidePage = read('entry/src/main/ets/pages/GuidePage.ets');
+  assert.match(guidePage, /AppStorage\.setOrCreate\(PRO_ORDER_PENDING_KEY, true\);\s*this\.finish\(\);/);
+});
+
 console.log(passed + ' guide and Pro intro checks passed');

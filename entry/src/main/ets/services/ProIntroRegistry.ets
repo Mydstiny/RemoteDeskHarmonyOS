@@ -5,6 +5,9 @@
  * Groups the Pro catalog by what a user gets, not by internal feature ids. Release builds keep Pro closed, so the
  * sheet is a preview there: it never offers a purchase and every item reads as 即将推出.
  */
+/** AppStorage flag set by 「现在订购」 in the startup sheet; the home page opens the Pro page and clears it. */
+export const PRO_ORDER_PENDING_KEY: string = 'proOrderPending';
+
 export interface ProIntroItem {
   id: string;
   glyph: Resource;

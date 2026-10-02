@@ -1,4 +1,5 @@
 import { ProBadge, proBadgeSummary } from '../components/ProBadge';
+import { PRO_ORDER_PENDING_KEY } from '../services/ProIntroRegistry';
 import { settingsUsageGuidePages } from '../services/GuideContentRegistry';
 import { ProBadgeSettingsPanel, ProFeatureDetailPanel } from '../components/ProFeatureManagerPanel';
 import { SshSkinSettingsPanel } from '../components/ssh/skin/SshSkinSettingsPanel';
@@ -2170,6 +2171,16 @@ struct HostListPage {
     AppStorage.setOrCreate('diagnosticAiOrbEnabled', store.settingsSnapshot().showOrbOnHostPage);
   }
 
+  /**
+   * 「现在订购」 in the startup Pro 功能介绍 ends the guide and leaves this flag; the Pro page opens once the home page
+   * is showing. Consumed once.
+   */
+  private openPendingProOrder(): void {
+    if (AppStorage.get<boolean>(PRO_ORDER_PENDING_KEY) !== true) { return; }
+    AppStorage.setOrCreate(PRO_ORDER_PENDING_KEY, false);
+    setTimeout((): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_PRO); }, 600);
+  }
+
   async aboutToAppear(): Promise<void> {
     const proVisibility = ProFeatureVisibility.getInstance();
     proVisibility.load(getContext(this) as common.UIAbilityContext);
@@ -2638,6 +2649,7 @@ struct HostListPage {
 
   onPageShow(): void {
     this.pageActive = true;
+    this.openPendingProOrder();
     this.cloudConnectionAvailable =
       CloudStore.getInstance().isCloudAvailable();
     this.refreshMoonlightDirectory();
@@ -19314,7 +19326,8 @@ struct HostListPage {
       AboutSettingsSheet({
         aboutSheetMode: this.aboutSheetMode,
         guideViewportHeight: this.pageViewportHeight,
-        onClose: (): void => { this.closeSettingsLeafSheet(); }
+        onClose: (): void => { this.closeSettingsLeafSheet(); },
+        onOrderPro: (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_PRO); }
       })
     }
   }

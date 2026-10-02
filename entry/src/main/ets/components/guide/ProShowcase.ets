@@ -19,8 +19,11 @@ export struct ProShowcase {
   @StorageProp('currentTheme') theme: string = 'light';
   @StorageProp('accentColor') accent: string = '#007DFF';
   @Prop primaryLabel: string = '开始使用';
+  /** Right-hand button that takes the user to the Pro page; empty hides it. The caller opens the purchase page. */
+  @Prop orderLabel: string = '现在订购';
   @Prop showClose: boolean = false;
   onPrimary: () => void = (): void => {};
+  onOrder: () => void = (): void => {};
   onClose: () => void = (): void => {};
   @State areaWidth: number = 360;
   @State entered: boolean = false;
@@ -133,11 +136,25 @@ export struct ProShowcase {
             .width('100%').textAlign(TextAlign.Center).margin({ top: 4 })
         }.width('100%').padding({ top: 4, bottom: 12 })
       }.layoutWeight(1).width('100%').scrollBar(BarState.Off).align(Alignment.Top).edgeEffect(EdgeEffect.Spring)
-      Button(this.primaryLabel).width('100%').height(48).fontSize(16).fontWeight(FontWeight.Medium)
-        .fontColor(Color.White).borderRadius(24)
-        .linearGradient({ angle: 100, colors: [['#3A5BC8', 0], [this.accent, 1]] })
-        .shadow({ radius: 16, color: tint(this.accent, '40'), offsetY: 6 })
-        .onClick((): void => { this.onPrimary(); })
+      // 完成 on the left, 现在订购 on the right.
+      Row({ space: 12 }) {
+        if (this.orderLabel.length > 0) {
+          Button(this.primaryLabel).layoutWeight(1).height(48).fontSize(16).fontWeight(FontWeight.Medium)
+            .fontColor(this.pal().text).backgroundColor(this.pal().surface).borderRadius(24)
+            .onClick((): void => { this.onPrimary(); })
+          Button(this.orderLabel).layoutWeight(1).height(48).fontSize(16).fontWeight(FontWeight.Medium)
+            .fontColor(Color.White).borderRadius(24)
+            .linearGradient({ angle: 100, colors: [['#3A5BC8', 0], [this.accent, 1]] })
+            .shadow({ radius: 16, color: tint(this.accent, '40'), offsetY: 6 })
+            .onClick((): void => { this.onOrder(); })
+        } else {
+          Button(this.primaryLabel).layoutWeight(1).height(48).fontSize(16).fontWeight(FontWeight.Medium)
+            .fontColor(Color.White).borderRadius(24)
+            .linearGradient({ angle: 100, colors: [['#3A5BC8', 0], [this.accent, 1]] })
+            .shadow({ radius: 16, color: tint(this.accent, '40'), offsetY: 6 })
+            .onClick((): void => { this.onPrimary(); })
+        }
+      }.width('100%')
     }
     // Bottom room for the system navigation bar under sheets.
     .width('100%').height('100%').padding({ left: 20, right: 20, top: 10, bottom: 28 })
