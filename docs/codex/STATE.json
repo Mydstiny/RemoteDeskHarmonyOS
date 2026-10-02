@@ -27,7 +27,7 @@
     "status": "implemented-p1-auth-profile-and-provider-request-boundaries",
     "reviewTaskId": "/root/diagnostic_ai_review",
     "reviewResult": "PENDING; independent P1 review required",
-    "validation": "bundled DevEco TypeScript diagnostic settings test 6/6 PASS; latest isolated-cache default@OhosTestCompileArkTS and signed assembleHap both exit 0 (final assembleHap 6.494 s); Light compliance PASS; previously built HAP 8c61efeb4a514de2a812cf647492298925b1cdc89d2b40e413e845083abdde4c installed with hdc install -r on three targets; optional ohosTest 00306054 unavailable; real Provider/terms/account/device visual/mail acceptance not run"
+    "validation": "bundled DevEco TypeScript diagnostic settings test 6/6 PASS; latest isolated-cache default@OhosTestCompileArkTS and signed assembleHap both exit 0; Light compliance PASS; ProviderService-fix HAP f93a064a73d3573b8e80cc6535bcadd16baf7c814ae6fb6072b56937d4eb0b30 installed with hdc install -r on 127.0.0.1:5555 and 192.168.31.156:38451; 192.168.31.118:40123 offline during final update; optional ohosTest 00306054 unavailable; real Provider/terms/account/device visual/mail acceptance not run"
   },
   "next": "先完成 /root/diagnostic_ai_review 对 96bdd311/9614dd09 的独立复核并修复发现；OAuth/设备授权只在官方资料和端点核验后接入。真实 Provider、官方用途、账号切换实机、设备视觉、邮件和生产权益仍保持开放边界。",
   "blockers": [
@@ -293,7 +293,7 @@
     "release": "NOT RUN; mandatory default assembleHap gate used",
     "diagnosticTests": "PASS 6/6 with DevEco bundled TypeScript",
     "compliance": "PASS Light and git diff --check",
-    "device": "HAP 8c61efeb4a514de2a812cf647492298925b1cdc89d2b40e413e845083abdde4c install -r succeeded on 127.0.0.1:5555, 192.168.31.118:40123 and 192.168.31.156:38451; UI/provider/account/mail acceptance not run",
+    "device": "ProviderService-fix HAP f93a064a73d3573b8e80cc6535bcadd16baf7c814ae6fb6072b56937d4eb0b30 install -r succeeded on 127.0.0.1:5555 and 192.168.31.156:38451; 192.168.31.118:40123 offline during final update; UI/provider/account/mail acceptance not run",
     "optionalOhosTest": "UNAVAILABLE task 00306054 not registered"
   },
   "updated": "2026-10-03",
