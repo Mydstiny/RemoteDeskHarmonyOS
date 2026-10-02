@@ -24,7 +24,7 @@
     "status": "ordinary-api-coding-plan-separation",
     "reviewTaskId": "/root/diagnostic_ai_review",
     "reviewResult": "PASS; independent follow-up review diagnostic-ai-p1-api-coding-plan-d2d67115-20261003; real Provider/account/device/mail acceptance remains open",
-    "validation": "bundled DevEco TypeScript diagnostic settings test 7 groups PASS; default@OhosTestCompileArkTS BUILD SUCCESSFUL; signed assembleHap BUILD SUCCESSFUL; git diff --check PASS; Light compliance PASS; signed HAP SHA-256 0e551081daa13646a0c1934531222f1205988d3a544e4a61f6fd1d32a47fe40f installed with hdc install -r on 127.0.0.1:5555 and 192.168.31.156:38451; 192.168.31.118:40123 offline; optional ohosTest 00306054 unavailable; real Provider/official Coding Plan/account/device visual/mail acceptance not run"
+    "validation": "bundled DevEco TypeScript diagnostic settings test 7 groups PASS; default@OhosTestCompileArkTS BUILD SUCCESSFUL; signed assembleHap BUILD SUCCESSFUL; git diff --check PASS; Light compliance PASS; signed HAP SHA-256 bd0ff21e35d651dc5bcc7905c2104a375f98deb12a5e811044062beaafe064a8 installed with hdc install -r on 127.0.0.1:5555 and 192.168.31.156:38451; 192.168.31.118:40123 offline; optional ohosTest 00306054 unavailable; real Provider/official Coding Plan/account/device visual/mail acceptance not run"
   },
   "next": "安全远端分支同步已具备条件；继续保留真实 Provider、官方用途、账号切换实机、设备视觉、邮件和生产权益开放边界。未来 Coding Plan Manifest 只有在官方资料核验后才可启用。",
   "blockers": [
