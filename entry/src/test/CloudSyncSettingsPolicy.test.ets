@@ -84,6 +84,8 @@ export default function cloudSyncSettingsPolicyTest() {
       expect(cloudUserSettingIsSyncable('loginMode')).assertFalse();
       expect(cloudUserSettingIsSyncable('totpLocked')).assertFalse();
       expect(cloudUserSettingIsSyncable('remoteDesktopBgFlag')).assertFalse();
+      expect(cloudUserSettingIsSyncable('remoteDisplayProfile.v1:owner%7Chost%7Cpc%7Cdefault%7Cany'))
+        .assertFalse();
       expect(cloudUserSettingIsSyncable('virtualMouseSession')).assertFalse();
       expect(cloudUserSettingIsSyncable('pro.org.groups.v1')).assertTrue();
       expect(cloudUserSettingIsSyncable('pro.org.membership.v1')).assertTrue();
