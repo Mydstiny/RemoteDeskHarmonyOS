@@ -3,31 +3,32 @@
   "task": "pro-purchase-foundation",
   "branch": "codex/pro-purchase-foundation",
   "base": "8edc187868e94ed41634e8a6c4c4c072e3a48679",
-  "head": "56895bc2",
-  "phase": "Full acceptance active; Pro 诊断与 AI 帮助 UI/catalog 与账户/Coding Plan P0 策略已实现，P1 认证 UI/专用 Key 分离待做，真实 Provider/条款/设备/邮件验收待完成",
-  "currentFocus": "Pro 诊断与 AI 帮助 P1：认证方式 UI、普通 API/Token Plan 与 Coding Plan 专用 Key 分离、条款/用途同意记录；P0 已对 Provider manifest、计费模式和 diagnostic_assistant 用途 fail-closed",
+  "head": "96bdd311",
+  "phase": "Full acceptance active; Pro 诊断与 AI 帮助 P0/P1 策略与 UI 已实现，独立复核和真实 Provider/条款/账号/设备/邮件验收待完成",
+  "currentFocus": "Pro 诊断与 AI 帮助：独立复核 P1 auth/profile boundary increment；随后仅在官方资料和端点核验后评估 OAuth/设备授权 P2",
   "status": "in-progress",
   "latestIncrement": {
-    "date": "2026-10-02",
-    "commit": "56895bc2",
-    "parentCommit": "4884e28e",
+    "date": "2026-10-03",
+    "commit": "96bdd311",
+    "parentCommit": "733c913cc",
     "scope": [
-      "entry/src/main/ets/services/diagnosticAi/DiagnosticAiModels.ets",
-      "entry/src/main/ets/services/diagnosticAi/DiagnosticAiProviderCatalog.ets",
-      "entry/src/main/ets/services/diagnosticAi/DiagnosticAiProfileStore.ets",
+      "entry/src/main/ets/components/diagnosticAi/DiagnosticAiAssistantPanel.ets",
+      "entry/src/main/ets/components/diagnosticAi/DiagnosticAiSettingsSheet.ets",
       "entry/src/main/ets/services/diagnosticAi/DiagnosticAiAuthPolicy.ets",
       "entry/src/main/ets/services/diagnosticAi/DiagnosticAiBillingPolicy.ets",
-      "entry/src/main/ets/services/diagnosticAi/DiagnosticAiUseCasePolicy.ets",
-      "entry/src/main/ets/services/diagnosticAi/DiagnosticAiAgentService.ets",
-      "entry/src/main/ets/components/diagnosticAi/DiagnosticAiSettingsSheet.ets",
-      "scripts/tests/test_diagnostic_ai_settings.cjs"
+      "entry/src/main/ets/services/diagnosticAi/DiagnosticAiModels.ets",
+      "entry/src/main/ets/services/diagnosticAi/DiagnosticAiProfileStore.ets",
+      "entry/src/main/ets/services/diagnosticAi/DiagnosticAiProviderCatalog.ets",
+      "entry/src/main/ets/services/diagnosticAi/DiagnosticAiSettingsPolicy.ets",
+      "scripts/tests/test_diagnostic_ai_settings.cjs",
+      "docs/codex/plans/2026-10-02-pro-diagnostic-ai-account-coding-plan-upgrade.md"
     ],
-    "status": "implemented-p0-auth-billing-use-case-manifest-gates; p1-auth-ui-and-coding-plan-key-separation-next",
+    "status": "implemented-p1-auth-mode-key-separation-consent-owner-rebind-and-fail-closed-coding-plan-boundaries",
     "reviewTaskId": "/root/diagnostic_ai_review",
-    "reviewResult": "PENDING; P0 policy increment has not received independent review",
-    "validation": "default@OhosTestCompileArkTS BUILD SUCCESSFUL 38.347 s; signed assembleHap BUILD SUCCESSFUL 51.381 s; git diff --check passed; diagnostic settings/memory/catalog/route/auth-billing-use-case policy tests PASS; optional ohosTest task 00306054 unavailable; P0 signed HAP install PASS on 127.0.0.1:5555, 192.168.31.118:40123 and 192.168.31.156:38451; real Provider/terms/account/device visual/mail acceptance not run"
+    "reviewResult": "PENDING; independent P1 review required",
+    "validation": "bundled DevEco TypeScript diagnostic settings test 6/6 PASS; isolated-cache default@OhosTestCompileArkTS BUILD SUCCESSFUL 25.289 s; signed assembleHap BUILD SUCCESSFUL 39.454 s; HAP 8c61efeb4a514de2a812cf647492298925b1cdc89d2b40e413e845083abdde4c installed with hdc install -r on three targets; optional ohosTest 00306054 unavailable; real Provider/terms/account/device visual/mail acceptance not run"
   },
-  "next": "继续账户登录/Coding Plan P1：认证方式选择与 API Key/Coding Plan Key 分离、条款和用途同意记录；OAuth/设备授权仅在官方资料和端点核验后接入。真实 Provider、账号、设备、邮件和生产权益仍保持开放边界。",
+  "next": "先完成 /root/diagnostic_ai_review 的 P1 独立复核并修复发现；OAuth/设备授权只在官方资料和端点核验后接入。真实 Provider、官方用途、账号切换实机、设备视觉、邮件和生产权益仍保持开放边界。",
   "blockers": [
     "Pad backup and Debug migration complete; same-account sandbox restore PASS without another payment. Remaining offline/cross-account and full protocol/device matrix remain open.",
     "M3/U0-U4 device matrix and M4 PC real Share Kit/SFTP file-integrity acceptance remain unverified.",
@@ -38,7 +39,8 @@
     "共享生成缓存曾出现 CMake scratch、Ninja 中断和临时 ArkTS manifest 校验问题；本轮使用项目隔离缓存重跑 default@OhosTestCompileArkTS 与 assembleHap 均 PASS，Provider/设备/邮件验收仍未完成。",
     "AI 会话管理和继续对话已完成代码门禁并安装到两台设备；需在设备上确认六行诊断卡片不再被反馈项截断、会话点击弹窗布局、原订阅恢复和实际 Provider 响应。",
     "本轮新增 typed appActions、settingProposals 与 execute/floating/inline 模式，需用真实 Provider 验证结构化动作/设置返回、敏感确认和三端执行动画；构建不能证明真实模型会返回动作或网络可达。",
-    "账户/Coding Plan P0 尚未完成独立复核；P1 OAuth/设备授权、官方用途和真实 Provider 条款核验未完成，Coding Plan 保持 review_required/experimental。"
+    "账户/Coding Plan P0 尚未完成独立复核；P1 OAuth/设备授权、官方用途和真实 Provider 条款核验未完成，Coding Plan 保持 review_required/experimental.",
+    "P1 auth/profile boundary increment 96bdd311 needs independent review; real Provider authorization, terms, account lifecycle, device visual and mail acceptance remain open."
   ],
   "planPaths": [
     "docs/codex/plans/2026-09-06-pro-purchase-foundation.md",
@@ -266,23 +268,33 @@
       "scripts/tests/test_pro_workspace.cjs",
       "scripts/tests/test_pro_workspace_capture.cjs",
       "scripts/tests/test_pro_workspace_launcher.cjs",
-      "entry/src/main/ets/components/ProWorkspaceEditorPanel.ets"
+      "entry/src/main/ets/components/ProWorkspaceEditorPanel.ets",
+      "entry/src/main/ets/components/diagnosticAi/DiagnosticAiAssistantPanel.ets",
+      "entry/src/main/ets/components/diagnosticAi/DiagnosticAiSettingsSheet.ets",
+      "entry/src/main/ets/services/diagnosticAi/DiagnosticAiAuthPolicy.ets",
+      "entry/src/main/ets/services/diagnosticAi/DiagnosticAiBillingPolicy.ets",
+      "entry/src/main/ets/services/diagnosticAi/DiagnosticAiModels.ets",
+      "entry/src/main/ets/services/diagnosticAi/DiagnosticAiProfileStore.ets",
+      "entry/src/main/ets/services/diagnosticAi/DiagnosticAiProviderCatalog.ets",
+      "entry/src/main/ets/services/diagnosticAi/DiagnosticAiSettingsPolicy.ets",
+      "scripts/tests/test_diagnostic_ai_settings.cjs",
+      "docs/codex/plans/2026-10-02-pro-diagnostic-ai-account-coding-plan-upgrade.md"
     ],
     "findings": [],
     "reviewedHead": "13413239bd7475539ade4deaae522a3d6a2e753e",
-    "reason": "Pro workspace/host-management editor checkpoint requires independent scoped review; concurrent SSH skin work remains outside this commit."
+    "reason": "P1 auth/profile boundary increment 96bdd311 changed the declared diagnostic-AI scope; independent review required before merge."
   },
   "lastVerification": {
-    "scope": "Remote AI pairing QR/link support plus current shared App tree",
-    "testCompile": "PASS exit 0; BUILD SUCCESSFUL in 1 min 18 s 466 ms",
-    "assembleHap": "PASS exit 0; BUILD SUCCESSFUL in 1 min 12 s 75 ms; SignHap 4 s 67 ms",
-    "release": "NOT RUN; this increment used the mandatory default assembleHap gate",
-    "hostChecks": "PASS Codex 30/30; DSH 14/14; Claude probe 3/3; local 9443/9444 and 9543/9544 reachable",
+    "scope": "P1 diagnostic AI auth/profile boundaries and current shared App tree",
+    "testCompile": "PASS exit 0; BUILD SUCCESSFUL in 25.289 s with REMOTE_DESKTOP_BUILD_CACHE_ROOT=.remotedesk-build-cache",
+    "assembleHap": "PASS exit 0; BUILD SUCCESSFUL in 39.454 s; SignHap 1.935 s",
+    "release": "NOT RUN; mandatory default assembleHap gate used",
+    "diagnosticTests": "PASS 6/6 with DevEco bundled TypeScript",
     "compliance": "PASS git diff --check",
-    "device": "NOT RUN for App pairing; host listener/panel checks are local-only and do not prove HarmonyOS LAN/device acceptance",
-    "progressRecordGates": "PASS with REMOTE_DESKTOP_BUILD_CACHE_ROOT=.remotedesk-build-cache; warnings only"
+    "device": "HAP 8c61efeb4a514de2a812cf647492298925b1cdc89d2b40e413e845083abdde4c install -r succeeded on 127.0.0.1:5555, 192.168.31.118:40123 and 192.168.31.156:38451; UI/provider/account/mail acceptance not run",
+    "optionalOhosTest": "UNAVAILABLE task 00306054 not registered"
   },
-  "updated": "2026-10-02",
+  "updated": "2026-10-03",
   "roadmapPaths": [
     "docs/codex/plans/2026-09-06-pro-product-roadmap.md",
     "docs/codex/plans/2026-09-07-pro-remote-ai-workspace.md"
