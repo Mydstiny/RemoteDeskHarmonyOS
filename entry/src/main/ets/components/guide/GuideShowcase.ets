@@ -221,7 +221,7 @@ export struct GuideShowcase {
 
   @Builder private primaryButton(fill: boolean) {
     Button(this.last() ? this.finishLabel : '下一步')
-      .height(this.embedded ? 42 : 48).fontSize(16).fontWeight(FontWeight.Medium).fontColor(Color.White)
+      .height(this.embedded ? 44 : 48).fontSize(16).fontWeight(FontWeight.Medium).fontColor(Color.White)
       .borderRadius(this.embedded ? 21 : 24)
       .linearGradient({ angle: 100, colors: [[this.light(this.currentHue()), 0], [this.currentHue(), 1]] })
       .padding({ left: 28, right: 28 })
@@ -274,12 +274,20 @@ export struct GuideShowcase {
           }.width('100%').padding({ left: this.embedded ? 22 : 40, right: this.embedded ? 22 : 40, top: 12,
             bottom: this.embedded ? 20 : 32 })
         } else {
+          // 上一步 sits beside the main button: a separate line at the very bottom fell under the system
+          // navigation bar and could not be tapped.
           Column({ space: 16 }) {
             this.dots()
-            this.primaryButton(true)
-            Text('上一步').fontSize(14).fontColor(this.index > 0 ? this.pal().text2 : Color.Transparent)
-              .onClick((): void => { this.previous(); })
-          }.width('100%').padding({ left: 24, right: 24, top: 8, bottom: this.embedded ? 14 : 22 })
+            Row({ space: 10 }) {
+              if (this.index > 0) {
+                Button('上一步').height(this.embedded ? 44 : 48).fontSize(15).fontColor(this.pal().text)
+                  .backgroundColor(this.pal().surface).borderRadius(this.embedded ? 22 : 24)
+                  .padding({ left: 20, right: 20 })
+                  .onClick((): void => { this.previous(); })
+              }
+              Column() { this.primaryButton(true) }.layoutWeight(1)
+            }.width('100%')
+          }.width('100%').padding({ left: 24, right: 24, top: 8, bottom: this.embedded ? 30 : 28 })
           .constraintSize({ maxWidth: 520 })
         }
       }.width('100%').height('100%')
@@ -395,7 +403,7 @@ export struct WhatsNewList {
       Text('可在「设置 → 教程 → 本版本更新日志」随时回看').fontSize(11).fontColor(this.pal().text3)
         .fontFamily(AppConfig.fontFamily).margin({ top: 10 })
     }
-    .width('100%').height('100%').padding({ left: 22, right: 22, top: 14, bottom: 20 })
+    .width('100%').height('100%').padding({ left: 22, right: 22, top: 14, bottom: 28 })
     .onAreaChange((_old: Area, area: Area): void => {
       const width: number = Number(area.width);
       if (width > 0 && Math.abs(width - this.areaWidth) > 1) { this.areaWidth = width; }

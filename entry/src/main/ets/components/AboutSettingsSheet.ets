@@ -197,6 +197,16 @@ export struct AboutSettingsSheet {
   }
 
   /** 「设置 → 教程 → Pro 功能介绍」: the same sheet the startup guide ends with. */
+  /**
+   * Phone sheet height that follows the window: a share of the usable height, within limits, so longer slides are
+   * not clipped on tall phones and the sheet still fits short ones.
+   */
+  private phoneSheetHeight(share: number, min: number, max: number): number {
+    const viewport: number = Number.isFinite(this.guideViewportHeight) && this.guideViewportHeight > 0 ?
+      this.guideViewportHeight : 720;
+    return Math.round(Math.max(min, Math.min(max, viewport * share)));
+  }
+
   @Builder proIntroSheet() {
     Column() {
       ProShowcase({
@@ -207,7 +217,7 @@ export struct AboutSettingsSheet {
       })
     }
     .width('100%')
-    .height(this.breakpoint === 'sm' ? 640 : 680)
+    .height(this.breakpoint === 'sm' ? this.phoneSheetHeight(0.88, 640, 820) : 680)
     .constraintSize({ maxWidth: 760 })
     .clip(true)
     .backgroundColor(this.pal().sheetBg)
@@ -228,7 +238,8 @@ export struct AboutSettingsSheet {
       })
     }
     .width('100%')
-    .height(this.breakpoint === 'sm' ? 600 : 500)
+    // Slides now carry up to four points; on phones the sheet follows the window instead of a fixed 600.
+    .height(this.breakpoint === 'sm' ? this.phoneSheetHeight(0.86, 600, 780) : 540)
     .constraintSize({ maxWidth: 760 })
     .clip(true)
     .backgroundColor(this.pal().sheetBg)

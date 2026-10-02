@@ -43,9 +43,8 @@ export struct ProShowcase {
 
   @Builder private hero() {
     Stack() {
-      // Deep plate with two soft glows, echoing the 星爆 badge.
-      Column().width('100%').height('100%')
-        .linearGradient({ angle: 150, colors: [['#1D2856', 0], ['#0B1028', 0.6], ['#121A3C', 1]] })
+      // Deep plate (the Stack's own gradient) with two soft glows, echoing the 星爆 badge. The glows are positioned,
+      // so only the text column sizes the hero.
       Column().width(320).height(320).position({ x: -120, y: -150 })
         .radialGradient({ center: ['50%', '50%'], radius: 160, colors: [['#553A5BC8', 0], ['#003A5BC8', 1]] })
       Column().width(260).height(260).position({ x: this.areaWidth - 180, y: 40 })
@@ -69,6 +68,7 @@ export struct ProShowcase {
       .animation({ duration: 420, curve: Curve.FastOutSlowIn })
     }
     .width('100%').borderRadius(26).clip(true)
+    .linearGradient({ angle: 150, colors: [['#1D2856', 0], ['#0B1028', 0.6], ['#121A3C', 1]] })
     .shadow({ radius: 24, color: '#401D2856', offsetY: 10 })
   }
 
@@ -139,7 +139,8 @@ export struct ProShowcase {
         .shadow({ radius: 16, color: tint(this.accent, '40'), offsetY: 6 })
         .onClick((): void => { this.onPrimary(); })
     }
-    .width('100%').height('100%').padding({ left: 20, right: 20, top: 10, bottom: 20 })
+    // Bottom room for the system navigation bar under sheets.
+    .width('100%').height('100%').padding({ left: 20, right: 20, top: 10, bottom: 28 })
     .onAreaChange((_old: Area, area: Area): void => {
       const width: number = Number(area.width);
       if (width > 0 && Math.abs(width - this.areaWidth) > 1) { this.areaWidth = width; }
