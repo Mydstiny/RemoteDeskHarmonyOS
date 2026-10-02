@@ -512,4 +512,6 @@ Phone / Pad / PC 每个平台都要验证：
 
 Provider 的结构化响应包含 `appActions`，解析器只接受动作注册表中的 ID，未知值直接丢弃；`recommendedReadOnlySteps` 仅作为旧 Provider 的文本回退映射。新增设置 Sheet、开关或协议工具栏能力时，必须同时登记动作 ID、展示名、执行模式、确认策略和 HostList/RemoteSessionTopBar 的现有回调，否则 Agent 只能解释该功能而不能生成可点击的模块卡片。页面重建后的待分析诊断包先重新绑定当前账号的 Profile/Asset Store 密钥，再决定显示配置引导；因此失败重试入口不会被“AI 未就绪”状态遮住。
 
+`settingProposals` 另有独立的可回滚布尔设置目录。应用在写入前读取实时 `AppStorage`，若 Provider 携带的 `currentValue` 已过期则拒绝应用并要求重新询问；凭据、密钥、主机地址、代理、TLS、付款和任意命令永远不进入该目录。
+
 新设置/协议/会话功能的 Definition of Done 必须包括：动作 ID、展示标签、能力门控、确认策略、知识库步骤、GuideContentRegistry 教程、隐私说明、用量归属和 Phone/Pad/PC 浮窗验收用例。个性化和用量弹窗必须按可用视口高度计算原生 Sheet 高度，内部只使用一个滚动容器，禁止固定高度截断设置项或让内容溢出遮罩层。

@@ -1,4 +1,5 @@
 import { diagnosticAiAppActionCatalog } from './DiagnosticAiAppActionPolicy';
+import { diagnosticAiSettingCatalog } from './DiagnosticAiSettingsActionPolicy';
 
 /**
  * RemoteDesktop AI 助手的本地知识基线。
@@ -7,7 +8,7 @@ import { diagnosticAiAppActionCatalog } from './DiagnosticAiAppActionPolicy';
  * 也不包含密码、主机地址、日志原文或用户资料。后续可以按版本拆成独立文档资源，
  * 但 Agent 必须始终带上知识版本，避免模型把过期操作当成当前 UI。
  */
-export const DIAGNOSTIC_AI_KNOWLEDGE_VERSION: string = 'RemoteDesktop-help-2026-10-02-v3';
+export const DIAGNOSTIC_AI_KNOWLEDGE_VERSION: string = 'RemoteDesktop-help-2026-10-02-v4';
 
 const KNOWLEDGE: string = [
   '产品：RemoteDesktop 是 HarmonyOS 的 RDP、RustDesk、SSH/SFTP、VNC、Moonlight 客户端。',
@@ -31,7 +32,9 @@ const KNOWLEDGE: string = [
   'Pro：AI 配置、AI 助手、设置建议和诊断分析属于 Pro；传统脱敏日志保留独立入口。权益失效或账号切换会取消请求并清理内存秘密。',
   '回答约束：先给直接答案，再给操作步骤；不确定时明确说明；不捏造设备、网络、Provider、付款或邮件发送结果。',
   '动作目录（只能从这里选择 appActions；mode=execute 执行后回到卡片，mode=floating 进入悬浮球，mode=inline 留在当前卡片；confirm 必须先让用户确认）：\n' +
-    diagnosticAiAppActionCatalog()
+    diagnosticAiAppActionCatalog(),
+  '可回滚设置目录（settingProposals 必须使用 ID、给出当前值/拟修改值/回滚值并要求用户确认；凭据、密钥、地址、TLS、代理和付款不在目录内）：\n' +
+    diagnosticAiSettingCatalog()
 ].join('\n');
 
 export function diagnosticAiKnowledgeSnapshot(): string {

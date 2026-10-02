@@ -5,7 +5,7 @@ import { http } from '@kit.NetworkKit';
 import { DiagnosticAiEvidenceRef, DiagnosticAiModelInfo, DiagnosticAiProviderManifest, DiagnosticAiProviderProfile, DiagnosticAiResult, DiagnosticAiSettingProposal } from './DiagnosticAiModels';
 import { diagnosticAiHarmonyLocalDeviceSupported, diagnosticAiProviderIsHarmonyLocal, diagnosticAiProviderManifest, HARMONY_LOCAL_MODEL_ID } from './DiagnosticAiProviderCatalog';
 import { validateDiagnosticAiEndpoint } from './DiagnosticAiEndpointPolicy';
-import { diagnosticAiProposalIsSafe } from './DiagnosticAiSettingsActionPolicy';
+import { diagnosticAiProposalIsSafe, diagnosticAiSettingCatalog } from './DiagnosticAiSettingsActionPolicy';
 import { diagnosticAiAppActionCatalog, diagnosticAiAppActionId } from './DiagnosticAiAppActionPolicy';
 
 const TIMEOUT_MS: number = 15000;
@@ -280,7 +280,7 @@ export class DiagnosticAiProviderService {
       '必须区分事实、假设和未知，不执行任何工具或设置操作。问题：' + input.question +
       '\n本地知识：' + input.knowledge + '\n诊断包：' + input.bundle;
     const messages: DiagnosticAiChatMessage[] = [
-      { role: 'system', content: '只输出 JSON，不要 Markdown。字段为 summary、severity(info/low/medium/high/unknown)、confidence(0到1)、evidenceRefs、hypotheses、recommendedReadOnlySteps、unknowns、settingProposals、appActions。appActions 只能使用知识中的动作目录 ID。settingProposals 每项必须包含 settingId、currentValue、proposedValue、reason、evidenceRefs、risk、requiresUserConfirmation=true、rollbackValue。只提出白名单且可回滚的设置。输出简洁、证据优先的诊断建议。' },
+      { role: 'system', content: '只输出 JSON，不要 Markdown。字段为 summary、severity(info/low/medium/high/unknown)、confidence(0到1)、evidenceRefs、hypotheses、recommendedReadOnlySteps、unknowns、settingProposals、appActions。appActions 只能使用知识中的动作目录 ID。settingProposals 每项必须使用下方设置目录 ID，包含 currentValue、proposedValue、reason、evidenceRefs、risk、requiresUserConfirmation=true、rollbackValue；只提出白名单且可回滚的设置。设置目录：\n' + diagnosticAiSettingCatalog() + '\n输出简洁、证据优先的诊断建议。' },
       { role: 'user', content: prompt }
     ];
     const body: DiagnosticAiChatBody = {
@@ -345,7 +345,8 @@ export class DiagnosticAiProviderService {
         '必须区分事实、建议和未知；不能执行工具、修改密码/密钥/网络安全配置、连接主机或发送邮件。' +
         '只输出 JSON，不要 Markdown。字段为 summary、severity(info/low/medium/high/unknown)、confidence(0到1)、evidenceRefs、hypotheses、recommendedReadOnlySteps、unknowns、settingProposals。' +
       'settingProposals 每项必须包含 settingId、currentValue、proposedValue、reason、evidenceRefs、risk、requiresUserConfirmation=true、rollbackValue；只提出应用白名单中的可回滚设置。' +
-      'appActions 只能填写下方动作目录中的 ID；不要输出路由、命令、AppStorage key 或自造动作。动作目录：\n' + diagnosticAiAppActionCatalog() },
+        'appActions 只能填写下方动作目录中的 ID；不要输出路由、命令、AppStorage key 或自造动作。动作目录：\n' + diagnosticAiAppActionCatalog() +
+        '\n设置目录：\n' + diagnosticAiSettingCatalog() },
       { role: 'user', content: prompt }
     ];
     const body: DiagnosticAiChatBody = { model: profile.modelId, stream: false, messages,
