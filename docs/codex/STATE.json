@@ -32,7 +32,7 @@
     "M5 RustDesk/VNC continuation commit 090be1411 passes focused tests and both mandatory Hvigor gates; real cross-device/device protocol acceptance remains unverified and aggregate review has no matching PASS receipt.",
     "Sandbox core device flow passed. Numeric-version publication, notification endpoint and formal merchant/product release remain open; worker timer disabled.",
     "RDP domain preflight checkpoints f06bcf620, b17d8d90 and d10db1076: direct/transparent hostname candidates are unified with the live FreeRDP transport after service reachability; testCompile and signed assembleHap pass; optional ohosTest task 00306054 is unavailable; real hostname/device certificate acceptance remains open.",
-    "本轮 Pro 诊断 AI 最新 assembleHap 仍未形成成功证据：共享生成缓存经历 CMake scratch、arm64 Ninja 中断和临时 ArkTS manifest 校验问题；需独占缓存重跑后再更新状态。"
+    "共享生成缓存曾出现 CMake scratch、Ninja 中断和临时 ArkTS manifest 校验问题；本轮使用项目隔离缓存重跑 default@OhosTestCompileArkTS 与 assembleHap 均 PASS，Provider/设备/邮件验收仍未完成。"
   ],
   "planPaths": [
     "docs/codex/plans/2026-09-06-pro-purchase-foundation.md",
@@ -264,14 +264,14 @@
     "reason": "Pro workspace/host-management editor checkpoint requires independent scoped review; concurrent SSH skin work remains outside this commit."
   },
   "lastVerification": {
-    "scope": "ad8c5d2ea RustDesk remote file explorer and delayed RDP file-station staging",
-    "testCompile": "PASS exit 0; BUILD SUCCESSFUL in 10 s 353 ms",
-    "assembleHap": "PASS exit 0; BUILD SUCCESSFUL in 15 s 874 ms; SignHap 1 s 479 ms",
+    "scope": "Remote AI pairing QR/link support plus current shared App tree",
+    "testCompile": "PASS exit 0; BUILD SUCCESSFUL in 1 min 18 s 466 ms",
+    "assembleHap": "PASS exit 0; BUILD SUCCESSFUL in 1 min 12 s 75 ms; SignHap 4 s 67 ms",
     "release": "NOT RUN; this increment used the mandatory default assembleHap gate",
-    "hostChecks": "PASS test_transfer_page_ownership 37; test_continuous_clipboard_page 11; test_pc_remote_clipboard_files 26",
+    "hostChecks": "PASS Codex 30/30; DSH 14/14; Claude probe 3/3; local 9443/9444 and 9543/9544 reachable",
     "compliance": "PASS git diff --check",
-    "device": "NOT RUN for this UI increment; prior HDC evidence remains bounded to compact RustDesk transfer-sheet observation",
-    "progressRecordGates": "PASS compile and signed assembleHap with REMOTE_DESKTOP_BUILD_CACHE_ROOT=.remotedesk-build-cache"
+    "device": "NOT RUN for App pairing; host listener/panel checks are local-only and do not prove HarmonyOS LAN/device acceptance",
+    "progressRecordGates": "PASS with REMOTE_DESKTOP_BUILD_CACHE_ROOT=.remotedesk-build-cache; warnings only"
   },
   "updated": "2026-10-02",
   "roadmapPaths": [
