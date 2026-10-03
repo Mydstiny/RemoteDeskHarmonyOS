@@ -178,7 +178,7 @@ export struct AiLiquidGlassButton {
   }
 
   @Builder private glyph() {
-    AiAssistantGlyph({ glyphSize: this.buttonSize * 0.66, ink: this.dark ? '#F2F2F7' : '#3C3C43' })
+    AiAssistantGlyph({ glyphSize: this.buttonSize * 0.66, ink: this.dark ? '#F2F2F7' : '#2C2C30' })
       .rotate({ angle: this.active ? this.turn : 0 })
   }
 
@@ -188,6 +188,10 @@ export struct AiLiquidGlassButton {
     if (this.dark) {
       Column().width(this.buttonSize).height(this.buttonSize).borderRadius(this.buttonSize / 2)
         .linearGradient({ angle: 180, colors: [['#2EFFFFFF', 0], ['#14FFFFFF', 0.55], ['#21FFFFFF', 1]] })
+    } else {
+      // Light mode: a white lens on a white page disappears, so the glass gets a faint cool-gray body.
+      Column().width(this.buttonSize).height(this.buttonSize).borderRadius(this.buttonSize / 2)
+        .linearGradient({ angle: 180, colors: [['#F2F7F8FA', 0], ['#E6E8EBF0', 0.6], ['#F0DDE1E8', 1]] })
     }
     Column().width(this.buttonSize).height(this.buttonSize).borderRadius(this.buttonSize / 2)
       .radialGradient({ center: ['50%', '92%'], radius: this.buttonSize * 0.6,
@@ -198,7 +202,7 @@ export struct AiLiquidGlassButton {
     Column().width(this.buttonSize).height(this.buttonSize).borderRadius(this.buttonSize / 2)
       .border({ width: this.dark ? 0.8 : { top: 1.2, left: 0.8, right: 0.8, bottom: 1 },
         color: this.dark ? { top: '#4DFFFFFF', left: '#2EFFFFFF', right: '#2EFFFFFF', bottom: '#3DFFFFFF' } :
-          { top: '#FFFFFFFF', left: '#24000000', right: '#24000000', bottom: '#F2FFFFFF' } })
+          { top: '#29000000', left: '#24000000', right: '#24000000', bottom: '#33000000' } })
   }
 
   build() {
