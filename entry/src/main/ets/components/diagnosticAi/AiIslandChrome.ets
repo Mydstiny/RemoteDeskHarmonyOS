@@ -21,6 +21,7 @@ export struct AiIslandGlass {
   @Prop radius: number = 29;
 
   private tall(): boolean { return this.glassHeight > 90; }
+  private dense(): boolean { return this.glassHeight > 320; }
 
   build() {
     Stack({ alignContent: Alignment.Bottom }) {
@@ -28,8 +29,12 @@ export struct AiIslandGlass {
         // As Siri's: one piece of smoky glass over a strong blur of the page, darkest only where it grows out of the
         // Dynamic Island (top center) and lighter everywhere else, so the page stays faintly visible through it.
         Column().width(this.glassWidth).height(this.glassHeight).backdropBlur(26)
+        // A tall card is mostly reading (a long answer, a chat): the glass stays dark all the way down so text and the
+        // input bar keep their contrast; a short card keeps Siri's see-through foot.
         Column().width(this.glassWidth).height(this.glassHeight)
-          .linearGradient({ angle: 180, colors: [['#B3050506', 0], ['#990A0A0C', 0.55], ['#6B121214', 1]] })
+          .linearGradient({ angle: 180, colors: this.dense() ?
+            [['#E6050506', 0], ['#DB0A0A0C', 0.55], ['#CF121214', 1]] :
+            [['#B3050506', 0], ['#990A0A0C', 0.55], ['#6B121214', 1]] })
         Column().width(this.glassWidth).height(this.glassHeight)
           .radialGradient({ center: ['50%', 0], radius: Math.max(this.glassWidth * 0.62, this.glassHeight * 0.7),
             colors: [['#FA000000', 0], ['#C7000000', 0.3], ['#59000000', 0.65], ['#00000000', 1]] })

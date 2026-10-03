@@ -16,7 +16,7 @@ import { AiTriageOption, AiTriageQuestion, AiTriageScript, DiagnosticAiHostBridg
 import { DiagnosticAiCaptureOrchestrator } from '../../services/diagnosticAi/DiagnosticAiCaptureOrchestrator';
 import { DiagnosticAiProfileStore } from '../../services/diagnosticAi/DiagnosticAiProfileStore';
 import { diagnosticAiProviderIsHarmonyLocal } from '../../services/diagnosticAi/DiagnosticAiProviderCatalog';
-import { DiagnosticAiProviderService } from '../../services/diagnosticAi/DiagnosticAiProviderService';
+import { DiagnosticAiProviderService, diagnosticAiEstimateTokens } from '../../services/diagnosticAi/DiagnosticAiProviderService';
 import { AI_MODE_MODELS, AI_REQUEST_AUTH, AI_REQUEST_NETWORK, AI_REQUEST_RATE_LIMIT, AI_REQUEST_SERVER, AI_REQUEST_TIMEOUT, AiRequestRecord, DiagnosticAiRequestLog, diagnosticAiErrorCategory, diagnosticAiRequestCategoryLabel, recordAiConfigProblem } from '../../services/diagnosticAi/DiagnosticAiRequestLog';
 import { DiagnosticAiAgentMode, DiagnosticAiAgentService, diagnosticAiAgentModeForQuestion, diagnosticAiAgentModeLabel } from '../../services/diagnosticAi/DiagnosticAiAgentService';
 import { diagnosticAiMailDraft } from '../../services/diagnosticAi/DiagnosticAiMailPolicy';
@@ -28,6 +28,10 @@ import { AccountSessionCoordinator } from '../../services/AccountSessionCoordina
 import { DiagnosticAiAppAction, DiagnosticAiAppActionId, diagnosticAiAppActionLabel, diagnosticAiAppActionRequiresConfirmation, diagnosticAiAppActionsForSteps } from '../../services/diagnosticAi/DiagnosticAiAppActionPolicy';
 import { DiagnosticAiAssistantPreferences, DiagnosticAiConversationSession, DiagnosticAiConversationStore, DiagnosticAiConversationTurn } from '../../services/diagnosticAi/DiagnosticAiConversationStore';
 import { DiagnosticAiModelCatalog } from '../../services/diagnosticAi/DiagnosticAiModelCatalog';
+import { AI_CHAT_HEADER_HEIGHT, AiChatMemory, AiChatView } from './AiChatView';
+import { AiSegmented } from './AiSegmented';
+import { aiRouteSuggestion } from '../../services/diagnosticAi/AiChatRoutePolicy';
+import { AI_CHAT_REFRESH_KEY } from '../../services/diagnosticAi/AiShareInbox';
 
 /** A suggested question shown as a pill in the island; it follows what the user is asking about. */
 class AiSuggestion {
@@ -168,6 +172,8 @@ class AiConversationMemory {
   static sessionId: string = '';
   /** The latest full answer, so the island can show an exchange that happened in the orb's mini chat. */
   static lastResult: DiagnosticAiResult | null = null;
+  /** A saved conversation was chosen in 对话记录: the next assistant panel opens on it. */
+  static resumeRequested: boolean = false;
 
   static clear(owner: string): void {
     AiConversationMemory.owner = owner;
@@ -178,8 +184,10 @@ class AiConversationMemory {
     AiConversationMemory.pendingDiagnose = '';
     AiConversationMemory.sessionId = '';
     AiConversationMemory.lastResult = null;
+    AiConversationMemory.resumeRequested = false;
   }
 }
+
 
 /** A topic the pills follow: its keywords and the questions to suggest for it. */
 class AiTopic {
@@ -285,6 +293,8 @@ export struct DiagnosticAiAssistantPanel {
   onCardSize: (width: number, height: number) => void = (_width: number, _height: number): void => {};
   /** The orb's mini chat: open the full assistant (something there needs the user's tap). */
   onExpand: () => void = (): void => {};
+  /** Shrink the island into the floating orb (聊天's 缩成悬浮球). */
+  onFloat: () => void = (): void => {};
   @State private pulse: boolean = false;
   @State private captureBytes: number = 0;
   onClose: () => void = (): void => {};
@@ -367,6 +377,14 @@ export struct DiagnosticAiAssistantPanel {
   /** Settings changed from this answer, newest last: each can be put back with one tap. */
   @State private undoable: AiUndo[] = [];
   @State private pendingAppAction: DiagnosticAiAppActionId | null = null;
+  /** 聊天模式: the island shows the general chat (AiChatView) instead of the app assistant. */
+  @State private chatMode: boolean = false;
+  /** The chat is waiting for an answer (drives the edge glow like the assistant's own work). */
+  @State private chatBusy: boolean = false;
+  /** A question that looks like one for 聊天, waiting for the user's choice. */
+  @State private routeQuestion: string = '';
+  private routeBypass: string = '';
+  @StorageProp(AI_CHAT_REFRESH_KEY) @Watch('onChatRefresh') chatRefresh: number = 0;
   private suggestionTimer: number = -1;
   private readonly capture: DiagnosticAiCaptureOrchestrator = DiagnosticAiCaptureOrchestrator.getInstance();
   private readonly agent: DiagnosticAiAgentService = new DiagnosticAiAgentService();
@@ -411,8 +429,29 @@ export struct DiagnosticAiAssistantPanel {
     }
   }
 
+  /**
+   * A conversation chosen in 对话记录 opens where it ended: earlier exchanges above, its last answer as the current
+   * answer, the input bar ready for the next question (same session, same subscription).
+   */
+  private applyRequestedResume(): void {
+    if (!AiConversationMemory.resumeRequested || this.busy || this.capturing()) { return; }
+    AiConversationMemory.resumeRequested = false;
+    const turns: AiTurn[] = AiConversationMemory.turns;
+    if (turns.length === 0 || AiConversationMemory.lastResult === null) { return; }
+    this.sessionId = AiConversationMemory.sessionId;
+    this.conversation = AiConversationMemory.history;
+    this.turns = turns.slice(0, turns.length - 1);
+    this.question = turns[turns.length - 1].question;
+    this.questionLabel = '';
+    this.result = AiConversationMemory.lastResult;
+    this.awaitingCapture = false; this.triage = null; this.triageCurrent = null; this.triageNote = '';
+    this.appliedActions = []; this.undoable = [];
+    this.agentMode = 'answer';
+  }
+
   private refreshReady(): void {
     this.catchUpConversation();
+    if (!this.mini) { this.applyRequestedResume(); }
     if (!this.mini && AiConversationMemory.pendingDiagnose !== '' && !this.busy && !this.capturing()) {
       const pending: string = AiConversationMemory.pendingDiagnose;
       AiConversationMemory.pendingDiagnose = '';
@@ -485,6 +524,7 @@ export struct DiagnosticAiAssistantPanel {
     this.conversationStore.init(getContext(this) as common.UIAbilityContext, this.owner);
     this.modelCatalog.init(getContext(this) as common.UIAbilityContext, this.owner);
     if (AiConversationMemory.owner !== this.owner) { AiConversationMemory.clear(this.owner); }
+    this.chatMode = this.siriMode && !this.mini && AiChatMemory.active;
     this.refreshReady();
     this.assistantPreferences = this.conversationStore.assistantPreferences();
     const resumed: DiagnosticAiConversationSession | undefined = this.resumeSessionId.trim() === '' ? undefined :
@@ -492,7 +532,7 @@ export struct DiagnosticAiAssistantPanel {
     if (resumed !== undefined) {
       this.sessionId = resumed.id;
       this.turns = resumed.turns.map((turn): AiTurn => new AiTurn(turn.question, turn.answer));
-      this.conversation = this.turns.map((turn: AiTurn): string => '\\n用户：' + turn.question + '\\n助手：' + turn.answer).join('').slice(-8000);
+      this.conversation = aiConversationText(this.turns);
       AiConversationMemory.owner = this.owner;
       AiConversationMemory.turns = this.turns.slice();
       AiConversationMemory.history = this.conversation;
@@ -502,6 +542,7 @@ export struct DiagnosticAiAssistantPanel {
       this.sessionId = AiConversationMemory.sessionId;
       this.conversation = AiConversationMemory.history;
       this.turns = AiConversationMemory.turns.slice();
+      if (!this.mini) { this.applyRequestedResume(); }
     }
     if (this.mini) {
       // The mini chat opens on the conversation's latest answer.
@@ -550,6 +591,11 @@ export struct DiagnosticAiAssistantPanel {
     this.captureLive = snapshot.phase === 'capturing';
     this.eventCount = snapshot.eventCount; this.elapsed = snapshot.durationMinutes * 60 - snapshot.remainingSeconds;
     this.captureBytes = snapshot.approximateBytes;
+    // The orb's small chat only shows the capture; the island's own panel ends and analyses it.
+    if (this.mini) {
+      if (snapshot.phase === 'capturing') { this.pulse = !this.pulse; }
+      return;
+    }
     this.reportActivity();
     if (snapshot.phase === 'capturing') {
       if (this.reproduceRunning) {
@@ -604,9 +650,54 @@ export struct DiagnosticAiAssistantPanel {
 
   private capturing(): boolean { return this.capture.status().phase === 'capturing'; }
 
+  /** A share or a resumed chat arrived: open in the mode it asked for. */
+  private onChatRefresh(): void {
+    // A chat answer may land while the island floats: the orb stops thinking.
+    this.chatBusy = AiChatMemory.requestId !== '';
+    this.reportActivity();
+    if (!this.siriMode || this.mini || this.busy || this.capturing()) { return; }
+    this.chatMode = AiChatMemory.active;
+  }
+
+  /**
+   * 助理 ⇄ 聊天, only ever on the user's tap. A question handed over is asked on the other side right away (the chat
+   * asks it when it shows; here it goes through the usual triage and capture path).
+   */
+  private switchMode(mode: string, question: string): void {
+    if (this.busy || this.capturing() || this.chatBusy) { return; }
+    this.routeQuestion = '';
+    if (mode === 'chat') {
+      AiChatMemory.active = true;
+      if (question !== '') {
+        AiChatMemory.handoff = question;
+        if (this.result === null) { this.question = ''; } else { this.draftQuestion = ''; }
+      }
+      this.getUIContext().animateTo({ curve: curves.springMotion(0.42, 0.86) }, (): void => { this.chatMode = true; });
+      return;
+    }
+    AiChatMemory.active = false;
+    this.getUIContext().animateTo({ curve: curves.springMotion(0.42, 0.86) }, (): void => { this.chatMode = false; });
+    if (question === '') { return; }
+    this.routeBypass = question;
+    if (this.result !== null) { this.draftQuestion = question; this.submitDraftQuestion(); }
+    else { this.question = question; this.submitQuestion(); }
+  }
+
+  /** In 助理, a general task (writing, a document) is better in 聊天: suggest it, and wait for the tap. */
+  private suggestChat(question: string): boolean {
+    const value: string = question.trim();
+    if (!this.siriMode || this.mini || value === '' || this.routeBypass === value ||
+      aiRouteSuggestion(value, 'assistant', false) !== 'chat') {
+      return false;
+    }
+    try { inputMethod.getController().hideTextInput(); } catch (_error) { /* keyboard already down */ }
+    this.getUIContext().animateTo({ curve: curves.springMotion(0.42, 0.86) }, (): void => { this.routeQuestion = value; });
+    return true;
+  }
+
   private reportActivity(): void {
     if (!this.alive) { return; }
-    const active: boolean = this.busy || this.capturing();
+    const active: boolean = this.busy || this.capturing() || this.chatBusy === true;
     if (active !== this.lastActive) { this.lastActive = active; this.onActivityChanged(active); }
   }
   private sizeText(): string {
@@ -761,6 +852,7 @@ export struct DiagnosticAiAssistantPanel {
       const currentOwner: string = currentScope.ownerScopeId.trim() === '' ? 'device-local' : currentScope.ownerScopeId;
       if (requestGeneration === this.lifecycleGeneration && currentOwner === requestOwner) {
         this.status = this.errorText(error);
+        this.recordRequestFailure(selectedProfile);
       }
     } finally { this.busy = false; this.reportActivity(); }
   }
@@ -1142,6 +1234,11 @@ export struct DiagnosticAiAssistantPanel {
 
   private shownQuestion(): string { return this.questionLabel !== '' ? this.questionLabel : this.question; }
 
+  /** A failed request still counts in 用量监控 (as a failure of its subscription, without tokens). */
+  private recordRequestFailure(profile: DiagnosticAiProviderProfile): void {
+    try { this.conversationStore.recordFailure(profile.providerId, profile.modelId); } catch (_error) { /* usage only */ }
+  }
+
   /**
    * The log analysis comes as a new message: the answer the capture plan came with moves up into the conversation,
    * the thinking row takes its place, and the analysis appears below it when it is ready.
@@ -1355,6 +1452,7 @@ export struct DiagnosticAiAssistantPanel {
       this.status = '诊断完成；请查看证据、建议和可选操作。';
     } catch (error) {
       this.status = this.errorText(error) + '；诊断包已保留，可点击「重试分析」';
+      this.recordRequestFailure(selectedProfile);
     } finally { this.busy = false; this.reportActivity(); }
   }
 
@@ -1628,6 +1726,8 @@ export struct DiagnosticAiAssistantPanel {
 
   private submitQuestion(): void {
     if (this.question.trim() === '' || this.busy || this.capturing()) { return; }
+    if (this.suggestChat(this.question)) { return; }
+    this.routeBypass = '';
     try { inputMethod.getController().hideTextInput(); } catch (_error) { /* keyboard already down */ }
     const mode = diagnosticAiAgentModeForQuestion(this.question);
     this.agentMode = mode;
@@ -1652,6 +1752,8 @@ export struct DiagnosticAiAssistantPanel {
   private submitDraftQuestion(): void {
     const value: string = this.draftQuestion.trim();
     if (value === '' || this.busy || this.capturing()) { return; }
+    // The answer stays on screen while the suggestion waits.
+    if (this.suggestChat(value)) { return; }
     if (this.result !== null) {
       this.turns = this.turns.concat([new AiTurn(this.shownQuestion(), (this.result as DiagnosticAiResult).summary)]);
     }
@@ -1672,6 +1774,7 @@ export struct DiagnosticAiAssistantPanel {
 
   /** Refresh the pills shortly after typing pauses; only a change of topic swaps them. */
   private followTyping(text: string): void {
+    if (this.routeQuestion !== '') { this.routeQuestion = ''; }
     if (this.suggestionTimer >= 0) { clearTimeout(this.suggestionTimer); }
     this.suggestionTimer = setTimeout((): void => {
       this.suggestionTimer = -1;
@@ -1799,29 +1902,40 @@ export struct DiagnosticAiAssistantPanel {
     }
     AiConversationMemory.sessionId = this.sessionId;
     AiConversationMemory.lastResult = result;
+    // Earlier turns keep their own time and kind; only the new turn is stamped now. The title is the conversation's
+    // first question, not whatever was asked last.
+    const previous: DiagnosticAiConversationSession | undefined = this.conversationStore.session(this.sessionId);
+    const allTurns: AiTurn[] = this.turns.concat([new AiTurn(this.shownQuestion(), result.summary)]);
+    const turns: DiagnosticAiConversationTurn[] = allTurns.map((turn: AiTurn, index: number): DiagnosticAiConversationTurn => {
+      const known: DiagnosticAiConversationTurn | undefined = previous !== undefined && index < previous.turns.length &&
+        previous.turns[index].question === turn.question.slice(0, 4000) ? previous.turns[index] : undefined;
+      return { question: turn.question.slice(0, 4000), answer: turn.answer.slice(0, 6000),
+        mode: known !== undefined ? known.mode : this.agentMode, createdAt: known !== undefined ? known.createdAt : now };
+    });
+    const firstQuestion: string = allTurns.length > 0 ? allTurns[0].question : this.question;
     const session: DiagnosticAiConversationSession = {
       id: this.sessionId,
-      title: this.question.trim().slice(0, 40) || 'AI 对话',
-      createdAt: now,
+      title: previous !== undefined && previous.title !== '' ? previous.title :
+        (firstQuestion.trim().replace(/\s+/g, ' ').slice(0, 40) || 'AI 对话'),
+      createdAt: previous !== undefined ? previous.createdAt : now,
       updatedAt: now,
       providerId: profile.providerId,
       modelId: profile.modelId,
-      turns: this.turns.concat([new AiTurn(this.shownQuestion(), result.summary)]).map((turn: AiTurn): DiagnosticAiConversationTurn => ({
-        question: turn.question.slice(0, 4000), answer: turn.answer.slice(0, 6000), mode: this.agentMode, createdAt: now
-      }))
+      turns: turns
     };
-    const previous: DiagnosticAiConversationSession | undefined = this.conversationStore.session(this.sessionId);
-    if (previous !== undefined) { session.createdAt = previous.createdAt; }
     this.conversationStore.saveSession(session);
-    const estimatedPromptTokens: number = Math.ceil((this.question.length + this.conversation.length + this.latestBundleText.length) / 4);
-    const estimatedCompletionTokens: number = Math.ceil(result.summary.length / 4);
-    const promptTokens: number = result.usage === undefined ? estimatedPromptTokens : result.usage.promptTokens;
-    const completionTokens: number = result.usage === undefined ? estimatedCompletionTokens : result.usage.completionTokens;
+    // Tokens as the provider reported them; when it reported none, the provider service estimated them from
+    // everything actually sent (system prompt and knowledge included), and the row is marked as estimated.
+    const fallbackPrompt: number = diagnosticAiEstimateTokens(this.question + this.conversation + this.latestBundleText);
+    const fallbackCompletion: number = diagnosticAiEstimateTokens(result.summary);
+    const promptTokens: number = result.usage === undefined ? fallbackPrompt : result.usage.promptTokens;
+    const completionTokens: number = result.usage === undefined ? fallbackCompletion : result.usage.completionTokens;
     const cachedTokens: number = result.usage === undefined ? 0 : result.usage.cachedTokens;
+    const estimated: boolean = result.usage === undefined || result.usage.estimated === true;
     const estimatedCost: number = this.modelCatalog.estimateCost(profile.providerId, profile.modelId,
       promptTokens, completionTokens, cachedTokens);
     this.conversationStore.recordUsage(promptTokens, completionTokens, cachedTokens, estimatedCost,
-      profile.providerId, profile.modelId);
+      profile.providerId, profile.modelId, estimated);
     // Show the new answer from its start (its question at the top), not the end of the conversation.
     setTimeout((): void => {
       if (this.turns.length > 0) { this.answerScroller.scrollTo({ xOffset: 0, yOffset: this.answerAnchorY }); }
@@ -2000,16 +2114,90 @@ export struct DiagnosticAiAssistantPanel {
     }.width('100%')
   }
 
+  /** The mode switch can be used: not while anything runs or a troubleshooting run waits for answers. */
+  private modeSwitchable(): boolean {
+    return !this.busy && !this.chatBusy && !this.captureLive && this.triage === null && !this.awaitingCapture;
+  }
+
+  /**
+   * The card: 助理 or 聊天, and over both the one 助理 | 聊天 switch, so its thumb slides from one to the other while
+   * the content slides out one way and in the other.
+   */
   @Builder private siriCardBody() {
     if (!this.aiReady && this.result === null && !this.busy && !this.captureLive && this.pendingCaptureId === '') {
       this.setupGuide()
     } else {
-      this.chatBody()
+      Stack({ alignContent: Alignment.TopStart }) {
+        if (this.chatMode) {
+          Column() {
+            AiChatView({
+              revealed: this.revealed,
+              bodyLimit: this.cardBodyLimit(),
+              deviceClass: this.deviceClass,
+              owner: this.owner,
+              onSwitchMode: (mode: string, question: string): void => { this.switchMode(mode, question); },
+              onActivityChanged: (active: boolean): void => { this.chatBusy = active; this.reportActivity(); },
+              onFloat: (): void => { this.onFloat(); },
+              onOpenSkills: (): void => { this.onAppAction('diagnosticAi.skills'); }
+            })
+          }.width('100%')
+          .transition(TransitionEffect.asymmetric(
+            TransitionEffect.OPACITY.combine(TransitionEffect.translate({ x: 36 }))
+              .animation({ curve: curves.springMotion(0.42, 0.86) }),
+            TransitionEffect.OPACITY.combine(TransitionEffect.translate({ x: 36 })).animation({ duration: 160, curve: Curve.EaseIn })))
+        } else {
+          Column() { this.chatBody() }.width('100%')
+            .transition(TransitionEffect.asymmetric(
+              TransitionEffect.OPACITY.combine(TransitionEffect.translate({ x: -36 }))
+                .animation({ curve: curves.springMotion(0.42, 0.86) }),
+              TransitionEffect.OPACITY.combine(TransitionEffect.translate({ x: -36 })).animation({ duration: 160, curve: Curve.EaseIn })))
+        }
+        if (!this.captureLive) {
+          Row() {
+            AiSegmented({ options: [['assistant', '助理'], ['chat', '聊天']], current: this.chatMode ? 'chat' : 'assistant',
+              switchable: this.modeSwitchable(), segmentWidth: 58, segmentHeight: 28, labelSize: 13,
+              trackColor: '#2E3A3A3C', thumbColor: '#F2F2F7', textColor: '#000000', mutedColor: '#C7C7CC',
+              onPick: (mode: string): void => { this.switchMode(mode, ''); } })
+          }.height(AI_CHAT_HEADER_HEIGHT).alignItems(VerticalAlign.Center)
+        }
+      }.width('100%')
     }
+  }
+
+  /** 助理 got a general task: offer 聊天 for it (the user decides). */
+  @Builder private chatRouteCard() {
+    Column({ space: 10 }) {
+      Text('这个问题更适合聊天模式').fontSize(15).fontWeight(FontWeight.Medium).fontColor('#FFFFFF').width('100%')
+      Text('聊天模式可以写作、翻译、总结，还能读你添加的文档、生成 Word 和 Excel；助理只处理 RemoteDesktop 的连接、设置和诊断。')
+        .fontSize(13).lineHeight(19).fontColor('#8E8E93').width('100%')
+      Row({ space: 8 }) {
+        this.plainPill('切到聊天', true, (): void => { this.switchMode('chat', this.routeQuestion); })
+        this.plainPill('就在这里问', false, (): void => {
+          const question: string = this.routeQuestion;
+          this.routeBypass = question;
+          this.routeQuestion = '';
+          if (this.result !== null) { this.draftQuestion = question; this.submitDraftQuestion(); }
+          else { this.question = question; this.submitQuestion(); }
+        })
+      }.width('100%')
+    }.width('100%').padding(14).borderRadius(22).backgroundColor('#F01C1C1F')
+    .border({ width: 0.5, color: '#1FFFFFFF' })
+    .transition(this.functionCardTransition())
   }
 
   @Builder private chatBody() {
     Column({ space: 12 }) {
+      // 助理 | 聊天, and (after a reply) the expand control, as in Siri.
+      if (!this.captureLive) {
+        // The switch of siriCardBody sits over this row's left end.
+        Row({ space: 8 }) {
+          Blank()
+          if (this.result !== null) {
+            Text(this.turns.length > 0 ? (this.turns.length + 1).toString() + ' 轮' : '').fontSize(12).fontColor('#8E8E93')
+            this.expandButton()
+          }
+        }.width('100%').height(AI_CHAT_HEADER_HEIGHT)
+      }
       // First question: Siri's text mode — typed straight into the card in large type, no field around it.
       if (this.result === null && !this.captureLive && !this.busy && !this.awaitingCapture && this.triage === null) {
         // A hair space keeps the placeholder clear of the caret, which sits before the first character.
@@ -2027,21 +2215,14 @@ export struct DiagnosticAiAssistantPanel {
             // While the island is still a capsule the keyboard would jump in front of it; onRevealed focuses later.
             if (this.revealed) { this.focusQuestion(); }
           })
-      } else {
-        if (this.result !== null) {
-          // The conversation scrolls below; the corner keeps the expand control, as in Siri.
-          Row() {
-            Text(this.turns.length > 0 ? '对话 · ' + (this.turns.length + 1).toString() + ' 轮' : '')
-              .fontSize(12).fontColor('#8E8E93').layoutWeight(1)
-            this.expandButton()
-          }.width('100%')
-        } else {
-          Text(this.question).fontSize(17).lineHeight(23).fontColor('#FFFFFF').width('100%').maxLines(3)
-            .textOverflow({ overflow: TextOverflow.Ellipsis })
-        }
+      } else if (this.result === null) {
+        Text(this.question).fontSize(17).lineHeight(23).fontColor('#FFFFFF').width('100%').maxLines(3)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
       }
       // Suggestions and the send button belong to asking; while troubleshooting questions are answered by tapping.
-      if (this.revealed && this.result === null && !this.captureLive && !this.busy && !this.awaitingCapture &&
+      if (this.routeQuestion !== '' && this.result === null && !this.busy && !this.captureLive) {
+        this.chatRouteCard()
+      } else if (this.revealed && this.result === null && !this.captureLive && !this.busy && !this.awaitingCapture &&
         this.triage === null) {
         Row({ space: 10 }) {
           Flex({ wrap: FlexWrap.Wrap, justifyContent: FlexAlign.Start }) {
@@ -2170,6 +2351,8 @@ export struct DiagnosticAiAssistantPanel {
             this.pill('取消', false, (): void => { this.pendingAppAction = null; this.status = '已取消操作'; })
           }.width('100%')
           .transition(this.pillTransition(0))
+        } else if (this.routeQuestion !== '' && !this.busy) {
+          this.chatRouteCard()
         } else if (this.revealed && this.draftQuestion.trim() !== '') {
           Flex({ wrap: FlexWrap.Wrap, justifyContent: FlexAlign.Start }) {
             ForEach(this.suggestions, (item: AiSuggestion, index: number): void => {
@@ -2288,7 +2471,18 @@ export struct DiagnosticAiAssistantPanel {
 
   @Builder private miniLayout() {
     Column({ space: 10 }) {
-      if (this.busy) {
+      if (this.captureLive) {
+        // A capture runs (the small chat was opened from the island's own orb): how far it is, and the way back.
+        Row({ space: 8 }) {
+          Circle().width(7).height(7).fill('#FF453A')
+            .opacity(this.pulse ? 1 : 0.35).animation({ duration: 480, curve: Curve.EaseInOut })
+          Text('正在抓取 · ' + this.eventCount.toString() + ' 条事件 · ' + this.elapsed.toString() + ' 秒')
+            .fontSize(14).fontColor('#C7C7CC').layoutWeight(1)
+        }.width('100%')
+        .transition(this.miniTransition())
+        Text('复现完问题后，展开主对话点「结束并分析」。').fontSize(13).lineHeight(19).fontColor('#8E8E93').width('100%')
+        this.miniExpandPill('展开主对话')
+      } else if (this.busy) {
         Row({ space: 10 }) {
           AiThinkingIndicator({ indicatorSize: 26 })
           Text(this.pendingCaptureId !== '' ? '正在分析日志…' : '正在思考…').fontSize(14).fontColor('#C7C7CC')
@@ -2434,4 +2628,29 @@ export struct DiagnosticAiAssistantPanel {
     }.width('100%').height('100%').padding(this.embedded ? 0 : 20)
     .backgroundColor(this.embedded ? Color.Transparent : this.pal().sheetBg)
   }
+}
+
+/** The conversation text the model reads for a list of exchanges. */
+function aiConversationText(turns: AiTurn[]): string {
+  return turns.map((turn: AiTurn): string => '\n用户：' + turn.question + '\n助手：' + turn.answer).join('').slice(-8000);
+}
+
+/**
+ * Continue a saved conversation (对话记录): it becomes the assistant's current conversation, its last answer the
+ * answer on screen, and the next question goes on from there on the same session.
+ */
+export function diagnosticAiResumeSession(owner: string, session: DiagnosticAiConversationSession): void {
+  const turns: AiTurn[] = session.turns.map((turn: DiagnosticAiConversationTurn): AiTurn => new AiTurn(turn.question, turn.answer));
+  AiConversationMemory.owner = owner;
+  AiConversationMemory.sessionId = session.id;
+  AiConversationMemory.turns = turns;
+  AiConversationMemory.history = aiConversationText(turns);
+  AiConversationMemory.pendingQuestion = '';
+  AiConversationMemory.pendingDiagnose = '';
+  const last: DiagnosticAiConversationTurn | undefined = session.turns.length > 0 ? session.turns[session.turns.length - 1] : undefined;
+  AiConversationMemory.lastResult = last === undefined ? null : {
+    summary: last.answer, severity: 'info', confidence: 0, evidenceRefs: [], hypotheses: [], recommendedReadOnlySteps: [],
+    unknowns: [], settingProposals: [], appActions: [], knowledgeVersion: '', createdAt: last.createdAt
+  };
+  AiConversationMemory.resumeRequested = last !== undefined;
 }

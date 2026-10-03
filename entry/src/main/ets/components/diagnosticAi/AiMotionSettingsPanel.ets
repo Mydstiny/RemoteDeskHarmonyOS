@@ -3,6 +3,7 @@ import { AI_MOTION_DONE, AI_MOTION_KINDS, AI_MOTION_OPEN, AI_MOTION_ORB, AI_MOTI
   AI_MOTION_THINKING, AiMotionKind, AiMotionOption, DiagnosticAiMotionStore } from '../../services/diagnosticAi/DiagnosticAiMotionPolicy';
 import { AiDoneMark, AiFloatingOrb, AiIslandRingsCheck, AiOpenPreview, AiThinkingIndicator } from './AiMotionViews';
 import { AiSendButton } from './AiIslandChrome';
+import { AiSegmented } from './AiSegmented';
 
 /**
  * AI 动效: one section per kind of motion, its styles side by side as small dark tiles that play the motion live.
@@ -109,15 +110,10 @@ export struct AiMotionSettingsPanel {
   }
 
   @Builder private speedRow(kind: AiMotionKind) {
-    Row({ space: 6 }) {
-      ForEach(kind.options, (option: AiMotionOption): void => {
-        Text(option.label).fontSize(14).fontWeight(FontWeight.Medium)
-          .fontColor(this.speed === option.id ? Color.White : this.pal().text)
-          .layoutWeight(1).height(36).textAlign(TextAlign.Center).borderRadius(18)
-          .backgroundColor(this.speed === option.id ? this.accent : this.pal().surface)
-          .onClick((): void => { this.choose(kind.key, option.id); })
-      }, (option: AiMotionOption): string => option.id)
-    }.width('100%')
+    AiSegmented({ options: kind.options.map((option: AiMotionOption): string[] => [option.id, option.label]),
+      current: this.speed, segmentHeight: 36, labelSize: 14, trackColor: this.pal().surface, thumbColor: this.accent,
+      textColor: '#FFFFFF', mutedColor: this.pal().text,
+      onPick: (id: string): void => { this.choose(kind.key, id); } })
   }
 
   build() {

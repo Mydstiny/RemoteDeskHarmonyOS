@@ -120,9 +120,9 @@ export default function diagnosticCaptureExportServiceTest(): void {
         JSON.parse(lines[lines.length - 1]) as Record<string, Object>;
       expect(manifest['profile'] as string).assertEqual('full');
       expect(manifest['fullLog'] as boolean).assertTrue();
-      expect((manifest['selectedModules'] as Object[]).length).assertEqual(10);
+      expect((manifest['selectedModules'] as Object[]).length).assertEqual(12);
       expect(summary['fullLog'] as boolean).assertTrue();
-      expect(summary['expectedModuleCount'] as number).assertEqual(10);
+      expect(summary['expectedModuleCount'] as number).assertEqual(12);
       expect((summary['expectedEventCount'] as number) > 60).assertTrue();
       expect(result.text.indexOf('"code":-2') >= 0).assertTrue();
     });

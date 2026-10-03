@@ -1,4 +1,5 @@
 import { recordDiagnosticEvent } from './DiagnosticCaptureRuntime';
+import { ConnectionJournal } from './ConnectionJournal';
 
 /** vnc_failure count: what kind of failure it was (from the app's E-VNC-* code; the message itself is dropped). */
 export const VNC_FAILURE_UNCLASSIFIED: number = 0;
@@ -30,7 +31,12 @@ export function vncFailureCategory(message: string): number {
 }
 
 /** A VNC connection failed (generation 1 while connecting). */
+const VNC_FAILURE_WORDS: string[] = ['连接失败', '地址或端口不通', 'VNC 密码错误', '缺少密码', 'TLS 配置不匹配', '证书问题',
+  '网关配置问题', '主机配置无效', '恢复画面失败', '连接超时'];
+
 export function recordVncFailure(message: string, elapsedMs: number): void {
+  const category: number = vncFailureCategory(message);
+  ConnectionJournal.failed('vnc', VNC_FAILURE_WORDS[category] ?? '连接失败');
   recordDiagnosticEvent('connection.vnc', 'vnc_failure', 'failed', 0, 1, 0, Math.max(0, Math.round(elapsedMs)),
-    vncFailureCategory(message));
+    category);
 }

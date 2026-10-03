@@ -5,6 +5,8 @@ import { DiagnosticAiAppActionId, diagnosticAiAppActionLabel, diagnosticAiAppAct
 import { AI_FLOAT_ORB, AiIslandGlass } from './AiIslandChrome';
 import { AiThinkingIndicator } from './AiMotionViews';
 import { AiLiftController, aiLiftLayer } from './AiLiftLayer';
+import { AiChatMemory } from './AiChatView';
+import { AI_ORB_HINT_TEXT, aiOrbHintWanted } from '../../services/diagnosticAi/AiOrbHintStore';
 import { AI_MOTION_DONE, AI_MOTION_OPEN, aiMotionStyle } from '../../services/diagnosticAi/DiagnosticAiMotionPolicy';
 
 export type DiagnosticAiDeviceClass = 'phone' | 'pad' | 'pc';
@@ -72,12 +74,21 @@ export struct AiIsland {
   /** The done mark and then the floating orb, in one full-window layer above opened screens (AiLiftLayer). */
   private liftLayer: ComponentContent<AiLiftController> | null = null;
   private liftController: AiLiftController | null = null;
+  private liftMode: string = 'assistant';
   /** Something of the island is lifted into the dialog layer (above opened screens); the island hides meanwhile. */
   @State private lifted: boolean = false;
   /** 0 hidden · 1 compact capsule · 2 status capsule · 3 panel (or the floating capsule while working). */
   @State private stage: number = 0;
   @State private working: boolean = false;
   @State private compact: boolean = false;
+  /**
+   * The content's own compact switch. The glass animates between orb and panel; the content swaps between the orb
+   * and the panel (and takes its final width) at once, while it is faded out — never re-laid out at every in-between
+   * width, which made opening from the orb stutter.
+   */
+  @State private contentCompact: boolean = false;
+  /** A finger is down on the orb: it gives a little at once (a single tap waits for the double-tap window). */
+  @State private orbPressed: boolean = false;
   /** The panel content is mounted from the status stage on (hidden) so its size is known before the panel opens. */
   @State private panelMounted: boolean = false;
   @State private revealed: boolean = false;
@@ -106,6 +117,14 @@ export struct AiIsland {
   private statusBarHidden: boolean = false;
   /** Height of the soft keyboard (vp); the open panel always ends above it. */
   @State private keyboardHeight: number = 0;
+  /** The island's own orb (capture, floating action): its one-time hint. */
+  @State private compactHint: boolean = false;
+  /**
+   * Whether the touch now being handled began on the orb. The orb's tap gestures run alongside the panel's own, and a
+   * single tap is only recognised once the double-tap wait is over: by then a tap on 缩成悬浮球 has made the island
+   * compact, and would otherwise open it again at once.
+   */
+  private touchStartedCompact: boolean = false;
   private keyboardWindow: window.Window | null = null;
   /** Fences delayed compact morphs so a rapid capture stop/start cannot apply an old layout. */
   private compactGeneration: number = 0;
@@ -268,8 +287,18 @@ export struct AiIsland {
     this.later(320, (): void => { this.revealed = true; });
   }
 
-  private setCompact(value: boolean): void {
+  private setCompact(value: boolean, hint: boolean = true): void {
     if (value === this.compact) { return; }
+    // Back to the panel: an orb lifted from the island's own orb goes with it.
+    if (!value && this.liftLayer !== null) { this.closeLift(); this.lifted = false; }
+    if (value && hint && !this.lifted && aiOrbHintWanted(this.getUIContext().getHostContext(), 'compact')) {
+      this.later(700, (): void => {
+        this.getUIContext().animateTo({ duration: 220, curve: Curve.EaseOut }, (): void => { this.compactHint = true; });
+      });
+      this.later(3900, (): void => {
+        this.getUIContext().animateTo({ duration: 260, curve: Curve.EaseIn }, (): void => { this.compactHint = false; });
+      });
+    }
     // A new compact transition supersedes opening/reveal timers from the prior
     // state; otherwise a delayed panel reveal can reopen over a live orb.
     this.clearTimers();
@@ -284,8 +313,10 @@ export struct AiIsland {
       if (generation !== this.compactGeneration) { return; }
       this.contentOpacity = 0; this.contentBlur = 10;
     });
-    this.later(70, (): void => {
+    this.later(110, (): void => {
       if (generation !== this.compactGeneration) { return; }
+      // The content is faded out now: swap it outside any animation, at its final width.
+      this.contentCompact = value;
       const applyCompact = (): void => {
         if (generation !== this.compactGeneration) { return; }
         this.compact = value;
@@ -374,10 +405,39 @@ export struct AiIsland {
     });
   }
 
+  /**
+   * 聊天's 缩成悬浮球: the orb goes straight into the lift layer, above whatever the user opens next; a tap on it
+   * shows the small chat, whose 展开 brings the island back.
+   */
+  private floatChat(): void {
+    if (this.liftLayer !== null || this.compact) { return; }
+    try { inputMethod.getController().hideTextInput(); } catch (_error) { /* keyboard already down */ }
+    // The island shrinks into the orb as it always does; once the orb rests at the edge, the same orb moves into the
+    // lift layer where it is (above whatever the user opens next, with its small chat a double tap away).
+    this.setCompact(true, false);
+    const generation: number = this.compactGeneration;
+    this.later(this.reducedMotion ? 0 : 640, (): void => {
+      if (generation !== this.compactGeneration || !this.compact || this.liftLayer !== null) { return; }
+      const x: number = (this.areaWidth - AI_FLOAT_ORB) / 2 + this.dragX;
+      const y: number = this.topOffset() + this.dragY;
+      this.liftUp('', 'none', 'chat', 'chat', false, x, y);
+      // The layer fades in over the island's orb (same orb, same spot); then the island's steps aside.
+      this.later(140, (): void => { if (this.liftLayer !== null) { this.lifted = true; } });
+    });
+  }
+
   /** Open the lift layer: the 完成动画 first (or the orb right away when it is 不显示). */
-  private liftUp(label: string, style: string): void {
+  private liftUp(label: string, style: string, mode: string = 'assistant', hintPath: string = 'action',
+    openChat: boolean = false, startX: number = -1, startY: number = -1): void {
     if (this.liftLayer !== null) { return; }
     const controller: AiLiftController = new AiLiftController();
+    controller.mode = mode;
+    controller.hintPath = hintPath;
+    controller.openChat = openChat;
+    controller.startX = startX;
+    controller.startY = startY;
+    this.liftMode = mode;
+    controller.onActivityChanged = (active: boolean): void => { this.onWorkChanged(active); };
     controller.deviceClass = this.deviceClass;
     controller.islandTop = this.islandTop;
     controller.pillWidth = this.islandPillWidth;
@@ -419,13 +479,27 @@ export struct AiIsland {
    * the orb was (x, y: its top-left in the window) rather than from where the island last floated.
    */
   private backFromOrb(x: number, y: number): void {
-    this.closeAppActionScreen();
+    // A screen an app action opened closes; whatever the user opened while 聊天 floated stays.
+    if (this.liftMode !== 'chat') { this.closeAppActionScreen(); }
     this.dragX = x - (this.areaWidth - AI_FLOAT_ORB) / 2;
     this.dragY = Math.max(0, y - this.topOffset());
     this.closeLift();
     this.lifted = false;
     this.stopExecutingPoll();
     this.setCompact(false);
+  }
+
+  /**
+   * A double tap on the island's own orb (a capture or a floating action runs): the same orb moves into the lift
+   * layer where it is, with the small chat open beside it. A tap there, or the chat's 展开, brings the panel back.
+   */
+  private liftFromCompact(): void {
+    if (!this.compact || this.executing !== '' || this.liftLayer !== null) { return; }
+    this.compactHint = false;
+    const x: number = (this.areaWidth - AI_FLOAT_ORB) / 2 + this.dragX;
+    const y: number = this.topOffset() + this.dragY;
+    this.liftUp('', 'none', AiChatMemory.active ? 'chat' : 'assistant', 'compact', true, x, y);
+    this.lifted = true;
   }
 
   private closeLift(): void {
@@ -523,7 +597,7 @@ export struct AiIsland {
       shellless: true,
       revealed: this.revealed,
       maxCardHeight: this.panelMaxHeight(),
-      compact: this.compact,
+      compact: this.contentCompact,
       cardTopPadding: this.panelTopPadding(),
       deviceClass: this.deviceClass,
       onCardSize: (_width: number, height: number): void => { this.onCardSize(height); },
@@ -531,7 +605,8 @@ export struct AiIsland {
       onCaptureStateChanged: (capturing: boolean): void => { this.onCaptureChanged(capturing); },
       onClose: (): void => { this.close(); },
       onOpenMailDraft: (subject: string, body: string): void => { this.onOpenMailDraft(subject, body); },
-      onAppAction: (action: DiagnosticAiAppActionId): void => { this.runAppAction(action); }
+      onAppAction: (action: DiagnosticAiAppActionId): void => { this.runAppAction(action); },
+      onFloat: (): void => { this.floatChat(); }
     }).width('100%')
   }
 
@@ -583,7 +658,7 @@ export struct AiIsland {
         // The panel content, mounted early and kept hidden until the glass has grown to it.
         if (this.panelMounted) {
           Column() { this.panel() }
-            .width(this.glassWidth())
+            .width(this.contentCompact ? this.floatWidth() : this.panelWidth())
             .padding({ top: this.compact ? this.headroom() : 0 })
             .constraintSize({ maxHeight: this.panelMaxHeight() + 120 })
             .opacity(this.showPanel() && this.executing === '' ? this.contentOpacity : 0)
@@ -595,12 +670,29 @@ export struct AiIsland {
       .blur(this.islandBlur)
       // While the capsule is lifted above an opened screen, the island itself steps aside.
       .opacity(this.stage === 0 || this.lifted ? 0 : 1)
-      .scale({ x: this.stage === 0 ? 0.7 : 1, y: this.stage === 0 ? 0.7 : 1, centerX: '50%', centerY: 0 })
+      .scale({ x: this.stage === 0 ? 0.7 : this.orbPressed ? 0.88 : 1, y: this.stage === 0 ? 0.7 : this.orbPressed ? 0.88 : 1,
+        centerX: '50%', centerY: this.compact ? '50%' : 0 })
       .translate({
         x: this.compact ? this.dragX : 0,
         y: this.compact ? this.dragY : 0
       })
-      .onClick((): void => { if (this.compact && this.executing === '') { this.setCompact(false); } })
+      // The orb: a tap opens the panel again, a double tap the small chat beside it. Alongside the content's own
+      // gestures (they only act while compact); the drag below stays an ordinary gesture so scrolling wins over it.
+      .onTouch((event: TouchEvent): void => {
+        if (event.type === TouchType.Down) {
+          this.touchStartedCompact = this.compact;
+          if (this.compact) {
+            this.getUIContext().animateTo({ curve: curves.springMotion(0.25, 0.8) }, (): void => { this.orbPressed = true; });
+          }
+        } else if ((event.type === TouchType.Up || event.type === TouchType.Cancel) && this.orbPressed) {
+          this.getUIContext().animateTo({ curve: curves.springMotion(0.35, 0.6) }, (): void => { this.orbPressed = false; });
+        }
+      })
+      .parallelGesture(GestureGroup(GestureMode.Exclusive,
+        TapGesture({ count: 2 }).onAction((): void => { if (this.touchStartedCompact) { this.liftFromCompact(); } }),
+        TapGesture({ count: 1 }).onAction((): void => {
+          if (this.touchStartedCompact && this.compact && this.executing === '') { this.setCompact(false); }
+        })))
       .gesture(PanGesture({ direction: this.compact ? PanDirection.All : PanDirection.Up, distance: this.compact ? 8 : 24 })
         .onActionStart((): void => { this.dragStartX = this.dragX; this.dragStartY = this.dragY; })
         .onActionUpdate((event: GestureEvent): void => {
@@ -615,6 +707,16 @@ export struct AiIsland {
         .onActionEnd((event: GestureEvent): void => {
           if (!this.compact && event.offsetY < -40) { this.close(); }
         }))
+      if (this.compact && this.compactHint && !this.lifted) {
+        Stack() {
+          Text(AI_ORB_HINT_TEXT).fontSize(12).fontColor('#FFFFFF').maxLines(1).textAlign(TextAlign.Center).width('100%')
+        }
+        .width(212).height(30).borderRadius(15).backgroundColor('#E61C1C1E').border({ width: 0.5, color: '#33FFFFFF' })
+        .position({ x: this.dragX > 0 ? (this.areaWidth - AI_FLOAT_ORB) / 2 + this.dragX - 222 :
+          (this.areaWidth + AI_FLOAT_ORB) / 2 + this.dragX + 10, y: this.topOffset() + this.dragY + (AI_FLOAT_ORB - 30) / 2 })
+        .hitTestBehavior(HitTestMode.None)
+        .transition(TransitionEffect.OPACITY)
+      }
     }
     .width('100%').height('100%')
     .hitTestBehavior(this.stage === 0 ? HitTestMode.None : this.compact || this.executing !== '' ? HitTestMode.Transparent :

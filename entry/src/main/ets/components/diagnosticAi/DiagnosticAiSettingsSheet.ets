@@ -5,8 +5,11 @@ import { AppConfig, Palette, buildDark, buildLight } from '../../common/Theme';
 import { AppSettingsActionRow } from '../AppSettingsActionRow';
 import { AppUiMetrics } from '../../common/AppUiMetrics';
 import { DiagnosticAiAssistantPanel } from './DiagnosticAiAssistantPanel';
+import { AiSegmented } from './AiSegmented';
+import { AiSkillsSettingsPanel } from './AiSkillsSettingsPanel';
 import { DiagnosticAiAuthMode, DiagnosticAiModelInfo, DiagnosticAiModelPriceEntry, DiagnosticAiProviderManifest, DiagnosticAiProviderProfile, DiagnosticAiSettings } from '../../services/diagnosticAi/DiagnosticAiModels';
 import { diagnosticAiHarmonyLocalDeviceSupported, diagnosticAiProviderCodingPlanAvailable, diagnosticAiProviderIsHarmonyLocal, diagnosticAiProviderManifests, diagnosticAiProviderNormalApiAvailable, diagnosticAiProviderSupportsDevice, HARMONY_LOCAL_MODEL_ID } from '../../services/diagnosticAi/DiagnosticAiProviderCatalog';
+import { diagnosticAiProviderManifest } from '../../services/diagnosticAi/DiagnosticAiProviderCatalog';
 import { validateDiagnosticAiEndpoint } from '../../services/diagnosticAi/DiagnosticAiEndpointPolicy';
 import { DiagnosticAiProfileStore } from '../../services/diagnosticAi/DiagnosticAiProfileStore';
 import { DiagnosticAiProviderService, diagnosticAiPrivacySummary } from '../../services/diagnosticAi/DiagnosticAiProviderService';
@@ -15,7 +18,7 @@ import { AccountSessionCoordinator } from '../../services/AccountSessionCoordina
 import { ProAppRuntime } from '../../services/pro/ProAppRuntime';
 import { ProEntries } from '../../services/pro/ProEntries';
 import { PRO_DIAGNOSTICS_ASSISTANT_FEATURE, PRO_DIAGNOSTICS_FEATURE, PRO_DIAGNOSTICS_PROVIDER_FEATURE } from '../../services/pro/ProFeatureCatalog';
-import { DiagnosticAiAssistantPreferences, DiagnosticAiConversationSession, DiagnosticAiConversationStore, DiagnosticAiProviderUsage, DiagnosticAiUsageSnapshot, defaultDiagnosticAiAssistantPreferences } from '../../services/diagnosticAi/DiagnosticAiConversationStore';
+import { diagnosticAiUsageDay, DiagnosticAiDailyProviderUsage, DiagnosticAiDailyUsage, DiagnosticAiAssistantPreferences, DiagnosticAiConversationSession, DiagnosticAiConversationStore, DiagnosticAiConversationTurn, DiagnosticAiProviderUsage, DiagnosticAiUsageSnapshot, defaultDiagnosticAiAssistantPreferences, diagnosticAiSessionKind } from '../../services/diagnosticAi/DiagnosticAiConversationStore';
 import { DiagnosticAiAppActionId } from '../../services/diagnosticAi/DiagnosticAiAppActionPolicy';
 
 class DiagnosticAiPersonalityChoice {
@@ -42,6 +45,102 @@ const DIAGNOSTIC_AI_ROLE_CHOICES: DiagnosticAiChoice[] = [
   new DiagnosticAiChoice('remote-expert', '远程桌面专家'), new DiagnosticAiChoice('beginner-guide', '新手引导'),
   new DiagnosticAiChoice('diagnostic-first', '排障优先'), new DiagnosticAiChoice('privacy-first', '隐私优先')
 ];
+
+/** What each personality, length and role means for the answers, shown under the choice. */
+function aiPersonalityNote(id: string): string {
+  switch (id) {
+    case 'warm': return '语气更耐心，会解释每一步为什么这么做';
+    case 'concise': return '只说结论和最关键的一两步';
+    case 'technical': return '会讲协议细节、错误码和日志依据';
+    default: return '先给结论，再列出操作步骤';
+  }
+}
+
+function aiVerbosityNote(id: string): string {
+  if (id === 'concise') { return '一两句话说清楚'; }
+  if (id === 'detailed') { return '补充原因、注意事项和替代方案'; }
+  return '结论加上必要的步骤';
+}
+
+function aiRoleNote(id: string): string {
+  switch (id) {
+    case 'beginner-guide': return '少用术语，一步一步带着做';
+    case 'diagnostic-first': return '遇到问题先帮你定位原因、建议抓日志';
+    case 'privacy-first': return '尽量少读日志，涉及数据外发时先说明';
+    default: return '覆盖各协议的使用、设置与排障';
+  }
+}
+
+/** A sample answer to "RDP 连不上怎么办？" in the chosen style and length, for the preview bubble. */
+function aiPreviewAnswer(personality: string, verbosity: string): string {
+  const head: string = personality === 'technical' ? '连接在 TCP 握手阶段失败（ERRCONNECT_CONNECT_TRANSPORT_FAILED），3389 端口不可达。' :
+    personality === 'warm' ? '别担心，这多半是电脑那边还没准备好接受远程连接。' :
+    personality === 'concise' ? '电脑的远程桌面没开，或端口被拦截了。' : '多半是电脑没有开启远程桌面，或防火墙拦住了连接。';
+  if (verbosity === 'concise') { return head; }
+  const steps: string = personality === 'concise' ? '\n1. 在电脑上打开"远程桌面"。' :
+    '\n1. 在电脑上打开"设置 → 系统 → 远程桌面"。\n2. 确认防火墙放行"远程桌面"。';
+  if (verbosity === 'standard') { return head + steps; }
+  return head + steps + '\n3. 如果走的是外网，还要在路由器上转发 3389 端口。' +
+    (personality === 'warm' ? '\n做完这几步再试一次，有问题我陪你继续查。' : '');
+}
+
+const CONFIG_TABS: string[][] = [['api', 'API Key'], ['coding', 'Coding Plan'], ['local', '本机模型']];
+/** Coding Plan access is closed for now: most plans only allow their own coding tools, so nothing can be saved here. */
+const CODING_PLAN_OPEN: boolean = false;
+
+const USAGE_RANGES: string[][] = [['today', '今天'], ['7d', '7 天'], ['30d', '30 天'], ['all', '全部']];
+const USAGE_AVATAR_COLORS: string[] = ['#5E5CE6', '#0A84FF', '#30B0C7', '#34C759', '#FF9F0A', '#FF375F', '#BF5AF2'];
+
+/** One time range of 用量监控, summed over the selected subscription(s). */
+class AiUsageView {
+  requests: number = 0;
+  failed: number = 0;
+  prompt: number = 0;
+  completion: number = 0;
+  cached: number = 0;
+  cost: number = 0;
+}
+
+/** A subscription's share of the chosen range. */
+class AiUsageRow {
+  key: string;
+  name: string;
+  model: string;
+  view: AiUsageView;
+
+  constructor(key: string, name: string, model: string, view: AiUsageView) {
+    this.key = key;
+    this.name = name;
+    this.model = model;
+    this.view = view;
+  }
+}
+
+/** One bar of the daily chart. */
+class AiUsageBar {
+  day: string;
+  label: string;
+  tokens: number;
+  today: boolean;
+
+  constructor(day: string, label: string, tokens: number, today: boolean) {
+    this.day = day;
+    this.label = label;
+    this.tokens = tokens;
+    this.today = today;
+  }
+}
+
+/** Saved conversations of one date group (今天 / 昨天 / 近 7 天 / 更早). */
+class AiSessionGroup {
+  title: string;
+  sessions: DiagnosticAiConversationSession[];
+
+  constructor(title: string, sessions: DiagnosticAiConversationSession[]) {
+    this.title = title;
+    this.sessions = sessions;
+  }
+}
 
 @Component
 export struct DiagnosticAiSettingsSheet {
@@ -78,6 +177,22 @@ export struct DiagnosticAiSettingsSheet {
   @State modelPricing: DiagnosticAiModelPriceEntry[] = [];
   @State resumeSessionId: string = '';
   @State usageProviderFilter: string = '';
+  /** 用量监控 time range: today, 7d, 30d or all. */
+  @State usageRange: string = '7d';
+  @State pricingExpanded: boolean = false;
+  @State usageClearArmed: boolean = false;
+  /** 对话记录: search text and the two-tap clear. */
+  @State sessionQuery: string = '';
+  @State sessionsClearArmed: boolean = false;
+  /** AI 对话记录: 助理 sessions and 聊天 sessions are listed apart. */
+  @State sessionKind: string = 'assistant';
+  /** 辅助 AI 配置: which kind of service is being set up (按量 API, Coding Plan or a model on this device). */
+  @State configTab: string = 'api';
+  /** 个性化: every change saves at once; this flashes 已保存 next to the section title. */
+  @State assistantSavedFlash: boolean = false;
+  @State memoryExpanded: boolean = false;
+  private assistantSavedTimer: number = -1;
+  private memorySaveTimer: number = -1;
   @State updatingModelPricing: boolean = false;
   @State private personalityDraft: 'balanced' | 'warm' | 'concise' | 'technical' = 'balanced';
   @State private verbosityDraft: 'concise' | 'standard' | 'detailed' = 'standard';
@@ -168,7 +283,53 @@ export struct DiagnosticAiSettingsSheet {
     const savedAuthMode: DiagnosticAiAuthMode | undefined = this.settings.selectedAuthMode === '' ? undefined : this.settings.selectedAuthMode;
     this.authModeDraft = selectedProfile?.authMode ?? savedAuthMode ?? selected?.authModes[0] ?? 'api_key';
     if (selectedProfile !== undefined) { this.termsAcceptedDraft = selectedProfile.consentId !== '' && selectedProfile.consentAt > 0; }
+    this.configTab = this.tabForSelection();
     this.resumeSessionId = this.initialResumeSessionId.trim();
+  }
+
+  private manifestIsLocal(manifest: DiagnosticAiProviderManifest): boolean {
+    return manifest.market === 'local' || diagnosticAiProviderIsHarmonyLocal(manifest.providerId);
+  }
+
+  private manifestHasCodingPlan(manifest: DiagnosticAiProviderManifest): boolean {
+    return manifest.authModes.indexOf('coding_plan_key') >= 0 || manifest.billingMode === 'coding_plan';
+  }
+
+  private tabForSelection(): string {
+    const manifest: DiagnosticAiProviderManifest | undefined = this.selectedManifest();
+    if (manifest !== undefined && this.manifestIsLocal(manifest)) { return 'local'; }
+    return this.authModeDraft === 'coding_plan_key' ? 'coding' : 'api';
+  }
+
+  /** The providers a tab offers. */
+  private tabManifests(tab: string): DiagnosticAiProviderManifest[] {
+    return this.manifests.filter((manifest: DiagnosticAiProviderManifest): boolean =>
+      tab === 'local' ? this.manifestIsLocal(manifest) :
+      tab === 'coding' ? this.manifestHasCodingPlan(manifest) : !this.manifestIsLocal(manifest));
+  }
+
+  private profileKind(profile: DiagnosticAiProviderProfile): string {
+    const manifest = this.manifests.find((m: DiagnosticAiProviderManifest): boolean => m.providerId === profile.providerId);
+    if (manifest !== undefined && this.manifestIsLocal(manifest)) { return '本机'; }
+    return profile.authMode === 'coding_plan_key' ? 'Coding Plan' : 'API';
+  }
+
+  /** Switch the tab: the tab's saved service if there is one, otherwise its first available provider. */
+  private selectConfigTab(tab: string): void {
+    if (tab === this.configTab) { return; }
+    this.getUIContext().animateTo({ duration: 220, curve: Curve.EaseOut }, (): void => { this.configTab = tab; });
+    const candidates: DiagnosticAiProviderManifest[] = this.tabManifests(tab);
+    const saved: DiagnosticAiProviderProfile | undefined = this.profiles.find((p: DiagnosticAiProviderProfile): boolean =>
+      candidates.some((m: DiagnosticAiProviderManifest): boolean => m.providerId === p.providerId) &&
+      (tab !== 'coding' || p.authMode === 'coding_plan_key') && (tab !== 'api' || p.authMode !== 'coding_plan_key'));
+    const target: DiagnosticAiProviderManifest | undefined = saved !== undefined ?
+      candidates.find((m: DiagnosticAiProviderManifest): boolean => m.providerId === saved.providerId) :
+      candidates.find((m: DiagnosticAiProviderManifest): boolean => this.providerAvailable(m));
+    this.message = '';
+    if (target === undefined || (tab === 'coding' && !CODING_PLAN_OPEN)) { return; }
+    this.selectProvider(target.providerId);
+    if (tab === 'coding') { this.selectAuthMode('coding_plan_key'); }
+    else if (tab === 'api' && target.authModes.indexOf('api_key') >= 0) { this.selectAuthMode('api_key'); }
   }
 
   private allowed(): boolean { return ProEntries.visible(PRO_DIAGNOSTICS_FEATURE, ProAppRuntime.getInstance().context()); }
@@ -239,6 +400,9 @@ export struct DiagnosticAiSettingsSheet {
     }
     if (this.authModeDraft === 'api_key' && !this.selectedNormalApiAvailable()) {
       this.message = '当前 Provider 未声明可用于诊断助手的普通 API 连接'; return;
+    }
+    if (this.authModeDraft === 'coding_plan_key' && !CODING_PLAN_OPEN) {
+      this.message = '暂不开放 Coding Plan 接入，请在「API Key」中使用按量计费的普通 API'; return;
     }
     if (this.authModeDraft === 'coding_plan_key' && !this.selectedCodingPlanAvailable()) {
       this.message = 'Coding Plan 专用连接尚未完成官方 Manifest 核验，普通 API Key 不会复用到这里'; return;
@@ -405,6 +569,22 @@ export struct DiagnosticAiSettingsSheet {
     this.message = value ? 'AI 动效已简化' : 'AI 动效已恢复';
   }
 
+  /** Save the assistant preferences right away (after any change) and flash 已保存. */
+  private saveAssistantNow(): void {
+    this.saveAssistantPreferences();
+    if (this.message.indexOf('失败') >= 0) { return; }
+    this.message = '';
+    this.assistantSavedFlash = true;
+    if (this.assistantSavedTimer !== -1) { clearTimeout(this.assistantSavedTimer); }
+    this.assistantSavedTimer = setTimeout((): void => { this.assistantSavedFlash = false; this.assistantSavedTimer = -1; }, 1400);
+  }
+
+  /** Typing in the memory field saves once the user pauses. */
+  private saveMemorySoon(): void {
+    if (this.memorySaveTimer !== -1) { clearTimeout(this.memorySaveTimer); }
+    this.memorySaveTimer = setTimeout((): void => { this.memorySaveTimer = -1; this.saveAssistantNow(); }, 800);
+  }
+
   private saveAssistantPreferences(): void {
     const next: DiagnosticAiAssistantPreferences = {
       name: this.assistantNameDraft.trim() === '' ? 'RD Assistant' : this.assistantNameDraft.trim().slice(0, 32),
@@ -418,30 +598,205 @@ export struct DiagnosticAiSettingsSheet {
     } else { this.message = '助手偏好保存失败，请稍后重试'; }
   }
 
-  private costText(): string {
-    const row: DiagnosticAiProviderUsage | undefined = this.usageProviderFilter === '' ? undefined :
-      this.usageSnapshot.providerUsage.find((item: DiagnosticAiProviderUsage): boolean => this.usageRowKey(item) === this.usageProviderFilter);
-    return '¥' + (row === undefined ? this.usageSnapshot.estimatedCostCny : row.estimatedCostCny).toFixed(4);
-  }
-  private cacheHitText(): string {
-    const row: DiagnosticAiProviderUsage | undefined = this.usageProviderFilter === '' ? undefined :
-      this.usageSnapshot.providerUsage.find((item: DiagnosticAiProviderUsage): boolean => this.usageRowKey(item) === this.usageProviderFilter);
-    const prompt: number = row === undefined ? this.usageSnapshot.promptTokens : row.promptTokens;
-    const cached: number = row === undefined ? this.usageSnapshot.cachedTokens : row.cachedTokens;
-    if (prompt <= 0) { return '0%'; }
-    return Math.round(cached / prompt * 100).toString() + '%';
-  }
-
   private usageRowKey(row: DiagnosticAiProviderUsage): string { return row.providerId + '\u001f' + row.modelId; }
 
-  private priceText(value: number): string { return value < 0 ? '待确认' : '¥' + value.toFixed(2); }
-
-  private usageFilterText(): string {
-    if (this.usageProviderFilter === '') { return '全部订阅'; }
-    const row: DiagnosticAiProviderUsage | undefined = this.usageSnapshot.providerUsage.find((item: DiagnosticAiProviderUsage): boolean =>
-      this.usageRowKey(item) === this.usageProviderFilter);
-    return row === undefined ? '当前订阅筛选' : '当前筛选：' + row.providerId + ' · ' + (row.modelId === '' ? '未知模型' : row.modelId);
+  /** The provider's own name for an id ("deepseek" → "DeepSeek"), the id itself when unknown. */
+  private providerName(providerId: string): string {
+    const profile: DiagnosticAiProviderProfile | undefined = this.profiles.find((item: DiagnosticAiProviderProfile): boolean =>
+      item.providerId === providerId);
+    if (profile !== undefined && profile.displayName !== '') { return profile.displayName; }
+    const manifest = diagnosticAiProviderManifest(providerId);
+    return manifest !== null ? manifest.displayName : providerId;
   }
+
+  /** The days of the chosen range (empty for 全部, which uses the running totals). */
+  private rangeDays(): string[] {
+    if (this.usageRange === 'all') { return []; }
+    const count: number = this.usageRange === 'today' ? 1 : this.usageRange === '7d' ? 7 : 30;
+    const days: string[] = [];
+    for (let i: number = 0; i < count; i++) { days.push(diagnosticAiUsageDay(Date.now() - i * 24 * 3600 * 1000)); }
+    return days;
+  }
+
+  /** Requests, failures, tokens and cost of the range, for one subscription key or (empty key) all of them. */
+  private usageFor(key: string): AiUsageView {
+    const view: AiUsageView = new AiUsageView();
+    if (this.usageRange === 'all') {
+      if (key === '') {
+        view.requests = this.usageSnapshot.requestCount; view.failed = this.usageSnapshot.failedCount ?? 0;
+        view.prompt = this.usageSnapshot.promptTokens; view.completion = this.usageSnapshot.completionTokens;
+        view.cached = this.usageSnapshot.cachedTokens; view.cost = this.usageSnapshot.estimatedCostCny;
+        return view;
+      }
+      const row: DiagnosticAiProviderUsage | undefined = this.usageSnapshot.providerUsage.find(
+        (item: DiagnosticAiProviderUsage): boolean => this.usageRowKey(item) === key);
+      if (row !== undefined) {
+        view.requests = row.requestCount; view.failed = row.failedCount ?? 0; view.prompt = row.promptTokens;
+        view.completion = row.completionTokens; view.cached = row.cachedTokens; view.cost = row.estimatedCostCny;
+      }
+      return view;
+    }
+    const days: string[] = this.rangeDays();
+    (this.usageSnapshot.daily ?? []).filter((d: DiagnosticAiDailyUsage): boolean => days.indexOf(d.day) >= 0)
+      .forEach((d: DiagnosticAiDailyUsage): void => {
+        if (key === '') {
+          view.requests += d.requestCount; view.failed += d.failedCount; view.prompt += d.promptTokens;
+          view.completion += d.completionTokens; view.cached += d.cachedTokens; view.cost += d.estimatedCostCny;
+          return;
+        }
+        d.providers.filter((p: DiagnosticAiDailyProviderUsage): boolean => p.key === key)
+          .forEach((p: DiagnosticAiDailyProviderUsage): void => {
+            view.requests += p.requestCount; view.failed += p.failedCount; view.prompt += p.promptTokens;
+            view.completion += p.completionTokens; view.cached += p.cachedTokens; view.cost += p.estimatedCostCny;
+          });
+      });
+    return view;
+  }
+
+  private currentUsage(): AiUsageView { return this.usageFor(this.usageProviderFilter); }
+
+  /** Every subscription with use in the range, biggest first. */
+  private usageRows(): AiUsageRow[] {
+    return this.usageSnapshot.providerUsage.map((row: DiagnosticAiProviderUsage): AiUsageRow =>
+      new AiUsageRow(this.usageRowKey(row), this.providerName(row.providerId), row.modelId === '' ? '未知模型' : row.modelId,
+        this.usageFor(this.usageRowKey(row))))
+      .filter((row: AiUsageRow): boolean => row.view.requests + row.view.failed > 0)
+      .sort((a: AiUsageRow, b: AiUsageRow): number =>
+        (b.view.prompt + b.view.completion) - (a.view.prompt + a.view.completion));
+  }
+
+  /** The last 14 days as bars of tokens (the filter applies). */
+  private usageBars(): AiUsageBar[] {
+    const bars: AiUsageBar[] = [];
+    for (let i: number = 13; i >= 0; i--) {
+      const time: number = Date.now() - i * 24 * 3600 * 1000;
+      const day: string = diagnosticAiUsageDay(time);
+      const row: DiagnosticAiDailyUsage | undefined = (this.usageSnapshot.daily ?? []).find(
+        (d: DiagnosticAiDailyUsage): boolean => d.day === day);
+      let tokens: number = 0;
+      if (row !== undefined) {
+        if (this.usageProviderFilter === '') { tokens = row.promptTokens + row.completionTokens; }
+        else {
+          row.providers.filter((p: DiagnosticAiDailyProviderUsage): boolean => p.key === this.usageProviderFilter)
+            .forEach((p: DiagnosticAiDailyProviderUsage): void => { tokens += p.promptTokens + p.completionTokens; });
+        }
+      }
+      bars.push(new AiUsageBar(day, i === 0 ? '今天' : (new Date(time).getDate()).toString(), tokens, i === 0));
+    }
+    return bars;
+  }
+
+  private maxBar(): number {
+    return Math.max(1, ...this.usageBars().map((bar: AiUsageBar): number => bar.tokens));
+  }
+
+  private tokenText(value: number): string {
+    if (value >= 1000000) { return (value / 1000000).toFixed(2) + 'M'; }
+    if (value >= 10000) { return (value / 1000).toFixed(1) + 'K'; }
+    return Math.round(value).toString();
+  }
+
+  private moneyText(value: number): string {
+    return value <= 0 ? '¥0' : value < 0.01 ? '¥' + value.toFixed(4) : '¥' + value.toFixed(2);
+  }
+
+  private rangeLabel(): string {
+    return this.usageRange === 'today' ? '今天' : this.usageRange === '7d' ? '近 7 天' : this.usageRange === '30d' ? '近 30 天' : '全部';
+  }
+
+  /** Whether a subscription's price is known (otherwise its cost is a rough default estimate). */
+  private priceKnown(key: string): boolean {
+    const parts: string[] = key.split('\u001f');
+    const price: DiagnosticAiModelPriceEntry | undefined = this.modelPricing.find((p: DiagnosticAiModelPriceEntry): boolean =>
+      p.providerId === parts[0] && p.modelId === (parts.length > 1 ? parts[1] : ''));
+    return price !== undefined && price.inputCnyPerMillion >= 0 && price.outputCnyPerMillion >= 0;
+  }
+
+  private clearUsage(): void {
+    if (!this.usageClearArmed) {
+      this.usageClearArmed = true;
+      setTimeout((): void => { this.usageClearArmed = false; }, 3000);
+      return;
+    }
+    this.usageClearArmed = false;
+    if (this.conversationStore.clearUsage()) {
+      this.usageSnapshot = this.conversationStore.usage();
+      this.usageProviderFilter = '';
+      this.message = '用量统计已清空';
+    }
+  }
+
+  /** Saved conversations matching the search, grouped by when they were last used. */
+  private sessionGroups(): AiSessionGroup[] {
+    const query: string = this.sessionQuery.trim().toLowerCase();
+    const matches: DiagnosticAiConversationSession[] = this.kindSessions().filter((session: DiagnosticAiConversationSession): boolean =>
+      query === '' || session.title.toLowerCase().indexOf(query) >= 0 ||
+        session.turns.some((turn): boolean => turn.question.toLowerCase().indexOf(query) >= 0 ||
+          turn.answer.toLowerCase().indexOf(query) >= 0));
+    const startOfToday: number = new Date(new Date().toDateString()).getTime();
+    const day: number = 24 * 3600 * 1000;
+    const groups: AiSessionGroup[] = [new AiSessionGroup('今天', []), new AiSessionGroup('昨天', []),
+      new AiSessionGroup('近 7 天', []), new AiSessionGroup('更早', [])];
+    matches.forEach((session: DiagnosticAiConversationSession): void => {
+      const index: number = session.updatedAt >= startOfToday ? 0 : session.updatedAt >= startOfToday - day ? 1 :
+        session.updatedAt >= startOfToday - 6 * day ? 2 : 3;
+      groups[index].sessions.push(session);
+    });
+    return groups.filter((group: AiSessionGroup): boolean => group.sessions.length > 0);
+  }
+
+  private kindSessions(): DiagnosticAiConversationSession[] {
+    return this.sessions.filter((session: DiagnosticAiConversationSession): boolean =>
+      diagnosticAiSessionKind(session) === this.sessionKind);
+  }
+
+  private sessionDocumentCount(session: DiagnosticAiConversationSession): number {
+    return session.turns.reduce((sum: number, turn: DiagnosticAiConversationTurn): number => sum + (turn.documents ?? []).length, 0);
+  }
+
+  private sessionTime(session: DiagnosticAiConversationSession): string {
+    const date: Date = new Date(session.updatedAt);
+    const pad = (value: number): string => (value < 10 ? '0' : '') + value.toString();
+    const startOfToday: number = new Date(new Date().toDateString()).getTime();
+    return session.updatedAt >= startOfToday ? pad(date.getHours()) + ':' + pad(date.getMinutes()) :
+      (date.getMonth() + 1).toString() + '月' + date.getDate().toString() + '日';
+  }
+
+  private sessionPreview(session: DiagnosticAiConversationSession): string {
+    const last = session.turns.length > 0 ? session.turns[session.turns.length - 1] : undefined;
+    return last === undefined ? '' : last.answer.replace(/\s+/g, ' ').trim();
+  }
+
+  private openSession(session: DiagnosticAiConversationSession): void {
+    const profile: DiagnosticAiProviderProfile | undefined = this.profiles.find((item: DiagnosticAiProviderProfile): boolean =>
+      item.providerId === session.providerId && item.modelId === session.modelId);
+    if (profile !== undefined) { this.useProviderForNewRequests(profile); }
+    this.onOpenSession(session.id);
+  }
+
+  private deleteSession(session: DiagnosticAiConversationSession): void {
+    if (this.conversationStore.deleteSession(session.id)) {
+      this.getUIContext().animateTo({ duration: 220, curve: Curve.EaseOut }, (): void => {
+        this.sessions = this.conversationStore.listSessions();
+      });
+    }
+  }
+
+  private clearSessions(): void {
+    if (!this.sessionsClearArmed) {
+      this.sessionsClearArmed = true;
+      setTimeout((): void => { this.sessionsClearArmed = false; }, 3000);
+      return;
+    }
+    this.sessionsClearArmed = false;
+    if (this.conversationStore.clearSessions(this.sessionKind === 'chat' ? 'chat' : 'assistant')) {
+      this.getUIContext().animateTo({ duration: 220, curve: Curve.EaseOut }, (): void => {
+        this.sessions = this.conversationStore.listSessions();
+      });
+    }
+  }
+
+  private priceText(value: number): string { return value < 0 ? '待确认' : '¥' + value.toFixed(2); }
 
   private selectedUsageProvider(): DiagnosticAiProviderProfile | undefined {
     const selected: DiagnosticAiProviderProfile | undefined = this.profiles.find((item: DiagnosticAiProviderProfile): boolean =>
@@ -523,16 +878,18 @@ export struct DiagnosticAiSettingsSheet {
     if (this.section === 1) { return '启动 AI 辅助'; }
     if (this.section === 3) { return 'AI 用量监控'; }
     if (this.section === 4) { return 'AI 个性化设置'; }
-    if (this.section === 5) { return 'AI 会话管理'; }
+    if (this.section === 5) { return 'AI 对话记录'; }
     if (this.section === 6) { return 'AI 动效'; }
+    if (this.section === 7) { return 'AI 工具与技能'; }
     return '辅助 AI 配置';
   }
   private headerDetail(): string {
     if (this.section === 1) { return '询问应用、协助设置、诊断问题并生成反馈草稿'; }
-    if (this.section === 3) { return '按订阅查看 Token、缓存命中和费用估算'; }
+    if (this.section === 3) { return '按时间和订阅查看请求、Token、缓存命中和费用'; }
     if (this.section === 4) { return '名称、语气和仅保存在本机的助手记忆'; }
-    if (this.section === 5) { return '查看历史对话并在原 Provider 上继续交流'; }
+    if (this.section === 5) { return '搜索、继续或删除历史对话'; }
     if (this.section === 6) { return '思考动画、悬浮球、完成动画和展开方式'; }
+    if (this.section === 7) { return '聊天可用的工具、已安装的技能和技能库'; }
     return '选择 Provider、模型和数据外发策略';
   }
 
@@ -540,6 +897,7 @@ export struct DiagnosticAiSettingsSheet {
     Row({ space: 12 }) {
       Column() {
         SymbolGlyph(this.section === 1 ? $r('sys.symbol.performance') : this.section === 6 ? $r('sys.symbol.wand_and_stars') :
+          this.section === 7 ? $r('sys.symbol.puzzle_fill') :
           $r('sys.symbol.gearshape_fill'))
           .fontSize(20).fontColor([Color.White])
       }
@@ -628,322 +986,578 @@ export struct DiagnosticAiSettingsSheet {
       .onClick((): void => { this.selectAuthMode(mode); })
   }
 
-  @Builder private authModeSection() {
-    if (!diagnosticAiProviderIsHarmonyLocal(this.selectedProvider)) {
-      Text('普通 API 连接').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
-      if (this.selectedNormalApiAvailable()) {
-        Row({ space: 8 }) {
-          Text('API Key · 独立按量/Token Plan').fontSize(12)
-            .fontColor(this.authModeDraft === 'api_key' ? Color.White : this.pal().text).layoutWeight(1)
-          if (this.authModeDraft === 'api_key') { SymbolGlyph($r('sys.symbol.checkmark_circle_fill')).fontSize(16).fontColor([Color.White]) }
-        }.width('100%').padding(10).borderRadius(12)
-          .backgroundColor(this.authModeDraft === 'api_key' ? this.accent : this.pal().surface)
-          .onClick((): void => { this.selectAuthMode('api_key'); })
-      } else {
-        Text('当前 Provider 未声明可用于诊断助手的普通 API 连接').fontSize(11).fontColor(this.pal().text3).width('100%')
+  /** 用量监控 — time range first, then the subscription filter; every figure below follows both. */
+  @Builder private usageRangeBar() {
+    AiSegmented({ options: USAGE_RANGES, current: this.usageRange, trackColor: this.pal().surface, thumbColor: this.pal().card, textColor: this.pal().text, mutedColor: this.pal().text3,
+      onPick: (id: string): void => {
+        this.getUIContext().animateTo({ duration: 220, curve: Curve.EaseOut }, (): void => { this.usageRange = id; });
+      } })
+  }
+
+  @Builder private usageFilterChip(key: string, label: string) {
+    Text(label).fontSize(12).fontWeight(FontWeight.Medium)
+      .fontColor(this.usageProviderFilter === key ? Color.White : this.pal().text2)
+      .height(30).padding({ left: 12, right: 12 }).borderRadius(15)
+      .backgroundColor(this.usageProviderFilter === key ? this.accent : this.pal().surface)
+      .onClick((): void => {
+        this.getUIContext().animateTo({ duration: 220, curve: Curve.EaseOut }, (): void => { this.usageProviderFilter = key; });
+      })
+  }
+
+  @Builder private usageChart() {
+    Column({ space: 10 }) {
+      Row() {
+        Text('每日 Token').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text).layoutWeight(1)
+        Text('近 14 天').fontSize(11).fontColor(this.pal().text3)
+      }.width('100%')
+      Row({ space: 4 }) {
+        ForEach(this.usageBars(), (bar: AiUsageBar, index: number): void => {
+          Column({ space: 4 }) {
+            Blank()
+            Row().width('70%').height(Math.max(3, bar.tokens / this.maxBar() * 86)).borderRadius(3)
+              .backgroundColor(bar.today ? this.accent : bar.tokens > 0 ? '#66' + this.accent.slice(1) : this.pal().surface)
+            Text(bar.today || index % 3 === 1 ? bar.label : ' ').fontSize(9)
+              .fontColor(bar.today ? this.accent : this.pal().text3).maxLines(1)
+          }.layoutWeight(1).height(112).alignItems(HorizontalAlign.Center)
+        }, (bar: AiUsageBar): string => 'bar-' + bar.day + '-' + bar.tokens.toString())
+      }.width('100%')
+    }.width('100%').padding(14).borderRadius(18).backgroundColor(this.pal().card)
+    .border({ width: 0.5, color: this.pal().cardBorder })
+  }
+
+  @Builder private usageRowView(row: AiUsageRow, total: number) {
+    Row({ space: 12 }) {
+      Text(row.name.charAt(0).toUpperCase()).fontSize(15).fontWeight(FontWeight.Bold).fontColor(Color.White)
+        .width(36).height(36).textAlign(TextAlign.Center).borderRadius(18)
+        .backgroundColor(USAGE_AVATAR_COLORS[Math.abs(row.key.length * 7 + row.name.charCodeAt(0)) % USAGE_AVATAR_COLORS.length])
+      Column({ space: 4 }) {
+        Row() {
+          Text(row.name).fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.pal().text).layoutWeight(1)
+            .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+          Text(this.moneyText(row.view.cost)).fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
+        }.width('100%')
+        Text(row.model + ' · ' + row.view.requests.toString() + ' 次' +
+          (row.view.failed > 0 ? ' · 失败 ' + row.view.failed.toString() : '') + ' · ' +
+          this.tokenText(row.view.prompt + row.view.completion) + ' Token' + (this.priceKnown(row.key) ? '' : ' · 价格待确认'))
+          .fontSize(11).fontColor(this.pal().text3).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).width('100%')
+        Stack({ alignContent: Alignment.Start }) {
+          Row().width('100%').height(4).borderRadius(2).backgroundColor(this.pal().surface)
+          Row().width((total > 0 ? Math.min(1, (row.view.prompt + row.view.completion) / total) * 100 : 0).toFixed(0) + '%')
+            .height(4).borderRadius(2).backgroundColor(this.accent)
+        }.width('100%')
+      }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+    }.width('100%').padding({ top: 10, bottom: 10 })
+    .onClick((): void => {
+      this.getUIContext().animateTo({ duration: 220, curve: Curve.EaseOut }, (): void => {
+        this.usageProviderFilter = this.usageProviderFilter === row.key ? '' : row.key;
+      });
+    })
+  }
+
+  @Builder private usageAndHistorySection() {
+    Column({ space: 12 }) {
+      this.usageRangeBar()
+      if (this.usageSnapshot.providerUsage.length > 1) {
+        Scroll() {
+          Row({ space: 8 }) {
+            this.usageFilterChip('', '全部订阅')
+            ForEach(this.usageSnapshot.providerUsage, (row: DiagnosticAiProviderUsage): void => {
+              this.usageFilterChip(this.usageRowKey(row), this.providerName(row.providerId) + ' · ' +
+                (row.modelId === '' ? '未知模型' : row.modelId))
+            }, (row: DiagnosticAiProviderUsage): string => 'chip-' + this.usageRowKey(row))
+          }
+        }.scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off).width('100%')
       }
-      Text('Coding Plan 专用连接').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text).margin({ top: 6 })
-      if (this.selectedCodingPlanAvailable()) {
-        Row({ space: 8 }) {
-          Text('Coding Plan Key · 独立密钥、独立模型白名单').fontSize(12)
-            .fontColor(this.authModeDraft === 'coding_plan_key' ? Color.White : this.pal().text).layoutWeight(1)
-          if (this.authModeDraft === 'coding_plan_key') { SymbolGlyph($r('sys.symbol.checkmark_circle_fill')).fontSize(16).fontColor([Color.White]) }
-        }.width('100%').padding(10).borderRadius(12)
-          .backgroundColor(this.authModeDraft === 'coding_plan_key' ? this.accent : this.pal().surface)
-          .onClick((): void => { this.selectAuthMode('coding_plan_key'); })
-      } else {
-        Row({ space: 8 }) {
-          SymbolGlyph($r('sys.symbol.lock_fill')).fontSize(16).fontColor([this.pal().text3])
-          Text(this.codingPlanDeclared() ? 'Coding Plan 已声明但等待官方用途/端点核验' :
-            'Coding Plan 专用连接待官方核验；不会把普通 API Key 当作 Coding Plan')
-            .fontSize(11).lineHeight(16).fontColor(this.pal().text3).layoutWeight(1)
-        }.width('100%').padding(10).borderRadius(12).backgroundColor(this.pal().surface).opacity(0.7)
+      // The headline: what the range cost, with its requests, tokens and failures.
+      Column({ space: 6 }) {
+        Text(this.rangeLabel() + ' · 估算费用').fontSize(12).fontColor(this.pal().text3)
+        Text(this.moneyText(this.currentUsage().cost)).fontSize(34).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
+        Row({ space: 14 }) {
+          Text(this.currentUsage().requests.toString() + ' 次请求').fontSize(13).fontColor(this.pal().text2)
+          Text(this.tokenText(this.currentUsage().prompt + this.currentUsage().completion) + ' Token').fontSize(13)
+            .fontColor(this.pal().text2)
+          if (this.currentUsage().failed > 0) {
+            Text(this.currentUsage().failed.toString() + ' 次失败').fontSize(13).fontColor('#FF453A')
+          }
+        }
+        if ((this.usageSnapshot.chatRequestCount ?? 0) > 0 && this.usageProviderFilter === '') {
+          Text('累计其中聊天模式 ' + (this.usageSnapshot.chatRequestCount ?? 0).toString() + ' 次 · ' +
+            this.tokenText(this.usageSnapshot.chatTokens ?? 0) + ' Token · ' + this.moneyText(this.usageSnapshot.chatCostCny ?? 0))
+            .fontSize(12).fontColor(this.pal().text3)
+        }
+      }.width('100%').alignItems(HorizontalAlign.Start).padding(18).borderRadius(22)
+      .backgroundColor(this.pal().card).border({ width: 0.5, color: this.pal().cardBorder })
+      Row({ space: 10 }) {
+        AiUsageTile({ label: '请求', value: this.currentUsage().requests.toString(),
+          detail: this.currentUsage().failed > 0 ? '失败 ' + this.currentUsage().failed.toString() + ' 次' : '全部成功',
+          ratio: -1, cardColor: this.pal().card, edgeColor: this.pal().cardBorder, textColor: this.pal().text,
+          mutedColor: this.pal().text3, trackColor: this.pal().surface }).layoutWeight(1)
+        AiUsageTile({ label: 'Token', value: this.tokenText(this.currentUsage().prompt + this.currentUsage().completion),
+          detail: '输入 ' + this.tokenText(this.currentUsage().prompt) + ' · 输出 ' + this.tokenText(this.currentUsage().completion),
+          ratio: -1, cardColor: this.pal().card, edgeColor: this.pal().cardBorder, textColor: this.pal().text,
+          mutedColor: this.pal().text3, trackColor: this.pal().surface }).layoutWeight(1)
+      }.width('100%')
+      Row({ space: 10 }) {
+        AiUsageTile({ label: '缓存命中', value: this.currentUsage().prompt > 0 ?
+          Math.round(this.currentUsage().cached / this.currentUsage().prompt * 100).toString() + '%' : '—',
+          detail: '命中 ' + this.tokenText(this.currentUsage().cached) + ' Token',
+          ratio: this.currentUsage().prompt > 0 ? this.currentUsage().cached / this.currentUsage().prompt : 0, cardColor: this.pal().card, edgeColor: this.pal().cardBorder, textColor: this.pal().text,
+          mutedColor: this.pal().text3, trackColor: this.pal().surface }).layoutWeight(1)
+        AiUsageTile({ label: '平均每次', value: this.currentUsage().requests > 0 ?
+          this.tokenText((this.currentUsage().prompt + this.currentUsage().completion) / this.currentUsage().requests) : '—',
+          detail: this.currentUsage().requests > 0 ? '约 ' + this.moneyText(this.currentUsage().cost / this.currentUsage().requests) + ' / 次' : '还没有请求',
+          ratio: -1, cardColor: this.pal().card, edgeColor: this.pal().cardBorder, textColor: this.pal().text,
+          mutedColor: this.pal().text3, trackColor: this.pal().surface }).layoutWeight(1)
+      }.width('100%')
+      if (this.usageRange !== 'today') {
+        this.usageChart()
       }
-      if (this.extraAuthModesForSelected().length > 0) {
-        Text('官方授权方式').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text).margin({ top: 6 })
+      if (this.usageRows().length > 0) {
+        Column() {
+          Text('各订阅用量').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text).width('100%')
+            .margin({ bottom: 2 })
+          ForEach(this.usageRows(), (row: AiUsageRow): void => {
+            this.usageRowView(row, this.usageRows().reduce((sum: number, r: AiUsageRow): number =>
+              sum + r.view.prompt + r.view.completion, 0))
+          }, (row: AiUsageRow): string => 'usage-' + row.key + '-' + this.usageRange + '-' + row.view.requests.toString())
+        }.width('100%').padding({ left: 14, right: 14, top: 12, bottom: 4 }).borderRadius(18)
+        .backgroundColor(this.pal().card).border({ width: 0.5, color: this.pal().cardBorder })
+      }
+      // Which subscription new requests use (switchable when there are several).
+      Column({ space: 8 }) {
+        Text('新请求使用的订阅').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text).width('100%')
+        if (this.profiles.length === 0) {
+          Text('尚未配置可用的 AI 订阅').fontSize(12).fontColor(this.pal().text3).width('100%')
+        }
+        ForEach(this.profiles, (profile: DiagnosticAiProviderProfile): void => {
+          Row({ space: 10 }) {
+            SymbolGlyph(profile.providerId === this.settings.selectedProviderId && profile.modelId === this.settings.selectedModelId ?
+              $r('sys.symbol.checkmark_circle_fill') : $r('sys.symbol.circle')).fontSize(18)
+              .fontColor([profile.providerId === this.settings.selectedProviderId && profile.modelId === this.settings.selectedModelId ?
+                this.accent : this.pal().text3])
+            Column({ space: 2 }) {
+              Text(profile.displayName).fontSize(14).fontColor(this.pal().text)
+              Text(profile.modelId === '' ? '未选择模型' : profile.modelId).fontSize(11).fontColor(this.pal().text3)
+            }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+          }.width('100%').padding({ top: 6, bottom: 6 }).onClick((): void => { this.useProviderForNewRequests(profile); })
+        }, (profile: DiagnosticAiProviderProfile): string => 'usage-provider-' + profile.id)
+      }.width('100%').padding(14).borderRadius(18).backgroundColor(this.pal().card)
+      .border({ width: 0.5, color: this.pal().cardBorder })
+      // Model prices: folded away unless asked for.
+      Column({ space: 8 }) {
+        Row({ space: 8 }) {
+          Text('模型与价格表').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text).layoutWeight(1)
+          SymbolGlyph($r(this.pricingExpanded ? 'sys.symbol.chevron_up' : 'sys.symbol.chevron_down')).fontSize(16)
+            .fontColor([this.pal().text3])
+        }.width('100%').onClick((): void => {
+          this.getUIContext().animateTo({ duration: 220, curve: Curve.EaseOut }, (): void => {
+            this.pricingExpanded = !this.pricingExpanded;
+          });
+        })
+        if (this.pricingExpanded) {
+          Row({ space: 8 }) {
+            Text('本地保留完整基线；保存 Provider 后可从其官方模型清单刷新').fontSize(11).fontColor(this.pal().text3).layoutWeight(1)
+            Button(this.updatingModelPricing ? '更新中…' : '联网更新').height(32).fontSize(12)
+              .padding({ left: 12, right: 12 }).borderRadius(16).backgroundColor(this.pal().surface).fontColor(this.accent)
+              .enabled(!this.updatingModelPricing && !this.busy && this.selectedUsageProvider() !== undefined)
+              .onClick((): void => { void this.updateModelPricing(); })
+          }.width('100%')
+          ForEach(this.modelPricing, (row: DiagnosticAiModelPriceEntry): void => {
+            Row({ space: 8 }) {
+              Column({ space: 2 }) {
+                Text(this.providerName(row.providerId) + ' · ' + row.displayName).fontSize(12).fontColor(this.pal().text)
+                  .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+                Text('输入 ' + this.priceText(row.inputCnyPerMillion) + ' · 输出 ' + this.priceText(row.outputCnyPerMillion) +
+                  ' · 缓存 ' + this.priceText(row.cachedInputCnyPerMillion) + '（元/百万 Token）').fontSize(10).fontColor(this.pal().text3)
+                  .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
+              }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+              Text(row.sourceKind === 'provider' ? '在线' : '维护').fontSize(10)
+                .fontColor(row.sourceKind === 'provider' ? '#2BB673' : this.pal().text3)
+            }.width('100%').padding({ top: 5, bottom: 5 })
+          }, (row: DiagnosticAiModelPriceEntry): string => 'price-' + row.providerId + '-' + row.modelId)
+        }
+      }.width('100%').padding(14).borderRadius(18).backgroundColor(this.pal().card)
+      .border({ width: 0.5, color: this.pal().cardBorder })
+      Text(((this.usageSnapshot.estimatedCount ?? 0) > 0 ? (this.usageSnapshot.estimatedCount ?? 0).toString() +
+        ' 次请求的服务没有返回用量，Token 为本机按实际发送内容估算。' : '') +
+        '费用按模型价格表估算，不是服务商账单；价格待确认的模型按 ¥0.30/百万 Token 粗估。统计只保存在本机当前账号下。')
+        .fontSize(11).lineHeight(16).fontColor(this.pal().text3).width('100%')
+      Text(this.usageClearArmed ? '再点一次清空统计' : '清空用量统计').fontSize(13).fontColor('#FF453A')
+        .padding({ top: 4, bottom: 8 }).onClick((): void => { this.clearUsage(); })
+    }.width('100%')
+  }
+
+  @Builder private sessionGroupHeader(title: string) {
+    Text(title).fontSize(12).fontWeight(FontWeight.Medium).fontColor(this.pal().text3).width('100%')
+      .padding({ left: 4, top: 10, bottom: 6 }).backgroundColor(this.pal().sheetBg)
+  }
+
+  @Builder private sessionDeleteButton(session: DiagnosticAiConversationSession) {
+    Stack() {
+      SymbolGlyph($r('sys.symbol.trash_fill')).fontSize(20).fontColor([Color.White])
+    }.width(64).height('100%').borderRadius(18).backgroundColor('#FF453A').margin({ left: 8 })
+    .onClick((): void => { this.deleteSession(session); })
+  }
+
+  @Builder private sessionCard(session: DiagnosticAiConversationSession) {
+    Column({ space: 6 }) {
+      Row({ space: 8 }) {
+        Text(session.title).fontSize(15).fontWeight(FontWeight.Medium).fontColor(this.pal().text).layoutWeight(1)
+          .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+        Text(this.sessionTime(session)).fontSize(11).fontColor(this.pal().text3)
+      }.width('100%')
+      if (this.sessionPreview(session) !== '') {
+        Text(this.sessionPreview(session)).fontSize(13).lineHeight(19).fontColor(this.pal().text2).width('100%')
+          .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
+      }
+      Row({ space: 6 }) {
+        Text(session.turns.length.toString() + ' 轮').fontSize(11).fontColor(this.pal().text2)
+          .padding({ left: 8, right: 8, top: 2, bottom: 2 }).borderRadius(8).backgroundColor(this.pal().surface)
+        if (this.sessionDocumentCount(session) > 0) {
+          Text(this.sessionDocumentCount(session).toString() + ' 个文档').fontSize(11).fontColor(this.pal().text2)
+            .padding({ left: 8, right: 8, top: 2, bottom: 2 }).borderRadius(8).backgroundColor(this.pal().surface)
+        }
+        if (session.modelId !== '') {
+          Text(session.modelId).fontSize(11).fontColor(this.pal().text2).maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis }).constraintSize({ maxWidth: 180 })
+            .padding({ left: 8, right: 8, top: 2, bottom: 2 }).borderRadius(8).backgroundColor(this.pal().surface)
+        }
+        Blank()
+        Text('继续').fontSize(12).fontColor(this.accent)
+        SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(14).fontColor([this.accent])
+      }.width('100%')
+    }.width('100%').padding(14).borderRadius(18).backgroundColor(this.pal().card)
+    .border({ width: 0.5, color: this.pal().cardBorder })
+    .onClick((): void => { this.openSession(session); })
+  }
+
+  /** 对话记录: search, grouped by date, swipe left to delete, tap to continue on the same subscription. */
+  @Builder private sessionManagementSection() {
+    Column({ space: 10 }) {
+      AiSegmented({ options: [['assistant', '助理'], ['chat', '聊天']], current: this.sessionKind, trackColor: this.pal().surface, thumbColor: this.pal().card, textColor: this.pal().text, mutedColor: this.pal().text3,
+        onPick: (id: string): void => {
+          this.getUIContext().animateTo({ duration: 200, curve: Curve.EaseOut }, (): void => {
+            this.sessionKind = id; this.sessionsClearArmed = false;
+          });
+        } })
+      Search({ value: this.sessionQuery, placeholder: '搜索对话内容' })
+        .height(40).width('100%').borderRadius(20)
+        .onChange((value: string): void => { this.sessionQuery = value; })
+      if (this.kindSessions().length === 0) {
+        Column({ space: 10 }) {
+          SymbolGlyph($r('sys.symbol.ellipsis_bubble')).fontSize(40).fontColor([this.pal().text3])
+          Text(this.sessionKind === 'chat' ? '还没有聊天记录' : '还没有助理对话').fontSize(16).fontWeight(FontWeight.Medium)
+            .fontColor(this.pal().text)
+          Text(this.sessionKind === 'chat' ? '在 AI 灵动岛里切到「聊天」，聊天和生成的文档会保存在这里，可以随时继续。' :
+            '向 AI 助理提问应用的用法、设置或问题后，对话会自动保存在这里，可以随时继续。').fontSize(13).lineHeight(19)
+            .fontColor(this.pal().text3).textAlign(TextAlign.Center)
+        }.width('100%').padding({ top: 48, bottom: 48 })
+      } else {
+        Row() {
+          Text('共 ' + this.kindSessions().length.toString() + ' 个对话 · 左滑可删除').fontSize(12).fontColor(this.pal().text3)
+            .layoutWeight(1)
+          Text(this.sessionsClearArmed ? '再点一次清空' : '清空全部').fontSize(12).fontColor('#FF453A')
+            .onClick((): void => { this.clearSessions(); })
+        }.width('100%')
+        if (this.sessionGroups().length === 0) {
+          Text('没有找到匹配的对话').fontSize(13).fontColor(this.pal().text3).width('100%').textAlign(TextAlign.Center)
+            .padding({ top: 24 })
+        }
+        List({ space: 8 }) {
+          ForEach(this.sessionGroups(), (group: AiSessionGroup): void => {
+            ListItemGroup({ header: this.sessionGroupHeader(group.title), space: 8 }) {
+              ForEach(group.sessions, (session: DiagnosticAiConversationSession): void => {
+                ListItem() { this.sessionCard(session) }
+                  .swipeAction({ end: { builder: (): void => { this.sessionDeleteButton(session); } },
+                    edgeEffect: SwipeEdgeEffect.Spring })
+              }, (session: DiagnosticAiConversationSession): string => 'session-' + session.id + '-' + session.updatedAt.toString())
+            }
+          }, (group: AiSessionGroup): string => 'group-' + group.title + '-' + group.sessions.length.toString())
+        }.layoutWeight(1).width('100%').scrollBar(BarState.Off).edgeEffect(EdgeEffect.Spring).sticky(StickyStyle.Header)
+      }
+    }.layoutWeight(1).width('100%')
+  }
+
+  @Builder private prefToggle(title: string, detail: string, isOn: boolean, onChange: (value: boolean) => void) {
+    Row({ space: 10 }) {
+      Column({ space: 2 }) {
+        Text(title).fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
+        Text(detail).fontSize(11).lineHeight(15).fontColor(this.pal().text3)
+      }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+      Toggle({ type: ToggleType.Switch, isOn: isOn }).selectedColor(this.accent)
+        .onChange((value: boolean): void => { onChange(value); })
+    }.width('100%').padding({ top: 4, bottom: 4 })
+  }
+
+  @Builder private prefCard(title: string) {
+    Text(title).fontSize(12).fontWeight(FontWeight.Medium).fontColor(this.pal().text3).width('100%')
+      .padding({ left: 4, top: 4 })
+  }
+
+  /** AI 个性化: every change applies and saves at once; the preview shows how answers will read. */
+  @Builder private assistantCustomizationSection() {
+    Column({ space: 10 }) {
+      Row() {
+        Text('改动会立即生效并保存在本机').fontSize(12).fontColor(this.pal().text3).layoutWeight(1)
+        if (this.assistantSavedFlash) {
+          Row({ space: 4 }) {
+            SymbolGlyph($r('sys.symbol.checkmark_circle_fill')).fontSize(14).fontColor(['#34C759'])
+            Text('已保存').fontSize(12).fontColor('#34C759')
+          }.transition(TransitionEffect.OPACITY.animation({ duration: 200 }))
+        }
+      }.width('100%').padding({ left: 4, right: 4 })
+      // Preview: the assistant's name and a sample answer in the current style and length.
+      Column({ space: 10 }) {
+        Row({ space: 10 }) {
+          Text((this.assistantNameDraft.trim() === '' ? 'R' : this.assistantNameDraft.trim().charAt(0)).toUpperCase())
+            .fontSize(16).fontWeight(FontWeight.Bold).fontColor(Color.White).width(36).height(36)
+            .textAlign(TextAlign.Center).borderRadius(18).backgroundColor(this.accent)
+          TextInput({ placeholder: '助手名称', text: this.assistantNameDraft }).height(38).fontSize(15).layoutWeight(1)
+            .fontWeight(FontWeight.Medium).backgroundColor(this.pal().surface).borderRadius(12).maxLength(32)
+            .onChange((value: string): void => { this.assistantNameDraft = value; })
+            .onSubmit((): void => { this.saveAssistantNow(); })
+            .onBlur((): void => { this.saveAssistantNow(); })
+        }.width('100%')
+        Text('“RDP 连不上怎么办？”').fontSize(12).fontColor(this.pal().text3).width('100%')
+        Text(aiPreviewAnswer(this.personalityDraft, this.verbosityDraft)).fontSize(13).lineHeight(19).fontColor(this.pal().text)
+          .width('100%').padding(12).borderRadius(16).backgroundColor(this.pal().surface)
+          .animation({ duration: 220, curve: Curve.EaseOut })
+      }.width('100%').padding(14).borderRadius(18).backgroundColor(this.pal().card)
+      .border({ width: 0.5, color: this.pal().cardBorder })
+
+      this.prefCard('回答')
+      Column({ space: 10 }) {
+        Text('风格').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text).width('100%')
+        AiSegmented({ options: [['balanced', '均衡'], ['warm', '温和'], ['concise', '简洁'], ['technical', '技术']],
+          current: this.personalityDraft, trackColor: this.pal().surface, thumbColor: this.pal().card, textColor: this.pal().text, mutedColor: this.pal().text3,
+          onPick: (id: string): void => {
+            this.personalityDraft = id as 'balanced' | 'warm' | 'concise' | 'technical'; this.saveAssistantNow();
+          } })
+        Text(aiPersonalityNote(this.personalityDraft)).fontSize(11).fontColor(this.pal().text3).width('100%')
+        Text('长度').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text).width('100%').margin({ top: 4 })
+        AiSegmented({ options: [['concise', '简短'], ['standard', '标准'], ['detailed', '详细']], current: this.verbosityDraft,
+          trackColor: this.pal().surface, thumbColor: this.pal().card, textColor: this.pal().text, mutedColor: this.pal().text3,
+          onPick: (id: string): void => { this.verbosityDraft = id as 'concise' | 'standard' | 'detailed'; this.saveAssistantNow(); } })
+        Text(aiVerbosityNote(this.verbosityDraft)).fontSize(11).fontColor(this.pal().text3).width('100%')
+        Text('语言').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text).width('100%').margin({ top: 4 })
+        AiSegmented({ options: [['zh-CN', '简体中文'], ['en-US', 'English']], current: this.languageDraft, trackColor: this.pal().surface, thumbColor: this.pal().card, textColor: this.pal().text, mutedColor: this.pal().text3,
+          onPick: (id: string): void => { this.languageDraft = id as 'zh-CN' | 'en-US'; this.saveAssistantNow(); } })
+      }.width('100%').padding(14).borderRadius(18).backgroundColor(this.pal().card)
+      .border({ width: 0.5, color: this.pal().cardBorder })
+
+      this.prefCard('角色')
+      Column() {
+        ForEach(DIAGNOSTIC_AI_ROLE_CHOICES, (item: DiagnosticAiChoice, index: number): void => {
+          Row({ space: 10 }) {
+            Column({ space: 2 }) {
+              Text(item.label).fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
+              Text(aiRoleNote(item.id)).fontSize(11).fontColor(this.pal().text3)
+            }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+            SymbolGlyph($r(this.roleDraft === item.id ? 'sys.symbol.checkmark_circle_fill' : 'sys.symbol.circle'))
+              .fontSize(20).fontColor([this.roleDraft === item.id ? this.accent : this.pal().text3])
+          }.width('100%').padding({ top: 10, bottom: 10 })
+          .border({ width: { bottom: index < DIAGNOSTIC_AI_ROLE_CHOICES.length - 1 ? 0.5 : 0 }, color: this.pal().divider })
+          .onClick((): void => {
+            this.roleDraft = item.id as 'remote-expert' | 'beginner-guide' | 'diagnostic-first' | 'privacy-first';
+            this.saveAssistantNow();
+          })
+        }, (item: DiagnosticAiChoice): string => 'role-' + item.id)
+      }.width('100%').padding({ left: 14, right: 14, top: 2, bottom: 2 }).borderRadius(18).backgroundColor(this.pal().card)
+      .border({ width: 0.5, color: this.pal().cardBorder })
+
+      this.prefCard('行为')
+      Column({ space: 4 }) {
+        this.prefToggle('主动建议', '在回答下面显示可以直接点的下一步操作', this.proactiveSuggestionsDraft,
+          (value: boolean): void => { this.proactiveSuggestionsDraft = value; this.saveAssistantNow(); })
+        this.prefToggle('敏感操作先确认', '断开连接、传输文件、涉及隐私或凭据的操作先问你，建议保持开启',
+          this.confirmBeforeActionsDraft, (value: boolean): void => { this.confirmBeforeActionsDraft = value; this.saveAssistantNow(); })
+        this.prefToggle('减少 AI 动效', '关闭持续旋转和弹簧转场，只保留状态变化', this.settings.reducedMotion,
+          (value: boolean): void => { this.saveReducedMotion(value); })
+      }.width('100%').padding({ left: 14, right: 14, top: 8, bottom: 8 }).borderRadius(18).backgroundColor(this.pal().card)
+      .border({ width: 0.5, color: this.pal().cardBorder })
+
+      this.prefCard('记忆')
+      Column({ space: 10 }) {
+        this.prefToggle('允许本地记忆', '最近对话的摘要和你补充的偏好会附在后续提问里，只保存在本机', this.memoryEnabledDraft,
+          (value: boolean): void => { this.memoryEnabledDraft = value; this.saveAssistantNow(); })
+        if (this.memoryEnabledDraft) {
+          Text('你希望 AI 记住的偏好').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text).width('100%')
+          TextArea({ placeholder: '例如：我主要用 RDP 连公司电脑，回答请先给最短的操作路径。', text: this.memoryDraft })
+            .height(84).fontSize(13).backgroundColor(this.pal().surface).borderRadius(12).maxLength(4000)
+            .onChange((value: string): void => { this.memoryDraft = value; this.saveMemorySoon(); })
+          Row() {
+            Text('自动生成的对话摘要').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text).layoutWeight(1)
+            if (this.sessionMemorySummary !== '') {
+              Text(this.memoryExpanded ? '收起' : '查看').fontSize(12).fontColor(this.accent)
+                .onClick((): void => { this.memoryExpanded = !this.memoryExpanded; })
+            }
+          }.width('100%')
+          Text(this.sessionMemorySummary === '' ? '完成几次问答后，这里会出现最近对话的本机摘要。' : this.sessionMemorySummary)
+            .fontSize(11).lineHeight(16).fontColor(this.pal().text3).width('100%').maxLines(this.memoryExpanded ? 40 : 3)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+          if (this.memoryDraft.trim() !== '') {
+            Text('清除我补充的偏好').fontSize(13).fontColor('#FF453A')
+              .onClick((): void => { this.memoryDraft = ''; this.saveAssistantNow(); })
+          }
+        }
+      }.width('100%').padding(14).borderRadius(18).backgroundColor(this.pal().card)
+      .border({ width: 0.5, color: this.pal().cardBorder })
+    }.width('100%')
+  }
+
+  @Builder private configTabs() {
+    AiSegmented({ options: CONFIG_TABS, current: this.configTab, segmentHeight: 34, trackColor: this.pal().surface, thumbColor: this.pal().card, textColor: this.pal().text, mutedColor: this.pal().text3,
+      onPick: (id: string): void => { this.selectConfigTab(id); } })
+  }
+
+  @Builder private configTabIntro() {
+    Text(this.configTab === 'api' ? '按量计费的普通 API：在服务商控制台创建 API Key，按实际用量付费。' :
+      this.configTab === 'coding' ? 'Coding Plan 是面向编程工具的包月套餐，使用独立的 Key 和专用地址；普通 API 与 Coding Plan 分开保存，互不复用。' :
+      '模型运行在本机或局域网内的电脑上，不需要 API Key，数据不出设备。')
+      .fontSize(12).lineHeight(17).fontColor(this.pal().text3).width('100%').padding({ left: 4, right: 4 })
+  }
+
+  /** API key / local connection fields for the selected provider (Coding Plan only when one is verified). */
+  @Builder private connectionFields() {
+    if (diagnosticAiProviderIsHarmonyLocal(this.selectedProvider)) {
+      Row({ space: 10 }) {
+        SymbolGlyph($r('sys.symbol.lock_shield_fill')).fontSize(22).fontColor([this.accent])
+        Column({ space: 2 }) {
+          Text('鸿蒙端侧小模型').fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
+          Text(this.selectedProviderSupported() ? '由系统管理，不需要地址、Key 或模型 ID' : '当前设备不可用：手机和 Pad 暂未开放')
+            .fontSize(12).fontColor(this.pal().text3)
+        }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+      }.width('100%')
+      Button(this.busy ? '检测中…' : '检测端侧模型').height(42).fontSize(13).borderRadius(21).width('100%')
+        .backgroundColor(this.pal().surface).fontColor(this.accent)
+        .enabled(!this.busy && this.selectedProviderSupported())
+        .onClick((): void => { void this.fetchModels(); })
+    } else {
+      if (this.configTab === 'api' && this.extraAuthModesForSelected().length > 0) {
+        this.field('授权方式', '')
         Flex({ wrap: FlexWrap.Wrap }) {
+          this.authModeChip('api_key')
           ForEach(this.extraAuthModesForSelected(), (mode: DiagnosticAiAuthMode): void => { this.authModeChip(mode) },
             (mode: DiagnosticAiAuthMode): string => 'auth-mode-' + mode)
         }.width('100%')
       }
-      Text(this.authModeDraft === 'coding_plan_key'
-        ? 'Coding Plan Key 只可发送到 Manifest 声明的专用 Base URL，并且模型必须在官方白名单内。'
-        : '普通 API 与 Coding Plan 分开保存；RemoteDesktop 不接收账户密码、Cookie 或网页 Session。')
-        .fontSize(11).lineHeight(16).fontColor(this.pal().text3).width('100%')
-    } else {
-      Text('连接方式：本机/端侧模型').fontSize(11).fontColor(this.pal().text3).width('100%')
+      this.field(this.authModeDraft === 'coding_plan_key' ? 'Coding Plan 专用地址' : '服务地址',
+        this.authModeDraft === 'coding_plan_key' ? '只使用服务商声明的专用地址' :
+          this.configTab === 'local' ? '本机或局域网内运行模型的地址' : '默认是官方地址，也可改为兼容的 HTTPS 地址')
+      TextInput({ placeholder: 'https://', text: this.endpoint }).height(44).fontSize(14)
+        .backgroundColor(this.pal().surface).borderRadius(12)
+        .enabled(this.authModeDraft !== 'coding_plan_key')
+        .onChange((value: string): void => { this.endpoint = value; })
+      if (this.authModeDraft !== 'none') {
+        this.field(this.authModeDraft === 'coding_plan_key' ? 'Coding Plan Key' : 'API Key',
+          '只保存在本机安全存储，不会同步、导出或写入日志')
+        TextInput({ placeholder: this.selectedHasSecret() ? '已保存，留空则保持不变' :
+          (this.authModeDraft === 'coding_plan_key' ? '粘贴 Coding Plan 专用 Key' : '粘贴 API Key'), text: this.keyText })
+          .height(44).fontSize(14).type(InputType.Password).backgroundColor(this.pal().surface).borderRadius(12)
+          .onChange((value: string): void => { this.keyText = value; })
+        Row({ space: 8 }) {
+          Checkbox().select(this.termsAcceptedDraft).selectedColor(this.accent)
+            .onChange((value: boolean): void => { this.termsAcceptedDraft = value; })
+          Text('我已了解服务商条款（版本 ' + (this.selectedManifest()?.termsVersion ?? '待核验') +
+            '）以及诊断助手的用途和数据处理地区。')
+            .fontSize(11).lineHeight(16).fontColor(this.pal().text3).layoutWeight(1)
+        }.width('100%')
+      }
+      this.field('模型', '保存后点「拉取模型」可从服务商读取可用模型')
+      Row({ space: 8 }) {
+        TextInput({ placeholder: '模型 ID', text: this.model }).height(44).fontSize(14).layoutWeight(1)
+          .backgroundColor(this.pal().surface).borderRadius(12)
+          .onChange((value: string): void => { this.model = value; })
+        Button(this.busy ? '…' : '拉取模型').height(44).fontSize(13).padding({ left: 14, right: 14 }).borderRadius(12)
+          .backgroundColor(this.pal().surface).fontColor(this.accent).enabled(!this.busy)
+          .onClick((): void => { void this.fetchModels(); })
+      }.width('100%')
+    }
+    if (this.availableModels.length > 0) {
+      Flex({ wrap: FlexWrap.Wrap }) {
+        ForEach(this.availableModels, (item: DiagnosticAiModelInfo): void => {
+          Text(item.displayName.length > 0 ? item.displayName : item.id).fontSize(12).maxLines(1)
+            .fontColor(this.model === item.id ? Color.White : this.pal().text)
+            .padding({ left: 10, right: 10, top: 6, bottom: 6 }).margin({ right: 6, bottom: 6 }).borderRadius(10)
+            .backgroundColor(this.model === item.id ? this.accent : this.pal().surface)
+            .onClick((): void => { this.selectModel(item.id); })
+        }, (item: DiagnosticAiModelInfo): string => item.id)
+      }.width('100%')
     }
   }
 
-  @Builder private usageAndHistorySection() {
-    this.sectionLabel('用量与本地会话')
-    Column({ space: 10 }) {
-      Text('当前 AI 订阅').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text).width('100%')
-      if (this.selectedUsageProvider() !== undefined) {
-        Row({ space: 8 }) {
-          SymbolGlyph($r('sys.symbol.checkmark_shield_fill')).fontSize(18).fontColor([this.accent])
-          Column({ space: 2 }) {
-            Text((this.selectedUsageProvider() as DiagnosticAiProviderProfile).displayName).fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
-            Text('模型：' + (this.selectedUsageProvider() as DiagnosticAiProviderProfile).modelId + ' · 新请求使用此订阅').fontSize(11).fontColor(this.pal().text3)
-          }.layoutWeight(1).alignItems(HorizontalAlign.Start)
-        }.width('100%').padding(10).borderRadius(14).backgroundColor(this.pal().surface)
-      } else {
-        Text('尚未配置可用的 AI 订阅').fontSize(12).fontColor(this.pal().text3).width('100%')
-      }
-      Row({ space: 8 }) {
+  /** Coding Plan is closed for now; the tab explains why and points to API Key. */
+  @Builder private codingPlanUnavailable() {
+    Column({ space: 12 }) {
+      Row({ space: 10 }) {
+        SymbolGlyph($r('sys.symbol.lock_fill')).fontSize(18).fontColor([this.pal().text3])
         Column({ space: 2 }) {
-          Text('模型与价格维护表').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
-          Text('本地保留完整基线；保存 Provider 后可从其官方 /models 清单刷新').fontSize(11).fontColor(this.pal().text3)
+          Text('暂不开放 Coding Plan 接入').fontSize(15).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
+          Text('Coding Plan 专用连接待官方核验').fontSize(12).fontColor(this.pal().text3)
         }.layoutWeight(1).alignItems(HorizontalAlign.Start)
-        Button(this.updatingModelPricing ? '更新中…' : '联网更新模型与价格').height(36).fontSize(11)
-          .padding({ left: 10, right: 10 }).borderRadius(18).backgroundColor(this.pal().surface).fontColor(this.accent)
-          .enabled(!this.updatingModelPricing && !this.busy && this.selectedUsageProvider() !== undefined)
-          .onClick((): void => { void this.updateModelPricing(); })
-      }.width('100%').padding(10).borderRadius(14).backgroundColor(this.pal().surface)
-      if (this.modelPricing.length > 0) {
-        Text('维护价格表（元 / 百万 Token）').fontSize(12).fontColor(this.pal().text2).width('100%')
-        ForEach(this.modelPricing, (row: DiagnosticAiModelPriceEntry): void => {
-          Row({ space: 8 }) {
-            Column({ space: 2 }) {
-              Text(row.providerId + ' · ' + row.displayName).fontSize(12).fontColor(this.pal().text)
-                .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-              Text(row.modelId + ' · 输入 ' + this.priceText(row.inputCnyPerMillion) + ' · 输出 ' + this.priceText(row.outputCnyPerMillion) +
-                ' · 缓存 ' + this.priceText(row.cachedInputCnyPerMillion)).fontSize(10).fontColor(this.pal().text3)
-                .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
-            }.layoutWeight(1).alignItems(HorizontalAlign.Start)
-            Text((row.sourceKind === 'provider' ? '在线' : '维护') + ' · ' + new Date(row.updatedAt).toLocaleDateString())
-              .fontSize(10).fontColor(row.sourceKind === 'provider' ? '#2BB673' : this.pal().text3)
-          }.width('100%').padding({ top: 5, bottom: 5 })
-        }, (row: DiagnosticAiModelPriceEntry): string => 'price-' + row.providerId + '-' + row.modelId)
-        Text('来源与更新时间以每行标记为准；价格不是 Provider 账单，缺少官方单价时显示“待确认”。').fontSize(10).lineHeight(15)
-          .fontColor(this.pal().text3).width('100%')
-      }
-      if (this.profiles.length > 1) {
-        Text('已配置订阅（点击切换新请求）').fontSize(12).fontColor(this.pal().text2).width('100%')
-        ForEach(this.profiles, (profile: DiagnosticAiProviderProfile): void => {
-          Row({ space: 8 }) {
-            SymbolGlyph(profile.providerId === this.settings.selectedProviderId && profile.modelId === this.settings.selectedModelId ?
-              $r('sys.symbol.checkmark_circle_fill') : $r('sys.symbol.circle')).fontSize(16)
-              .fontColor([profile.providerId === this.settings.selectedProviderId && profile.modelId === this.settings.selectedModelId ? this.accent : this.pal().text3])
-            Text(profile.displayName + ' · ' + (profile.modelId === '' ? '未选择模型' : profile.modelId)).fontSize(12).fontColor(this.pal().text).layoutWeight(1)
-          }.width('100%').padding({ top: 7, bottom: 7 }).onClick((): void => { this.useProviderForNewRequests(profile); })
-        }, (profile: DiagnosticAiProviderProfile): string => 'usage-provider-' + profile.id)
-      }
-      if (this.usageSnapshot.providerUsage.length > 0) {
-        Text('订阅用量明细').fontSize(12).fontColor(this.pal().text2).width('100%')
-        ForEach(this.usageSnapshot.providerUsage, (row: DiagnosticAiProviderUsage): void => {
-          Row({ space: 8 }) {
-            Column({ space: 2 }) {
-              Text(row.providerId + ' · ' + (row.modelId === '' ? '未知模型' : row.modelId)).fontSize(12).fontColor(this.pal().text)
-              Text(row.requestCount.toString() + ' 次 · ' + (row.promptTokens + row.completionTokens).toString() + ' Token · ¥' + row.estimatedCostCny.toFixed(4)).fontSize(11).fontColor(this.pal().text3)
-            }.layoutWeight(1).alignItems(HorizontalAlign.Start)
-            Text('查看').fontSize(11).fontColor(this.accent)
-          }.width('100%').padding({ top: 6, bottom: 6 }).onClick((): void => { this.usageProviderFilter = this.usageRowKey(row); })
-        }, (row: DiagnosticAiProviderUsage): string => 'usage-row-' + this.usageRowKey(row))
-      }
-      Row({ space: 8 }) {
-        Column({ space: 2 }) { Text(this.usageSnapshot.requestCount.toString()).fontSize(18).fontWeight(FontWeight.Bold).fontColor(this.pal().text); Text('请求').fontSize(11).fontColor(this.pal().text3) }.layoutWeight(1)
-        Column({ space: 2 }) { Text((this.usageSnapshot.promptTokens + this.usageSnapshot.completionTokens).toString()).fontSize(18).fontWeight(FontWeight.Bold).fontColor(this.pal().text); Text('估算 Token').fontSize(11).fontColor(this.pal().text3) }.layoutWeight(1)
-        Column({ space: 2 }) { Text(this.cacheHitText()).fontSize(18).fontWeight(FontWeight.Bold).fontColor(this.pal().text); Text('缓存命中').fontSize(11).fontColor(this.pal().text3) }.layoutWeight(1)
-        Column({ space: 2 }) { Text(this.costText()).fontSize(18).fontWeight(FontWeight.Bold).fontColor(this.pal().text); Text('估算费用').fontSize(11).fontColor(this.pal().text3) }.layoutWeight(1)
       }.width('100%')
-      Text(this.usageFilterText() + ' · 统计只保存在当前账号的本机偏好中；Provider 未返回真实计费时按 ¥0.30/百万 Token 估算。').fontSize(11).lineHeight(16).fontColor(this.pal().text3).width('100%')
+      Text('各家 Coding Plan 多数只允许在指定的编程工具里使用，并且要走专用地址；在 AI 助理里调用可能违反套餐条款，甚至导致 Key 被停用。在服务商明确允许之前，这里不接入 Coding Plan，也不会把普通 API Key 当作 Coding Plan 使用。')
+        .fontSize(12).lineHeight(18).fontColor(this.pal().text3).width('100%')
+      Button('改用 API Key').height(40).fontSize(13).borderRadius(20).width('100%')
+        .backgroundColor(this.pal().surface).fontColor(this.accent)
+        .onClick((): void => { this.selectConfigTab('api'); })
     }.width('100%').padding(14).borderRadius(18).backgroundColor(this.pal().card)
-      .border({ width: 0.5, color: this.pal().cardBorder })
+    .border({ width: 0.5, color: this.pal().cardBorder })
   }
 
-  @Builder private sessionManagementSection() {
-    Scroll() {
-      Column({ space: 10 }) {
-        Column({ space: 4 }) {
-          Text('历史会话').fontSize(16).fontWeight(FontWeight.Medium).fontColor(this.pal().text).width('100%')
-          Text('每个会话保留自己的 Provider、模型和上下文。点击后会替换当前设置页，并在原 Provider 上继续提问。').fontSize(12).lineHeight(17).fontColor(this.pal().text3).width('100%')
-        }.width('100%').alignItems(HorizontalAlign.Start)
-        if (this.sessions.length === 0) {
-          Text('还没有已保存的对话。完成一次问答后会自动创建会话。').fontSize(12).fontColor(this.pal().text2).width('100%')
-        } else {
-          ForEach(this.sessions.slice(0, 50), (session: DiagnosticAiConversationSession): void => {
-            AppSettingsActionRow({ title: session.title, detail: session.turns.length.toString() + ' 轮 · ' + new Date(session.updatedAt).toLocaleString(), isEnabled: true,
-              onAction: (): void => {
-                const profile: DiagnosticAiProviderProfile | undefined = this.profiles.find((item: DiagnosticAiProviderProfile): boolean =>
-                  item.providerId === session.providerId && item.modelId === session.modelId);
-                if (profile !== undefined) { this.useProviderForNewRequests(profile); }
-                this.onOpenSession(session.id);
-              } })
-          }, (session: DiagnosticAiConversationSession): string => 'session-' + session.id)
-        }
-      }.width('100%').padding({ bottom: 16 })
-    }.layoutWeight(1).width('100%').scrollBar(BarState.Off).edgeEffect(EdgeEffect.Spring)
-  }
-
-  @Builder private assistantCustomizationSection() {
-    this.sectionLabel('助手个性与本地记忆')
-    Column({ space: 10 }) {
-      Text('助手名称').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
-      TextInput({ placeholder: '例如：RD Assistant', text: this.assistantNameDraft }).height(42).fontSize(14)
-        .backgroundColor(this.pal().surface).borderRadius(12).onChange((value: string): void => { this.assistantNameDraft = value; })
-      Text('回答风格').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
-      Flex({ wrap: FlexWrap.Wrap }) {
-        ForEach(DIAGNOSTIC_AI_PERSONALITY_CHOICES, (item: DiagnosticAiPersonalityChoice): void => {
-          Text(item.label).fontSize(12).fontColor(this.personalityDraft === item.id ? Color.White : this.pal().text)
-            .padding({ left: 12, right: 12, top: 7, bottom: 7 }).margin({ right: 8, bottom: 6 }).borderRadius(14)
-            .backgroundColor(this.personalityDraft === item.id ? this.accent : this.pal().surface)
-            .onClick((): void => { this.personalityDraft = item.id; })
-        }, (item: DiagnosticAiPersonalityChoice): string => item.id)
-      }.width('100%')
-      Text('回答长度').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
-      Flex({ wrap: FlexWrap.Wrap }) {
-        ForEach(DIAGNOSTIC_AI_VERBOSITY_CHOICES, (item: DiagnosticAiChoice): void => {
-          Text(item.label).fontSize(12).fontColor(this.verbosityDraft === item.id ? Color.White : this.pal().text)
-            .padding({ left: 12, right: 12, top: 7, bottom: 7 }).margin({ right: 8, bottom: 6 }).borderRadius(14)
-            .backgroundColor(this.verbosityDraft === item.id ? this.accent : this.pal().surface)
-            .onClick((): void => { this.verbosityDraft = item.id as 'concise' | 'standard' | 'detailed'; })
-        }, (item: DiagnosticAiChoice): string => 'verbosity-' + item.id)
-      }.width('100%')
-      Text('助手角色').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
-      Flex({ wrap: FlexWrap.Wrap }) {
-        ForEach(DIAGNOSTIC_AI_ROLE_CHOICES, (item: DiagnosticAiChoice): void => {
-          Text(item.label).fontSize(12).fontColor(this.roleDraft === item.id ? Color.White : this.pal().text)
-            .padding({ left: 12, right: 12, top: 7, bottom: 7 }).margin({ right: 8, bottom: 6 }).borderRadius(14)
-            .backgroundColor(this.roleDraft === item.id ? this.accent : this.pal().surface)
-            .onClick((): void => { this.roleDraft = item.id as 'remote-expert' | 'beginner-guide' | 'diagnostic-first' | 'privacy-first'; })
-        }, (item: DiagnosticAiChoice): string => 'role-' + item.id)
-      }.width('100%')
-      Text('回答语言').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
-      Row({ space: 8 }) {
-        Text('简体中文').fontSize(12).fontColor(this.languageDraft === 'zh-CN' ? Color.White : this.pal().text)
-          .padding({ left: 12, right: 12, top: 7, bottom: 7 }).borderRadius(14)
-          .backgroundColor(this.languageDraft === 'zh-CN' ? this.accent : this.pal().surface)
-          .onClick((): void => { this.languageDraft = 'zh-CN'; })
-        Text('English').fontSize(12).fontColor(this.languageDraft === 'en-US' ? Color.White : this.pal().text)
-          .padding({ left: 12, right: 12, top: 7, bottom: 7 }).borderRadius(14)
-          .backgroundColor(this.languageDraft === 'en-US' ? this.accent : this.pal().surface)
-          .onClick((): void => { this.languageDraft = 'en-US'; })
-      }.width('100%')
-      Row({ space: 8 }) {
-        Column({ space: 2 }) { Text('允许本地记忆').fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.pal().text); Text('会话摘要和你手动填写的偏好只附加到后续请求').fontSize(11).fontColor(this.pal().text3) }.layoutWeight(1)
-        Toggle({ type: ToggleType.Switch, isOn: this.memoryEnabledDraft }).selectedColor(this.accent).onChange((value: boolean): void => { this.memoryEnabledDraft = value; })
-      }.width('100%')
-      Row({ space: 8 }) {
-        Column({ space: 2 }) { Text('减少 AI 动效').fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.pal().text); Text('关闭持续旋转和弹簧转场，保留状态与可用操作').fontSize(11).fontColor(this.pal().text3) }.layoutWeight(1)
-        Toggle({ type: ToggleType.Switch, isOn: this.settings.reducedMotion }).selectedColor(this.accent)
-          .onChange((value: boolean): void => { this.saveReducedMotion(value); })
-      }.width('100%')
-      Row({ space: 8 }) {
-        Column({ space: 2 }) { Text('主动建议').fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.pal().text); Text('在回答末尾显示下一步操作卡片').fontSize(11).fontColor(this.pal().text3) }.layoutWeight(1)
-        Toggle({ type: ToggleType.Switch, isOn: this.proactiveSuggestionsDraft }).selectedColor(this.accent).onChange((value: boolean): void => { this.proactiveSuggestionsDraft = value; })
-      }.width('100%')
-      Row({ space: 8 }) {
-        Column({ space: 2 }) { Text('敏感操作先确认').fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.pal().text); Text('断开、传输、隐私、凭据等操作始终建议保持开启').fontSize(11).fontColor(this.pal().text3) }.layoutWeight(1)
-        Toggle({ type: ToggleType.Switch, isOn: this.confirmBeforeActionsDraft }).selectedColor(this.accent).onChange((value: boolean): void => { this.confirmBeforeActionsDraft = value; })
-      }.width('100%')
-      Text('自动会话摘要').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
-      Text(this.sessionMemorySummary === '' ? '完成问答后，这里会显示最近会话的本机摘要。' : this.sessionMemorySummary)
-        .fontSize(11).lineHeight(16).fontColor(this.pal().text3).width('100%').maxLines(8)
-      Text('手动补充偏好').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
-      TextArea({ placeholder: '例如：我主要使用 RDP，回答请先给出最短操作路径。', text: this.memoryDraft }).height(86).fontSize(13)
-        .backgroundColor(this.pal().surface).borderRadius(12).onChange((value: string): void => { this.memoryDraft = value; })
-      Button('保存助手偏好').width('100%').height(42).borderRadius(21).backgroundColor(this.pal().surface).fontColor(this.accent)
-        .onClick((): void => { this.saveAssistantPreferences(); })
-    }.width('100%').padding(14).borderRadius(18).backgroundColor(this.pal().card)
-      .border({ width: 0.5, color: this.pal().cardBorder })
-  }
-
+  /** 辅助 AI 配置: API Key, Coding Plan and on-device models kept apart, each with its own providers and fields. */
   @Builder private configSection() {
     Scroll() {
-      Column({ space: 10 }) {
+      Column({ space: 12 }) {
         this.statusCard()
-        this.sectionLabel('选择服务商 · 优先支持中国大陆服务')
-        Flex({ wrap: FlexWrap.Wrap }) {
-          ForEach(this.manifests, (manifest: DiagnosticAiProviderManifest): void => { this.providerCard(manifest) },
-            (manifest: DiagnosticAiProviderManifest): string => manifest.providerId)
-        }.width('100%')
-        this.sectionLabel('连接信息')
-        Column({ space: 10 }) {
-          this.authModeSection()
-          if (diagnosticAiProviderIsHarmonyLocal(this.selectedProvider)) {
-            this.field('鸿蒙端侧小模型', '由 HarmonyOS 系统管理，不需要服务地址、API Key 或模型 ID')
-            Row({ space: 10 }) {
-              SymbolGlyph($r('sys.symbol.lock_shield_fill')).fontSize(22).fontColor([this.accent])
-              Text(this.selectedProviderSupported() ?
-                '当前设备允许使用 PC/2in1 端侧问答模型' :
-                '当前设备不可用：手机和 Pad 暂未开放').fontSize(13).lineHeight(19)
-                .fontColor(this.pal().text).layoutWeight(1)
-            }.width('100%').padding(12).borderRadius(14).backgroundColor(this.pal().surface)
-            Button(this.busy ? '检测中…' : '检测端侧模型').height(44).fontSize(13).borderRadius(12)
-              .backgroundColor(this.pal().surface).fontColor(this.accent)
-              .enabled(!this.busy && this.selectedProviderSupported())
-              .onClick((): void => { void this.fetchModels(); })
-          } else {
-            this.field(this.authModeDraft === 'coding_plan_key' ? 'Coding Plan 专用 Base URL' : '服务地址',
-              this.authModeDraft === 'coding_plan_key' ? '仅使用 Provider Manifest 声明的专用地址，不会把专用 Key 发到自定义端点' : '可改为兼容的 HTTPS 地址')
-            TextInput({ placeholder: 'https://', text: this.endpoint }).height(44).fontSize(14)
-              .backgroundColor(this.pal().surface).borderRadius(12)
-              .enabled(this.authModeDraft !== 'coding_plan_key')
-              .onChange((value: string): void => { this.endpoint = value; })
-            this.field(this.authModeDraft === 'coding_plan_key' ? 'Coding Plan 专用 Key' : 'API Key',
-              this.authModeDraft === 'coding_plan_key' ? '与普通 API Key 分开保存；仅用于已核验的 Coding Plan' : '只保存在本机安全存储，不会同步或写入日志')
-            TextInput({ placeholder: this.selectedHasSecret() ? '已保存；留空则保持不变' :
-              (this.authModeDraft === 'coding_plan_key' ? '粘贴 Coding Plan 专用 Key' : '粘贴 API Key'), text: this.keyText })
-              .height(44).fontSize(14).type(InputType.Password).backgroundColor(this.pal().surface).borderRadius(12)
-              .onChange((value: string): void => { this.keyText = value; })
-            if (this.authModeDraft !== 'none') {
-              Row({ space: 8 }) {
-                Checkbox().select(this.termsAcceptedDraft).selectedColor(this.accent)
-                  .onChange((value: boolean): void => { this.termsAcceptedDraft = value; })
-                Text('我已查看 Provider 条款版本 ' + (this.selectedManifest()?.termsVersion ?? '待核验') +
-                  '，确认当前诊断助手用途和数据处理地区已向我说明。')
-                  .fontSize(11).lineHeight(16).fontColor(this.pal().text3).layoutWeight(1)
-              }.width('100%')
-            }
-            this.field('模型', '保存服务后可拉取可用模型列表')
-            Row({ space: 8 }) {
-              TextInput({ placeholder: '模型 ID', text: this.model }).height(44).fontSize(14).layoutWeight(1)
-                .backgroundColor(this.pal().surface).borderRadius(12)
-                .onChange((value: string): void => { this.model = value; })
-              Button('拉取模型').height(44).fontSize(13).padding({ left: 14, right: 14 }).borderRadius(12)
-                .backgroundColor(this.pal().surface).fontColor(this.accent).enabled(!this.busy)
-                .onClick((): void => { void this.fetchModels(); })
-            }.width('100%')
-          }
-          if (this.availableModels.length > 0) {
-            Flex({ wrap: FlexWrap.Wrap }) {
-              ForEach(this.availableModels, (item: DiagnosticAiModelInfo): void => {
-                Text(item.displayName.length > 0 ? item.displayName : item.id).fontSize(12).maxLines(1)
-                  .fontColor(this.model === item.id ? Color.White : this.pal().text)
-                  .padding({ left: 10, right: 10, top: 6, bottom: 6 }).margin({ right: 6, bottom: 6 }).borderRadius(10)
-                  .backgroundColor(this.model === item.id ? this.accent : this.pal().surface)
-                  .onClick((): void => { this.selectModel(item.id); })
-              }, (item: DiagnosticAiModelInfo): string => item.id)
-            }.width('100%')
-          }
-        }
-        .width('100%').padding(14).borderRadius(18).backgroundColor(this.pal().card)
-        .border({ width: 0.5, color: this.pal().cardBorder })
-        if (this.profiles.length > 1) {
-          this.sectionLabel('已保存的服务')
-          ForEach(this.profiles, (profile: DiagnosticAiProviderProfile): void => {
-            Row({ space: 8 }) {
-              AppSettingsActionRow({ title: profile.displayName, detail: (profile.modelId === '' ? '已配置 · 尚未选择模型' :
-                '模型：' + profile.modelId) + ' · ' + this.authModeLabel(profile.authMode) + ' · ' + diagnosticAiPrivacySummary(profile), isEnabled: true,
-                onAction: (): void => { this.selectedProvider = profile.providerId; this.authModeDraft = profile.authMode;
-                  this.termsAcceptedDraft = profile.consentId !== '' && profile.consentAt > 0;
-                this.model = profile.modelId;
-                  this.endpoint = profile.endpoint; this.availableModels = []; } }).layoutWeight(1)
-              Button('删除').height(40).fontSize(12).fontColor(this.pal().danger).backgroundColor(this.pal().surface)
-                .borderRadius(12).onClick((): void => { this.revokeProfile(profile); })
-            }.width('100%')
-          }, (profile: DiagnosticAiProviderProfile): string => profile.id)
-        }
-        Row({ space: 12 }) {
-          SymbolGlyph($r('sys.symbol.performance')).fontSize(20).fontColor([this.accent])
-          Column({ space: 2 }) {
-            Text('AI 入口已常驻').fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
-            Text('主机页右上角始终保留入口；点击即可唤起 Siri 风格 AI 浮窗。').fontSize(11).fontColor(this.pal().text3)
-          }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-          Text('已开启').fontSize(11).fontColor('#2BB673').padding({ left: 8, right: 8, top: 3, bottom: 3 }).borderRadius(9).backgroundColor('#1A2BB673')
-        }.width('100%').padding(14).borderRadius(18).backgroundColor(this.pal().card)
+        this.configTabs()
+        this.configTabIntro()
+        if (this.configTab === 'coding' && (!CODING_PLAN_OPEN || !this.tabManifests('coding').some(
+          (m: DiagnosticAiProviderManifest): boolean => this.providerAvailable(m)))) {
+          this.codingPlanUnavailable()
+        } else {
+          Flex({ wrap: FlexWrap.Wrap }) {
+            ForEach(this.tabManifests(this.configTab), (manifest: DiagnosticAiProviderManifest): void => {
+              this.providerCard(manifest)
+            }, (manifest: DiagnosticAiProviderManifest): string => this.configTab + '-' + manifest.providerId)
+          }.width('100%')
+          Column({ space: 10 }) {
+            this.connectionFields()
+          }.width('100%').padding(14).borderRadius(18).backgroundColor(this.pal().card)
           .border({ width: 0.5, color: this.pal().cardBorder })
+        }
+        if (this.profiles.length > 0) {
+          Text('已保存的服务').fontSize(12).fontWeight(FontWeight.Medium).fontColor(this.pal().text3).width('100%')
+            .padding({ left: 4, top: 4 })
+          Column() {
+            ForEach(this.profiles, (profile: DiagnosticAiProviderProfile, index: number): void => {
+              Row({ space: 10 }) {
+                Column({ space: 3 }) {
+                  Row({ space: 6 }) {
+                    Text(profile.displayName).fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
+                    Text(this.profileKind(profile)).fontSize(10).fontColor(this.accent)
+                      .padding({ left: 6, right: 6, top: 1, bottom: 1 }).borderRadius(6).backgroundColor(this.pal().surface)
+                    if (profile.providerId === this.settings.selectedProviderId && profile.modelId === this.settings.selectedModelId) {
+                      Text('使用中').fontSize(10).fontColor('#2BB673')
+                    }
+                  }
+                  Text(profile.modelId === '' ? '尚未选择模型' : profile.modelId).fontSize(11).fontColor(this.pal().text3)
+                }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+                Text('编辑').fontSize(12).fontColor(this.accent).padding(6)
+                  .onClick((): void => {
+                    this.selectedProvider = profile.providerId; this.authModeDraft = profile.authMode;
+                    this.termsAcceptedDraft = profile.consentId !== '' && profile.consentAt > 0;
+                    this.model = profile.modelId; this.endpoint = profile.endpoint; this.availableModels = [];
+                    this.configTab = this.tabForSelection();
+                  })
+                Text('删除').fontSize(12).fontColor(this.pal().danger).padding(6)
+                  .onClick((): void => { this.revokeProfile(profile); })
+              }.width('100%').padding({ top: 10, bottom: 10 })
+              .border({ width: { bottom: index < this.profiles.length - 1 ? 0.5 : 0 }, color: this.pal().divider })
+            }, (profile: DiagnosticAiProviderProfile): string => profile.id + profile.modelId)
+          }.width('100%').padding({ left: 14, right: 14 }).borderRadius(18).backgroundColor(this.pal().card)
+          .border({ width: 0.5, color: this.pal().cardBorder })
+        }
       }.width('100%').padding({ bottom: 12 })
     }.layoutWeight(1).width('100%').scrollBar(BarState.Off).edgeEffect(EdgeEffect.Spring).align(Alignment.Top)
     if (this.message.length > 0) {
@@ -955,9 +1569,12 @@ export struct DiagnosticAiSettingsSheet {
       .width('100%').padding(10).borderRadius(12).margin({ top: 8 })
       .backgroundColor(this.messageIsError() ? '#1AF08C00' : this.pal().surface)
     }
-    Button(this.busy ? '处理中…' : '保存配置').width('100%').height(48).fontSize(16).fontWeight(FontWeight.Medium)
-      .fontColor(Color.White).backgroundColor(this.accent).borderRadius(24).margin({ top: 10 })
-      .enabled(!this.busy).onClick((): void => { void this.saveProvider(); })
+    if (!(this.configTab === 'coding' && !this.tabManifests('coding').some(
+      (m: DiagnosticAiProviderManifest): boolean => this.providerAvailable(m)))) {
+      Button(this.busy ? '处理中…' : '保存并使用').width('100%').height(48).fontSize(16).fontWeight(FontWeight.Medium)
+        .fontColor(Color.White).backgroundColor(this.accent).borderRadius(24).margin({ top: 10 })
+        .enabled(!this.busy).onClick((): void => { void this.saveProvider(); })
+    }
   }
 
   @Builder private lockedCard() {
@@ -984,7 +1601,8 @@ export struct DiagnosticAiSettingsSheet {
   build() {
     Column() {
         this.header()
-        if ((this.section === 1 || this.section === 3 || this.section === 4 || this.section === 5 || this.section === 6) ?
+        if ((this.section === 1 || this.section === 3 || this.section === 4 || this.section === 5 || this.section === 6 ||
+          this.section === 7) ?
           !this.assistantAllowed() : !this.providerAllowed()) {
           this.lockedCard()
         } else if (this.section === 1) {
@@ -1003,10 +1621,44 @@ export struct DiagnosticAiSettingsSheet {
           this.sessionManagementSection()
         } else if (this.section === 6) {
           AiMotionSettingsPanel()
+        } else if (this.section === 7) {
+          AiSkillsSettingsPanel({ owner: this.owner })
         } else {
           this.configSection()
         }
       }.width('100%').height('100%').padding({ left: 20, right: 20, top: 18, bottom: 28 })
         .backgroundColor(this.pal().sheetBg)
+  }
+}
+
+/** One usage figure (a component, so it redraws when the range or subscription filter changes). */
+@Component
+struct AiUsageTile {
+  @Prop label: string = '';
+  @Prop value: string = '';
+  @Prop detail: string = '';
+  /** 0…1 draws a bar under the value; negative: no bar. */
+  @Prop ratio: number = -1;
+  @Prop cardColor: string = '#FFFFFF';
+  @Prop edgeColor: string = '#14000000';
+  @Prop textColor: string = '#000000';
+  @Prop mutedColor: string = '#8E8E93';
+  @Prop trackColor: string = '#F2F2F7';
+
+  build() {
+    Column({ space: 4 }) {
+      Text(this.label).fontSize(12).fontColor(this.mutedColor)
+      Text(this.value).fontSize(22).fontWeight(FontWeight.Bold).fontColor(this.textColor)
+        .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+      if (this.ratio >= 0) {
+        Stack({ alignContent: Alignment.Start }) {
+          Row().width('100%').height(4).borderRadius(2).backgroundColor(this.trackColor)
+          Row().width((Math.min(1, this.ratio) * 100).toFixed(0) + '%').height(4).borderRadius(2).backgroundColor('#34C759')
+            .animation({ duration: 300, curve: Curve.EaseOut })
+        }.width('100%').margin({ top: 2 })
+      }
+      Text(this.detail).fontSize(11).fontColor(this.mutedColor).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+    }.width('100%').alignItems(HorizontalAlign.Start).padding(14).borderRadius(18)
+    .backgroundColor(this.cardColor).border({ width: 0.5, color: this.edgeColor })
   }
 }

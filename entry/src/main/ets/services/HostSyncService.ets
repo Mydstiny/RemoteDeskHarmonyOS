@@ -43,6 +43,7 @@ import {
 } from './LanHostAddressPolicy';
 import { KeyVaultService } from './KeyVaultService';
 import { AccountSessionCoordinator } from './AccountSessionCoordinator';
+import { ConnectionJournal } from './ConnectionJournal';
 import {
   hydrateRustDeskPeerTwoFactorHost,
   RUSTDESK_PEER_2FA_BINDING_VERSION,
@@ -962,6 +963,7 @@ export class HostSyncService {
     if (!host) { return; }
     const next: RemoteHost = host.runtimeClone();
     next.lastConnected = Date.now();
+    ConnectionJournal.connected(hostId, host.label, host.protocol);
     this.persistLocalHostObservation(hostId, next, true);
   }
 
@@ -984,7 +986,10 @@ export class HostSyncService {
     } else {
       next.lastHealth = ConnectionHealth.BAD;
     }
-    if (markConnected) { next.lastConnected = Date.now(); }
+    if (markConnected) {
+      next.lastConnected = Date.now();
+      ConnectionJournal.connected(hostId, host.label, host.protocol);
+    }
     if (!markConnected && next.lastHealth === host.lastHealth && next.lastLatency === host.lastLatency) {
       return;
     }

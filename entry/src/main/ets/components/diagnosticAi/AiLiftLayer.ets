@@ -3,6 +3,9 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 import { DiagnosticAiAssistantPanel } from './DiagnosticAiAssistantPanel';
 import { AI_FLOAT_ORB } from './AiIslandChrome';
 import { AiDoneMark, AiFloatingOrb, AiIslandRingsCheck } from './AiMotionViews';
+import { AiChatMemory, AiChatView } from './AiChatView';
+import { AI_CHAT_REFRESH_KEY } from '../../services/diagnosticAi/AiShareInbox';
+import { AI_ORB_HINT_TEXT, aiOrbHintWanted } from '../../services/diagnosticAi/AiOrbHintStore';
 
 /** The island's square when 灵动岛光环 opens out of it. */
 const AI_ISLAND_CARD: number = 148;
@@ -12,6 +15,9 @@ const AI_CAPSULE_HEIGHT: number = 58;
 const AI_CHAT_GAP: number = 10;
 /** Orb resting distance from the side it snaps to. */
 const AI_EDGE: number = 14;
+/** The one-time hint beside the orb. */
+const AI_HINT_WIDTH: number = 212;
+const AI_HINT_HEIGHT: number = 30;
 
 /**
  * What AiIsland hands the layer, and how it talks to it once it is up. The layer fills in the `to…` hooks when it
@@ -40,6 +46,20 @@ export class AiLiftController {
   /** The window's size as AiIsland measured it (vp), until the layer reads the window itself. */
   areaWidth: number = 360;
   areaHeight: number = 780;
+  /**
+   * 'assistant': after an app action; 'chat': 聊天 floated by the user. Either way a tap on the orb goes back to the
+   * island and a double tap shows or hides the small chat beside it.
+   */
+  mode: string = 'assistant';
+  /** Whether a request is out (the orb shows it thinks). */
+  onActivityChanged: (active: boolean) => void = (_active: boolean): void => {};
+  /** Which way into the orb this is, for its one-time hint: action · chat · compact. */
+  hintPath: string = 'action';
+  /** Open with the small chat already shown (a double tap on the island's own orb). */
+  openChat: boolean = false;
+  /** Where the orb starts, in window coordinates (−1: its usual spot at the right edge). */
+  startX: number = -1;
+  startY: number = -1;
 }
 
 @Builder
@@ -88,6 +108,11 @@ struct AiLiftLayer {
   @State private orbOpacity: number = 0;
   @State private chatShown: boolean = false;
   @State private chatH: number = 150;
+  /** 聊天: an answer landed while the small chat was hidden — a dot on the orb says so. */
+  @StorageProp(AI_CHAT_REFRESH_KEY) @Watch('onChatRefresh') chatRefresh: number = 0;
+  @State private unread: boolean = false;
+  /** "轻点返回 · 双击打开小窗", for a moment after the orb appears. */
+  @State private hintShown: boolean = false;
   @State private dragging: boolean = false;
   /** Overflow from a 1×1 anchor (normal), or the fallback: full window / the region at rest. */
   @State private anchored: boolean = true;
@@ -159,6 +184,53 @@ struct AiLiftLayer {
 
   private later(ms: number, action: () => void): void { this.timers.push(setTimeout(action, ms)); }
 
+  private chatMode(): boolean { return this.controller.mode === 'chat'; }
+
+  private onChatRefresh(): void {
+    if (!this.chatMode() || this.phase !== 2) { return; }
+    this.controller.onActivityChanged(AiChatMemory.requestId !== '');
+    if (!this.chatShown && AiChatMemory.requestId === '') {
+      this.getUIContext().animateTo({ curve: curves.springMotion(0.4, 0.7) }, (): void => { this.unread = true; });
+    }
+  }
+
+  /** The orb is up: the first time it comes this way, say how to use it. */
+  private showHint(): void {
+    if (!aiOrbHintWanted(this.getUIContext().getHostContext(), this.controller.hintPath)) { return; }
+    this.getUIContext().animateTo({ duration: 220, curve: Curve.EaseOut }, (): void => { this.hintShown = true; });
+    this.later(3200, (): void => {
+      this.getUIContext().animateTo({ duration: 260, curve: Curve.EaseIn }, (): void => { this.hintShown = false; });
+      // The resting region held the hint too: shrink it back to the orb.
+      this.later(300, (): void => { this.toFull(); this.restSoon(60); });
+    });
+  }
+
+  /** Show or hide the small chat beside the orb (聊天); the orb moves only if the two would not fit. */
+  private setChatShown(shown: boolean): void {
+    if (shown === this.chatShown) { return; }
+    this.toFull();
+    this.getUIContext().animateTo({ curve: curves.springMotion(0.5, 0.86) }, (): void => {
+      this.chatShown = shown;
+      this.boxY = this.fitY(this.boxY);
+      this.syncChatSides(false);
+    });
+    this.restSoon(700);
+  }
+
+  /** A tap: back to the island, from where the orb is. */
+  private orbTapped(): void {
+    if (this.phase !== 2) { return; }
+    this.controller.onOrbTap(this.boxX, this.boxY + this.originY);
+  }
+
+  /** A double tap: the small chat beside the orb, or away again. */
+  private orbDoubleTapped(): void {
+    if (this.phase !== 2) { return; }
+    this.hintShown = false;
+    if (!this.chatShown) { this.unread = false; }
+    this.setChatShown(!this.chatShown);
+  }
+
   /** Full window: needed while anything moves (positions are window positions, so nothing visibly changes). */
   private toFull(): void {
     if (this.restTimer !== -1) { clearTimeout(this.restTimer); this.restTimer = -1; }
@@ -189,6 +261,13 @@ struct AiLiftLayer {
       top = Math.min(top, this.chatY());
       right = Math.max(right, this.chatX() + this.chatWidth());
       bottom = Math.max(bottom, this.chatY() + this.chatH);
+    }
+    if (this.hintShown) {
+      // The hint beside the orb must not be cut down to the orb's region.
+      left = Math.min(left, this.hintX());
+      top = Math.min(top, this.hintY());
+      right = Math.max(right, this.hintX() + AI_HINT_WIDTH);
+      bottom = Math.max(bottom, this.hintY() + AI_HINT_HEIGHT);
     }
     left = Math.max(0, Math.floor(left));
     top = Math.max(0, Math.floor(top));
@@ -225,7 +304,7 @@ struct AiLiftLayer {
     const windowBottom: number = this.windowH > 0 ? this.windowH - this.originY : this.layerH;
     return Math.min(this.layerH, windowBottom) - Math.max(this.bottomSafe + 6, this.keyboard + 8);
   }
-  private chatWidth(): number { return Math.min(this.layerW - 28, 300); }
+  private chatWidth(): number { return Math.min(this.layerW - 28, this.chatMode() ? 340 : 300); }
   private orbOnRight(): boolean { return this.boxX + AI_FLOAT_ORB / 2 > this.layerW / 2; }
 
   /** Room for the chat under and over the orb, as much of the chat as would fit there. */
@@ -262,6 +341,12 @@ struct AiLiftLayer {
       this.chatShiftY = 0;
     });
   }
+  private hintX(): number {
+    const x: number = this.orbOnRight() ? this.boxX - AI_HINT_WIDTH - 10 : this.boxX + AI_FLOAT_ORB + 10;
+    return Math.max(4, Math.min(this.layerW - AI_HINT_WIDTH - 4, x));
+  }
+  private hintY(): number { return this.boxY + (AI_FLOAT_ORB - AI_HINT_HEIGHT) / 2; }
+
   private edgeX(right: boolean): number { return right ? this.layerW - AI_FLOAT_ORB - AI_EDGE : AI_EDGE; }
   private chatSpace(): number { return this.chatShown ? this.chatH + AI_CHAT_GAP : 0; }
 
@@ -346,11 +431,8 @@ struct AiLiftLayer {
     this.later(620, (): void => {
       this.phase = 2;
       this.ringsOn = false;
-      ui.animateTo({ curve: curves.springMotion(0.5, 0.86) }, (): void => {
-        this.chatShown = true;
-        this.boxY = this.fitY(this.boxY);
-        this.syncChatSides(false);
-      });
+      // Just the orb: a double tap brings the small chat.
+      this.showHint();
       this.restSoon(700);
     });
   }
@@ -362,19 +444,20 @@ struct AiLiftLayer {
     this.orbOpacity = 1;
     this.boxColor = '#00000000';
     this.boxW = AI_FLOAT_ORB; this.boxH = AI_FLOAT_ORB; this.boxR = AI_FLOAT_ORB / 2;
-    this.boxX = this.edgeX(true); this.boxY = this.fitY(this.layerH * 0.46);
-    this.boxScale = 0.6; this.boxOpacity = 0;
+    const fromIsland: boolean = this.controller.startX >= 0 && this.controller.startY >= 0;
+    this.boxX = fromIsland ? Math.max(4, Math.min(this.layerW - AI_FLOAT_ORB - 4, this.controller.startX)) : this.edgeX(true);
+    this.boxY = this.fitY(fromIsland ? this.controller.startY - this.originY : this.layerH * 0.46);
+    // Taking over the island's orb where it is: no pop.
+    this.boxScale = fromIsland ? 1 : 0.6; this.boxOpacity = fromIsland ? 1 : 0;
     this.later(16, (): void => {
       this.getUIContext().animateTo({ curve: curves.springMotion(0.45, 0.78) }, (): void => {
         this.boxScale = 1; this.boxOpacity = 1;
       });
     });
-    this.later(200, (): void => {
-      this.getUIContext().animateTo({ curve: curves.springMotion(0.5, 0.86) }, (): void => {
-        this.chatShown = true;
-        this.boxY = this.fitY(this.boxY);
-        this.syncChatSides(false);
-      });
+    this.later(fromIsland ? 16 : 200, (): void => {
+      if (this.controller.openChat) { this.setChatShown(true); return; }
+      // Just the orb, out of the way: a double tap brings the small chat.
+      this.showHint();
       this.restSoon(700);
     });
   }
@@ -402,6 +485,17 @@ struct AiLiftLayer {
     });
     // In case onFinish does not come (an interrupted animation), shrink anyway.
     this.restSoon(900);
+  }
+
+  /** An answer arrived (or went): the chat grows, and the orb moves only if the two no longer fit. */
+  private chatResized(height: number): void {
+    if (height <= 0 || Math.abs(height - this.chatH) < 1) { return; }
+    this.toFull();
+    this.getUIContext().animateTo({ curve: curves.springMotion(0.45, 0.86) }, (): void => {
+      this.chatH = height;
+      if (!this.dragging) { this.boxY = this.fitY(this.boxY); this.syncChatSides(false); }
+    });
+    this.restSoon(560);
   }
 
   @Builder private doneContent() {
@@ -441,13 +535,22 @@ struct AiLiftLayer {
         .onVisibleAreaChange([0.0, 0.05, 0.5], (visible: boolean, ratio: number): void => {
           if (visible && ratio > 0.01) { this.overflowSeen = true; }
         }, true)
-        .accessibilityText(this.phase === 2 ? 'AI 助手，轻点回到完整对话，按住可拖动' : this.controller.label)
-        .onClick((): void => {
-          if (this.phase === 2) {
-            this.controller.onOrbTap(this.boxX, this.boxY + this.originY);
+        .accessibilityText(this.phase !== 2 ? this.controller.label :
+          (this.chatMode() ? 'AI 聊天' : 'AI 助手') + '，单击展开主对话，双击' + (this.chatShown ? '收起' : '启动') + '小对话框，按住可拖动')
+        // A finger on the orb: it gives a little at once, before a tap or a double tap is known.
+        .onTouch((event: TouchEvent): void => {
+          if (this.phase !== 2 || this.dragging) { return; }
+          if (event.type === TouchType.Down) {
+            this.getUIContext().animateTo({ curve: curves.springMotion(0.25, 0.8) }, (): void => { this.boxScale = 0.88; });
+          } else if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
+            this.getUIContext().animateTo({ curve: curves.springMotion(0.35, 0.6) }, (): void => { this.boxScale = 1; });
           }
         })
-        .gesture(PanGesture({ distance: 4 })
+        // A double tap is told apart from a tap (the tap waits a moment); a drag wins over both.
+        .gesture(GestureGroup(GestureMode.Exclusive,
+          TapGesture({ count: 2 }).onAction((): void => { this.orbDoubleTapped(); }),
+          TapGesture({ count: 1 }).onAction((): void => { this.orbTapped(); })))
+        .parallelGesture(PanGesture({ distance: 4 })
           .onActionStart((): void => {
             if (this.phase !== 2) { return; }
             // The orb may now travel anywhere: the layer covers the window again until it settles.
@@ -474,19 +577,38 @@ struct AiLiftLayer {
             this.settle(0, 0);
           }))
       }
-      if (this.chatShown) {
+      if (this.phase === 2 && this.unread && !this.chatShown) {
+        Circle().width(12).height(12).fill('#FF453A').stroke('#FFFFFF').strokeWidth(1.5)
+          .position({ x: this.boxX + AI_FLOAT_ORB - 12 - this.offsetX(), y: this.boxY - this.offsetY() })
+          .hitTestBehavior(HitTestMode.None)
+          .transition(TransitionEffect.scale({ x: 0, y: 0 }).animation({ curve: curves.springMotion(0.4, 0.6) }))
+      }
+      if (this.phase === 2 && this.hintShown && !this.dragging) {
+        // A box of its own size around the text, as the orb has: the layer's 1 vp anchor must not narrow the text.
+        Stack() {
+          Text(AI_ORB_HINT_TEXT).fontSize(12).fontColor('#FFFFFF').maxLines(1).textAlign(TextAlign.Center).width('100%')
+        }
+        .width(AI_HINT_WIDTH).height(AI_HINT_HEIGHT).borderRadius(AI_HINT_HEIGHT / 2).backgroundColor('#E61C1C1E')
+        .border({ width: 0.5, color: '#33FFFFFF' })
+        .position({ x: this.hintX() - this.offsetX(), y: this.hintY() - this.offsetY() })
+        .hitTestBehavior(HitTestMode.None)
+        .transition(TransitionEffect.OPACITY)
+      }
+      if (this.chatShown && this.chatMode()) {
+        AiChatView({ mini: true, owner: AiChatMemory.owner !== '' ? AiChatMemory.owner : 'device-local',
+          deviceClass: this.controller.deviceClass,
+          onCardSize: (height: number): void => { this.chatResized(height); },
+          onActivityChanged: (active: boolean): void => { this.controller.onActivityChanged(active); },
+          onExpand: (): void => { this.controller.onOrbTap(this.boxX, this.boxY + this.originY); } })
+          .width(this.chatWidth())
+          .position({ x: this.chatX() - this.offsetX(), y: this.chatY() - this.offsetY() })
+          .translate({ x: this.chatShiftX, y: this.chatShiftY })
+          .transition(TransitionEffect.OPACITY.combine(TransitionEffect.scale({ x: 0.6, y: 0.6 }))
+            .animation({ curve: curves.springMotion(0.5, 0.78) }))
+      } else if (this.chatShown) {
         DiagnosticAiAssistantPanel({ siriMode: true, forceDark: true, embedded: true, mini: true, revealed: true,
           deviceClass: this.controller.deviceClass === 'pc' ? 'pc' : this.controller.deviceClass === 'pad' ? 'pad' : 'phone',
-          onCardSize: (_width: number, height: number): void => {
-            if (height <= 0 || Math.abs(height - this.chatH) < 1) { return; }
-            // An answer arrived (or went): the chat grows, and the orb moves only if the two no longer fit.
-            this.toFull();
-            this.getUIContext().animateTo({ curve: curves.springMotion(0.45, 0.86) }, (): void => {
-              this.chatH = height;
-              if (!this.dragging) { this.boxY = this.fitY(this.boxY); this.syncChatSides(false); }
-            });
-            this.restSoon(560);
-          },
+          onCardSize: (_width: number, height: number): void => { this.chatResized(height); },
           onExpand: (): void => { this.controller.onOrbTap(this.boxX, this.boxY + this.originY); } })
           .width(this.chatWidth())
           .position({ x: this.chatX() - this.offsetX(), y: this.chatY() - this.offsetY() })

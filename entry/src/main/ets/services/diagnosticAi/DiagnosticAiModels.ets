@@ -101,6 +101,8 @@ export interface DiagnosticAiUsageMetadata {
   promptTokens: number;
   completionTokens: number;
   cachedTokens: number;
+  /** The provider returned no usage: these are local estimates of what was sent and received. */
+  estimated?: boolean;
 }
 
 /** Locally maintained model pricing in CNY per million tokens. A negative value

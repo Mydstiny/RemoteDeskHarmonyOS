@@ -16,7 +16,7 @@ export type DiagnosticAiAppActionId =
   | 'settings.aiDisplay' | 'settings.aiData' | 'settings.aiInstall'
   | 'settings.appIcon' | 'settings.keyVault' | 'settings.rdpCredentialEditor' | 'settings.proBadge'
   | 'diagnosticAi.assistant' | 'diagnosticAi.usage' | 'diagnosticAi.personalization' | 'diagnosticAi.sessions'
-  | 'diagnosticAi.classicLogs'
+  | 'diagnosticAi.classicLogs' | 'diagnosticAi.skills'
   | 'settings.vncConnection' | 'settings.vncTimeout' | 'settings.vncSecurity' | 'settings.vncDisplay'
   | 'settings.vncInput' | 'settings.vncPerformance' | 'settings.vncClipboard' | 'settings.vncTrust'
   | 'settings.vncHosts' | 'settings.vncGateway'
@@ -116,6 +116,7 @@ const RULES: ActionRule[] = [
   new ActionRule('diagnosticAi.personalization', '打开 AI 个性化设置', [['AI 个性化', '助手名字', '助手性格', '本地记忆']]),
   new ActionRule('diagnosticAi.sessions', '打开 AI 会话管理', [['AI 会话', '历史对话', '继续对话']]),
   new ActionRule('diagnosticAi.classicLogs', '打开传统日志抓取', [['传统日志', '手动抓日志', '导出诊断日志']]),
+  new ActionRule('diagnosticAi.skills', '打开 AI 工具与技能', [['工具与技能', 'AI 技能', 'AI 工具', '安装技能']]),
 
   new ActionRule('session.keyboard', '打开远程键盘', [['键盘', '打字', '输入']], 'inline'),
   new ActionRule('session.modifiers', '打开组合键面板', [['组合键', '修饰键', 'Ctrl', 'Alt', 'Shift']], 'inline'),

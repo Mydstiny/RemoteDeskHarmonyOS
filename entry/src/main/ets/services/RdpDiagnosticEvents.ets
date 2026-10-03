@@ -1,5 +1,6 @@
 import { DiagnosticModuleId, DiagnosticOutcome } from './DiagnosticCapturePolicy';
 import { recordDiagnosticEvent } from './DiagnosticCaptureRuntime';
+import { ConnectionJournal } from './ConnectionJournal';
 
 /**
  * Remote-session diagnostic events that carry no text: an RDP failure is reduced to a closed category and the
@@ -71,8 +72,16 @@ export function rdpFailureClassification(message: string): number[] {
 }
 
 /** An RDP connection failed (while connecting) or ended with an error (in the session). */
+/** rdp_failure categories in words, for 连接记录. */
+const RDP_FAILURE_WORDS: string[] = ['连接失败', '网络或端口不通', '域名解析失败', 'TLS 握手失败', '用户名或密码错误', '账号被禁用或受限',
+  '证书问题', '网关失败', '服务器断开', '连接超时', '已取消', '安全协商失败', '没有远程登录权限', '密码已过期'];
+
 export function recordRdpFailure(message: string, stage: number, elapsedMs: number): void {
   const classified: number[] = rdpFailureClassification(message);
+  if (classified[0] !== RDP_FAILURE_CANCELLED) {
+    ConnectionJournal.failed('rdp', (stage === RDP_FAILURE_IN_SESSION ? '会话中断：' : '') +
+      (RDP_FAILURE_WORDS[classified[0]] ?? '连接失败'));
+  }
   recordDiagnosticEvent('connection.rdp', 'rdp_failure', 'failed', 0, stage, classified[1],
     Math.max(0, Math.round(elapsedMs)), classified[0]);
 }

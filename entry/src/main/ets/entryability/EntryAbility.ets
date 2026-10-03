@@ -1,6 +1,8 @@
 import { ProContinuationService, PRO_CONTINUATION_PARAM, PRO_CONTINUATION_SECRET_PARAM,
   PRO_CONTINUATION_LIBRARY_PARAM } from '../services/pro/ProContinuationService';
 import { ProConnectionShareReceiver } from '../services/pro/ProConnectionShareReceiver';
+import { aiShareInboxAccept } from '../services/diagnosticAi/AiShareInbox';
+import { ConnectionJournal } from '../services/ConnectionJournal';
 import { ProConnectionShareSender } from '../services/pro/ProConnectionShareSender';
 import { ProAppRuntime } from '../services/pro/ProAppRuntime';
 import { ProFeatureVisibility } from '../services/pro/ProFeatureVisibility';
@@ -224,11 +226,17 @@ export default class EntryAbility extends UIAbility {
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     // Crashes/freezes of earlier runs arrive at start-up; keep their kind and time for diagnostics.
     AppFaultHistoryService.init(this.context);
+    // 连接记录 for the AI chat's reports, per signed-in account.
+    ConnectionJournal.init(this.context, (): string => {
+      const scope = AccountSessionCoordinator.getInstance().currentScope();
+      return scope.ownerScopeId.trim() === '' ? 'device-local' : scope.ownerScopeId;
+    });
     ProAppRuntime.getInstance();
     ProFeatureVisibility.getInstance().load(this.context as common.UIAbilityContext);
     ProContinuationService.getInstance().initializeMission(this.context);
     if (!this.acceptProContinuationWant(want, launchParam)) { return; }
     this.acceptProConnectionShareWant(want, launchParam);
+    this.acceptAiShareWant(want, launchParam);
     try {
       const appClone: AppCloneContext = AppCloneContext.getInstance();
       appClone.init(this.context);
@@ -383,6 +391,7 @@ export default class EntryAbility extends UIAbility {
   onNewWant(want: Want, launch: AbilityConstant.LaunchParam): void {
     this.acceptProContinuationWant(want, launch);
     this.acceptProConnectionShareWant(want, launch);
+    this.acceptAiShareWant(want, launch);
     const libraryId: Object | undefined = want.parameters?.[PRO_CONTINUATION_LIBRARY_PARAM];
     if (typeof libraryId === 'string' && libraryId !== '' &&
         ProContinuationService.getInstance().incomingId() === libraryId) {
@@ -405,6 +414,12 @@ export default class EntryAbility extends UIAbility {
         });
       } catch (_error) {}
     }
+  }
+
+  /** 分享 → RemoteDesktop: documents and text for the AI chat. A share that cannot be read never disturbs launching. */
+  private acceptAiShareWant(want: Want, launch: AbilityConstant.LaunchParam): void {
+    if (launch.launchReason === AbilityConstant.LaunchReason.CONTINUATION) { return; }
+    try { aiShareInboxAccept(want); } catch (_error) { /* nothing shared to read */ }
   }
 
   async onContinue(parameters: Record<string, Object>): Promise<AbilityConstant.OnContinueResult> {

@@ -1,0 +1,1277 @@
+import { hilog } from '@kit.PerformanceAnalysisKit';
+import { common } from '@kit.AbilityKit';
+import { curves, LengthMetrics } from '@kit.ArkUI';
+import { inputMethod } from '@kit.IMEKit';
+import { pasteboard } from '@kit.BasicServicesKit';
+import { AiThinkingIndicator } from './AiMotionViews';
+import { AiInputCapsule, AiSendButton } from './AiIslandChrome';
+import { DiagnosticAiProviderProfile } from '../../services/diagnosticAi/DiagnosticAiModels';
+import { DiagnosticAiProfileStore } from '../../services/diagnosticAi/DiagnosticAiProfileStore';
+import { diagnosticAiProviderIsHarmonyLocal, diagnosticAiProviderManifest } from '../../services/diagnosticAi/DiagnosticAiProviderCatalog';
+import { AiChatAppData, AiChatReply, AiChatService, AiChatTurn } from '../../services/diagnosticAi/AiChatService';
+import { AiAttachment, AiDocument, aiCreateDocument, aiDocumentAvailable, aiDocumentErrorText, aiDocumentKind, aiDocumentKindLabel, aiImportDocument, aiOpenDocument, aiPickDocuments, aiSaveDocumentAs, aiShareDocument, aiTextAttachment } from '../../services/diagnosticAi/AiDocumentService';
+import { AiMdBlock, AiMdSpan, aiMarkdownBlocks } from '../../services/diagnosticAi/AiMarkdownPolicy';
+import { aiRouteSuggestion } from '../../services/diagnosticAi/AiChatRoutePolicy';
+import { AI_CHAT_REFRESH_KEY, AiShareInbox, AiSharedItem, aiChatRefresh } from '../../services/diagnosticAi/AiShareInbox';
+import { AiSkill, AiToolSpec, aiSkillsForQuestion, aiThinkingPhrases } from '../../services/diagnosticAi/AiSkillCatalog';
+import { AiSkillStore } from '../../services/diagnosticAi/AiSkillStore';
+import { AiAppDataBridge, AiConnectionRow, aiConnectionsText, aiHostsText } from '../../services/diagnosticAi/AiAppDataBridge';
+import { ConnectionJournal, ConnectionJournalEntry } from '../../services/ConnectionJournal';
+import { diagnosticAiSettingCatalog } from '../../services/diagnosticAi/DiagnosticAiSettingsActionPolicy';
+import { DiagnosticAiAssistantPreferences, DiagnosticAiConversationSession, DiagnosticAiConversationStore, DiagnosticAiConversationTurn, DiagnosticAiDailyUsage, DiagnosticAiTurnDocument, defaultDiagnosticAiAssistantPreferences } from '../../services/diagnosticAi/DiagnosticAiConversationStore';
+import { DiagnosticAiModelCatalog } from '../../services/diagnosticAi/DiagnosticAiModelCatalog';
+import { ProAppRuntime } from '../../services/pro/ProAppRuntime';
+import { ProEntries } from '../../services/pro/ProEntries';
+import { PRO_DIAGNOSTICS_ASSISTANT_FEATURE } from '../../services/pro/ProFeatureCatalog';
+import { AccountSessionCoordinator } from '../../services/AccountSessionCoordinator';
+
+/** Most documents one chat holds at a time. */
+const AI_CHAT_MAX_ATTACHMENTS: number = 5;
+/** The header row's height; the 助理 | 聊天 switch of the panel sits over its left end. */
+export const AI_CHAT_HEADER_HEIGHT: number = 34;
+
+/** One message of the chat: the user's (with the names of the documents added to it) or the AI's (with documents). */
+export class AiChatMessage {
+  id: string;
+  role: string;
+  text: string;
+  attachments: string[];
+  documents: AiDocument[];
+  createdAt: number;
+  /** The AI's suggested next steps (pills under the latest answer; not kept with the saved session). */
+  suggestions: string[];
+
+  constructor(id: string, role: string, text: string, attachments: string[], documents: AiDocument[], createdAt: number,
+    suggestions: string[] = []) {
+    this.id = id;
+    this.role = role;
+    this.text = text;
+    this.attachments = attachments;
+    this.documents = documents;
+    this.createdAt = createdAt;
+    this.suggestions = suggestions;
+  }
+}
+
+/** One pill under the latest answer: a next question to send, or something the app does itself. */
+class AiChatPill {
+  key: string;
+  label: string;
+  /** ask · excel · word · float */
+  kind: string;
+
+  constructor(key: string, label: string, kind: string) {
+    this.key = key;
+    this.label = label;
+    this.kind = kind;
+  }
+}
+
+/**
+ * The chat outlives the island, like the assistant's conversation: closing, floating as the orb and reopening keep
+ * it (and whether the island was in 聊天), until 新对话 or a change of account. A request out when the view goes (the
+ * island floats) still lands here, and the view that comes back shows it.
+ */
+export class AiChatMemory {
+  static owner: string = '';
+  /** The island opens in 聊天 rather than 助理. */
+  static active: boolean = false;
+  static sessionId: string = '';
+  static messages: AiChatMessage[] = [];
+  /** Documents the conversation has read so far (sent to the model with every request). */
+  static attachments: AiAttachment[] = [];
+  /** Added (picked or shared) but not sent yet. */
+  static pending: AiAttachment[] = [];
+  /** A question handed over from 助理, asked as soon as the chat shows. */
+  static handoff: string = '';
+  /** The request out now ('' none); 新对话 clears it, so a late answer is dropped. */
+  static requestId: string = '';
+  static status: string = '';
+  static error: string = '';
+
+  static clear(owner: string): void {
+    AiChatMemory.owner = owner;
+    AiChatMemory.sessionId = '';
+    AiChatMemory.messages = [];
+    AiChatMemory.attachments = [];
+    AiChatMemory.pending = [];
+    AiChatMemory.handoff = '';
+    AiChatMemory.requestId = '';
+    AiChatMemory.status = '';
+    AiChatMemory.error = '';
+  }
+}
+
+function newMessageId(): string {
+  return Date.now().toString(36) + Math.floor(Math.random() * 46656).toString(36);
+}
+
+/** Continue a saved chat (AI 对话记录 › 聊天): it becomes the current chat and the island opens in 聊天. */
+export function aiChatResumeSession(owner: string, session: DiagnosticAiConversationSession): void {
+  AiChatMemory.clear(owner);
+  AiChatMemory.active = true;
+  AiChatMemory.sessionId = session.id;
+  const messages: AiChatMessage[] = [];
+  session.turns.forEach((turn: DiagnosticAiConversationTurn, index: number): void => {
+    messages.push(new AiChatMessage('r' + index.toString() + 'q', 'user', turn.question, turn.attachments ?? [], [], turn.createdAt));
+    const documents: AiDocument[] = (turn.documents ?? []).map((doc: DiagnosticAiTurnDocument): AiDocument =>
+      new AiDocument(doc.name, doc.format, doc.path, doc.bytes, turn.createdAt));
+    messages.push(new AiChatMessage('r' + index.toString() + 'a', 'assistant', turn.answer, [], documents, turn.createdAt));
+  });
+  AiChatMemory.messages = messages;
+}
+
+/** The chat as a saved session (AI 对话记录 › 聊天): one turn per question and its answer. */
+function aiChatSaveSession(store: DiagnosticAiConversationStore, sessionId: string, messages: AiChatMessage[],
+  profile: DiagnosticAiProviderProfile | undefined): void {
+  const turns: DiagnosticAiConversationTurn[] = [];
+  for (let i: number = 0; i < messages.length; i++) {
+    const m: AiChatMessage = messages[i];
+    if (m.role !== 'user' || i + 1 >= messages.length || messages[i + 1].role !== 'assistant') { continue; }
+    const a: AiChatMessage = messages[i + 1];
+    turns.push({ question: m.text, answer: a.text, mode: 'chat', createdAt: m.createdAt,
+      attachments: m.attachments.length > 0 ? m.attachments : undefined,
+      documents: a.documents.length > 0 ? a.documents.map((d: AiDocument): DiagnosticAiTurnDocument =>
+        ({ name: d.name, format: d.format, path: d.path, bytes: d.bytes })) : undefined });
+  }
+  if (turns.length === 0 || sessionId === '') { return; }
+  const previous: DiagnosticAiConversationSession | undefined = store.session(sessionId);
+  const now: number = Date.now();
+  store.saveSession({
+    id: sessionId,
+    title: previous !== undefined && previous.title !== '' ? previous.title :
+      (turns[0].question.trim().replace(/\s+/g, ' ').slice(0, 40) || 'AI 聊天'),
+    createdAt: previous !== undefined ? previous.createdAt : now,
+    updatedAt: now,
+    providerId: profile !== undefined ? profile.providerId : (previous !== undefined ? previous.providerId : ''),
+    modelId: profile !== undefined ? profile.modelId : (previous !== undefined ? previous.modelId : ''),
+    turns: turns,
+    kind: 'chat'
+  });
+}
+
+function aiChatErrorText(error: Object): string {
+  const value: string = error instanceof Error ? error.message : '';
+  if (value.indexOf('LOCAL_MODEL_PC_ONLY') >= 0) { return '鸿蒙端侧小模型目前只支持 PC/2in1'; }
+  if (value.indexOf('LOCAL_MODEL') >= 0) { return '鸿蒙端侧小模型当前不可用'; }
+  if (value.indexOf('USE_CASE_NOT_ALLOWED') >= 0) { return '当前 AI 服务的套餐不允许聊天用途，请在辅助 AI 配置中换用按量计费的 API'; }
+  if (value.indexOf('POLICY') >= 0) { return '当前 AI 服务配置还不能使用，请在辅助 AI 配置中重新保存'; }
+  if (value.indexOf('HTTP_401') >= 0 || value.indexOf('HTTP_403') >= 0) { return 'AI 服务拒绝了请求，请检查 API Key 和模型权限'; }
+  if (value.indexOf('HTTP_413') >= 0) { return '内容太长，超出了模型的请求上限；可以移除部分文档或开始新对话'; }
+  if (value.indexOf('HTTP_429') >= 0) { return 'AI 服务当前限流，请稍后重试'; }
+  if (value.indexOf('HTTP_5') >= 0) { return 'AI 服务暂时不可用，请稍后重试'; }
+  if (value.indexOf('HTTP_400') >= 0 || value.indexOf('HTTP_422') >= 0) { return 'AI 服务不接受这个请求，可以换一个模型再试'; }
+  if (value.indexOf('TIMEOUT') >= 0) { return 'AI 回答超时（生成长文档需要更久），请重试或换用更快的模型'; }
+  if (value.indexOf('NETWORK') >= 0) { return 'AI 服务暂时无法连接，请检查网络'; }
+  if (value.indexOf('EMPTY_RESULT') >= 0) { return 'AI 服务返回了空结果，请重试'; }
+  return 'AI 请求失败，请重试';
+}
+
+function sizeLabel(bytes: number): string {
+  if (bytes >= 1024 * 1024) { return (bytes / 1024 / 1024).toFixed(1) + ' MB'; }
+  return Math.max(1, Math.round(bytes / 1024)).toString() + ' KB';
+}
+
+function documentColor(format: string): string {
+  if (format === 'docx') { return '#4A8DFF'; }
+  if (format === 'xlsx') { return '#34C759'; }
+  if (format === 'pptx') { return '#FF9F0A'; }
+  if (format === 'pdf') { return '#FF453A'; }
+  return '#AEAEB2';
+}
+
+/** Column widths of a table, from the longest text in each column (CJK counted double). */
+function tableWidths(rows: string[][]): number[] {
+  const columns: number = rows.reduce((most: number, row: string[]): number => Math.max(most, row.length), 0);
+  const widths: number[] = [];
+  for (let c: number = 0; c < columns; c++) {
+    let widest: number = 0;
+    rows.forEach((row: string[]): void => {
+      const cell: string = c < row.length ? row[c] : '';
+      let w: number = 0;
+      for (let i: number = 0; i < cell.length; i++) { w += cell.charCodeAt(i) > 0x2E80 ? 2 : 1; }
+      widest = Math.max(widest, w);
+    });
+    widths.push(Math.min(220, Math.max(64, widest * 7.5 + 20)));
+  }
+  return widths;
+}
+
+function tokenWords(value: number): string {
+  return value >= 10000 ? (value / 10000).toFixed(1) + ' 万' : Math.round(value).toString();
+}
+
+/**
+ * 聊天模式 inside the AI island: a general chatbot. It sees what the user types, the documents the user adds (picked
+ * here or shared from another app) and, through the tools left on in 设置 › AI 工具与技能, the app's hosts,
+ * connection log, settings and usage. Installed skills sit under the field as chips. Answers come in Markdown and
+ * documents as cards to open in WPS, share or save. A question about the app's own faults gets a suggestion to hand
+ * it to 助理, and the chat can float as the orb while the user works; nothing switches by itself.
+ */
+@Component
+export struct AiChatView {
+  @Prop revealed: boolean = true;
+  /** Room for the chat inside the island (it ends above the keyboard). */
+  @Prop bodyLimit: number = 100000;
+  @Prop deviceClass: string = 'phone';
+  @Prop owner: string = 'device-local';
+  @StorageProp(AI_CHAT_REFRESH_KEY) @Watch('reloadFromMemory') refreshToken: number = 0;
+  /** To 助理 (with a question to ask there, or '' just to switch). */
+  onSwitchMode: (mode: string, question: string) => void = (_mode: string, _question: string): void => {};
+  onActivityChanged: (active: boolean) => void = (_active: boolean): void => {};
+  /** Shrink the island into the floating orb (the chat waits there). */
+  onFloat: () => void = (): void => {};
+  /** 设置 › AI 工具与技能. */
+  onOpenSkills: () => void = (): void => {};
+  /** The small chat beside the floating orb: the latest exchange and a field; 展开 goes back to the island. */
+  @Prop mini: boolean = false;
+  onExpand: () => void = (): void => {};
+  onCardSize: (height: number) => void = (_height: number): void => {};
+  @State private messages: AiChatMessage[] = [];
+  @State private attachments: AiAttachment[] = [];
+  @State private pending: AiAttachment[] = [];
+  @State private draft: string = '';
+  @State private busy: boolean = false;
+  @State private status: string = '';
+  @State private importing: boolean = false;
+  @State private error: string = '';
+  /** A question that looks like one for 助理, waiting for the user's choice. */
+  @State private routeQuestion: string = '';
+  @State private expanded: boolean = false;
+  @State private providerName: string = '';
+  @State private skills: AiSkill[] = [];
+  @State private chosenSkill: AiSkill | null = null;
+  @State private contentHeight: number = 0;
+  /** The message that just arrived (it fades in; the others are simply there). */
+  @State private freshId: string = '';
+  /** Parsed Markdown per message, so a status line changing does not parse every answer again. */
+  private blockCache: Map<string, AiMdBlock[]> = new Map<string, AiMdBlock[]>();
+  @State private toolsOn: number = 0;
+  private routeBypass: string = '';
+  private alive: boolean = true;
+  private sessionId: string = '';
+  private readonly scroller: Scroller = new Scroller();
+  /** Where each message starts in the scrolling conversation (to show a new answer from its question). */
+  private positions: Map<string, number> = new Map<string, number>();
+  private phrases: string[] = [];
+  private phraseIndex: number = 0;
+  private statusTimer: number = -1;
+  private toolStatusAt: number = 0;
+  private readonly chat: AiChatService = new AiChatService();
+  private readonly store: DiagnosticAiProfileStore = new DiagnosticAiProfileStore();
+  private readonly conversationStore: DiagnosticAiConversationStore = new DiagnosticAiConversationStore();
+  private readonly modelCatalog: DiagnosticAiModelCatalog = new DiagnosticAiModelCatalog();
+  private readonly skillStore: AiSkillStore = new AiSkillStore();
+  private preferences: DiagnosticAiAssistantPreferences = defaultDiagnosticAiAssistantPreferences();
+
+  aboutToAppear(): void {
+    this.alive = true;
+    const context: common.UIAbilityContext = this.context();
+    try {
+      this.store.init(context, this.owner);
+      this.conversationStore.init(context, this.owner);
+      this.modelCatalog.init(context, this.owner);
+      this.skillStore.init(context, this.owner);
+      this.preferences = this.conversationStore.assistantPreferences();
+    } catch (_error) { /* requests fail closed below */ }
+    if (AiChatMemory.owner !== this.owner) { AiChatMemory.clear(this.owner); }
+    const profile: DiagnosticAiProviderProfile | undefined = this.selectedProfile();
+    const manifest = profile !== undefined ? diagnosticAiProviderManifest(profile.providerId) : null;
+    this.providerName = manifest !== null ? manifest.displayName : '';
+    this.reloadFromMemory();
+  }
+
+  aboutToDisappear(): void {
+    this.alive = false;
+    this.stopStatus();
+    this.persist();
+  }
+
+  /** Pick up what changed outside: a resumed chat, shared documents, a question from 助理, an answer that landed. */
+  private reloadFromMemory(): void {
+    if (AiChatMemory.owner !== this.owner) { AiChatMemory.clear(this.owner); }
+    this.skills = this.skillStore.installedSkills();
+    this.toolsOn = this.skillStore.enabledTools().length;
+    const inFlight: boolean = AiChatMemory.requestId !== '';
+    if (this.busy && inFlight) { return; }
+    this.sessionId = AiChatMemory.sessionId;
+    if (AiChatMemory.messages.length === 0) { this.contentHeight = 0; }
+    this.messages = AiChatMemory.messages.slice();
+    this.attachments = AiChatMemory.attachments.slice();
+    this.pending = AiChatMemory.pending.slice();
+    this.error = AiChatMemory.error;
+    this.routeQuestion = '';
+    if (inFlight !== this.busy) {
+      this.busy = inFlight;
+      this.onActivityChanged(inFlight);
+    }
+    if (inFlight) {
+      this.status = AiChatMemory.status !== '' ? AiChatMemory.status : '正在思考';
+      this.startStatus(this.status, []);
+    }
+    if (AiShareInbox.pending()) { void this.importShared(AiShareInbox.take()); }
+    if (AiChatMemory.handoff !== '' && !inFlight) {
+      const question: string = AiChatMemory.handoff;
+      AiChatMemory.handoff = '';
+      this.routeBypass = question;
+      setTimeout((): void => { if (this.alive) { void this.ask(question, false); } }, 120);
+    } else if (this.messages.length > 0) {
+      setTimeout((): void => { this.scroller.scrollEdge(Edge.Bottom); }, 80);
+    }
+  }
+
+  private persist(): void {
+    AiChatMemory.owner = this.owner;
+    AiChatMemory.sessionId = this.sessionId;
+    AiChatMemory.messages = this.messages.slice();
+    AiChatMemory.attachments = this.attachments.slice();
+    AiChatMemory.pending = this.pending.slice();
+  }
+
+  private allowed(): boolean {
+    return ProEntries.visible(PRO_DIAGNOSTICS_ASSISTANT_FEATURE, ProAppRuntime.getInstance().context());
+  }
+
+  private ownerStill(): boolean {
+    const scope = AccountSessionCoordinator.getInstance().currentScope();
+    const current: string = scope.ownerScopeId.trim() === '' ? 'device-local' : scope.ownerScopeId;
+    return current === this.owner;
+  }
+
+  private selectedProfile(): DiagnosticAiProviderProfile | undefined {
+    try {
+      const profiles: DiagnosticAiProviderProfile[] = this.store.list();
+      const settings = this.store.settingsSnapshot();
+      const selected: DiagnosticAiProviderProfile | undefined = profiles.find((value: DiagnosticAiProviderProfile): boolean =>
+        value.providerId === settings.selectedProviderId && value.modelId === settings.selectedModelId && value.modelId !== '' &&
+        (settings.selectedAuthMode === '' || value.authMode === settings.selectedAuthMode));
+      if (selected !== undefined) { return selected; }
+      const candidates: DiagnosticAiProviderProfile[] = profiles.filter((value: DiagnosticAiProviderProfile): boolean => value.modelId !== '');
+      return candidates.length === 1 ? candidates[0] : undefined;
+    } catch (_error) { return undefined; }
+  }
+
+  private toast(message: string): void {
+    try { this.getUIContext().getPromptAction().showToast({ message: message, duration: 2200 }); } catch (_error) { /* no toast */ }
+  }
+
+  private hideKeyboard(): void {
+    try { inputMethod.getController().hideTextInput(); } catch (_error) { /* keyboard already down */ }
+  }
+
+  private context(): common.UIAbilityContext { return this.getUIContext().getHostContext() as common.UIAbilityContext; }
+
+  private float(): void {
+    this.hideKeyboard();
+    this.persist();
+    this.onFloat();
+  }
+
+  // ------------------------------------------------------------------ status while thinking
+
+  /** Rotate through lines that fit the question; a tool's own status ("正在查看主机列表") wins for a while. */
+  private startStatus(first: string, phrases: string[]): void {
+    this.stopStatus();
+    this.phrases = phrases;
+    this.phraseIndex = 0;
+    this.status = first;
+    AiChatMemory.status = first;
+    this.statusTimer = setInterval((): void => {
+      if (!this.alive || Date.now() - this.toolStatusAt < 2600 || this.phrases.length === 0) { return; }
+      this.phraseIndex = Math.min(this.phraseIndex + 1, this.phrases.length - 1);
+      const next: string = this.phrases[this.phraseIndex];
+      if (next !== this.status) {
+        this.getUIContext().animateTo({ duration: 260, curve: Curve.EaseOut }, (): void => { this.status = next; });
+      }
+    }, 2800);
+  }
+
+  private stopStatus(): void {
+    if (this.statusTimer >= 0) { clearInterval(this.statusTimer); this.statusTimer = -1; }
+  }
+
+  private progress(status: string): void {
+    AiChatMemory.status = status;
+    this.toolStatusAt = Date.now();
+    if (this.alive && status !== this.status) {
+      this.getUIContext().animateTo({ duration: 260, curve: Curve.EaseOut }, (): void => { this.status = status; });
+    }
+  }
+
+  // ------------------------------------------------------------------ app data for the tools
+
+  private appData(): AiChatAppData {
+    return {
+      hosts: (protocol: string): string => aiHostsText(AiAppDataBridge.hosts(), protocol),
+      connections: (days: number): string => aiConnectionsText(ConnectionJournal.recent(days)
+        .map((e: ConnectionJournalEntry): AiConnectionRow => ({ at: e.at, label: e.label, protocol: e.protocol, outcome: e.outcome,
+          detail: e.detail })), days, AiAppDataBridge.hosts()),
+      settings: (): string => diagnosticAiSettingCatalog(),
+      usage: (days: number): string => this.usageText(days)
+    };
+  }
+
+  private usageText(days: number): string {
+    const since: number = Date.now() - days * 24 * 3600 * 1000;
+    const rows: DiagnosticAiDailyUsage[] = (this.conversationStore.usage().daily ?? [])
+      .filter((row: DiagnosticAiDailyUsage): boolean => new Date(row.day).getTime() >= since - 24 * 3600 * 1000);
+    if (rows.length === 0) { return '最近 ' + days.toString() + ' 天没有 AI 请求。'; }
+    const total = (pick: (row: DiagnosticAiDailyUsage) => number): number =>
+      rows.reduce((sum: number, row: DiagnosticAiDailyUsage): number => sum + pick(row), 0);
+    return '最近 ' + days.toString() + ' 天：' + total((r: DiagnosticAiDailyUsage): number => r.requestCount).toString() + ' 次请求，' +
+      tokenWords(total((r: DiagnosticAiDailyUsage): number => r.promptTokens + r.completionTokens)) + ' Token，估算 ¥' +
+      total((r: DiagnosticAiDailyUsage): number => r.estimatedCostCny).toFixed(2) + '。\n' +
+      rows.map((r: DiagnosticAiDailyUsage): string => r.day + '：' + r.requestCount.toString() + ' 次，' +
+        tokenWords(r.promptTokens + r.completionTokens) + ' Token，¥' + r.estimatedCostCny.toFixed(2)).join('\n');
+  }
+
+  // ------------------------------------------------------------------ documents
+
+  private async addDocuments(): Promise<void> {
+    if (this.importing || this.busy) { return; }
+    const room: number = AI_CHAT_MAX_ATTACHMENTS - this.pending.length;
+    if (room <= 0) { this.toast('一次最多添加 ' + AI_CHAT_MAX_ATTACHMENTS.toString() + ' 个文档'); return; }
+    let uris: string[] = [];
+    try { uris = await aiPickDocuments(this.context(), room); } catch (_error) { this.toast('无法打开文件选择'); return; }
+    await this.importUris(uris.map((uri: string): AiSharedItem => new AiSharedItem(uri, '', '')));
+  }
+
+  private async importShared(items: AiSharedItem[]): Promise<void> {
+    await this.importUris(items);
+    if (this.draft.trim() === '' && this.pending.length > 0) { this.draft = '帮我总结这些内容的要点'; }
+  }
+
+  private async importUris(items: AiSharedItem[]): Promise<void> {
+    if (items.length === 0) { return; }
+    this.importing = true;
+    try {
+      for (const item of items) {
+        if (this.pending.length >= AI_CHAT_MAX_ATTACHMENTS) { break; }
+        try {
+          const attachment: AiAttachment = item.uri === '' ? aiTextAttachment(item.name, item.text) :
+            await aiImportDocument(this.context(), item.uri, aiDocumentKind(item.name) !== '' ? item.name : '');
+          if (!this.alive) { return; }
+          this.getUIContext().animateTo({ curve: curves.springMotion(0.42, 0.86) }, (): void => {
+            this.pending = this.pending.filter((a: AiAttachment): boolean => a.name !== attachment.name).concat([attachment]);
+          });
+        } catch (error) {
+          this.toast(aiDocumentErrorText(error as Object));
+        }
+      }
+    } finally {
+      this.importing = false;
+      this.persist();
+    }
+  }
+
+  private removePending(attachment: AiAttachment): void {
+    this.getUIContext().animateTo({ curve: curves.springMotion(0.42, 0.86) }, (): void => {
+      this.pending = this.pending.filter((a: AiAttachment): boolean => a.id !== attachment.id);
+    });
+    this.persist();
+  }
+
+  private async openDocument(document: AiDocument, thenFloat: boolean): Promise<void> {
+    if (!aiDocumentAvailable(document)) { this.toast('文件已不在设备上'); return; }
+    try {
+      await aiOpenDocument(this.context(), document);
+      if (thenFloat) { this.float(); }
+    } catch (_error) { this.toast('没有找到可以打开这个文件的应用，可以先分享或另存'); }
+  }
+
+  private async shareDocument(document: AiDocument): Promise<void> {
+    if (!aiDocumentAvailable(document)) { this.toast('文件已不在设备上'); return; }
+    try { await aiShareDocument(this.context(), document); } catch (_error) { this.toast('无法打开分享'); }
+  }
+
+  private async saveDocument(document: AiDocument): Promise<void> {
+    if (!aiDocumentAvailable(document)) { this.toast('文件已不在设备上'); return; }
+    try { if (await aiSaveDocumentAs(this.context(), document)) { this.toast('已保存「' + document.name + '」'); } }
+    catch (_error) { this.toast('保存失败'); }
+  }
+
+  /** 存为 Word: any answer becomes a document, model tools or not. */
+  private saveAnswerAsDocument(message: AiChatMessage): void {
+    const firstLine: string = message.text.split('\n').map((line: string): string => line.replace(/^#+\s*/, '').trim())
+      .find((line: string): boolean => line !== '') ?? 'AI 回答';
+    try {
+      const document: AiDocument = aiCreateDocument(this.context(), firstLine.slice(0, 30), 'docx', message.text);
+      this.messages = this.messages.map((m: AiChatMessage): AiChatMessage => m.id !== message.id ? m :
+        new AiChatMessage(m.id, m.role, m.text, m.attachments, m.documents.concat([document]), m.createdAt, m.suggestions));
+      this.persist();
+      aiChatSaveSession(this.conversationStore, this.sessionId, this.messages, undefined);
+    } catch (_error) { this.toast('生成文档失败'); }
+  }
+
+  private copyText(text: string): void {
+    try {
+      pasteboard.getSystemPasteboard().setDataSync(pasteboard.createData(pasteboard.MIMETYPE_TEXT_PLAIN, text));
+      this.toast('已复制');
+    } catch (_error) { this.toast('复制失败'); }
+  }
+
+  // ------------------------------------------------------------------ skills
+
+  private useSkill(skill: AiSkill): void {
+    this.getUIContext().animateTo({ curve: curves.springMotion(0.42, 0.86) }, (): void => { this.chosenSkill = skill; });
+    if (skill.needsDocument) {
+      void this.addDocuments().then((): void => {
+        if (this.draft.trim() === '') { this.draft = '帮我' + skill.name + '：'; }
+      });
+      return;
+    }
+    if (this.draft.trim() === '') { this.draft = skill.starter !== '' ? skill.starter : '帮我' + skill.name + '：'; }
+    setTimeout((): void => { focusControl.requestFocus(this.messages.length === 0 ? 'aiChatQuestion' : 'aiChatDraft'); }, 60);
+  }
+
+  /** Skills that fit what is being typed (none picked yet). */
+  private typedSkills(): AiSkill[] {
+    if (this.chosenSkill !== null || this.draft.trim().length < 2) { return []; }
+    return aiSkillsForQuestion(this.skills, this.draft).slice(0, 3);
+  }
+
+  // ------------------------------------------------------------------ asking
+
+  private submit(): void {
+    if (this.busy || this.importing) { return; }
+    const typed: string = this.draft.trim();
+    if (typed === '' && this.pending.length === 0) { return; }
+    const question: string = typed !== '' ? typed : '请阅读我添加的文档，简要说说它讲了什么。';
+    if (this.routeBypass !== question &&
+      aiRouteSuggestion(question, 'chat', this.pending.length + this.attachments.length > 0) === 'assistant') {
+      this.hideKeyboard();
+      this.getUIContext().animateTo({ curve: curves.springMotion(0.42, 0.86) }, (): void => { this.routeQuestion = question; });
+      return;
+    }
+    this.routeBypass = '';
+    this.draft = '';
+    this.hideKeyboard();
+    void this.ask(question, false);
+  }
+
+  private retry(): void {
+    const last: AiChatMessage | undefined = this.messages.length > 0 ? this.messages[this.messages.length - 1] : undefined;
+    if (last === undefined || last.role !== 'user' || this.busy) { return; }
+    void this.ask(last.text, true);
+  }
+
+  private turnText(message: AiChatMessage): string {
+    if (message.role === 'user') {
+      return message.text + (message.attachments.length > 0 ? '\n（添加了文档：' + message.attachments.join('、') + '）' : '');
+    }
+    return message.text + (message.documents.length > 0 ?
+      '\n（已生成文档：' + message.documents.map((d: AiDocument): string => d.name).join('、') + '）' : '');
+  }
+
+  private preferenceText(): string {
+    const p: DiagnosticAiAssistantPreferences = this.preferences;
+    const tone: string = p.personality === 'warm' ? '亲切' : p.personality === 'concise' ? '简洁' :
+      p.personality === 'technical' ? '专业' : '平衡';
+    const length: string = p.verbosity === 'concise' ? '简短' : p.verbosity === 'detailed' ? '详细' : '适中';
+    return '助手名字：' + p.name + '；语气：' + tone + '；回答长度：' + length + '；语言：' + (p.language === 'en-US' ? '英文' : '中文');
+  }
+
+  private async ask(question: string, retry: boolean): Promise<void> {
+    if (!this.allowed()) { this.error = '当前账号没有 AI 助理权限'; return; }
+    const profile: DiagnosticAiProviderProfile | undefined = this.selectedProfile();
+    if (profile === undefined) { this.error = '请先在辅助 AI 配置中保存 API Key 并选择模型'; return; }
+    let secret: string = '';
+    try { secret = this.store.secret(profile); } catch (_error) { secret = ''; }
+    if (!diagnosticAiProviderIsHarmonyLocal(profile.providerId) && secret.trim() === '') {
+      this.error = 'API Key 无法从本机安全存储读回，请在辅助 AI 配置中重新保存'; return;
+    }
+    const sent: AiAttachment[] = retry ? [] : this.pending;
+    if (!retry) {
+      const message: AiChatMessage = new AiChatMessage(newMessageId(), 'user', question,
+        sent.map((a: AiAttachment): string => a.name), [], Date.now());
+      // Not inside an animation: the switch from the empty chat to the conversation must not be animated through
+      // in-between layouts (it flashed a half-height card with the add and send buttons). The bubble fades in itself.
+      this.freshId = message.id;
+      this.messages = this.messages.concat([message]);
+      this.attachments = this.attachments.filter((a: AiAttachment): boolean =>
+        !sent.some((s: AiAttachment): boolean => s.name === a.name)).concat(sent).slice(-AI_CHAT_MAX_ATTACHMENTS);
+      this.pending = [];
+    }
+    if (this.sessionId === '') {
+      this.sessionId = 'chat-' + Date.now().toString() + '-' + Math.floor(Math.random() * 100000).toString();
+    }
+    const chosen: string[] = this.chosenSkill !== null ? [this.chosenSkill.id] : [];
+    const requestId: string = newMessageId();
+    AiChatMemory.requestId = requestId;
+    AiChatMemory.error = '';
+    this.error = ''; this.routeQuestion = ''; this.chosenSkill = null;
+    this.busy = true; this.onActivityChanged(true);
+    const docNames: string[] = sent.map((a: AiAttachment): string => a.name);
+    const phrases: string[] = aiThinkingPhrases(question, docNames);
+    this.startStatus(phrases[0], phrases);
+    this.persist();
+    const sessionId: string = this.sessionId;
+    setTimeout((): void => { this.scroller.scrollEdge(Edge.Bottom); }, 80);
+    const askedId: string = this.messages.length > 0 ? this.messages[this.messages.length - 1].id : '';
+    const tools: AiToolSpec[] = this.skillStore.enabledTools();
+    try {
+      const turns: AiChatTurn[] = this.messages.filter((m: AiChatMessage): boolean => m.role === 'user' || m.role === 'assistant')
+        .map((m: AiChatMessage): AiChatTurn => new AiChatTurn(m.role, this.turnText(m)));
+      const reply: AiChatReply = await this.chat.respond(this.context(), profile, secret, {
+        turns: turns, attachments: this.attachments, preferences: this.preferenceText(),
+        memory: this.preferences.memoryEnabled ? this.preferences.manualMemorySummary.trim().slice(0, 1200) : '',
+        tools: tools, skills: this.skills, chosenSkills: chosen, appData: this.appData(),
+        onProgress: (status: string): void => { this.progress(status); }
+      });
+      if (AiChatMemory.requestId !== requestId) { return; }
+      if (!this.ownerStill() || !this.allowed()) { AiChatMemory.error = '账号已变化，已丢弃这次回答'; return; }
+      const answer: AiChatMessage = new AiChatMessage(newMessageId(), 'assistant', reply.text, [], reply.documents, Date.now(),
+        reply.suggestions);
+      // The answer lands in the chat's memory whether or not this view is still up (the island may float meanwhile).
+      if (this.alive) {
+        this.freshId = answer.id;
+        this.messages = this.messages.concat([answer]);
+        this.persist();
+      } else {
+        AiChatMemory.messages = AiChatMemory.messages.concat([answer]);
+      }
+      aiChatSaveSession(this.conversationStore, sessionId, AiChatMemory.messages, profile);
+      this.recordUsage(profile, reply);
+      hilog.info(0x0000, 'AiChat', 'answered chars=%{public}s docs=%{public}s tools=%{public}s', reply.text.length.toString(),
+        reply.documents.length.toString(), reply.usedTools ? 'yes' : 'no');
+      if (this.alive) {
+        // Show the new answer from its question, not from its end.
+        setTimeout((): void => {
+          const y: number | undefined = this.positions.get(askedId);
+          if (y !== undefined) { this.scroller.scrollTo({ xOffset: 0, yOffset: Math.max(0, y - 4) }); }
+        }, 200);
+      }
+    } catch (error) {
+      if (AiChatMemory.requestId !== requestId) { return; }
+      AiChatMemory.error = aiChatErrorText(error as Object);
+      try { this.conversationStore.recordFailure(profile.providerId, profile.modelId); } catch (_e) { /* best effort */ }
+    } finally {
+      if (AiChatMemory.requestId === requestId) {
+        AiChatMemory.requestId = '';
+        AiChatMemory.status = '';
+        if (this.alive) {
+          this.stopStatus();
+          this.error = AiChatMemory.error;
+          this.busy = false;
+          this.onActivityChanged(false);
+        } else {
+          // The view that comes back (or the panel) picks the answer up.
+          aiChatRefresh();
+        }
+      }
+    }
+  }
+
+  private recordUsage(profile: DiagnosticAiProviderProfile, reply: AiChatReply): void {
+    const usage = reply.usage;
+    const cost: number = this.modelCatalog.estimateCost(profile.providerId, profile.modelId, usage.promptTokens,
+      usage.completionTokens, usage.cachedTokens);
+    this.conversationStore.recordUsage(usage.promptTokens, usage.completionTokens, usage.cachedTokens, cost,
+      profile.providerId, profile.modelId, usage.estimated === true, true);
+  }
+
+  private startNewChat(): void {
+    if (this.busy) { return; }
+    AiChatMemory.clear(this.owner);
+    AiChatMemory.active = true;
+    this.messages = []; this.attachments = []; this.pending = []; this.draft = ''; this.error = '';
+    this.routeQuestion = ''; this.sessionId = ''; this.expanded = false; this.chosenSkill = null;
+    this.contentHeight = 0; this.freshId = '';
+    this.positions.clear();
+    this.blockCache.clear();
+    setTimeout((): void => { focusControl.requestFocus('aiChatQuestion'); }, 300);
+  }
+
+  /** Names of documents earlier messages used that this chat no longer holds (a resumed chat keeps no file text). */
+  private missingAttachments(): string[] {
+    const missing: string[] = [];
+    this.messages.forEach((m: AiChatMessage): void => {
+      m.attachments.forEach((name: string): void => {
+        if (missing.indexOf(name) < 0 && !this.attachments.some((a: AiAttachment): boolean => a.name === name)) { missing.push(name); }
+      });
+    });
+    return missing;
+  }
+
+  /** The tallest the conversation may scroll in: the card's usual (or expanded) height minus the rows around it. */
+  private scrollLimit(): number {
+    const usual: number = this.deviceClass === 'phone' ? 480 : 560;
+    const card: number = Math.min(this.expanded ? 100000 : usual, this.bodyLimit);
+    const chrome: number = AI_CHAT_HEADER_HEIGHT + 12 + 46 + 12 + (this.pending.length > 0 || this.importing ? 42 : 0) +
+      (this.chosenSkill !== null || this.typedSkills().length > 0 || this.answerPills().length > 0 ? 44 : 0) +
+      (this.missingAttachments().length > 0 && this.pending.length === 0 ? 30 : 0);
+    return Math.max(120, card - chrome);
+  }
+
+  private privacyLine(): string {
+    const target: string = this.providerName !== '' ? '发送给 ' + this.providerName : '发送给你选择的 AI 服务';
+    return this.toolsOn > 0 ? '会' + target + '：你输入的内容、添加的文档，以及开启的工具读取的 App 数据（主机名、连接记录等，不含地址和密码）。' :
+      '只会' + target + '你输入的内容和添加的文档。';
+  }
+
+  /** A table in the answer can go to Excel. */
+  private exportAnswerAsSheet(message: AiChatMessage): void {
+    const firstLine: string = message.text.split('\n').map((line: string): string => line.replace(/^#+\s*/, '').trim())
+      .find((line: string): boolean => line !== '' && line.indexOf('|') < 0) ?? 'AI 表格';
+    try {
+      const document: AiDocument = aiCreateDocument(this.context(), firstLine.slice(0, 30), 'xlsx', message.text);
+      this.messages = this.messages.map((m: AiChatMessage): AiChatMessage => m.id !== message.id ? m :
+        new AiChatMessage(m.id, m.role, m.text, m.attachments, m.documents.concat([document]), m.createdAt, m.suggestions));
+      this.persist();
+      aiChatSaveSession(this.conversationStore, this.sessionId, this.messages, undefined);
+    } catch (_error) { this.toast('生成表格失败'); }
+  }
+
+  /**
+   * Pills under the latest answer: the AI's own next steps first, then what the app can do with the answer right
+   * away (a table to Excel, a long answer to Word), and the floating orb.
+   */
+  private answerPills(): AiChatPill[] {
+    if (this.busy || this.messages.length === 0 || this.draft.trim() !== '' || this.routeQuestion !== '') { return []; }
+    const last: AiChatMessage = this.messages[this.messages.length - 1];
+    if (last.role !== 'assistant') { return []; }
+    const pills: AiChatPill[] = last.suggestions.map((text: string, i: number): AiChatPill =>
+      new AiChatPill('s' + i.toString() + last.id, text, 'ask'));
+    const hasTable: boolean = this.blocksOf(last).some((block: AiMdBlock): boolean => block.kind === 'table');
+    if (hasTable && !last.documents.some((d: AiDocument): boolean => d.format === 'xlsx')) {
+      pills.push(new AiChatPill('excel' + last.id, '导出 Excel', 'excel'));
+    } else if (last.documents.length === 0 && last.text.length > 200 &&
+      !pills.some((p: AiChatPill): boolean => p.label.indexOf('Word') >= 0)) {
+      pills.push(new AiChatPill('word' + last.id, '存为 Word', 'word'));
+    }
+    pills.push(new AiChatPill('float' + last.id, '缩成悬浮球', 'float'));
+    return pills.slice(0, 5);
+  }
+
+  private runPill(pill: AiChatPill): void {
+    const last: AiChatMessage = this.messages[this.messages.length - 1];
+    if (pill.kind === 'ask') { this.draft = pill.label; this.submit(); return; }
+    if (pill.kind === 'excel') { this.exportAnswerAsSheet(last); return; }
+    if (pill.kind === 'word') { this.saveAnswerAsDocument(last); return; }
+    this.float();
+  }
+
+  /** Pills rise in one after another and settle with a little spring, as the assistant's do. */
+  private pillTransition(index: number): TransitionEffect {
+    return TransitionEffect.asymmetric(
+      TransitionEffect.OPACITY.combine(TransitionEffect.translate({ y: 18 }))
+        .combine(TransitionEffect.scale({ x: 0.6, y: 0.6 }))
+        .animation({ curve: curves.springMotion(0.62, 0.58), delay: 120 + index * 110 }),
+      TransitionEffect.OPACITY.combine(TransitionEffect.scale({ x: 0.9, y: 0.9 }))
+        .animation({ duration: 140, curve: Curve.EaseIn }));
+  }
+
+  // ------------------------------------------------------------------ views
+
+  @Builder private glyphButton(symbol: Resource, label: string, action: () => void) {
+    Stack() {
+      SymbolGlyph(symbol).fontSize(16).fontColor(['#FFFFFF'])
+    }
+    .width(34).height(34).borderRadius(17).backgroundColor('#2E3A3A3C')
+    .accessibilityText(label)
+    .onClick(action)
+  }
+
+  /** The header: the panel's 助理 | 聊天 switch sits over its left end; float, new chat and expand on the right. */
+  @Builder private header() {
+    Row({ space: 8 }) {
+      Blank()
+      this.glyphButton($r('sys.symbol.smal_window_playback'), '缩成悬浮球', (): void => { this.float(); })
+      if (this.messages.length > 0) {
+        this.glyphButton($r('sys.symbol.square_and_pencil'), '新对话', (): void => { this.startNewChat(); })
+        this.glyphButton($r(this.expanded ? 'sys.symbol.arrow_down_right_and_arrow_up_left' :
+          'sys.symbol.arrow_up_left_and_arrow_down_right'), this.expanded ? '收起' : '展开', (): void => {
+          this.getUIContext().animateTo({ curve: curves.springMotion(0.42, 0.86) }, (): void => { this.expanded = !this.expanded; });
+        })
+      }
+    }.width('100%').height(AI_CHAT_HEADER_HEIGHT)
+  }
+
+  @Builder private smallPill(label: string, primary: boolean, action: () => void) {
+    Text(label).fontSize(13).fontWeight(FontWeight.Medium).fontColor(primary ? '#000000' : '#FFFFFF')
+      .height(32).padding({ left: 14, right: 14 }).borderRadius(16)
+      .backgroundColor(primary ? '#F2F2F7' : '#3A3A3C')
+      .onClick(action)
+  }
+
+  @Builder private chip(label: string, symbol: Resource, index: number, action: () => void) {
+    Row({ space: 6 }) {
+      SymbolGlyph(symbol).fontSize(13).fontColor(['#C7C7CC'])
+      Text(label).fontSize(13).fontWeight(FontWeight.Medium).fontColor('#FFFFFF')
+    }
+    .height(32).padding({ left: 12, right: 14 }).borderRadius(16)
+    .backgroundColor('#B31C1C1E').border({ width: 0.5, color: '#33FFFFFF' })
+    .margin({ right: 8, top: 4, bottom: 4 })
+    .transition(this.pillTransition(index))
+    .onClick(action)
+  }
+
+  @Builder private attachmentChip(attachment: AiAttachment, removable: boolean) {
+    Row({ space: 6 }) {
+      SymbolGlyph($r(attachment.kind === 'pdf' ? 'sys.symbol.pdf_doc' : 'sys.symbol.doc_text_fill')).fontSize(14)
+        .fontColor([documentColor(attachment.kind)])
+      Text(attachment.name).fontSize(12).fontColor('#E5E5EA').maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+        .constraintSize({ maxWidth: 150 })
+      if (removable) {
+        SymbolGlyph($r('sys.symbol.xmark_circle_fill')).fontSize(14).fontColor(['#8E8E93'])
+          .onClick((): void => { this.removePending(attachment); })
+      }
+    }
+    .height(30).padding({ left: 10, right: removable ? 6 : 10 }).borderRadius(15).backgroundColor('#2C2C2E')
+    .margin({ right: 6, bottom: 6 })
+  }
+
+  @Builder private pendingRow() {
+    if (this.pending.length > 0 || this.importing) {
+      Flex({ wrap: FlexWrap.Wrap }) {
+        ForEach(this.pending, (item: AiAttachment): void => { this.attachmentChip(item, true) },
+          (item: AiAttachment): string => 'pending-' + item.id)
+        if (this.importing) {
+          Row({ space: 6 }) {
+            LoadingProgress().width(16).height(16).color('#C7C7CC')
+            Text('正在读取文档…').fontSize(12).fontColor('#C7C7CC')
+          }.height(30).padding({ left: 10, right: 10 }).borderRadius(15).backgroundColor('#2C2C2E').margin({ bottom: 6 })
+        }
+      }.width('100%')
+    }
+  }
+
+  /** The skill picked for the next message, or skills that fit what is being typed. */
+  @Builder private skillRow() {
+    if (this.chosenSkill !== null) {
+      Row({ space: 6 }) {
+        SymbolGlyph($r('sys.symbol.wand_and_stars')).fontSize(13).fontColor(['#B9A6FF'])
+        Text('技能 · ' + (this.chosenSkill as AiSkill).name).fontSize(12).fontColor('#E5E5EA')
+        SymbolGlyph($r('sys.symbol.xmark_circle_fill')).fontSize(14).fontColor(['#8E8E93'])
+          .onClick((): void => { this.chosenSkill = null; })
+      }.height(30).padding({ left: 10, right: 6 }).borderRadius(15).backgroundColor('#2C2346')
+      .transition(TransitionEffect.OPACITY.combine(TransitionEffect.scale({ x: 0.9, y: 0.9 })))
+    } else if (this.typedSkills().length > 0) {
+      Row() {
+        ForEach(this.typedSkills(), (skill: AiSkill, index: number): void => {
+          this.chip('用「' + skill.name + '」', $r('sys.symbol.wand_and_stars'), index, (): void => { this.useSkill(skill); })
+        }, (skill: AiSkill): string => 'typed-' + skill.id)
+      }.width('100%')
+    }
+  }
+
+  @Builder private spansText(spans: AiMdSpan[], size: number, color: string, weight: FontWeight) {
+    Text() {
+      ForEach(spans, (span: AiMdSpan): void => {
+        Span(span.text).fontSize(size).fontColor(span.code ? '#FFD28A' : color)
+          .fontWeight(span.bold ? FontWeight.Bold : weight)
+      }, (span: AiMdSpan, index: number): string => index.toString() + span.text.slice(0, 12))
+    }.fontSize(size).lineHeight(size * 1.5).fontColor(color).width('100%').copyOption(CopyOptions.LocalDevice)
+  }
+
+  @Builder private tableView(rows: string[][]) {
+    Scroll() {
+      Column() {
+        ForEach(rows, (row: string[], r: number): void => {
+          Row() {
+            ForEach(row, (cell: string, c: number): void => {
+              Text(cell).fontSize(13).lineHeight(18).fontColor(r === 0 ? '#FFFFFF' : '#E5E5EA')
+                .fontWeight(r === 0 ? FontWeight.Medium : FontWeight.Normal)
+                .width(tableWidths(rows)[c] ?? 80).padding({ left: 8, right: 8, top: 6, bottom: 6 })
+                .border({ width: { right: 0.5 }, color: { right: '#33FFFFFF' } })
+            }, (cell: string, c: number): string => r.toString() + '-' + c.toString())
+          }.backgroundColor(r === 0 ? '#26FFFFFF' : Color.Transparent)
+          .border({ width: { bottom: 0.5 }, color: { bottom: '#33FFFFFF' } })
+        }, (_row: string[], r: number): string => 'tr-' + r.toString())
+      }.borderRadius(10).clip(true).border({ width: 0.5, color: '#33FFFFFF' })
+    }.scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off).width('100%').align(Alignment.Start)
+  }
+
+  @Builder private blockView(block: AiMdBlock) {
+    if (block.kind === 'h1' || block.kind === 'h2' || block.kind === 'h3') {
+      this.spansText(block.spans, block.kind === 'h1' ? 20 : block.kind === 'h2' ? 18 : 16, '#FFFFFF', FontWeight.Bold)
+    } else if (block.kind === 'bullet' || block.kind === 'number') {
+      Row({ space: 6 }) {
+        Text(block.kind === 'bullet' ? '•' : block.marker).fontSize(16).lineHeight(24).fontColor('#C7C7CC')
+          .width(block.kind === 'bullet' ? 12 : 22)
+        Column() { this.spansText(block.spans, 16, '#FFFFFF', FontWeight.Normal) }.layoutWeight(1)
+      }.width('100%').alignItems(VerticalAlign.Top).padding({ left: block.level * 16 })
+    } else if (block.kind === 'quote') {
+      Row({ space: 10 }) {
+        Column().width(3).height('100%').borderRadius(2).backgroundColor('#636366')
+        Column() { this.spansText(block.spans, 15, '#C7C7CC', FontWeight.Normal) }.layoutWeight(1)
+      }.width('100%').alignItems(VerticalAlign.Top)
+    } else if (block.kind === 'rule') {
+      Divider().color('#33FFFFFF').strokeWidth(0.5)
+    } else if (block.kind === 'code') {
+      Scroll() {
+        Text(block.text).fontSize(13).lineHeight(19).fontColor('#E5E5EA').fontFamily('monospace')
+          .copyOption(CopyOptions.LocalDevice).padding(12)
+      }.scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off).width('100%').align(Alignment.Start)
+      .borderRadius(12).backgroundColor('#1C1C1E')
+    } else if (block.kind === 'table') {
+      this.tableView(block.rows)
+    } else {
+      this.spansText(block.spans, 16, '#FFFFFF', FontWeight.Normal)
+    }
+  }
+
+  @Builder private documentCard(document: AiDocument) {
+    Column({ space: 10 }) {
+      Row({ space: 12 }) {
+        Stack() {
+          SymbolGlyph($r('sys.symbol.doc_text_fill')).fontSize(22).fontColor([documentColor(document.format)])
+        }.width(42).height(42).borderRadius(12).backgroundColor('#2C2C2E')
+        Column({ space: 2 }) {
+          Text(document.name).fontSize(15).fontWeight(FontWeight.Medium).fontColor('#FFFFFF').maxLines(2)
+            .textOverflow({ overflow: TextOverflow.Ellipsis }).width('100%')
+          Text(aiDocumentKindLabel(document.format) + ' · ' + sizeLabel(document.bytes)).fontSize(12).fontColor('#8E8E93')
+        }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+      }.width('100%')
+      Row({ space: 8 }) {
+        this.smallPill('打开', true, (): void => { void this.openDocument(document, false); })
+        this.smallPill('分享', false, (): void => { void this.shareDocument(document); })
+        this.smallPill('另存', false, (): void => { void this.saveDocument(document); })
+      }.width('100%')
+      // 悬浮球: open the document and keep the chat at hand as the orb.
+      Row({ space: 6 }) {
+        SymbolGlyph($r('sys.symbol.smal_window_playback')).fontSize(13).fontColor(['#8E8E93'])
+        Text('打开并缩成悬浮球，边看边问').fontSize(12).fontColor('#8E8E93')
+      }.onClick((): void => { void this.openDocument(document, true); })
+    }.width('100%').padding(14).borderRadius(20).backgroundColor('#F01C1C1F')
+    .border({ width: 0.5, color: '#1FFFFFFF' })
+  }
+
+  @Builder private actionLink(symbol: Resource, label: string, action: () => void) {
+    Row({ space: 4 }) {
+      SymbolGlyph(symbol).fontSize(13).fontColor(['#8E8E93'])
+      Text(label).fontSize(12).fontColor('#8E8E93')
+    }.height(24).onClick(action)
+  }
+
+  @Builder private messageView(message: AiChatMessage, last: boolean) {
+    if (message.role === 'user') {
+      Column({ space: 6 }) {
+        if (message.attachments.length > 0) {
+          Flex({ wrap: FlexWrap.Wrap, justifyContent: FlexAlign.End }) {
+            ForEach(message.attachments, (name: string): void => {
+              Row({ space: 6 }) {
+                SymbolGlyph($r('sys.symbol.paperclip')).fontSize(12).fontColor(['#C7C7CC'])
+                Text(name).fontSize(12).fontColor('#C7C7CC').maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+                  .constraintSize({ maxWidth: 180 })
+              }.padding({ left: 8, right: 8, top: 4, bottom: 4 }).borderRadius(10).backgroundColor('#2C2C2E')
+              .margin({ left: 6, bottom: 4 })
+            }, (name: string): string => message.id + name)
+          }.width('100%')
+        }
+        Row() {
+          Text(message.text).fontSize(15).lineHeight(22).fontColor('#FFFFFF').copyOption(CopyOptions.LocalDevice)
+            .padding({ left: 14, right: 14, top: 9, bottom: 9 }).borderRadius(18).backgroundColor('#3A3A3C')
+            .constraintSize({ maxWidth: '86%' })
+        }.width('100%').justifyContent(FlexAlign.End)
+      }.width('100%').alignItems(HorizontalAlign.End)
+    } else {
+      Column({ space: 10 }) {
+        ForEach(this.blocksOf(message), (block: AiMdBlock): void => {
+          this.blockView(block)
+        }, (_block: AiMdBlock, index: number): string => message.id + '-b' + index.toString())
+        ForEach(message.documents, (document: AiDocument): void => { this.documentCard(document) },
+          (document: AiDocument): string => message.id + '-d' + document.path)
+        Row({ space: 16 }) {
+          this.actionLink($r('sys.symbol.doc_filled_on_doc'), '复制', (): void => { this.copyText(message.text); })
+          if (message.documents.length === 0 && message.text.length > 80) {
+            this.actionLink($r('sys.symbol.doc_text'), '存为 Word', (): void => { this.saveAnswerAsDocument(message); })
+          }
+
+        }.width('100%')
+      }.width('100%')
+    }
+  }
+
+  /** Waiting for the answer, where the answer will appear: the ring (with room for its glow) and what is happening. */
+  @Builder private thinkingRow() {
+    Row({ space: 10 }) {
+      Stack() { AiThinkingIndicator({ indicatorSize: 24 }) }.width(36).height(36)
+      Stack({ alignContent: Alignment.Start }) {
+        ForEach([this.status], (line: string): void => {
+          Text(line + '…').fontSize(15).fontColor('#C7C7CC').maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+            .transition(TransitionEffect.asymmetric(
+              TransitionEffect.OPACITY.combine(TransitionEffect.translate({ y: 8 })),
+              TransitionEffect.OPACITY.combine(TransitionEffect.translate({ y: -8 })))
+              .animation({ duration: 260, curve: Curve.EaseOut }))
+        }, (line: string): string => 'status-' + line)
+      }.layoutWeight(1).height(36)
+    }.width('100%').padding({ left: 4, right: 4 })
+    .transition(TransitionEffect.OPACITY.animation({ duration: 200 }))
+  }
+
+  @Builder private routeCard() {
+    Column({ space: 10 }) {
+      Text('这像是 RemoteDesktop 的问题').fontSize(15).fontWeight(FontWeight.Medium).fontColor('#FFFFFF').width('100%')
+      Text('助理可以抓取日志、排查连接问题，并直接帮你改设置。').fontSize(13).lineHeight(19)
+        .fontColor('#8E8E93').width('100%')
+      Row({ space: 8 }) {
+        this.smallPill('交给助理', true, (): void => {
+          const question: string = this.routeQuestion;
+          this.routeQuestion = ''; this.draft = '';
+          this.persist();
+          this.onSwitchMode('assistant', question);
+        })
+        this.smallPill('仍在聊天里问', false, (): void => {
+          this.routeBypass = this.routeQuestion;
+          this.routeQuestion = '';
+          this.submit();
+        })
+      }.width('100%')
+    }.width('100%').padding(14).borderRadius(20).backgroundColor('#F01C1C1F')
+    .border({ width: 0.5, color: '#1FFFFFFF' })
+    .transition(TransitionEffect.OPACITY.combine(TransitionEffect.translate({ y: 12 }))
+      .animation({ curve: curves.springMotion(0.42, 0.86) }))
+  }
+
+  @Builder private addButton() {
+    Stack() {
+      SymbolGlyph($r('sys.symbol.plus')).fontSize(18).fontColor(['#FFFFFF'])
+    }
+    .width(40).height(40).borderRadius(20).backgroundColor('#3A3A3C')
+    .opacity(this.importing || this.busy ? 0.4 : 1)
+    .accessibilityText('添加文档')
+    .onClick((): void => { void this.addDocuments(); })
+  }
+
+  @Builder private emptyState() {
+    // An empty chat: Siri's text mode, typed straight into the card in large type.
+    TextArea({ placeholder: ' 问点什么，或让我帮你处理文档', text: this.draft })
+      .id('aiChatQuestion')
+      .width('100%').fontSize(20).fontWeight(FontWeight.Medium).fontColor('#FFFFFF')
+      .placeholderColor('#8E8E93').placeholderFont({ size: 20, weight: FontWeight.Medium })
+      .caretStyle({ width: 2.5, color: '#FFFFFF' })
+      .backgroundColor(Color.Transparent).padding({ left: 3, right: 0, top: 4, bottom: 2 })
+      .constraintSize({ minHeight: 56, maxHeight: 180 })
+      .enterKeyType(EnterKeyType.Send)
+      .onChange((value: string): void => { this.draft = value; if (this.routeQuestion !== '') { this.routeQuestion = ''; } })
+      .onSubmit((): void => { this.submit(); })
+      .onAppear((): void => {
+        if (this.revealed) { setTimeout((): void => { focusControl.requestFocus('aiChatQuestion'); }, 280); }
+      })
+    this.pendingRow()
+    if (this.routeQuestion !== '') {
+      this.routeCard()
+    } else if (this.draft.trim() === '' && this.chosenSkill === null) {
+      // The installed skills, as what the user might want; 技能 opens the library.
+      Flex({ wrap: FlexWrap.Wrap }) {
+        ForEach(this.skills.slice(0, 9), (skill: AiSkill, index: number): void => {
+          this.chip(skill.name, $r(skill.needsDocument ? 'sys.symbol.doc_text' : 'sys.symbol.wand_and_stars'), index,
+            (): void => { this.useSkill(skill); })
+        }, (skill: AiSkill): string => 'skill-' + skill.id)
+        this.chip('更多技能', $r('sys.symbol.plus'), Math.min(9, this.skills.length),
+          (): void => { this.hideKeyboard(); this.onOpenSkills(); })
+      }.width('100%')
+    } else {
+      this.skillRow()
+    }
+    if (this.error !== '') {
+      Text(this.error).fontSize(13).lineHeight(18).fontColor('#FF9F0A').width('100%')
+    }
+    Row({ space: 10 }) {
+      this.addButton()
+      Text(this.pending.length > 0 ? '已添加 ' + this.pending.length.toString() + ' 个文档' : '添加文档')
+        .fontSize(13).fontColor('#8E8E93').layoutWeight(1)
+        .onClick((): void => { void this.addDocuments(); })
+      AiSendButton({ active: (this.draft.trim() !== '' || this.pending.length > 0) && !this.importing,
+        buttonSize: 40, onTap: (): void => { this.submit(); } })
+    }.width('100%')
+    Text(this.privacyLine()).fontSize(11).lineHeight(16).fontColor('#8E8E93').width('100%')
+  }
+
+  @Builder private conversation() {
+    Scroll(this.scroller) {
+      Column({ space: 18 }) {
+        ForEach(this.messages, (message: AiChatMessage, index: number): void => {
+          Column() { this.messageView(message, index === this.messages.length - 1 && !this.busy) }
+            .width('100%')
+            .transition(message.id === this.freshId ?
+              TransitionEffect.OPACITY.combine(TransitionEffect.translate({ y: 12 }))
+                .animation({ curve: curves.springMotion(0.42, 0.86) }) : TransitionEffect.IDENTITY)
+            .onAreaChange((_old: Area, area: Area): void => { this.positions.set(message.id, Number(area.position.y)); })
+        }, (message: AiChatMessage, index: number): string => message.id + '-' + message.documents.length.toString() + '-' +
+          (index === this.messages.length - 1 && !this.busy ? 'last' : ''))
+        if (this.busy) {
+          this.thinkingRow()
+        }
+        if (this.error !== '' && !this.busy) {
+          Column({ space: 8 }) {
+            Text(this.error).fontSize(13).lineHeight(18).fontColor('#FF9F0A').width('100%')
+            if (this.messages.length > 0 && this.messages[this.messages.length - 1].role === 'user') {
+              Row() { this.smallPill('重试', true, (): void => { this.retry(); }) }.width('100%')
+            }
+          }.width('100%')
+        }
+        if (this.routeQuestion !== '') {
+          this.routeCard()
+        }
+      }.width('100%').padding({ bottom: 6 })
+      .onAreaChange((_old: Area, area: Area): void => {
+        const height: number = Number(area.height);
+        if (Math.abs(height - this.contentHeight) > 0.5) { this.contentHeight = height; }
+      })
+    }
+    .width('100%')
+    // As tall as the conversation, up to the card's limit: a short chat leaves no empty space above the field. Until
+    // the conversation is measured it takes no room (never the full limit, which flashed a tall empty card).
+    .height(this.contentHeight > 0 ? Math.min(this.contentHeight, this.scrollLimit()) : 1)
+    .scrollBar(BarState.Off).edgeEffect(EdgeEffect.Spring).align(Alignment.Top)
+    .fadingEdge(true, { fadingEdgeLength: LengthMetrics.vp(20) })
+    if (this.missingAttachments().length > 0 && this.pending.length === 0) {
+      Text('之前添加的文档没有随对话保存；要继续读取，请重新添加：' + this.missingAttachments().join('、'))
+        .fontSize(11).lineHeight(16).fontColor('#8E8E93').width('100%')
+    }
+    this.pendingRow()
+    if (this.answerPills().length > 0 && this.chosenSkill === null) {
+      // What the answer suggests doing next, rising in over the field.
+      Scroll() {
+        Row() {
+          ForEach(this.answerPills(), (pill: AiChatPill, index: number): void => {
+            this.chip(pill.label, $r(pill.kind === 'ask' ? 'sys.symbol.wand_and_stars' : pill.kind === 'float' ?
+              'sys.symbol.smal_window_playback' : 'sys.symbol.doc_text'), index, (): void => { this.runPill(pill); })
+          }, (pill: AiChatPill): string => pill.key)
+        }
+      }.scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off).width('100%').align(Alignment.Start)
+      .edgeEffect(EdgeEffect.Spring)
+    } else {
+      this.skillRow()
+    }
+    Row({ space: 10 }) {
+      this.addButton()
+      AiInputCapsule() {
+        TextArea({ placeholder: '继续聊…', text: this.draft })
+          .id('aiChatDraft')
+          .layoutWeight(1).fontSize(16).fontColor('#FFFFFF').placeholderColor('#8E8E93')
+          .caretStyle({ width: 2.5, color: '#FFFFFF' }).backgroundColor(Color.Transparent)
+          .padding({ left: 0, right: 0, top: 9, bottom: 9 })
+          .constraintSize({ minHeight: 40, maxHeight: 120 })
+          .enterKeyType(EnterKeyType.Send)
+          .onChange((value: string): void => { this.draft = value; if (this.routeQuestion !== '') { this.routeQuestion = ''; } })
+          .onSubmit((): void => { this.submit(); })
+      }
+      AiSendButton({ active: (this.draft.trim() !== '' || this.pending.length > 0) && !this.busy && !this.importing,
+        buttonSize: 40, onTap: (): void => { this.submit(); } })
+    }.width('100%').alignItems(VerticalAlign.Bottom)
+  }
+
+  private blocksOf(message: AiChatMessage): AiMdBlock[] {
+    const key: string = message.id + ':' + message.text.length.toString();
+    const cached: AiMdBlock[] | undefined = this.blockCache.get(key);
+    if (cached !== undefined) { return cached; }
+    const blocks: AiMdBlock[] = aiMarkdownBlocks(message.text);
+    this.blockCache.set(key, blocks);
+    return blocks;
+  }
+
+  private lastAnswer(): AiChatMessage | null {
+    for (let i: number = this.messages.length - 1; i >= 0; i--) {
+      if (this.messages[i].role === 'assistant') { return this.messages[i]; }
+    }
+    return null;
+  }
+
+  private lastQuestion(): string {
+    for (let i: number = this.messages.length - 1; i >= 0; i--) {
+      if (this.messages[i].role === 'user') { return this.messages[i].text; }
+    }
+    return '';
+  }
+
+  @Builder private miniDocument(document: AiDocument) {
+    Row({ space: 10 }) {
+      SymbolGlyph($r('sys.symbol.doc_text_fill')).fontSize(18).fontColor([documentColor(document.format)])
+      Text(document.name).fontSize(13).fontColor('#FFFFFF').maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+        .layoutWeight(1)
+      this.smallPill('打开', true, (): void => { void this.openDocument(document, false); })
+    }.width('100%').padding({ left: 10, right: 6, top: 6, bottom: 6 }).borderRadius(16).backgroundColor('#2C2C2E')
+  }
+
+  /**
+   * Beside the floating orb: the latest question and answer (or what is happening while it thinks), and a field to
+   * go on. Documents open from here; anything more (adding files, skills, history) is in the full chat (展开).
+   */
+  @Builder private miniLayout() {
+    Column({ space: 10 }) {
+      Row({ space: 8 }) {
+        SymbolGlyph($r('sys.symbol.ellipsis_bubble')).fontSize(14).fontColor(['#C7C7CC'])
+        Text('聊天').fontSize(13).fontWeight(FontWeight.Medium).fontColor('#C7C7CC').layoutWeight(1)
+        this.glyphButton($r('sys.symbol.arrow_up_left_and_arrow_down_right'), '展开完整对话', (): void => {
+          this.hideKeyboard();
+          this.persist();
+          this.onExpand();
+        })
+      }.width('100%')
+      if (this.busy) {
+        if (this.lastQuestion() !== '') {
+          Text(this.lastQuestion()).fontSize(13).lineHeight(18).fontColor('#8E8E93').maxLines(2)
+            .textOverflow({ overflow: TextOverflow.Ellipsis }).width('100%')
+        }
+        this.thinkingRow()
+      } else if (this.lastAnswer() !== null) {
+        Scroll() {
+          Column({ space: 8 }) {
+            if (this.lastQuestion() !== '') {
+              Text(this.lastQuestion()).fontSize(13).lineHeight(18).fontColor('#8E8E93').maxLines(2)
+                .textOverflow({ overflow: TextOverflow.Ellipsis }).width('100%')
+            }
+            ForEach(this.blocksOf(this.lastAnswer() as AiChatMessage), (block: AiMdBlock): void => {
+              this.blockView(block)
+            }, (_block: AiMdBlock, index: number): string => 'mini-b' + index.toString() + '-' + (this.lastAnswer() as AiChatMessage).id)
+            ForEach((this.lastAnswer() as AiChatMessage).documents, (document: AiDocument): void => { this.miniDocument(document) },
+              (document: AiDocument): string => 'mini-d' + document.path)
+          }.width('100%')
+        }.constraintSize({ maxHeight: 240 }).scrollBar(BarState.Off).edgeEffect(EdgeEffect.Spring).align(Alignment.Top)
+        .fadingEdge(true, { fadingEdgeLength: LengthMetrics.vp(16) })
+      } else if (this.error === '') {
+        Text('问点什么，我在这儿。').fontSize(14).fontColor('#8E8E93').width('100%')
+      }
+      if (this.error !== '' && !this.busy) {
+        Text(this.error).fontSize(13).lineHeight(18).fontColor('#FF9F0A').width('100%')
+      }
+      if (this.routeQuestion !== '') {
+        this.routeCard()
+      }
+      Row({ space: 8 }) {
+        AiInputCapsule() {
+          TextInput({ placeholder: '继续问…', text: this.draft })
+            .id('aiChatMiniDraft')
+            .layoutWeight(1).height(38).fontSize(15).fontColor('#FFFFFF').placeholderColor('#8E8E93')
+            .caretStyle({ width: 2, color: '#FFFFFF' }).backgroundColor(Color.Transparent).padding(0)
+            .enterKeyType(EnterKeyType.Send)
+            .onChange((value: string): void => { this.draft = value; if (this.routeQuestion !== '') { this.routeQuestion = ''; } })
+            .onSubmit((): void => { this.submit(); })
+        }
+        AiSendButton({ active: this.draft.trim() !== '' && !this.busy, buttonSize: 34, onTap: (): void => { this.submit(); } })
+      }.width('100%').alignItems(VerticalAlign.Center)
+    }
+    // The island's material in small: black where the text is, smoky towards the foot, a soft rim.
+    .width('100%').padding({ left: 16, right: 12, top: 12, bottom: 12 }).borderRadius(28)
+    .backdropBlur(26)
+    .linearGradient({ angle: 180, colors: [['#E6030304', 0], ['#D9070708', 0.5], ['#C7101012', 1]] })
+    .border({ width: { top: 0.6, left: 0.6, right: 0.6, bottom: 1 },
+      color: { top: '#1FFFFFFF', left: '#17FFFFFF', right: '#17FFFFFF', bottom: '#59FFFFFF' } })
+    .shadow({ radius: 24, color: '#59000000', offsetY: 8 })
+    .onAreaChange((_old: Area, area: Area): void => { this.onCardSize(Number(area.height)); })
+  }
+
+  build() {
+    if (this.mini) {
+      this.miniLayout()
+    } else {
+      this.fullLayout()
+    }
+  }
+
+  @Builder private fullLayout() {
+    Column({ space: 12 }) {
+      this.header()
+      if (this.messages.length === 0 && !this.busy) {
+        this.emptyState()
+      } else {
+        this.conversation()
+      }
+    }
+    .width('100%')
+    .constraintSize({ maxHeight: this.bodyLimit })
+  }
+}

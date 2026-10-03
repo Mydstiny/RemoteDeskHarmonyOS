@@ -1,4 +1,5 @@
 import { recordDiagnosticEvent } from './DiagnosticCaptureRuntime';
+import { ConnectionJournal } from './ConnectionJournal';
 
 /**
  * SSH/SFTP diagnostic events without text: a connection failure becomes a closed category plus the native code, an
@@ -44,8 +45,12 @@ export function sshFailureClassification(message: string, code: number): number[
   return [SSH_FAILURE_UNCLASSIFIED, native];
 }
 
+const SSH_FAILURE_WORDS: string[] = ['连接失败', '网络或端口不通', '认证失败', '主机指纹问题', '私钥问题', '跳板机失败', '代理失败',
+  '路由已过期', '会话绑定失败'];
+
 export function recordSshFailure(message: string, code: number, elapsedMs: number): void {
   const classified: number[] = sshFailureClassification(message, code);
+  ConnectionJournal.failed('ssh', SSH_FAILURE_WORDS[classified[0]] ?? '连接失败');
   recordDiagnosticEvent('connection.ssh_sftp', 'ssh_failure', 'failed', 0, 1, classified[1],
     Math.max(0, Math.round(elapsedMs)), classified[0]);
 }

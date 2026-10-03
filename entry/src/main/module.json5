@@ -47,6 +47,38 @@
             "actions": [
               "ohos.want.action.home"
             ]
+          },
+          {
+            "actions": [
+              "ohos.want.action.sendData"
+            ],
+            "uris": [
+              {
+                "scheme": "file",
+                "utd": "general.text",
+                "maxFileSupported": 5
+              },
+              {
+                "scheme": "file",
+                "utd": "com.adobe.pdf",
+                "maxFileSupported": 5
+              },
+              {
+                "scheme": "file",
+                "utd": "org.openxmlformats.wordprocessingml.document",
+                "maxFileSupported": 5
+              },
+              {
+                "scheme": "file",
+                "utd": "org.openxmlformats.spreadsheetml.sheet",
+                "maxFileSupported": 5
+              },
+              {
+                "scheme": "file",
+                "utd": "org.openxmlformats.presentationml.presentation",
+                "maxFileSupported": 5
+              }
+            ]
           }
         ]
       },

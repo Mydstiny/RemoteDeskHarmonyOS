@@ -1,5 +1,6 @@
 import { DiagnosticOutcome } from './DiagnosticCapturePolicy';
 import { recordDiagnosticEvent } from './DiagnosticCaptureRuntime';
+import { ConnectionJournal } from './ConnectionJournal';
 import { classifyRustDeskProNativeError, parseRustDeskNativeError,
   RustDeskProNativeErrorKind } from './RustDeskProConnectionPreflightPolicy';
 
@@ -88,8 +89,15 @@ export function rustDeskFailureClassification(message: string): number[] {
 }
 
 /** A RustDesk connection failed (generation 1 while connecting, 2 in the session). */
+const RUSTDESK_FAILURE_WORDS: string[] = ['连接失败', '服务器不可达', '对端 ID 不存在或离线', '设备密码错误', '需要对方批准',
+  '等待批准超时', '中继鉴权失败', 'Server Pro 登录失败', '二次验证失败', '连上但没有画面', '握手失败或中断', '本机核心未运行', '已取消',
+  '握手超时', '连接方式不支持', '连接配置无效'];
+
 export function recordRustDeskFailure(message: string, stage: number, elapsedMs: number): void {
   const classified: number[] = rustDeskFailureClassification(message);
+  if (classified[0] !== RUSTDESK_FAILURE_CANCELLED) {
+    ConnectionJournal.failed('rustdesk', (stage === 2 ? '会话中断：' : '') + (RUSTDESK_FAILURE_WORDS[classified[0]] ?? '连接失败'));
+  }
   recordDiagnosticEvent('connection.rustdesk', 'rustdesk_failure', 'failed', 0, stage, classified[1],
     Math.max(0, Math.round(elapsedMs)), classified[0]);
 }

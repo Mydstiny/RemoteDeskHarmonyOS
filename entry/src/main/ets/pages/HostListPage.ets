@@ -808,7 +808,11 @@ import { DiagnosticCaptureSettingsSheet } from '../components/DiagnosticCaptureS
 import { DiagnosticAiSettingsSheet } from '../components/diagnosticAi/DiagnosticAiSettingsSheet';
 import { DiagnosticAiOrb } from '../components/diagnosticAi/DiagnosticAiOrb';
 import { DiagnosticAiProfileStore } from '../services/diagnosticAi/DiagnosticAiProfileStore';
-import { DiagnosticAiAssistantPreferences, DiagnosticAiConversationStore } from '../services/diagnosticAi/DiagnosticAiConversationStore';
+import { DiagnosticAiAssistantPreferences, DiagnosticAiConversationSession, DiagnosticAiConversationStore, diagnosticAiSessionKind } from '../services/diagnosticAi/DiagnosticAiConversationStore';
+import { diagnosticAiResumeSession } from '../components/diagnosticAi/DiagnosticAiAssistantPanel';
+import { AiChatMemory, aiChatResumeSession } from '../components/diagnosticAi/AiChatView';
+import { AI_SHARE_REQUEST_KEY, AiShareInbox, aiChatRefresh } from '../services/diagnosticAi/AiShareInbox';
+import { AiAppDataBridge, AiHostSummary } from '../services/diagnosticAi/AiAppDataBridge';
 import { DiagnosticAiOrbState } from '../services/diagnosticAi/DiagnosticAiModels';
 import { recordDiagnosticEvent } from '../services/DiagnosticCaptureRuntime';
 import { FeedbackSettingsSheet } from '../components/FeedbackSettingsSheet';
@@ -1143,6 +1147,9 @@ struct HostListPage {
   @StorageLink('aiEntryState') diagnosticAiOrbState: string = 'idle';
   /** An AI entry on another tab (its own page component) asks to open the assistant. */
   @StorageProp('aiEntryOpenRequest') @Watch('onAiEntryOpenRequest') aiEntryOpenRequest: number = 0;
+  /** Documents or text shared to the app (分享 → RemoteDesktop) open the AI island in 聊天. */
+  @StorageProp(AI_SHARE_REQUEST_KEY) @Watch('openSharedToAi') aiShareRequest: number = 0;
+  private aiShareRefusedTimer: number = -1;
   @State settingsLeafSheetMode: number = SETTINGS_SHEET_NONE;
   @State virtualKeyboardCustomEditorVisible: boolean = false;
   @State vncSettingsLeafDirty: boolean = false;
@@ -2174,6 +2181,7 @@ struct HostListPage {
     this.rdpAdvancedDisplayVisible = ProEntries.visible(PRO_RDP_ADVANCED_DISPLAY_FEATURE, this.rdpAdvancedDisplayContext());
     this.diagnosticAiConfigVisible = ProEntries.visible(PRO_DIAGNOSTICS_PROVIDER_FEATURE);
     this.diagnosticAiAssistantVisible = ProEntries.visible(PRO_DIAGNOSTICS_ASSISTANT_FEATURE);
+    if (this.diagnosticAiAssistantVisible && AiShareInbox.pending()) { this.openSharedToAi(); }
     const orgVisible: boolean = ProEntries.visible('pro.hostManagement');
     const workspacesVisible: boolean = ProEntries.visible('pro.workspaces') &&
       workspaceUsableOnDevice(this.workspaceDeviceKind(), this.workspacePhoneEnabled);
@@ -2248,6 +2256,13 @@ struct HostListPage {
   private readonly assistantHostLister = (protocol: string): AiTriageHost[] =>
     this.hosts.filter((host: RemoteHost): boolean => host.protocol === protocol)
       .map((host: RemoteHost): AiTriageHost => new AiTriageHost(host.id, host.label !== '' ? host.label : host.host));
+  /** The AI chat's 主机列表 tool: names, protocols, groups and last use only — no address or credential. */
+  private readonly chatHostLister = (): AiHostSummary[] => this.hosts.map((host: RemoteHost): AiHostSummary => {
+    const groupId: string = HostOrganizationStore.getInstance().membership(host.id).groupId;
+    const group = groupId === '' ? null : HostOrganizationStore.getInstance().group(groupId);
+    return new AiHostSummary(host.label !== '' ? host.label : '未命名主机', host.protocol, group !== null ? group.name : '',
+      host.lastConnected, host.lastHealth as number, host.lastLatency);
+  });
   private readonly assistantHostConnector = (hostId: string): boolean => {
     const host: RemoteHost | undefined = this.hosts.find((item: RemoteHost): boolean => item.id === hostId);
     if (host === undefined) { return false; }
@@ -2357,6 +2372,7 @@ struct HostListPage {
     this.syncDiagnosticAiOrbPreference();
     DiagnosticAiSettingsBridge.register(this.assistantSettingApplier, this.assistantSettingReader);
     DiagnosticAiHostBridge.register(this.assistantHostLister, this.assistantHostConnector);
+    AiAppDataBridge.register(this.chatHostLister);
     this.refreshAppIconEntry();
     this.ensureHostOrganizationSubscription();
     this.proVisibilityUnsubscribe?.();
@@ -2820,6 +2836,7 @@ struct HostListPage {
   onPageShow(): void {
     this.pageActive = true;
     this.openPendingProOrder();
+    this.openSharedToAi();
     this.cloudConnectionAvailable =
       CloudStore.getInstance().isCloudAvailable();
     this.refreshMoonlightDirectory();
@@ -5789,6 +5806,7 @@ struct HostListPage {
   aboutToDisappear(): void {
     DiagnosticAiSettingsBridge.unregister(this.assistantSettingApplier);
     DiagnosticAiHostBridge.unregister(this.assistantHostLister);
+    AiAppDataBridge.unregister(this.chatHostLister);
     this.hostOrgUnsubscribe?.(); this.hostOrgUnsubscribe = null;
     this.endProWorkspaceRun();
     this.aiStopStore(); this.aiStopAccess();
@@ -18718,6 +18736,8 @@ struct HostListPage {
                 this.cardDivider()
                 this.diagnosticSubRow(5)
                 this.cardDivider()
+                this.diagnosticSubRow(7)
+                this.cardDivider()
                 this.diagnosticSubRow(6)
                 this.cardDivider()
               }
@@ -20449,6 +20469,7 @@ struct HostListPage {
       case 'diagnosticAi.usage': this.openDiagnosticAiSection(3); return;
       case 'diagnosticAi.personalization': this.openDiagnosticAiSection(4); return;
       case 'diagnosticAi.sessions': this.openDiagnosticAiSection(5); return;
+      case 'diagnosticAi.skills': this.openDiagnosticAiSection(7); return;
       case 'diagnosticAi.classicLogs': this.openSettingsLeafSheet(SETTINGS_SHEET_DIAGNOSTIC_LOG); return;
       case 'settings.aiHosts': this.openSettingsLeafSheet(SETTINGS_SHEET_AI_HOSTS); return;
       case 'settings.aiDisplay': this.openSettingsLeafSheet(SETTINGS_SHEET_AI_DISPLAY); return;
@@ -20471,6 +20492,33 @@ struct HostListPage {
       case 'settings.moonlightDiagnostics': this.openMoonlightSettingsFromSettings(SETTINGS_SHEET_MOONLIGHT_DIAGNOSTICS); return;
       case 'settings.moonlightTrust': this.openMoonlightSettingsFromSettings(SETTINGS_SHEET_MOONLIGHT_TRUST); return;
       case 'settings.moonlightData': this.openMoonlightSettingsFromSettings(SETTINGS_SHEET_MOONLIGHT_DATA); return;
+    }
+  }
+
+  /**
+   * Something was shared to the app: the AI island opens in 聊天 and the chat reads it. Without the AI assistant (no
+   * Pro) the share is dropped with a note, after giving the entitlement a moment to load.
+   */
+  private openSharedToAi(): void {
+    if (!AiShareInbox.pending()) { return; }
+    if (!this.diagnosticAiAssistantVisible) {
+      if (this.aiShareRefusedTimer >= 0) { return; }
+      this.aiShareRefusedTimer = setTimeout((): void => {
+        this.aiShareRefusedTimer = -1;
+        if (!AiShareInbox.pending() || this.diagnosticAiAssistantVisible) { return; }
+        AiShareInbox.take();
+        try {
+          this.getUIContext().getPromptAction().showToast({ message: 'AI 助理需要开通 Pro 后才能处理分享的文档', duration: 3000 });
+        } catch (_error) { /* no toast */ }
+      }, 2500);
+      return;
+    }
+    AiChatMemory.active = true;
+    const sheetOpen: boolean = this.showSettingsLeafSheet;
+    if (sheetOpen) { this.closeSettingsLeafSheet(); }
+    aiChatRefresh();
+    if (!this.aiIslandShown) {
+      setTimeout((): void => { this.aiIslandShown = true; this.diagnosticAiOrbState = 'open'; }, sheetOpen ? 320 : 60);
     }
   }
 
@@ -20497,9 +20545,29 @@ struct HostListPage {
   private openDiagnosticAiSession(sessionId: string): void {
     const id: string = sessionId.trim();
     if (id === '') { return; }
-    this.openSettingsLeafSheet(SETTINGS_SHEET_DIAGNOSTIC_AI, (): void => {
-      this.diagnosticAiSection = 1; this.diagnosticAiResumeSessionId = id.slice(0, 128);
-    });
+    // 对话记录 → continue in the AI island itself: the chosen conversation becomes the current one, the settings
+    // sheet closes, and the island opens on its last answer with the input ready.
+    const session: DiagnosticAiConversationSession | undefined = this.assistantConversationStore().session(id.slice(0, 128));
+    if (session === undefined || !this.diagnosticAiAssistantVisible) {
+      this.openSettingsLeafSheet(SETTINGS_SHEET_DIAGNOSTIC_AI, (): void => {
+        this.diagnosticAiSection = 1; this.diagnosticAiResumeSessionId = id.slice(0, 128);
+      });
+      return;
+    }
+    if (diagnosticAiSessionKind(session) === 'chat') {
+      // A chat continues in 聊天 with its messages and documents.
+      aiChatResumeSession(this.assistantOwner(), session);
+      aiChatRefresh();
+    } else {
+      AiChatMemory.active = false;
+      diagnosticAiResumeSession(this.assistantOwner(), session);
+      aiChatRefresh();
+    }
+    this.closeSettingsLeafSheet();
+    setTimeout((): void => {
+      this.aiIslandShown = true;
+      this.diagnosticAiOrbState = 'open';
+    }, 320);
   }
 
   /** One AI help setting row: 0 config, 1 assistant, 2 classic logs, 3 usage, 4 personalization, 5 sessions. */
@@ -20508,17 +20576,19 @@ struct HostListPage {
       SymbolGlyph(kind === 0 ? $r('sys.symbol.gearshape_fill') : kind === 1 ? $r('sys.symbol.performance') :
         kind === 2 ? $r('sys.symbol.doc_plaintext') : kind === 3 ? $r('sys.symbol.performance') :
         kind === 4 ? $r('sys.symbol.person_crop_circle_fill') : kind === 6 ? $r('sys.symbol.wand_and_stars') :
-        $r('sys.symbol.clock')).fontSize(22).fontColor([this.pal().text3])
+        kind === 7 ? $r('sys.symbol.puzzle_fill') : $r('sys.symbol.clock')).fontSize(22).fontColor([this.pal().text3])
         .width(22).height(22).margin({ left: 9, right: 9 })
       Column() {
         Text(kind === 0 ? '辅助 AI 配置' : kind === 1 ? '启动 AI 辅助' : kind === 2 ? '传统日志抓取' :
-          kind === 3 ? 'AI 用量监控' : kind === 4 ? 'AI 个性化设置' : kind === 6 ? 'AI 动效' : 'AI 会话管理')
+          kind === 3 ? 'AI 用量监控' : kind === 4 ? 'AI 个性化设置' : kind === 6 ? 'AI 动效' : kind === 7 ? 'AI 工具与技能' :
+          'AI 对话记录')
           .fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
           .fontColor(this.pal().text).fontFamily(this.font())
         Text(kind === 0 ? '选择 AI 服务商、保存密钥并选择模型' : kind === 1 ? '询问应用、协助设置、诊断问题和生成反馈草稿' :
-          kind === 2 ? '脱敏诊断日志的抓取、预览、保存与导出' : kind === 3 ? 'Token、缓存命中率、订阅分项与费用估算' :
+          kind === 2 ? '脱敏诊断日志的抓取、预览、保存与导出' : kind === 3 ? '按时间和订阅查看请求、Token 与费用' :
           kind === 4 ? '助手名称、性格、风格和本机用户画像记忆' :
-          kind === 6 ? '思考动画、悬浮球、完成动画和展开方式' : '查看历史对话并继续与 AI 助手交流')
+          kind === 6 ? '思考动画、悬浮球、完成动画和展开方式' : kind === 7 ? '聊天可用的工具、技能库和自定义技能' :
+          '搜索、继续或删除历史对话')
           .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
           .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).margin({ top: 2 })
       }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })

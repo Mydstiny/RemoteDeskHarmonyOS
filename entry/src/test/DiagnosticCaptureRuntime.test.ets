@@ -81,14 +81,14 @@ export default function diagnosticCaptureRuntimeTest(): void {
       const status = runtime.status();
       expect(status.fullLog).assertTrue();
       expect(status.profile).assertEqual('full');
-      expect(status.selectedModules.length).assertEqual(10);
+      expect(status.selectedModules.length).assertEqual(12);
       expect(runtime.isModuleCapturing('connection.rustdesk')).assertTrue();
       expect(runtime.isModuleCapturing('security.ssh_key')).assertTrue();
       expect(runtime.stop()).assertEqual('ok');
       const frozen: FrozenDiagnosticCapture = runtime.frozenCapture() as FrozenDiagnosticCapture;
       expect(frozen.fullLog).assertTrue();
       expect(frozen.profile).assertEqual('full');
-      expect(frozen.selectedModules.length).assertEqual(10);
+      expect(frozen.selectedModules.length).assertEqual(12);
     });
 
     it('notifies_runtime_samplers_at_start_and_stop_boundaries', 0, (): void => {

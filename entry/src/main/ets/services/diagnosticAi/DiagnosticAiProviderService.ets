@@ -3,7 +3,7 @@ import { BusinessError, deviceInfo } from '@kit.BasicServicesKit';
 import { util } from '@kit.ArkTS';
 import { localChatModel } from '@kit.DataAugmentationKit';
 import { http } from '@kit.NetworkKit';
-import { DiagnosticAiCapturePlanProposal, DiagnosticAiClarifyQuestion, DiagnosticAiEvidenceRef, DiagnosticAiModelInfo, DiagnosticAiModelPriceEntry, DiagnosticAiProviderManifest, DiagnosticAiProviderProfile, DiagnosticAiResult, DiagnosticAiSettingProposal, DiagnosticAiUsageMetadata } from './DiagnosticAiModels';
+import { DiagnosticAiCapturePlanProposal, DiagnosticAiClarifyQuestion, DiagnosticAiEvidenceRef, DiagnosticAiModelInfo, DiagnosticAiModelPriceEntry, DiagnosticAiProviderManifest, DiagnosticAiProviderProfile, DiagnosticAiResult, DiagnosticAiSettingProposal, DiagnosticAiUsageMetadata, DiagnosticAiUseCase } from './DiagnosticAiModels';
 import { diagnosticAiHarmonyLocalDeviceSupported, diagnosticAiProviderIsHarmonyLocal, diagnosticAiProviderManifest, HARMONY_LOCAL_MODEL_ID } from './DiagnosticAiProviderCatalog';
 import { validateDiagnosticAiEndpoint } from './DiagnosticAiEndpointPolicy';
 import { diagnosticAiProposalIsSafe, diagnosticAiSettingCatalog } from './DiagnosticAiSettingsActionPolicy';
@@ -39,6 +39,44 @@ function nestedNumber(row: Record<string, Object>, parent: string, keys: string[
     }
   }
   return 0;
+}
+
+/**
+ * Tokens of a text, roughly as tokenizers count them: a CJK character is about one token, other text about four
+ * characters per token. Used only when a provider returns no usage.
+ */
+export function diagnosticAiEstimateTokens(text: string): number {
+  let cjk: number = 0;
+  for (let i: number = 0; i < text.length; i++) {
+    const c: number = text.charCodeAt(i);
+    if ((c >= 0x3000 && c <= 0x9fff) || (c >= 0xac00 && c <= 0xd7af) || (c >= 0xff00 && c <= 0xffef)) { cjk++; }
+  }
+  return Math.ceil(cjk + (text.length - cjk) / 4);
+}
+
+/** The provider said nothing about usage: estimate it from everything actually sent and the answer received. */
+function estimatedUsage(sent: string, received: string): DiagnosticAiUsageMetadata {
+  return { promptTokens: diagnosticAiEstimateTokens(sent), completionTokens: diagnosticAiEstimateTokens(received),
+    cachedTokens: 0, estimated: true };
+}
+
+/** The usage a provider reported for one response (undefined: none). */
+export function diagnosticAiResponseUsage(raw: Record<string, Object>): DiagnosticAiUsageMetadata | undefined {
+  return usageMetadata(raw);
+}
+
+/** The assistant message of a chat response (choices[0].message, or Ollama's message), as sent. */
+export function diagnosticAiResponseMessage(raw: Record<string, Object>): Record<string, Object> | null {
+  const choices: Object[] = Array.isArray(raw['choices']) ? raw['choices'] as Object[] : [];
+  const first: Record<string, Object> | null = choices.length > 0 ? choices[0] as Record<string, Object> : null;
+  const message: Object | undefined = first !== null ? first['message'] : raw['message'];
+  return message !== undefined && message !== null && typeof message === 'object' ? message as Record<string, Object> : null;
+}
+
+/** The text of a chat response, whichever shape the provider used. */
+export function diagnosticAiResponseText(raw: Record<string, Object>): string {
+  const choices: Object[] = Array.isArray(raw['choices']) ? raw['choices'] as Object[] : [];
+  return responseContent(raw, choices.length > 0 ? choices[0] as Record<string, Object> : null);
 }
 
 function usageMetadata(raw: Record<string, Object>): DiagnosticAiUsageMetadata | undefined {
@@ -314,9 +352,12 @@ export class DiagnosticAiProviderService {
 
   private async localAssist(input: DiagnosticAiAssistInput,
     manifest: DiagnosticAiProviderManifest): Promise<DiagnosticAiResult> {
-    const answer: string = await this.harmonyLocalChat(this.localPrompt(input.mode, input.question,
-      input.history.slice(-1200), input.bundle.slice(-1200), input.knowledge.slice(-1000), input.assistantContext ?? ''));
-    return this.parseLocalResult(answer, manifest.verifiedAt);
+    const prompt: string = this.localPrompt(input.mode, input.question,
+      input.history.slice(-1200), input.bundle.slice(-1200), input.knowledge.slice(-1000), input.assistantContext ?? '');
+    const answer: string = await this.harmonyLocalChat(prompt);
+    const result: DiagnosticAiResult = this.parseLocalResult(answer, manifest.verifiedAt);
+    if (result.usage === undefined) { result.usage = estimatedUsage(prompt, answer); }
+    return result;
   }
 
   private async localAnalyze(input: DiagnosticAiAnalysisInput,
@@ -338,10 +379,12 @@ export class DiagnosticAiProviderService {
   }
 
   private async request(profile: DiagnosticAiProviderProfile, secret: string, path: string,
-    body: Object | null): Promise<string> {
+    body: Object | null, useCase: DiagnosticAiUseCase = 'diagnostic_assistant', readTimeoutMs: number = 0): Promise<string> {
     const manifest = diagnosticAiProviderManifest(profile.providerId);
     if (manifest === null) { throw new Error('DIAGNOSTIC_AI_PROVIDER_UNKNOWN'); }
-    const policy = diagnosticAiUseCaseDecision(manifest, profile, 'diagnostic_assistant');
+    // Chat is checked as chat; everything else as the diagnostic assistant it is.
+    const policy = useCase === 'interactive_chat' ? diagnosticAiUseCaseDecision(manifest, profile, 'interactive_chat') :
+      diagnosticAiUseCaseDecision(manifest, profile, 'diagnostic_assistant');
     if (!policy.ok) { throw diagnosticAiUseCaseError(policy); }
     const endpoint = this.endpoint(profile, path);
     const decision = validateDiagnosticAiEndpoint(endpoint, manifest.adapterFamily, false);
@@ -352,7 +395,7 @@ export class DiagnosticAiProviderService {
         method: body === null ? http.RequestMethod.GET : http.RequestMethod.POST,
         expectDataType: http.HttpDataType.STRING, usingCache: false, maxRedirects: 0,
         maxLimit: MAX_RESPONSE_BYTES, connectTimeout: TIMEOUT_MS,
-        readTimeout: body === null ? TIMEOUT_MS : CHAT_READ_TIMEOUT_MS,
+        readTimeout: body === null ? TIMEOUT_MS : readTimeoutMs > 0 ? readTimeoutMs : CHAT_READ_TIMEOUT_MS,
         header: this.authHeaders(profile, secret)
       };
       if (body !== null) { options.extraData = JSON.stringify(body); }
@@ -371,6 +414,25 @@ export class DiagnosticAiProviderService {
       if (code === HTTP_TIMEOUT_CODE) { throw new Error('DIAGNOSTIC_AI_TIMEOUT'); }
       throw new Error('DIAGNOSTIC_AI_NETWORK');
     } finally { client.destroy(); }
+  }
+
+  /**
+   * 聊天模式: one chat completion with the body as given (messages, and tools when the chat uses them), checked as
+   * interactive chat. Writing a whole document takes a model longer than an answer does, hence the longer wait.
+   */
+  async chatCompletion(profile: DiagnosticAiProviderProfile, secret: string, body: Record<string, Object>,
+    readTimeoutMs: number): Promise<Record<string, Object>> {
+    const manifest = diagnosticAiProviderManifest(profile.providerId);
+    if (manifest === null || manifest.chatPath === '') { throw new Error('DIAGNOSTIC_AI_ANALYSIS_UNAVAILABLE'); }
+    const text: string = await this.request(profile, secret, manifest.chatPath, body, 'interactive_chat', readTimeoutMs);
+    const raw: Object = JSON.parse(text) as Object;
+    if (raw === null || typeof raw !== 'object') { throw new Error('DIAGNOSTIC_AI_EMPTY_RESULT'); }
+    return raw as Record<string, Object>;
+  }
+
+  /** 聊天模式 on the HarmonyOS on-device model: one prompt in, the answer text out. */
+  async localChatText(prompt: string): Promise<string> {
+    return await this.harmonyLocalChat(prompt);
   }
 
   /** The provider's model list; also the AI self-check's reachability test (logged as an ai_request of kind 5). */
@@ -462,7 +524,8 @@ export class DiagnosticAiProviderService {
       messages, response_format: { type: 'json_object' }
     };
     const raw = JSON.parse(await this.request(profile, secret, manifest.chatPath, body)) as Record<string, Object>;
-    const usage: DiagnosticAiUsageMetadata | undefined = usageMetadata(raw);
+    const usage: DiagnosticAiUsageMetadata = usageMetadata(raw) ?? estimatedUsage(
+      messages.map((m: DiagnosticAiChatMessage): string => m.content).join('\n'), JSON.stringify(raw['choices'] ?? ''));
     const choices = Array.isArray(raw['choices']) ? raw['choices'] as Object[] : [];
     let first: Record<string, Object> | null = null;
     if (choices.length > 0) { first = choices[0] as Record<string, Object>; }
@@ -540,7 +603,12 @@ export class DiagnosticAiProviderService {
       const fallbackBody: DiagnosticAiChatBody = { model: profile.modelId, stream: false, messages };
       rawText = await this.request(profile, secret, manifest.chatPath, fallbackBody);
     }
-    return this.parseResult(rawText, manifest.verifiedAt);
+    const result: DiagnosticAiResult = this.parseResult(rawText, manifest.verifiedAt);
+    if (result.usage === undefined) {
+      result.usage = estimatedUsage(messages.map((m: DiagnosticAiChatMessage): string => m.content).join('\n'),
+        JSON.stringify(result));
+    }
+    return result;
   }
 
   private parseResult(rawText: string, knowledgeVersion: string): DiagnosticAiResult {

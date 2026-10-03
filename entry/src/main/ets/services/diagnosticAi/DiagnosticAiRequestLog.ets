@@ -21,11 +21,14 @@ export const AI_MODE_CONFIGURE: number = 2;
 export const AI_MODE_DIAGNOSE: number = 3;
 export const AI_MODE_FEEDBACK: number = 4;
 export const AI_MODE_MODELS: number = 5;
+/** 聊天模式: a general chat request (documents, writing), not about the app. */
+export const AI_MODE_CHAT: number = 6;
 
 export function diagnosticAiModeCode(mode: string): number {
   if (mode === 'configure') { return AI_MODE_CONFIGURE; }
   if (mode === 'diagnose') { return AI_MODE_DIAGNOSE; }
   if (mode === 'feedback') { return AI_MODE_FEEDBACK; }
+  if (mode === 'chat') { return AI_MODE_CHAT; }
   return AI_MODE_ANSWER;
 }
 
