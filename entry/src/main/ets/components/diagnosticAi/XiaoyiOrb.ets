@@ -29,6 +29,8 @@ export struct AiKernelRing {
   @Prop ringSize: number = 34;
   /** One still frame, no clock (settings tiles that are not selected). */
   @Prop still: boolean = false;
+  /** Opens from a dot when it appears (unless a ring was just showing); false: shows open at once. */
+  @Prop opensFromDot: boolean = true;
   @StorageProp('diagnosticAiReducedMotion') @Watch('onReducedMotionChanged') reducedMotion: boolean = false;
   @State private clock: number = 0;
   private sync: displaySync.DisplaySync | null = null;
@@ -41,7 +43,7 @@ export struct AiKernelRing {
   aboutToAppear(): void {
     this.clock = Date.now();
     if (this.reducedMotion || this.still) { return; }
-    this.bornAt = this.clock - AiKernelRing.lastFrameAt > 300 ? this.clock : 0;
+    this.bornAt = this.opensFromDot && this.clock - AiKernelRing.lastFrameAt > 300 ? this.clock : 0;
     this.startClock();
   }
 

@@ -47,6 +47,8 @@ export struct AiThinkingIndicator {
   @Prop style: string = '';
   /** One still frame (settings tiles that are not selected). */
   @Prop still: boolean = false;
+  /** The ring opens from a dot as it appears; false shows it open at once (it was already there, only unseen). */
+  @Prop opensFromDot: boolean = true;
   @StorageProp(AI_MOTION_THINKING) saved: string = 'dots';
   @StorageProp(AI_MOTION_REDUCED) reduced: boolean = false;
 
@@ -72,7 +74,7 @@ export struct AiThinkingIndicator {
       } else if (this.effective() === 'minimal') {
         AiQuietDots({ dotsSize: this.indicatorSize })
       } else {
-        AiKernelRing({ ringSize: this.indicatorSize, still: this.still })
+        AiKernelRing({ ringSize: this.indicatorSize, still: this.still, opensFromDot: this.opensFromDot })
       }
     }.width(this.indicatorSize).height(this.indicatorSize)
   }

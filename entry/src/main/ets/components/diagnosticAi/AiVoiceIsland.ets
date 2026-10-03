@@ -351,6 +351,12 @@ export struct AiVoiceIsland {
 
   /** Closing: the AI island's compact capsule (AiIsland stage 1), where text mode also closes through. */
   private closingCapsule(): boolean { return this.phase === 'capsule'; }
+  /** That capsule's ring, as AiIsland draws it at stage 1: 34 vp, left of the system island, on the centre line. */
+  private capsuleRingSize(): number { return 34 * this.k(); }
+  private capsuleRingX(): number {
+    const headroom: number = this.cutoutTop >= 0 ? Math.max(0, this.topInset + 6 - this.panelAnchorTop()) : 0;
+    return (headroom > 0 ? 24 : 11) * this.k();
+  }
 
   private surfaceWidth(): number {
     if (this.handTop >= 0) { return this.handWidth; }
@@ -1315,6 +1321,14 @@ export struct AiVoiceIsland {
       }
       if (this.cardPhase() || this.contentIn) {
         this.cardBody()
+      }
+      // Closing, as text mode's capsule: the thinking ring (shown open, not opening from a dot — in text mode it was
+      // there all along) comes into view as the surface gathers, and sinks into the island with it.
+      if (this.closingCapsule()) {
+        AiThinkingIndicator({ indicatorSize: this.capsuleRingSize(), opensFromDot: false })
+          .position({ x: this.capsuleRingX(), y: (this.surfaceHeight() - this.capsuleRingSize()) / 2 })
+          .hitTestBehavior(HitTestMode.None)
+          .transition(TransitionEffect.OPACITY)
       }
       // A fine glass edge on the droplet, a hairline on the card, none on the black capsules — but the island's own
       // capsule (closing) has text mode's rim: pale along the bottom, faint at the sides.
