@@ -13,6 +13,7 @@ const TIMEOUT_MS: number = 15000;
 const MAX_RESPONSE_BYTES: number = 2 * 1024 * 1024;
 const LOCAL_CHAT_MAX_BYTES: number = 4300;
 const LOCAL_CHAT_TIMEOUT_MS: number = 30000;
+const LOCAL_MODEL_INIT_TIMEOUT_MS: number = 10000;
 
 function safeText(value: Object | undefined | null, fallback: string = ''): string {
   return typeof value === 'string' ? value as string : fallback;
@@ -164,7 +165,7 @@ export class DiagnosticAiProviderService {
       this.localInit = localChatModel.init();
     }
     try {
-      const ready: boolean = await this.localInit;
+      const ready: boolean = await this.awaitLocalModelInit(this.localInit);
       if (!ready) { throw new Error('DIAGNOSTIC_AI_LOCAL_MODEL_UNAVAILABLE'); }
     } catch (error) {
       this.localInit = null;
@@ -177,6 +178,29 @@ export class DiagnosticAiProviderService {
   private nextLocalQuestionId(): number {
     this.localQuestionId = (this.localQuestionId + 1) % 65536;
     return this.localQuestionId === 0 ? 1 : this.localQuestionId;
+  }
+
+  private async awaitLocalModelInit(pending: Promise<boolean>): Promise<boolean> {
+    return await new Promise<boolean>((resolve: (value: boolean) => void,
+      reject: (reason?: Object) => void): void => {
+      let settled: boolean = false;
+      const timer: number = setTimeout((): void => {
+        if (settled) { return; }
+        settled = true;
+        reject(new Error('DIAGNOSTIC_AI_LOCAL_MODEL_INIT_TIMEOUT'));
+      }, LOCAL_MODEL_INIT_TIMEOUT_MS);
+      pending.then((ready: boolean): void => {
+        if (settled) { return; }
+        settled = true;
+        clearTimeout(timer);
+        resolve(ready);
+      }).catch((error: Object): void => {
+        if (settled) { return; }
+        settled = true;
+        clearTimeout(timer);
+        reject(error);
+      });
+    });
   }
 
   private async harmonyLocalChat(content: string): Promise<string> {

@@ -8,7 +8,8 @@ import { AppConfig, Palette, buildDark, buildLight } from '../../common/Theme';
 import { AppUiMetrics } from '../../common/AppUiMetrics';
 import { DiagnosticAiProviderProfile, DiagnosticAiResult, DiagnosticAiSettingProposal } from '../../services/diagnosticAi/DiagnosticAiModels';
 import { DiagnosticModuleId } from '../../services/DiagnosticCapturePolicy';
-import { diagnosticAiModulesForQuestion, diagnosticAiCaptureStatus } from '../../services/diagnosticAi/DiagnosticAiBundlePolicy';
+import { DiagnosticCaptureActionCode } from '../../services/DiagnosticCaptureRuntime';
+import { DiagnosticAiBundle, diagnosticAiModulesForQuestion, diagnosticAiCaptureStatus } from '../../services/diagnosticAi/DiagnosticAiBundlePolicy';
 import { DiagnosticAiCaptureOrchestrator } from '../../services/diagnosticAi/DiagnosticAiCaptureOrchestrator';
 import { DiagnosticAiProfileStore } from '../../services/diagnosticAi/DiagnosticAiProfileStore';
 import { diagnosticAiProviderIsHarmonyLocal } from '../../services/diagnosticAi/DiagnosticAiProviderCatalog';
@@ -242,7 +243,9 @@ export struct DiagnosticAiAssistantPanel {
   private owner: string = 'device-local';
   private timer: number = -1;
   private lifecycleGeneration: number = 0;
+  private alive: boolean = true;
   private captureOwnedByPanel: boolean = false;
+  private lastCapturePhase: string = 'idle';
   private readonly conversationStore: DiagnosticAiConversationStore = new DiagnosticAiConversationStore();
   private sessionId: string = '';
   private assistantPreferences: DiagnosticAiAssistantPreferences = {
@@ -333,7 +336,9 @@ export struct DiagnosticAiAssistantPanel {
   }
 
   aboutToAppear(): void {
+    this.alive = true;
     this.lifecycleGeneration++;
+    try { this.lastCapturePhase = this.capture.status().phase; } catch (_error) { this.lastCapturePhase = 'idle'; }
     const scope = AccountSessionCoordinator.getInstance().currentScope();
     this.owner = scope.ownerScopeId.trim() === '' ? 'device-local' : scope.ownerScopeId;
     this.store.init(getContext(this) as common.UIAbilityContext, this.owner);
@@ -373,34 +378,79 @@ export struct DiagnosticAiAssistantPanel {
   }
 
   aboutToDisappear(): void {
+    this.alive = false;
     this.lifecycleGeneration++;
     if (this.suggestionTimer >= 0) { clearTimeout(this.suggestionTimer); this.suggestionTimer = -1; }
     if (this.timer >= 0) { clearInterval(this.timer); this.timer = -1; }
     if (this.captureOwnedByPanel) {
-      this.capture.cancel(this.owner);
+      try { this.capture.cancel(this.owner); } catch (_error) { /* page teardown must not throw */ }
       this.captureOwnedByPanel = false;
       this.onCaptureStateChanged(false);
     }
+    this.busy = false;
+    this.onActivityChanged(false);
   }
 
   private allowed(): boolean {
     return ProEntries.visible(PRO_DIAGNOSTICS_ASSISTANT_FEATURE, ProAppRuntime.getInstance().context());
   }
 
+  /** App actions and mail drafts must use the same live entitlement/scope fence as AI requests. */
+  private actionsAllowed(): boolean {
+    if (!this.alive || !this.allowed()) { return false; }
+    const scope = AccountSessionCoordinator.getInstance().currentScope();
+    const currentOwner: string = scope.ownerScopeId.trim() === '' ? 'device-local' : scope.ownerScopeId;
+    return currentOwner === this.owner;
+  }
+
   private syncCapture(): void {
     const snapshot = this.capture.status();
+    const previousPhase: string = this.lastCapturePhase;
+    this.lastCapturePhase = snapshot.phase;
     this.eventCount = snapshot.eventCount; this.elapsed = snapshot.durationMinutes * 60 - snapshot.remainingSeconds;
     this.captureBytes = snapshot.approximateBytes;
     this.reportActivity();
     if (snapshot.phase === 'capturing') {
       this.status = '正在抓取脱敏诊断事件，复现问题后点「结束并分析」';
       this.pulse = !this.pulse;
+    } else if (previousPhase === 'capturing' && snapshot.phase === 'readyToSave' &&
+      (this.captureOwnedByPanel || (snapshot.ownerId === this.owner && snapshot.ownerKind === 'ai'))) {
+      // Runtime.status() performs the deadline transition lazily. Treat that
+      // edge like an explicit stop so the island cannot remain collapsed with
+      // no end button and no retryable bundle.
+      let bundle: DiagnosticAiBundle | null = null;
+      try {
+        bundle = this.capture.bundle(this.owner);
+      } catch (_error) {
+        bundle = null;
+      }
+      this.captureOwnedByPanel = false;
+      this.onCaptureStateChanged(false);
+      if (bundle === null) {
+        try { this.capture.discard(this.owner, snapshot.captureId); } catch (_error) { /* best effort cleanup */ }
+        this.status = '抓取已到时，但没有可分析的诊断事件';
+      } else {
+        this.latestBundleText = bundle.text;
+        this.pendingCaptureId = bundle.captureId;
+        this.agentMode = 'diagnose';
+        AiConversationMemory.pendingQuestion = this.question;
+        this.status = '抓取已到时；诊断包已保留，可继续分析。';
+      }
+      this.reportActivity();
+    } else if (previousPhase === 'capturing' && snapshot.phase === 'idle' && this.captureOwnedByPanel) {
+      // Account/logout invalidation can discard the runtime without a panel
+      // click. Release the stale visual owner so a new capture can be shown.
+      this.captureOwnedByPanel = false;
+      this.onCaptureStateChanged(false);
+      this.status = '抓取已停止；当前诊断包已失效。';
+      this.reportActivity();
     }
   }
 
   private capturing(): boolean { return this.capture.status().phase === 'capturing'; }
 
   private reportActivity(): void {
+    if (!this.alive) { return; }
     const active: boolean = this.busy || this.capturing();
     if (active !== this.lastActive) { this.lastActive = active; this.onActivityChanged(active); }
   }
@@ -449,6 +499,8 @@ export struct DiagnosticAiAssistantPanel {
     this.agentMode = 'diagnose';
     this.question = AiConversationMemory.pendingQuestion === '' ? '请分析刚刚抓取的诊断日志。' : AiConversationMemory.pendingQuestion;
     this.status = '上次诊断包已保留；可以继续分析或重新提问。';
+    this.onCaptureStateChanged(false);
+    this.reportActivity();
   }
 
   private errorText(error: Object): string {
@@ -477,20 +529,43 @@ export struct DiagnosticAiAssistantPanel {
   private async sendAgent(mode: DiagnosticAiAgentMode, bundle: string = ''): Promise<void> {
     if (!this.allowed()) { this.status = '当前账号没有诊断与 AI 帮助权限'; return; }
     if (this.busy || this.question.trim() === '') { return; }
-    const selected = this.selectedProfile();
+    let selected: DiagnosticAiProviderProfile | undefined;
+    try {
+      selected = this.selectedProfile();
+    } catch (error) {
+      this.status = '无法读取 AI 配置：' + this.errorText(error as Object); return;
+    }
     if (selected === undefined) { this.status = '请先在辅助 AI 配置中保存 API Key 并选择模型'; return; }
-    const secret: string = this.store.secret(selected);
-    if (!diagnosticAiProviderIsHarmonyLocal(selected.providerId) && secret.trim() === '') {
+    const selectedProfile: DiagnosticAiProviderProfile = selected;
+    const selectedProfileId: string = selectedProfile.id;
+    let secret: string = '';
+    try {
+      secret = this.store.secret(selectedProfile);
+    } catch (error) {
+      this.status = '无法读取 API Key：' + this.errorText(error as Object); return;
+    }
+    if (!diagnosticAiProviderIsHarmonyLocal(selectedProfile.providerId) && secret.trim() === '') {
       this.status = '已找到 Provider 配置，但 API Key 无法从本机安全存储读回；请重新保存 API Key';
       return;
     }
     const requestGeneration: number = this.lifecycleGeneration;
     const requestOwner: string = this.owner;
-    const selectedRevision: number = selected.revision;
+    const requestCaptureGeneration: number = this.capture.currentGeneration();
+    const selectedRevision: number = selectedProfile.revision;
     this.agentMode = mode; this.busy = true; this.result = null; this.expandedResult = false;
     this.status = '正在连接 AI…'; this.reportActivity();
     try {
-      const analyzed: DiagnosticAiResult = await this.agent.respond(selected, secret, {
+      const beforeScope = AccountSessionCoordinator.getInstance().currentScope();
+      const beforeOwner: string = beforeScope.ownerScopeId.trim() === '' ? 'device-local' : beforeScope.ownerScopeId;
+      const beforeProfile = this.store.list().find((value: DiagnosticAiProviderProfile): boolean =>
+        value.id === selectedProfileId);
+      if (requestGeneration !== this.lifecycleGeneration || requestCaptureGeneration !== this.capture.currentGeneration() ||
+        beforeOwner !== requestOwner || !this.allowed() || beforeProfile === undefined ||
+        beforeProfile.revision !== selectedRevision) {
+        this.status = '页面或账号作用域已变化，已丢弃旧 AI 请求';
+        return;
+      }
+      const analyzed: DiagnosticAiResult = await this.agent.respond(selectedProfile, secret, {
         mode, question: this.question, history: this.conversation, bundle,
         assistantContext: this.assistantPreferences.name + '；语气：' + this.assistantPreferences.personality +
           '；详细程度：' + this.assistantPreferences.verbosity + '；角色：' + this.assistantPreferences.role +
@@ -499,8 +574,9 @@ export struct DiagnosticAiAssistantPanel {
       });
       const currentScope = AccountSessionCoordinator.getInstance().currentScope();
       const currentOwner: string = currentScope.ownerScopeId.trim() === '' ? 'device-local' : currentScope.ownerScopeId;
-      const latestProfile = this.store.list().find((value: DiagnosticAiProviderProfile): boolean => value.id === selected.id);
-      if (requestGeneration !== this.lifecycleGeneration || currentOwner !== requestOwner || !this.allowed() ||
+      const latestProfile = this.store.list().find((value: DiagnosticAiProviderProfile): boolean => value.id === selectedProfileId);
+      if (requestGeneration !== this.lifecycleGeneration || requestCaptureGeneration !== this.capture.currentGeneration() ||
+        currentOwner !== requestOwner || !this.allowed() ||
         latestProfile === undefined || latestProfile.revision !== selectedRevision) {
         this.status = '页面或账号作用域已变化，已丢弃旧 AI 结果'; return;
       }
@@ -511,7 +587,7 @@ export struct DiagnosticAiAssistantPanel {
         AiConversationMemory.pendingQuestion = '';
       }
       this.conversation = (this.conversation + '\n用户：' + this.question + '\n助手：' + analyzed.summary).slice(-8000);
-      this.rememberExchange(analyzed, selected);
+      this.rememberExchange(analyzed, selectedProfile);
       this.status = mode === 'diagnose' ? '诊断完成；请查看证据、建议和可选操作。' : '已收到 AI 回复；请从卡片中选择下一步。';
     } catch (error) {
       const currentScope = AccountSessionCoordinator.getInstance().currentScope();
@@ -538,33 +614,122 @@ export struct DiagnosticAiAssistantPanel {
     }
   }
 
+  /** Restore the island animation contract on every synchronous finish failure. */
+  private finishCaptureFailure(message: string, keepCaptureOwnership: boolean = false): void {
+    this.status = message;
+    this.busy = false;
+    if (!keepCaptureOwnership) { this.captureOwnedByPanel = false; }
+    this.reportActivity();
+  }
+
+  /** Cancel the runtime first, then publish the visual transition only when it really stopped. */
+  private cancelCapture(): void {
+    let result: DiagnosticCaptureActionCode = 'not_active';
+    try {
+      result = this.capture.cancel(this.owner);
+    } catch (error) {
+      this.busy = false;
+      this.reportActivity();
+      this.status = '无法取消抓取：' + this.errorText(error as Object);
+      return;
+    }
+    const stillCapturing: boolean = this.capture.status().phase === 'capturing';
+    if (result === 'ok' || result === 'not_active') {
+      this.captureOwnedByPanel = false;
+      this.onCaptureStateChanged(false);
+      this.syncCapture();
+      this.status = '已取消抓取';
+      return;
+    }
+    this.captureOwnedByPanel = stillCapturing;
+    this.syncCapture();
+    if (!stillCapturing) { this.onCaptureStateChanged(false); }
+    this.status = '无法取消抓取：' + result;
+  }
+
   private async finishCapture(): Promise<void> {
     if (this.busy) { return; }
     const requestGeneration: number = this.lifecycleGeneration;
     const requestOwner: string = this.owner;
-    this.busy = true; this.reportActivity(); const stopCode = this.capture.stop(requestOwner); this.captureOwnedByPanel = false;
-    this.onCaptureStateChanged(false); this.syncCapture();
-    if (stopCode !== 'ok' && stopCode !== 'not_active') {
-      this.status = '无法结束抓取：' + stopCode; this.busy = false; return;
+    const requestCaptureGeneration: number = this.capture.currentGeneration();
+    this.busy = true; this.reportActivity();
+    let stopCode: DiagnosticCaptureActionCode = 'not_active';
+    try {
+      stopCode = this.capture.stop(requestOwner);
+    } catch (error) {
+      const stillCapturing: boolean = this.capture.status().phase === 'capturing';
+      this.captureOwnedByPanel = stillCapturing;
+      this.syncCapture();
+      if (!stillCapturing) { this.onCaptureStateChanged(false); }
+      this.finishCaptureFailure('无法结束抓取：' + this.errorText(error as Object), stillCapturing);
+      return;
     }
-    const bundle = this.capture.bundle(requestOwner);
+    if (stopCode !== 'ok' && stopCode !== 'not_active') {
+      // A busy/stale stop must leave an active capture cancellable. Do not fold
+      // the island or drop ownership until the runtime has actually stopped.
+      const stillCapturing: boolean = this.capture.status().phase === 'capturing';
+      this.captureOwnedByPanel = stillCapturing;
+      this.syncCapture();
+      if (!stillCapturing) { this.onCaptureStateChanged(false); }
+      this.finishCaptureFailure('无法结束抓取：' + stopCode, stillCapturing);
+      return;
+    }
+    // The explicit stop owns the ready-to-save transition; prevent the
+    // periodic edge handler from packaging the same capture a second time.
+    this.lastCapturePhase = this.capture.status().phase;
+    this.captureOwnedByPanel = false;
+    this.onCaptureStateChanged(false); this.syncCapture();
+    let bundle: DiagnosticAiBundle | null = null;
+    try {
+      bundle = this.capture.bundle(requestOwner);
+    } catch (error) {
+      this.finishCaptureFailure('无法读取诊断包：' + this.errorText(error as Object));
+      return;
+    }
     if (bundle === null) {
-      this.capture.cancel(requestOwner);
-      this.status = '没有可分析的诊断事件'; this.busy = false; return;
+      this.cancelCapture();
+      this.finishCaptureFailure('没有可分析的诊断事件'); return;
     }
     this.latestBundleText = bundle.text;
     this.pendingCaptureId = bundle.captureId;
     AiConversationMemory.pendingQuestion = this.question;
-    const selected = this.selectedProfile();
-    if (selected === undefined) { this.status = '请先在辅助 AI 配置中保存 API Key 并选择模型'; this.busy = false; return; }
-    const secret: string = this.store.secret(selected);
-    if (!diagnosticAiProviderIsHarmonyLocal(selected.providerId) && secret.trim() === '') {
+    let selected: DiagnosticAiProviderProfile | undefined;
+    try {
+      selected = this.selectedProfile();
+    } catch (error) {
+      this.finishCaptureFailure('无法读取 AI 配置：' + this.errorText(error as Object));
+      return;
+    }
+    if (selected === undefined) {
+      this.finishCaptureFailure('请先在辅助 AI 配置中保存 API Key 并选择模型'); return;
+    }
+    const selectedProfile: DiagnosticAiProviderProfile = selected;
+    let secret: string = '';
+    try {
+      secret = this.store.secret(selectedProfile);
+    } catch (error) {
+      this.finishCaptureFailure('无法读取 API Key：' + this.errorText(error as Object));
+      return;
+    }
+    if (!diagnosticAiProviderIsHarmonyLocal(selectedProfile.providerId) && secret.trim() === '') {
       this.status = 'API Key 无法从本机安全存储读回；诊断包已保留，请重新保存 API Key 后重试';
       this.busy = false; this.reportActivity(); return;
     }
-    const selectedRevision: number = selected.revision;
+    const selectedRevision: number = selectedProfile.revision;
     try {
-      const analyzed: DiagnosticAiResult = await this.agent.respond(selected, secret, {
+      // Re-fence immediately before dispatch: account/entitlement/profile
+      // changes can happen after the synchronous setup but before Provider I/O.
+      const beforeScope = AccountSessionCoordinator.getInstance().currentScope();
+      const beforeOwner: string = beforeScope.ownerScopeId.trim() === '' ? 'device-local' : beforeScope.ownerScopeId;
+      const beforeProfile = this.store.list().find((value: DiagnosticAiProviderProfile): boolean =>
+        value.id === selectedProfile.id);
+      if (requestGeneration !== this.lifecycleGeneration || requestCaptureGeneration !== this.capture.currentGeneration() ||
+        beforeOwner !== requestOwner || !this.allowed() || beforeProfile === undefined ||
+        beforeProfile.revision !== selectedRevision) {
+        this.status = '页面或账号作用域已变化，诊断包已保留，可重试分析';
+        return;
+      }
+      const analyzed: DiagnosticAiResult = await this.agent.respond(selectedProfile, secret, {
         mode: 'diagnose', question: this.question, history: this.conversation, bundle: bundle.text,
         assistantContext: this.assistantPreferences.name + '；语气：' + this.assistantPreferences.personality +
           '；详细程度：' + this.assistantPreferences.verbosity + '；角色：' + this.assistantPreferences.role +
@@ -573,8 +738,9 @@ export struct DiagnosticAiAssistantPanel {
       });
       const currentScope = AccountSessionCoordinator.getInstance().currentScope();
       const currentOwner: string = currentScope.ownerScopeId.trim() === '' ? 'device-local' : currentScope.ownerScopeId;
-      const latestProfile = this.store.list().find((value: DiagnosticAiProviderProfile): boolean => value.id === selected.id);
-      if (requestGeneration !== this.lifecycleGeneration || currentOwner !== requestOwner || !this.allowed() ||
+      const latestProfile = this.store.list().find((value: DiagnosticAiProviderProfile): boolean => value.id === selectedProfile.id);
+      if (requestGeneration !== this.lifecycleGeneration || requestCaptureGeneration !== this.capture.currentGeneration() ||
+        currentOwner !== requestOwner || !this.allowed() ||
         latestProfile === undefined || latestProfile.revision !== selectedRevision) {
         this.status = '页面或账号作用域已变化，已丢弃旧诊断结果';
         return;
@@ -584,7 +750,7 @@ export struct DiagnosticAiAssistantPanel {
       this.pendingCaptureId = '';
       AiConversationMemory.pendingQuestion = '';
       this.conversation = (this.conversation + '\n用户：' + this.question + '\n助手：' + analyzed.summary).slice(-8000);
-      this.rememberExchange(analyzed, selected);
+      this.rememberExchange(analyzed, selectedProfile);
       this.status = '诊断完成；请查看证据、建议和可选操作。';
     } catch (error) {
       this.status = this.errorText(error) + '；诊断包已保留，可点击「重试分析」';
@@ -829,16 +995,18 @@ export struct DiagnosticAiAssistantPanel {
           proposal, null));
       }
     });
-    diagnosticAiAppActionsForSteps(result.recommendedReadOnlySteps)
-      .forEach((action: DiagnosticAiAppAction): void => {
-        actions.push(new AiAction('app-' + action.id, action.label, null, action.id));
+    if (this.assistantPreferences.proactiveSuggestions) {
+      diagnosticAiAppActionsForSteps(result.recommendedReadOnlySteps)
+        .forEach((action: DiagnosticAiAppAction): void => {
+          actions.push(new AiAction('app-' + action.id, action.label, null, action.id));
+        });
+      result.appActions.forEach((id: string): void => {
+        const typedId: DiagnosticAiAppActionId = id as DiagnosticAiAppActionId;
+        if (!actions.some((action: AiAction): boolean => action.appAction === typedId)) {
+          actions.push(new AiAction('app-explicit-' + id, diagnosticAiAppActionLabel(typedId), null, typedId));
+        }
       });
-    result.appActions.forEach((id: string): void => {
-      const typedId: DiagnosticAiAppActionId = id as DiagnosticAiAppActionId;
-      if (!actions.some((action: AiAction): boolean => action.appAction === typedId)) {
-        actions.push(new AiAction('app-explicit-' + id, diagnosticAiAppActionLabel(typedId), null, typedId));
-      }
-    });
+    }
     // Never more pills than the panel holds: at most three things to do (a "what can you do" answer would otherwise
     // list every module), then the conversation's own actions.
     const shown: AiAction[] = actions.slice(0, AI_MAX_ACTION_PILLS);
@@ -902,6 +1070,11 @@ export struct DiagnosticAiAssistantPanel {
   }
 
   private runAction(action: AiAction): void {
+    if (!this.actionsAllowed()) {
+      this.pendingAppAction = null;
+      this.status = '当前账号或页面已变化，已阻止旧 AI 操作';
+      return;
+    }
     if (action.special === 'new') { this.startNewConversation(); return; }
     if (action.special === 'mailOpen') {
       this.onOpenMailDraft(this.mailSubject, this.mailBody); this.mailPreviewVisible = false; return;
@@ -924,7 +1097,8 @@ export struct DiagnosticAiAssistantPanel {
       return;
     }
     if (action.appAction !== null) {
-      if (diagnosticAiAppActionRequiresConfirmation(action.appAction) && this.pendingAppAction !== action.appAction) {
+      if (this.assistantPreferences.confirmBeforeActions && diagnosticAiAppActionRequiresConfirmation(action.appAction) &&
+        this.pendingAppAction !== action.appAction) {
         this.pendingAppAction = action.appAction;
         this.status = '请确认是否执行：' + diagnosticAiAppActionLabel(action.appAction);
         return;
@@ -937,6 +1111,11 @@ export struct DiagnosticAiAssistantPanel {
   private confirmPendingAppAction(): void {
     const action: DiagnosticAiAppActionId | null = this.pendingAppAction;
     if (action === null) { return; }
+    if (!this.actionsAllowed()) {
+      this.pendingAppAction = null;
+      this.status = '当前账号或页面已变化，已阻止旧 AI 操作';
+      return;
+    }
     this.pendingAppAction = null; this.status = '正在执行：' + diagnosticAiAppActionLabel(action);
     this.onAppAction(action);
   }
@@ -1223,7 +1402,7 @@ export struct DiagnosticAiAssistantPanel {
               .margin({ top: -6 })
           }.width(this.deviceClass === 'phone' ? '92%' : '76%').height(40).offset({ y: 12 })
           .blur(this.deviceClass === 'phone' ? 32 : 28).opacity(this.lastActive ? 1 : 0.74)
-          HdsImmersiveEdgeLight({ active: this.lastActive || this.result !== null })
+          HdsImmersiveEdgeLight({ active: this.lastActive })
             .width('100%').height(36).offset({ y: 8 })
         }
         Column() { this.siriCardBody() }
@@ -1242,10 +1421,7 @@ export struct DiagnosticAiAssistantPanel {
       Row({ space: 8 }) {
         if (this.capturing()) {
           this.pill('结束并分析', true, (): void => { void this.finishCapture(); })
-          this.pill('取消', false, (): void => {
-            this.capture.cancel(this.owner); this.captureOwnedByPanel = false;
-            this.onCaptureStateChanged(false); this.syncCapture(); this.status = '已取消抓取';
-          })
+          this.pill('取消', false, (): void => { this.cancelCapture(); })
         }
         if (this.awaitingCapture && !this.capturing() && !this.busy) {
           this.pill('开始抓取诊断', true, (): void => { this.beginCapture(); })
@@ -1380,8 +1556,7 @@ export struct DiagnosticAiAssistantPanel {
         if (this.capturing()) {
           Button('取消').height(48).layoutWeight(1).borderRadius(24).backgroundColor(this.pal().surface)
             .fontColor(this.pal().text).enabled(!this.busy)
-            .onClick((): void => { this.capture.cancel(this.owner); this.captureOwnedByPanel = false;
-              this.onCaptureStateChanged(false); this.syncCapture(); this.status = '已取消抓取'; })
+            .onClick((): void => { this.cancelCapture(); })
         }
         Button(this.busy ? 'AI 思考中…' : this.capturing() ? '结束并分析' : this.awaitingCapture ? '开始抓取诊断' : this.result !== null ? '再问一个' : '发送给 AI')
           .height(48).layoutWeight(1).borderRadius(24).fontSize(16).fontWeight(FontWeight.Medium)

@@ -10,6 +10,7 @@ export struct DiagnosticAiOrb {
   @Prop visible: boolean = false;
   @Prop state: DiagnosticAiOrbState = 'idle';
   @Prop reducedMotion: boolean = false;
+  @StorageProp('diagnosticAiReducedMotion') storedReducedMotion: boolean = false;
   @StorageProp('currentTheme') theme: string = 'light';
   onOpen: () => void = (): void => {};
 
@@ -24,7 +25,8 @@ export struct DiagnosticAiOrb {
   build() {
     if (this.visible) {
       Stack() {
-        AiLiquidGlassButton({ buttonSize: 36, dark: this.theme === 'dark', active: this.working() })
+        AiLiquidGlassButton({ buttonSize: 36, dark: this.theme === 'dark', active: this.working(),
+          reducedMotion: this.reducedMotion || this.storedReducedMotion })
       }
       .width(40).height(40)
       .responseRegion({ x: -4, y: -4, width: 48, height: 48 })

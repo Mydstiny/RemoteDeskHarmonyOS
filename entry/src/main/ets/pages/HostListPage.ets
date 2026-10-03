@@ -961,7 +961,8 @@ struct HostListPage {
   @State rdpAdvancedDisplayVisible: boolean = false;
   /** 诊断与 AI 帮助 sub-settings that need Pro; 传统日志抓取 is always there. */
   @State diagnosticAiConfigVisible: boolean = false;
-  @State diagnosticAiAssistantVisible: boolean = false;
+  /** Shared through AppStorage so the AI entry on the 密钥保险库 and 中继 tabs follows the same entitlement. */
+  @StorageLink('aiEntryAssistantVisible') diagnosticAiAssistantVisible: boolean = false;
   /** Which sub-setting the diagnostic AI sheet shows: 0 = 辅助 AI 配置, 1 = 启动 AI 辅助. */
   @State diagnosticAiSection: number = 0;
   /** Session selected from AI history; native sheet replacement carries it into section 1. */
@@ -1133,7 +1134,10 @@ struct HostListPage {
   @State showSettingsPanel: boolean = false;
   @State showSettingsLeafSheet: boolean = false;
   @StorageProp('diagnosticAiOrbEnabled') diagnosticAiOrbEnabled: boolean = false;
-  @State diagnosticAiOrbState: string = 'idle';
+  /** Shared through AppStorage so every tab's AI entry shows the same state. */
+  @StorageLink('aiEntryState') diagnosticAiOrbState: string = 'idle';
+  /** An AI entry on another tab (its own page component) asks to open the assistant. */
+  @StorageProp('aiEntryOpenRequest') @Watch('onAiEntryOpenRequest') aiEntryOpenRequest: number = 0;
   @State settingsLeafSheetMode: number = SETTINGS_SHEET_NONE;
   @State virtualKeyboardCustomEditorVisible: boolean = false;
   @State vncSettingsLeafDirty: boolean = false;
@@ -2186,7 +2190,9 @@ struct HostListPage {
     const owner: string = scope.ownerScopeId.trim() === '' ? 'device-local' : scope.ownerScopeId;
     const store = new DiagnosticAiProfileStore();
     store.init(getContext(this) as common.UIAbilityContext, owner);
-    AppStorage.setOrCreate('diagnosticAiOrbEnabled', store.settingsSnapshot().showOrbOnHostPage);
+    const settings = store.settingsSnapshot();
+    AppStorage.setOrCreate('diagnosticAiOrbEnabled', settings.showOrbOnHostPage);
+    AppStorage.setOrCreate('diagnosticAiReducedMotion', settings.reducedMotion);
   }
 
   /**
@@ -14059,6 +14065,10 @@ struct HostListPage {
           onDismissed: (): void => { this.aiIslandShown = false; this.aiIslandFloating = false; this.diagnosticAiOrbState = 'idle'; },
           onFloatingChanged: (floating: boolean): void => { this.aiIslandFloating = floating; },
           onActivityChanged: (active: boolean): void => { this.diagnosticAiOrbState = active ? 'thinking' : 'open'; },
+          onCaptureStateChanged: (capturing: boolean): void => {
+            if (capturing) { this.diagnosticAiOrbState = 'capturing'; }
+            else if (this.diagnosticAiOrbState === 'capturing') { this.diagnosticAiOrbState = 'open'; }
+          },
           onOpenMailDraft: (subject: string, body: string): void => { void this.openFeedbackEmail(subject, body); },
           onAppAction: (action: DiagnosticAiAppActionId): void => { this.runAssistantAppAction(action); },
           isAppActionScreenOpen: (): boolean => this.showAddSheet || this.showSettingsLeafSheet,
@@ -19385,6 +19395,11 @@ struct HostListPage {
         Row().width('100%').height(this.topSafeHeightVp() + this.titleOffsetY())
         Row() {
           Text('设置').fontSize(27).fontWeight(FontWeight.Bold).fontColor(this.pal().text).fontFamily(this.font())
+            .layoutWeight(1)
+          if (this.hostAiOrbAvailable()) {
+            DiagnosticAiOrb({ visible: true, state: this.diagnosticAiOrbState as DiagnosticAiOrbState,
+              onOpen: (): void => { this.openDiagnosticAiSection(1); } })
+          }
         }.width('100%').padding({ left: 24, right: 24, bottom: 8 })
       }.width('100%')
       .backgroundColor(Color.Transparent)
@@ -20303,6 +20318,10 @@ struct HostListPage {
       case 'settings.moonlightTrust': this.openMoonlightSettingsFromSettings(SETTINGS_SHEET_MOONLIGHT_TRUST); return;
       case 'settings.moonlightData': this.openMoonlightSettingsFromSettings(SETTINGS_SHEET_MOONLIGHT_DATA); return;
     }
+  }
+
+  private onAiEntryOpenRequest(): void {
+    if (this.aiEntryOpenRequest > 0) { this.openDiagnosticAiSection(1); }
   }
 
   private openDiagnosticAiSection(section: number): void {

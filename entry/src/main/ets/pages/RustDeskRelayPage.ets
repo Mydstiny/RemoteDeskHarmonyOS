@@ -1,3 +1,5 @@
+import { DiagnosticAiOrb } from '../components/diagnosticAi/DiagnosticAiOrb';
+import { DiagnosticAiOrbState } from '../services/diagnosticAi/DiagnosticAiModels';
 /**
  * RustDeskRelayPage.ets — RustDesk 中继服务器管理页面 v2
  *
@@ -101,6 +103,11 @@ interface VncDeepCheckBinding {
 
 @Component
 export struct RustDeskRelayPage {
+  /** The AI entry, the same on every tab: shown while the account may use the assistant; a tap asks the host page
+   * (which owns the AI island) to open it. */
+  @StorageProp('diagnosticAiOrbEnabled') aiEntryEnabled: boolean = false;
+  @StorageProp('aiEntryAssistantVisible') aiEntryAssistantVisible: boolean = false;
+  @StorageProp('aiEntryState') aiEntryState: string = 'idle';
   @StorageLink('currentTheme') theme: string = 'light';
   @StorageLink('accentColor') accentColor: string = '#007DFF';
   @Prop @Watch('onAddTrigger') addTrigger: number = 0;
@@ -2271,6 +2278,10 @@ export struct RustDeskRelayPage {
           Text('中继服务器').fontSize(27).fontWeight(FontWeight.Bold)
             .fontColor(this.pal().text).fontFamily(this.font())
           Blank()
+          if (this.aiEntryEnabled && this.aiEntryAssistantVisible) {
+            DiagnosticAiOrb({ visible: true, state: this.aiEntryState as DiagnosticAiOrbState,
+              onOpen: (): void => { AppStorage.setOrCreate('aiEntryOpenRequest', Date.now()); } })
+          }
         }.width('100%').padding({ left: 24, right: 24, bottom: 8 })
       }.width('100%').backgroundColor(Color.Transparent)
     }.width('100%').height(this.titleBarH()).hitTestBehavior(HitTestMode.Transparent)

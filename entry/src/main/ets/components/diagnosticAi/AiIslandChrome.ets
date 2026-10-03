@@ -61,12 +61,14 @@ export struct AiIslandGlass {
 /** Primary action in the island: a blue-to-cyan pill with a highlight sweeping across, like Siri's Send. */
 @Component
 export struct AiPrimaryPill {
+  @StorageProp('diagnosticAiReducedMotion') reducedMotion: boolean = false;
   @Prop label: string = '';
   onTap: () => void = (): void => {};
   @State private pillWidth: number = 0;
   @State private sweep: number = 0;
 
   aboutToAppear(): void {
+    if (this.reducedMotion) { return; }
     setTimeout((): void => {
       this.getUIContext().animateTo({ duration: 2400, iterations: -1, curve: Curve.EaseInOut,
         expectedFrameRateRange: { min: 30, max: 60, expected: 60 } }, (): void => { this.sweep = 1; });
@@ -167,10 +169,12 @@ export struct AiLiquidGlassButton {
   @Prop buttonSize: number = 38;
   @Prop dark: boolean = false;
   @Prop active: boolean = false;
+  @Prop reducedMotion: boolean = false;
   @State private turn: number = 0;
   private readonly official: boolean = aiImmersiveMaterialAvailable();
 
   aboutToAppear(): void {
+    if (this.reducedMotion) { return; }
     setTimeout((): void => {
       this.getUIContext().animateTo({ duration: 6000, iterations: -1, curve: Curve.Linear,
         expectedFrameRateRange: { min: 30, max: 60, expected: 60 } }, (): void => { this.turn = 360; });
@@ -257,6 +261,7 @@ const AI_CARET_GLOW: Array<[ResourceColor, number]> = [
  */
 @Component
 export struct AiSendButton {
+  @StorageProp('diagnosticAiReducedMotion') reducedMotion: boolean = false;
   @Prop @Watch('onActiveChanged') active: boolean = false;
   @Prop buttonSize: number = 34;
   onTap: () => void = (): void => {};
@@ -266,6 +271,7 @@ export struct AiSendButton {
 
   aboutToAppear(): void {
     this.lit = this.active ? 1 : 0;
+    if (this.reducedMotion) { return; }
     setTimeout((): void => {
       this.getUIContext().animateTo({ duration: 1800, iterations: -1, playMode: PlayMode.Alternate,
         curve: Curve.EaseInOut, expectedFrameRateRange: { min: 30, max: 60, expected: 60 } }, (): void => { this.breath = 1; });
@@ -402,7 +408,8 @@ const AI_ORB_WAVES: AiOrbWave[] = [
 @Component
 export struct AiSiriOrb {
   @Prop orbSize: number = AI_FLOAT_ORB;
-  @Prop active: boolean = false;
+  @Prop @Watch('onActiveChanged') active: boolean = false;
+  @StorageProp('diagnosticAiReducedMotion') @Watch('onReducedMotionChanged') reducedMotion: boolean = false;
   private readonly settings: RenderingContextSettings = new RenderingContextSettings(true);
   private readonly ctx: CanvasRenderingContext2D = new CanvasRenderingContext2D(this.settings);
   private sync: displaySync.DisplaySync | null = null;
@@ -410,6 +417,22 @@ export struct AiSiriOrb {
   private ready: boolean = false;
 
   aboutToAppear(): void {
+    if (this.reducedMotion) { return; }
+    this.startTicker();
+  }
+
+  private onReducedMotionChanged(): void {
+    if (this.reducedMotion) { this.stopTicker(); }
+    else { this.startTicker(); }
+    this.draw();
+  }
+
+  private onActiveChanged(): void {
+    if (this.reducedMotion) { this.draw(); }
+  }
+
+  private startTicker(): void {
+    if (this.reducedMotion || this.sync !== null || this.timer !== -1) { return; }
     try {
       const sync: displaySync.DisplaySync = displaySync.create();
       sync.setExpectedFrameRateRange({ min: 30, max: 60, expected: 60 });
@@ -422,6 +445,10 @@ export struct AiSiriOrb {
   }
 
   aboutToDisappear(): void {
+    this.stopTicker();
+  }
+
+  private stopTicker(): void {
     if (this.sync !== null) {
       try { this.sync.stop(); this.sync.off('frame'); } catch (_error) { /* already stopped */ }
       this.sync = null;

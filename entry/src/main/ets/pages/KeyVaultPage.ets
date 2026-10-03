@@ -1,3 +1,5 @@
+import { DiagnosticAiOrb } from '../components/diagnosticAi/DiagnosticAiOrb';
+import { DiagnosticAiOrbState } from '../services/diagnosticAi/DiagnosticAiModels';
 /**
  * KeyVaultPage.ets — 密钥保险库页面 v3 (官方图标按钮 + 滑动删除动画)
  *
@@ -33,6 +35,11 @@ import { ModernKeyVaultAddFlow } from '../components/resourceadd/modern/ModernKe
 
 @Component
 export struct KeyVaultPage {
+  /** The AI entry, the same on every tab: shown while the account may use the assistant; a tap asks the host page
+   * (which owns the AI island) to open it. */
+  @StorageProp('diagnosticAiOrbEnabled') aiEntryEnabled: boolean = false;
+  @StorageProp('aiEntryAssistantVisible') aiEntryAssistantVisible: boolean = false;
+  @StorageProp('aiEntryState') aiEntryState: string = 'idle';
   @StorageLink('currentTheme') theme: string = 'light';
   @StorageLink('accentColor') accentColor: string = '#007DFF';
   @Link keyVaultInnerTab: number;
@@ -1057,7 +1064,11 @@ export struct KeyVaultPage {
         Row().width('100%').height(this.topSafeHeightVp() + this.titleOffsetY())
         Row() {
           Text('密钥保险库').fontSize(27).fontWeight(FontWeight.Bold)
-            .fontColor(this.pal().text).fontFamily(this.font())
+            .fontColor(this.pal().text).fontFamily(this.font()).layoutWeight(1)
+          if (this.aiEntryEnabled && this.aiEntryAssistantVisible) {
+            DiagnosticAiOrb({ visible: true, state: this.aiEntryState as DiagnosticAiOrbState,
+              onOpen: (): void => { AppStorage.setOrCreate('aiEntryOpenRequest', Date.now()); } })
+          }
         }.width('100%').padding({ left: 24, right: 24, bottom: 8 })
 
         // 居中悬浮 Tab 栏 (xl 由侧边栏控制, 隐藏此栏)

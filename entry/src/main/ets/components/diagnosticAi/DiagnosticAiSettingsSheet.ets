@@ -142,6 +142,7 @@ export struct DiagnosticAiSettingsSheet {
     this.conversationStore.init(getContext(this) as common.UIAbilityContext, this.owner);
     this.modelCatalog.init(getContext(this) as common.UIAbilityContext, this.owner);
     this.profiles = this.store.list(); this.settings = this.store.settingsSnapshot();
+    AppStorage.setOrCreate('diagnosticAiReducedMotion', this.settings.reducedMotion);
     this.sessions = this.conversationStore.listSessions();
     this.sessionMemorySummary = this.conversationStore.summarizedSessionMemory();
     this.modelPricing = this.modelCatalog.list();
@@ -383,6 +384,24 @@ export struct DiagnosticAiSettingsSheet {
     this.settings.showOrbOnHostPage = value; this.store.saveSettings(this.settings);
     AppStorage.setOrCreate('diagnosticAiOrbEnabled', value);
     this.message = value ? '远程主机页 AI 入口已开启' : '远程主机页 AI 入口已关闭';
+  }
+
+  private saveReducedMotion(value: boolean): void {
+    const next: DiagnosticAiSettings = {
+      selectedProviderId: this.settings.selectedProviderId,
+      selectedModelId: this.settings.selectedModelId,
+      selectedAuthMode: this.settings.selectedAuthMode,
+      showOrbOnHostPage: this.settings.showOrbOnHostPage,
+      reducedMotion: value,
+      retentionDays: this.settings.retentionDays
+    };
+    if (!this.store.saveSettings(next)) {
+      this.message = 'AI 动效偏好保存失败，请稍后重试';
+      return;
+    }
+    this.settings = next;
+    AppStorage.setOrCreate('diagnosticAiReducedMotion', value);
+    this.message = value ? 'AI 动效已简化' : 'AI 动效已恢复';
   }
 
   private saveAssistantPreferences(): void {
@@ -800,6 +819,11 @@ export struct DiagnosticAiSettingsSheet {
       Row({ space: 8 }) {
         Column({ space: 2 }) { Text('允许本地记忆').fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.pal().text); Text('会话摘要和你手动填写的偏好只附加到后续请求').fontSize(11).fontColor(this.pal().text3) }.layoutWeight(1)
         Toggle({ type: ToggleType.Switch, isOn: this.memoryEnabledDraft }).selectedColor(this.accent).onChange((value: boolean): void => { this.memoryEnabledDraft = value; })
+      }.width('100%')
+      Row({ space: 8 }) {
+        Column({ space: 2 }) { Text('减少 AI 动效').fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.pal().text); Text('关闭持续旋转和弹簧转场，保留状态与可用操作').fontSize(11).fontColor(this.pal().text3) }.layoutWeight(1)
+        Toggle({ type: ToggleType.Switch, isOn: this.settings.reducedMotion }).selectedColor(this.accent)
+          .onChange((value: boolean): void => { this.saveReducedMotion(value); })
       }.width('100%')
       Row({ space: 8 }) {
         Column({ space: 2 }) { Text('主动建议').fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.pal().text); Text('在回答末尾显示下一步操作卡片').fontSize(11).fontColor(this.pal().text3) }.layoutWeight(1)

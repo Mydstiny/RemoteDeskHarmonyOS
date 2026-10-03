@@ -59,6 +59,8 @@ export class DiagnosticAiCaptureOrchestrator {
     this.coordinator.invalidateAll();
     this.owner = '';
     AppStorage.setOrCreate('diagnosticAiOrbEnabled', false);
+    AppStorage.setOrCreate('aiEntryState', 'idle');
+    AppStorage.setOrCreate('aiEntryOpenRequest', 0);
   }
 
   currentGeneration(): number { return this.generation; }

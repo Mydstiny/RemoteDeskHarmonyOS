@@ -100,6 +100,7 @@ const AI_PHONE_ISLAND_WIDTH: number = 296; // phone capsule: room for a system i
  */
 @Component
 export struct AiIsland {
+  @StorageProp('diagnosticAiReducedMotion') reducedMotion: boolean = false;
   /** Distance from the window top to the safe area (status bar); used only where there is no island anchor. */
   @Prop topInset: number = 24;
   @Prop deviceClass: DiagnosticAiDeviceClass = 'phone';
@@ -158,6 +159,8 @@ export struct AiIsland {
   /** Height of the soft keyboard (vp); the open panel always ends above it. */
   @State private keyboardHeight: number = 0;
   private keyboardWindow: window.Window | null = null;
+  /** Fences delayed compact morphs so a rapid capture stop/start cannot apply an old layout. */
+  private compactGeneration: number = 0;
   private readonly onKeyboard = (height: number): void => {
     this.keyboardHeight = this.getUIContext().px2vp(height);
   };
@@ -200,8 +203,14 @@ export struct AiIsland {
     }).catch((): void => { /* no window */ });
   }
 
-  private later(ms: number, action: () => void): void { this.timers.push(setTimeout(action, ms)); }
-  private clearTimers(): void { this.timers.forEach((id: number): void => { clearTimeout(id); }); this.timers = []; }
+  private later(ms: number, action: () => void): void {
+    this.timers.push(setTimeout(action, this.reducedMotion ? 0 : ms));
+  }
+  private clearTimers(): void {
+    this.compactGeneration++;
+    this.timers.forEach((id: number): void => { clearTimeout(id); });
+    this.timers = [];
+  }
 
   /** Phones scale the reference by width; larger windows keep its phone proportions. */
   private k(): number { return this.deviceClass === 'phone' ? Math.min(1.15, Math.max(0.85, this.areaWidth / AI_REF_WIDTH)) : 1; }
@@ -246,10 +255,12 @@ export struct AiIsland {
 
   /** Geometry: quick build-up with a small settle, no toy bounce. */
   private morph(action: () => void): void {
+    if (this.reducedMotion) { action(); return; }
     this.getUIContext().animateTo({ curve: curves.springMotion(0.42, 0.86) }, action);
   }
 
   private fade(duration: number, delay: number, action: () => void): void {
+    if (this.reducedMotion) { action(); return; }
     this.getUIContext().animateTo({ duration: duration, delay: delay, curve: Curve.EaseOut }, action);
   }
 
@@ -276,21 +287,35 @@ export struct AiIsland {
 
   private setCompact(value: boolean): void {
     if (value === this.compact) { return; }
+    // A new compact transition supersedes opening/reveal timers from the prior
+    // state; otherwise a delayed panel reveal can reopen over a live orb.
+    this.clearTimers();
+    const generation: number = ++this.compactGeneration;
     if (value) {
       try { inputMethod.getController().hideTextInput(); } catch (_error) { /* keyboard already down */ }
     }
     this.setStatusBarHidden(!value);
     // Content loses focus first; then in one spring the surface shrinks into the orb while it travels to the right
     // edge (or grows back from there into the panel at the top), so it reads as one object moving, never a jump.
-    this.fade(110, 0, (): void => { this.contentOpacity = 0; this.contentBlur = 10; });
+    this.fade(110, 0, (): void => {
+      if (generation !== this.compactGeneration) { return; }
+      this.contentOpacity = 0; this.contentBlur = 10;
+    });
     this.later(70, (): void => {
-      this.getUIContext().animateTo({ curve: curves.springMotion(0.55, 0.8) }, (): void => {
+      if (generation !== this.compactGeneration) { return; }
+      const applyCompact = (): void => {
+        if (generation !== this.compactGeneration) { return; }
         this.compact = value;
         // The orb floats at the right edge, a third of the way down, out of the way of the page's content.
         this.dragX = value ? this.areaWidth / 2 - AI_FLOAT_ORB / 2 - 14 : 0;
         this.dragY = value ? this.areaHeight * 0.3 : 0;
+      };
+      if (this.reducedMotion) { applyCompact(); }
+      else { this.getUIContext().animateTo({ curve: curves.springMotion(0.55, 0.8) }, applyCompact); }
+      this.fade(280, value ? 180 : 260, (): void => {
+        if (generation !== this.compactGeneration) { return; }
+        this.contentOpacity = 1; this.contentBlur = 0;
       });
-      this.fade(280, value ? 180 : 260, (): void => { this.contentOpacity = 1; this.contentBlur = 0; });
     });
     this.onFloatingChanged(value);
   }

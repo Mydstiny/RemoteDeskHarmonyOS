@@ -20,12 +20,25 @@ const AI_RING_DOT_MAX: number = 0.7;
 @Component
 export struct AiKernelRing {
   @Prop ringSize: number = 34;
+  @StorageProp('diagnosticAiReducedMotion') @Watch('onReducedMotionChanged') reducedMotion: boolean = false;
   @State private clock: number = 0;
   private sync: displaySync.DisplaySync | null = null;
   private timer: number = -1;
 
   aboutToAppear(): void {
     this.clock = Date.now();
+    if (this.reducedMotion) { return; }
+    this.startClock();
+  }
+
+  private onReducedMotionChanged(): void {
+    this.clock = Date.now();
+    if (this.reducedMotion) { this.stopClock(); }
+    else { this.startClock(); }
+  }
+
+  private startClock(): void {
+    if (this.reducedMotion || this.sync !== null || this.timer !== -1) { return; }
     try {
       const sync: displaySync.DisplaySync = displaySync.create();
       sync.setExpectedFrameRateRange({ min: 30, max: 60, expected: 60 });
@@ -38,6 +51,10 @@ export struct AiKernelRing {
   }
 
   aboutToDisappear(): void {
+    this.stopClock();
+  }
+
+  private stopClock(): void {
     if (this.sync !== null) {
       try { this.sync.stop(); this.sync.off('frame'); } catch (_error) { /* already stopped */ }
       this.sync = null;
