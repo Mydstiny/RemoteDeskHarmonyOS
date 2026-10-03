@@ -3,6 +3,8 @@ import { DiagnosticAiProviderService, DiagnosticAiAssistInput } from './Diagnost
 import { diagnosticAiKnowledgeSnapshot } from './DiagnosticAiKnowledgeBase';
 import { diagnosticAiProviderManifest } from './DiagnosticAiProviderCatalog';
 import { diagnosticAiUseCaseDecision, diagnosticAiUseCaseError } from './DiagnosticAiUseCasePolicy';
+import { diagnosticAiSettingIntents } from './DiagnosticAiSettingsActionPolicy';
+import { DiagnosticAiRequestLog, diagnosticAiModeCode } from './DiagnosticAiRequestLog';
 
 export type DiagnosticAiAgentMode = 'answer' | 'configure' | 'diagnose' | 'feedback';
 
@@ -12,6 +14,8 @@ export interface DiagnosticAiAgentRequest {
   history: string;
   bundle: string;
   assistantContext?: string;
+  /** 'technical' (回答风格 › 技术) may go into protocol details; anything else answers in plain words. */
+  answerStyle?: string;
 }
 
 /** Intent is a safety boundary, not a request to let the model choose arbitrary tools. */
@@ -20,9 +24,15 @@ export function diagnosticAiAgentModeForQuestion(question: string): DiagnosticAi
   if (value.indexOf('邮件') >= 0 || value.indexOf('反馈') >= 0 || value.indexOf('开发者') >= 0 || value.indexOf('发送错误') >= 0) {
     return 'feedback';
   }
-  if (value.indexOf('诊断') >= 0 || value.indexOf('日志') >= 0 || value.indexOf('报错') >= 0 || value.indexOf('错误') >= 0 ||
-      value.indexOf('失败') >= 0 || value.indexOf('黑屏') >= 0 || value.indexOf('卡顿') >= 0 || value.indexOf('连不上') >= 0 ||
-      value.indexOf('连接不上') >= 0 || value.indexOf('崩溃') >= 0 || value.indexOf('异常') >= 0) {
+  // A plain request to change a setting is a configuration, even when it names a symptom word.
+  if (diagnosticAiSettingIntents(question).length > 0) { return 'configure'; }
+  const problems: string[] = ['诊断', '日志', '报错', '错误', '失败', '黑屏', '花屏', '卡顿', '卡住', '很卡', '有点卡', '卡死',
+    '延迟', '掉帧', '不流畅', '连不上', '连接不上', '连接不了', '断开', '掉线', '闪退', '崩溃', '异常', '模糊', '没声音',
+    '没有声音', '打不开', '不稳定', '无法', '出问题', '有问题', '出了问题', '用不了', '不能用', '没法用', '不好用', '不行',
+    '不好使', '不工作', '进不去', '登不上', '登录不了', '怎么回事', '咋回事', '坏了', '不回答', '没反应', '没有反应', '没回应',
+    '不理我', '一直转圈', '一直思考', 'fail', 'error', 'timeout', 'timed out', 'refused', 'crash', "can't", 'cannot',
+    'not working', 'black screen', 'lag'];
+  if (problems.some((word: string): boolean => value.indexOf(word) >= 0)) {
     return 'diagnose';
   }
   if (value.indexOf('帮我设置') >= 0 || value.indexOf('帮我打开') >= 0 || value.indexOf('帮我关闭') >= 0 ||
@@ -64,8 +74,18 @@ export class DiagnosticAiAgentService {
     const input: DiagnosticAiAssistInput = {
       mode: request.mode, question: request.question.trim().slice(0, 4000),
       history: request.history.slice(-8000), bundle: this.boundedBundle(request.bundle),
-      knowledge: diagnosticAiKnowledgeSnapshot(), assistantContext: request.assistantContext ?? ''
+      knowledge: diagnosticAiKnowledgeSnapshot(), assistantContext: request.assistantContext ?? '',
+      answerStyle: request.answerStyle ?? 'plain'
     };
-    return await this.provider.assist(profile, secret, input);
+    const startedAt: number = Date.now();
+    const bytes: number = input.question.length + input.history.length + input.bundle.length;
+    try {
+      const result: DiagnosticAiResult = await this.provider.assist(profile, secret, input);
+      DiagnosticAiRequestLog.record(diagnosticAiModeCode(request.mode), null, Date.now() - startedAt, bytes);
+      return result;
+    } catch (error) {
+      DiagnosticAiRequestLog.record(diagnosticAiModeCode(request.mode), error as Object, Date.now() - startedAt, bytes);
+      throw error as Error;
+    }
   }
 }

@@ -1,3 +1,4 @@
+import { recordSftpFailure } from './SshDiagnosticEvents';
 import { common } from '@kit.AbilityKit';
 import { fileIo } from '@kit.CoreFileKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
@@ -780,6 +781,7 @@ export class SshSftpTaskEngine {
         ' reason=' + reason, true);
       return;
     }
+    recordSftpFailure(reason, 0, true);
     this.logDiagnostic('transport lost session=' + session.sessionId.toString() +
       ' generation=' + session.generation.toString() + ' reason=' + reason, true);
   }
@@ -1573,6 +1575,7 @@ export class SshSftpTaskEngine {
     }
     const failed: SshSftpTaskRecord = this.updateTask(task, 'failed', task.verifiedOffset,
       task.partialSize, task.partialMtime);
+    recordSftpFailure(reason, task.direction === 'upload' ? 1 : 2);
     this.publish('batchBlocked', binding.batchId, failed, reason);
     return false;
   }

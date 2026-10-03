@@ -148,6 +148,26 @@ export interface DiagnosticAiResult {
   knowledgeVersion: string;
   createdAt: number;
   usage?: DiagnosticAiUsageMetadata;
+  /** The technical reading (event codes, error codes, timeline): for the developer mail only, not the answer. */
+  developerNotes?: string;
+  /** The model's plan for a log capture, when it judged logs are needed to tell what is wrong. */
+  capturePlan?: DiagnosticAiCapturePlanProposal;
+  /** Questions to ask before capturing, when the app's own question bank had none for this problem. */
+  clarifyQuestions?: DiagnosticAiClarifyQuestion[];
+}
+
+/** One tap-to-answer question the AI wants answered before a capture. */
+export interface DiagnosticAiClarifyQuestion {
+  question: string;
+  options: string[];
+}
+
+/** Which 日志子模块 to capture, for how long, and what the user should do meanwhile. */
+export interface DiagnosticAiCapturePlanProposal {
+  focus: string[];
+  durationMinutes: number;
+  steps: string[];
+  reason: string;
 }
 
 export interface DiagnosticAiSettingProposal {

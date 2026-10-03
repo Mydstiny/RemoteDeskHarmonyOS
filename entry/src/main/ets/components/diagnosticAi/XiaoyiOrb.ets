@@ -1,4 +1,5 @@
 import { displaySync } from '@kit.ArkGraphics2D';
+import { aiMotionSpeedFactor } from '../../services/diagnosticAi/DiagnosticAiMotionPolicy';
 
 /** Orbit speed of the six dots, clockwise (measured on the reference recording: about 75°/s, one turn in 4.8 s). */
 const AI_RING_ORBIT_DEG_PER_S: number = 75;
@@ -20,6 +21,8 @@ const AI_RING_DOT_MAX: number = 0.7;
 @Component
 export struct AiKernelRing {
   @Prop ringSize: number = 34;
+  /** One still frame, no clock (settings tiles that are not selected). */
+  @Prop still: boolean = false;
   @StorageProp('diagnosticAiReducedMotion') @Watch('onReducedMotionChanged') reducedMotion: boolean = false;
   @State private clock: number = 0;
   private sync: displaySync.DisplaySync | null = null;
@@ -27,7 +30,7 @@ export struct AiKernelRing {
 
   aboutToAppear(): void {
     this.clock = Date.now();
-    if (this.reducedMotion) { return; }
+    if (this.reducedMotion || this.still) { return; }
     this.startClock();
   }
 
@@ -64,7 +67,9 @@ export struct AiKernelRing {
 
   /** Ring radius: the ring plus its largest dot fills the box. */
   private radius(): number { return this.ringSize / (2 + AI_RING_DOT_MAX + 0.1); }
-  private seconds(): number { return (this.clock % 3600000) / 1000; }
+  @StorageProp('aiMotion.speed') speed: string = 'normal';
+  /** Wall-clock seconds scaled by AI 动效 › 动效速度 (all rings stay in step with one another). */
+  private seconds(): number { return (this.clock % 3600000) / 1000 * aiMotionSpeedFactor(this.speed); }
   private orbit(i: number): number { return (i * 60 + AI_RING_ORBIT_DEG_PER_S * this.seconds()) * Math.PI / 180; }
   private peak(): number { return (AI_RING_WAVE_DEG_PER_S * this.seconds()) * Math.PI / 180; }
 

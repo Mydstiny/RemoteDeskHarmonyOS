@@ -1,3 +1,6 @@
+import { recordVncFailure } from '../services/VncDiagnosticEvents';
+import { recordRustDeskFailure, recordRustDeskFirstFrame } from '../services/RustDeskDiagnosticEvents';
+import { CLIPBOARD_AUTHORITY_BUSY, CLIPBOARD_CHANNEL_NOT_NEGOTIATED, CLIPBOARD_NATIVE_REJECTED, CLIPBOARD_READ_PERMISSION_MISSING, CLIPBOARD_START_ERROR, CLIPBOARD_STARTED, RDP_FAILURE_IN_SESSION, RDP_FAILURE_WHILE_CONNECTING, recordRdpAudio, recordRdpDrive, recordRdpFailure, recordSessionClipboard } from '../services/RdpDiagnosticEvents';
 import { diagnosticDesktopRuntimeFacts } from '../services/DiagnosticRuntimeSnapshotPolicy';
 import { recordVideoOrientation } from '../services/VideoOrientationCapture';
 import {
@@ -10454,6 +10457,7 @@ struct RemoteDesktop {
       this.loader.setSessionClipboardEnabled(this.sessionId, true);
       hilog.info(RD_DOMAIN, RD_TAG,
         'RDP clipboard remains unavailable until reconnect: cliprdr was not negotiated');
+      recordSessionClipboard('rdp', 'failed', CLIPBOARD_CHANNEL_NOT_NEGOTIATED);
       promptAction.showToast({
         message: '本次连接未启用 RDP 剪贴板通道，重新连接后生效',
         duration: 2200
@@ -10462,6 +10466,7 @@ struct RemoteDesktop {
     }
     if (!this.loader.setSessionClipboardEnabled(this.sessionId, true)) {
       hilog.warn(RD_DOMAIN, RD_TAG, 'RDP clipboard native setting update was rejected');
+      recordSessionClipboard('rdp', 'failed', CLIPBOARD_NATIVE_REJECTED);
       return;
     }
     this.startClipboardBridgeBestEffort(this.sessionId, this.connectAttemptId, true);
@@ -13591,6 +13596,7 @@ struct RemoteDesktop {
   ): Promise<boolean> {
     const startedAtMs: number = Date.now();
     let lastRefreshAtMs: number = 0;
+    let recoveries: number = 0;
     while (Date.now() - startedAtMs < timeoutMs) {
       if (attemptId !== this.connectAttemptId || this.sessionId !== sessionId) {
         hilog.info(RD_DOMAIN, RD_TAG, 'RustDesk first-frame wait canceled');
@@ -13611,6 +13617,7 @@ struct RemoteDesktop {
       if (state === 4 || state === 0) {
         const ffiError: string = this.loader.getRustDeskLastError();
         const detail: string = ffiError.length > 0 ? ffiError : nativeMessage;
+        recordRustDeskFirstFrame('failed', Date.now() - startedAtMs, recoveries);
         throw new Error('RustDesk 首帧接收失败' +
           (detail.length > 0 ? '：' + detail : '') + ' [E-RUSTDESK-FIRST-FRAME-STATE]');
       }
@@ -13620,6 +13627,7 @@ struct RemoteDesktop {
         diagnostics.receivedFrames, diagnostics.presentedFrames,
         diagnostics.width, diagnostics.height)) {
         this.connectionProgressMessage = 'RustDesk: 首帧已显示';
+        recordRustDeskFirstFrame('succeeded', Date.now() - startedAtMs, recoveries);
         hilog.info(RD_DOMAIN, RD_TAG, 'RustDesk first frame presented session=' +
           sessionId.toString() + ' frames=' + diagnostics.presentedFrames.toString());
         return true;
@@ -13627,6 +13635,7 @@ struct RemoteDesktop {
       const elapsedMs: number = Date.now() - startedAtMs;
       if (elapsedMs >= 150 && (lastRefreshAtMs === 0 || Date.now() - lastRefreshAtMs >= 1200)) {
         const recoveryArmed: boolean = this.loader.requestDecoderRecovery();
+        recoveries++;
         const refresh = this.loader.requestFrameRefresh();
         lastRefreshAtMs = Date.now();
         hilog.info(RD_DOMAIN, RD_TAG, 'RustDesk first-frame recovery armed=' +
@@ -13646,6 +13655,7 @@ struct RemoteDesktop {
         operationGeneration, presentationLease))) {
       return false;
     }
+    recordRustDeskFirstFrame('timeout', Date.now() - startedAtMs, recoveries);
     throw new Error('RustDesk 首帧显示超时，请检查远端画面编码或网络 [E-RUSTDESK-FIRST-FRAME-TIMEOUT]');
   }
 
@@ -13977,6 +13987,9 @@ struct RemoteDesktop {
         this.rdpTransferStatusTimer = -1;
         hilog.info(RD_DOMAIN, RD_TAG, 'RDP drive status settled mounted=' +
           (status.rdpDriveMounted ? 'true' : 'false') + ' diagnostic=' + status.diagnosticCode);
+        if (status.rdpDriveMounted) { recordRdpDrive('succeeded', 0); }
+        else if (status.diagnosticCode === 'drive_unavailable') { recordRdpDrive('failed', 1); }
+        else { recordRdpDrive('timeout', 2); }
         return;
       }
       this.rdpTransferStatusTimer = setTimeout(poll, 300);
@@ -14005,6 +14018,7 @@ struct RemoteDesktop {
               RdpSessionErrorSource.TRANSPORT_FAILURE);
           hilog.error(RD_DOMAIN, RD_TAG, 'RDP terminal classified state=' + state.toString() +
             ' source=' + model.source + ' code=' + model.code);
+          recordRdpFailure(nativeMessage, RDP_FAILURE_IN_SESSION, 0);
           this.connectionError = model.title;
           this.connectionErrorDetail = model.message + ' 错误代码: ' + model.code;
           const cleanupReason: string = model.source === RdpSessionErrorSource.SERVER_ERROR_INFO
@@ -15478,6 +15492,7 @@ struct RemoteDesktop {
 
   private async doConnect(host: RemoteHost): Promise<void> {
     const attemptId: number = ++this.connectAttemptId;
+    const connectBeganAt: number = Date.now();
     let connectionScope = AccountSessionCoordinator.getInstance().currentScope();
     const vncHost: VncHostView | null = this.pendingVncHost;
     const isVnc: boolean = host.protocol === 'vnc' && vncHost !== null;
@@ -15720,9 +15735,11 @@ struct RemoteDesktop {
         hilog.info(RD_DOMAIN, RD_TAG, 'RustDesk audio player lazy init enabled; native starts on first PCM frame');
       } else if (host.protocol === 'rdp' && !(AppStorage.get<boolean>('rdpAudioEnabled') ?? true)) {
         hilog.info(RD_DOMAIN, RD_TAG, 'RDP audio disabled by user preference');
+        recordRdpAudio('skipped', 0);
       } else {
         const audioHandle: number = this.loader.initAudioPlayer(48000, 2);
         hilog.info(RD_DOMAIN, RD_TAG, 'initAudioPlayer returned: ' + audioHandle.toString());
+        if (host.protocol === 'rdp') { recordRdpAudio(audioHandle > 0 ? 'succeeded' : 'failed', audioHandle); }
         if (audioHandle > 0) {
           this.nativeHandles.markAudioStarted();
         }
@@ -16421,6 +16438,13 @@ struct RemoteDesktop {
       const errObj: Error = err as Error;
       this.connectionError = '无法建立远程连接';
       const rawConnectionDetail: string = errObj.message ? errObj.message : '未知连接错误 [E-CONNECT-UNKNOWN]';
+      if (host.protocol === 'rdp') {
+        recordRdpFailure(rawConnectionDetail, RDP_FAILURE_WHILE_CONNECTING, Date.now() - connectBeganAt);
+      } else if (host.protocol === 'rustdesk') {
+        recordRustDeskFailure(rawConnectionDetail, 1, Date.now() - connectBeganAt);
+      } else if (host.protocol === 'vnc') {
+        recordVncFailure(rawConnectionDetail, Date.now() - connectBeganAt);
+      }
       let rustDeskErrorKind: RustDeskProNativeErrorKind = classifyRustDeskProNativeError(rawConnectionDetail);
       if (rustDeskErrorKind === 'unknown' && host.protocol === 'rustdesk' &&
         host.rustdeskAuthMode === 'request_approval' && rawConnectionDetail.indexOf('等待远端批准超时') >= 0) {
@@ -18518,6 +18542,7 @@ struct RemoteDesktop {
       if (candidate === null || candidate.sessionId !== sessionId || candidate.attemptId !== attemptId) { return; }
       const token: number = this.loader.claimSessionClipboardAuthority(sessionId, candidate.nativeGeneration, explicitClaim);
       if (token <= 0) {
+        recordSessionClipboard(candidate.protocol, 'failed', CLIPBOARD_AUTHORITY_BUSY);
         this.continuousClipboardMessage = '另一连接正在同步剪贴板，重新开启此连接的同步开关可切换';
         return;
       }
@@ -18595,9 +18620,12 @@ struct RemoteDesktop {
                 lease.protocol === 'rdp' ? richContent.receiveRemote(snapshot, guard, tag) : Promise.resolve(false)
           });
         this.continuousClipboardMessage = localStarted ? '剪贴板持续同步已开启' : '远端复制可接收；本机同步需要剪贴板读取权限';
+        recordSessionClipboard(lease.protocol, 'succeeded',
+          localStarted ? CLIPBOARD_STARTED : CLIPBOARD_READ_PERMISSION_MISSING, localStarted);
       } catch (_error) {
         if (current()) { this.stopClipboardBridge(); }
         hilog.warn(RD_DOMAIN, RD_TAG, 'clipboard bridge start unavailable');
+        recordSessionClipboard(lease.protocol, 'failed', CLIPBOARD_START_ERROR);
       }
     };
     setTimeout((): void => { void tryStart(); }, 0);

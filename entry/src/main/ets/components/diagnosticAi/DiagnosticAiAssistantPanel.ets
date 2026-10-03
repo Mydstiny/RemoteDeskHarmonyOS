@@ -1,21 +1,26 @@
+import { hilog } from '@kit.PerformanceAnalysisKit';
 import { common } from '@kit.AbilityKit';
 import { curves, LengthMetrics } from '@kit.ArkUI';
 import { inputMethod } from '@kit.IMEKit';
-import { AiKernelRing } from './XiaoyiOrb';
+import { AiFloatingOrb, AiThinkingIndicator } from './AiMotionViews';
 import { HdsImmersiveEdgeLight } from './HdsImmersiveEdgeLight';
-import { AI_FLOAT_ORB, AiAssistantGlyph, AiInputCapsule, AiPrimaryPill, AiSendButton, AiSiriOrb } from './AiIslandChrome';
+import { AI_FLOAT_ORB, AiAssistantGlyph, AiInputCapsule, AiPrimaryPill, AiSendButton } from './AiIslandChrome';
 import { AppConfig, Palette, buildDark, buildLight } from '../../common/Theme';
 import { AppUiMetrics } from '../../common/AppUiMetrics';
 import { DiagnosticAiProviderProfile, DiagnosticAiResult, DiagnosticAiSettingProposal } from '../../services/diagnosticAi/DiagnosticAiModels';
 import { DiagnosticModuleId } from '../../services/DiagnosticCapturePolicy';
 import { DiagnosticCaptureActionCode } from '../../services/DiagnosticCaptureRuntime';
 import { DiagnosticAiBundle, diagnosticAiModulesForQuestion, diagnosticAiCaptureStatus } from '../../services/diagnosticAi/DiagnosticAiBundlePolicy';
+import { DiagnosticCaptureFacet, diagnosticCaptureFacet, diagnosticCaptureFacets, diagnosticFacetsForQuestion, diagnosticModulesForFacets, diagnosticPlanDurations } from '../../services/DiagnosticCaptureFacetPolicy';
+import { AiTriageOption, AiTriageQuestion, AiTriageScript, DiagnosticAiHostBridge, diagnosticAiHostQuestion, diagnosticAiProtocolLabel, diagnosticAiTriageFacets, diagnosticAiTriageFor, diagnosticAiTriageMinutes, diagnosticAiTriageScript, diagnosticAiTriageWithProtocol } from '../../services/diagnosticAi/DiagnosticAiTriagePolicy';
 import { DiagnosticAiCaptureOrchestrator } from '../../services/diagnosticAi/DiagnosticAiCaptureOrchestrator';
 import { DiagnosticAiProfileStore } from '../../services/diagnosticAi/DiagnosticAiProfileStore';
 import { diagnosticAiProviderIsHarmonyLocal } from '../../services/diagnosticAi/DiagnosticAiProviderCatalog';
+import { DiagnosticAiProviderService } from '../../services/diagnosticAi/DiagnosticAiProviderService';
+import { AI_MODE_MODELS, AI_REQUEST_AUTH, AI_REQUEST_NETWORK, AI_REQUEST_RATE_LIMIT, AI_REQUEST_SERVER, AI_REQUEST_TIMEOUT, AiRequestRecord, DiagnosticAiRequestLog, diagnosticAiErrorCategory, diagnosticAiRequestCategoryLabel, recordAiConfigProblem } from '../../services/diagnosticAi/DiagnosticAiRequestLog';
 import { DiagnosticAiAgentMode, DiagnosticAiAgentService, diagnosticAiAgentModeForQuestion, diagnosticAiAgentModeLabel } from '../../services/diagnosticAi/DiagnosticAiAgentService';
 import { diagnosticAiMailDraft } from '../../services/diagnosticAi/DiagnosticAiMailPolicy';
-import { diagnosticAiApplyProposal, diagnosticAiSettingActionText } from '../../services/diagnosticAi/DiagnosticAiSettingsActionPolicy';
+import { AiSettingChoice, diagnosticAiOptimizationIntents, diagnosticAiSettingIntents, diagnosticAiApplyProposal, diagnosticAiApplySetting, diagnosticAiProposalChoice, diagnosticAiSettingActionText, diagnosticAiSettingCurrent, diagnosticAiSettingSpec, diagnosticAiSettingValueLabel } from '../../services/diagnosticAi/DiagnosticAiSettingsActionPolicy';
 import { ProAppRuntime } from '../../services/pro/ProAppRuntime';
 import { ProEntries } from '../../services/pro/ProEntries';
 import { PRO_DIAGNOSTICS_ASSISTANT_FEATURE } from '../../services/pro/ProFeatureCatalog';
@@ -58,6 +63,80 @@ class AiAction {
   }
 }
 
+/**
+ * The answer's analysis as separate paragraphs: blank lines, and inline enumerations (①②③…, "1." "2)" "1、") start a
+ * new paragraph, so a crowded answer still reads point by point.
+ */
+function aiAnswerParagraphs(text: string): string[] {
+  const marked: string = text
+    .replace(/\s*([①②③④⑤⑥⑦⑧⑨⑩])/g, '\n$1')
+    .replace(/([。；;：:])\s*(\d{1,2}[\.、\)）]\s*)/g, '$1\n$2');
+  return marked.split(/\n+/).map((p: string): string => p.trim()).filter((p: string): boolean => p.length > 0);
+}
+
+/** The pill for a setting change: 开启/关闭 for switches, "名称设为 值" for everything else. */
+function aiSettingPillLabel(settingId: string, choice: AiSettingChoice): string {
+  const name: string = diagnosticAiSettingActionText(settingId);
+  const spec = diagnosticAiSettingSpec(settingId);
+  if (spec !== undefined && spec.isBoolean()) { return choice.label + ' ' + name; }
+  return name + '设为' + choice.label;
+}
+
+/** What a proposal would set, as the user reads it (the model's own wording when it matches no value). */
+function aiProposalTargetLabel(proposal: DiagnosticAiSettingProposal): string {
+  const choice: AiSettingChoice | null = diagnosticAiProposalChoice(proposal);
+  return choice !== null ? choice.label : proposal.proposedValue;
+}
+
+/** One line of the AI self-check: 1 fine, 0 a problem, 2 a warning, -1 still checking. */
+class AiCheckItem {
+  state: number;
+  title: string;
+  detail: string;
+
+  constructor(state: number, title: string, detail: string) {
+    this.state = state;
+    this.title = title;
+    this.detail = detail;
+  }
+}
+
+/** One answered troubleshooting question, as shown and as sent. */
+class AiTriageExchange {
+  question: string;
+  answer: string;
+
+  constructor(question: string, answer: string) {
+    this.question = question;
+    this.answer = answer;
+  }
+}
+
+/** A change the assistant made, kept so it can be undone from the answer. */
+class AiUndo {
+  settingId: string;
+  previous: string;
+
+  constructor(settingId: string, previous: string) {
+    this.settingId = settingId;
+    this.previous = previous;
+  }
+}
+
+/** Which events a capture holds (names and counts only), to check the producers from the device log. */
+function logBundleSummary(bundle: DiagnosticAiBundle): void {
+  try {
+    const counts: Map<string, number> = new Map<string, number>();
+    (bundle.text.match(/"eventCode":"[a-z_]+"/g) ?? []).forEach((m: string): void => {
+      const code: string = m.slice(13, m.length - 1);
+      counts.set(code, (counts.get(code) ?? 0) + 1);
+    });
+    const summary: string[] = [];
+    counts.forEach((n: number, code: string): void => { summary.push(code + '×' + n.toString()); });
+    hilog.info(0x0000, 'AiTriage', 'bundle %{public}s events [%{public}s]', bundle.eventCount.toString(), summary.join(' '));
+  } catch (_error) { /* logging only */ }
+}
+
 /** Most action pills an answer may show (besides 邮件草稿 and 新对话). */
 const AI_MAX_ACTION_PILLS: number = 3;
 
@@ -81,6 +160,10 @@ class AiConversationMemory {
   static turns: AiTurn[] = [];
   static history: string = '';
   static pendingQuestion: string = '';
+  /** The 日志子模块 of the capture waiting for analysis (the bundle is narrowed to them). */
+  static pendingFocus: string[] = [];
+  /** A problem described in the orb's mini chat, answered in the full assistant (its questions need the room). */
+  static pendingDiagnose: string = '';
   /** One saved session for the whole conversation, whichever panel (island or the orb's mini chat) asked. */
   static sessionId: string = '';
   /** The latest full answer, so the island can show an exchange that happened in the orb's mini chat. */
@@ -91,6 +174,8 @@ class AiConversationMemory {
     AiConversationMemory.turns = [];
     AiConversationMemory.history = '';
     AiConversationMemory.pendingQuestion = '';
+    AiConversationMemory.pendingFocus = [];
+    AiConversationMemory.pendingDiagnose = '';
     AiConversationMemory.sessionId = '';
     AiConversationMemory.lastResult = null;
   }
@@ -198,6 +283,8 @@ export struct DiagnosticAiAssistantPanel {
   /** Opens a screen of the app for an answer's step (the island floats meanwhile). */
   onAppAction: (action: DiagnosticAiAppActionId) => void = (_action: DiagnosticAiAppActionId): void => {};
   onCardSize: (width: number, height: number) => void = (_width: number, _height: number): void => {};
+  /** The orb's mini chat: open the full assistant (something there needs the user's tap). */
+  onExpand: () => void = (): void => {};
   @State private pulse: boolean = false;
   @State private captureBytes: number = 0;
   onClose: () => void = (): void => {};
@@ -209,6 +296,48 @@ export struct DiagnosticAiAssistantPanel {
   @State question: string = '';
   @State private agentMode: DiagnosticAiAgentMode = 'answer';
   @State private awaitingCapture: boolean = false;
+  /**
+   * Whether a capture is running, as view state. The runtime's own status is not observable, so a view that asked
+   * capturing() would never re-render when a capture ends (the end pill stayed, the thinking row never showed).
+   */
+  @State private captureLive: boolean = false;
+  /** Shown above the current answer instead of the question (a log analysis is its own message). */
+  @State private questionLabel: string = '';
+  /** 抓取计划: the 日志子模块 to capture (the AI's choice or the local guess, then the user's edits), how long, and
+   * what to do meanwhile. */
+  @State private planFocus: string[] = [];
+  @State private planDuration: number = 3;
+  @State private planSteps: string[] = [];
+  @State private planReason: string = '';
+  @State private planFromAi: boolean = false;
+  @State private planShowAll: boolean = false;
+  /**
+   * 排障问答: the questions being asked before a capture (local bank, or the AI's), the answers so far, and what
+   * they decided (host, auto or manual reproduction). Cleared when the capture starts or a new question is asked.
+   */
+  @State private triage: AiTriageScript | null = null;
+  @State private triageStep: number = 0;
+  @State private triageAnswers: AiTriageOption[] = [];
+  /** The questions those answers belong to (same order). */
+  @State private triageAsked: AiTriageQuestion[] = [];
+  @State private triageCurrent: AiTriageQuestion | null = null;
+  private triageHostId: string = '';
+  private triageHostLabel: string = '';
+  private triageAuto: boolean = false;
+  /** What the run learned, sent with the capture to the AI. */
+  private triageNote: string = '';
+  /** 替我连一次: watching the capture for the connection's end, then finishing on its own. */
+  private reproduceRunning: boolean = false;
+  private reproduceSeq: number = 0;
+  private reproduceDoneAt: number = 0;
+  private reproduceProtocol: string = '';
+  private reproduceSymptom: string = '';
+  /** The user chose to ask without capturing: the next answer brings no new plan or questions. */
+  private skipNextPlan: boolean = false;
+  /** AI 自检: checked on the device, without the AI (which may be what is broken). */
+  @State private aiChecks: AiCheckItem[] = [];
+  @State private aiCheckAdvice: string = '';
+  @State private aiCheckNeedsConfig: boolean = false;
   @State private conversation: string = '';
   @State status: string = '';
   @State busy: boolean = false;
@@ -235,6 +364,8 @@ export struct DiagnosticAiAssistantPanel {
   @Prop mini: boolean = false;
   /** Setting changes from the current answer that were already applied; their pills leave. */
   @State private appliedActions: string[] = [];
+  /** Settings changed from this answer, newest last: each can be put back with one tap. */
+  @State private undoable: AiUndo[] = [];
   @State private pendingAppAction: DiagnosticAiAppActionId | null = null;
   private suggestionTimer: number = -1;
   private readonly capture: DiagnosticAiCaptureOrchestrator = DiagnosticAiCaptureOrchestrator.getInstance();
@@ -274,7 +405,7 @@ export struct DiagnosticAiAssistantPanel {
       this.question = turns[turns.length - 1].question;
       this.result = AiConversationMemory.lastResult;
       this.agentMode = 'answer';
-      this.appliedActions = [];
+      this.appliedActions = []; this.undoable = [];
     } else {
       this.turns = turns.slice();
     }
@@ -282,6 +413,15 @@ export struct DiagnosticAiAssistantPanel {
 
   private refreshReady(): void {
     this.catchUpConversation();
+    if (!this.mini && AiConversationMemory.pendingDiagnose !== '' && !this.busy && !this.capturing()) {
+      const pending: string = AiConversationMemory.pendingDiagnose;
+      AiConversationMemory.pendingDiagnose = '';
+      if (this.result !== null) {
+        this.turns = this.turns.concat([new AiTurn(this.shownQuestion(), (this.result as DiagnosticAiResult).summary)]);
+      }
+      this.result = null; this.questionLabel = ''; this.question = pending;
+      this.submitQuestion();
+    }
     const selected: DiagnosticAiProviderProfile | undefined = this.selectedProfile();
     this.aiReady = selected !== undefined &&
       (diagnosticAiProviderIsHarmonyLocal(selected.providerId) || this.store.secret(selected).trim() !== '');
@@ -407,20 +547,33 @@ export struct DiagnosticAiAssistantPanel {
     const snapshot = this.capture.status();
     const previousPhase: string = this.lastCapturePhase;
     this.lastCapturePhase = snapshot.phase;
+    this.captureLive = snapshot.phase === 'capturing';
     this.eventCount = snapshot.eventCount; this.elapsed = snapshot.durationMinutes * 60 - snapshot.remainingSeconds;
     this.captureBytes = snapshot.approximateBytes;
     this.reportActivity();
     if (snapshot.phase === 'capturing') {
-      this.status = '正在抓取脱敏诊断事件，复现问题后点「结束并分析」';
+      if (this.reproduceRunning) {
+        this.watchReproduce();
+      } else {
+        this.status = '正在抓取脱敏诊断事件，复现问题后点「结束并分析」';
+      }
       this.pulse = !this.pulse;
     } else if (previousPhase === 'capturing' && snapshot.phase === 'readyToSave' &&
       (this.captureOwnedByPanel || (snapshot.ownerId === this.owner && snapshot.ownerKind === 'ai'))) {
       // Runtime.status() performs the deadline transition lazily. Treat that
       // edge like an explicit stop so the island cannot remain collapsed with
       // no end button and no retryable bundle.
+      if (snapshot.stopReason === 'manual') {
+        // Another assistant panel (a remote session's) ended it and analyses it there; just let go here.
+        this.captureOwnedByPanel = false;
+        this.onCaptureStateChanged(false);
+        this.status = '';
+        this.reportActivity();
+        return;
+      }
       let bundle: DiagnosticAiBundle | null = null;
       try {
-        bundle = this.capture.bundle(this.owner);
+        bundle = this.capture.bundle(this.owner, AiConversationMemory.pendingFocus);
       } catch (_error) {
         bundle = null;
       }
@@ -434,7 +587,9 @@ export struct DiagnosticAiAssistantPanel {
         this.pendingCaptureId = bundle.captureId;
         this.agentMode = 'diagnose';
         AiConversationMemory.pendingQuestion = this.question;
-        this.status = '抓取已到时；诊断包已保留，可继续分析。';
+        this.status = '抓取已到时，正在分析…';
+        // The plan's time is up: analyse right away, as if 结束并分析 was tapped.
+        setTimeout((): void => { if (this.alive) { this.retryPendingDiagnosis(); } }, 60);
       }
       this.reportActivity();
     } else if (previousPhase === 'capturing' && snapshot.phase === 'idle' && this.captureOwnedByPanel) {
@@ -488,7 +643,7 @@ export struct DiagnosticAiAssistantPanel {
   private recoverPendingBundle(): void {
     const snapshot = this.capture.status();
     if (snapshot.phase !== 'readyToSave') { return; }
-    const bundle = this.capture.bundle(this.owner);
+    const bundle = this.capture.bundle(this.owner, AiConversationMemory.pendingFocus);
     if (bundle === null) { return; }
     // The settings sheet and the island can be recreated independently. Rebind the profile/secret store before
     // deciding whether to show the setup guide so a retained bundle is never hidden behind a stale readiness bit.
@@ -515,6 +670,9 @@ export struct DiagnosticAiAssistantPanel {
       return 'Provider 暂时不可用；本地诊断包已保留，请稍后重试';
     }
     if (value.indexOf('HTTP_400') >= 0 || value.indexOf('HTTP_422') >= 0) { return 'AI 服务不接受当前请求格式，请重新拉取模型或换用兼容模型'; }
+    if (value.indexOf('TIMEOUT') >= 0) {
+      return this.pendingCaptureId !== '' ? 'AI 分析日志超时（模型处理较慢）；日志已保留，可点「重试分析」' : 'AI 回答超时，请重试或换用更快的模型';
+    }
     if (value.indexOf('NETWORK') >= 0) { return 'AI 服务暂时无法连接，请检查网络、地址和证书'; }
     if (value.indexOf('EMPTY_RESULT') >= 0) { return 'AI 服务返回了空结果，请重试或更换模型'; }
     if (value.indexOf('ANALYSIS_UNAVAILABLE') >= 0) { return '当前 Provider 尚未完成 AI 请求适配'; }
@@ -527,7 +685,7 @@ export struct DiagnosticAiAssistantPanel {
   }
 
   private async sendAgent(mode: DiagnosticAiAgentMode, bundle: string = ''): Promise<void> {
-    if (!this.allowed()) { this.status = '当前账号没有诊断与 AI 帮助权限'; return; }
+    if (!this.allowed()) { this.status = '当前账号没有 AI 助理权限'; return; }
     if (this.busy || this.question.trim() === '') { return; }
     let selected: DiagnosticAiProviderProfile | undefined;
     try {
@@ -535,7 +693,10 @@ export struct DiagnosticAiAssistantPanel {
     } catch (error) {
       this.status = '无法读取 AI 配置：' + this.errorText(error as Object); return;
     }
-    if (selected === undefined) { this.status = '请先在辅助 AI 配置中保存 API Key 并选择模型'; return; }
+    if (selected === undefined) {
+      recordAiConfigProblem(2);
+      this.status = '请先在辅助 AI 配置中保存 API Key 并选择模型'; return;
+    }
     const selectedProfile: DiagnosticAiProviderProfile = selected;
     const selectedProfileId: string = selectedProfile.id;
     let secret: string = '';
@@ -545,6 +706,7 @@ export struct DiagnosticAiAssistantPanel {
       this.status = '无法读取 API Key：' + this.errorText(error as Object); return;
     }
     if (!diagnosticAiProviderIsHarmonyLocal(selectedProfile.providerId) && secret.trim() === '') {
+      recordAiConfigProblem(1);
       this.status = '已找到 Provider 配置，但 API Key 无法从本机安全存储读回；请重新保存 API Key';
       return;
     }
@@ -553,6 +715,7 @@ export struct DiagnosticAiAssistantPanel {
     const requestCaptureGeneration: number = this.capture.currentGeneration();
     const selectedRevision: number = selectedProfile.revision;
     this.agentMode = mode; this.busy = true; this.result = null; this.expandedResult = false;
+    if (bundle === '') { this.questionLabel = ''; }
     this.status = '正在连接 AI…'; this.reportActivity();
     try {
       const beforeScope = AccountSessionCoordinator.getInstance().currentScope();
@@ -566,11 +729,12 @@ export struct DiagnosticAiAssistantPanel {
         return;
       }
       const analyzed: DiagnosticAiResult = await this.agent.respond(selectedProfile, secret, {
-        mode, question: this.question, history: this.conversation, bundle,
+        mode, question: this.question + this.triageNote, history: this.conversation, bundle,
         assistantContext: this.assistantPreferences.name + '；语气：' + this.assistantPreferences.personality +
           '；详细程度：' + this.assistantPreferences.verbosity + '；角色：' + this.assistantPreferences.role +
           '；语言：' + this.assistantPreferences.language +
-          (this.assistantMemoryContext() !== '' ? '；本机助手记忆：' + this.assistantMemoryContext() : '')
+          (this.assistantMemoryContext() !== '' ? '；本机助手记忆：' + this.assistantMemoryContext() : ''),
+        answerStyle: this.technicalStyle() ? 'technical' : 'plain'
       });
       const currentScope = AccountSessionCoordinator.getInstance().currentScope();
       const currentOwner: string = currentScope.ownerScopeId.trim() === '' ? 'device-local' : currentScope.ownerScopeId;
@@ -580,7 +744,10 @@ export struct DiagnosticAiAssistantPanel {
         latestProfile === undefined || latestProfile.revision !== selectedRevision) {
         this.status = '页面或账号作用域已变化，已丢弃旧 AI 结果'; return;
       }
+      if (bundle === '' && mode !== 'diagnose') { this.addLocalSettingIntents(analyzed); }
+      if (mode === 'diagnose') { this.addLocalOptimizations(analyzed); }
       this.result = analyzed;
+      if (bundle === '') { this.adoptCapturePlan(analyzed, mode); }
       if (mode === 'diagnose' && bundle !== '' && this.pendingCaptureId !== '') {
         this.capture.discard(requestOwner, this.pendingCaptureId);
         this.pendingCaptureId = '';
@@ -598,17 +765,442 @@ export struct DiagnosticAiAssistantPanel {
     } finally { this.busy = false; this.reportActivity(); }
   }
 
+  private startTriage(script: AiTriageScript): void {
+    hilog.info(0x0000, 'AiTriage', 'start protocol=%{public}s symptom=%{public}s questions=%{public}s ai=%{public}s',
+      script.protocol, script.symptom, script.questions.length.toString(), script.fromAi ? 'yes' : 'no');
+    this.getUIContext().animateTo({ curve: curves.springMotion(0.42, 0.86) }, (): void => {
+      this.triage = script;
+      this.triageAnswers = [];
+      this.triageAsked = [];
+      this.aiChecks = []; this.aiCheckAdvice = ''; this.aiCheckNeedsConfig = false;
+      this.triageStep = -1;
+      this.triageCurrent = null;
+      this.triageHostId = ''; this.triageHostLabel = ''; this.triageAuto = false;
+      this.awaitingCapture = false;
+      this.agentMode = 'diagnose';
+      this.status = '';
+    });
+    this.nextTriageQuestion();
+  }
+
+  /**
+   * Move to the next question that applies: the host question lists the protocol's saved hosts (skipped when it
+   * has none), and "替我连一次" is offered only once a saved host was chosen. After the last one: the capture plan.
+   */
+  private nextTriageQuestion(): void {
+    const script: AiTriageScript | null = this.triage;
+    if (script === null) { return; }
+    let step: number = this.triageStep + 1;
+    let next: AiTriageQuestion | null = null;
+    while (step < script.questions.length && next === null) {
+      const candidate: AiTriageQuestion = script.questions[step];
+      if (candidate.kind === 'host') {
+        next = diagnosticAiHostQuestion(script.protocol);
+      } else if (candidate.kind === 'reproduce') {
+        next = this.triageHostId !== '' ? candidate : null;
+      } else {
+        next = candidate;
+      }
+      if (next === null) { step++; }
+    }
+    this.getUIContext().animateTo({ curve: curves.springMotion(0.42, 0.86) }, (): void => {
+      this.triageStep = step;
+      this.triageCurrent = next;
+    });
+    if (next === null) { this.finishTriage(); }
+  }
+
+  private answerTriage(option: AiTriageOption): void {
+    const question: AiTriageQuestion | null = this.triageCurrent;
+    const script: AiTriageScript | null = this.triage;
+    if (question === null || script === null) { return; }
+    let restart: boolean = false;
+    if (question.kind === 'protocol') {
+      this.triage = diagnosticAiTriageWithProtocol(script, option.id.slice('protocol:'.length));
+    } else if (question.kind === 'symptom') {
+      // What is going wrong decides the rest: the questions for that symptom (protocol already known or answered).
+      const symptom: string = option.id.slice('symptom:'.length);
+      const current: AiTriageScript = this.triage ?? script;
+      if (symptom === 'other') {
+        // Nothing the local bank knows: hand what was answered to the AI, which asks its own questions or plans.
+        this.triageAnswers = this.triageAnswers.concat([option]);
+        this.triageAsked = this.triageAsked.concat([question]);
+        this.triageNote = '\n排障问答（用户在应用里点选回答）：' + this.triageSummary(false);
+        this.keepTriageAsTurn();
+        void this.sendAgent('diagnose');
+        return;
+      }
+      this.triage = diagnosticAiTriageFor(current.protocol, symptom, false);
+      restart = true;
+    } else if (question.kind === 'host') {
+      this.triageHostId = option.id.slice('host:'.length);
+      this.triageHostLabel = this.triageHostId !== '' ? option.label : '';
+    } else if (question.kind === 'reproduce') {
+      this.triageAuto = option.id === 'auto';
+    }
+    this.getUIContext().animateTo({ curve: curves.springMotion(0.42, 0.86) }, (): void => {
+      this.triageAnswers = this.triageAnswers.concat([option]);
+      this.triageAsked = this.triageAsked.concat([question]);
+    });
+    if (restart) { this.triageStep = -1; }
+    this.nextTriageQuestion();
+  }
+
+  /** The answers decide the capture: shown for the user's go-ahead (开始抓取), adjustable before it starts. */
+  private finishTriage(): void {
+    const script: AiTriageScript | null = this.triage;
+    if (script === null) { return; }
+    const focus: string[] = diagnosticAiTriageFacets(script, this.triageAnswers);
+    const how: string = this.triageAuto && this.triageHostLabel !== '' ? '开始后我会替你连接「' + this.triageHostLabel +
+      '」，连接结束就自动分析。' : '开始后请你自己操作一次，复现这个问题。';
+    this.setPlan(focus, diagnosticAiTriageMinutes(script, this.triageAnswers), [], how, true);
+    hilog.info(0x0000, 'AiTriage', 'plan facets=[%{public}s] minutes=%{public}s auto=%{public}s', focus.join(','),
+      this.planDuration.toString(), this.triageAuto ? 'yes' : 'no');
+    this.modules = diagnosticModulesForFacets(this.planFocus);
+    this.triageNote = '\n排障问答（用户在应用里点选回答）：' + this.triageSummary(false) +
+      (this.triageAuto ? '；复现方式：应用替用户连接了一次该主机' : '；复现方式：用户自己操作复现');
+    this.getUIContext().animateTo({ curve: curves.springMotion(0.42, 0.86) }, (): void => {
+      this.awaitingCapture = true;
+    });
+    if (script.symptom === 'ai') { void this.runAiSelfCheck(); }
+  }
+
+  private showAiChecks(checks: AiCheckItem[], advice: string, needsConfig: boolean): void {
+    this.getUIContext().animateTo({ curve: curves.springMotion(0.42, 0.86) }, (): void => {
+      this.aiChecks = checks.slice();
+      this.aiCheckAdvice = advice;
+      this.aiCheckNeedsConfig = needsConfig;
+    });
+  }
+
+  /**
+   * AI 自检, on the device: a service and model chosen, the key readable, how recent requests went, and a live
+   * reachability test (the model list). The advice follows the first real problem found.
+   */
+  private async runAiSelfCheck(): Promise<void> {
+    const checks: AiCheckItem[] = [];
+    let selected: DiagnosticAiProviderProfile | undefined = undefined;
+    try { selected = this.selectedProfile(); } catch (_error) { selected = undefined; }
+    if (selected === undefined) {
+      recordAiConfigProblem(2);
+      checks.push(new AiCheckItem(0, '没有可用的 AI 服务', '还没有选择服务商和模型，或之前的配置已失效'));
+      this.showAiChecks(checks, '先到 AI 配置里选择服务商、保存 API Key 并选择模型。', true);
+      return;
+    }
+    const profile: DiagnosticAiProviderProfile = selected;
+    checks.push(new AiCheckItem(1, 'AI 服务已配置', '模型：' + profile.modelId));
+    let secret: string = '';
+    try { secret = this.store.secret(profile); } catch (_error) { secret = ''; }
+    if (!diagnosticAiProviderIsHarmonyLocal(profile.providerId) && secret.trim() === '') {
+      recordAiConfigProblem(1);
+      checks.push(new AiCheckItem(0, 'API Key 读不出来', '本机安全存储里没有可用的 Key'));
+      this.showAiChecks(checks, '到 AI 配置里重新保存 API Key。', true);
+      return;
+    }
+    checks.push(new AiCheckItem(1, 'API Key 可以读取', '已保存在本机安全存储'));
+    const recent: AiRequestRecord[] = DiagnosticAiRequestLog.recent.filter((r: AiRequestRecord): boolean => r.mode !== AI_MODE_MODELS);
+    let recentProblem: number = 0;
+    if (recent.length > 0) {
+      const failures: AiRequestRecord[] = recent.filter((r: AiRequestRecord): boolean => r.category !== 0);
+      const average: number = recent.reduce((sum: number, r: AiRequestRecord): number => sum + r.ms, 0) / recent.length;
+      if (failures.length === 0) {
+        checks.push(new AiCheckItem(1, '最近 ' + recent.length.toString() + ' 次请求都成功', '平均 ' + (average / 1000).toFixed(1) + ' 秒'));
+      } else {
+        recentProblem = failures[failures.length - 1].category;
+        const labels: string[] = [];
+        failures.forEach((r: AiRequestRecord): void => {
+          const label: string = diagnosticAiRequestCategoryLabel(r.category);
+          if (labels.indexOf(label) < 0) { labels.push(label); }
+        });
+        checks.push(new AiCheckItem(2, '最近 ' + recent.length.toString() + ' 次请求有 ' + failures.length.toString() + ' 次失败',
+          labels.join('、') + ' · 平均 ' + (average / 1000).toFixed(1) + ' 秒'));
+      }
+    }
+    checks.push(new AiCheckItem(-1, '正在测试能否连上 AI 服务…', ''));
+    this.showAiChecks(checks, '', false);
+    const startedAt: number = Date.now();
+    let liveProblem: number = 0;
+    try {
+      await new DiagnosticAiProviderService().listModels(profile, secret);
+      checks[checks.length - 1] = new AiCheckItem(1, 'AI 服务可以连上', '用时 ' + ((Date.now() - startedAt) / 1000).toFixed(1) + ' 秒');
+    } catch (error) {
+      const message: string = error instanceof Error ? (error as Error).message : '';
+      liveProblem = diagnosticAiErrorCategory(message)[0];
+      checks[checks.length - 1] = new AiCheckItem(0, '连不上 AI 服务', diagnosticAiRequestCategoryLabel(liveProblem));
+    }
+    const problem: number = liveProblem !== 0 ? liveProblem : recentProblem;
+    const advice: string = problem === AI_REQUEST_AUTH ? 'Key 无效或没有这个模型的权限：到 AI 配置重新保存 Key，或换一个有权限的模型。' :
+      problem === AI_REQUEST_NETWORK ? '网络连不上 AI 服务：检查网络；用了代理或自定义服务地址时，确认地址正确。' :
+      problem === AI_REQUEST_TIMEOUT ? '模型回答太慢：可以换用更快的模型，或把 AI 回答长度改成"简短"。' :
+      problem === AI_REQUEST_RATE_LIMIT ? '请求太频繁被限流了，等一会儿再试。' :
+      problem === AI_REQUEST_SERVER ? '服务商暂时故障，稍后再试，或在 AI 配置里换一个服务商。' :
+      problem !== 0 ? diagnosticAiRequestCategoryLabel(problem) + '：可以在 AI 配置里重新拉取模型或换用其它模型。' :
+      'AI 服务本身是正常的。如果是回答不对，可以把问题描述得更具体，或把 AI 回答风格改成"技术"。';
+    this.showAiChecks(checks, advice, problem === AI_REQUEST_AUTH || problem === AI_REQUEST_NETWORK);
+  }
+
+  /** The questions and answers so far, as one line (host names only when shown on this device). */
+  private triageSummary(withHostName: boolean): string {
+    const protocol: string = this.triage !== null ? this.triage.protocol : '';
+    return this.triagePairs(withHostName).map((pair: AiTriageExchange): string => pair.question + '：' + pair.answer)
+      .join('；') + (protocol !== '' && !withHostName ? '；连接类型：' + diagnosticAiProtocolLabel(protocol) : '');
+  }
+
+  private triagePairs(withHostName: boolean): AiTriageExchange[] {
+    const protocol: string = this.triage !== null ? this.triage.protocol : '';
+    return this.triageAnswers.map((answer: AiTriageOption, index: number): AiTriageExchange => {
+      const question: AiTriageQuestion = this.triageAsked[index];
+      const hostAnswer: string = answer.id === 'host:' ? '不在已保存的主机里' :
+        '一台已保存的' + diagnosticAiProtocolLabel(protocol) + ' 主机';
+      return new AiTriageExchange(question.kind === 'host' ? '主机' : question.text.replace('？', ''),
+        question.kind === 'host' && !withHostName ? hostAnswer : answer.label);
+    });
+  }
+
+  /** What the app already knows about the problem's connection type, so it does not have to ask. */
+  private triageFacts(): string {
+    const script: AiTriageScript | null = this.triage;
+    if (script === null || script.protocol === '') { return ''; }
+    const hosts: number = DiagnosticAiHostBridge.hosts(script.protocol).length;
+    const ids: string[] = script.protocol === 'rdp' ? ['rdp.colorDepth', 'rdp.audioEnabled', 'rdp.clipboardEnabled'] :
+      script.protocol === 'rustdesk' ? ['rustdesk.codec', 'rustdesk.imageQuality', 'rustdesk.audioEnabled'] :
+      script.protocol === 'ssh' ? ['ssh.inputMode'] : [];
+    const facts: string[] = [diagnosticAiProtocolLabel(script.protocol) + ' 主机 ' + hosts.toString() + ' 台'];
+    ids.forEach((id: string): void => {
+      const current: string | null = diagnosticAiSettingCurrent(id);
+      if (current !== null) {
+        facts.push(diagnosticAiSettingActionText(id).replace(diagnosticAiProtocolLabel(script.protocol) + ' ', '') + ' ' +
+          diagnosticAiSettingValueLabel(id, current));
+      }
+    });
+    return '我先看了本机：' + facts.join(' · ');
+  }
+
+  private cancelTriage(): void {
+    this.getUIContext().animateTo({ curve: curves.springMotion(0.42, 0.86) }, (): void => {
+      this.triage = null; this.triageCurrent = null; this.triageAnswers = []; this.triageAsked = [];
+      this.awaitingCapture = false; this.triageNote = ''; this.status = '';
+    });
+  }
+
+  /** 先不抓，直接问 AI: the answers go to the AI without a capture. */
+  private askWithoutCapture(): void {
+    this.awaitingCapture = false;
+    this.skipNextPlan = true;
+    this.keepTriageAsTurn();
+    void this.sendAgent('diagnose');
+  }
+
+  /** The finished questions stay in the conversation as one exchange above what comes next. */
+  private keepTriageAsTurn(): void {
+    if (this.triage === null) { return; }
+    const summary: string = this.triageSummary(true);
+    this.turns = this.turns.concat([new AiTurn(this.shownQuestion(), summary !== '' ? summary : '已回答排障问题')]);
+    this.triage = null; this.triageCurrent = null;
+  }
+
+  /**
+   * 替我连一次: while the capture runs, watch it for the chosen connection's end — failed, closed, or connected
+   * (then a little longer for a slow or black picture) — and finish the capture on its own.
+   */
+  private watchReproduce(): void {
+    if (!this.reproduceRunning || this.reproduceDoneAt < 0) { return; }
+    const module: string = this.reproduceProtocol === 'ssh' ? 'connection.ssh_sftp' : 'connection.' + this.reproduceProtocol;
+    this.capture.outcomesSince(this.owner, this.reproduceSeq).forEach((event): void => {
+      this.reproduceSeq = Math.max(this.reproduceSeq, event.sequence);
+      if (event.moduleId !== module) { return; }
+      // A real attempt after a failed preflight (the user chose to continue): wait for its own result.
+      if (this.reproduceDoneAt > 0 && event.eventCode.indexOf('_connection_request') > 0 && event.outcome === 'started') {
+        this.reproduceDoneAt = 0;
+        this.status = '正在连接…';
+        return;
+      }
+      if (this.reproduceDoneAt > 0) { return; }
+      // SSH reports its lifecycle as codes (4 Ready, 9 Failed); its "succeeded" is a closed session, not a connected one.
+      const sshEvent: boolean = event.eventCode === 'ssh_session_event';
+      const failed: boolean = event.outcome === 'failed' || event.outcome === 'timeout' ||
+        (event.eventCode.indexOf('_disconnect') > 0 && event.outcome !== 'succeeded') ||
+        (event.eventCode.indexOf('_state_changed') > 0 && event.code === 4) || (sshEvent && event.code === 9);
+      const connected: boolean = (event.eventCode.indexOf('_state_changed') > 0 && event.code === 2) ||
+        (sshEvent && event.code === 4) ||
+        (event.eventCode === 'moonlight_launch' && event.outcome === 'succeeded');
+      if (failed || connected) {
+        hilog.info(0x0000, 'AiTriage', 'reproduce %{public}s by %{public}s/%{public}s code=%{public}s',
+          failed ? 'failed' : 'connected', event.eventCode, event.outcome, event.code.toString());
+      }
+      if (failed && event.eventCode.indexOf('_preflight') > 0) {
+        // The preflight sheet still lets the user continue or skip it: give them time before wrapping up.
+        this.reproduceDoneAt = Date.now() + 15000;
+        this.status = '预检没有连上，可以在提示里选择继续连接，或等待自动分析…';
+      } else if (failed) {
+        this.reproduceDoneAt = Date.now() + 3000;
+        this.status = '连接失败了，正在收尾…';
+      } else if (connected && this.reproduceSymptom !== 'disconnect') {
+        const watchLonger: boolean = ['lag', 'black', 'audio'].indexOf(this.reproduceSymptom) >= 0;
+        this.reproduceDoneAt = Date.now() + (watchLonger ? 20000 : 4000);
+        this.status = watchLonger ? '已连上，再观察一会儿画面…' : '这次连上了，正在收尾…';
+      }
+    });
+    if (this.reproduceDoneAt > 0 && Date.now() >= this.reproduceDoneAt) {
+      this.reproduceDoneAt = -1;
+      void this.finishCapture();
+    }
+  }
+
+  /** 回答风格 › 技术: the answer may go into protocol details; otherwise it stays in plain words. */
+  private technicalStyle(): boolean { return this.assistantPreferences.personality === 'technical'; }
+
+  /**
+   * A request to change settings always gets its buttons: what the user asked for in plain words is read locally and
+   * added to the model's proposals (the model sometimes only describes the steps, or names a setting loosely).
+   */
+  private addLocalSettingIntents(result: DiagnosticAiResult): void {
+    const local: DiagnosticAiSettingProposal[] = diagnosticAiSettingIntents(this.question);
+    const fromModel: string = result.settingProposals.map((p: DiagnosticAiSettingProposal): string =>
+      p.settingId + '=' + p.proposedValue).join(',');
+    local.forEach((proposal: DiagnosticAiSettingProposal): void => {
+      if (!result.settingProposals.some((p: DiagnosticAiSettingProposal): boolean => p.settingId === proposal.settingId)) {
+        result.settingProposals.push(proposal);
+      }
+    });
+    hilog.info(0x0000, 'AiSettings', 'proposals model=[%{public}s] local=[%{public}s]', fromModel,
+      local.map((p: DiagnosticAiSettingProposal): string => p.settingId + '=' + p.proposedValue).join(','));
+  }
+
+  /** A described problem also gets the settings that commonly help with it, next to the capture plan. */
+  private addLocalOptimizations(result: DiagnosticAiResult): void {
+    diagnosticAiOptimizationIntents(this.question).forEach((proposal: DiagnosticAiSettingProposal): void => {
+      if (!result.settingProposals.some((p: DiagnosticAiSettingProposal): boolean => p.settingId === proposal.settingId)) {
+        result.settingProposals.push(proposal);
+      }
+    });
+  }
+
+  private setPlan(focus: string[], minutes: number, steps: string[], reason: string, fromAi: boolean): void {
+    this.planFocus = focus;
+    this.planDuration = diagnosticPlanDurations().indexOf(minutes) >= 0 ? minutes : 3;
+    this.planSteps = steps;
+    this.planReason = reason;
+    this.planFromAi = fromAi;
+    this.planShowAll = false;
+  }
+
+  /**
+   * An answer without logs behind it may come with the AI's capture plan; a problem report without one gets the local
+   * guess. Either way the plan card appears under the answer and waits for 开始抓取.
+   */
+  private adoptCapturePlan(result: DiagnosticAiResult, mode: DiagnosticAiAgentMode): void {
+    // A settings request is answered with its buttons, never with a log capture; and once the questions were answered
+    // and the user chose to ask without capturing, no new plan or questions come back.
+    const skip: boolean = this.skipNextPlan;
+    this.skipNextPlan = false;
+    if (mode === 'configure' || (mode !== 'diagnose' && result.settingProposals.length > 0) || skip) {
+      return;
+    }
+    const plan = result.capturePlan;
+    // The local bank had no questions for this problem: ask the AI's, then capture what its plan names.
+    const asked = result.clarifyQuestions;
+    if (mode === 'diagnose' && asked !== undefined && asked.length > 0) {
+      const questions: AiTriageQuestion[] = asked.map((q, qi: number): AiTriageQuestion =>
+        new AiTriageQuestion('ai' + qi.toString(), q.question, 'choice',
+          q.options.map((label: string, oi: number): AiTriageOption =>
+            new AiTriageOption('ai' + qi.toString() + '-' + oi.toString(), label))));
+      const focus: string[] = plan !== undefined && plan.focus.length > 0 ? plan.focus : diagnosticFacetsForQuestion(this.question);
+      this.startTriage(new AiTriageScript('', 'other', questions, focus,
+        plan !== undefined ? plan.durationMinutes : 3, true));
+      return;
+    }
+    if (plan !== undefined && plan.focus.length > 0) {
+      this.setPlan(plan.focus, plan.durationMinutes, plan.steps, plan.reason, true);
+    } else if (mode === 'diagnose') {
+      this.setPlan(diagnosticFacetsForQuestion(this.question), 3, [], '', false);
+    } else {
+      return;
+    }
+    this.modules = diagnosticModulesForFacets(this.planFocus);
+    this.agentMode = 'diagnose';
+    this.awaitingCapture = true;
+  }
+
+  private togglePlanFacet(id: string): void {
+    this.getUIContext().animateTo({ curve: curves.springMotion(0.38, 0.8) }, (): void => {
+      this.planFocus = this.planFocus.indexOf(id) >= 0 ? this.planFocus.filter((value: string): boolean => value !== id) :
+        this.planFocus.concat([id]);
+      this.modules = diagnosticModulesForFacets(this.planFocus);
+    });
+  }
+
+  /** The sub-modules the card offers: the plan's own first, then (on 更多) every other one. */
+  private planFacetChoices(): DiagnosticCaptureFacet[] {
+    const all: DiagnosticCaptureFacet[] = diagnosticCaptureFacets();
+    if (this.planShowAll) {
+      return all.filter((facet: DiagnosticCaptureFacet): boolean => this.planFocus.indexOf(facet.id) >= 0)
+        .concat(all.filter((facet: DiagnosticCaptureFacet): boolean => this.planFocus.indexOf(facet.id) < 0));
+    }
+    return all.filter((facet: DiagnosticCaptureFacet): boolean => this.planFocus.indexOf(facet.id) >= 0);
+  }
+
+  private shownQuestion(): string { return this.questionLabel !== '' ? this.questionLabel : this.question; }
+
+  /**
+   * The log analysis comes as a new message: the answer the capture plan came with moves up into the conversation,
+   * the thinking row takes its place, and the analysis appears below it when it is ready.
+   */
+  private startLogAnswer(): void {
+    const previous: DiagnosticAiResult | null = this.result;
+    if (previous !== null && previous !== undefined && this.turns !== undefined) {
+      this.turns = this.turns.concat([new AiTurn(this.shownQuestion(), previous.summary)]);
+    }
+    this.result = null;
+    this.expandedResult = false;
+    this.questionLabel = '分析抓到的日志';
+  }
+
+  private retryPendingDiagnosis(): void {
+    if (this.pendingCaptureId === '' || this.latestBundleText === '' || this.busy) { return; }
+    this.startLogAnswer();
+    this.refreshProfileStore();
+    if (!this.aiReady) {
+      this.status = '已保留诊断包，但当前 Provider 密钥暂不可读；请先回到辅助 AI 配置重新保存后再重试';
+      return;
+    }
+    this.agentMode = 'diagnose';
+    void this.sendAgent('diagnose', this.latestBundleText);
+  }
+
   private beginCapture(): void {
     if (!this.allowed() || this.busy || this.question.trim() === '') { return; }
     if (this.selectedProfile() === undefined) { this.status = '请先在辅助 AI 配置中保存 API Key 并选择模型'; return; }
     this.agentMode = 'diagnose'; this.awaitingCapture = false;
-    this.modules = diagnosticAiModulesForQuestion(this.question);
-    const result = this.capture.start(this.owner, { modules: this.modules, durationMinutes: 3, consentId: 'consent-' + Date.now().toString() });
+    if (this.planFocus.length === 0) { this.planFocus = diagnosticFacetsForQuestion(this.question); }
+    this.modules = diagnosticModulesForFacets(this.planFocus);
+    if (this.modules.length === 0) { this.modules = diagnosticAiModulesForQuestion(this.question); }
+    AiConversationMemory.pendingFocus = this.planFocus.slice();
+    const result = this.capture.start(this.owner, { modules: this.modules, durationMinutes: this.planDuration,
+      consentId: 'consent-' + Date.now().toString() });
     this.syncCapture();
     if (result === 'ok') {
       this.captureOwnedByPanel = true;
       this.onCaptureStateChanged(true);
       this.status = '正在抓取脱敏诊断事件…';
+      const hostId: string = this.triageHostId;
+      const auto: boolean = this.triage !== null && this.triageAuto && hostId !== '';
+      this.reproduceRunning = auto;
+      this.reproduceSeq = 0;
+      this.reproduceDoneAt = 0;
+      this.reproduceProtocol = this.triage !== null ? this.triage.protocol : '';
+      this.reproduceSymptom = this.triage !== null ? this.triage.symptom : '';
+      this.keepTriageAsTurn();
+      if (auto) {
+        setTimeout((): void => {
+          const started: boolean = DiagnosticAiHostBridge.connect(hostId);
+          hilog.info(0x0000, 'AiTriage', 'reproduce connect started=%{public}s', started ? 'yes' : 'no');
+          if (!started) {
+            this.reproduceRunning = false;
+            this.status = '没能替你连接，请自己连接一次来复现';
+          }
+        }, 450);
+      }
     } else {
       this.status = '无法开始抓取：' + result;
     }
@@ -649,6 +1241,10 @@ export struct DiagnosticAiAssistantPanel {
 
   private async finishCapture(): Promise<void> {
     if (this.busy) { return; }
+    const reproduced: boolean = this.reproduceRunning;
+    this.reproduceRunning = false;
+    this.reproduceDoneAt = -1;
+    this.startLogAnswer();
     const requestGeneration: number = this.lifecycleGeneration;
     const requestOwner: string = this.owner;
     const requestCaptureGeneration: number = this.capture.currentGeneration();
@@ -681,7 +1277,7 @@ export struct DiagnosticAiAssistantPanel {
     this.onCaptureStateChanged(false); this.syncCapture();
     let bundle: DiagnosticAiBundle | null = null;
     try {
-      bundle = this.capture.bundle(requestOwner);
+      bundle = this.capture.bundle(requestOwner, AiConversationMemory.pendingFocus);
     } catch (error) {
       this.finishCaptureFailure('无法读取诊断包：' + this.errorText(error as Object));
       return;
@@ -693,6 +1289,7 @@ export struct DiagnosticAiAssistantPanel {
     this.latestBundleText = bundle.text;
     this.pendingCaptureId = bundle.captureId;
     AiConversationMemory.pendingQuestion = this.question;
+    logBundleSummary(bundle);
     let selected: DiagnosticAiProviderProfile | undefined;
     try {
       selected = this.selectedProfile();
@@ -730,11 +1327,12 @@ export struct DiagnosticAiAssistantPanel {
         return;
       }
       const analyzed: DiagnosticAiResult = await this.agent.respond(selectedProfile, secret, {
-        mode: 'diagnose', question: this.question, history: this.conversation, bundle: bundle.text,
+        mode: 'diagnose', question: this.question + this.triageNote, history: this.conversation, bundle: bundle.text,
         assistantContext: this.assistantPreferences.name + '；语气：' + this.assistantPreferences.personality +
           '；详细程度：' + this.assistantPreferences.verbosity + '；角色：' + this.assistantPreferences.role +
           '；语言：' + this.assistantPreferences.language +
-          (this.assistantMemoryContext() !== '' ? '；本机助手记忆：' + this.assistantMemoryContext() : '')
+          (this.assistantMemoryContext() !== '' ? '；本机助手记忆：' + this.assistantMemoryContext() : ''),
+        answerStyle: this.technicalStyle() ? 'technical' : 'plain'
       });
       const currentScope = AccountSessionCoordinator.getInstance().currentScope();
       const currentOwner: string = currentScope.ownerScopeId.trim() === '' ? 'device-local' : currentScope.ownerScopeId;
@@ -745,7 +1343,10 @@ export struct DiagnosticAiAssistantPanel {
         this.status = '页面或账号作用域已变化，已丢弃旧诊断结果';
         return;
       }
+      this.addLocalOptimizations(analyzed);
       this.result = analyzed;
+      // The user may still be in the session the app opened: say where the result is.
+      if (reproduced) { this.toast('AI 诊断完成，回到 AI 助手查看结果'); }
       this.capture.discard(requestOwner, bundle.captureId);
       this.pendingCaptureId = '';
       AiConversationMemory.pendingQuestion = '';
@@ -755,6 +1356,133 @@ export struct DiagnosticAiAssistantPanel {
     } catch (error) {
       this.status = this.errorText(error) + '；诊断包已保留，可点击「重试分析」';
     } finally { this.busy = false; this.reportActivity(); }
+  }
+
+  /**
+   * 排障问答 as Siri would ask: what the app already read, the answered questions (question in gray, answer in
+   * white), and the current question with its answers as chips — one tap answers it and the next one comes in.
+   */
+  @Builder private triageView() {
+    Column({ space: 10 }) {
+      if (this.triageFacts() !== '') {
+        Text(this.triageFacts()).fontSize(12).lineHeight(17).fontColor('#C7C7CC').width('100%')
+          .padding({ left: 10, right: 10, top: 7, bottom: 7 }).borderRadius(12).backgroundColor('#1C1C1E')
+      }
+      ForEach(this.triagePairs(true), (pair: AiTriageExchange, index: number): void => {
+        Row({ space: 8 }) {
+          Text(pair.question).fontSize(13).fontColor('#8E8E93')
+          Text(pair.answer).fontSize(14).fontWeight(FontWeight.Medium).fontColor('#FFFFFF').layoutWeight(1)
+            .textAlign(TextAlign.End).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+        }.width('100%')
+        .transition(this.functionCardTransition())
+      }, (pair: AiTriageExchange, index: number): string => 'triage-a' + index.toString() + pair.answer)
+      if (this.aiChecks.length > 0 && this.triageCurrent === null) {
+        Column({ space: 8 }) {
+          Text('AI 自检').fontSize(13).fontWeight(FontWeight.Medium).fontColor('#8E8E93').width('100%')
+          ForEach(this.aiChecks, (item: AiCheckItem, index: number): void => {
+            Row({ space: 10 }) {
+              if (item.state === -1) {
+                AiThinkingIndicator({ indicatorSize: 18 })
+              } else {
+                SymbolGlyph($r(item.state === 1 ? 'sys.symbol.checkmark_circle_fill' :
+                  item.state === 2 ? 'sys.symbol.exclamationmark_circle_fill' : 'sys.symbol.xmark_circle_fill'))
+                  .fontSize(18).fontColor([item.state === 1 ? '#30D158' : item.state === 2 ? '#FF9F0A' : '#FF453A'])
+              }
+              Column({ space: 2 }) {
+                Text(item.title).fontSize(14).fontWeight(FontWeight.Medium).fontColor('#FFFFFF').width('100%')
+                if (item.detail !== '') {
+                  Text(item.detail).fontSize(12).lineHeight(17).fontColor('#C7C7CC').width('100%')
+                }
+              }.layoutWeight(1)
+            }.width('100%').alignItems(VerticalAlign.Top)
+            .transition(this.functionCardTransition())
+          }, (item: AiCheckItem, index: number): string => 'aicheck-' + index.toString() + item.state.toString() + item.title)
+          if (this.aiCheckAdvice !== '') {
+            Text(this.aiCheckAdvice).fontSize(14).lineHeight(20).fontColor('#E5E5EA').width('100%').margin({ top: 2 })
+          }
+        }.width('100%').padding(14).borderRadius(20).backgroundColor('#14FFFFFF')
+        .transition(this.functionCardTransition())
+      }
+      if (this.triageCurrent !== null) {
+        Column({ space: 10 }) {
+          Text((this.triageCurrent as AiTriageQuestion).text).fontSize(17).lineHeight(24).fontColor('#FFFFFF').width('100%')
+          Flex({ wrap: FlexWrap.Wrap }) {
+            ForEach((this.triageCurrent as AiTriageQuestion).options, (option: AiTriageOption, index: number): void => {
+              Text(option.label).fontSize(14).fontWeight(FontWeight.Medium).fontColor('#F2F2F7')
+                .height(34).padding({ left: 14, right: 14 }).borderRadius(17).margin({ right: 8, bottom: 8 })
+                .backgroundColor('#2E3A3A3C').border({ width: 0.5, color: '#26FFFFFF' })
+                .transition(this.pillTransition(index))
+                .onClick((): void => { this.answerTriage(option); })
+            }, (option: AiTriageOption): string => (this.triageCurrent as AiTriageQuestion).id + option.id)
+          }.width('100%')
+        }.width('100%')
+        .transition(this.functionCardTransition())
+      }
+    }.width('100%')
+  }
+
+  /**
+   * 抓取计划: what will be captured (日志子模块 as chips, tap to drop or add), for how long, and what to do meanwhile.
+   * Only redacted, structured events are read, and only after 开始抓取.
+   */
+  @Builder private capturePlanCard() {
+    Column({ space: 10 }) {
+      Row({ space: 8 }) {
+        AiAssistantGlyph({ glyphSize: 22, ink: '#F2F2F7' })
+        Column({ space: 2 }) {
+          Text(this.triageNote !== '' ? '根据你的回答，抓取这些日志' : this.planFromAi ? 'AI 建议抓取这些日志' : '抓取这些日志来诊断')
+            .fontSize(14).fontWeight(FontWeight.Medium)
+            .fontColor('#FFFFFF')
+          Text(this.planReason !== '' ? this.planReason : '只读取脱敏的结构化事件，不含密码、屏幕和文件内容')
+            .fontSize(12).lineHeight(17).fontColor('#C7C7CC').maxLines(3).textOverflow({ overflow: TextOverflow.Ellipsis })
+        }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+      }.width('100%').alignItems(VerticalAlign.Top)
+      Flex({ wrap: FlexWrap.Wrap }) {
+        ForEach(this.planFacetChoices(), (facet: DiagnosticCaptureFacet): void => {
+          Row({ space: 4 }) {
+            if (this.planFocus.indexOf(facet.id) >= 0) {
+              SymbolGlyph($r('sys.symbol.checkmark')).fontSize(11).fontColor(['#000000'])
+            }
+            Text(facet.label).fontSize(12).fontWeight(FontWeight.Medium)
+              .fontColor(this.planFocus.indexOf(facet.id) >= 0 ? '#000000' : '#E5E5EA')
+          }
+          .height(28).padding({ left: 10, right: 10 }).borderRadius(14).margin({ right: 6, bottom: 6 })
+          .backgroundColor(this.planFocus.indexOf(facet.id) >= 0 ? '#F2F2F7' : '#2E3A3A3C')
+          .accessibilityText(facet.label + '：' + facet.detail)
+          .onClick((): void => { this.togglePlanFacet(facet.id); })
+        }, (facet: DiagnosticCaptureFacet): string => facet.id)
+        Text(this.planShowAll ? '收起' : '更多…').fontSize(12).fontColor('#8E8E93')
+          .height(28).padding({ left: 10, right: 10 }).margin({ bottom: 6 })
+          .onClick((): void => {
+            this.getUIContext().animateTo({ curve: curves.springMotion(0.42, 0.86) },
+              (): void => { this.planShowAll = !this.planShowAll; });
+          })
+      }.width('100%')
+      Row({ space: 6 }) {
+        Text('时长').fontSize(12).fontColor('#8E8E93').margin({ right: 4 })
+        ForEach(diagnosticPlanDurations(), (minutes: number): void => {
+          Text(minutes.toString() + ' 分钟').fontSize(12).fontWeight(FontWeight.Medium)
+            .fontColor(this.planDuration === minutes ? '#000000' : '#E5E5EA')
+            .height(26).padding({ left: 10, right: 10 }).borderRadius(13)
+            .backgroundColor(this.planDuration === minutes ? '#F2F2F7' : '#2E3A3A3C')
+            .onClick((): void => { this.planDuration = minutes; })
+        }, (minutes: number): string => 'dur-' + minutes.toString())
+      }.width('100%')
+      if (this.planSteps.length > 0) {
+        Column({ space: 6 }) {
+          Text('抓取时请这样复现').fontSize(12).fontColor('#8E8E93').width('100%')
+          ForEach(this.planSteps, (step: string, index: number): void => {
+            Row({ space: 8 }) {
+              Text((index + 1).toString()).fontSize(11).fontWeight(FontWeight.Bold).fontColor('#000000')
+                .width(18).height(18).textAlign(TextAlign.Center).borderRadius(9).backgroundColor('#E5E5EA')
+              Text(step).fontSize(13).lineHeight(19).fontColor('#E5E5EA').layoutWeight(1)
+            }.width('100%').alignItems(VerticalAlign.Top)
+          }, (_step: string, index: number): string => 'plan-step-' + index.toString())
+        }.width('100%')
+      }
+    }.width('100%').padding(14).borderRadius(24).backgroundColor('#F01C1C1F')
+    .border({ width: 0.5, color: '#1FFFFFFF' })
+    .transition(this.functionCardTransition())
   }
 
   @Builder private metric(value: string, label: string) {
@@ -821,7 +1549,7 @@ export struct DiagnosticAiAssistantPanel {
         ForEach((this.result as DiagnosticAiResult).settingProposals, (proposal: DiagnosticAiSettingProposal): void => {
           Row({ space: 10 }) {
             Column({ space: 3 }) {
-              Text(diagnosticAiSettingActionText(proposal.settingId) + ' → ' + proposal.proposedValue)
+              Text(diagnosticAiSettingActionText(proposal.settingId) + ' → ' + aiProposalTargetLabel(proposal))
                 .fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text).width('100%')
               Text(proposal.reason).fontSize(11).lineHeight(16).fontColor(this.pal().text2).width('100%')
             }.layoutWeight(1)
@@ -903,25 +1631,21 @@ export struct DiagnosticAiAssistantPanel {
     try { inputMethod.getController().hideTextInput(); } catch (_error) { /* keyboard already down */ }
     const mode = diagnosticAiAgentModeForQuestion(this.question);
     this.agentMode = mode;
-    if (mode === 'diagnose') {
-      this.modules = diagnosticAiModulesForQuestion(this.question);
-      this.awaitingCapture = true;
-      this.status = '这类问题需要读取一小段脱敏事件；请确认后开始抓取。';
-      return;
-    }
     this.awaitingCapture = false;
-    void this.sendAgent(mode);
-  }
-
-  private retryPendingDiagnosis(): void {
-    if (this.pendingCaptureId === '' || this.latestBundleText === '' || this.busy) { return; }
-    this.refreshProfileStore();
-    if (!this.aiReady) {
-      this.status = '已保留诊断包，但当前 Provider 密钥暂不可读；请先回到辅助 AI 配置重新保存后再重试';
-      return;
+    this.triageNote = '';
+    if (mode === 'diagnose') {
+      // The orb's mini chat has no room for the questions: the full assistant asks them when it opens.
+      if (this.mini) {
+        AiConversationMemory.pendingDiagnose = this.question;
+        this.awaitingCapture = true;
+        return;
+      }
+      // A problem the local bank knows: ask what the app cannot read, right away, then capture.
+      const script: AiTriageScript | null = diagnosticAiTriageScript(this.question);
+      if (script !== null) { this.startTriage(script); return; }
     }
-    this.agentMode = 'diagnose';
-    void this.sendAgent('diagnose', this.latestBundleText);
+    // Anything else goes to the AI first; for an unknown problem it writes the questions (or a capture plan).
+    void this.sendAgent(mode);
   }
 
   /** Submit a follow-up from the result surface while keeping the conversation summary in the request. */
@@ -929,11 +1653,13 @@ export struct DiagnosticAiAssistantPanel {
     const value: string = this.draftQuestion.trim();
     if (value === '' || this.busy || this.capturing()) { return; }
     if (this.result !== null) {
-      this.turns = this.turns.concat([new AiTurn(this.question, (this.result as DiagnosticAiResult).summary)]);
+      this.turns = this.turns.concat([new AiTurn(this.shownQuestion(), (this.result as DiagnosticAiResult).summary)]);
     }
+    this.questionLabel = '';
+    this.triage = null; this.triageCurrent = null; this.triageNote = '';
     this.question = value;
     this.draftQuestion = '';
-    this.appliedActions = [];
+    this.appliedActions = []; this.undoable = [];
     this.result = null;
     this.expandedResult = false;
     this.mailPreviewVisible = false;
@@ -988,13 +1714,18 @@ export struct DiagnosticAiAssistantPanel {
     const result: DiagnosticAiResult | null = this.result;
     if (result === null) { return []; }
     const actions: AiAction[] = [];
-    result.settingProposals.forEach((proposal: DiagnosticAiSettingProposal, index: number): void => {
-      const key: string = 'set-' + proposal.settingId + '-' + proposal.proposedValue;
-      if (this.appliedActions.indexOf(key) < 0) {
-        actions.push(new AiAction(key, diagnosticAiSettingActionText(proposal.settingId) + ' → ' + proposal.proposedValue,
-          proposal, null));
-      }
+    // Changes already made from this answer can be put back (these do not count against the limit below).
+    const undos: AiAction[] = [];
+    this.undoable.forEach((undo: AiUndo): void => {
+      undos.push(new AiAction('undo-' + undo.settingId, '撤销 ' + diagnosticAiSettingActionText(undo.settingId),
+        null, null, 'undo'));
     });
+    const settings: AiAction[] = this.pendingSettingActions();
+    // Several changes at once: one tap applies them all.
+    if (settings.length > 1) {
+      actions.push(new AiAction('apply-all', '全部应用（' + settings.length.toString() + ' 项）', null, null, 'applyAll'));
+    }
+    settings.forEach((action: AiAction): void => { actions.push(action); });
     if (this.assistantPreferences.proactiveSuggestions) {
       diagnosticAiAppActionsForSteps(result.recommendedReadOnlySteps)
         .forEach((action: DiagnosticAiAppAction): void => {
@@ -1009,7 +1740,7 @@ export struct DiagnosticAiAssistantPanel {
     }
     // Never more pills than the panel holds: at most three things to do (a "what can you do" answer would otherwise
     // list every module), then the conversation's own actions.
-    const shown: AiAction[] = actions.slice(0, AI_MAX_ACTION_PILLS);
+    const shown: AiAction[] = undos.concat(actions.slice(0, AI_MAX_ACTION_PILLS));
     if (this.agentMode === 'diagnose' || this.agentMode === 'feedback' || this.latestBundleText !== '') {
       shown.push(this.mailPreviewVisible ? new AiAction('mail-open', '打开系统邮件', null, null, 'mailOpen') :
         new AiAction('mail-draft', '生成邮件草稿', null, null, 'mail'));
@@ -1018,11 +1749,50 @@ export struct DiagnosticAiAssistantPanel {
     return shown;
   }
 
+  /**
+   * The answer's setting changes that would change something: a proposal whose target is not a valid value, or that
+   * the setting already has (the live value decides, not the model's guess), gets no button.
+   */
+  private pendingSettingActions(): AiAction[] {
+    const result: DiagnosticAiResult | null = this.result;
+    if (result === null) { return []; }
+    const actions: AiAction[] = [];
+    result.settingProposals.forEach((proposal: DiagnosticAiSettingProposal): void => {
+      const choice: AiSettingChoice | null = diagnosticAiProposalChoice(proposal);
+      if (choice === null) { return; }
+      const key: string = 'set-' + proposal.settingId + '-' + choice.value;
+      if (this.appliedActions.indexOf(key) >= 0 || diagnosticAiSettingCurrent(proposal.settingId) === choice.value ||
+        actions.some((action: AiAction): boolean => action.key === key)) { return; }
+      actions.push(new AiAction(key, aiSettingPillLabel(proposal.settingId, choice), proposal, null));
+    });
+    return actions;
+  }
+
+  /** Apply one proposal; remembers the old value for 撤销. Returns whether the setting changed. */
+  private applySettingAction(action: AiAction): boolean {
+    const proposal: DiagnosticAiSettingProposal | null = action.proposal;
+    if (proposal === null) { return false; }
+    const previous: string | null = diagnosticAiSettingCurrent(proposal.settingId);
+    const applied: boolean = diagnosticAiApplyProposal(proposal);
+    // The assistant's own answer style changed: use it from the next answer on.
+    if (applied && proposal.settingId.indexOf('ai.') === 0) {
+      this.assistantPreferences = this.conversationStore.assistantPreferences();
+    }
+    this.getUIContext().animateTo({ curve: curves.springMotion(0.42, 0.86) }, (): void => {
+      this.appliedActions = this.appliedActions.concat([action.key]);
+      if (applied && previous !== null) {
+        this.undoable = this.undoable.filter((undo: AiUndo): boolean => undo.settingId !== proposal.settingId)
+          .concat([new AiUndo(proposal.settingId, previous)]);
+      }
+    });
+    return applied;
+  }
+
   /** Keep the finished exchange for the next time the assistant opens, and show the answer from its start. */
   private rememberExchange(result: DiagnosticAiResult, profile: DiagnosticAiProviderProfile): void {
     AiConversationMemory.owner = this.owner;
     AiConversationMemory.history = this.conversation;
-    AiConversationMemory.turns = this.turns.concat([new AiTurn(this.question, result.summary)]);
+    AiConversationMemory.turns = this.turns.concat([new AiTurn(this.shownQuestion(), result.summary)]);
     const now: number = Date.now();
     if (this.sessionId === '') {
       this.sessionId = 'ai-' + now.toString() + '-' + Math.floor(Math.random() * 100000).toString();
@@ -1036,7 +1806,7 @@ export struct DiagnosticAiAssistantPanel {
       updatedAt: now,
       providerId: profile.providerId,
       modelId: profile.modelId,
-      turns: this.turns.concat([new AiTurn(this.question, result.summary)]).map((turn: AiTurn): DiagnosticAiConversationTurn => ({
+      turns: this.turns.concat([new AiTurn(this.shownQuestion(), result.summary)]).map((turn: AiTurn): DiagnosticAiConversationTurn => ({
         question: turn.question.slice(0, 4000), answer: turn.answer.slice(0, 6000), mode: this.agentMode, createdAt: now
       }))
     };
@@ -1060,11 +1830,13 @@ export struct DiagnosticAiAssistantPanel {
 
   private startNewConversation(): void {
     AiConversationMemory.clear(this.owner);
+    this.questionLabel = '';
+    this.triage = null; this.triageCurrent = null; this.triageNote = ''; this.reproduceRunning = false;
     this.conversation = '';
     this.turns = [];
     this.result = null; this.question = ''; this.status = ''; this.mailPreviewVisible = false; this.modules = [];
     this.awaitingCapture = false; this.agentMode = 'answer'; this.expandedResult = false; this.draftQuestion = '';
-    this.appliedActions = [];
+    this.appliedActions = []; this.undoable = [];
     this.sessionId = '';
     this.focusQuestion();
   }
@@ -1087,13 +1859,39 @@ export struct DiagnosticAiAssistantPanel {
       this.mailSubject = draft.subject; this.mailBody = draft.body; this.mailPreviewVisible = true;
       return;
     }
+    if (action.special === 'applyAll') {
+      const all: AiAction[] = this.pendingSettingActions();
+      const changed: number = all.filter((item: AiAction): boolean => this.applySettingAction(item)).length;
+      this.status = '已应用 ' + changed.toString() + ' 项设置';
+      this.toast(changed === all.length ? '已应用 ' + changed.toString() + ' 项设置，可逐项撤销' :
+        '已应用 ' + changed.toString() + ' 项，其余 ' + (all.length - changed).toString() + ' 项没有更改');
+      return;
+    }
+    if (action.special === 'undo') {
+      const settingId: string = action.key.slice('undo-'.length);
+      const undo: AiUndo | undefined = this.undoable.find((item: AiUndo): boolean => item.settingId === settingId);
+      if (undo === undefined) { return; }
+      const restored: boolean = diagnosticAiApplySetting(undo.settingId, undo.previous);
+      this.getUIContext().animateTo({ curve: curves.springMotion(0.42, 0.86) }, (): void => {
+        this.undoable = this.undoable.filter((item: AiUndo): boolean => item.settingId !== settingId);
+        // The proposal's button comes back, in case the user wants it after all.
+        this.appliedActions = this.appliedActions.filter((key: string): boolean => key.indexOf('set-' + settingId + '-') !== 0);
+      });
+      this.toast(restored ? '已恢复「' + diagnosticAiSettingActionText(undo.settingId) + '」为' +
+        diagnosticAiSettingValueLabel(undo.settingId, undo.previous) : '「' + diagnosticAiSettingActionText(undo.settingId) +
+        '」已经是原来的值');
+      return;
+    }
     if (action.proposal !== null) {
-      const applied: boolean = diagnosticAiApplyProposal(action.proposal);
-      this.status = applied ? '已应用：' + diagnosticAiSettingActionText(action.proposal.settingId) : '该建议未通过安全白名单';
-      if (applied) {
-        this.getUIContext().animateTo({ curve: curves.springMotion(0.42, 0.86) },
-          (): void => { this.appliedActions = this.appliedActions.concat([action.key]); });
-      }
+      const proposal: DiagnosticAiSettingProposal = action.proposal;
+      const name: string = diagnosticAiSettingActionText(proposal.settingId);
+      const applied: boolean = this.applySettingAction(action);
+      const current: string | null = diagnosticAiSettingCurrent(proposal.settingId);
+      this.status = applied ? '已应用：' + name : '没有应用：' + name;
+      // The answer view shows no status line, so say it where it is seen; either way the button has done its job.
+      this.toast(applied ? '已把「' + name + '」设为' + diagnosticAiSettingValueLabel(proposal.settingId, current ?? '') :
+        current !== null ? '「' + name + '」现在是' + diagnosticAiSettingValueLabel(proposal.settingId, current) + '，没有更改' :
+        '「' + name + '」暂时无法在这里更改，请在设置里调整');
       return;
     }
     if (action.appAction !== null) {
@@ -1106,6 +1904,10 @@ export struct DiagnosticAiAssistantPanel {
       this.pendingAppAction = null;
       this.onAppAction(action.appAction);
     }
+  }
+
+  private toast(message: string): void {
+    try { this.getUIContext().getPromptAction().showToast({ message: message, duration: 2200 }); } catch (_error) { /* no toast */ }
   }
 
   private confirmPendingAppAction(): void {
@@ -1161,7 +1963,8 @@ export struct DiagnosticAiAssistantPanel {
     this.draftQuestion = '';
     this.status = '';
     this.awaitingCapture = mode === 'diagnose';
-    this.modules = mode === 'diagnose' ? diagnosticAiModulesForQuestion(question) : [];
+    if (this.awaitingCapture) { this.setPlan(diagnosticFacetsForQuestion(question), 3, [], '', false); }
+    this.modules = mode === 'diagnose' ? diagnosticModulesForFacets(this.planFocus) : [];
     // A function card is about to rise into the panel; let it be seen instead of covered by the keyboard.
     if (this.awaitingCapture) {
       try { inputMethod.getController().hideTextInput(); } catch (_error) { /* keyboard already down */ }
@@ -1198,7 +2001,7 @@ export struct DiagnosticAiAssistantPanel {
   }
 
   @Builder private siriCardBody() {
-    if (!this.aiReady && this.result === null && !this.busy && !this.capturing() && this.pendingCaptureId === '') {
+    if (!this.aiReady && this.result === null && !this.busy && !this.captureLive && this.pendingCaptureId === '') {
       this.setupGuide()
     } else {
       this.chatBody()
@@ -1208,7 +2011,7 @@ export struct DiagnosticAiAssistantPanel {
   @Builder private chatBody() {
     Column({ space: 12 }) {
       // First question: Siri's text mode — typed straight into the card in large type, no field around it.
-      if (this.result === null && !this.capturing() && !this.busy && !this.awaitingCapture) {
+      if (this.result === null && !this.captureLive && !this.busy && !this.awaitingCapture && this.triage === null) {
         // A hair space keeps the placeholder clear of the caret, which sits before the first character.
         TextArea({ placeholder: '\u200A描述遇到的问题 — 询问 AI', text: this.question })
           .id('aiIslandQuestion')
@@ -1237,7 +2040,9 @@ export struct DiagnosticAiAssistantPanel {
             .textOverflow({ overflow: TextOverflow.Ellipsis })
         }
       }
-      if (this.revealed && this.result === null && !this.capturing() && !this.busy && !this.awaitingCapture) {
+      // Suggestions and the send button belong to asking; while troubleshooting questions are answered by tapping.
+      if (this.revealed && this.result === null && !this.captureLive && !this.busy && !this.awaitingCapture &&
+        this.triage === null) {
         Row({ space: 10 }) {
           Flex({ wrap: FlexWrap.Wrap, justifyContent: FlexAlign.Start }) {
             ForEach(this.suggestions, (item: AiSuggestion, index: number): void => {
@@ -1252,23 +2057,13 @@ export struct DiagnosticAiAssistantPanel {
               .animation({ curve: curves.springMotion(0.6, 0.55), delay: 260 + 3 * 130 }))
         }.width('100%').alignItems(VerticalAlign.Bottom)
       }
-      if (this.awaitingCapture && !this.capturing() && !this.busy) {
-        Column({ space: 8 }) {
-          Row({ space: 8 }) {
-            AiAssistantGlyph({ glyphSize: 22, ink: '#F2F2F7' })
-            Column({ space: 2 }) {
-              Text('要开始诊断吗？').fontSize(14).fontWeight(FontWeight.Medium).fontColor('#FFFFFF')
-              Text('只读取脱敏事件：' + this.modules.join('、')).fontSize(12).fontColor('#C7C7CC')
-                .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
-            }.layoutWeight(1).alignItems(HorizontalAlign.Start)
-          }.width('100%')
-          Text('你可以先复现问题；点击「开始抓取诊断」后才会读取这部分日志。')
-            .fontSize(12).lineHeight(17).fontColor('#8E8E93').width('100%')
-        }.width('100%').padding(14).borderRadius(24).backgroundColor('#F01C1C1F')
-          .border({ width: 0.5, color: '#1FFFFFFF' })
-          .transition(this.functionCardTransition())
+      if (this.triage !== null && !this.captureLive && !this.busy && this.result === null) {
+        this.triageView()
       }
-      if (this.capturing()) {
+      if (this.awaitingCapture && !this.captureLive && !this.busy && this.result === null) {
+        this.capturePlanCard()
+      }
+      if (this.captureLive) {
         Row({ space: 8 }) {
           Circle().width(7).height(7).fill('#FF453A')
             .opacity(this.pulse ? 1 : 0.35).animation({ duration: 480, curve: Curve.EaseInOut })
@@ -1278,13 +2073,13 @@ export struct DiagnosticAiAssistantPanel {
         Text('现在去复现问题，完成后点「结束并分析」').fontSize(13).fontColor('#8E8E93').width('100%')
       } else if (this.busy) {
         Row({ space: 10 }) {
-          AiKernelRing({ ringSize: 30 })
-          Text('正在思考…').fontSize(15).fontColor('#C7C7CC')
+          AiThinkingIndicator({ indicatorSize: 30 })
+          Text(this.pendingCaptureId !== '' ? '正在分析抓到的日志…' : '正在思考…').fontSize(15).fontColor('#C7C7CC')
         }.width('100%')
       } else if (this.status.length > 0 && this.result === null && this.status.indexOf('正在') < 0) {
         Text(this.status).fontSize(13).lineHeight(18).fontColor('#FF9F0A').width('100%')
       }
-      if (this.result === null && !this.busy && !this.capturing() && this.pendingCaptureId !== '') {
+      if (this.result === null && !this.busy && !this.captureLive && this.pendingCaptureId !== '') {
         Row({ space: 8 }) {
           this.pill('重试分析', true, (): void => { this.retryPendingDiagnosis(); })
           this.pill('丢弃诊断包', false, (): void => {
@@ -1304,27 +2099,46 @@ export struct DiagnosticAiAssistantPanel {
               }.width('100%').padding({ bottom: 12 })
               .border({ width: { bottom: 0.5 }, color: { bottom: '#26FFFFFF' } })
             }, (turn: AiTurn, index: number): string => 'turn-' + index.toString())
-            Text(this.question).fontSize(14).lineHeight(20).fontColor('#8E8E93').width('100%')
+            Text(this.shownQuestion()).fontSize(14).lineHeight(20).fontColor('#8E8E93').width('100%')
               .onAreaChange((_old: Area, area: Area): void => { this.answerAnchorY = Number(area.position.y); })
-            Text((this.result as DiagnosticAiResult).summary).fontSize(17).lineHeight(25).fontColor('#FFFFFF')
-              .width('100%').copyOption(CopyOptions.InApp)
-            Text('影响 ' + this.severityText() + ' · 置信度 ' +
-              Math.round((this.result as DiagnosticAiResult).confidence * 100).toString() + '%')
-              .fontSize(12).fontColor('#8E8E93').width('100%')
-            if ((this.result as DiagnosticAiResult).unknowns.length > 0) {
+            // 分析: the model's reading of the problem, one paragraph per point (inline ①②③ / 1. 2. are split up).
+            ForEach(aiAnswerParagraphs((this.result as DiagnosticAiResult).summary), (para: string, index: number): void => {
+              Text(para).fontSize(17).lineHeight(25).fontColor('#FFFFFF').width('100%').copyOption(CopyOptions.InApp)
+            }, (para: string, index: number): string => 'para-' + index.toString())
+            // 怎么做: the steps, each on its own numbered line.
+            if ((this.result as DiagnosticAiResult).recommendedReadOnlySteps.length > 0) {
+              Column({ space: 10 }) {
+                Text('怎么做').fontSize(13).fontWeight(FontWeight.Medium).fontColor('#8E8E93').width('100%')
+                ForEach((this.result as DiagnosticAiResult).recommendedReadOnlySteps, (step: string, index: number): void => {
+                  Row({ space: 10 }) {
+                    Text((index + 1).toString()).fontSize(12).fontWeight(FontWeight.Bold).fontColor('#000000')
+                      .width(20).height(20).textAlign(TextAlign.Center).borderRadius(10).backgroundColor('#E5E5EA')
+                    Text(step).fontSize(15).lineHeight(21).fontColor('#E5E5EA').layoutWeight(1)
+                      .copyOption(CopyOptions.InApp)
+                  }.width('100%').alignItems(VerticalAlign.Top)
+                }, (_step: string, index: number): string => 'siri-step' + index.toString())
+              }.width('100%').padding(14).borderRadius(20).backgroundColor('#14FFFFFF')
+            }
+            if (this.triage !== null && !this.captureLive && !this.busy) {
+              this.triageView()
+            }
+            if (this.awaitingCapture && !this.captureLive && !this.busy) {
+              this.capturePlanCard()
+            }
+            // Severity, confidence and open questions are for the technical style; plain answers just solve it.
+            if (this.technicalStyle()) {
+              Text('影响 ' + this.severityText() + ' · 置信度 ' +
+                Math.round((this.result as DiagnosticAiResult).confidence * 100).toString() + '%')
+                .fontSize(12).fontColor('#8E8E93').width('100%')
+            }
+            if (this.technicalStyle() && (this.result as DiagnosticAiResult).unknowns.length > 0) {
               Text('尚不确定：' + (this.result as DiagnosticAiResult).unknowns.join('；')).fontSize(13).lineHeight(19)
                 .fontColor('#8E8E93').width('100%')
-            }
-            if ((this.result as DiagnosticAiResult).recommendedReadOnlySteps.length > 0) {
-              Text('建议操作').fontSize(13).fontWeight(FontWeight.Medium).fontColor('#FFFFFF').width('100%')
-              ForEach((this.result as DiagnosticAiResult).recommendedReadOnlySteps, (step: string, index: number): void => {
-                Text((index + 1).toString() + '. ' + step).fontSize(13).lineHeight(19).fontColor('#C7C7CC').width('100%')
-              }, (_step: string, index: number): string => 'siri-step' + index.toString())
             }
             ForEach((this.result as DiagnosticAiResult).settingProposals, (proposal: DiagnosticAiSettingProposal): void => {
               Row({ space: 10 }) {
                 Column({ space: 2 }) {
-                  Text(diagnosticAiSettingActionText(proposal.settingId) + ' → ' + proposal.proposedValue)
+                  Text(diagnosticAiSettingActionText(proposal.settingId) + ' → ' + aiProposalTargetLabel(proposal))
                     .fontSize(14).fontWeight(FontWeight.Medium).fontColor('#FFFFFF').width('100%')
                   Text(proposal.reason).fontSize(12).lineHeight(17).fontColor('#8E8E93').width('100%')
                 }.layoutWeight(1)
@@ -1419,13 +2233,22 @@ export struct DiagnosticAiAssistantPanel {
           .onAreaChange((_old: Area, area: Area): void => { this.reportCardSize(area); })
       }.width('100%')
       Row({ space: 8 }) {
-        if (this.capturing()) {
+        if (this.captureLive) {
           this.pill('结束并分析', true, (): void => { void this.finishCapture(); })
           this.pill('取消', false, (): void => { this.cancelCapture(); })
         }
-        if (this.awaitingCapture && !this.capturing() && !this.busy) {
-          this.pill('开始抓取诊断', true, (): void => { this.beginCapture(); })
-          this.pill('取消', false, (): void => { this.awaitingCapture = false; this.status = ''; })
+        if (this.aiCheckNeedsConfig && this.triage !== null && !this.captureLive && !this.busy) {
+          this.pill('去 AI 配置', true, (): void => { this.onAppAction('ai.config'); })
+        }
+        if (this.awaitingCapture && !this.captureLive && !this.busy) {
+          this.pill('开始抓取（' + this.planDuration.toString() + ' 分钟）', !this.aiCheckNeedsConfig,
+            (): void => { this.beginCapture(); })
+          if (this.triageNote !== '') {
+            this.pill('先不抓，直接问 AI', false, (): void => { this.askWithoutCapture(); })
+          }
+          this.pill('取消', false, (): void => { this.cancelTriage(); })
+        } else if (this.triage !== null && this.triageCurrent !== null && !this.busy && !this.captureLive) {
+          this.pill('取消排障', false, (): void => { this.cancelTriage(); })
         }
       }.width('100%').justifyContent(FlexAlign.Center)
     }.width('100%')
@@ -1437,34 +2260,72 @@ export struct DiagnosticAiAssistantPanel {
    */
   @Builder private compactLayout() {
     Stack() {
-      AiSiriOrb({ orbSize: AI_FLOAT_ORB, active: this.lastActive })
+      AiFloatingOrb({ orbSize: AI_FLOAT_ORB, active: this.lastActive })
     }
     .width(AI_FLOAT_ORB).height(AI_FLOAT_ORB)
-    .accessibilityText(this.capturing() ? 'AI 助手正在抓取，轻点返回对话' : this.busy ? 'AI 助手正在思考，轻点返回对话' :
+    .accessibilityText(this.captureLive ? 'AI 助手正在抓取，轻点返回对话' : this.busy ? 'AI 助手正在思考，轻点返回对话' :
       'AI 助手，轻点返回对话')
     .onAreaChange((_old: Area, area: Area): void => { this.reportCardSize(area); })
+  }
+
+  private miniTransition(): TransitionEffect {
+    return TransitionEffect.asymmetric(
+      TransitionEffect.OPACITY.combine(TransitionEffect.translate({ y: 10 }))
+        .combine(TransitionEffect.scale({ x: 0.96, y: 0.96 }))
+        .animation({ curve: curves.springMotion(0.42, 0.86), delay: 60 }),
+      TransitionEffect.OPACITY.animation({ duration: 120, curve: Curve.EaseIn }));
   }
 
   /**
    * The orb's mini chat, shown under the orb above an opened screen: the latest answer (or the thinking ring) and a
    * one-line field with the send button. Questions that need a capture are sent back to the island.
    */
+  @Builder private miniExpandPill(label: string) {
+    Row() { this.plainPill(label, true, (): void => { this.onExpand(); }) }
+      .width('100%')
+      .transition(this.miniTransition())
+  }
+
   @Builder private miniLayout() {
     Column({ space: 10 }) {
       if (this.busy) {
         Row({ space: 10 }) {
-          AiKernelRing({ ringSize: 26 })
-          Text('正在思考…').fontSize(14).fontColor('#C7C7CC')
+          AiThinkingIndicator({ indicatorSize: 26 })
+          Text(this.pendingCaptureId !== '' ? '正在分析日志…' : '正在思考…').fontSize(14).fontColor('#C7C7CC')
         }.width('100%')
+        .transition(this.miniTransition())
       } else if (this.awaitingCapture) {
-        Text('这个问题需要抓取诊断日志，轻点上方的球回到 AI 助手继续。').fontSize(13).lineHeight(19)
+        Text('排查这个问题要先回答几个问题，再抓取日志。展开 AI 助手继续。').fontSize(13).lineHeight(19)
           .fontColor('#C7C7CC').width('100%')
+          .transition(this.miniTransition())
+        this.miniExpandPill('展开继续排查')
       } else if (this.result !== null) {
         Scroll() {
-          Text((this.result as DiagnosticAiResult).summary).fontSize(15).lineHeight(22).fontColor('#FFFFFF')
-            .width('100%').copyOption(CopyOptions.InApp)
-        }.constraintSize({ maxHeight: 180 }).scrollBar(BarState.Off)
+          Column({ space: 8 }) {
+            ForEach(aiAnswerParagraphs((this.result as DiagnosticAiResult).summary), (para: string, index: number): void => {
+              Text(para).fontSize(15).lineHeight(22).fontColor('#FFFFFF').width('100%').copyOption(CopyOptions.InApp)
+            }, (para: string, index: number): string => 'mini-para-' + index.toString())
+            ForEach((this.result as DiagnosticAiResult).recommendedReadOnlySteps, (step: string, index: number): void => {
+              Row({ space: 8 }) {
+                Text((index + 1).toString()).fontSize(11).fontWeight(FontWeight.Bold).fontColor('#000000')
+                  .width(18).height(18).textAlign(TextAlign.Center).borderRadius(9).backgroundColor('#E5E5EA')
+                Text(step).fontSize(14).lineHeight(20).fontColor('#E5E5EA').layoutWeight(1)
+              }.width('100%').alignItems(VerticalAlign.Top)
+            }, (_step: string, index: number): string => 'mini-step' + index.toString())
+          }.width('100%')
+        }.constraintSize({ maxHeight: 200 }).scrollBar(BarState.Off)
         .fadingEdge(true, { fadingEdgeLength: LengthMetrics.vp(20) })
+        // The answer arrives: it rises in and comes into focus.
+        .transition(this.miniTransition())
+        // Changes wait for the user's tap, which is made in the full assistant.
+        if (this.pendingSettingActions().length > 0 || this.pendingAppAction !== null) {
+          Text(this.pendingSettingActions().length > 0 ?
+            '有 ' + this.pendingSettingActions().length.toString() + ' 项设置需要你手动确认，展开 AI 助手后一键应用。' :
+            '这个操作需要你手动确认，展开 AI 助手后执行。')
+            .fontSize(13).lineHeight(19).fontColor('#C7C7CC').width('100%')
+            .transition(this.miniTransition())
+          this.miniExpandPill('展开确认')
+        }
       } else if (this.status.length > 0 && this.status.indexOf('正在') < 0) {
         Text(this.status).fontSize(13).lineHeight(18).fontColor('#FF9F0A').width('100%')
       }
@@ -1525,23 +2386,24 @@ export struct DiagnosticAiAssistantPanel {
             Text('遇到了什么问题？').fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.pal().text).width('100%')
             TextArea({ placeholder: '问问 RemoteDesktop，或描述你想完成的操作', text: this.question })
               .height(96).fontSize(15).fontFamily(AppConfig.fontFamily)
-              .backgroundColor(this.pal().surface).borderRadius(14).enabled(!this.busy && !this.capturing())
+              .backgroundColor(this.pal().surface).borderRadius(14).enabled(!this.busy && !this.captureLive)
               .onChange((value: string): void => { this.question = value; })
-            if (this.modules.length > 0 && (this.awaitingCapture || this.capturing())) {
+            if (this.planFocus.length > 0 && (this.awaitingCapture || this.captureLive)) {
               Flex({ wrap: FlexWrap.Wrap }) {
                 Text('抓取范围').fontSize(11).fontColor(this.pal().text3).margin({ right: 6, bottom: 6, top: 4 })
-                ForEach(this.modules, (module: DiagnosticModuleId): void => {
-                  Text(module).fontSize(11).fontColor(this.accent).padding({ left: 8, right: 8, top: 3, bottom: 3 })
+                ForEach(this.planFocus, (id: string): void => {
+                  Text(diagnosticCaptureFacet(id)?.label ?? id).fontSize(11).fontColor(this.accent)
+                    .padding({ left: 8, right: 8, top: 3, bottom: 3 })
                     .borderRadius(9).backgroundColor(this.pal().surface).margin({ right: 6, bottom: 6 })
-                }, (module: DiagnosticModuleId): string => module)
+                }, (id: string): string => id)
               }.width('100%')
             }
           }.width('100%').padding(14).borderRadius(18).backgroundColor(this.pal().card)
           .border({ width: 0.5, color: this.pal().cardBorder })
-          if (this.capturing()) {
+          if (this.captureLive) {
             this.captureCard()
           }
-          if (this.status.length > 0 && !this.capturing()) {
+          if (this.status.length > 0 && !this.captureLive) {
             Row({ space: 8 }) {
               SymbolGlyph($r('sys.symbol.info_circle_fill')).fontSize(15).fontColor([this.accent])
               Text(this.status).fontSize(12).lineHeight(17).fontColor(this.pal().text).layoutWeight(1)
@@ -1553,12 +2415,12 @@ export struct DiagnosticAiAssistantPanel {
         }.width('100%').padding({ bottom: 12 })
       }.layoutWeight(1).width('100%').scrollBar(BarState.Off).edgeEffect(EdgeEffect.Spring).align(Alignment.Top)
       Row({ space: 10 }) {
-        if (this.capturing()) {
+        if (this.captureLive) {
           Button('取消').height(48).layoutWeight(1).borderRadius(24).backgroundColor(this.pal().surface)
             .fontColor(this.pal().text).enabled(!this.busy)
             .onClick((): void => { this.cancelCapture(); })
         }
-        Button(this.busy ? 'AI 思考中…' : this.capturing() ? '结束并分析' : this.awaitingCapture ? '开始抓取诊断' : this.result !== null ? '再问一个' : '发送给 AI')
+        Button(this.busy ? 'AI 思考中…' : this.captureLive ? '结束并分析' : this.awaitingCapture ? '开始抓取诊断' : this.result !== null ? '再问一个' : '发送给 AI')
           .height(48).layoutWeight(1).borderRadius(24).fontSize(16).fontWeight(FontWeight.Medium)
           .backgroundColor(this.accent).fontColor(Color.White)
           .enabled(!this.busy && this.question.trim() !== '')

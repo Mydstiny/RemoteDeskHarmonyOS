@@ -1,15 +1,23 @@
+import { hilog } from '@kit.PerformanceAnalysisKit';
 import { BusinessError, deviceInfo } from '@kit.BasicServicesKit';
 import { util } from '@kit.ArkTS';
 import { localChatModel } from '@kit.DataAugmentationKit';
 import { http } from '@kit.NetworkKit';
-import { DiagnosticAiEvidenceRef, DiagnosticAiModelInfo, DiagnosticAiModelPriceEntry, DiagnosticAiProviderManifest, DiagnosticAiProviderProfile, DiagnosticAiResult, DiagnosticAiSettingProposal, DiagnosticAiUsageMetadata } from './DiagnosticAiModels';
+import { DiagnosticAiCapturePlanProposal, DiagnosticAiClarifyQuestion, DiagnosticAiEvidenceRef, DiagnosticAiModelInfo, DiagnosticAiModelPriceEntry, DiagnosticAiProviderManifest, DiagnosticAiProviderProfile, DiagnosticAiResult, DiagnosticAiSettingProposal, DiagnosticAiUsageMetadata } from './DiagnosticAiModels';
 import { diagnosticAiHarmonyLocalDeviceSupported, diagnosticAiProviderIsHarmonyLocal, diagnosticAiProviderManifest, HARMONY_LOCAL_MODEL_ID } from './DiagnosticAiProviderCatalog';
 import { validateDiagnosticAiEndpoint } from './DiagnosticAiEndpointPolicy';
 import { diagnosticAiProposalIsSafe, diagnosticAiSettingCatalog } from './DiagnosticAiSettingsActionPolicy';
+import { diagnosticFacetCatalog, normalizeDiagnosticFacets, normalizeDiagnosticPlanDuration } from '../DiagnosticCaptureFacetPolicy';
+import { diagnosticAiEventGlossary } from './DiagnosticAiEventGlossary';
+import { AI_MODE_MODELS, DiagnosticAiRequestLog } from './DiagnosticAiRequestLog';
 import { diagnosticAiAppActionCatalog, diagnosticAiAppActionId } from './DiagnosticAiAppActionPolicy';
 import { diagnosticAiUseCaseDecision, diagnosticAiUseCaseError } from './DiagnosticAiUseCasePolicy';
 
 const TIMEOUT_MS: number = 15000;
+/** A model answering (above all with a capture to read) easily takes longer than connecting does. */
+const CHAT_READ_TIMEOUT_MS: number = 90000;
+/** @ohos.net.http: "Timeout was reached". */
+const HTTP_TIMEOUT_CODE: number = 2300028;
 const MAX_RESPONSE_BYTES: number = 2 * 1024 * 1024;
 const LOCAL_CHAT_MAX_BYTES: number = 4300;
 const LOCAL_CHAT_TIMEOUT_MS: number = 30000;
@@ -112,6 +120,41 @@ function evidenceRefs(value: Object | undefined): DiagnosticAiEvidenceRef[] {
     .map((item: DiagnosticAiEvidenceRef | null): DiagnosticAiEvidenceRef => item as DiagnosticAiEvidenceRef);
 }
 
+/** The model's capture plan, kept only with known sub-modules and an allowed duration. */
+function safeCapturePlan(value: Object | undefined): DiagnosticAiCapturePlanProposal | undefined {
+  if (value === undefined || value === null || typeof value !== 'object' || Array.isArray(value)) { return undefined; }
+  const row = value as Record<string, Object>;
+  const focus: string[] = normalizeDiagnosticFacets(stringArray(row['focus']).concat(stringArray(row['subModules'])))
+    .slice(0, 8);
+  if (focus.length === 0) { return undefined; }
+  const minutes: number = typeof row['durationMinutes'] === 'number' ? row['durationMinutes'] as number : 3;
+  return { focus: focus, durationMinutes: normalizeDiagnosticPlanDuration(minutes),
+    steps: stringArray(row['steps']).map((step: string): string => step.slice(0, 200)).slice(0, 4),
+    reason: safeText(row['reason']).slice(0, 400) };
+}
+
+/** Up to three short questions with two to five short answers each; anything else is dropped. */
+function safeClarifyQuestions(value: Object | undefined): DiagnosticAiClarifyQuestion[] | undefined {
+  if (!Array.isArray(value)) { return undefined; }
+  const questions: DiagnosticAiClarifyQuestion[] = [];
+  (value as Object[]).slice(0, 3).forEach((item: Object): void => {
+    if (item === null || typeof item !== 'object') { return; }
+    const row = item as Record<string, Object>;
+    const question: string = safeText(row['question']).slice(0, 60);
+    const options: string[] = stringArray(row['options']).map((option: string): string => option.slice(0, 16)).slice(0, 5);
+    if (question !== '' && options.length >= 2) { questions.push({ question: question, options: options }); }
+  });
+  return questions.length > 0 ? questions : undefined;
+}
+
+/** How the model asks for logs: a capture plan over the sub-module catalog. */
+function capturePlanInstruction(): string {
+  return '\n需要日志才能判断问题时（连接失败、黑屏、卡顿、崩溃、同步异常等），填写 capturePlan：' +
+    '{"focus":[日志子模块 ID，最多 8 个，只选与问题相关的],"durationMinutes":1/3/5/10,' +
+    '"steps":[用户在抓取期间要做的复现步骤，最多 4 条，以动词开头],"reason":一句话说明为什么要抓这些}；' +
+    '不需要日志时不要填写。日志子模块目录（ID|名称|覆盖内容）：\n' + diagnosticFacetCatalog();
+}
+
 function safeProposals(value: Object | undefined): DiagnosticAiSettingProposal[] {
   if (!Array.isArray(value)) { return []; }
   return (value as Object[]).slice(0, 16).map((item: Object): DiagnosticAiSettingProposal | null => {
@@ -122,8 +165,10 @@ function safeProposals(value: Object | undefined): DiagnosticAiSettingProposal[]
       proposedValue: safeText(row['proposedValue']).slice(0, 256),
       reason: safeText(row['reason']).slice(0, 2000), evidenceRefs: evidenceRefs(row['evidenceRefs']),
       risk: ['low', 'medium', 'high'].indexOf(safeText(row['risk'])) >= 0 ?
-        safeText(row['risk']) as 'low' | 'medium' | 'high' : 'high',
-      requiresUserConfirmation: row['requiresUserConfirmation'] === true,
+        safeText(row['risk']) as 'low' | 'medium' | 'high' : 'low',
+      // Every proposal waits for the user's tap in the app, whatever the model wrote here; a model that leaves the
+      // field out must not lose its proposals.
+      requiresUserConfirmation: true,
       rollbackValue: safeText(row['rollbackValue']).slice(0, 256)
     };
     return diagnosticAiProposalIsSafe(proposal) ? proposal : null;
@@ -148,6 +193,22 @@ export interface DiagnosticAiAssistInput {
   bundle: string;
   knowledge: string;
   assistantContext?: string;
+  answerStyle?: string;
+}
+
+/**
+ * Who the answer is for. Unless the user chose the technical style, the answer solves the problem in plain words and
+ * the technical reading goes to developerNotes, which only the developer mail carries.
+ */
+function answerStyleInstruction(style: string): string {
+  if (style === 'technical') {
+    return '\n回答风格：用户选择了“技术”风格。summary 第一句先给结论，再给关键技术依据（可以引用事件代码、错误码和时间线）；' +
+      'developerNotes 写完整的技术分析。';
+  }
+  return '\n回答风格：回答对象是普通用户，目的是帮他解决问题。summary 第一句直接说结论（出了什么问题），' +
+    '再用一两句白话说最可能的原因和影响；不要出现事件代码、模块 ID、错误码、字段名、证据序号或协议内部术语；' +
+    'recommendedReadOnlySteps 只写用户自己能完成的操作；hypotheses 和 unknowns 也用白话，各最多 2 条。' +
+    '把技术分析（依据的事件代码、错误码、时间线、推断过程）完整写进 developerNotes，它只会出现在发给开发者的邮件里。';
 }
 
 export class DiagnosticAiProviderService {
@@ -242,7 +303,7 @@ export class DiagnosticAiProviderService {
     return limitUtf8(instruction + '\n问题：' + question + '\n最近对话：' + history +
       '\n本地知识：' + knowledge + '\n脱敏诊断包：' + bundle +
       '\n助手偏好（仅影响语气，不改变权限）：' + assistantContext +
-      '\n请输出 JSON，字段包含 summary、severity、confidence、evidenceRefs、hypotheses、recommendedReadOnlySteps、unknowns、settingProposals 和 appActions；appActions 只能使用知识中的动作 ID。不要 Markdown，不要编造未提供的事实。', LOCAL_CHAT_MAX_BYTES);
+      '\n请输出 JSON，字段包含 summary、severity、confidence、evidenceRefs、hypotheses、recommendedReadOnlySteps、unknowns、settingProposals 和 appActions；appActions 只能使用知识中的动作 ID。不要 Markdown，不要编造未提供的事实。回答写法：summary 只写对问题的分析与判断（1 到 3 句，不要列步骤，不要用①②③或 1. 2. 编号）；需要用户操作时，把每个可执行步骤单独写进 recommendedReadOnlySteps，一条一步、按先后顺序、以动词开头，最多 6 条。', LOCAL_CHAT_MAX_BYTES);
   }
 
   private parseLocalResult(answer: string, knowledgeVersion: string): DiagnosticAiResult {
@@ -290,7 +351,8 @@ export class DiagnosticAiProviderService {
       const options: http.HttpRequestOptions = {
         method: body === null ? http.RequestMethod.GET : http.RequestMethod.POST,
         expectDataType: http.HttpDataType.STRING, usingCache: false, maxRedirects: 0,
-        maxLimit: MAX_RESPONSE_BYTES, connectTimeout: TIMEOUT_MS, readTimeout: TIMEOUT_MS,
+        maxLimit: MAX_RESPONSE_BYTES, connectTimeout: TIMEOUT_MS,
+        readTimeout: body === null ? TIMEOUT_MS : CHAT_READ_TIMEOUT_MS,
         header: this.authHeaders(profile, secret)
       };
       if (body !== null) { options.extraData = JSON.stringify(body); }
@@ -304,11 +366,27 @@ export class DiagnosticAiProviderService {
     } catch (error) {
       const message = error instanceof Error ? error.message : 'network';
       if (message.startsWith('DIAGNOSTIC_AI_')) { throw new Error(message); }
+      const code: number = (error as BusinessError).code ?? 0;
+      hilog.warn(0x0000, 'AiAgent', 'request failed code=%{public}s', code.toString());
+      if (code === HTTP_TIMEOUT_CODE) { throw new Error('DIAGNOSTIC_AI_TIMEOUT'); }
       throw new Error('DIAGNOSTIC_AI_NETWORK');
     } finally { client.destroy(); }
   }
 
+  /** The provider's model list; also the AI self-check's reachability test (logged as an ai_request of kind 5). */
   async listModels(profile: DiagnosticAiProviderProfile, secret: string): Promise<DiagnosticAiModelInfo[]> {
+    const startedAt: number = Date.now();
+    try {
+      const models: DiagnosticAiModelInfo[] = await this.fetchModels(profile, secret);
+      DiagnosticAiRequestLog.record(AI_MODE_MODELS, null, Date.now() - startedAt, 0);
+      return models;
+    } catch (error) {
+      DiagnosticAiRequestLog.record(AI_MODE_MODELS, error as Object, Date.now() - startedAt, 0);
+      throw error as Error;
+    }
+  }
+
+  private async fetchModels(profile: DiagnosticAiProviderProfile, secret: string): Promise<DiagnosticAiModelInfo[]> {
     const manifest = diagnosticAiProviderManifest(profile.providerId);
     if (manifest !== null && diagnosticAiProviderIsHarmonyLocal(profile.providerId)) {
       await this.ensureHarmonyLocalModel();
@@ -376,7 +454,7 @@ export class DiagnosticAiProviderService {
       '必须区分事实、假设和未知，不执行任何工具或设置操作。问题：' + input.question +
       '\n本地知识：' + input.knowledge + '\n诊断包：' + input.bundle;
     const messages: DiagnosticAiChatMessage[] = [
-      { role: 'system', content: '只输出 JSON，不要 Markdown。字段为 summary、severity(info/low/medium/high/unknown)、confidence(0到1)、evidenceRefs、hypotheses、recommendedReadOnlySteps、unknowns、settingProposals、appActions。appActions 只能使用知识中的动作目录 ID。settingProposals 每项必须使用下方设置目录 ID，包含 currentValue、proposedValue、reason、evidenceRefs、risk、requiresUserConfirmation=true、rollbackValue；只提出白名单且可回滚的设置。设置目录：\n' + diagnosticAiSettingCatalog() + '\n输出简洁、证据优先的诊断建议。' },
+      { role: 'system', content: '只输出 JSON，不要 Markdown。字段为 summary、severity(info/low/medium/high/unknown)、confidence(0到1)、evidenceRefs、hypotheses、recommendedReadOnlySteps、unknowns、settingProposals、appActions。appActions 只能使用知识中的动作目录 ID。settingProposals 每项必须使用下方设置目录 ID，包含 currentValue、proposedValue、reason、evidenceRefs、risk、requiresUserConfirmation=true、rollbackValue；只提出白名单且可回滚的设置。设置目录：\n' + diagnosticAiSettingCatalog() + '\n输出简洁、证据优先的诊断建议。回答写法：summary 只写对问题的分析与判断（1 到 3 句，不要列步骤，不要用①②③或 1. 2. 编号）；需要用户操作时，把每个可执行步骤单独写进 recommendedReadOnlySteps，一条一步、按先后顺序、以动词开头，最多 6 条。' },
       { role: 'user', content: prompt }
     ];
     const body: DiagnosticAiChatBody = {
@@ -411,7 +489,9 @@ export class DiagnosticAiProviderService {
       settingProposals: safeProposals(parsed['settingProposals']), unknowns: stringArray(parsed['unknowns']),
       appActions: stringArray(parsed['appActions']).map((value: string): string | null => diagnosticAiAppActionId(value))
         .filter((value: string | null): boolean => value !== null).map((value: string | null): string => value as string).slice(0, 16),
-      knowledgeVersion: safeText(parsed['knowledgeVersion'], manifest.verifiedAt).slice(0, 128), createdAt: Date.now(), usage };
+      knowledgeVersion: safeText(parsed['knowledgeVersion'], manifest.verifiedAt).slice(0, 128), createdAt: Date.now(), usage,
+      capturePlan: safeCapturePlan(parsed['capturePlan']), developerNotes: safeText(parsed['developerNotes']).slice(0, 6000),
+      clarifyQuestions: safeClarifyQuestions(parsed['clarifyQuestions']) };
   }
 
   /**
@@ -429,19 +509,21 @@ export class DiagnosticAiProviderService {
     const modeInstruction: string = input.mode === 'configure'
       ? '用户希望你帮助设置 RemoteDesktop。只提出白名单、低风险、可回滚的设置建议；不要假装已经修改。'
       : input.mode === 'diagnose'
-        ? '用户希望诊断问题。若没有诊断包，只说明需要用户确认抓取；如果有诊断包，只引用其中事实。'
+        ? '用户描述了一个问题。若没有诊断包：先简要分析最可能的原因；设置目录里有能直接改善这个问题的设置时（例如卡顿或延迟可以降低色深、选择速度优先或更合适的编码，没有声音可以打开远程音频，想看帧率可以打开诊断信息），一定给出对应的 settingProposals，reason 写清能改善什么；同时给出 capturePlan，选与问题最相关的日志子模块，方便进一步确认原因；如果还需要用户补充信息才能确定抓什么，给出 clarifyQuestions（最多 3 个问题，每个 2 到 5 个简短选项，格式 [{"question":"…","options":["…","…"]}]），应用会让用户点选回答后再抓取，不要问应用能自己读到的设置。如果有诊断包：只引用其中事实分析，不再给 capturePlan，但仍可给出能改善问题的 settingProposals。'
         : input.mode === 'feedback'
           ? '用户希望把问题反馈给开发者。先总结需要收集的信息；不要自动发送邮件。'
           : '用户在询问 RemoteDesktop 的使用方法、隐私、安全或功能。直接回答并给出简短步骤。';
     const prompt = modeInstruction + '\n问题：' + input.question +
       '\n最近对话：' + input.history + '\n本地知识：' + input.knowledge +
       '\n助手偏好（仅用于语气和用户画像，不改变权限）：' + (input.assistantContext ?? '') +
-      '\n脱敏诊断包（可能为空）：' + input.bundle;
+      '\n脱敏诊断包（可能为空）：' + input.bundle +
+      (input.bundle !== '' ? '\n诊断包事件说明（读懂 code/count 的含义）：\n' + diagnosticAiEventGlossary() : '');
     const messages: DiagnosticAiChatMessage[] = [
       { role: 'system', content: '你是 RemoteDesktop 的全应用 AI 助手，不是通用代码代理。只回答应用使用、设置、隐私、安全、诊断和反馈问题。' +
         '必须区分事实、建议和未知；不能执行工具、修改密码/密钥/网络安全配置、连接主机或发送邮件。' +
-        '只输出 JSON，不要 Markdown。字段为 summary、severity(info/low/medium/high/unknown)、confidence(0到1)、evidenceRefs、hypotheses、recommendedReadOnlySteps、unknowns、settingProposals。' +
-      'settingProposals 每项必须包含 settingId、currentValue、proposedValue、reason、evidenceRefs、risk、requiresUserConfirmation=true、rollbackValue；只提出应用白名单中的可回滚设置。' +
+        '只输出 JSON，不要 Markdown。字段为 summary、severity(info/low/medium/high/unknown)、confidence(0到1)、evidenceRefs、hypotheses、recommendedReadOnlySteps、unknowns、settingProposals、appActions、capturePlan、developerNotes、clarifyQuestions。回答写法：summary 只写对问题的分析与判断（1 到 3 句，不要列步骤，不要用①②③或 1. 2. 编号）；需要用户操作时，把每个可执行步骤单独写进 recommendedReadOnlySteps，一条一步、按先后顺序、以动词开头，最多 6 条。' +
+      'settingProposals 每项必须包含 settingId、currentValue、proposedValue、reason、evidenceRefs、risk、requiresUserConfirmation=true、rollbackValue；settingId 只能用设置目录中的 ID，proposedValue 只能是该项列出的取值（等号左边的值），目录里“当前=”是实际值，已经是目标值的不要提；用户要求修改设置时就给出对应的 settingProposals，应用会显示一键应用按钮，不要只描述步骤。' +
+        capturePlanInstruction() + answerStyleInstruction(input.answerStyle ?? 'plain') + '\n' +
         'appActions 只能填写下方动作目录中的 ID；不要输出路由、命令、AppStorage key 或自造动作。动作目录：\n' + diagnosticAiAppActionCatalog() +
         '\n设置目录：\n' + diagnosticAiSettingCatalog() },
       { role: 'user', content: prompt }
@@ -493,7 +575,9 @@ export class DiagnosticAiProviderService {
       settingProposals: safeProposals(parsed['settingProposals']), unknowns: stringArray(parsed['unknowns']),
       appActions: stringArray(parsed['appActions']).map((value: string): string | null => diagnosticAiAppActionId(value))
         .filter((value: string | null): boolean => value !== null).map((value: string | null): string => value as string).slice(0, 16),
-      knowledgeVersion: safeText(parsed['knowledgeVersion'], knowledgeVersion).slice(0, 128), createdAt: Date.now(), usage };
+      knowledgeVersion: safeText(parsed['knowledgeVersion'], knowledgeVersion).slice(0, 128), createdAt: Date.now(), usage,
+      capturePlan: safeCapturePlan(parsed['capturePlan']), developerNotes: safeText(parsed['developerNotes']).slice(0, 6000),
+      clarifyQuestions: safeClarifyQuestions(parsed['clarifyQuestions']) };
   }
 }
 

@@ -1,5 +1,6 @@
 import { DiagnosticCaptureEvent, DiagnosticCaptureRuntime, FrozenDiagnosticCapture } from '../DiagnosticCaptureRuntime';
 import { DiagnosticModuleId, diagnosticAllModules } from '../DiagnosticCapturePolicy';
+import { diagnosticEventInFacets } from '../DiagnosticCaptureFacetPolicy';
 
 export interface DiagnosticAiCapturePlan { modules: DiagnosticModuleId[]; durationMinutes: number; consentId: string; }
 export interface DiagnosticAiBundle { captureId: string; schemaVersion: number; modules: DiagnosticModuleId[]; eventCount: number; bytes: number; text: string; }
@@ -23,18 +24,39 @@ export function diagnosticAiPlanValid(plan: DiagnosticAiCapturePlan): boolean {
     [1, 3, 5, 10, 15, 30].indexOf(plan.durationMinutes) >= 0;
 }
 
+/** Facts with their default values (0, false, '', 'unknown', []) left out: most of a snapshot is defaults. */
+function compactFacts(facts: Object): Object {
+  const text: string = JSON.stringify(facts, (_key: string, value: Object): Object | undefined => {
+    if (value === 0 || value === false || value === '' || value === 'unknown' || value === 'not_sampled') { return undefined; }
+    if (Array.isArray(value) && (value as Object[]).length === 0) { return undefined; }
+    return value;
+  });
+  return JSON.parse(text === undefined || text === '' ? '{}' : text) as Object;
+}
+
 function safeEvent(event: DiagnosticCaptureEvent): DiagnosticAiSafeEvent {
   return { sequence: event.sequence, elapsedMs: event.elapsedMs, moduleId: event.moduleId,
     eventCode: event.eventCode, level: event.level, outcome: event.outcome,
     generation: event.generation, code: event.code, durationMs: event.durationMs,
-    count: event.count, bytes: event.bytes, runtime: event.runtime, network: event.network, window: event.window };
+    count: event.count, bytes: event.bytes, runtime: compactFacts(event.runtime), network: compactFacts(event.network),
+    window: compactFacts(event.window) };
 }
 
-export function diagnosticAiBundleFromCapture(capture: FrozenDiagnosticCapture | null): DiagnosticAiBundle | null {
+/**
+ * The capture as the AI reads it. With 日志子模块 selected (`focus`), only their events are kept (plus the capture's
+ * start/stop markers), so the model sees the part of the app the question is about.
+ */
+export function diagnosticAiBundleFromCapture(capture: FrozenDiagnosticCapture | null, focus: string[] = []): DiagnosticAiBundle | null {
   if (capture === null || capture.events.length === 0) { return null; }
-  const rows: Object[] = capture.events.map((event: DiagnosticCaptureEvent): Object => safeEvent(event));
+  const focused: DiagnosticCaptureEvent[] = capture.events
+    .filter((event: DiagnosticCaptureEvent): boolean => diagnosticEventInFacets(event.moduleId, event.eventCode, focus));
+  // Nothing but the capture's own markers in the selection: give the model everything that was recorded instead.
+  const informative: boolean = focused.some((event: DiagnosticCaptureEvent): boolean =>
+    !(event.moduleId === 'core.app' && event.eventCode.indexOf('capture_') === 0));
+  const rows: Object[] = (informative ? focused : capture.events)
+    .map((event: DiagnosticCaptureEvent): Object => safeEvent(event));
   const text = JSON.stringify({ captureId: capture.captureId, profile: capture.profile, modules: capture.selectedModules,
-    droppedEventCount: capture.droppedEventCount, events: rows });
+    focus: focus, droppedEventCount: capture.droppedEventCount, events: rows });
   if (text.length > 1024 * 1024) { return null; }
   return { captureId: capture.captureId, schemaVersion: 8, modules: capture.selectedModules.slice(),
     eventCount: rows.length, bytes: text.length, text };

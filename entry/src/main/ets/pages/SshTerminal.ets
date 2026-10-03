@@ -1,3 +1,4 @@
+import { recordSshFailure } from '../services/SshDiagnosticEvents';
 import { ProBadge } from '../components/ProBadge';
 import { ProConnectionShareSender } from '../services/pro/ProConnectionShareSender';
 import { WorkspaceHandoff } from '../services/pro/workspace/WorkspaceHandoff';
@@ -12495,6 +12496,7 @@ struct SshTerminal {
 
   private async connect(host: RemoteHost, pageGeneration: number,
     bindingGeneration: number): Promise<void> {
+    const connectBeganAt: number = Date.now();
     const bindingHostId: string = host.id.trim();
     if (!this.isSshBindingActive(pageGeneration, bindingGeneration, bindingHostId)) { return; }
     // This path creates a new native identity after adoption/reconnect failed;
@@ -12680,6 +12682,8 @@ struct SshTerminal {
       if (!this.isSshBindingActive(pageGeneration, bindingGeneration, bindingHostId)) { return; }
       hilog.error(0x0001, 'SshTerminal', '[connect] failed code=' +
         sshDiagnosticErrorCode(err));
+      const nativeCode: number = parseInt(sshDiagnosticErrorCode(err), 10);
+      recordSshFailure(msg, Number.isFinite(nativeCode) ? nativeCode : 0, Date.now() - connectBeganAt);
       this.connectionError = msg;
       this.sshTabStore.invalidateSession(bindingHostId, 'error', msg);
       this.refreshSshTabViews();

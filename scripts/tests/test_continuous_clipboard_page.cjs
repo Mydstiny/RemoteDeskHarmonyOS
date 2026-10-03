@@ -12,7 +12,8 @@ function fixture(){
  vm.runInNewContext(code,{module,exports:module.exports,ClipboardCoordinator:{getInstance:()=>coordinator},AccountSessionCoordinator:{getInstance:()=>({currentScope:()=>state.scope})},rdpRouteIdentity:host=>'rdp:'+host.host,
   pasteboard:{MIMETYPE_TEXT_URI:'uri',getSystemPasteboard:()=>({getChangeCount:()=>state.count})},
   SystemClipboardFileProvider:class{async read(){state.fileReads++;if(state.failFileRead)throw Error('synthetic temporary error');return ['file://owned']}},
-  util:{TextEncoder},Date,setTimeout:callback=>{state.timers.push(callback);return state.timers.length},hilog:{warn(){}}});
+  util:{TextEncoder},Date,setTimeout:callback=>{state.timers.push(callback);return state.timers.length},hilog:{warn(){}},recordSessionClipboard(){},CLIPBOARD_AUTHORITY_BUSY:1,CLIPBOARD_STARTED:0,
+  CLIPBOARD_READ_PERMISSION_MISSING:2,CLIPBOARD_START_ERROR:4});
  const page=new module.exports.Harness();
  Object.assign(page,{connected:true,cleanupStarted:false,sessionId:7,connectAttemptId:3,hostId:'host',sessionWindowId:'window',harmonyShortcutCaptureOwner:'capture',sessionWindowActive:true,sessionWindowMinimized:false,
   pendingHost:{host:'rdp.invalid',protocol:'rdp'},currentProtocolName:()=> 'rdp',clipboardBridgeEnabledForSession:()=>state.enabled,currentAbilityBackgroundState:()=>state.background,currentSessionCapabilities:()=>({clipboardSend:{enabled:true}}),

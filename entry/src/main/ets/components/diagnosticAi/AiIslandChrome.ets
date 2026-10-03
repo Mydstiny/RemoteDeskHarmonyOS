@@ -262,6 +262,9 @@ const AI_CARET_GLOW: Array<[ResourceColor, number]> = [
 @Component
 export struct AiSendButton {
   @StorageProp('diagnosticAiReducedMotion') reducedMotion: boolean = false;
+  /** AI 动效 › 发送按钮光晕: flow (turning), static, off. `glowStyle` overrides it for the settings preview. */
+  @StorageProp('aiMotion.sendGlow') savedGlow: string = 'flow';
+  @Prop glowStyle: string = '';
   @Prop @Watch('onActiveChanged') active: boolean = false;
   @Prop buttonSize: number = 34;
   onTap: () => void = (): void => {};
@@ -271,18 +274,27 @@ export struct AiSendButton {
 
   aboutToAppear(): void {
     this.lit = this.active ? 1 : 0;
-    if (this.reducedMotion) { return; }
+    const style: string = this.glow_();
+    if (this.reducedMotion || style === 'static' || style === 'off') { return; }
     setTimeout((): void => {
-      this.getUIContext().animateTo({ duration: 1800, iterations: -1, playMode: PlayMode.Alternate,
-        curve: Curve.EaseInOut, expectedFrameRateRange: { min: 30, max: 60, expected: 60 } }, (): void => { this.breath = 1; });
-      // The colors keep flowing round the button.
-      this.getUIContext().animateTo({ duration: 3200, iterations: -1, curve: Curve.Linear,
-        expectedFrameRateRange: { min: 30, max: 60, expected: 60 } }, (): void => { this.flow = 360; });
+      // 呼吸 breathes deeper; 流动 and 彗星 breathe lightly while they turn (彗星 faster, a light running round).
+      this.getUIContext().animateTo({ duration: style === 'breath' ? 1400 : 1800, iterations: -1,
+        playMode: PlayMode.Alternate, curve: Curve.EaseInOut,
+        expectedFrameRateRange: { min: 30, max: 60, expected: 60 } }, (): void => { this.breath = 1; });
+      if (style !== 'breath') {
+        this.getUIContext().animateTo({ duration: style === 'comet' ? 1500 : 3200, iterations: -1, curve: Curve.Linear,
+          expectedFrameRateRange: { min: 30, max: 60, expected: 60 } }, (): void => { this.flow = 360; });
+      }
     }, 16);
   }
 
   private onActiveChanged(): void {
     this.getUIContext().animateTo({ curve: curves.springMotion(0.42, 0.82) }, (): void => { this.lit = this.active ? 1 : 0; });
+  }
+
+  private glow_(): string {
+    if (this.glowStyle !== '') { return this.glowStyle; }
+    return this.reducedMotion ? 'off' : this.savedGlow;
   }
 
   private glow(): number { return this.buttonSize + 12; }
@@ -298,6 +310,25 @@ export struct AiSendButton {
     const h: number = this.ring.height;
     if (w <= 0 || h <= 0) { return; }
     this.ring.clearRect(0, 0, w, h);
+    if (this.glow_() === 'comet') {
+      // A faint ring with one bright head and a tail fading behind it; the canvas turns, so it runs round.
+      this.ring.strokeStyle = 'rgba(168,107,255,0.28)';
+      this.ring.lineWidth = 1.2;
+      this.ring.beginPath(); this.ring.arc(w / 2, h / 2, this.buttonSize / 2 + 2, 0, Math.PI * 2); this.ring.stroke();
+      const tail: CanvasGradient = this.ring.createConicGradient(0, w / 2, h / 2);
+      tail.addColorStop(0, 'rgba(255,255,255,0)');
+      tail.addColorStop(0.18, 'rgba(74,141,255,0.6)');
+      tail.addColorStop(0.3, 'rgba(255,94,138,1)');
+      tail.addColorStop(0.31, 'rgba(255,94,138,0)');
+      tail.addColorStop(1, 'rgba(255,255,255,0)');
+      this.ring.strokeStyle = tail;
+      this.ring.lineWidth = 2.2;
+      this.ring.shadowColor = 'rgba(255,94,138,0.9)';
+      this.ring.shadowBlur = 6;
+      this.ring.beginPath(); this.ring.arc(w / 2, h / 2, this.buttonSize / 2 + 2, 0, Math.PI * 2); this.ring.stroke();
+      this.ring.shadowBlur = 0;
+      return;
+    }
     const g: CanvasGradient = this.ring.createConicGradient(0, w / 2, h / 2);
     g.addColorStop(0, '#FFB547');
     g.addColorStop(0.25, '#FF5E8A');
@@ -317,11 +348,15 @@ export struct AiSendButton {
   build() {
     Stack() {
       // The canvas turns, so the colors flow round the button.
-      Canvas(this.ring).width(this.glow()).height(this.glow())
-        .onReady((): void => { this.paintRing(); })
-        .rotate({ angle: this.flow })
-        .opacity(this.lit * (0.75 + this.breath * 0.25))
-        .scale({ x: 0.9 + this.lit * 0.1, y: 0.9 + this.lit * 0.1 })
+      if (this.glow_() !== 'off') {
+        Canvas(this.ring).width(this.glow()).height(this.glow())
+          .onReady((): void => { this.paintRing(); })
+          .rotate({ angle: this.flow })
+          .opacity(this.lit * (this.glow_() === 'breath' ? 0.45 + this.breath * 0.55 : 0.75 + this.breath * 0.25))
+          .scale(this.glow_() === 'breath' ?
+            { x: 0.92 + this.lit * 0.04 + this.breath * 0.1, y: 0.92 + this.lit * 0.04 + this.breath * 0.1 } :
+            { x: 0.9 + this.lit * 0.1, y: 0.9 + this.lit * 0.1 })
+      }
       Circle().width(this.buttonSize).height(this.buttonSize)
         .fill(this.active ? '#FFFFFF' : '#3A3A3C')
         .animation({ duration: 200, curve: Curve.EaseOut })
@@ -408,6 +443,8 @@ const AI_ORB_WAVES: AiOrbWave[] = [
 @Component
 export struct AiSiriOrb {
   @Prop orbSize: number = AI_FLOAT_ORB;
+  /** One still frame, no clock (settings tiles that are not selected). */
+  @Prop still: boolean = false;
   @Prop @Watch('onActiveChanged') active: boolean = false;
   @StorageProp('diagnosticAiReducedMotion') @Watch('onReducedMotionChanged') reducedMotion: boolean = false;
   private readonly settings: RenderingContextSettings = new RenderingContextSettings(true);
@@ -417,7 +454,7 @@ export struct AiSiriOrb {
   private ready: boolean = false;
 
   aboutToAppear(): void {
-    if (this.reducedMotion) { return; }
+    if (this.reducedMotion || this.still) { return; }
     this.startTicker();
   }
 

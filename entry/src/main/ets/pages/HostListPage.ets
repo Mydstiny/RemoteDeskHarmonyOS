@@ -1,5 +1,9 @@
 import { ProBadge, proBadgeSummary } from '../components/ProBadge';
 import { AiIsland } from '../components/diagnosticAi/AiIsland';
+import { DiagnosticAiMotionStore } from '../services/diagnosticAi/DiagnosticAiMotionPolicy';
+import { DiagnosticAiSettingsBridge } from '../services/diagnosticAi/DiagnosticAiSettingsActionPolicy';
+import { AiTriageHost, DiagnosticAiHostBridge } from '../services/diagnosticAi/DiagnosticAiTriagePolicy';
+import { RDP_CERTIFICATE_BYPASS, RDP_CERTIFICATE_CANCEL, RDP_CERTIFICATE_CONTINUE_ONCE, RDP_CERTIFICATE_TRUST, recordRdpCertificateDecision } from '../services/RdpDiagnosticEvents';
 import { DiagnosticAiAppActionId } from '../services/diagnosticAi/DiagnosticAiAppActionPolicy';
 import { PRO_ORDER_PENDING_KEY } from '../services/ProIntroRegistry';
 import { settingsUsageGuidePages } from '../services/GuideContentRegistry';
@@ -804,6 +808,7 @@ import { DiagnosticCaptureSettingsSheet } from '../components/DiagnosticCaptureS
 import { DiagnosticAiSettingsSheet } from '../components/diagnosticAi/DiagnosticAiSettingsSheet';
 import { DiagnosticAiOrb } from '../components/diagnosticAi/DiagnosticAiOrb';
 import { DiagnosticAiProfileStore } from '../services/diagnosticAi/DiagnosticAiProfileStore';
+import { DiagnosticAiAssistantPreferences, DiagnosticAiConversationStore } from '../services/diagnosticAi/DiagnosticAiConversationStore';
 import { DiagnosticAiOrbState } from '../services/diagnosticAi/DiagnosticAiModels';
 import { recordDiagnosticEvent } from '../services/DiagnosticCaptureRuntime';
 import { FeedbackSettingsSheet } from '../components/FeedbackSettingsSheet';
@@ -2185,6 +2190,144 @@ struct HostListPage {
     }
   }
 
+  /**
+   * The AI assistant changes settings through the same savers as 设置 (persisted, cloud-synced where the setting
+   * syncs, side effects included). Ids and values come from the assistant's settings catalog; anything else is refused.
+   */
+  private readonly assistantSettingApplier = (id: string, value: string): boolean => this.applyAssistantSetting(id, value);
+  private readonly assistantSettingReader = (id: string): string | null => {
+    if (id === 'ui.hostCardSensitiveHidden') { return this.hostCardSensitiveInfoHidden ? 'true' : 'false'; }
+    if (id === 'ai.personality' || id === 'ai.verbosity' || id === 'ai.role') {
+      const prefs: DiagnosticAiAssistantPreferences = this.assistantConversationStore().assistantPreferences();
+      return id === 'ai.personality' ? prefs.personality : id === 'ai.verbosity' ? prefs.verbosity : prefs.role;
+    }
+    return null;
+  };
+
+  private assistantOwner(): string {
+    const scope = AccountSessionCoordinator.getInstance().currentScope();
+    return scope.ownerScopeId.trim() === '' ? 'device-local' : scope.ownerScopeId;
+  }
+
+  private assistantConversationStore(): DiagnosticAiConversationStore {
+    const store = new DiagnosticAiConversationStore();
+    store.init(getContext(this) as common.UIAbilityContext, this.assistantOwner());
+    return store;
+  }
+
+  /** AI 助理's own settings: its answers (assistant preferences), reduced motion (profile) and AI 动效 (motion store). */
+  private applyAssistantAiSetting(id: string, value: string): boolean {
+    if (id === 'ai.personality' || id === 'ai.verbosity' || id === 'ai.role') {
+      const store: DiagnosticAiConversationStore = this.assistantConversationStore();
+      const prefs: DiagnosticAiAssistantPreferences = store.assistantPreferences();
+      if (id === 'ai.personality') { prefs.personality = value as 'balanced' | 'warm' | 'concise' | 'technical'; }
+      else if (id === 'ai.verbosity') { prefs.verbosity = value as 'concise' | 'standard' | 'detailed'; }
+      else { prefs.role = value as 'remote-expert' | 'beginner-guide' | 'diagnostic-first' | 'privacy-first'; }
+      prefs.updatedAt = Date.now();
+      return store.saveAssistantPreferences(prefs);
+    }
+    if (id === 'ai.reducedMotion') {
+      const store = new DiagnosticAiProfileStore();
+      store.init(getContext(this) as common.UIAbilityContext, this.assistantOwner());
+      const settings = store.settingsSnapshot();
+      settings.reducedMotion = value === 'true';
+      const saved: boolean = store.saveSettings(settings);
+      AppStorage.setOrCreate('diagnosticAiReducedMotion', value === 'true');
+      return saved;
+    }
+    const motionKeys: string[] = ['thinking', 'orb', 'done', 'open', 'sendGlow', 'speed'];
+    const kind: string = id.slice('ai.motion.'.length);
+    if (id.indexOf('ai.motion.') === 0 && motionKeys.indexOf(kind) >= 0) {
+      DiagnosticAiMotionStore.save(getContext(this), 'aiMotion.' + kind, value);
+      return AppStorage.get<string>('aiMotion.' + kind) === value;
+    }
+    return false;
+  }
+
+  /** 排障问答: the saved hosts of a protocol (newest first as listed), and the "替我连一次" connection. */
+  private readonly assistantHostLister = (protocol: string): AiTriageHost[] =>
+    this.hosts.filter((host: RemoteHost): boolean => host.protocol === protocol)
+      .map((host: RemoteHost): AiTriageHost => new AiTriageHost(host.id, host.label !== '' ? host.label : host.host));
+  private readonly assistantHostConnector = (hostId: string): boolean => {
+    const host: RemoteHost | undefined = this.hosts.find((item: RemoteHost): boolean => item.id === hostId);
+    if (host === undefined) { return false; }
+    void this.connectToHost(host);
+    return true;
+  };
+
+  private applyAssistantSetting(id: string, value: string): boolean {
+    const on: boolean = value === 'true';
+    const num: number = Number(value);
+    switch (id) {
+      case 'ui.theme':
+        if (value === 'system') { this.applyFollowSystemColorMode(); } else { this.applyManualTheme(value === 'dark', 'assistant'); }
+        return true;
+      case 'ui.ambientLightEffect': this.saveAmbientLightEffectEnabled(on); return true;
+      case 'ui.groupedHostCards': this.saveGroupedHostCards(on); return true;
+      case 'ui.hostCardSensitiveHidden': this.saveHostCardSensitiveInfoHidden(on); return true;
+      case 'ui.liveViewEnabled': this.liveViewEnabled = on; this.persistPref('liveViewEnabled', on); return true;
+      case 'ui.hostAddMode': this.saveFabAddStyle(value); return true;
+      case 'ui.virtualMouseStyle': this.saveVirtualMouseStyle(value); return true;
+      case 'rdp.audioEnabled': this.saveRdpAudioEnabled(on); return true;
+      case 'rdp.clipboardEnabled': this.saveRdpClipboardEnabled(on); return true;
+      case 'rdp.driveEnabled': this.saveRdpDriveEnabled(on); return true;
+      case 'rdp.showDiagnostics': this.saveRdpShowDiagnostics(on); return true;
+      case 'rdp.colorDepth': this.saveRdpColorDepth(num); return true;
+      case 'rdp.controlMode': this.saveRdpControlMode(num); return true;
+      case 'rdp.remoteUiScale': this.saveRdpRemoteUiScale(value); return true;
+      case 'rustdesk.imageQuality': this.saveRustDeskImageQuality(num); return true;
+      case 'rustdesk.codec': this.saveRustDeskCodec(num); return true;
+      case 'rustdesk.controlMode': this.saveRustDeskControlMode(num); return true;
+      case 'rustdesk.audioEnabled': this.saveRustDeskAudioEnabled(on); return true;
+      case 'rustdesk.clipboardEnabled': this.saveRustDeskClipboardEnabled(on); return true;
+      case 'rustdesk.filePasteEnabled': this.saveRustDeskFilePasteEnabled(on); return true;
+      case 'rustdesk.showDiagnostics': this.saveRustDeskShowDiagnostics(on); return true;
+      case 'rustdesk.privacyMode': this.saveRustDeskPrivacyMode(on); return true;
+      case 'rustdesk.lanDiscovery': this.saveRustDeskLanDiscovery(on); return true;
+      case 'rustdesk.presenceDetectionEnabled': this.saveRustDeskPresenceDetection(on); return true;
+      case 'rustdesk.remoteAppTouchScaleEnabled': this.saveRustDeskRemoteAppTouchScaleEnabled(on); return true;
+      case 'rustdesk.showLocalCursor': this.persistPref('rustdeskShowLocalCursor', on); return true;
+      case 'rustdesk.relativeMouseMode': this.persistPref('rustdeskRelativeMouseMode', on); return true;
+      case 'rustdesk.swapMouseButtons': this.persistPref('rustdeskSwapMouseButtons', on); return true;
+      case 'ssh.inputMode': this.saveSshInputMode(num); return true;
+      case 'remote.displayScaleMode': this.saveRemoteDisplayScaleMode(value); return true;
+      case 'remote.quickExitDisabled': return this.saveRemoteSessionQuickExitDisabled(on);
+      case 'remote.rdpPinchZoom': return this.saveAssistantPinchZoom('rdp', on);
+      case 'remote.rustdeskPinchZoom': return this.saveAssistantPinchZoom('rustdesk', on);
+      case 'remote.sshPinchZoom': return this.saveAssistantPinchZoom('ssh', on);
+      case 'remote.vncPinchZoom': return this.saveAssistantPinchZoom('vnc', on);
+      case 'remote.moonlightPinchZoom': return this.saveAssistantPinchZoom('moonlight', on);
+      case 'remote.rdpReverseWheel': return this.saveAssistantReverseWheel('rdp', on);
+      case 'remote.rustdeskReverseWheel': return this.saveAssistantReverseWheel('rustdesk', on);
+      case 'remote.sshReverseWheel': return this.saveAssistantReverseWheel('ssh', on);
+      case 'remote.vncReverseWheel': return this.saveAssistantReverseWheel('vnc', on);
+      case 'remote.moonlightReverseWheel': return this.saveAssistantReverseWheel('moonlight', on);
+      default: return id.indexOf('ai.') === 0 ? this.applyAssistantAiSetting(id, value) : false;
+    }
+  }
+
+  private saveAssistantPinchZoom(protocol: string, on: boolean): boolean {
+    const values: RemotePinchZoomPreferences = this.remotePinchZoomPreferences();
+    const touched: RemotePinchZoomPreferencePresence = { rdp: false, rustdesk: false, ssh: false, vnc: false, moonlight: false };
+    if (protocol === 'rdp') { values.rdp = on; touched.rdp = true; }
+    else if (protocol === 'rustdesk') { values.rustdesk = on; touched.rustdesk = true; }
+    else if (protocol === 'ssh') { values.ssh = on; touched.ssh = true; }
+    else if (protocol === 'vnc') { values.vnc = on; touched.vnc = true; }
+    else { values.moonlight = on; touched.moonlight = true; }
+    return this.saveRemotePinchZoomPreferenceUpdate({ values: values, touched: touched });
+  }
+
+  private saveAssistantReverseWheel(protocol: string, on: boolean): boolean {
+    const values: RemoteWheelPreferences = this.remoteWheelPreferences();
+    const touched: RemoteWheelPreferencePresence = { rdp: false, rustdesk: false, ssh: false, vnc: false, moonlight: false };
+    if (protocol === 'rdp') { values.rdp = on; touched.rdp = true; }
+    else if (protocol === 'rustdesk') { values.rustdesk = on; touched.rustdesk = true; }
+    else if (protocol === 'ssh') { values.ssh = on; touched.ssh = true; }
+    else if (protocol === 'vnc') { values.vnc = on; touched.vnc = true; }
+    else { values.moonlight = on; touched.moonlight = true; }
+    return this.saveRemoteWheelPreferenceUpdate({ values: values, touched: touched });
+  }
+
   private syncDiagnosticAiOrbPreference(): void {
     const scope = AccountSessionCoordinator.getInstance().currentScope();
     const owner: string = scope.ownerScopeId.trim() === '' ? 'device-local' : scope.ownerScopeId;
@@ -2193,6 +2336,7 @@ struct HostListPage {
     const settings = store.settingsSnapshot();
     AppStorage.setOrCreate('diagnosticAiOrbEnabled', settings.showOrbOnHostPage);
     AppStorage.setOrCreate('diagnosticAiReducedMotion', settings.reducedMotion);
+    DiagnosticAiMotionStore.init(getContext(this));
   }
 
   /**
@@ -2211,6 +2355,8 @@ struct HostListPage {
     WorkspacePhonePreference.load(getContext(this) as common.UIAbilityContext);
     this.workspacePhoneEnabled = AppStorage.get<boolean>(WORKSPACE_PHONE_ENABLED_KEY) ?? false;
     this.syncDiagnosticAiOrbPreference();
+    DiagnosticAiSettingsBridge.register(this.assistantSettingApplier, this.assistantSettingReader);
+    DiagnosticAiHostBridge.register(this.assistantHostLister, this.assistantHostConnector);
     this.refreshAppIconEntry();
     this.ensureHostOrganizationSubscription();
     this.proVisibilityUnsubscribe?.();
@@ -5389,9 +5535,9 @@ struct HostListPage {
       return settingsSecurityExpandedMaxHeight(SETTINGS_SECURITY_ACTION_ROW_COUNT);
     }
     if (section === SETTINGS_SECTION_DIAGNOSTICS) {
-      // Card title plus configuration, assistant, usage, personalization, session history and classic-log rows.
-      // Keep enough room for the complete card; the native settings page remains independently scrollable.
-      return 480;
+      // Card title plus configuration, assistant, usage, personalization, session history, AI 动效 and classic-log
+      // rows. Keep enough room for the complete card; the native settings page remains independently scrollable.
+      return 545;
     }
     if (section === SETTINGS_SECTION_TUTORIAL) {
       // Five action rows (更新日志, 快速认识, Pro 介绍, 操作引导, 连接前准备) plus the card title.
@@ -5641,6 +5787,8 @@ struct HostListPage {
   }
 
   aboutToDisappear(): void {
+    DiagnosticAiSettingsBridge.unregister(this.assistantSettingApplier);
+    DiagnosticAiHostBridge.unregister(this.assistantHostLister);
     this.hostOrgUnsubscribe?.(); this.hostOrgUnsubscribe = null;
     this.endProWorkspaceRun();
     this.aiStopStore(); this.aiStopAccess();
@@ -8168,6 +8316,7 @@ struct HostListPage {
     if (this.rdpCertificateClosing) {
       return;
     }
+    recordRdpCertificateDecision(RDP_CERTIFICATE_CANCEL);
     const hostId: string = this.rdpCertificateHostId;
     const host: RemoteHost | undefined = this.srv.getHost(hostId);
     const ownerScopeId: string = host === undefined ?
@@ -8351,6 +8500,7 @@ struct HostListPage {
     if (host === undefined || result === null || !this.rdpCertificateBypassHintVisible()) {
       return;
     }
+    recordRdpCertificateDecision(RDP_CERTIFICATE_BYPASS);
     if (!this.rdpCertificateResultMatchesLiveRoute(host, result)) {
       this.rejectStaleRdpCertificateResult();
       return;
@@ -8898,6 +9048,7 @@ struct HostListPage {
       return;
     }
     if (!this.rdpCertificateRouteResult) { return; }
+    recordRdpCertificateDecision(RDP_CERTIFICATE_CONTINUE_ONCE);
     const result: RdpPreflightResult = this.rdpCertificateRouteResult;
     if (this.rdpGatewayConfirmationPending(result)) {
       this.continueAfterRdpGatewayCertificateDecision(
@@ -8929,6 +9080,7 @@ struct HostListPage {
       return;
     }
     if (!this.rdpCertificateRouteResult) { return; }
+    recordRdpCertificateDecision(RDP_CERTIFICATE_TRUST);
     const result: RdpPreflightResult = this.rdpCertificateRouteResult;
     if (this.rdpGatewayConfirmationPending(result)) {
       this.continueAfterRdpGatewayCertificateDecision(
@@ -18543,14 +18695,14 @@ struct HostListPage {
 
         ListItem() {
           this.settingsAccordionHeader(SETTINGS_SECTION_DIAGNOSTICS, $r('sys.symbol.performance'),
-            '诊断与 AI 帮助', this.diagnosticAiConfigVisible || this.diagnosticAiAssistantVisible ?
+            'AI 助理', this.diagnosticAiConfigVisible || this.diagnosticAiAssistantVisible ?
               '辅助 AI 配置、启动 AI 辅助与传统日志抓取' : '传统脱敏日志抓取')
         }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 10 })
 
-        // --- 诊断与 AI 帮助: configuration, assistant, monitoring, personalization and classic logs ---
+        // --- AI 助理: configuration, assistant, monitoring, personalization and classic logs ---
         ListItem() {
           Column() {
-            Text('诊断与 AI 帮助').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text3)
+            Text('AI 助理').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text3)
               .fontFamily(this.font()).padding({ left: 8, bottom: 8 })
             Column() {
               if (this.diagnosticAiConfigVisible) {
@@ -18565,6 +18717,8 @@ struct HostListPage {
                 this.diagnosticSubRow(4)
                 this.cardDivider()
                 this.diagnosticSubRow(5)
+                this.cardDivider()
+                this.diagnosticSubRow(6)
                 this.cardDivider()
               }
               this.diagnosticSubRow(2)
@@ -20353,22 +20507,22 @@ struct HostListPage {
     Row() {
       SymbolGlyph(kind === 0 ? $r('sys.symbol.gearshape_fill') : kind === 1 ? $r('sys.symbol.performance') :
         kind === 2 ? $r('sys.symbol.doc_plaintext') : kind === 3 ? $r('sys.symbol.performance') :
-        kind === 4 ? $r('sys.symbol.person_crop_circle_fill') : $r('sys.symbol.clock')).fontSize(22).fontColor([this.pal().text3])
+        kind === 4 ? $r('sys.symbol.person_crop_circle_fill') : kind === 6 ? $r('sys.symbol.wand_and_stars') :
+        $r('sys.symbol.clock')).fontSize(22).fontColor([this.pal().text3])
         .width(22).height(22).margin({ left: 9, right: 9 })
       Column() {
         Text(kind === 0 ? '辅助 AI 配置' : kind === 1 ? '启动 AI 辅助' : kind === 2 ? '传统日志抓取' :
-          kind === 3 ? 'AI 用量监控' : kind === 4 ? 'AI 个性化设置' : 'AI 会话管理')
+          kind === 3 ? 'AI 用量监控' : kind === 4 ? 'AI 个性化设置' : kind === 6 ? 'AI 动效' : 'AI 会话管理')
           .fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
           .fontColor(this.pal().text).fontFamily(this.font())
         Text(kind === 0 ? '选择 AI 服务商、保存密钥并选择模型' : kind === 1 ? '询问应用、协助设置、诊断问题和生成反馈草稿' :
           kind === 2 ? '脱敏诊断日志的抓取、预览、保存与导出' : kind === 3 ? 'Token、缓存命中率、订阅分项与费用估算' :
-          kind === 4 ? '助手名称、性格、风格和本机用户画像记忆' : '查看历史对话并继续与 AI 助手交流')
+          kind === 4 ? '助手名称、性格、风格和本机用户画像记忆' :
+          kind === 6 ? '思考动画、悬浮球、完成动画和展开方式' : '查看历史对话并继续与 AI 助手交流')
           .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
           .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).margin({ top: 2 })
       }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
-      if (kind !== 2) {
-        ProBadge().margin({ right: 8 })
-      }
+      // The section header carries the Pro mark; its rows do not repeat it.
       SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(18).fontColor([this.pal().text3])
         .margin({ right: 14 })
     }.width('100%').height(62).padding({ left: 16, right: 16 })

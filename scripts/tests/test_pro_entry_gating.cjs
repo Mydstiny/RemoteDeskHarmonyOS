@@ -59,8 +59,7 @@ const badges = new Map([
   ['components/pro/workspace/WorkspaceGroupCard.ets', [1, /if \(ProEntries\.visible\('pro\.workspaces'\)\) \{/]],
   // AI cards/section (4) follow aiProVisible; the app-icon row follows ProEntries; the account card
   // marker follows ProEntries.proActive(); the RDP 远端显示方案 row follows rdpAdvancedDisplayVisible.
-  // The 诊断与 AI 帮助 sub-rows (one builder) carry the badge only for 辅助 AI 配置 / 启动 AI 辅助.
-  ['pages/HostListPage.ets', [10, /aiProVisible = AiAccess\.getInstance\(\)\.proVisible\(\)/]],
+  ['pages/HostListPage.ets', [9, /aiProVisible = AiAccess\.getInstance\(\)\.proVisible\(\)/]],
   // RDP session panel: the 远端显示方案 entry exists only while RemoteDesktop passes advancedDisplayVisible.
   ['components/rdp/RdpControlCenter.ets', [1, /if \(this\.advancedDisplayVisible\) \{\s*this\.displayProfileEntry\(\)/]],
   // The 远端显示方案 sheet opens only from those gated entries (settings row and session panel).
@@ -100,7 +99,9 @@ assert.match(hostSource, /this\.diagnosticAiAssistantVisible = ProEntries\.visib
 assert.match(hostSource, /if \(this\.diagnosticAiConfigVisible\) \{\s*this\.diagnosticSubRow\(0\)/);
 assert.match(hostSource, /if \(this\.diagnosticAiAssistantVisible\) \{\s*this\.diagnosticSubRow\(1\)/);
 assert.match(hostSource, /\}\s*this\.diagnosticSubRow\(2\)\s*\}/);
-assert.match(hostSource, /if \(kind < 2\) \{\s*ProBadge\(\)/);
+// The AI 助理 rows do not repeat the Pro mark; the section header carries it.
+assert.doesNotMatch(hostSource.slice(hostSource.indexOf('@Builder diagnosticSubRow'),
+  hostSource.indexOf('@Builder', hostSource.indexOf('@Builder diagnosticSubRow') + 10)), /ProBadge\(\)/);
 // The 诊断与 AI 帮助 header badge shows only while one of its AI sub-settings is visible.
 assert.match(hostSource, /section === SETTINGS_SECTION_DIAGNOSTICS && \(this\.diagnosticAiConfigVisible \|\| this\.diagnosticAiAssistantVisible\)/);
 // The host-page AI entry follows the 启动 AI 辅助 entitlement.

@@ -43,6 +43,7 @@ import { SshTerminalBackgroundTaskService } from '../services/SshTerminalBackgro
 import { SshTerminalPipService } from '../services/SshTerminalPipService';
 import { RemoteSessionWindowCoordinator } from '../services/RemoteSessionWindowCoordinator';
 import { recordDiagnosticAppLifecycleEvent } from '../services/DiagnosticCaptureRuntime';
+import { AppFaultHistoryService } from '../services/AppFaultHistoryService';
 import { GuideVisibilityService } from '../services/GuideVisibilityService';
 import { RemoteKeyboardSettingsService } from '../services/RemoteKeyboardSettingsService';
 import {
@@ -221,6 +222,8 @@ export default class EntryAbility extends UIAbility {
   }
 
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
+    // Crashes/freezes of earlier runs arrive at start-up; keep their kind and time for diagnostics.
+    AppFaultHistoryService.init(this.context);
     ProAppRuntime.getInstance();
     ProFeatureVisibility.getInstance().load(this.context as common.UIAbilityContext);
     ProContinuationService.getInstance().initializeMission(this.context);

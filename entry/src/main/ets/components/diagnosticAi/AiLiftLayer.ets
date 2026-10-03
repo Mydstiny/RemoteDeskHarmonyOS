@@ -1,0 +1,534 @@
+import { curves, window } from '@kit.ArkUI';
+import { hilog } from '@kit.PerformanceAnalysisKit';
+import { DiagnosticAiAssistantPanel } from './DiagnosticAiAssistantPanel';
+import { AI_FLOAT_ORB } from './AiIslandChrome';
+import { AiDoneMark, AiFloatingOrb, AiIslandRingsCheck } from './AiMotionViews';
+
+/** The island's square when 灵动岛光环 opens out of it. */
+const AI_ISLAND_CARD: number = 148;
+const AI_ISLAND_CARD_RADIUS: number = 46;
+const AI_CAPSULE_HEIGHT: number = 58;
+/** Between the orb and its mini chat. */
+const AI_CHAT_GAP: number = 10;
+/** Orb resting distance from the side it snaps to. */
+const AI_EDGE: number = 14;
+
+/**
+ * What AiIsland hands the layer, and how it talks to it once it is up. The layer fills in the `to…` hooks when it
+ * appears; until then the opening request (`startWith`, `label`, `style`) says what to show first.
+ */
+export class AiLiftController {
+  deviceClass: string = 'phone';
+  /** The camera cutout in window coordinates (phone), or -1 without one. */
+  islandTop: number = -1;
+  pillWidth: number = 120;
+  pillHeight: number = 36;
+  /** Status bar height (vp), used when the window's avoid areas cannot be read. */
+  topInset: number = 24;
+  /** 'done' plays the 完成动画 first, then becomes the orb; 'orb' shows the orb right away. */
+  startWith: string = 'done';
+  label: string = '';
+  style: string = 'check';
+  /** The orb was tapped where it is (window coordinates of its top-left): back to the island from there. */
+  onOrbTap: (x: number, y: number) => void = (_x: number, _y: number): void => {};
+  /** Set by the layer: the done mark gives way to the orb. */
+  toOrb: () => void = (): void => {};
+  /** Asked before the layer is up. */
+  orbRequested: boolean = false;
+  /** Set by AiIsland: move the dialog to (dx, dy) from where it opened (the layer's own top-left). */
+  place: (dx: number, dy: number) => void = (_dx: number, _dy: number): void => {};
+  /** The window's size as AiIsland measured it (vp), until the layer reads the window itself. */
+  areaWidth: number = 360;
+  areaHeight: number = 780;
+}
+
+@Builder
+export function aiLiftLayer(controller: AiLiftController) {
+  AiLiftLayer({ controller: controller })
+}
+
+/**
+ * Everything of the assistant that has to stay above a screen an app action opened (sheets included), in one dialog
+ * layer: the 完成动画, then the floating orb with its mini chat. Being one layer, the done mark can turn into the orb
+ * in place and fly to its spot, the orb follows the finger frame by frame and springs to the nearer side, and orb plus
+ * chat are always fitted inside the window (status bar, gesture bar and keyboard excluded).
+ *
+ * A dialog takes every touch inside its own frame. So the layer's own frame is a 1 vp anchor strip at the left edge and
+ * the mark, orb and chat are drawn outside it, at their window positions: children beyond an unclipped parent still
+ * take touches, and the screen underneath takes every other touch. The dialog never moves, so nothing twitches.
+ * Should the system's dialog wrapper clip (the orb would then be invisible and untouchable), the layer notices from
+ * the orb's visible area and falls back to covering the window while things move and the orb's region at rest.
+ */
+@Component
+struct AiLiftLayer {
+  controller: AiLiftController = new AiLiftController();
+  /** Layer size and where it starts in the window (the dialog may begin under the status bar). */
+  @State private layerW: number = 360;
+  @State private layerH: number = 780;
+  @State private originY: number = 0;
+  @State private windowH: number = 0;
+  @State private topSafe: number = 24;
+  @State private bottomSafe: number = 16;
+  @State private keyboard: number = 0;
+  /** 1 the done mark, 2 the orb. */
+  @State private phase: number = 0;
+  /** The morphing box: the island's pill → its square (or the done capsule) → the orb. Layer coordinates. */
+  @State private boxX: number = 0;
+  @State private boxY: number = 0;
+  @State private boxW: number = AI_FLOAT_ORB;
+  @State private boxH: number = AI_FLOAT_ORB;
+  @State private boxR: number = AI_FLOAT_ORB / 2;
+  @State private boxColor: string = '#FF000000';
+  @State private boxScale: number = 1;
+  @State private boxOpacity: number = 1;
+  @State private boxShadow: number = 0;
+  @State private doneOpacity: number = 1;
+  @State private ringsOn: boolean = false;
+  @State private orbMounted: boolean = false;
+  @State private orbOpacity: number = 0;
+  @State private chatShown: boolean = false;
+  @State private chatH: number = 150;
+  @State private dragging: boolean = false;
+  /** Overflow from a 1×1 anchor (normal), or the fallback: full window / the region at rest. */
+  @State private anchored: boolean = true;
+  private overflowSeen: boolean = false;
+  /** Where the chat sits relative to the orb; changes during a drag glide (chatShift eases back to zero). */
+  @State private chatBelowSide: boolean = true;
+  @State private chatRightSide: boolean = true;
+  @State private chatShiftX: number = 0;
+  @State private chatShiftY: number = 0;
+  /** Fallback at rest: the dialog covers only regionX/Y/W/H (layer coordinates) around the orb and chat. */
+  @State private boxMode: boolean = false;
+  @State private regionX: number = 0;
+  @State private regionY: number = 0;
+  @State private regionW: number = 0;
+  @State private regionH: number = 0;
+  private restTimer: number = -1;
+  private measured: boolean = false;
+  private dragStartX: number = 0;
+  private dragStartY: number = 0;
+  private timers: number[] = [];
+  private keyboardWindow: window.Window | null = null;
+  private readonly onKeyboard = (height: number): void => {
+    const next: number = this.getUIContext().px2vp(height);
+    this.toFull();
+    this.getUIContext().animateTo({ curve: curves.springMotion(0.4, 0.9) }, (): void => {
+      this.keyboard = next;
+      if (this.phase === 2 && !this.dragging) { this.boxY = this.fitY(this.boxY); this.syncChatSides(false); }
+    });
+    this.restSoon(520);
+  };
+
+  aboutToAppear(): void {
+    this.topSafe = this.controller.topInset;
+    this.layerW = this.controller.areaWidth;
+    this.layerH = this.controller.areaHeight;
+    this.controller.toOrb = (): void => { this.toOrb(); };
+    const context = this.getUIContext().getHostContext();
+    if (context) {
+      window.getLastWindow(context).then((win: window.Window): void => {
+        this.keyboardWindow = win;
+        const ui = this.getUIContext();
+        try {
+          const top: number = ui.px2vp(win.getWindowAvoidArea(window.AvoidAreaType.TYPE_SYSTEM).topRect.height);
+          const bottom: number = ui.px2vp(
+            win.getWindowAvoidArea(window.AvoidAreaType.TYPE_NAVIGATION_INDICATOR).bottomRect.height);
+          if (top > 0) { this.topSafe = top; }
+          this.bottomSafe = Math.max(8, bottom);
+          const rect: window.Rect = win.getWindowProperties().windowRect;
+          this.windowH = ui.px2vp(rect.height);
+          if (this.anchored) {
+            this.layerW = ui.px2vp(rect.width);
+            this.layerH = this.windowH - this.originY;
+          }
+        } catch (_error) { /* keep the fallbacks */ }
+        try { win.on('keyboardHeightChange', this.onKeyboard); } catch (_error) { /* no keyboard events */ }
+      }).catch((): void => { /* no window */ });
+    }
+  }
+
+  aboutToDisappear(): void {
+    this.timers.forEach((id: number): void => { clearTimeout(id); });
+    this.timers = [];
+    if (this.restTimer !== -1) { clearTimeout(this.restTimer); this.restTimer = -1; }
+    if (this.keyboardWindow !== null) {
+      try { this.keyboardWindow.off('keyboardHeightChange', this.onKeyboard); } catch (_error) { /* already off */ }
+      this.keyboardWindow = null;
+    }
+  }
+
+  private later(ms: number, action: () => void): void { this.timers.push(setTimeout(action, ms)); }
+
+  /** Full window: needed while anything moves (positions are window positions, so nothing visibly changes). */
+  private toFull(): void {
+    if (this.restTimer !== -1) { clearTimeout(this.restTimer); this.restTimer = -1; }
+    if (this.anchored || !this.boxMode) { return; }
+    this.controller.place(0, 0);
+    this.boxMode = false;
+  }
+
+  /** Once things have settled, shrink to the orb and chat so the screen underneath works again. */
+  private restSoon(ms: number): void {
+    if (this.anchored) { return; }
+    if (this.restTimer !== -1) { clearTimeout(this.restTimer); }
+    this.restTimer = setTimeout((): void => {
+      this.restTimer = -1;
+      this.toBox();
+    }, ms);
+  }
+
+  private toBox(): void {
+    if (this.anchored || this.phase !== 2 || this.dragging) { return; }
+    // The orb (with room for its pressed scale) and, when shown, the chat.
+    let left: number = this.boxX - 6;
+    let top: number = this.boxY - 6;
+    let right: number = this.boxX + AI_FLOAT_ORB + 6;
+    let bottom: number = this.boxY + AI_FLOAT_ORB + 6;
+    if (this.chatShown) {
+      left = Math.min(left, this.chatX());
+      top = Math.min(top, this.chatY());
+      right = Math.max(right, this.chatX() + this.chatWidth());
+      bottom = Math.max(bottom, this.chatY() + this.chatH);
+    }
+    left = Math.max(0, Math.floor(left));
+    top = Math.max(0, Math.floor(top));
+    right = Math.min(this.layerW, Math.ceil(right));
+    bottom = Math.min(this.layerH, Math.ceil(bottom));
+    if (right - left <= 0 || bottom - top <= 0) { return; }
+    this.regionX = left; this.regionY = top; this.regionW = right - left; this.regionH = bottom - top;
+    this.controller.place(left, top);
+    this.boxMode = true;
+  }
+
+  /** Children are placed in layer coordinates; at rest the layer's own origin is the region's corner. */
+  private offsetX(): number { return this.boxMode ? this.regionX : 0; }
+  private offsetY(): number { return this.boxMode ? this.regionY : 0; }
+
+  /** The layer is laid out: start what AiIsland asked for, now that the window geometry is known. */
+  private start(): void {
+    // If the orb or the mark never shows as visible, the dialog wrapper clips what overflows the anchor.
+    this.later(700, (): void => {
+      if (this.anchored && !this.overflowSeen) {
+        hilog.info(0x0000, 'AiLift', 'overflow is clipped: covering the window instead');
+        this.anchored = false;
+        this.restSoon(900);
+      }
+    });
+    if (this.controller.startWith === 'orb') { this.showOrb(); return; }
+    if (this.controller.style === 'island') { this.islandDone(); } else { this.capsuleDone(); }
+    if (this.controller.orbRequested) { this.toOrb(); }
+  }
+
+  // Geometry, in layer coordinates.
+  private topLimit(): number { return Math.max(0, this.topSafe + 4 - this.originY); }
+  private bottomLimit(): number {
+    const windowBottom: number = this.windowH > 0 ? this.windowH - this.originY : this.layerH;
+    return Math.min(this.layerH, windowBottom) - Math.max(this.bottomSafe + 6, this.keyboard + 8);
+  }
+  private chatWidth(): number { return Math.min(this.layerW - 28, 300); }
+  private orbOnRight(): boolean { return this.boxX + AI_FLOAT_ORB / 2 > this.layerW / 2; }
+
+  /** Room for the chat under and over the orb, as much of the chat as would fit there. */
+  private fitBelow(): number {
+    return Math.min(this.chatH, this.bottomLimit() - (this.boxY + AI_FLOAT_ORB + AI_CHAT_GAP));
+  }
+  private fitAbove(): number { return Math.min(this.chatH, this.boxY - AI_CHAT_GAP - this.topLimit()); }
+
+  /**
+   * Choose the chat's side: under the orb unless clearly more of it fits over it, on the orb's side of the screen. A
+   * little hysteresis keeps it from flipping back and forth near the middle. During a drag the flip glides (the chat
+   * is shifted back to where it was and eases to its new place); otherwise the caller's animation carries it.
+   */
+  private syncChatSides(glide: boolean): void {
+    const below: number = this.fitBelow();
+    const above: number = this.fitAbove();
+    const wantBelow: boolean = this.chatBelowSide ? !(above > below + 16) : below > above + 16 || below >= this.chatH;
+    const center: number = this.boxX + AI_FLOAT_ORB / 2;
+    const wantRight: boolean = this.chatRightSide ? center > this.layerW / 2 - 24 : center > this.layerW / 2 + 24;
+    if (wantBelow === this.chatBelowSide && wantRight === this.chatRightSide) { return; }
+    if (!glide || !this.chatShown) {
+      this.chatBelowSide = wantBelow;
+      this.chatRightSide = wantRight;
+      return;
+    }
+    const fromX: number = this.chatX();
+    const fromY: number = this.chatY();
+    this.chatBelowSide = wantBelow;
+    this.chatRightSide = wantRight;
+    this.chatShiftX += fromX - this.chatX();
+    this.chatShiftY += fromY - this.chatY();
+    this.getUIContext().animateTo({ curve: curves.springMotion(0.42, 0.84) }, (): void => {
+      this.chatShiftX = 0;
+      this.chatShiftY = 0;
+    });
+  }
+  private edgeX(right: boolean): number { return right ? this.layerW - AI_FLOAT_ORB - AI_EDGE : AI_EDGE; }
+  private chatSpace(): number { return this.chatShown ? this.chatH + AI_CHAT_GAP : 0; }
+
+  private chatX(): number {
+    const w: number = this.chatWidth();
+    const x: number = this.chatRightSide ? this.boxX + AI_FLOAT_ORB - w : this.boxX;
+    return Math.max(8, Math.min(this.layerW - w - 8, x));
+  }
+  private chatY(): number {
+    const y: number = this.chatBelowSide ? this.boxY + AI_FLOAT_ORB + AI_CHAT_GAP : this.boxY - AI_CHAT_GAP - this.chatH;
+    // While dragging the orb may sit where neither side fits; the chat still never leaves the window.
+    return Math.max(this.topLimit(), Math.min(this.bottomLimit() - this.chatH, y));
+  }
+
+  /** The orb's y nearest to `y` where the orb and its chat both fit (chat under or over it). */
+  private fitY(y: number): number {
+    const minY: number = this.topLimit();
+    const maxY: number = this.bottomLimit() - AI_FLOAT_ORB;
+    const orbY: number = Math.max(minY, Math.min(maxY, y));
+    const chat: number = this.chatSpace();
+    if (orbY + AI_FLOAT_ORB + chat <= this.bottomLimit() || orbY - chat >= minY) { return orbY; }
+    const withChatBelow: number = this.bottomLimit() - AI_FLOAT_ORB - chat;
+    const withChatAbove: number = minY + chat;
+    const options: number[] = [withChatBelow, withChatAbove].filter((v: number): boolean => v >= minY && v <= maxY);
+    if (options.length === 0) { return minY; }
+    return options.reduce((best: number, v: number): number => Math.abs(v - orbY) < Math.abs(best - orbY) ? v : best);
+  }
+
+  /** 灵动岛光环: the island's own pill opens into a square, the rings tumble briefly and close into the check. */
+  private islandDone(): void {
+    const top: number = this.controller.islandTop >= 0 ? this.controller.islandTop - this.originY : this.topLimit() + 2;
+    const pillW: number = this.controller.islandTop >= 0 ? this.controller.pillWidth : 120;
+    const pillH: number = this.controller.islandTop >= 0 ? this.controller.pillHeight : 36;
+    this.phase = 1;
+    this.boxW = pillW; this.boxH = pillH; this.boxR = pillH / 2;
+    this.boxX = (this.layerW - pillW) / 2; this.boxY = top;
+    this.boxColor = '#FF000000'; this.boxOpacity = 1; this.boxScale = 1; this.doneOpacity = 1;
+    this.later(30, (): void => {
+      this.getUIContext().animateTo({ curve: curves.springMotion(0.42, 0.76) }, (): void => {
+        this.boxW = AI_ISLAND_CARD; this.boxH = AI_ISLAND_CARD; this.boxR = AI_ISLAND_CARD_RADIUS;
+        this.boxX = (this.layerW - AI_ISLAND_CARD) / 2;
+        this.boxShadow = 28;
+      });
+    });
+    this.later(150, (): void => { this.ringsOn = true; });
+  }
+
+  /** The other 完成动画 styles: a capsule under the status bar with the mark and what was done. */
+  private capsuleDone(): void {
+    const w: number = Math.min(this.layerW - 32, 340);
+    this.phase = 1;
+    this.boxW = w; this.boxH = AI_CAPSULE_HEIGHT; this.boxR = AI_CAPSULE_HEIGHT / 2;
+    this.boxX = (this.layerW - w) / 2; this.boxY = this.topLimit() + 2;
+    this.boxColor = '#F5000000'; this.boxScale = 0.8; this.boxOpacity = 0; this.boxShadow = 24; this.doneOpacity = 1;
+    this.later(16, (): void => {
+      this.getUIContext().animateTo({ curve: curves.springMotion(0.42, 0.82) }, (): void => {
+        this.boxScale = 1; this.boxOpacity = 1;
+      });
+    });
+  }
+
+  /**
+   * The done mark becomes the orb: its content fades, the box shrinks into a sphere while it travels to the orb's spot
+   * on the right, the orb comes alive inside it, and then the mini chat grows out of it.
+   */
+  private toOrb(): void {
+    if (this.phase === 0) { this.controller.orbRequested = true; return; }
+    if (this.phase === 2) { return; }
+    this.orbMounted = true;
+    const ui = this.getUIContext();
+    const x: number = this.edgeX(true);
+    const y: number = this.fitY(this.layerH * 0.46);
+    ui.animateTo({ duration: 140, curve: Curve.EaseIn }, (): void => { this.doneOpacity = 0; });
+    ui.animateTo({ curve: curves.springMotion(0.55, 0.78), delay: 60 }, (): void => {
+      this.boxX = x; this.boxY = y;
+      this.boxW = AI_FLOAT_ORB; this.boxH = AI_FLOAT_ORB; this.boxR = AI_FLOAT_ORB / 2;
+      this.boxScale = 1; this.boxOpacity = 1; this.boxShadow = 0;
+    });
+    ui.animateTo({ duration: 300, delay: 260, curve: Curve.EaseOut }, (): void => {
+      this.orbOpacity = 1; this.boxColor = '#00000000';
+    });
+    this.later(620, (): void => {
+      this.phase = 2;
+      this.ringsOn = false;
+      ui.animateTo({ curve: curves.springMotion(0.5, 0.86) }, (): void => {
+        this.chatShown = true;
+        this.boxY = this.fitY(this.boxY);
+        this.syncChatSides(false);
+      });
+      this.restSoon(700);
+    });
+  }
+
+  /** Straight to the orb (完成动画 › 不显示). */
+  private showOrb(): void {
+    this.phase = 2;
+    this.orbMounted = true;
+    this.orbOpacity = 1;
+    this.boxColor = '#00000000';
+    this.boxW = AI_FLOAT_ORB; this.boxH = AI_FLOAT_ORB; this.boxR = AI_FLOAT_ORB / 2;
+    this.boxX = this.edgeX(true); this.boxY = this.fitY(this.layerH * 0.46);
+    this.boxScale = 0.6; this.boxOpacity = 0;
+    this.later(16, (): void => {
+      this.getUIContext().animateTo({ curve: curves.springMotion(0.45, 0.78) }, (): void => {
+        this.boxScale = 1; this.boxOpacity = 1;
+      });
+    });
+    this.later(200, (): void => {
+      this.getUIContext().animateTo({ curve: curves.springMotion(0.5, 0.86) }, (): void => {
+        this.chatShown = true;
+        this.boxY = this.fitY(this.boxY);
+        this.syncChatSides(false);
+      });
+      this.restSoon(700);
+    });
+  }
+
+  /**
+   * Let go: the orb springs to the nearer side (where the throw was heading), and up or down just enough that the
+   * orb and its chat fit, carrying the finger's speed into the spring so there is no stop-and-go.
+   */
+  private settle(velocityX: number, velocityY: number): void {
+    const vx: number = this.getUIContext().px2vp(velocityX);
+    const vy: number = this.getUIContext().px2vp(velocityY);
+    const projectedX: number = this.boxX + AI_FLOAT_ORB / 2 + vx * 0.12;
+    const targetX: number = this.edgeX(projectedX > this.layerW / 2);
+    const targetY: number = this.fitY(this.boxY + Math.max(-160, Math.min(160, vy * 0.08)));
+    const distance: number = Math.max(Math.abs(targetX - this.boxX), Math.abs(targetY - this.boxY));
+    const speed: number = Math.abs(targetX - this.boxX) >= Math.abs(targetY - this.boxY) ?
+      vx * Math.sign(targetX - this.boxX) : vy * Math.sign(targetY - this.boxY);
+    const velocity: number = distance > 1 ? Math.max(0, Math.min(12, speed / distance)) : 0;
+    this.getUIContext().animateTo({
+      curve: curves.interpolatingSpring(velocity, 1, 240, 22),
+      onFinish: (): void => { this.restSoon(60); }
+    }, (): void => {
+      this.boxX = targetX; this.boxY = targetY; this.boxScale = 1;
+      this.syncChatSides(false);
+    });
+    // In case onFinish does not come (an interrupted animation), shrink anyway.
+    this.restSoon(900);
+  }
+
+  @Builder private doneContent() {
+    if (this.controller.style === 'island') {
+      if (this.ringsOn) {
+        AiIslandRingsCheck({ markSize: 88 })
+      }
+    } else {
+      Row({ space: 14 }) {
+        Stack() { AiDoneMark({ markSize: 30, style: this.controller.style }) }.width(34).height(34)
+        Text(this.controller.label).fontSize(16).fontWeight(FontWeight.Medium).fontColor('#FFFFFF')
+          .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).layoutWeight(1)
+      }.width('100%').height('100%').padding({ left: 16, right: 20 })
+    }
+  }
+
+  build() {
+    Stack({ alignContent: Alignment.TopStart }) {
+      if (this.phase > 0) {
+        Stack() {
+          if (this.phase === 1 || this.doneOpacity > 0) {
+            Stack() { this.doneContent() }
+              .width('100%').height('100%').opacity(this.doneOpacity)
+          }
+          if (this.orbMounted) {
+            AiFloatingOrb({ orbSize: AI_FLOAT_ORB }).opacity(this.orbOpacity)
+          }
+        }
+        .width(this.boxW).height(this.boxH).borderRadius(this.boxR)
+        .backgroundColor(this.boxColor)
+        .clip(true)
+        .shadow({ radius: this.boxShadow, color: '#59000000', offsetY: this.boxShadow > 0 ? 8 : 0 })
+        .position({ x: this.boxX - this.offsetX(), y: this.boxY - this.offsetY() })
+        .scale({ x: this.boxScale, y: this.boxScale })
+        .opacity(this.boxOpacity)
+        // Any visible part means overflow beyond the anchor is drawn (and so also touchable).
+        .onVisibleAreaChange([0.0, 0.05, 0.5], (visible: boolean, ratio: number): void => {
+          if (visible && ratio > 0.01) { this.overflowSeen = true; }
+        }, true)
+        .accessibilityText(this.phase === 2 ? 'AI 助手，轻点回到完整对话，按住可拖动' : this.controller.label)
+        .onClick((): void => {
+          if (this.phase === 2) {
+            this.controller.onOrbTap(this.boxX, this.boxY + this.originY);
+          }
+        })
+        .gesture(PanGesture({ distance: 4 })
+          .onActionStart((): void => {
+            if (this.phase !== 2) { return; }
+            // The orb may now travel anywhere: the layer covers the window again until it settles.
+            this.toFull();
+            this.dragging = true;
+            this.dragStartX = this.boxX; this.dragStartY = this.boxY;
+            this.getUIContext().animateTo({ curve: curves.springMotion(0.3, 0.8) }, (): void => { this.boxScale = 1.08; });
+          })
+          .onActionUpdate((event: GestureEvent): void => {
+            if (this.phase !== 2 || !this.dragging) { return; }
+            // Exactly under the finger, every frame: no animation, no fitting while the finger is down.
+            this.boxX = Math.max(4, Math.min(this.layerW - AI_FLOAT_ORB - 4, this.dragStartX + event.offsetX));
+            this.boxY = Math.max(this.topLimit(), Math.min(this.bottomLimit() - AI_FLOAT_ORB, this.dragStartY + event.offsetY));
+            this.syncChatSides(true);
+          })
+          .onActionEnd((event: GestureEvent): void => {
+            if (this.phase !== 2 || !this.dragging) { return; }
+            this.dragging = false;
+            this.settle(event.velocityX, event.velocityY);
+          })
+          .onActionCancel((): void => {
+            if (!this.dragging) { return; }
+            this.dragging = false;
+            this.settle(0, 0);
+          }))
+      }
+      if (this.chatShown) {
+        DiagnosticAiAssistantPanel({ siriMode: true, forceDark: true, embedded: true, mini: true, revealed: true,
+          deviceClass: this.controller.deviceClass === 'pc' ? 'pc' : this.controller.deviceClass === 'pad' ? 'pad' : 'phone',
+          onCardSize: (_width: number, height: number): void => {
+            if (height <= 0 || Math.abs(height - this.chatH) < 1) { return; }
+            // An answer arrived (or went): the chat grows, and the orb moves only if the two no longer fit.
+            this.toFull();
+            this.getUIContext().animateTo({ curve: curves.springMotion(0.45, 0.86) }, (): void => {
+              this.chatH = height;
+              if (!this.dragging) { this.boxY = this.fitY(this.boxY); this.syncChatSides(false); }
+            });
+            this.restSoon(560);
+          },
+          onExpand: (): void => { this.controller.onOrbTap(this.boxX, this.boxY + this.originY); } })
+          .width(this.chatWidth())
+          .position({ x: this.chatX() - this.offsetX(), y: this.chatY() - this.offsetY() })
+          .translate({ x: this.chatShiftX, y: this.chatShiftY })
+          .transition(TransitionEffect.OPACITY.combine(TransitionEffect.scale({ x: 0.6, y: 0.6 }))
+            .animation({ curve: curves.springMotion(0.5, 0.78) }))
+      }
+    }
+    // Anchored: a 1 vp wide strip down the left edge. Its full height gives the chat room to lay out its own
+    // height (a child's auto size is capped by its parent); the children's widths are all explicit.
+    .width(this.anchored ? 1 : this.boxMode ? this.regionW : '100%')
+    .height(this.anchored ? '100%' : this.boxMode ? this.regionH : '100%')
+    // Full window: under the status and gesture bars too. A region at rest stays exactly its size.
+    .expandSafeArea(this.anchored || this.boxMode ? [] : [SafeAreaType.SYSTEM, SafeAreaType.KEYBOARD])
+    // The layer itself never takes a touch: only the mark, the orb and the chat do.
+    .hitTestBehavior(HitTestMode.None)
+    .onAreaChange((_old: Area, area: Area): void => {
+      const w: number = Number(area.width);
+      const h: number = Number(area.height);
+      if (w <= 0 || h <= 0) { return; }
+      if (this.anchored) {
+        // The anchor's corner is the layer's origin; the window gives its size.
+        this.originY = Number(area.globalPosition.y);
+        if (this.windowH > 0) { this.layerH = this.windowH - this.originY; }
+        hilog.info(0x0000, 'AiLift', 'anchor at %{public}s,%{public}s layer %{public}sx%{public}s',
+          Math.round(Number(area.globalPosition.x)).toString(), Math.round(this.originY).toString(),
+          Math.round(this.layerW).toString(), Math.round(this.layerH).toString());
+        if (!this.measured) { this.measured = true; this.start(); }
+        return;
+      }
+      if (this.boxMode) {
+        // At rest: where the dialog really put the region, to check it matches the orb's place.
+        hilog.info(0x0000, 'AiLift', 'region %{public}s,%{public}s placed at %{public}s,%{public}s',
+          Math.round(this.regionX).toString(), Math.round(this.regionY + this.originY).toString(),
+          Math.round(Number(area.globalPosition.x)).toString(), Math.round(Number(area.globalPosition.y)).toString());
+        return;
+      }
+      this.layerW = w; this.layerH = h;
+      this.originY = Number(area.globalPosition.y);
+      hilog.info(0x0000, 'AiLift', 'layer %{public}sx%{public}s at y %{public}s',
+        Math.round(w).toString(), Math.round(h).toString(), Math.round(this.originY).toString());
+      if (!this.measured) { this.measured = true; this.start(); }
+    })
+  }
+}

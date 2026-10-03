@@ -1,3 +1,4 @@
+import { AiMotionSettingsPanel } from './AiMotionSettingsPanel';
 import { common } from '@kit.AbilityKit';
 import { deviceInfo } from '@kit.BasicServicesKit';
 import { AppConfig, Palette, buildDark, buildLight } from '../../common/Theme';
@@ -523,6 +524,7 @@ export struct DiagnosticAiSettingsSheet {
     if (this.section === 3) { return 'AI 用量监控'; }
     if (this.section === 4) { return 'AI 个性化设置'; }
     if (this.section === 5) { return 'AI 会话管理'; }
+    if (this.section === 6) { return 'AI 动效'; }
     return '辅助 AI 配置';
   }
   private headerDetail(): string {
@@ -530,13 +532,15 @@ export struct DiagnosticAiSettingsSheet {
     if (this.section === 3) { return '按订阅查看 Token、缓存命中和费用估算'; }
     if (this.section === 4) { return '名称、语气和仅保存在本机的助手记忆'; }
     if (this.section === 5) { return '查看历史对话并在原 Provider 上继续交流'; }
+    if (this.section === 6) { return '思考动画、悬浮球、完成动画和展开方式'; }
     return '选择 Provider、模型和数据外发策略';
   }
 
   @Builder private header() {
     Row({ space: 12 }) {
       Column() {
-        SymbolGlyph(this.section === 1 ? $r('sys.symbol.performance') : $r('sys.symbol.gearshape_fill'))
+        SymbolGlyph(this.section === 1 ? $r('sys.symbol.performance') : this.section === 6 ? $r('sys.symbol.wand_and_stars') :
+          $r('sys.symbol.gearshape_fill'))
           .fontSize(20).fontColor([Color.White])
       }
       .width(40).height(40).borderRadius(13).justifyContent(FlexAlign.Center)
@@ -960,7 +964,7 @@ export struct DiagnosticAiSettingsSheet {
     Column({ space: 10 }) {
       SymbolGlyph($r('sys.symbol.lock_fill')).fontSize(30).fontColor([this.pal().text3])
       Text('需要有效的 Pro 权益').fontSize(17).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
-      Text('传统日志抓取不受影响，可在「设置 → 诊断与 AI 帮助 → 传统日志抓取」中使用。')
+      Text('传统日志抓取不受影响，可在「设置 → AI 助理 → 传统日志抓取」中使用。')
         .fontSize(13).lineHeight(19).fontColor(this.pal().text2).textAlign(TextAlign.Center)
     }.width('100%').padding(28).borderRadius(18).backgroundColor(this.pal().card)
   }
@@ -980,7 +984,8 @@ export struct DiagnosticAiSettingsSheet {
   build() {
     Column() {
         this.header()
-        if ((this.section === 1 || this.section === 3 || this.section === 4 || this.section === 5) ? !this.assistantAllowed() : !this.providerAllowed()) {
+        if ((this.section === 1 || this.section === 3 || this.section === 4 || this.section === 5 || this.section === 6) ?
+          !this.assistantAllowed() : !this.providerAllowed()) {
           this.lockedCard()
         } else if (this.section === 1) {
           DiagnosticAiAssistantPanel({
@@ -996,6 +1001,8 @@ export struct DiagnosticAiSettingsSheet {
           this.personalizationSection()
         } else if (this.section === 5) {
           this.sessionManagementSection()
+        } else if (this.section === 6) {
+          AiMotionSettingsPanel()
         } else {
           this.configSection()
         }

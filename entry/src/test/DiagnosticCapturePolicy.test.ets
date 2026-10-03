@@ -47,7 +47,7 @@ export default function diagnosticCapturePolicyTest(): void {
       expect(selected[0]).assertEqual('core.app');
       expect(selected[1]).assertEqual('connection.rdp');
       expect(selected[2]).assertEqual('connection.vnc');
-      expect(diagnosticAllModules().length).assertEqual(10);
+      expect(diagnosticAllModules().length).assertEqual(12);
       expect(diagnosticModuleSpecs()[0].alwaysEnabled).assertTrue();
       expect(diagnosticModuleIsKnown('security.ssh_key')).assertTrue();
       expect(diagnosticModuleIsKnown('security.totp')).assertFalse();

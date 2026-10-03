@@ -15,7 +15,9 @@ export type DiagnosticModuleId =
   'data.cloud_sync' |
   'data.local_store' |
   'network.routing' |
-  'security.ssh_key';
+  'security.ssh_key' |
+  'core.account' |
+  'core.ai';
 
 export type DiagnosticEventLevel = 'info' | 'warn' | 'error';
 
@@ -246,7 +248,7 @@ export interface DiagnosticEventSpec {
 export type DiagnosticCaptureProfile = 'selected' | 'full';
 
 export const DIAGNOSTIC_CAPTURE_SCHEMA_VERSION: number = 8;
-export const DIAGNOSTIC_EVENT_CATALOG_VERSION: number = 1;
+export const DIAGNOSTIC_EVENT_CATALOG_VERSION: number = 2;
 export const DIAGNOSTIC_REDACTION_POLICY_VERSION: number = 3;
 export const DIAGNOSTIC_DEFAULT_DURATION_MINUTES: number = 10;
 export const DIAGNOSTIC_MAX_EVENTS: number = 10000;
@@ -267,7 +269,9 @@ const DIAGNOSTIC_MODULES: DiagnosticModuleSpec[] = [
   { id: 'data.cloud_sync', label: '云同步', alwaysEnabled: false },
   { id: 'data.local_store', label: '本地数据库', alwaysEnabled: false },
   { id: 'network.routing', label: '中继与网关', alwaysEnabled: false },
-  { id: 'security.ssh_key', label: 'SSH 密钥对', alwaysEnabled: false }
+  { id: 'security.ssh_key', label: 'SSH 密钥对', alwaysEnabled: false },
+  { id: 'core.account', label: '账号与登录', alwaysEnabled: false },
+  { id: 'core.ai', label: 'AI 助手', alwaysEnabled: false }
 ];
 
 const DIAGNOSTIC_OUTCOMES: DiagnosticOutcome[] = [
@@ -282,6 +286,8 @@ const DIAGNOSTIC_EVENTS: DiagnosticEventSpec[] = [
   { moduleId: 'core.app', eventCode: 'app_lifecycle' },
   { moduleId: 'core.app', eventCode: 'window_orientation_request' },
   { moduleId: 'core.app', eventCode: 'window_orientation_state' },
+  { moduleId: 'core.app', eventCode: 'app_fault_history' },
+  { moduleId: 'core.app', eventCode: 'app_exception' },
 
   { moduleId: 'connection.rdp', eventCode: 'rdp_connection_request' },
   { moduleId: 'connection.rdp', eventCode: 'rdp_preflight' },
@@ -289,6 +295,11 @@ const DIAGNOSTIC_EVENTS: DiagnosticEventSpec[] = [
   { moduleId: 'connection.rdp', eventCode: 'rdp_runtime_snapshot' },
   { moduleId: 'connection.rdp', eventCode: 'rdp_display_layout' },
   { moduleId: 'connection.rdp', eventCode: 'rdp_disconnect' },
+  { moduleId: 'connection.rdp', eventCode: 'rdp_failure' },
+  { moduleId: 'connection.rdp', eventCode: 'rdp_certificate' },
+  { moduleId: 'connection.rdp', eventCode: 'rdp_clipboard' },
+  { moduleId: 'connection.rdp', eventCode: 'rdp_drive' },
+  { moduleId: 'connection.rdp', eventCode: 'rdp_audio' },
 
   { moduleId: 'connection.rustdesk', eventCode: 'rustdesk_presence' },
   { moduleId: 'connection.rustdesk', eventCode: 'rustdesk_preflight' },
@@ -299,6 +310,9 @@ const DIAGNOSTIC_EVENTS: DiagnosticEventSpec[] = [
   { moduleId: 'connection.rustdesk', eventCode: 'rustdesk_display_switch' },
   { moduleId: 'connection.rustdesk', eventCode: 'rustdesk_orientation_observation' },
   { moduleId: 'connection.rustdesk', eventCode: 'rustdesk_disconnect' },
+  { moduleId: 'connection.rustdesk', eventCode: 'rustdesk_clipboard' },
+  { moduleId: 'connection.rustdesk', eventCode: 'rustdesk_failure' },
+  { moduleId: 'connection.rustdesk', eventCode: 'rustdesk_first_frame' },
 
   { moduleId: 'connection.ssh_sftp', eventCode: 'ssh_session_event' },
   { moduleId: 'connection.ssh_sftp', eventCode: 'ssh_preflight' },
@@ -306,6 +320,8 @@ const DIAGNOSTIC_EVENTS: DiagnosticEventSpec[] = [
   { moduleId: 'connection.ssh_sftp', eventCode: 'ssh_runtime_snapshot' },
   { moduleId: 'connection.ssh_sftp', eventCode: 'sftp_task_started' },
   { moduleId: 'connection.ssh_sftp', eventCode: 'sftp_task_completed' },
+  { moduleId: 'connection.ssh_sftp', eventCode: 'ssh_failure' },
+  { moduleId: 'connection.ssh_sftp', eventCode: 'sftp_failure' },
 
   { moduleId: 'connection.vnc', eventCode: 'vnc_connection_request' },
   { moduleId: 'connection.vnc', eventCode: 'vnc_preflight' },
@@ -314,6 +330,7 @@ const DIAGNOSTIC_EVENTS: DiagnosticEventSpec[] = [
   { moduleId: 'connection.vnc', eventCode: 'vnc_update_progress' },
   { moduleId: 'connection.vnc', eventCode: 'vnc_runtime_snapshot' },
   { moduleId: 'connection.vnc', eventCode: 'vnc_disconnect' },
+  { moduleId: 'connection.vnc', eventCode: 'vnc_failure' },
 
   { moduleId: 'connection.moonlight', eventCode: 'moonlight_pair' },
   { moduleId: 'connection.moonlight', eventCode: 'moonlight_catalog' },
@@ -349,7 +366,13 @@ const DIAGNOSTIC_EVENTS: DiagnosticEventSpec[] = [
   { moduleId: 'security.ssh_key', eventCode: 'ssh_key_store' },
   { moduleId: 'security.ssh_key', eventCode: 'ssh_key_delete' },
   { moduleId: 'security.ssh_key', eventCode: 'ssh_key_install' },
-  { moduleId: 'security.ssh_key', eventCode: 'ssh_key_auth_test' }
+  { moduleId: 'security.ssh_key', eventCode: 'ssh_key_auth_test' },
+
+  { moduleId: 'core.account', eventCode: 'account_login' },
+
+  { moduleId: 'core.ai', eventCode: 'ai_request' },
+  { moduleId: 'core.ai', eventCode: 'ai_config' },
+  { moduleId: 'core.ai', eventCode: 'ai_setting' }
 ];
 
 export function diagnosticDurationOptions(): number[] {

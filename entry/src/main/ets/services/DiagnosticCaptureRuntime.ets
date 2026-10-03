@@ -94,6 +94,15 @@ export interface DiagnosticCaptureStatus {
   stopReason: DiagnosticStopReason | '';
 }
 
+/** What happened in one event, without any of its facts: enough to see a connection end while capturing. */
+export interface DiagnosticEventOutcome {
+  sequence: number;
+  moduleId: DiagnosticModuleId;
+  eventCode: string;
+  outcome: DiagnosticOutcome;
+  code: number;
+}
+
 export interface FrozenDiagnosticCapture {
   captureId: string;
   durationMinutes: number;
@@ -333,6 +342,16 @@ export class DiagnosticCaptureRuntime {
       approximateBytes: this.approximateBytes,
       stopReason: this.stopReason
     };
+  }
+
+  /** Outcomes of the running capture's events after `sequence` (read-only; nothing while not capturing). */
+  outcomesSince(sequence: number): DiagnosticEventOutcome[] {
+    if (this.phase !== 'capturing') { return []; }
+    return this.events.filter((event: DiagnosticCaptureEvent): boolean => event.sequence > sequence)
+      .map((event: DiagnosticCaptureEvent): DiagnosticEventOutcome => ({
+        sequence: event.sequence, moduleId: event.moduleId, eventCode: event.eventCode, outcome: event.outcome,
+        code: event.code
+      }));
   }
 
   frozenCapture(): FrozenDiagnosticCapture | null {

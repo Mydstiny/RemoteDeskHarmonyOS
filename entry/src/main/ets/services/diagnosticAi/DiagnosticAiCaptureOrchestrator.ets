@@ -1,4 +1,4 @@
-import { DiagnosticCaptureActionCode } from '../DiagnosticCaptureRuntime';
+import { DiagnosticCaptureActionCode, DiagnosticEventOutcome } from '../DiagnosticCaptureRuntime';
 import { DiagnosticCaptureCoordinator } from '../DiagnosticCaptureCoordinator';
 import { DiagnosticAiCapturePlan, diagnosticAiBundleFromCapture, DiagnosticAiBundle, diagnosticAiPlanValid } from './DiagnosticAiBundlePolicy';
 
@@ -30,9 +30,10 @@ export class DiagnosticAiCaptureOrchestrator {
     return result;
   }
 
-  bundle(owner: string): DiagnosticAiBundle | null {
+  /** The frozen capture as an AI bundle, narrowed to the 日志子模块 in `focus` (all of it when empty). */
+  bundle(owner: string, focus: string[] = []): DiagnosticAiBundle | null {
     if (owner !== this.owner) { return null; }
-    return diagnosticAiBundleFromCapture(this.coordinator.bundle(owner, 'ai'));
+    return diagnosticAiBundleFromCapture(this.coordinator.bundle(owner, 'ai'), focus);
   }
 
   discard(owner: string, captureId: string = ''): DiagnosticCaptureActionCode {
@@ -52,6 +53,12 @@ export class DiagnosticAiCaptureOrchestrator {
   }
 
   status() { return this.coordinator.status(); }
+
+  /** How the owner's running capture is going: event outcomes after `sequence` (see DiagnosticCaptureRuntime). */
+  outcomesSince(owner: string, sequence: number): DiagnosticEventOutcome[] {
+    if (owner !== this.owner) { return []; }
+    return this.coordinator.runtime().outcomesSince(sequence);
+  }
 
   /** Stop capture before an account/logout/refund transition can change scope. */
   invalidateAll(): void {

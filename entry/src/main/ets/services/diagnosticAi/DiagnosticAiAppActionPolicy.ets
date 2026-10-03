@@ -88,7 +88,7 @@ const RULES: ActionRule[] = [
   new ActionRule('settings.controlBar', '打开会话控制栏设置', [['控制栏', '会话栏', '工具栏显示']]),
   new ActionRule('settings.rdpDisplay', '打开 RDP 显示设置', [['RDP', '分辨率', '显示缩放']]),
   new ActionRule('settings.sshSkin', '打开 SSH 外观设置', [['SSH', '终端皮肤', '终端外观']]),
-  new ActionRule('settings.diagnosticAi', '打开诊断与 AI 帮助', [['诊断与 AI', '诊断AI', 'AI 帮助'], ['设置', '页面', '入口', '帮助']]),
+  new ActionRule('settings.diagnosticAi', '打开 AI 助理设置', [['AI 助理', 'AI助理', '诊断与 AI', '诊断AI', 'AI 帮助'], ['设置', '页面', '入口', '帮助']]),
   new ActionRule('settings.aiHosts', '打开远程 AI 主机设置', [['远程 AI', 'AI 主机', '电脑端 AI']]),
   new ActionRule('settings.aiDisplay', '打开远程 AI 显示设置', [['远程 AI', 'AI 显示', '显示入口']]),
   new ActionRule('settings.aiData', '打开远程 AI 数据设置', [['远程 AI', 'AI 数据', '数据策略']]),
