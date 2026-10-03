@@ -487,7 +487,10 @@ export function diagnosticRuntimeFactsSignature(facts: DiagnosticRuntimeFacts): 
     JSON.stringify(facts.protocol), JSON.stringify(facts.resources),
     facts.video?.sentCodecPreference, facts.video?.codecOptionSendFailures,
     facts.video?.firstFrameCodec, facts.video?.codecChanges,
-    JSON.stringify(facts.video?.decoderAttempts)
+    JSON.stringify(facts.video?.decoderAttempts),
+    facts.rdpGraphics?.evidenceLevel, facts.rdpGraphics?.presentation,
+    facts.rdpGraphics?.capsConfirmedVersion, facts.rdpGraphics?.wireCodec,
+    facts.rdpGraphics?.h264Status, facts.rdpGraphics?.fallbackReason
   ].join('|');
 }
 

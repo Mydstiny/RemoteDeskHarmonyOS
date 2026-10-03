@@ -1,5 +1,9 @@
 import { deviceInfo } from '@kit.BasicServicesKit';
 import { VideoDiagnosticEvidence, parseVideoDiagnosticEvidence } from './VideoDiagnosticEvidence';
+import {
+  DiagnosticRdpGraphicsFacts,
+  parseDiagnosticRdpGraphicsFacts
+} from './RdpGraphicsEvidencePolicy';
 import { fileIo, picker } from '@kit.CoreFileKit';
 import { util } from '@kit.ArkTS';
 import { common } from '@kit.AbilityKit';
@@ -567,10 +571,14 @@ function jsonRuntimeFacts(value: Object): DiagnosticRuntimeFacts | null {
     'dropped', 'errors', 'queueDepth', 'latencyMs', 'protocol', 'resources'
   ];
   if (source['video'] !== undefined) { fields.push('video'); }
+  if (source['rdpGraphics'] !== undefined) { fields.push('rdpGraphics'); }
   if (!objectHasExactKeys(source, fields)) { return null; }
   const video: VideoDiagnosticEvidence | null = source['video'] === undefined ? null :
     parseVideoDiagnosticEvidence(source['video']);
   if (source['video'] !== undefined && video === null) { return null; }
+  const rdpGraphics: DiagnosticRdpGraphicsFacts | null = source['rdpGraphics'] === undefined ?
+    null : parseDiagnosticRdpGraphicsFacts(source['rdpGraphics']);
+  if (source['rdpGraphics'] !== undefined && rdpGraphics === null) { return null; }
   const protocol: DiagnosticProtocolFacts | null = jsonProtocolFacts(source['protocol']);
   const resources: DiagnosticResourceFacts | null = jsonResourceFacts(source['resources']);
   if (protocol === null || resources === null) { return null; }
@@ -631,6 +639,7 @@ function jsonRuntimeFacts(value: Object): DiagnosticRuntimeFacts | null {
     errors === null || queueDepth === null || latencyMs === null) { return null; }
   const facts: DiagnosticRuntimeFacts = {
     video: video === null ? undefined : video,
+    rdpGraphics: rdpGraphics === null ? undefined : rdpGraphics,
     state: state as DiagnosticRuntimeState,
     backend: backend as DiagnosticRuntimeBackend,
     codec: codec as DiagnosticRuntimeCodec,

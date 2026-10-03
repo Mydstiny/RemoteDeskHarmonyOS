@@ -507,15 +507,19 @@ fn ffi_string(ptr: *const c_char) -> String {
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RustDeskProfile {
-    Stable = 0,      // H264 30fps 1280px Low 质量 — 最稳定
-    Balanced = 1,    // H264 45fps 1600px Balanced 质量 — 默认
-    Performance = 2, // H264/H265 60fps 1920px Best 质量 — 高性能设备
-    Custom = 3,      // 使用显式的 width/height/codec/fps 参数
+    Stable = 0,      // H264 30fps Low 质量 — 最稳定
+    Balanced = 1,    // H264 60fps Balanced 质量 — 默认
+    Performance = 2, // H264/H265 60fps Best 质量 — 高性能设备
+    Custom = 3,      // 使用显式的 codec/fps 参数
 }
 
-/// Profile 分辨率/FPS/质量映射
+/// Profile FPS/编码/质量映射。
+///
+/// A profile never chooses the remote resolution: RustDesk peers stream their
+/// own display size, and display/resolution changes are explicit requests
+/// owned by the display controls. The image-quality tier only maps to the
+/// remote encoder bitrate preference.
 pub struct ProfileParams {
-    pub max_edge_px: i32,
     pub fps: u32,
     pub codec: i32,         // 0=auto, 4=H264, 5=H265
     pub image_quality: i32, // 0=Low, 1=Balanced, 2=Best
@@ -525,25 +529,21 @@ impl ProfileParams {
     pub fn from_profile(profile: RustDeskProfile) -> Self {
         match profile {
             RustDeskProfile::Stable => ProfileParams {
-                max_edge_px: 1280,
                 fps: 30,
                 codec: 4,         // H264
                 image_quality: 0, // Low
             },
             RustDeskProfile::Balanced => ProfileParams {
-                max_edge_px: 1600,
                 fps: 60,          // was 45 — revert to known-good 60fps
                 codec: 4,         // H264
                 image_quality: 1, // Balanced
             },
             RustDeskProfile::Performance => ProfileParams {
-                max_edge_px: 1920,
                 fps: 60,
                 codec: 0,         // Auto (prefer H264, allow H265)
                 image_quality: 2, // Best
             },
             RustDeskProfile::Custom => ProfileParams {
-                max_edge_px: 1920,
                 fps: 60,
                 codec: 0,
                 image_quality: 1,
@@ -689,8 +689,6 @@ struct ResolvedStreamParams {
     preferred_codec: i32,
     image_quality: i32,
     effective_fps: u32,
-    req_width: i32,
-    req_height: i32,
 }
 
 fn resolve_stream_params_for_config(config: &RustDeskConfig) -> ResolvedStreamParams {
@@ -738,16 +736,6 @@ fn resolve_stream_params_for_config(config: &RustDeskConfig) -> ResolvedStreamPa
         preferred_codec,
         image_quality,
         effective_fps,
-        req_width: if config.width > 0 {
-            config.width
-        } else {
-            profile_params.max_edge_px
-        },
-        req_height: if config.height > 0 {
-            config.height
-        } else {
-            1080
-        },
     }
 }
 
@@ -2129,19 +2117,15 @@ fn rustdesk_connect_impl(
     let preferred_codec = stream_params.preferred_codec;
     let image_quality = stream_params.image_quality;
     let effective_fps = stream_params.effective_fps;
-    let req_width = stream_params.req_width;
-    let req_height = stream_params.req_height;
     eprintln!(
-        "[RustDesk-FFI] config profile={:?} codec={} raw_quality={} quality={} raw_fps={} fps={} audio={} res={}x{}",
+        "[RustDesk-FFI] config profile={:?} codec={} raw_quality={} quality={} raw_fps={} fps={} audio={}",
         config.profile,
         preferred_codec,
         config.image_quality,
         image_quality,
         config.fps,
         effective_fps,
-        if audio_enabled { "on" } else { "off" },
-        req_width,
-        req_height
+        if audio_enabled { "on" } else { "off" }
     );
 
     if host.is_empty() {
@@ -6033,8 +6017,6 @@ mod tests {
         assert_eq!(params.preferred_codec, 0);
         assert_eq!(params.image_quality, 2);
         assert_eq!(params.effective_fps, 60);
-        assert_eq!(params.req_width, 742);
-        assert_eq!(params.req_height, 1600);
     }
 
     #[test]
@@ -6064,7 +6046,6 @@ mod tests {
         assert_eq!(params.profile, RustDeskProfile::Stable);
         assert_eq!(params.preferred_codec, 4);
         assert_eq!(params.effective_fps, 30);
-        assert_eq!(params.req_width, 1280);
     }
 
     #[test]

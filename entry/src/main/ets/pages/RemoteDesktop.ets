@@ -1,5 +1,17 @@
 import { recordVncFailure } from '../services/VncDiagnosticEvents';
-import { recordRustDeskFailure, recordRustDeskFirstFrame } from '../services/RustDeskDiagnosticEvents';
+import { recordRustDeskFailure, recordRustDeskFirstFrame, recordRustDeskQualityRequest,
+  recordRustDeskQualityResult } from '../services/RustDeskDiagnosticEvents';
+import {
+  RUSTDESK_QUALITY_POLL_INTERVAL_MS,
+  RustDeskQualityConfirmation,
+  RustDeskQualityEvaluation,
+  RustDeskQualitySample,
+  beginRustDeskQualityConfirmation,
+  evaluateRustDeskQualityConfirmation,
+  rustDeskQualityName,
+  rustDeskQualityVerdictIsFinal,
+  rustDeskQualityVerdictMessage
+} from '../services/RustDeskQualityConfirmationPolicy';
 import { CLIPBOARD_AUTHORITY_BUSY, CLIPBOARD_CHANNEL_NOT_NEGOTIATED, CLIPBOARD_NATIVE_REJECTED, CLIPBOARD_READ_PERMISSION_MISSING, CLIPBOARD_START_ERROR, CLIPBOARD_STARTED, RDP_FAILURE_IN_SESSION, RDP_FAILURE_WHILE_CONNECTING, recordRdpAudio, recordRdpDrive, recordRdpFailure, recordSessionClipboard } from '../services/RdpDiagnosticEvents';
 import { diagnosticDesktopRuntimeFacts } from '../services/DiagnosticRuntimeSnapshotPolicy';
 import { recordVideoOrientation } from '../services/VideoOrientationCapture';
@@ -1993,6 +2005,8 @@ struct RemoteDesktop {
   private rdpTransferStatusTimer: number = -1;
   private remoteCursorPollTimer: number = -1;
   private rustDeskGeometrySyncTimer: number = -1;
+  private rustDeskQualityConfirmTimer: number = -1;
+  private rustDeskQualityConfirmation: RustDeskQualityConfirmation | null = null;
   private vncGeometrySyncTimer: number = -1;
   private vncSurfaceResizeRefreshTimer: number = -1;
   @State @Watch('onHarmonyShortcutInputOwnerChange')
@@ -7917,12 +7931,85 @@ struct RemoteDesktop {
     const next: number = quality >= 0 && quality <= 2 ? quality : 1;
     this.rustdeskImageQuality = next;
     this.persistSessionPref('rustdeskImageQuality', next);
-    const appliedLive: boolean = this.sessionId >= 0 && this.isRustDeskSession() &&
-      this.loader.setRustDeskImageQuality(this.sessionId, next);
+    this.stopRustDeskQualityConfirmation();
+    const sessionId: number = this.sessionId;
+    const live: boolean = sessionId >= 0 && this.isRustDeskSession();
+    // Sample the remote target bitrate before the request so the verdict can
+    // compare against what the peer was encoding with the previous tier.
+    const baseline: RustDeskQualitySample | null = live ? this.rustDeskQualitySample(sessionId) : null;
+    const appliedLive: boolean = live && this.loader.setRustDeskImageQuality(sessionId, next);
+    recordRustDeskQualityRequest(sessionId, next, appliedLive,
+      baseline !== null ? baseline.targetBitrateKbps : 0);
+    if (!appliedLive || baseline === null) {
+      promptAction.showToast({ message: '画质偏好已保存，下次连接生效', duration: 2000 });
+      return;
+    }
     promptAction.showToast({
-      message: appliedLive ? '画质更新已发送，等待远端生效' : '画质偏好已保存，下次连接生效',
-      duration: 2000
+      message: rustDeskQualityName(next) + '已发送，正在等待远端码率报告', duration: 2000
     });
+    this.startRustDeskQualityConfirmation(sessionId, next, baseline);
+  }
+
+  /** Physical pixels per remote pixel from the last renderer viewport; -1 when unknown. */
+  private remoteLocalScalePercent(): number {
+    const viewport: RendererViewportSnapshot | null = this.rendererViewportCache;
+    if (viewport === null || viewport.sourceWidth <= 0 || viewport.viewportW <= 0) { return -1; }
+    const displayedSource: number = this.canvasRotationQuarterTurns % 2 === 1 ?
+      viewport.sourceHeight : viewport.sourceWidth;
+    if (displayedSource <= 0) { return -1; }
+    return Math.max(1, Math.round(viewport.viewportW * 100 / displayedSource));
+  }
+
+  private rustDeskQualitySample(sessionId: number): RustDeskQualitySample | null {
+    try {
+      const snapshot: RustDeskDiagnosticsSnapshot = this.loader.getSessionDiagnostics(sessionId);
+      if (snapshot.sessionId !== sessionId) { return null; }
+      return {
+        sessionActive: snapshot.sessionActive,
+        targetBitrateKbps: snapshot.targetBitrateKbps,
+        testDelayCount: snapshot.testDelayCount,
+        sentImageQuality: snapshot.sentImageQuality,
+        qualityRequestedGeneration: snapshot.qualityRequestedGeneration,
+        qualityAppliedGeneration: snapshot.qualityAppliedGeneration,
+        qualityUpdateStatus: snapshot.qualityUpdateStatus
+      };
+    } catch (_e) {
+      return null;
+    }
+  }
+
+  private startRustDeskQualityConfirmation(sessionId: number, quality: number,
+    baseline: RustDeskQualitySample): void {
+    const state: RustDeskQualityConfirmation =
+      beginRustDeskQualityConfirmation(quality, Date.now(), baseline);
+    this.rustDeskQualityConfirmation = state;
+    this.rustDeskQualityConfirmTimer = setInterval((): void => {
+      if (this.rustDeskQualityConfirmation !== state) { return; }
+      if (!this.connected || this.sessionId !== sessionId || !this.isRustDeskSession()) {
+        this.stopRustDeskQualityConfirmation();
+        return;
+      }
+      const sample: RustDeskQualitySample | null = this.rustDeskQualitySample(sessionId);
+      if (sample === null) { return; }
+      const nowMs: number = Date.now();
+      const evaluation: RustDeskQualityEvaluation =
+        evaluateRustDeskQualityConfirmation(state, sample, nowMs);
+      if (!rustDeskQualityVerdictIsFinal(evaluation.verdict)) { return; }
+      this.stopRustDeskQualityConfirmation();
+      recordRustDeskQualityResult(sessionId, quality, evaluation.verdict,
+        evaluation.currentBitrateKbps, nowMs - state.startedAtMs);
+      promptAction.showToast({
+        message: rustDeskQualityVerdictMessage(quality, evaluation), duration: 3000
+      });
+    }, RUSTDESK_QUALITY_POLL_INTERVAL_MS);
+  }
+
+  private stopRustDeskQualityConfirmation(): void {
+    if (this.rustDeskQualityConfirmTimer >= 0) {
+      clearInterval(this.rustDeskQualityConfirmTimer);
+      this.rustDeskQualityConfirmTimer = -1;
+    }
+    this.rustDeskQualityConfirmation = null;
   }
 
   private setRustDeskCodecPref(codec: number): void {
@@ -10611,6 +10698,7 @@ struct RemoteDesktop {
   }
 
   aboutToDisappear(): void {
+    this.stopRustDeskQualityConfirmation();
     this.stopProRemoteContinuation();
     this.proRdpPageLive = false;
     this.proRdpContinuationEpoch++;
@@ -23823,6 +23911,7 @@ struct RemoteDesktop {
           filePasteEnabled: this.rustdeskFilePasteEnabled,
           viewScaleMode: this.remoteDisplayScaleMode,
           imageQuality: this.rustdeskImageQuality,
+          localScalePercent: this.isRustDeskSession() ? this.remoteLocalScalePercent() : -1,
           codec: this.rustdeskCodec,
           showLocalCursor: this.rustdeskShowLocalCursor,
           browseMode: this.rustdeskBrowseMode,

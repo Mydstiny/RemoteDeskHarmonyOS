@@ -111,6 +111,12 @@ import {
 } from './DiagnosticCaptureRuntime';
 import { recordVncUpdateFailure } from './VncUpdateDiagnostics';
 import {
+  DiagnosticRdpGraphicsFacts,
+  rdpGraphicsFactsFromRenderStats,
+  rdpGraphicsTransitionCode,
+  rdpGraphicsTransitionSignature
+} from './RdpGraphicsEvidencePolicy';
+import {
   DiagnosticDesktopModule,
   DiagnosticRuntimeSamplingLoop,
   DiagnosticRuntimeSamplingScheduler,
@@ -281,6 +287,9 @@ export class ExtensionLoader implements RustDeskClipboardNative {
     new Map<number, DiagnosticConnectionObservation>();
   private diagnosticRuntimeSnapshots: DiagnosticRuntimeSnapshotGate =
     new DiagnosticRuntimeSnapshotGate();
+  // Last recorded RDP graphics negotiation per session; a change records one
+  // rdp_graphics_negotiation event independent of runtime snapshot throttling.
+  private diagnosticRdpGraphicsSignatures: Map<number, string> = new Map<number, string>();
   private readonly diagnosticRuntimeSamplingLoop: DiagnosticRuntimeSamplingLoop;
 
   constructor(diagnosticRuntimeScheduler: DiagnosticRuntimeSamplingScheduler =
@@ -296,6 +305,11 @@ export class ExtensionLoader implements RustDeskClipboardNative {
       // snapshot even when counters did not change since the last tick.
       if (boundary === 'stopping') {
         this.diagnosticRuntimeSnapshots.clear();
+      }
+      // A new capture must start with the current graphics state; the stop
+      // boundary keeps signatures so its final sample records no false change.
+      if (boundary === 'started') {
+        this.diagnosticRdpGraphicsSignatures.clear();
       }
       this.diagnosticRuntimeSamplingLoop.sampleNow();
     });
@@ -321,14 +335,20 @@ export class ExtensionLoader implements RustDeskClipboardNative {
         this.mergeRdpRenderDiagnostics(sessionId, facts);
       }
       facts.resources = this.diagnosticResourceFacts();
+      if (moduleId === 'connection.rdp' && facts.rdpGraphics !== undefined) {
+        this.recordRdpGraphicsTransition(sessionId, facts);
+      }
       if (!this.diagnosticRuntimeSnapshots.shouldRecord(
         desktopModule, sessionId, captureId, facts, Date.now(),
         this.diagnosticRuntimeIntervalMs())) { return; }
+      // RDP event bytes are observed RDPGFX wire bytes, never local copies.
+      const eventBytes: number = moduleId === 'connection.rdp' ?
+        (facts.rdpGraphics !== undefined ? facts.rdpGraphics.wireBytes : 0) :
+        (Number.isSafeInteger(source.receivedBytes) && source.receivedBytes > 0 ?
+          source.receivedBytes : 0);
       recordDiagnosticEvent(desktopModule,
         diagnosticDesktopRuntimeEventCode(desktopModule), 'state', sessionId, 0,
-        source.codec, facts.latencyMs, facts.frames,
-        Number.isSafeInteger(source.receivedBytes) && source.receivedBytes > 0 ?
-          source.receivedBytes : 0, facts,
+        source.codec, facts.latencyMs, facts.frames, eventBytes, facts,
         this.diagnosticSessionNetworks.get(sessionId));
     } catch (_err) {
       // Runtime capture must never affect a diagnostics HUD or session poll.
@@ -384,6 +404,17 @@ export class ExtensionLoader implements RustDeskClipboardNative {
     }
   }
 
+  private recordRdpGraphicsTransition(sessionId: number, facts: DiagnosticRuntimeFacts): void {
+    const graphics: DiagnosticRdpGraphicsFacts | undefined = facts.rdpGraphics;
+    if (graphics === undefined) { return; }
+    const signature: string = rdpGraphicsTransitionSignature(graphics);
+    if (this.diagnosticRdpGraphicsSignatures.get(sessionId) === signature) { return; }
+    this.diagnosticRdpGraphicsSignatures.set(sessionId, signature);
+    recordDiagnosticEvent('connection.rdp', 'rdp_graphics_negotiation', 'state', sessionId, 0,
+      rdpGraphicsTransitionCode(graphics), 0, graphics.surfaceCommands, graphics.wireBytes, facts,
+      this.diagnosticSessionNetworks.get(sessionId));
+  }
+
   private mergeRdpRenderDiagnostics(sessionId: number, facts: DiagnosticRuntimeFacts): void {
     try {
       const stats: RdpRenderStats = this.getRdpRenderStats(sessionId);
@@ -391,8 +422,15 @@ export class ExtensionLoader implements RustDeskClipboardNative {
         Number.isSafeInteger(value) && value >= 0 ? value : 0;
       facts.protocol.receivedFrames = Math.max(facts.protocol.receivedFrames,
         counter(stats.pumpSubmitted));
-      facts.protocol.receivedBytes = Math.max(facts.protocol.receivedBytes,
-        counter(stats.copiedBytes));
+      // RDP's generic ingress counter is fed by the render callback with
+      // dirty-rect BGRA bytes, i.e. local presentation volume. Export it as
+      // callbackBytes only; receivedBytes is the observed RDPGFX wire payload
+      // and no network bitrate is derived from local copies.
+      facts.rdpGraphics = rdpGraphicsFactsFromRenderStats(stats);
+      facts.protocol.callbackBytes = Math.max(facts.protocol.callbackBytes,
+        facts.protocol.receivedBytes);
+      facts.protocol.receivedBytes = facts.rdpGraphics.wireBytes;
+      facts.protocol.bitrateKbps = 0;
       facts.protocol.presentedFrames = counter(stats.pumpRendered);
       facts.protocol.presentationRejected = counter(stats.presentationRejected) +
         counter(stats.surfaceDetachedRejections) + counter(stats.generationRejections);
@@ -474,6 +512,7 @@ export class ExtensionLoader implements RustDeskClipboardNative {
       if (moduleId !== undefined) {
         this.diagnosticRuntimeSnapshots.forget(moduleId, sessionId);
       }
+      this.diagnosticRdpGraphicsSignatures.delete(sessionId);
       this.diagnosticSessionModules.delete(sessionId);
       this.diagnosticSessionNetworks.delete(sessionId);
       this.diagnosticConnectionStates.delete(sessionId);
@@ -555,6 +594,7 @@ export class ExtensionLoader implements RustDeskClipboardNative {
     if (moduleId !== undefined) {
       try { this.diagnosticRuntimeSnapshots.forget(moduleId, sessionId); } catch (_err) {}
     }
+    try { this.diagnosticRdpGraphicsSignatures.delete(sessionId); } catch (_err) {}
     try { this.diagnosticSessionModules.delete(sessionId); } catch (_err) {}
     try { this.diagnosticSessionNetworks.delete(sessionId); } catch (_err) {}
     try { this.diagnosticConnectionStates.delete(sessionId); } catch (_err) {}
@@ -574,6 +614,7 @@ export class ExtensionLoader implements RustDeskClipboardNative {
       submitted)) { return; }
     this.diagnosticRuntimeSamplingLoop.clear();
     this.diagnosticRuntimeSnapshots.clear();
+    try { this.diagnosticRdpGraphicsSignatures.clear(); } catch (_err) {}
     try { this.diagnosticSessionModules.clear(); } catch (_err) {}
     try { this.diagnosticSessionNetworks.clear(); } catch (_err) {}
     try { this.diagnosticConnectionStates.clear(); } catch (_err) {}

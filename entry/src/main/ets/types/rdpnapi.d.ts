@@ -624,6 +624,39 @@ export interface RdpRenderStats {
   inputDroppedMouseMoves: number;
   inputNonDisposableOverflow: number;
   graphicsMode: string;
+  /** Absent on native builds that predate graphics evidence. */
+  gfxEvidence?: RdpGfxEvidenceStats;
+}
+
+/**
+ * Observed RDP graphics negotiation. `requested*`/`h264Advertised` describe
+ * what the client offered; `capsConfirmed*` and `wireCodec` are what the
+ * server actually confirmed and sent. `wireCodec` is 'none' until the first
+ * RDPGFX surface command arrives.
+ */
+export interface RdpGfxEvidenceStats {
+  requestedApplied: boolean;
+  compiledGfx: boolean;
+  compiledH264: boolean;
+  h264PathSafe: boolean;
+  supportGraphicsPipeline: boolean;
+  remoteFxCodec: boolean;
+  h264Advertised: boolean;
+  fallbackConsumed: boolean;
+  fallbackReason: string;
+  capsAdvertisedCount: number;
+  capsAdvertisedMaxVersion: string;
+  capsAdvertisedAvc: boolean;
+  capsConfirmed: boolean;
+  capsConfirmedVersion: string;
+  capsConfirmedFlags: number;
+  capsConfirmedAvc: boolean;
+  surfaceCommands: number;
+  surfaceCommandBytes: number;
+  avcSurfaceCommands: number;
+  unknownCodecCommands: number;
+  wireCodecMask: number;
+  wireCodec: string;
 }
 
 export interface RdpDisplayLayoutRequest {

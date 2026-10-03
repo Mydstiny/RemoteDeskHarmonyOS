@@ -1,5 +1,10 @@
 import { VideoDiagnosticEvidence, copyVideoDiagnosticEvidence, parseVideoDiagnosticEvidence } from './VideoDiagnosticEvidence';
 import {
+  DiagnosticRdpGraphicsFacts,
+  copyDiagnosticRdpGraphicsFacts,
+  diagnosticRdpGraphicsFactsAreValid
+} from './RdpGraphicsEvidencePolicy';
+import {
   EndpointAddressResult,
   parseEndpointAuthority,
   parseEndpointFields
@@ -198,6 +203,8 @@ export interface DiagnosticNetworkFacts {
 
 export interface DiagnosticRuntimeFacts {
   video?: VideoDiagnosticEvidence;
+  /** RDP only: requested graphics mode vs. observed RDPGFX caps and wire codec. */
+  rdpGraphics?: DiagnosticRdpGraphicsFacts;
   state: DiagnosticRuntimeState;
   backend: DiagnosticRuntimeBackend;
   codec: DiagnosticRuntimeCodec;
@@ -247,9 +254,13 @@ export interface DiagnosticEventSpec {
 /** A capture profile is part of the exported contract, not a UI-only flag. */
 export type DiagnosticCaptureProfile = 'selected' | 'full';
 
-export const DIAGNOSTIC_CAPTURE_SCHEMA_VERSION: number = 8;
-export const DIAGNOSTIC_EVENT_CATALOG_VERSION: number = 2;
-export const DIAGNOSTIC_REDACTION_POLICY_VERSION: number = 3;
+// v9: optional runtime.rdpGraphics, RDP wire/presentation byte separation and
+// summary evidence coverage. Catalog v3 adds graphics negotiation, RustDesk
+// image-quality and direct-connection stage events; redaction v4 closes the
+// new graphics/quality/direct fields to fixed catalogs.
+export const DIAGNOSTIC_CAPTURE_SCHEMA_VERSION: number = 9;
+export const DIAGNOSTIC_EVENT_CATALOG_VERSION: number = 3;
+export const DIAGNOSTIC_REDACTION_POLICY_VERSION: number = 4;
 export const DIAGNOSTIC_DEFAULT_DURATION_MINUTES: number = 10;
 export const DIAGNOSTIC_MAX_EVENTS: number = 10000;
 export const DIAGNOSTIC_MAX_EVENT_BYTES: number = 8192;
@@ -300,6 +311,7 @@ const DIAGNOSTIC_EVENTS: DiagnosticEventSpec[] = [
   { moduleId: 'connection.rdp', eventCode: 'rdp_clipboard' },
   { moduleId: 'connection.rdp', eventCode: 'rdp_drive' },
   { moduleId: 'connection.rdp', eventCode: 'rdp_audio' },
+  { moduleId: 'connection.rdp', eventCode: 'rdp_graphics_negotiation' },
 
   { moduleId: 'connection.rustdesk', eventCode: 'rustdesk_presence' },
   { moduleId: 'connection.rustdesk', eventCode: 'rustdesk_preflight' },
@@ -313,6 +325,9 @@ const DIAGNOSTIC_EVENTS: DiagnosticEventSpec[] = [
   { moduleId: 'connection.rustdesk', eventCode: 'rustdesk_clipboard' },
   { moduleId: 'connection.rustdesk', eventCode: 'rustdesk_failure' },
   { moduleId: 'connection.rustdesk', eventCode: 'rustdesk_first_frame' },
+  { moduleId: 'connection.rustdesk', eventCode: 'rustdesk_quality_request' },
+  { moduleId: 'connection.rustdesk', eventCode: 'rustdesk_quality_result' },
+  { moduleId: 'connection.rustdesk', eventCode: 'rustdesk_direct_stage' },
 
   { moduleId: 'connection.ssh_sftp', eventCode: 'ssh_session_event' },
   { moduleId: 'connection.ssh_sftp', eventCode: 'ssh_preflight' },
@@ -698,6 +713,8 @@ export function emptyDiagnosticRuntimeFacts(): DiagnosticRuntimeFacts {
 
 export function diagnosticRuntimeFactsAreValid(facts: DiagnosticRuntimeFacts): boolean {
   if (facts.video !== undefined && parseVideoDiagnosticEvidence(facts.video) === null) { return false; }
+  if (facts.rdpGraphics !== undefined &&
+    !diagnosticRdpGraphicsFactsAreValid(facts.rdpGraphics)) { return false; }
   if (!diagnosticProtocolFactsAreValid(facts.protocol) ||
     !diagnosticResourceFactsAreValid(facts.resources)) { return false; }
   if (DIAGNOSTIC_RUNTIME_STATES.indexOf(facts.state) < 0 ||
@@ -750,6 +767,8 @@ export function copyDiagnosticRuntimeFacts(
   facts: DiagnosticRuntimeFacts): DiagnosticRuntimeFacts {
   return {
     video: facts.video === undefined ? undefined : copyVideoDiagnosticEvidence(facts.video),
+    rdpGraphics: facts.rdpGraphics === undefined ? undefined :
+      copyDiagnosticRdpGraphicsFacts(facts.rdpGraphics),
     state: facts.state, backend: facts.backend, codec: facts.codec, path: facts.path,
     peerPlatform: facts.peerPlatform, presentation: facts.presentation,
     producerTransform: facts.producerTransform,

@@ -36,6 +36,7 @@
 #include "rdp_clipboard_format_queue.h"
 #include "rdp_clipboard_publication_queue.h"
 #include "rdp_graphics_lifecycle.h"
+#include "rdp_gfx_wire_evidence.h"
 #include "rdp_keymap.h"
 #include "rdp_negotiation_parser.h"
 #include "rdp_network_action_gate.h"
@@ -1796,6 +1797,20 @@ struct FreeRdpAdapter::Impl {
     }
     bool                    forceNextFullFrame = false;
     std::string             graphicsMode = "gdi";
+    // Requested graphics settings plus observed RDPGFX caps/wire codecs for
+    // the current connection attempt; guarded by renderMutex for the reason.
+    RdpGfxWireEvidence      gfxWireEvidence;
+    std::string             gfxFallbackReason;
+    // GFX fallback scope computed once from the configured target before
+    // connect. FreeRDP rewrites ServerHostname on server redirection, so the
+    // live setting cannot key a fallback that the next connect must consume.
+    std::mutex              gfxFallbackScopeMutex;
+    std::string             gfxFallbackScope;
+
+    std::string gfxFallbackScopeSnapshot() {
+        std::lock_guard<std::mutex> lock(gfxFallbackScopeMutex);
+        return gfxFallbackScope;
+    }
 
     void resetRdpTransferStatus() {
         std::lock_guard<std::mutex> lock(transferStatusMutex);
@@ -3309,7 +3324,24 @@ static bool acquireCurrentRdpCallbackOwnerLease(RdpCallbackLease& callbackLease)
         isRdpCallbackLeaseCurrent(callbackLease);
 }
 static std::once_flag g_rdpAddinProviderOnce;
-static RdpNextConnectionGfxFallback g_nextConnectionGfxFallback;
+// GFX fallback is scoped to the endpoint whose graphics pipeline failed so one
+// host's failure cannot silently downgrade an unrelated next connection.
+static RdpScopedGfxFallback g_scopedGfxFallback;
+
+static std::string rdpGfxFallbackScope(rdpSettings* settings) {
+    if (!settings) {
+        return std::string();
+    }
+    return RdpGfxFallbackScopeKey(
+        freerdp_settings_get_string(settings, FreeRDP_ServerHostname),
+        freerdp_settings_get_uint32(settings, FreeRDP_ServerPort));
+}
+
+static void markRdpGfxFallback(const std::string& scope, const char* reason) {
+    g_scopedGfxFallback.mark(scope, reason);
+    OH_LOG_WARN(LOG_APP, "[RDP] GFX fallback armed for next connection to this endpoint reason=%{public}s",
+                reason != nullptr ? reason : "unknown");
+}
 
 static void ensureFreeRdpStaticAddinProvider() {
     std::call_once(g_rdpAddinProviderOnce, []() {
@@ -3377,10 +3409,14 @@ static bool rdpGfxH264PathSafe() {
     return false;
 }
 
-static RdpPerformancePolicy::GraphicsMode applyRdpPerformanceSettings(rdpSettings* settings) {
+static RdpPerformancePolicy::GraphicsMode applyRdpPerformanceSettings(
+        rdpSettings* settings, const std::string& fallbackScope,
+        RdpGfxRequestedSettings* requested, std::string* fallbackReason) {
     const bool compiledGfx = compiledWithRdpGfx();
     const bool compiledH264 = compiledWithGfxH264();
-    const bool fallbackForThisConnection = g_nextConnectionGfxFallback.consume();
+    std::string consumedFallbackReason;
+    const bool fallbackForThisConnection =
+        g_scopedGfxFallback.consume(fallbackScope, &consumedFallbackReason);
     const bool gfxAvailable = compiledGfx && !fallbackForThisConnection;
     const bool h264Available = compiledH264;
     const bool gfxConsumerAvailable = rdpGfxPipelineConsumerAvailable();
@@ -3435,6 +3471,22 @@ static RdpPerformancePolicy::GraphicsMode applyRdpPerformanceSettings(rdpSetting
                 freerdp_settings_get_bool(settings, FreeRDP_GfxH264) ? "true" : "false",
                 freerdp_settings_get_bool(settings, FreeRDP_RemoteFxCodec) ? "true" : "false",
                 freerdp_settings_get_uint32(settings, FreeRDP_FrameAcknowledge));
+    if (requested) {
+        requested->applied = true;
+        requested->compiledGfx = compiledGfx;
+        requested->compiledH264 = compiledH264;
+        requested->gfxConsumerAvailable = gfxConsumerAvailable;
+        requested->gfxResetSafe = gfxResetSafe;
+        requested->h264PathSafe = h264PathSafe;
+        requested->fallbackConsumed = fallbackForThisConnection;
+        requested->supportGraphicsPipeline =
+            freerdp_settings_get_bool(settings, FreeRDP_SupportGraphicsPipeline) == TRUE;
+        requested->remoteFxCodec = freerdp_settings_get_bool(settings, FreeRDP_RemoteFxCodec) == TRUE;
+        requested->gfxH264 = freerdp_settings_get_bool(settings, FreeRDP_GfxH264) == TRUE;
+    }
+    if (fallbackReason) {
+        *fallbackReason = fallbackForThisConnection ? consumedFallbackReason : std::string();
+    }
     return mode;
 }
 
@@ -4747,8 +4799,11 @@ void FreeRdpAdapter::cbChannelConnected(void* context, const ChannelConnectedEve
 #if defined(CHANNEL_RDPGFX_CLIENT)
     if (std::strcmp(e->name, RDPGFX_DVC_CHANNEL_NAME) == 0) {
         FreeRdpAdapter* adapter = callbackLease.adapter;
-        auto failGfxChannel = [adapter](const char* message) {
-            g_nextConnectionGfxFallback.mark();
+        rdpSettings* gfxSettings = rdpContext->settings;
+        auto failGfxChannel = [adapter, gfxSettings](const char* message, const char* reason) {
+            const std::string scope = adapter && adapter->impl_ ?
+                adapter->impl_->gfxFallbackScopeSnapshot() : std::string();
+            markRdpGfxFallback(scope.empty() ? rdpGfxFallbackScope(gfxSettings) : scope, reason);
             if (adapter && adapter->impl_) {
                 adapter->impl_->setState(ConnectionState::ERROR, message);
             }
@@ -4762,17 +4817,17 @@ void FreeRdpAdapter::cbChannelConnected(void* context, const ChannelConnectedEve
         };
         if (!rdpContext->gdi || !e->pInterface) {
             OH_LOG_ERROR(LOG_APP, "[RDP] RDPGFX channel connected before GDI is ready [E-RDP-GFX-GDI]");
-            failGfxChannel("RDP graphics pipeline missing GDI [E-RDP-GFX-GDI]");
+            failGfxChannel("RDP graphics pipeline missing GDI [E-RDP-GFX-GDI]", "gfx-gdi-missing");
             return;
         }
         if (!freerdp_settings_get_bool(rdpContext->settings, FreeRDP_SoftwareGdi)) {
             OH_LOG_ERROR(LOG_APP, "[RDP] RDPGFX requires SoftwareGdi in OHOS renderer [E-RDP-GFX-GDI-MODE]");
-            failGfxChannel("RDP graphics pipeline requires SoftwareGdi [E-RDP-GFX-GDI-MODE]");
+            failGfxChannel("RDP graphics pipeline requires SoftwareGdi [E-RDP-GFX-GDI-MODE]", "gfx-gdi-mode");
             return;
         }
         if (!adapter || !adapter->impl_) {
             OH_LOG_ERROR(LOG_APP, "[RDP] RDPGFX channel owner missing [E-RDP-GFX-OWNER]");
-            failGfxChannel("RDP graphics pipeline owner missing [E-RDP-GFX-OWNER]");
+            failGfxChannel("RDP graphics pipeline owner missing [E-RDP-GFX-OWNER]", "gfx-owner-missing");
             return;
         }
         const uintptr_t channelContext = reinterpret_cast<uintptr_t>(e->pInterface);
@@ -4789,7 +4844,7 @@ void FreeRdpAdapter::cbChannelConnected(void* context, const ChannelConnectedEve
         }
         if (action != RdpGfxChannelAction::Initialize) {
             OH_LOG_ERROR(LOG_APP, "[RDP] conflicting RDPGFX channel connect rejected [E-RDP-GFX-CONFLICT]");
-            failGfxChannel("RDP graphics pipeline channel conflict [E-RDP-GFX-CONFLICT]");
+            failGfxChannel("RDP graphics pipeline channel conflict [E-RDP-GFX-CONFLICT]", "gfx-channel-conflict");
             return;
         }
         if (!isRdpCallbackLeaseRegistered(callbackLease) ||
@@ -4803,13 +4858,104 @@ void FreeRdpAdapter::cbChannelConnected(void* context, const ChannelConnectedEve
             channelContext, initialized);
         if (!initialized) {
             OH_LOG_ERROR(LOG_APP, "[RDP] gdi_graphics_pipeline_init failed [E-RDP-GFX-INIT]");
-            failGfxChannel("RDP graphics pipeline init failed [E-RDP-GFX-INIT]");
+            failGfxChannel("RDP graphics pipeline init failed [E-RDP-GFX-INIT]", "gfx-init-failed");
             return;
         }
+        installRdpGfxEvidenceHooks(reinterpret_cast<RdpgfxClientContext*>(e->pInterface));
         OH_LOG_INFO(LOG_APP, "[RDP] GDI graphics pipeline initialized for RDPGFX");
     }
 #endif
 }
+
+#if defined(CHANNEL_RDPGFX_CLIENT)
+// gdi_graphics_pipeline_init installs the same static GDI callbacks for every
+// session, so one process-wide copy of the originals is sufficient. The hooks
+// only count codec ids/payload sizes and always forward to FreeRDP.
+static std::atomic<pcRdpgfxSurfaceCommand> g_rdpGdiGfxSurfaceCommand {nullptr};
+static std::atomic<pcRdpgfxCapsAdvertise> g_rdpGfxSendCapsAdvertise {nullptr};
+
+static rdpContext* rdpGfxOwnerContext(RdpgfxClientContext* gfx) {
+    if (!gfx || !gfx->custom) {
+        return nullptr;
+    }
+    return reinterpret_cast<rdpGdi*>(gfx->custom)->context;
+}
+
+void FreeRdpAdapter::installRdpGfxEvidenceHooks(RdpgfxClientContext* gfx) {
+    if (!gfx) {
+        return;
+    }
+    if (gfx->SurfaceCommand && gfx->SurfaceCommand != &FreeRdpAdapter::cbGfxSurfaceCommand) {
+        g_rdpGdiGfxSurfaceCommand.store(gfx->SurfaceCommand, std::memory_order_release);
+        gfx->SurfaceCommand = &FreeRdpAdapter::cbGfxSurfaceCommand;
+    }
+    if (gfx->CapsAdvertise && gfx->CapsAdvertise != &FreeRdpAdapter::cbGfxCapsAdvertise) {
+        g_rdpGfxSendCapsAdvertise.store(gfx->CapsAdvertise, std::memory_order_release);
+        gfx->CapsAdvertise = &FreeRdpAdapter::cbGfxCapsAdvertise;
+    }
+    // GDI does not consume CapsConfirm; the channel ignores a null handler.
+    if (!gfx->CapsConfirm) {
+        gfx->CapsConfirm = &FreeRdpAdapter::cbGfxCapsConfirm;
+    }
+}
+
+UINT FreeRdpAdapter::cbGfxSurfaceCommand(RdpgfxClientContext* context,
+                                         const RDPGFX_SURFACE_COMMAND* cmd) {
+    if (cmd) {
+        auto lease = acquireRdpCallbackContext(rdpGfxOwnerContext(context));
+        if (isRdpCallbackLeaseCurrent(lease) && lease.adapter->impl_) {
+            lease.adapter->impl_->gfxWireEvidence.recordSurfaceCommand(cmd->codecId, cmd->length);
+        }
+    }
+    const pcRdpgfxSurfaceCommand original =
+        g_rdpGdiGfxSurfaceCommand.load(std::memory_order_acquire);
+    return original ? original(context, cmd) : ERROR_INTERNAL_ERROR;
+}
+
+UINT FreeRdpAdapter::cbGfxCapsAdvertise(RdpgfxClientContext* context,
+                                        const RDPGFX_CAPS_ADVERTISE_PDU* advertise) {
+    if (advertise && advertise->capsSets) {
+        uint32_t maxVersion = 0;
+        bool anyAvc = false;
+        for (UINT16 index = 0; index < advertise->capsSetCount; ++index) {
+            const RDPGFX_CAPSET& set = advertise->capsSets[index];
+            if (set.version != kRdpGfxCapsVersionFreeRdp1 && set.version > maxVersion) {
+                maxVersion = set.version;
+            }
+            anyAvc = anyAvc || RdpGfxCapsAllowAvc(set.version, set.flags);
+        }
+        auto lease = acquireRdpCallbackContext(rdpGfxOwnerContext(context));
+        if (isRdpCallbackLeaseCurrent(lease) && lease.adapter->impl_) {
+            lease.adapter->impl_->gfxWireEvidence.recordCapsAdvertise(
+                advertise->capsSetCount, maxVersion, anyAvc);
+        }
+        OH_LOG_INFO(LOG_APP,
+            "[RDP-GFX] caps advertise count=%{public}u maxVersion=%{public}s avc=%{public}s",
+            static_cast<unsigned>(advertise->capsSetCount), RdpGfxCapsVersionName(maxVersion),
+            anyAvc ? "true" : "false");
+    }
+    const pcRdpgfxCapsAdvertise original =
+        g_rdpGfxSendCapsAdvertise.load(std::memory_order_acquire);
+    return original ? original(context, advertise) : ERROR_INTERNAL_ERROR;
+}
+
+UINT FreeRdpAdapter::cbGfxCapsConfirm(RdpgfxClientContext* context,
+                                      const RDPGFX_CAPS_CONFIRM_PDU* confirm) {
+    if (confirm && confirm->capsSet) {
+        const uint32_t version = confirm->capsSet->version;
+        const uint32_t flags = confirm->capsSet->flags;
+        auto lease = acquireRdpCallbackContext(rdpGfxOwnerContext(context));
+        if (isRdpCallbackLeaseCurrent(lease) && lease.adapter->impl_) {
+            lease.adapter->impl_->gfxWireEvidence.recordCapsConfirm(version, flags);
+        }
+        OH_LOG_INFO(LOG_APP,
+            "[RDP-GFX] caps confirm version=%{public}s flags=0x%{public}x avcAllowed=%{public}s",
+            RdpGfxCapsVersionName(version), flags,
+            RdpGfxCapsAllowAvc(version, flags) ? "true" : "false");
+    }
+    return CHANNEL_RC_OK;
+}
+#endif
 
 BOOL FreeRdpAdapter::cbObservedSendChannelData(freerdp* instance, UINT16 channelId,
     const BYTE* bytes, size_t size) {
@@ -5895,7 +6041,9 @@ BOOL FreeRdpAdapter::cbDesktopResize(rdpContext* context) {
         const RdpGraphicsLifecycleSnapshot lifecycle =
             adapter->impl_->graphicsLifecycle.snapshot();
         if (lifecycle.gfxRequested) {
-            g_nextConnectionGfxFallback.mark();
+            const std::string scope = adapter->impl_->gfxFallbackScopeSnapshot();
+            markRdpGfxFallback(scope.empty() ? rdpGfxFallbackScope(context->settings) : scope,
+                               "resize-rejected");
         }
         OH_LOG_ERROR(LOG_APP,
             "[RDP-RESIZE] rejected size=%{public}ux%{public}u inProgress=%{public}s [E-RDP-RESIZE-INVALID]",
@@ -5952,7 +6100,9 @@ BOOL FreeRdpAdapter::cbDesktopResize(rdpContext* context) {
         const RdpGraphicsLifecycleSnapshot lifecycle =
             adapter->impl_->graphicsLifecycle.snapshot();
         if (lifecycle.gfxRequested) {
-            g_nextConnectionGfxFallback.mark();
+            const std::string scope = adapter->impl_->gfxFallbackScopeSnapshot();
+            markRdpGfxFallback(scope.empty() ? rdpGfxFallbackScope(context->settings) : scope,
+                               "resize-failed");
         }
         OH_LOG_ERROR(LOG_APP,
             "[RDP-RESIZE] failed epoch=%{public}llu gdi=%{public}s pump=%{public}s [E-RDP-RESIZE-FAILED]",
@@ -7901,10 +8051,21 @@ void FreeRdpAdapter::connectThreadFunc(
     freerdp_settings_set_bool(s, FreeRDP_RestrictedAdminModeRequired, restrictedAdmin ? TRUE : FALSE);
     freerdp_settings_set_bool(s, FreeRDP_RestrictedAdminModeSupported, restrictedAdmin ? TRUE : FALSE);
     freerdp_settings_set_bool(s, FreeRDP_SupportErrorInfoPdu, TRUE);
-    const RdpPerformancePolicy::GraphicsMode graphicsMode = applyRdpPerformanceSettings(s);
+    RdpGfxRequestedSettings requestedGraphics;
+    std::string gfxFallbackReason;
+    const std::string gfxFallbackScope =
+        RdpGfxFallbackScopeKey(route.targetHost.c_str(), static_cast<uint32_t>(port));
+    {
+        std::lock_guard<std::mutex> scopeLock(impl_->gfxFallbackScopeMutex);
+        impl_->gfxFallbackScope = gfxFallbackScope;
+    }
+    const RdpPerformancePolicy::GraphicsMode graphicsMode =
+        applyRdpPerformanceSettings(s, gfxFallbackScope, &requestedGraphics, &gfxFallbackReason);
+    impl_->gfxWireEvidence.reset(requestedGraphics);
     {
         std::lock_guard<std::mutex> renderLock(impl_->renderMutex);
         impl_->graphicsMode = RdpPerformancePolicy::GraphicsModeName(graphicsMode);
+        impl_->gfxFallbackReason = gfxFallbackReason;
     }
     impl_->graphicsLifecycle.reset(
         static_cast<int>(freerdp_settings_get_uint32(s, FreeRDP_DesktopWidth)),
@@ -8752,6 +8913,34 @@ RdpRenderStats FreeRdpAdapter::getRdpRenderStats() {
     stats.desktopResizeInProgress = graphics.resizeInProgress;
     stats.gfxChannelConnected = graphics.gfxInitialized;
     stats.graphicsMode = impl_->graphicsMode;
+    stats.gfxEvidence.fallbackReason = impl_->gfxFallbackReason;
+    {
+        const RdpGfxWireEvidenceSnapshot wire = impl_->gfxWireEvidence.snapshot();
+        RdpGfxEvidenceStats& gfx = stats.gfxEvidence;
+        gfx.requestedApplied = wire.requested.applied;
+        gfx.compiledGfx = wire.requested.compiledGfx;
+        gfx.compiledH264 = wire.requested.compiledH264;
+        gfx.h264PathSafe = wire.requested.h264PathSafe;
+        gfx.supportGraphicsPipeline = wire.requested.supportGraphicsPipeline;
+        gfx.remoteFxCodec = wire.requested.remoteFxCodec;
+        gfx.h264Advertised = wire.requested.gfxH264;
+        gfx.fallbackConsumed = wire.requested.fallbackConsumed;
+        gfx.capsAdvertisedCount = wire.capsAdvertisedCount;
+        gfx.capsAdvertisedMaxVersion = RdpGfxCapsVersionName(wire.capsAdvertisedMaxVersion);
+        gfx.capsAdvertisedAvc = wire.capsAdvertisedAvc;
+        gfx.capsConfirmed = wire.capsConfirmed;
+        gfx.capsConfirmedVersion = wire.capsConfirmed ?
+            RdpGfxCapsVersionName(wire.capsConfirmedVersion) : "unknown";
+        gfx.capsConfirmedFlags = wire.capsConfirmedFlags;
+        gfx.capsConfirmedAvc = wire.capsConfirmedAvc;
+        gfx.surfaceCommands = wire.surfaceCommands;
+        gfx.surfaceCommandBytes = wire.surfaceCommandBytes;
+        gfx.avcSurfaceCommands = wire.avcSurfaceCommands;
+        gfx.unknownCodecCommands = wire.unknownCodecCommands;
+        gfx.wireCodecMask = wire.codecMask;
+        gfx.wireCodec = wire.dominantCodecId < kRdpGfxCodecSlots ?
+            RdpGfxWireCodecName(wire.dominantCodecId) : "none";
+    }
     {
         std::lock_guard<std::mutex> displayLock(impl_->displayControlMutex);
         stats.displayControlReady = impl_->displayControlReady;

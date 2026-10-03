@@ -1,5 +1,7 @@
 # RustDesk EasyTier 直连流程与连接失败修复计划
 
+> 已合并：执行以 [2026-10-03 合并计划](2026-10-03-rdp-rustdesk-observability-direct-quality-plan.md) 为准；本文件保留为来源记录。
+
 状态：PLAN_ONLY（2026-10-03，暂不改代码）
 
 本计划针对用户反馈的场景：官方 RustDesk 可以通过 EasyTier 连接，RemoteDesktop 的 RustDesk 直连失败。用户提供的诊断 JSONL 只有 `core.app` 的开始/停止事件，`connection.rustdesk` 为 0 条，因此本计划先修复流程语义和取证能力，再根据真实直连阶段结果修复 native/网络问题。

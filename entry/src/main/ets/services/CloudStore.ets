@@ -13490,6 +13490,27 @@ try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
     }
   }
 
+  /**
+   * Read one cloud-table host back by id without decrypting secrets, so a
+   * caller can verify that just-written endpoint columns persisted exactly.
+   */
+  readBackHostRaw(id: string): RemoteHost | undefined {
+    if (!this.store || id === '') { return undefined; }
+    let rs: relationalStore.ResultSet | undefined = undefined;
+    try {
+      const predicates = new relationalStore.RdbPredicates('remotehosts');
+      this.addCurrentOwnerPredicate(predicates);
+      predicates.equalTo('id', id);
+      rs = this.store.querySync(predicates);
+      return rs.goToFirstRow() ? this.rowToHostRaw(rs) : undefined;
+    } catch (err) {
+      hilog.error(0x0001, 'CloudSync', 'readBackHostRaw 失败: ' + DataCrypto.errDetail(err));
+      return undefined;
+    } finally {
+      if (rs !== undefined) { rs.close(); }
+    }
+  }
+
   private rowToHostRaw(rs: relationalStore.ResultSet): RemoteHost {
     const h = new RemoteHost();
     h.id = rs.getString(rs.getColumnIndex('id'));

@@ -303,6 +303,36 @@ struct RdpCertificateInfo {
     std::vector<std::string> riskFlags;
 };
 
+/**
+ * RDP graphics negotiation evidence. "Requested" fields are what the client
+ * advertised; caps/surface fields are observed from the RDPGFX channel. The
+ * wire codec is the dominant codec id actually carried by surface commands.
+ */
+struct RdpGfxEvidenceStats {
+    bool requestedApplied = false;
+    bool compiledGfx = false;
+    bool compiledH264 = false;
+    bool h264PathSafe = false;
+    bool supportGraphicsPipeline = false;
+    bool remoteFxCodec = false;
+    bool h264Advertised = false;
+    bool fallbackConsumed = false;
+    std::string fallbackReason;
+    uint32_t capsAdvertisedCount = 0;
+    std::string capsAdvertisedMaxVersion = "unknown";
+    bool capsAdvertisedAvc = false;
+    bool capsConfirmed = false;
+    std::string capsConfirmedVersion = "unknown";
+    uint32_t capsConfirmedFlags = 0;
+    bool capsConfirmedAvc = false;
+    uint64_t surfaceCommands = 0;
+    uint64_t surfaceCommandBytes = 0;
+    uint64_t avcSurfaceCommands = 0;
+    uint64_t unknownCodecCommands = 0;
+    uint32_t wireCodecMask = 0;
+    std::string wireCodec = "none";
+};
+
 /** RDP 原生渲染统计, 用于 ArkTS 侧识别已连接但未出画面的异常 */
 struct RdpRenderStats {
     int paintCount = 0;
@@ -390,6 +420,7 @@ struct RdpRenderStats {
     int64_t inputDroppedMouseMoves = 0;
     int64_t inputNonDisposableOverflow = 0;
     std::string graphicsMode;
+    RdpGfxEvidenceStats gfxEvidence;
 };
 
 struct RdpDisplayLayoutRequest {

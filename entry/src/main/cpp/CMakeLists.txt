@@ -60,6 +60,7 @@ set(PROTOCOL_SOURCES
     rdp/rdp_frame_scheduler.cpp
     rdp/rdp_gl_upload_gate.cpp
     rdp/rdp_graphics_lifecycle.cpp
+    rdp/rdp_gfx_wire_evidence.cpp
     rdp/rdp_frame_pump.cpp
     rdp/rdp_file_clipboard_bridge.cpp
     rdp/rdp_channel_observer.cpp
@@ -348,6 +349,7 @@ if(RDP_BUILD_TESTS)
         test/rdp_transform_refresh_policy_test.cpp
         test/rdp_gl_upload_gate_test.cpp
         test/rdp_graphics_lifecycle_test.cpp
+        test/rdp_gfx_wire_evidence_test.cpp
         test/rdp_certificate_policy_test.cpp
         test/rdp_gateway_policy_test.cpp
         test/rdp_network_recovery_policy_test.cpp
@@ -440,6 +442,7 @@ if(RDP_BUILD_TESTS)
         rdp/rdp_frame_scheduler.cpp
         rdp/rdp_gl_upload_gate.cpp
         rdp/rdp_graphics_lifecycle.cpp
+        rdp/rdp_gfx_wire_evidence.cpp
         rdp/rdp_file_clipboard_offer.cpp
         audio/audio_queue_policy.cpp
         audio/audio_activity_state.cpp

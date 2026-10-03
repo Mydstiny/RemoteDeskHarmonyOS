@@ -716,6 +716,19 @@ export class HostSyncService {
     return this.hosts.get(id);
   }
 
+  /**
+   * The persisted copy of a host for write verification. Device-local LAN
+   * records and a store that is not ready yet have no separate persisted row,
+   * so the in-memory record is returned for them.
+   */
+  readBackHost(id: string): RemoteHost | undefined {
+    const current: RemoteHost | undefined = this.hosts.get(id);
+    if (current === undefined || !this.ready || lanHostUsesLocalOnlyStorage(current)) {
+      return current;
+    }
+    return this.cloud.readBackHostRaw(id);
+  }
+
   addHost(host: RemoteHost): boolean {
     if (!host.id) { host.id = RemoteHost.generateId(); }
     if (!this.prepareHostNetworkEndpoints(host)) { return false; }

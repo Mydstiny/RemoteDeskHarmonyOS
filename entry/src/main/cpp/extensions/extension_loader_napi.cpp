@@ -4071,6 +4071,39 @@ napi_value NapiGetRdpRenderStats(napi_env env, napi_callback_info info) {
     SetObjectInt64(env, result, "inputDroppedMouseMoves", stats.inputDroppedMouseMoves);
     SetObjectInt64(env, result, "inputNonDisposableOverflow", stats.inputNonDisposableOverflow);
     SetObjectString(env, result, "graphicsMode", stats.graphicsMode);
+    napi_value gfxEvidence = nullptr;
+    if (napi_create_object(env, &gfxEvidence) == napi_ok && gfxEvidence != nullptr) {
+        const RdpGfxEvidenceStats& gfx = stats.gfxEvidence;
+        SetObjectBool(env, gfxEvidence, "requestedApplied", gfx.requestedApplied);
+        SetObjectBool(env, gfxEvidence, "compiledGfx", gfx.compiledGfx);
+        SetObjectBool(env, gfxEvidence, "compiledH264", gfx.compiledH264);
+        SetObjectBool(env, gfxEvidence, "h264PathSafe", gfx.h264PathSafe);
+        SetObjectBool(env, gfxEvidence, "supportGraphicsPipeline", gfx.supportGraphicsPipeline);
+        SetObjectBool(env, gfxEvidence, "remoteFxCodec", gfx.remoteFxCodec);
+        SetObjectBool(env, gfxEvidence, "h264Advertised", gfx.h264Advertised);
+        SetObjectBool(env, gfxEvidence, "fallbackConsumed", gfx.fallbackConsumed);
+        SetObjectString(env, gfxEvidence, "fallbackReason", gfx.fallbackReason);
+        SetObjectInt64(env, gfxEvidence, "capsAdvertisedCount",
+                       static_cast<int64_t>(gfx.capsAdvertisedCount));
+        SetObjectString(env, gfxEvidence, "capsAdvertisedMaxVersion", gfx.capsAdvertisedMaxVersion);
+        SetObjectBool(env, gfxEvidence, "capsAdvertisedAvc", gfx.capsAdvertisedAvc);
+        SetObjectBool(env, gfxEvidence, "capsConfirmed", gfx.capsConfirmed);
+        SetObjectString(env, gfxEvidence, "capsConfirmedVersion", gfx.capsConfirmedVersion);
+        SetObjectInt64(env, gfxEvidence, "capsConfirmedFlags",
+                       static_cast<int64_t>(gfx.capsConfirmedFlags));
+        SetObjectBool(env, gfxEvidence, "capsConfirmedAvc", gfx.capsConfirmedAvc);
+        SetObjectInt64(env, gfxEvidence, "surfaceCommands",
+                       static_cast<int64_t>(gfx.surfaceCommands));
+        SetObjectInt64(env, gfxEvidence, "surfaceCommandBytes",
+                       static_cast<int64_t>(gfx.surfaceCommandBytes));
+        SetObjectInt64(env, gfxEvidence, "avcSurfaceCommands",
+                       static_cast<int64_t>(gfx.avcSurfaceCommands));
+        SetObjectInt64(env, gfxEvidence, "unknownCodecCommands",
+                       static_cast<int64_t>(gfx.unknownCodecCommands));
+        SetObjectInt64(env, gfxEvidence, "wireCodecMask", static_cast<int64_t>(gfx.wireCodecMask));
+        SetObjectString(env, gfxEvidence, "wireCodec", gfx.wireCodec);
+        napi_set_named_property(env, result, "gfxEvidence", gfxEvidence);
+    }
     return result;
 }
 

@@ -237,6 +237,39 @@ fn changed_pressure_target_fps(
     (target != current_stream_fps).then_some(target)
 }
 
+/// A live image-quality change only changes the remote encoder bitrate. One
+/// refresh_video request makes the new tier visible on the next keyframe
+/// instead of waiting for incremental frames. Rapid tier changes coalesce into
+/// at most one refresh per interval so the peer is never flooded with keyframes.
+pub(crate) const QUALITY_REFRESH_MIN_INTERVAL: Duration = Duration::from_millis(750);
+
+#[derive(Debug, Default)]
+pub(crate) struct QualityRefreshGate {
+    pending: bool,
+    last_sent: Option<Instant>,
+}
+
+impl QualityRefreshGate {
+    pub(crate) fn request(&mut self) {
+        self.pending = true;
+    }
+
+    /// Returns true exactly when a coalesced refresh should be sent now.
+    pub(crate) fn take_due(&mut self, now: Instant) -> bool {
+        if !self.pending {
+            return false;
+        }
+        if let Some(last) = self.last_sent {
+            if now.saturating_duration_since(last) < QUALITY_REFRESH_MIN_INTERVAL {
+                return false;
+            }
+        }
+        self.pending = false;
+        self.last_sent = Some(now);
+        true
+    }
+}
+
 fn should_emit_control_diagnostics(last_report: Instant, now: Instant) -> bool {
     now.duration_since(last_report) >= CONTROL_DIAGNOSTIC_INTERVAL
 }
@@ -2587,6 +2620,7 @@ impl RustDeskConnector {
         requested_pressure_level: &mut u32,
         current_image_quality: &mut i32,
         quality_state: &Arc<Mutex<crate::RustDeskQualityState>>,
+        quality_refresh: &mut QualityRefreshGate,
         physical_modifiers: &mut PhysicalModifierState,
         remote_keyboard_transport: RemoteKeyboardTransport,
         stream_started: Instant,
@@ -2650,10 +2684,13 @@ impl RustDeskConnector {
                         }
                     }
                     match send_result {
-                        Ok(()) => eprintln!(
-                            "[RustDesk-FFI] live image quality applied generation={} quality={}",
-                            generation, quality
-                        ),
+                        Ok(()) => {
+                            quality_refresh.request();
+                            eprintln!(
+                                "[RustDesk-FFI] live image quality sent generation={} quality={}",
+                                generation, quality
+                            )
+                        }
                         Err(err) => eprintln!(
                             "[RustDesk-FFI] live image quality failed generation={} quality={} error={}",
                             generation, quality, err
@@ -2765,6 +2802,10 @@ impl RustDeskConnector {
                 }
             }
         }
+        if quality_refresh.take_due(Instant::now()) {
+            Session::send_refresh_video(crypto)?;
+            eprintln!("[RustDesk-FFI] refresh_video after live image quality change");
+        }
         Ok(())
     }
 
@@ -2817,6 +2858,7 @@ impl RustDeskConnector {
 
         let mut stream_options_reasserted = false;
         let mut image_quality = image_quality.clamp(0, 2);
+        let mut quality_refresh = QualityRefreshGate::default();
         let mut empty_reads: u32 = 0; // 连续空读计数
                                       // 消息类型统计 — 用于诊断对端停止发送前的行为
         let mut msg_stats: std::collections::HashMap<&'static str, u64> =
@@ -2933,6 +2975,7 @@ impl RustDeskConnector {
                 &mut requested_pressure_level,
                 &mut image_quality,
                 &quality_state,
+                &mut quality_refresh,
                 &mut physical_modifiers,
                 remote_keyboard_transport,
                 stream_started,
@@ -2964,6 +3007,7 @@ impl RustDeskConnector {
                     &mut requested_pressure_level,
                     &mut image_quality,
                     &quality_state,
+                    &mut quality_refresh,
                     &mut physical_modifiers,
                     remote_keyboard_transport,
                     stream_started,
@@ -5536,6 +5580,7 @@ mod tests {
         PendingFileUpload, PhysicalModifierState, RemoteKeyboardTransport, RendezvousCredentials,
         RustDeskConnectionStrategy, RustDeskConnector, VP9_PRESSURE_RECOVERY_HOLD_WINDOWS,
     };
+    use super::{QualityRefreshGate, QUALITY_REFRESH_MIN_INTERVAL};
     use crate::crypto_channel::CryptoChannel;
     use crate::peer_stream::{spawn_test_kcp_echo_server, KcpPeerStream, PeerStream};
     use crate::protocol::message_proto::KeyboardMode;
@@ -5573,6 +5618,21 @@ mod tests {
         value.set_content(content);
         value.set_compress(compressed);
         value
+    }
+
+    #[test]
+    fn quality_refresh_gate_coalesces_rapid_tier_changes() {
+        let mut gate = QualityRefreshGate::default();
+        let start = std::time::Instant::now();
+        assert!(!gate.take_due(start), "no refresh without a quality change");
+        gate.request();
+        gate.request();
+        assert!(gate.take_due(start), "first change refreshes immediately");
+        assert!(!gate.take_due(start), "a refresh is sent once per request burst");
+        gate.request();
+        assert!(!gate.take_due(start + QUALITY_REFRESH_MIN_INTERVAL / 2));
+        assert!(gate.take_due(start + QUALITY_REFRESH_MIN_INTERVAL));
+        assert!(!gate.take_due(start + QUALITY_REFRESH_MIN_INTERVAL * 3));
     }
 
     #[test]

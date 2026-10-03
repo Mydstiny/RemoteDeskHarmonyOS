@@ -58,7 +58,30 @@ const GLOSSARY: string[] = [
   'ai_config：AI 配置问题，code 1 API Key 无法从本机安全存储读出、2 没有选择可用的 AI 服务和模型。',
   'ai_setting：AI 一键修改设置，code 为设置在目录中的序号，outcome succeeded 已修改、failed 未修改（已是该值或无法修改）。',
   '*_runtime_snapshot：runtime.protocol 中 receivedFps/displayFps 为接收与显示帧率，decodeErrors 解码错误数，droppedFrames 丢帧，' +
-    'lastFrameAgeMs 距最后一帧的毫秒数（很大说明画面停了），inputEventsDropped 丢弃的输入，bitrateKbps 码率。'
+    'lastFrameAgeMs 距最后一帧的毫秒数（很大说明画面停了），inputEventsDropped 丢弃的输入，bitrateKbps 码率。' +
+    'RDP 例外：receivedBytes 为 GFX 线上负载字节，bitrateKbps 不导出（为 0），callbackBytes 为本机渲染回调拷贝字节（不是网络流量）。',
+  'runtime.rdpGraphics（RDP）：requestedMode 只是连接前客户端愿意通告的模式（gdi/gfx/gfx-h264），不是线上事实；' +
+    'capsConfirmed/capsConfirmedVersion 为服务端确认的 GFX 能力版本；wireCodec 为实际 GFX 帧编码（none 表示没有收到 GFX 帧，' +
+    'remotefx/progressive/planar/clearcodec/avc420/avc444 等）；h264Status：gated_off 客户端门禁未通告 H.264、advertised_unconfirmed 已通告待确认、' +
+    'server_disabled 服务端确认不用 AVC、allowed_not_used 允许但未出现 AVC 帧、in_use 已收到 AVC 帧；wireBytes 为 GFX 线上负载字节，' +
+    'copiedBytes 为本机呈现拷贝字节（不是网络流量）；fallbackReason 为本次连接因同一主机上次 GFX 失败而回退 GDI 的原因。' +
+    'evidenceLevel 为 missing 或 configured 时不得断言线上编码。',
+  'rdp_graphics_negotiation：RDP 图形协商发生变化（能力确认、首次看到某种线上编码、回退），runtime.rdpGraphics 为变化后的值；' +
+    'code 0 无原生证据、1 只有客户端配置、2 服务端已确认能力、3 已观测到线上编码、4 已收到 H.264 帧；count 为 GFX 帧命令数，bytes 为线上负载字节。',
+  'rustdesk_quality_request：会话中切换画质。generation 为请求档位（0 速度、1 平衡、2 画质），code 1 已交给原生发送、0 被拒绝只保存为下次连接；' +
+    'count 为切换前远端报告的目标码率（kbps，0 表示未报告）。画质档位只改变远端编码码率，不改变分辨率与色度采样。',
+  'rustdesk_quality_result：画质切换的证据结论。code 1 发送失败、2 远端码率升高、3 远端码率降低、4 码率未变化（受网络自适应或远端编码器限制）、' +
+    '5 远端未报告码率（无法确认）；count 为切换后的远端目标码率（kbps）；durationMs 为等待时长。只有 2/3 能说明“已生效”。',
+  'rustdesk_direct_stage：RustDesk 连接阶段与路由证据（无地址）。generation 为地址来源：0 中继、1 手动直连地址（局域网 IP、EasyTier 等虚拟网 IP、VPN、域名）、' +
+    '2 局域网搜索；code 为阶段：0 未知/开始、1 本地校验未通过、2 地址无效、3 TCP 超时、4 TCP 被拒绝（对端未开启 IP 直接访问或端口不对）、' +
+    '5 无路由（虚拟网未运行或本应用看不到虚拟网卡）、6 TCP 被中断、7 TCP 其它失败、8 设备密码错误、9 对端不接受密码登录、10 登录握手失败、' +
+    '11 已登录但无画面、12 已取消、13 已连接；count 为地址类别：1 域名、2 私有 IPv4（含 EasyTier 默认网段）、3 100.64/10 共享地址、' +
+    '4 回环、5 链路本地、6 公网 IPv4、7 IPv6 ULA（fc00::/7）、8 IPv6 链路本地、9 IPv6 回环、10 全局 IPv6、0 无效、' +
+    '11 不适用（中继路由没有直连地址）。' +
+    '地址类别不能证明使用了哪种虚拟网。',
+  'rustdesk_preflight 的本地校验失败 code：-20 中继绑定无效、-21 认证绑定已变化、-22 密码仍在加密仓库、-23 未填写设备密码、' +
+    '-24 直连选择了请求批准、-25 密码锁定时切换请求批准、-26 连接入口配置校验失败（直连地址/端口无效、链路本地 IPv6、中继缺失等，' +
+    '面板尚未打开）、-27 鉴权流程不可用；这些失败的 generation 为 0，表示没有发起原生连接。'
 ];
 
 export function diagnosticAiEventGlossary(): string {

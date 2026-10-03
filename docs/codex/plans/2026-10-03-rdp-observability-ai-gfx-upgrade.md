@@ -1,5 +1,7 @@
 # RDP 可观测性、AI 取证接口与 GFX/H.264 分阶段升级计划
 
+> 已合并：执行以 [2026-10-03 合并计划](2026-10-03-rdp-rustdesk-observability-direct-quality-plan.md) 为准；本文件保留为来源记录。
+
 - 日期：2026-10-03（Asia/Shanghai）
 - 计划状态：PLAN-ONLY；本文件不授权实现、发布或打开 H.264 默认路径
 - 当前基线：`codex/pro-purchase-foundation`，工作区已有 Pro/AI 未提交修改；本计划不包含这些修改

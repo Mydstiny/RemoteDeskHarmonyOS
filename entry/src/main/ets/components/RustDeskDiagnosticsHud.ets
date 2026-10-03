@@ -352,7 +352,13 @@ export struct RustDeskDiagnosticsHud {
           value: this.remotePermissionLabel()
         })
         this.metricLine({
-          label: '画质 偏好/生效/已发送',
+          label: '远端目标码率',
+          value: this.diagnostics.targetBitrateKbps > 0 ?
+            formatDiagnosticBitrate(this.diagnostics.targetBitrateKbps) + ' #' +
+              this.diagnostics.testDelayCount.toString() : '远端未报告'
+        })
+        this.metricLine({
+          label: '画质 请求/本地/已发送',
           value: this.imageQualityLabel(this.diagnostics.requestedImageQuality) + '/' +
             this.imageQualityLabel(this.diagnostics.effectiveImageQuality) + '/' +
             this.imageQualityLabel(this.diagnostics.sentImageQuality)

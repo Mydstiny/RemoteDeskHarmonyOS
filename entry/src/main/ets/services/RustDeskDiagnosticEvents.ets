@@ -1,4 +1,4 @@
-import { DiagnosticOutcome } from './DiagnosticCapturePolicy';
+import { DiagnosticNetworkFacts, DiagnosticOutcome } from './DiagnosticCapturePolicy';
 import { recordDiagnosticEvent } from './DiagnosticCaptureRuntime';
 import { ConnectionJournal } from './ConnectionJournal';
 import { classifyRustDeskProNativeError, parseRustDeskNativeError,
@@ -106,4 +106,62 @@ export function recordRustDeskFailure(message: string, stage: number, elapsedMs:
 export function recordRustDeskFirstFrame(outcome: DiagnosticOutcome, elapsedMs: number, recoveries: number): void {
   recordDiagnosticEvent('connection.rustdesk', 'rustdesk_first_frame', outcome, 0, 0, 0,
     Math.max(0, Math.round(elapsedMs)), recoveries);
+}
+
+/** rustdesk_quality_result code: closed verdict of a live image-quality change. */
+export const RUSTDESK_QUALITY_RESULT_SEND_FAILED: number = 1;
+export const RUSTDESK_QUALITY_RESULT_RAISED: number = 2;
+export const RUSTDESK_QUALITY_RESULT_LOWERED: number = 3;
+export const RUSTDESK_QUALITY_RESULT_UNCHANGED: number = 4;
+export const RUSTDESK_QUALITY_RESULT_NOT_REPORTED: number = 5;
+
+export function rustDeskQualityResultCode(verdict: string): number {
+  switch (verdict) {
+    case 'send_failed': return RUSTDESK_QUALITY_RESULT_SEND_FAILED;
+    case 'bitrate_raised': return RUSTDESK_QUALITY_RESULT_RAISED;
+    case 'bitrate_lowered': return RUSTDESK_QUALITY_RESULT_LOWERED;
+    case 'bitrate_unchanged': return RUSTDESK_QUALITY_RESULT_UNCHANGED;
+    case 'not_reported': return RUSTDESK_QUALITY_RESULT_NOT_REPORTED;
+    default: return 0;
+  }
+}
+
+/**
+ * A live image-quality request. generation is the requested tier (0..2), code
+ * is 1 when the native control lane accepted it and 0 when it was rejected and
+ * only the preference was saved for the next connection.
+ */
+export function recordRustDeskQualityRequest(sessionId: number, quality: number,
+  acceptedLive: boolean, baselineBitrateKbps: number): void {
+  recordDiagnosticEvent('connection.rustdesk', 'rustdesk_quality_request',
+    acceptedLive ? 'started' : 'skipped', Math.max(0, sessionId), quality, acceptedLive ? 1 : 0, 0,
+    Math.max(0, Math.round(baselineBitrateKbps)));
+}
+
+/**
+ * The evidence-based outcome of that request. count carries the remote target
+ * bitrate (kbps) after the change; durationMs is the confirmation wait.
+ */
+export function recordRustDeskQualityResult(sessionId: number, quality: number, verdict: string,
+  currentBitrateKbps: number, elapsedMs: number): void {
+  const code: number = rustDeskQualityResultCode(verdict);
+  const outcome: DiagnosticOutcome = code === RUSTDESK_QUALITY_RESULT_RAISED ||
+    code === RUSTDESK_QUALITY_RESULT_LOWERED ? 'succeeded' :
+    (code === RUSTDESK_QUALITY_RESULT_SEND_FAILED ? 'failed' : 'state');
+  recordDiagnosticEvent('connection.rustdesk', 'rustdesk_quality_result', outcome, Math.max(0, sessionId),
+    quality, code, Math.max(0, Math.round(elapsedMs)), Math.max(0, Math.round(currentBitrateKbps)));
+}
+
+/**
+ * One stage of a RustDesk connection attempt with its route evidence and no
+ * address: generation is the endpoint source code (0 relay, 1 manual direct,
+ * 2 LAN discovery), code is the RustDeskDirectStage code and count is the
+ * RustDeskDirectAddressClass code. Network facts carry only the address family.
+ */
+export function recordRustDeskDirectStage(outcome: DiagnosticOutcome, sessionId: number,
+  sourceCode: number, stageCode: number, addressClassCode: number, elapsedMs: number,
+  network: DiagnosticNetworkFacts): void {
+  recordDiagnosticEvent('connection.rustdesk', 'rustdesk_direct_stage', outcome,
+    sessionId > 0 ? sessionId : 0, Math.max(0, sourceCode), Math.max(0, stageCode),
+    Math.max(0, Math.round(elapsedMs)), Math.max(0, addressClassCode), 0, undefined, network);
 }

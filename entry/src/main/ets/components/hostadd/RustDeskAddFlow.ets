@@ -262,7 +262,7 @@ export struct RustDeskAddFlow {
         Row() {
           this.modeButton('中继连接', '通过已配置服务器连接', false)
           Blank().width(8)
-          this.modeButton('局域网直连', 'IP + 端口直接连接', true)
+          this.modeButton('直连（局域网 / EasyTier）', 'IP 或虚拟网 IP + 端口', true)
         }.width('100%').margin({ bottom: 16 })
         if (!this.direct) {
           if (this.relays.length === 0) {
@@ -291,7 +291,7 @@ export struct RustDeskAddFlow {
           Text('直连仅支持设备密码，不能请求被控端批准。').fontSize(12).fontColor(this.pal().danger)
             .width('100%').margin({ bottom: 12 })
           Row() {
-            Button('手动配置').layoutWeight(1).height(38).borderRadius(10)
+            Button('手动地址').layoutWeight(1).height(38).borderRadius(10)
               .backgroundColor(!this.useLan ? this.accentColor : this.pal().surface)
               .fontColor(!this.useLan ? Color.White : this.pal().text2).onClick((): void => {
                 this.useLan = false; this.selectedLanPeerId = ''; this.lanAddressMode = '';
@@ -302,6 +302,11 @@ export struct RustDeskAddFlow {
                 this.useLan = true; this.selectedLanPeerId = ''; this.lanAddressMode = ''; this.onStartLanScan();
               })
           }.width('100%').margin({ bottom: 10 })
+          Text(this.useLan ?
+            '局域网搜索只适用于同一局域网（UDP 21119 广播）。EasyTier、ZeroTier 等虚拟网无法被搜索到，请改用“手动地址”。' :
+            '手动地址适用于局域网 IP、EasyTier 等虚拟网 IP、VPN 或域名。EasyTier 请填写对端的虚拟 IP，不要填写 RustDesk ID；' +
+              '端口默认 21118，对端 RustDesk 需开启“允许 IP 直接访问”。')
+            .fontSize(11).fontColor(this.pal().text3).width('100%').margin({ bottom: 10 })
           if (this.useLan) {
             if (this.lanScanning) {
               Row() {
@@ -375,7 +380,7 @@ export struct RustDeskAddFlow {
             })
         }.width('100%').margin({ bottom: 12 })
         if (this.direct) {
-          this.field('直连 IP', this.directHost, '例如：192.168.1.10',
+          this.field('直连地址', this.directHost, '局域网 IP、EasyTier 虚拟 IP 或域名',
             (v: string): void => { this.directHost = v; }, false, !this.useLan)
           this.field('直连端口', this.directPortText, this.defaultDirectPort.toString(),
             (v: string): void => { this.directPortText = v; }, false, !this.useLan)

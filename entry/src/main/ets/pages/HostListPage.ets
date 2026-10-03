@@ -818,6 +818,23 @@ import { AI_SHARE_REQUEST_KEY, AiShareInbox, aiChatRefresh } from '../services/d
 import { AiAppDataBridge, AiHostSummary } from '../services/diagnosticAi/AiAppDataBridge';
 import { DiagnosticAiOrbState } from '../services/diagnosticAi/DiagnosticAiModels';
 import { recordDiagnosticEvent } from '../services/DiagnosticCaptureRuntime';
+import {
+  DiagnosticOutcome,
+  diagnosticNetworkFactsForEndpoints,
+  emptyDiagnosticNetworkFacts
+} from '../services/DiagnosticCapturePolicy';
+import { recordRustDeskDirectStage } from '../services/RustDeskDiagnosticEvents';
+import {
+  RustDeskDirectStage,
+  rustDeskDirectAddressClass,
+  rustDeskDirectAddressClassCode,
+  rustDeskDirectEndpointReadbackError,
+  rustDeskDirectEndpointSource,
+  rustDeskDirectFailureMessage,
+  rustDeskDirectFailureStage,
+  rustDeskDirectSourceCode,
+  rustDeskDirectStageCode
+} from '../services/RustDeskDirectRoutePolicy';
 import { FeedbackSettingsSheet } from '../components/FeedbackSettingsSheet';
 import { VirtualKeyboardSettingsSheet } from '../components/VirtualKeyboardSettingsSheet';
 import {
@@ -3238,6 +3255,21 @@ struct HostListPage {
       }
       promptAction.showToast({ message: '保存主机失败，请稍后重试', duration: 1800 });
       return;
+    }
+    if (host.protocol === 'rustdesk') {
+      // A direct record must read back with the exact endpoint just entered;
+      // otherwise the first connection would silently use a different
+      // address or port (or a stale relay binding).
+      const readbackError: string =
+        rustDeskDirectEndpointReadbackError(host, this.srv.readBackHost(host.id));
+      if (readbackError !== '') {
+        const rolledBack: boolean = this.srv.removeHost(host.id);
+        promptAction.showToast({
+          message: rolledBack ? readbackError : readbackError + '；回滚未完成，请返回列表检查',
+          duration: 3000
+        });
+        return;
+      }
     }
     if (host.protocol === 'rustdesk' && rustDeskTotpEntryId !== '' &&
       !this.srv.setRustDeskPeerTwoFactorBinding(
@@ -7776,6 +7808,11 @@ struct HostListPage {
         proManaged: relay !== undefined && connectionContext.requiresAccount
       });
       if (rustDeskError !== '') {
+        // Rejected before the preflight panel opens; still leave evidence so a
+        // capture never shows zero RustDesk events for an attempted connect.
+        this.recordRustDeskPreflightEvent('failed', 0, -26);
+        this.recordRustDeskRouteStage(host, 'failed',
+          host.rustdeskDirectEnabled ? 'input' : 'validation', 0, 0);
         this.releaseConnectionAttempt(host.id);
         promptAction.showToast({ message: rustDeskError, duration: 2600 });
         return;
@@ -7786,6 +7823,8 @@ struct HostListPage {
         // Fail closed if a future policy ever removes this host from the
         // preflight owner. A desktop window may only receive an already-live,
         // authenticated RustDesk session through the atomic handoff below.
+        this.recordRustDeskPreflightEvent('failed', 0, -27);
+        this.recordRustDeskRouteStage(host, 'failed', 'validation', 0, 0);
         this.releaseConnectionAttempt(host.id);
         promptAction.showToast({ message: 'RustDesk 鉴权流程不可用，未打开独立窗口', duration: 2400 });
       }
@@ -11734,12 +11773,14 @@ struct HostListPage {
     const stored: RemoteHost | undefined = this.srv.getHost(this.rustDeskProPreflightHostId);
     if (!stored || this.rustDeskProPreflightState === RustDeskProPreflightState.CONNECTING) { return; }
     if (this.rustDeskProSecretProjectionInvalidated) {
+      this.failRustDeskPreflightValidation(stored, -21);
       this.rustDeskProPreflightError =
         'RustDesk 认证绑定已变化；请关闭后重新打开连接面板再继续';
       return;
     }
     const bindingError: string = this.rustDeskProBindingError(stored);
     if (bindingError !== '') {
+      this.failRustDeskPreflightValidation(stored, -20);
       this.rustDeskProPreflightError = bindingError;
       this.rustDeskProPreflightState = RustDeskProPreflightState.ERROR;
       return;
@@ -11759,29 +11800,37 @@ struct HostListPage {
     if (this.rustDeskProAuthMode === 'password' && keepsStoredPassword &&
       keepsSamePasswordMode && this.rustDeskProPasswordConfigured &&
       stored.password === '' && this.rustDeskProPassword === '') {
+      this.failRustDeskPreflightValidation(stored, -22);
       this.rustDeskProPreflightError = '设备密码仍在加密仓库中；请先解锁并重新打开连接面板。';
       return;
     }
     if (this.rustDeskProAuthMode === 'password' && passwordForConnection.trim().length === 0) {
+      this.failRustDeskPreflightValidation(stored, -23);
       this.rustDeskProPreflightError = '请输入远程 RustDesk 设备密码。';
       return;
     }
     if (this.rustDeskProAuthMode === 'request_approval' && stored.rustdeskDirectEnabled) {
+      this.failRustDeskPreflightValidation(stored, -24);
       this.rustDeskProPreflightError = '直连模式只能使用设备密码。';
       return;
     }
     if (this.rustDeskProAuthMode === 'request_approval' && stored.passwordConfigured &&
       stored.password === '') {
+      this.failRustDeskPreflightValidation(stored, -25);
       this.rustDeskProPreflightError =
         '已保存设备密码处于加密仓库中；请先解锁再切换为请求批准。';
       return;
     }
     const generation: number = ++this.rustDeskProPreflightGeneration;
+    const preflightStartedAtMs: number = Date.now();
     this.recordRustDeskPreflightEvent('started', generation);
+    this.recordRustDeskRouteStage(stored, 'started', 'unknown', 0, 0);
     const accountScopeReady: boolean = await AccountSessionCoordinator.getInstance().init(
       getContext(this) as common.Context);
     if (!accountScopeReady) {
       this.recordRustDeskPreflightEvent('failed', generation, -10);
+      this.recordRustDeskRouteStage(stored, 'failed', 'unknown', 0,
+        Date.now() - preflightStartedAtMs);
       this.rustDeskProPreflightState = RustDeskProPreflightState.ERROR;
       this.rustDeskProPreflightError = '账号数据域初始化失败，无法安全保留后台会话。';
       return;
@@ -11919,6 +11968,8 @@ struct HostListPage {
           this.showRustDeskProPreflight = false;
           this.showRemoteHostSheet = false;
           this.recordRustDeskPreflightEvent('succeeded', generation, 2, sid);
+          this.recordRustDeskRouteStage(host, 'succeeded', 'connected', sid,
+            Date.now() - preflightStartedAtMs);
           if (remoteSessionExactDisconnectIdentityEquals(
             this.rustDeskProDisconnectIdentity, preflightDisconnectIdentity)) {
             this.rustDeskProDisconnectIdentity = null;
@@ -11969,6 +12020,11 @@ struct HostListPage {
       this.recordRustDeskPreflightEvent('failed', generation,
         this.rustDeskPreflightDiagnosticCode(detail),
         preflightDisconnectIdentity === null ? 0 : preflightDisconnectIdentity.sessionId);
+      const directStage: RustDeskDirectStage = host.rustdeskDirectEnabled ?
+        rustDeskDirectFailureStage(detail) : 'unknown';
+      this.recordRustDeskRouteStage(host, 'failed', directStage,
+        preflightDisconnectIdentity === null ? 0 : preflightDisconnectIdentity.sessionId,
+        Date.now() - preflightStartedAtMs);
       let kind: RustDeskProNativeErrorKind = classifyRustDeskProNativeError(detail);
       if (kind === 'unknown' && host.rustdeskAuthMode === 'request_approval' &&
         detail.indexOf('等待远端批准超时') >= 0) {
@@ -11989,7 +12045,38 @@ struct HostListPage {
         ? rustDeskNativeErrorDetail(detail)
         : rustDeskProNativeErrorMessage(
           kind, host.rustdeskAuthMode, controlPlaneProfile);
+      // Direct-IP failures name the failed layer (address, TCP, login,
+      // video) instead of a generic code, with overlay-network hints.
+      const directMessage: string = host.rustdeskDirectEnabled ?
+        rustDeskDirectFailureMessage(directStage, host.rustdeskDirectPort) : '';
+      if (directMessage !== '') {
+        this.rustDeskProPreflightError = directMessage;
+      }
     }
+  }
+
+  /** A preflight rejected by local validation before any native attempt. */
+  private failRustDeskPreflightValidation(host: RemoteHost, code: number): void {
+    // Generation 0: no native attempt was opened, so this must not correlate
+    // with an earlier attempt's started/failed pair.
+    this.recordRustDeskPreflightEvent('failed', 0, code);
+    this.recordRustDeskRouteStage(host, 'failed', 'validation', 0, 0);
+  }
+
+  /** Address-free RustDesk route evidence: source, stage and address class. */
+  private recordRustDeskRouteStage(host: RemoteHost, outcome: DiagnosticOutcome,
+    stage: RustDeskDirectStage, sessionId: number, elapsedMs: number): void {
+    try {
+      const direct: boolean = host.rustdeskDirectEnabled;
+      recordRustDeskDirectStage(outcome, sessionId,
+        rustDeskDirectSourceCode(rustDeskDirectEndpointSource(host)),
+        rustDeskDirectStageCode(stage),
+        rustDeskDirectAddressClassCode(direct ?
+          rustDeskDirectAddressClass(host.rustdeskDirectHost, host.rustdeskDirectPort) : 'not_applicable'),
+        elapsedMs,
+        direct ? diagnosticNetworkFactsForEndpoints(host.rustdeskDirectHost, host.rustdeskDirectPort) :
+          emptyDiagnosticNetworkFacts());
+    } catch (_err) {}
   }
 
   private sshProxyEditorValueForHost(host: RemoteHost): SshProxyEditorValue {

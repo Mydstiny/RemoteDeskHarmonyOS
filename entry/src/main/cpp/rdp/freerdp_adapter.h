@@ -29,6 +29,9 @@
 #if defined(CHANNEL_DISP_CLIENT)
 #include <freerdp/client/disp.h>
 #endif
+#if defined(CHANNEL_RDPGFX_CLIENT)
+#include <freerdp/client/rdpgfx.h>
+#endif
 #include <freerdp/version.h>
 #endif
 
@@ -298,6 +301,15 @@ private:
     static void cbErrorInfo(void* context, const ErrorInfoEventArgs* e);
     static void cbChannelConnected(void* context, const ChannelConnectedEventArgs* e);
     static void cbChannelDisconnected(void* context, const ChannelDisconnectedEventArgs* e);
+#if defined(CHANNEL_RDPGFX_CLIENT)
+    static void installRdpGfxEvidenceHooks(RdpgfxClientContext* gfx);
+    static UINT cbGfxSurfaceCommand(RdpgfxClientContext* context,
+                                    const RDPGFX_SURFACE_COMMAND* cmd);
+    static UINT cbGfxCapsAdvertise(RdpgfxClientContext* context,
+                                   const RDPGFX_CAPS_ADVERTISE_PDU* advertise);
+    static UINT cbGfxCapsConfirm(RdpgfxClientContext* context,
+                                 const RDPGFX_CAPS_CONFIRM_PDU* confirm);
+#endif
 #if defined(CHANNEL_DISP_CLIENT)
     static UINT cbDisplayControlCaps(DispClientContext* context, UINT32 maxNumMonitors,
                                      UINT32 maxMonitorAreaFactorA,

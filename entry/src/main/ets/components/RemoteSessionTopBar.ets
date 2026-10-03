@@ -152,6 +152,8 @@ export struct RemoteSessionTopBar {
   @Prop filePasteEnabled: boolean = true;
   @Prop viewScaleMode: string = 'fit';
   @Prop imageQuality: number = 1;
+  /** Physical pixels shown per remote pixel, percent; -1 when unknown. */
+  @Prop localScalePercent: number = -1;
   @Prop codec: number = 0;
   @Prop showLocalCursor: boolean = true;
   @Prop browseMode: boolean = false;
@@ -1014,15 +1016,30 @@ export struct RemoteSessionTopBar {
 
   @Builder
   private imageQualitySubMenuContent() {
-    this.menuItem('速度优先', 'displaySettings', (): void => {
+    // The tier only changes the remote encoder bitrate; text sharpness also
+    // depends on remote resolution, local scaling and 4:2:0 chroma.
+    this.menuItem('速度优先（降低码率）', 'displaySettings', (): void => {
       this.actions.onSetRustDeskImageQuality(0);
     }, this.imageQuality === 0)
     this.menuItem('平衡', 'displaySettings', (): void => {
       this.actions.onSetRustDeskImageQuality(1);
     }, this.imageQuality === 1)
-    this.menuItem('画质优先', 'displaySettings', (): void => {
+    this.menuItem('画质优先（提高码率）', 'displaySettings', (): void => {
       this.actions.onSetRustDeskImageQuality(2);
     }, this.imageQuality === 2)
+    if (this.localScalePercent > 0 && this.localScalePercent < 100) {
+      this.menuNote('当前缩小到 ' + this.localScalePercent.toString() +
+        '% 显示，清晰度主要受缩放影响')
+    }
+  }
+
+  @Builder
+  private menuNote(text: string) {
+    Text(text)
+      .fontSize(11)
+      .fontColor('#6B7280')
+      .width('100%')
+      .padding({ left: 38, right: 8, top: 2, bottom: 4 })
   }
 
   @Builder

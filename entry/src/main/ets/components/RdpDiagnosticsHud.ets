@@ -1,4 +1,12 @@
 import { RdpRenderStats } from '../types/rdpnapi';
+import {
+  DiagnosticRdpGraphicsFacts,
+  rdpGfxCapsLabel,
+  rdpGraphicsFactsFromRenderStats,
+  rdpGraphicsPresentationLabel,
+  rdpH264StatusLabel,
+  rdpWireCodecLabel
+} from '../services/RdpGraphicsEvidencePolicy';
 import { Palette, buildDark } from '../common/Theme';
 
 export const EMPTY_RDP_RENDER_STATS: RdpRenderStats = {
@@ -126,7 +134,7 @@ export struct RdpDiagnosticsHud {
   private pal(): Palette { return buildDark(this.accentColor); }
 
   private panelHeight(expanded: boolean = this.expanded): number {
-    return expanded ? 248 : 116;
+    return expanded ? 305 : 116;
   }
 
   private visiblePanelWidth(): number {
@@ -138,7 +146,7 @@ export struct RdpDiagnosticsHud {
   }
 
   private canExpand(): boolean {
-    return this.availableWidth >= 236 && this.availableHeight >= 248;
+    return this.availableWidth >= 236 && this.availableHeight >= this.panelHeight(true);
   }
 
   private clampPosition(expanded: boolean = this.expanded): void {
@@ -169,6 +177,16 @@ export struct RdpDiagnosticsHud {
     }.width('100%').height(19)
   }
 
+  private graphicsFacts(): DiagnosticRdpGraphicsFacts {
+    return rdpGraphicsFactsFromRenderStats(this.stats);
+  }
+
+  private graphicsBadge(): string {
+    const facts: DiagnosticRdpGraphicsFacts = this.graphicsFacts();
+    return facts.wireCodec !== 'none' ? rdpWireCodecLabel(facts) :
+      this.stats.graphicsMode.toUpperCase();
+  }
+
   build() {
     Column() {
       Row() {
@@ -178,7 +196,7 @@ export struct RdpDiagnosticsHud {
         Text('RDP 性能监视').fontSize(11).fontWeight(FontWeight.Medium).fontColor('#FFFFFF')
           .margin({ left: 7 })
         Blank().layoutWeight(1)
-        Text(this.stats.graphicsMode.toUpperCase()).fontSize(9).fontColor(this.accentColor)
+        Text(this.graphicsBadge()).fontSize(9).fontColor(this.accentColor)
           .fontWeight(FontWeight.Bold)
         SymbolGlyph(this.expanded ? $r('sys.symbol.chevron_up') : $r('sys.symbol.chevron_down'))
           .fontSize(12).fontColor(['rgba(255,255,255,0.72)']).margin({ left: 8 })
@@ -227,10 +245,19 @@ export struct RdpDiagnosticsHud {
           value: this.stats.desktopWidth.toString() + ' x ' + this.stats.desktopHeight.toString()
         })
         this.metric({
-          label: 'GFX / 动态布局',
-          value: (this.stats.gfxChannelConnected ? 'connected' : 'gdi') + ' / ' +
+          label: '图形管线 / 动态布局',
+          value: rdpGraphicsPresentationLabel(this.graphicsFacts()) + ' / ' +
             (this.stats.displayControlDisabled ? 'fallback' :
               (this.stats.displayControlReady ? this.stats.displayLastResult : 'unavailable'))
+        })
+        this.metric({
+          label: 'GFX 能力 通告→确认',
+          value: rdpGfxCapsLabel(this.graphicsFacts())
+        })
+        this.metric({
+          label: '线上编码 / H.264',
+          value: rdpWireCodecLabel(this.graphicsFacts()) + ' / ' +
+            rdpH264StatusLabel(this.graphicsFacts())
         })
         this.metric({
           label: '停滞/拒绝',
