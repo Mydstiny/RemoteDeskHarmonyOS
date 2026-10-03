@@ -988,6 +988,13 @@ struct HostListPage {
   @State aiVoiceMode: string = 'hands';
   /** Voice mode starts from the closing panel's capsule ('panel') or from the camera island ('island'). */
   @State aiVoiceStart: string = 'island';
+  /** Voice mode comes back from the orb over a screen it opened (its last answer, listening). */
+  @State aiVoiceResume: boolean = false;
+  @StorageProp('aiVoice.resumeRequest') @Watch('onAiVoiceResume') aiVoiceResumeRequest: number = 0;
+  /** The island starts by running this app action (voice mode confirmed it). */
+  @State aiIslandStartAction: string = '';
+  /** The island starts as the floating orb (voice mode floated). */
+  @State aiIslandStartFloat: boolean = false;
   /** The island opens straight into the panel (taking over from the voice card) instead of its capsule sequence. */
   @State aiIslandQuickOpen: boolean = false;
   @StorageProp(AI_VOICE_REQUEST) @Watch('onAiVoiceRequest') aiVoiceRequest: number = 0;
@@ -2284,6 +2291,20 @@ struct HostListPage {
     void this.connectToHost(host);
     return true;
   };
+  /** The AI's 编辑主机 card: the host's own edit sheet, where the user changes and saves it. */
+  private readonly assistantHostEditor = (hostId: string): boolean => {
+    const host: RemoteHost | undefined = this.hosts.find((item: RemoteHost): boolean => item.id === hostId);
+    if (host === undefined) { return false; }
+    void this.editHost(host);
+    return true;
+  };
+  /** The AI's 删除主机 card: the list's own delete, with its lock check and 确认删除 dialog. */
+  private readonly assistantHostRemover = (hostId: string): boolean => {
+    const host: RemoteHost | undefined = this.hosts.find((item: RemoteHost): boolean => item.id === hostId);
+    if (host === undefined) { return false; }
+    void this.doDeleteHost(host);
+    return true;
+  };
 
   private applyAssistantSetting(id: string, value: string): boolean {
     const on: boolean = value === 'true';
@@ -2386,7 +2407,8 @@ struct HostListPage {
     this.workspacePhoneEnabled = AppStorage.get<boolean>(WORKSPACE_PHONE_ENABLED_KEY) ?? false;
     this.syncDiagnosticAiOrbPreference();
     DiagnosticAiSettingsBridge.register(this.assistantSettingApplier, this.assistantSettingReader);
-    DiagnosticAiHostBridge.register(this.assistantHostLister, this.assistantHostConnector);
+    DiagnosticAiHostBridge.register(this.assistantHostLister, this.assistantHostConnector, this.assistantHostEditor,
+      this.assistantHostRemover);
     AiAppDataBridge.register(this.chatHostLister);
     this.refreshAppIconEntry();
     this.ensureHostOrganizationSubscription();
@@ -14249,8 +14271,12 @@ struct HostListPage {
           topInset: this.topSafeHeightVp(),
           deviceClass: this.isDesktopDevice ? 'pc' : this.breakpoint === 'sm' ? 'phone' : 'pad',
           quickOpen: this.aiIslandQuickOpen,
+          startAction: this.aiIslandStartAction,
+          startFloat: this.aiIslandStartFloat,
           onDismissed: (): void => {
             this.aiIslandShown = false; this.aiIslandFloating = false; this.aiIslandQuickOpen = false;
+            this.aiIslandStartAction = '';
+            this.aiIslandStartFloat = false;
             this.diagnosticAiOrbState = 'idle';
           },
           onFloatingChanged: (floating: boolean): void => { this.aiIslandFloating = floating; },
@@ -14277,6 +14303,20 @@ struct HostListPage {
           deviceClass: this.isDesktopDevice ? 'pc' : this.breakpoint === 'sm' ? 'phone' : 'pad',
           mode: this.aiVoiceMode,
           startShape: this.aiVoiceStart,
+          resume: this.aiVoiceResume,
+          onFloat: (): void => {
+            this.aiIslandStartAction = '';
+            this.aiIslandStartFloat = true;
+            this.aiIslandQuickOpen = false;
+            if (!this.aiIslandShown) { this.aiIslandShown = true; }
+          },
+          onOpenScreen: (action: string): void => {
+            // The island runs the action as text mode's would, and floats as the orb over the opened screen.
+            this.aiIslandStartAction = action;
+            this.aiIslandQuickOpen = false;
+            if (!this.aiIslandShown) { this.aiIslandShown = true; }
+            this.diagnosticAiOrbState = 'open';
+          },
           onDismissed: (): void => { this.aiVoiceShown = false; },
           onOpenChat: (): void => {
             // The panel opens at once under the voice card, which then dissolves into it.
@@ -20578,6 +20618,10 @@ struct HostListPage {
     if (this.aiVoiceHold.startsWith('down:') && !this.aiVoiceShown) { this.openAiVoice('hold'); }
   }
 
+  private onAiVoiceResume(): void {
+    if (this.aiVoiceResumeRequest > 0) { this.openAiVoice('hands', true); }
+  }
+
   private onAiAppActionRequest(): void {
     const at: number = this.aiAppActionRequest.indexOf('@');
     if (at <= 0 || !this.diagnosticAiAssistantVisible) { return; }
@@ -20589,14 +20633,16 @@ struct HostListPage {
   }
 
   /** Voice mode takes over from the island (which folds away first). */
-  private openAiVoice(mode: string): void {
+  private openAiVoice(mode: string, resume: boolean = false): void {
     if (this.aiVoiceShown || !this.diagnosticAiAssistantVisible) { return; }
     const islandOpen: boolean = this.aiIslandShown && !this.aiIslandFloating;
-    if (islandOpen) { AppStorage.setOrCreate('aiIsland.closeRequest', Date.now()); }
+    // The island folds away (a floating one too: its orb would otherwise stay above voice mode).
+    if (this.aiIslandShown) { AppStorage.setOrCreate('aiIsland.closeRequest', Date.now()); }
     // From the panel: the droplet takes over from the capsule the panel gathers into as it closes.
     setTimeout((): void => {
       this.aiVoiceMode = mode;
       this.aiVoiceStart = islandOpen ? 'panel' : 'island';
+      this.aiVoiceResume = resume;
       this.aiVoiceShown = true;
     }, islandOpen ? 300 : 0);
   }

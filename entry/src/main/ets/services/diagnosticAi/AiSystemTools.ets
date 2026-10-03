@@ -1,4 +1,5 @@
-import { abilityAccessCtrl, common, Permissions } from '@kit.AbilityKit';
+import { abilityAccessCtrl, common, Permissions, Want } from '@kit.AbilityKit';
+import { systemShare } from '@kit.ShareKit';
 import { batteryInfo, BusinessError, deviceInfo, pasteboard } from '@kit.BasicServicesKit';
 import { calendarManager } from '@kit.CalendarKit';
 import { camera } from '@kit.CameraKit';
@@ -10,9 +11,11 @@ import { notificationManager } from '@kit.NotificationKit';
 import { call } from '@kit.TelephonyKit';
 import { photoAccessHelper } from '@kit.MediaLibraryKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { aiRecognizeImageFile } from './AiDocumentService';
+import { AiDocument, aiDeleteDocument, aiRecognizeImageFile } from './AiDocumentService';
+import { DiagnosticAiConversationStore } from './DiagnosticAiConversationStore';
 import { diagnosticAiAppActionId, diagnosticAiAppActionLabel } from './DiagnosticAiAppActionPolicy';
 import { AI_APP_ACTION_REQUEST } from './AiBridgeKeys';
+import { DiagnosticAiHostBridge } from './DiagnosticAiTriagePolicy';
 import { diagnosticAiApplySetting, diagnosticAiSettingActionText, diagnosticAiSettingCurrent, diagnosticAiSettingValueLabel } from './DiagnosticAiSettingsActionPolicy';
 
 /**
@@ -47,7 +50,8 @@ export class AiChatAction {
 }
 
 /** The functions that wait for the user's 确认. */
-export const AI_CONFIRM_TOOLS: string[] = ['set_reminder', 'call_phone', 'send_email', 'navigate', 'open_link'];
+export const AI_CONFIRM_TOOLS: string[] = ['set_reminder', 'cancel_reminder', 'call_phone', 'send_email', 'navigate',
+  'open_link'];
 
 function field(input: Record<string, Object>, key: string): string {
   const value: Object | undefined = input[key];
@@ -236,8 +240,59 @@ async function recognizeImage(context: common.UIAbilityContext): Promise<string>
 }
 
 /** Tools that do not wait for 确认; their result goes straight back to the model. */
+/** The system share sheet with some text (the user picks the app). */
+async function shareText(context: common.UIAbilityContext, text: string, title: string): Promise<string> {
+  if (text.trim() === '') { return '没有分享：内容为空。'; }
+  const record: systemShare.SharedRecord = { utd: 'general.plain-text', content: text.slice(0, 20000) };
+  if (title !== '') { record.title = title.slice(0, 60); }
+  const controller: systemShare.ShareController = new systemShare.ShareController(new systemShare.SharedData(record));
+  await controller.show(context, { previewMode: systemShare.SharePreviewMode.DETAIL, selectionMode: systemShare.SelectionMode.SINGLE });
+  return '已打开系统分享面板，由用户选择分享到哪里。';
+}
+
+/** System settings pages the AI may open (the user changes things there themselves). */
+const SETTINGS_PAGES: string[][] = [['wifi', 'wifi_entry', 'WLAN'], ['bluetooth', 'bluetooth_entry', '蓝牙'],
+  ['mobile_network', 'mobile_network_entry', '移动网络'], ['location', 'location_manager_settings', '位置信息'],
+  ['app_info', 'application_info_entry', '本应用的应用信息与权限'], ['home', '', '设置首页']];
+
+async function openSystemSettings(context: common.UIAbilityContext, page: string): Promise<string> {
+  const entry: string[] = SETTINGS_PAGES.find((p: string[]): boolean => p[0] === page) ?? SETTINGS_PAGES[SETTINGS_PAGES.length - 1];
+  const want: Want = { bundleName: 'com.huawei.hmos.settings', abilityName: 'com.huawei.hmos.settings.MainAbility' };
+  if (entry[1] !== '') { want.uri = entry[1]; }
+  if (entry[0] === 'app_info') {
+    const params: Record<string, Object> = {};
+    params['pushParams'] = context.abilityInfo.bundleName;
+    want.parameters = params;
+  }
+  await context.startAbility(want);
+  return '已打开系统设置的「' + entry[2] + '」页面，请用户在那里自己调整。';
+}
+
+/** The reminders this app set that have not gone off yet, with the numbers cancel_reminder takes. */
+async function listReminders(): Promise<string> {
+  const reminders: reminderAgentManager.ReminderInfo[] = await reminderAgentManager.getAllValidReminders();
+  if (reminders.length === 0) {
+    return '本应用现在没有待触发的提醒。（改用日历设置的提醒在系统日历里，这里看不到。）';
+  }
+  return '待触发的提醒（编号：内容，时间）：\n' + reminders.slice(0, 30).map((info: reminderAgentManager.ReminderInfo): string => {
+    const request: reminderAgentManager.ReminderRequest = info.reminderReq;
+    let when: string = '';
+    if (request.reminderType === reminderAgentManager.ReminderType.REMINDER_TYPE_CALENDAR) {
+      const t: reminderAgentManager.LocalDateTime = (request as reminderAgentManager.ReminderRequestCalendar).dateTime;
+      when = t.year.toString() + '-' + pad(t.month) + '-' + pad(t.day) + ' ' + pad(t.hour) + ':' + pad(t.minute);
+    } else if (request.reminderType === reminderAgentManager.ReminderType.REMINDER_TYPE_TIMER) {
+      when = '倒计时 ' + Math.round((request as reminderAgentManager.ReminderRequestTimer).triggerTimeInSeconds / 60).toString() +
+        ' 分钟（从设置时算起）';
+    } else {
+      when = '闹钟';
+    }
+    return info.reminderId.toString() + '：' + (request.title ?? '提醒') + '，' + when;
+  }).join('\n');
+}
+
 export async function aiRunSystemTool(context: common.UIAbilityContext, fn: string, input: Record<string, Object>): Promise<string> {
   try {
+    if (fn === 'list_reminders') { return await listReminders(); }
     if (fn === 'read_clipboard') { return await readClipboard(context); }
     if (fn === 'copy_to_clipboard') { return copyToClipboard(field(input, 'text')); }
     if (fn === 'device_status') { return deviceStatus(); }
@@ -247,6 +302,8 @@ export async function aiRunSystemTool(context: common.UIAbilityContext, fn: stri
     if (fn === 'pick_contact') { return await pickContact(); }
     if (fn === 'add_contact') { return await addContact(context, input); }
     if (fn === 'flashlight') { return flashlight(context, input['on'] !== false && field(input, 'on') !== 'false'); }
+    if (fn === 'share_text') { return await shareText(context, field(input, 'text'), field(input, 'title')); }
+    if (fn === 'open_system_settings') { return await openSystemSettings(context, field(input, 'page')); }
     if (fn === 'recognize_image_text') { return await recognizeImage(context); }
   } catch (error) {
     const code: number = (error as BusinessError).code ?? 0;
@@ -270,6 +327,12 @@ export function aiActionFor(id: string, fn: string, input: Record<string, Object
     }
     if (isNaN(at) || at <= Date.now()) { return '提醒时间无效或已经过去：time 用 YYYY-MM-DD HH:mm，或用 minutes 表示多少分钟后。'; }
     return new AiChatAction(id, fn, '提醒：' + title, timeText(at), args);
+  }
+  if (fn === 'cancel_reminder') {
+    const reminderId: number = parseInt(field(input, 'id'), 10);
+    if (isNaN(reminderId)) { return '缺少提醒编号：先用 list_reminders 查看。'; }
+    return new AiChatAction(id, fn, '取消提醒' + (field(input, 'title') !== '' ? '：' + field(input, 'title') : ''),
+      '到点不会再弹出', args);
   }
   if (fn === 'call_phone') {
     const number: string = field(input, 'number').replace(/[^\d+]/g, '');
@@ -443,9 +506,40 @@ async function navigate(context: common.UIAbilityContext, input: Record<string, 
   return '已在地图应用里搜索「' + field(input, 'destination') + '」';
 }
 
-/** Run an action the user confirmed; the text says what happened (or throws with why it did not). */
-export async function aiRunAction(context: common.UIAbilityContext, action: AiChatAction): Promise<string> {
+/**
+ * Run an action the user confirmed; the text says what happened (or throws with why it did not). `owner`: the
+ * account whose saved conversations a delete_conversation card removes.
+ */
+export async function aiRunAction(context: common.UIAbilityContext, action: AiChatAction, owner: string = ''): Promise<string> {
   const input: Record<string, Object> = JSON.parse(action.args) as Record<string, Object>;
+  if (action.tool === 'cancel_reminder') {
+    await reminderAgentManager.cancelReminder(parseInt(field(input, 'id'), 10));
+    return '已取消这个提醒';
+  }
+  if (action.tool === 'delete_document') {
+    const name: string = field(input, 'name');
+    if (!aiDeleteDocument(new AiDocument(name, field(input, 'format'), field(input, 'path'), 0, 0))) {
+      throw new Error('没有删掉「' + name + '」，可能已经不在了');
+    }
+    return '已删除「' + name + '」';
+  }
+  if (action.tool === 'delete_conversation') {
+    if (owner === '') { throw new Error('不知道是哪个账号的对话'); }
+    const store: DiagnosticAiConversationStore = new DiagnosticAiConversationStore();
+    store.init(context, owner);
+    const sessionId: string = field(input, 'id');
+    if (store.session(sessionId) === undefined) { return '这条对话已经不在了'; }
+    if (!store.deleteSession(sessionId)) { throw new Error('没有删除成功，请稍后再试'); }
+    return '已删除对话「' + field(input, 'title') + '」';
+  }
+  if (action.tool === 'edit_host') {
+    if (!DiagnosticAiHostBridge.edit(field(input, 'host_id'))) { throw new Error('没有找到这台主机，可能已被删除'); }
+    return '已打开编辑页，在那里修改后保存';
+  }
+  if (action.tool === 'delete_host') {
+    if (!DiagnosticAiHostBridge.remove(field(input, 'host_id'))) { throw new Error('没有找到这台主机，可能已被删除'); }
+    return '已弹出删除确认，在对话框里确认后才会删除';
+  }
   if (action.tool === 'set_reminder') {
     if (!(await aiEnsurePermission(context, 'ohos.permission.PUBLISH_AGENT_REMINDER'))) { throw new Error('没有提醒权限'); }
     return await setReminder(context, input);
@@ -462,6 +556,10 @@ export async function aiRunAction(context: common.UIAbilityContext, action: AiCh
     }
     if (!diagnosticAiApplySetting(settingId, value)) { throw new Error('设置没有改成功，请到设置里手动修改'); }
     return '已把「' + diagnosticAiSettingActionText(settingId) + '」改为「' + diagnosticAiSettingValueLabel(settingId, value) + '」';
+  }
+  if (action.tool === 'connect_host') {
+    if (!DiagnosticAiHostBridge.connect(field(input, 'host_id'))) { throw new Error('没有找到这台主机，可能已被删除'); }
+    return '正在连接';
   }
   if (action.tool === 'open_app_screen') {
     const screen: string = field(input, 'screen');

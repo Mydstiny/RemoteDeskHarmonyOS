@@ -81,16 +81,25 @@ export class AiTriageScript {
 export class DiagnosticAiHostBridge {
   private static lister: ((protocol: string) => AiTriageHost[]) | null = null;
   private static connector: ((hostId: string) => boolean) | null = null;
+  /** Opens the host's own edit sheet (the user changes and saves it there). */
+  private static editor: ((hostId: string) => boolean) | null = null;
+  /** Starts the host list's own delete (its lock check and its 确认删除 dialog). */
+  private static remover: ((hostId: string) => boolean) | null = null;
 
-  static register(list: (protocol: string) => AiTriageHost[], connect: (hostId: string) => boolean): void {
+  static register(list: (protocol: string) => AiTriageHost[], connect: (hostId: string) => boolean,
+    edit: ((hostId: string) => boolean) | null = null, remove: ((hostId: string) => boolean) | null = null): void {
     DiagnosticAiHostBridge.lister = list;
     DiagnosticAiHostBridge.connector = connect;
+    DiagnosticAiHostBridge.editor = edit;
+    DiagnosticAiHostBridge.remover = remove;
   }
 
   static unregister(list: (protocol: string) => AiTriageHost[]): void {
     if (DiagnosticAiHostBridge.lister === list) {
       DiagnosticAiHostBridge.lister = null;
       DiagnosticAiHostBridge.connector = null;
+      DiagnosticAiHostBridge.editor = null;
+      DiagnosticAiHostBridge.remover = null;
     }
   }
 
@@ -104,6 +113,18 @@ export class DiagnosticAiHostBridge {
     const connect = DiagnosticAiHostBridge.connector;
     if (connect === null) { return false; }
     try { return connect(hostId); } catch (_error) { return false; }
+  }
+
+  static edit(hostId: string): boolean {
+    const edit = DiagnosticAiHostBridge.editor;
+    if (edit === null) { return false; }
+    try { return edit(hostId); } catch (_error) { return false; }
+  }
+
+  static remove(hostId: string): boolean {
+    const remove = DiagnosticAiHostBridge.remover;
+    if (remove === null) { return false; }
+    try { return remove(hostId); } catch (_error) { return false; }
   }
 }
 

@@ -52,6 +52,13 @@ export function aiTtsProvider(id: string): AiTtsProvider {
   return AI_TTS_PROVIDERS.find((provider: AiTtsProvider): boolean => provider.id === id) ?? AI_TTS_PROVIDERS[0];
 }
 
+/**
+ * 语音识别: on the device (the system recognizer, offline), or 阿里云百炼's real-time recognition (Paraformer / Fun-ASR,
+ * streamed over its WebSocket API with the 阿里云百炼 key) — much more accurate, as 小艺输入法's cloud recognition is.
+ */
+export const AI_ASR_ENGINES: string[][] = [['system', '本机（离线）'], ['dashscope', '阿里云百炼（云端）']];
+export const AI_ASR_MODELS: string[] = ['paraformer-realtime-v2', 'fun-asr-realtime'];
+
 /** 语速 → the engines' speed factor. */
 export function aiVoiceSpeed(rate: string): number {
   return rate === 'slow' ? 0.85 : rate === 'fast' ? 1.2 : 1;
@@ -70,6 +77,10 @@ export class AiVoiceConfig {
   holdToTalk: boolean = true;
   /** A cloud engine is chosen and has a key; otherwise speech falls back to the system voice. */
   hasKey: boolean = false;
+  /** 语音识别 engine ('system' | 'dashscope') and its model; asrReady once the 阿里云百炼 key is saved. */
+  asr: string = 'system';
+  asrModel: string = AI_ASR_MODELS[0];
+  asrReady: boolean = false;
 }
 
 function scopeKey(owner: string): string {
@@ -137,6 +148,9 @@ export class AiVoiceSettings {
     config.continuous = this.flag('continuous', true);
     config.holdToTalk = this.flag('holdToTalk', true);
     config.hasKey = provider.needsKey && this.keyFingerprint(config.provider) !== '';
+    config.asr = this.text('asr', 'system') === 'dashscope' ? 'dashscope' : 'system';
+    config.asrModel = this.text('asr.model', AI_ASR_MODELS[0]);
+    config.asrReady = config.asr === 'dashscope' && this.keyFingerprint('dashscope') !== '';
     AppStorage.setOrCreate(AI_VOICE_ENABLED, config.enabled);
     AppStorage.setOrCreate(AI_VOICE_HOLD, config.enabled && config.holdToTalk);
     return config;
@@ -151,6 +165,8 @@ export class AiVoiceSettings {
   setVoice(provider: string, voice: string): void { this.put(provider + '.voice', voice.trim().slice(0, 120)); }
   setBaseUrl(provider: string, url: string): void { this.put(provider + '.baseUrl', url.trim().replace(/\/+$/, '').slice(0, 300)); }
   setGroupId(provider: string, groupId: string): void { this.put(provider + '.groupId', groupId.trim().slice(0, 64)); }
+  setAsr(id: string): void { this.put('asr', id === 'dashscope' ? 'dashscope' : 'system'); }
+  setAsrModel(model: string): void { this.put('asr.model', model.trim().slice(0, 120)); }
 
   /** Saves a key; '' keeps the one already saved. False when the secret store refused it. */
   saveKey(provider: string, key: string): boolean {

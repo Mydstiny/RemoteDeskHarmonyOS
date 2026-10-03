@@ -8,20 +8,21 @@ import { AiInputCapsule, AiSendButton } from './AiIslandChrome';
 import { DiagnosticAiProviderProfile } from '../../services/diagnosticAi/DiagnosticAiModels';
 import { DiagnosticAiProfileStore } from '../../services/diagnosticAi/DiagnosticAiProfileStore';
 import { diagnosticAiProviderIsHarmonyLocal, diagnosticAiProviderManifest } from '../../services/diagnosticAi/DiagnosticAiProviderCatalog';
-import { AiChatAppData, AiChatReply, AiChatService, AiChatTurn } from '../../services/diagnosticAi/AiChatService';
+import { AiChatAppData, AiChatReply, AiChatService, AiChatTurn, AiConversationRow } from '../../services/diagnosticAi/AiChatService';
 import { AiAttachment, AiDocument, aiCreateDocument, aiDocumentAvailable, aiDocumentErrorText, aiDocumentKind, aiDocumentKindLabel, aiImportDocument, aiOpenDocument, aiPickDocuments, aiPrintDocument, aiSaveDocumentAs, aiShareDocument, aiTextAttachment } from '../../services/diagnosticAi/AiDocumentService';
 import { AiChatAction, aiActionErrorText, aiRunAction } from '../../services/diagnosticAi/AiSystemTools';
 import { AiReadAloud, AiVoiceInput } from '../../services/diagnosticAi/AiSpeech';
 import { AI_VOICE_ENABLED } from '../../services/diagnosticAi/AiVoiceSettings';
 import { AiMdBlock, AiMdSpan, aiMarkdownBlocks } from '../../services/diagnosticAi/AiMarkdownPolicy';
-import { aiRouteSuggestion } from '../../services/diagnosticAi/AiChatRoutePolicy';
+import { aiAutoRoute, aiModeCommand } from '../../services/diagnosticAi/AiChatRoutePolicy';
+import { AI_MODE_REQUEST } from '../../services/diagnosticAi/AiBridgeKeys';
 import { AI_CHAT_REFRESH_KEY, AiShareInbox, AiSharedItem, aiChatRefresh } from '../../services/diagnosticAi/AiShareInbox';
 import { AiSkill, AiToolSpec, aiSkillsForQuestion, aiThinkingPhrases } from '../../services/diagnosticAi/AiSkillCatalog';
 import { AiSkillStore } from '../../services/diagnosticAi/AiSkillStore';
 import { AiAppDataBridge, AiConnectionRow, aiConnectionsText, aiHostsText } from '../../services/diagnosticAi/AiAppDataBridge';
 import { ConnectionJournal, ConnectionJournalEntry } from '../../services/ConnectionJournal';
 import { diagnosticAiSettingCatalog } from '../../services/diagnosticAi/DiagnosticAiSettingsActionPolicy';
-import { DiagnosticAiAssistantPreferences, DiagnosticAiConversationSession, DiagnosticAiConversationStore, DiagnosticAiConversationTurn, DiagnosticAiDailyUsage, DiagnosticAiTurnDocument, defaultDiagnosticAiAssistantPreferences } from '../../services/diagnosticAi/DiagnosticAiConversationStore';
+import { DiagnosticAiAssistantPreferences, DiagnosticAiConversationSession, DiagnosticAiConversationStore, DiagnosticAiConversationTurn, DiagnosticAiDailyUsage, DiagnosticAiTurnDocument, defaultDiagnosticAiAssistantPreferences, diagnosticAiSessionKind } from '../../services/diagnosticAi/DiagnosticAiConversationStore';
 import { DiagnosticAiModelCatalog } from '../../services/diagnosticAi/DiagnosticAiModelCatalog';
 import { ProAppRuntime } from '../../services/pro/ProAppRuntime';
 import { ProEntries } from '../../services/pro/ProEntries';
@@ -93,6 +94,8 @@ export class AiChatMemory {
   static pending: AiAttachment[] = [];
   /** A question handed over from 助理, asked as soon as the chat shows. */
   static handoff: string = '';
+  /** Voice mode opened an app screen: the orb over it brings voice mode back (not the text panel). */
+  static voiceResume: boolean = false;
   /** The request out now ('' none); 新对话 clears it, so a late answer is dropped. */
   static requestId: string = '';
   static status: string = '';
@@ -238,9 +241,47 @@ function aiChatUsageText(conversationStore: DiagnosticAiConversationStore, days:
       tokenWords(r.promptTokens + r.completionTokens) + ' Token，¥' + r.estimatedCostCny.toFixed(2)).join('\n');
 }
 
-/** The app data the chat's tools may read (hosts, connection log, settings, AI usage). */
+/**
+ * The documents the AI wrote for this account that are still on the device, newest first: from the saved
+ * conversations and the one going on.
+ */
+function aiChatDocuments(conversationStore: DiagnosticAiConversationStore): AiDocument[] {
+  const found: AiDocument[] = [];
+  const seen: Set<string> = new Set<string>();
+  const add = (document: AiDocument): void => {
+    if (document.path === '' || seen.has(document.path)) { return; }
+    seen.add(document.path);
+    if (aiDocumentAvailable(document)) { found.push(document); }
+  };
+  AiChatMemory.messages.forEach((m: AiChatMessage): void => { m.documents.forEach(add); });
+  conversationStore.listSessions().forEach((session: DiagnosticAiConversationSession): void => {
+    session.turns.forEach((turn: DiagnosticAiConversationTurn): void => {
+      (turn.documents ?? []).forEach((d: DiagnosticAiTurnDocument): void => {
+        add(new AiDocument(d.name, d.format, d.path, d.bytes, turn.createdAt));
+      });
+    });
+  });
+  return found.sort((a: AiDocument, b: AiDocument): number => b.createdAt - a.createdAt);
+}
+
+/** The app data the chat's tools read and change (hosts, connection log, settings, usage, documents, memory…). */
 export function aiChatAppData(conversationStore: DiagnosticAiConversationStore): AiChatAppData {
   return {
+    documents: (): AiDocument[] => aiChatDocuments(conversationStore),
+    conversations: (): AiConversationRow[] => conversationStore.listSessions()
+      .sort((a: DiagnosticAiConversationSession, b: DiagnosticAiConversationSession): number => b.updatedAt - a.updatedAt)
+      .map((session: DiagnosticAiConversationSession): AiConversationRow => new AiConversationRow(session.id,
+        session.title !== '' ? session.title : '（无标题）', diagnosticAiSessionKind(session) === 'chat' ? '聊天' : '助理',
+        session.updatedAt, session.turns.length,
+        session.turns.reduce((sum: number, turn: DiagnosticAiConversationTurn): number => sum + (turn.documents ?? []).length, 0))),
+    currentConversation: (): string => AiChatMemory.sessionId,
+    memory: (): string => conversationStore.assistantPreferences().manualMemorySummary,
+    memoryEnabled: (): boolean => conversationStore.assistantPreferences().memoryEnabled,
+    saveMemory: (text: string): boolean => {
+      const preferences: DiagnosticAiAssistantPreferences = conversationStore.assistantPreferences();
+      preferences.manualMemorySummary = text;
+      return conversationStore.saveAssistantPreferences(preferences);
+    },
     hosts: (protocol: string): string => aiHostsText(AiAppDataBridge.hosts(), protocol),
     connections: (days: number): string => aiConnectionsText(ConnectionJournal.recent(days)
       .map((e: ConnectionJournalEntry): AiConnectionRow => ({ at: e.at, label: e.label, protocol: e.protocol, outcome: e.outcome,
@@ -343,8 +384,6 @@ export struct AiChatView {
   /** The message that just arrived (it fades in; the others are simply there). */
   @State private freshId: string = '';
   /** Dictating into the field; what was typed before it started. */
-  @State private listening: boolean = false;
-  private voiceBase: string = '';
   /** The message being read aloud ('' none). */
   @State private speakingId: string = '';
   /** An action card being carried out. */
@@ -389,7 +428,6 @@ export struct AiChatView {
   aboutToDisappear(): void {
     this.alive = false;
     this.stopStatus();
-    if (this.listening) { AiVoiceInput.stop(); }
     this.persist();
   }
 
@@ -578,23 +616,6 @@ export struct AiChatView {
 
   // ------------------------------------------------------------------ voice, reading aloud, actions
 
-  /** Dictation into the field: the words appear as they are recognised; a second tap stops. */
-  private toggleVoice(): void {
-    if (this.listening) { AiVoiceInput.stop(); return; }
-    if (this.busy) { return; }
-    this.voiceBase = this.draft.trim() === '' ? '' : this.draft.trim() + ' ';
-    this.listening = true;
-    let heard: boolean = false;
-    void AiVoiceInput.start(this.context(), (text: string, _final: boolean): void => {
-      if (text.trim() !== '') { heard = true; }
-      if (this.alive) { this.draft = this.voiceBase + text; }
-    }, (problem: string): void => {
-      this.listening = false;
-      if (!this.alive) { return; }
-      if (problem !== '') { this.toast(problem); } else if (!heard) { this.toast('没有听到说话'); }
-    });
-  }
-
   private toggleReadAloud(message: AiChatMessage): void {
     if (this.speakingId === message.id) { AiReadAloud.stop(); return; }
     void AiReadAloud.speak(this.context(), this.owner, message.id, message.text, (id: string): void => {
@@ -625,7 +646,12 @@ export struct AiChatView {
     if (this.runningAction !== '' || (action.status !== 'pending' && action.status !== 'failed')) { return; }
     this.runningAction = action.id;
     try {
-      const result: string = await aiRunAction(this.context(), action);
+      // The host's edit sheet or delete dialog comes up over the app: the chat waits as the orb meanwhile.
+      if (action.tool === 'edit_host' || action.tool === 'delete_host') {
+        this.onFloat();
+        await new Promise<void>((resolve: () => void): void => { setTimeout(resolve, 360); });
+      }
+      const result: string = await aiRunAction(this.context(), action, this.owner);
       this.setAction(message.id, action, 'done', result);
     } catch (error) {
       const why: string = aiActionErrorText(error as Object);
@@ -669,15 +695,27 @@ export struct AiChatView {
     const typed: string = this.draft.trim();
     if (typed === '' && this.pending.length === 0) { return; }
     const question: string = typed !== '' ? typed : '请阅读我添加的文档，简要说说它讲了什么。';
-    if (this.routeBypass !== question &&
-      aiRouteSuggestion(question, 'chat', this.pending.length + this.attachments.length > 0) === 'assistant') {
+    // 拜拜 / 回到语音 / 切到助理 / 悬浮球: done by the app at once, in any mode (the open panel acts on the request).
+    const command: string = this.pending.length === 0 ? aiModeCommand(typed) : '';
+    if (command === 'orb') { this.draft = ''; this.float(); return; }
+    if (command !== '') {
+      this.draft = '';
       this.hideKeyboard();
-      this.getUIContext().animateTo({ curve: curves.springMotion(0.42, 0.86) }, (): void => { this.routeQuestion = question; });
+      this.persist();
+      AppStorage.setOrCreate(AI_MODE_REQUEST, command + '@' + Date.now().toString());
+      return;
+    }
+    // Diagnosing the app or sending feedback needs 助理's capture and mail flow: it goes there by itself.
+    if (this.routeBypass !== question &&
+      aiAutoRoute(question, 'chat', this.pending.length + this.attachments.length > 0) === 'assistant') {
+      this.draft = '';
+      this.hideKeyboard();
+      this.persist();
+      this.onSwitchMode('assistant', question);
       return;
     }
     this.routeBypass = '';
     this.draft = '';
-    if (this.listening) { AiVoiceInput.stop(); this.listening = false; }
     this.hideKeyboard();
     void this.ask(question, false);
   }
@@ -730,6 +768,8 @@ export struct AiChatView {
     setTimeout((): void => { this.scroller.scrollEdge(Edge.Bottom); }, 80);
     const askedId: string = this.messages.length > 0 ? this.messages[this.messages.length - 1].id : '';
     const tools: AiToolSpec[] = this.skillStore.enabledTools();
+    // 记忆 may have changed since the view opened (update_memory, or 个性化设置).
+    try { this.preferences = this.conversationStore.assistantPreferences(); } catch (_error) { /* keep what we have */ }
     try {
       const turns: AiChatTurn[] = this.messages.filter((m: AiChatMessage): boolean => m.role === 'user' || m.role === 'assistant')
         .map((m: AiChatMessage): AiChatTurn => new AiChatTurn(m.role, this.turnText(m)));
@@ -1035,7 +1075,10 @@ export struct AiChatView {
           SymbolGlyph($r(action.tool === 'call_phone' ? 'sys.symbol.phone_fill' : action.tool === 'send_email' ?
             'sys.symbol.envelope_fill' : action.tool === 'navigate' ? 'sys.symbol.location_up_fill' : action.tool === 'open_link' ?
             'sys.symbol.link' : action.tool === 'change_setting' ? 'sys.symbol.gearshape_fill' :
-            action.tool === 'open_app_screen' ? 'sys.symbol.chevron_right' : 'sys.symbol.alarm_fill')).fontSize(20)
+            action.tool === 'open_app_screen' ? 'sys.symbol.chevron_right' : action.tool === 'connect_host' ? 'sys.symbol.display' :
+            action.tool === 'edit_host' ? 'sys.symbol.square_and_pencil' : action.tool === 'delete_host' ||
+            action.tool === 'delete_document' || action.tool === 'delete_conversation' ? 'sys.symbol.trash_fill' :
+            'sys.symbol.alarm_fill')).fontSize(20)
             .fontColor([action.status === 'done' ? '#34C759' : action.status === 'failed' ? '#FF9F0A' : '#4A8DFF'])
         }.width(42).height(42).borderRadius(12).backgroundColor('#2C2C2E')
         Column({ space: 2 }) {
@@ -1067,20 +1110,24 @@ export struct AiChatView {
         Column({ space: 2 }) {
           Text(document.name).fontSize(15).fontWeight(FontWeight.Medium).fontColor('#FFFFFF').maxLines(2)
             .textOverflow({ overflow: TextOverflow.Ellipsis }).width('100%')
-          Text(aiDocumentKindLabel(document.format) + ' · ' + sizeLabel(document.bytes)).fontSize(12).fontColor('#8E8E93')
+          Text(aiDocumentAvailable(document) ? aiDocumentKindLabel(document.format) + ' · ' + sizeLabel(document.bytes) : '已删除')
+            .fontSize(12).fontColor('#8E8E93')
         }.layoutWeight(1).alignItems(HorizontalAlign.Start)
       }.width('100%')
-      Row({ space: 8 }) {
-        this.smallPill('打开', true, (): void => { void this.openDocument(document, false); })
-        this.smallPill('分享', false, (): void => { void this.shareDocument(document); })
-        this.smallPill('另存', false, (): void => { void this.saveDocument(document); })
-        this.smallPill('打印', false, (): void => { void this.printDocument(document); })
-      }.width('100%')
-      // 悬浮球: open the document and keep the chat at hand as the orb.
-      Row({ space: 6 }) {
-        SymbolGlyph($r('sys.symbol.smal_window_playback')).fontSize(13).fontColor(['#8E8E93'])
-        Text('打开并缩成悬浮球，边看边问').fontSize(12).fontColor('#8E8E93')
-      }.onClick((): void => { void this.openDocument(document, true); })
+      // Deleted (delete_document, or gone from the device): the card stays, without its buttons.
+      if (aiDocumentAvailable(document)) {
+        Row({ space: 8 }) {
+          this.smallPill('打开', true, (): void => { void this.openDocument(document, false); })
+          this.smallPill('分享', false, (): void => { void this.shareDocument(document); })
+          this.smallPill('另存', false, (): void => { void this.saveDocument(document); })
+          this.smallPill('打印', false, (): void => { void this.printDocument(document); })
+        }.width('100%')
+        // 悬浮球: open the document and keep the chat at hand as the orb.
+        Row({ space: 6 }) {
+          SymbolGlyph($r('sys.symbol.smal_window_playback')).fontSize(13).fontColor(['#8E8E93'])
+          Text('打开并缩成悬浮球，边看边问').fontSize(12).fontColor('#8E8E93')
+        }.onClick((): void => { void this.openDocument(document, true); })
+      }
     }.width('100%').padding(14).borderRadius(20).backgroundColor('#F01C1C1F')
     .border({ width: 0.5, color: '#1FFFFFFF' })
   }
@@ -1178,25 +1225,19 @@ export struct AiChatView {
       .animation({ curve: curves.springMotion(0.42, 0.86) }))
   }
 
-  /** Dictation: the microphone, red and pulsing while it listens. */
-  @Builder private micButton(size: number) {
-    if (AiVoiceInput.available()) {
-      Stack() {
-        SymbolGlyph($r(this.listening ? 'sys.symbol.waveform' : 'sys.symbol.mic')).fontSize(size * 0.45)
-          .fontColor([this.listening ? '#FFFFFF' : '#C7C7CC'])
-      }
-      .width(size).height(size).borderRadius(size / 2)
-      .backgroundColor(this.listening ? '#FF453A' : Color.Transparent)
-      .scale({ x: this.listening ? 1.06 : 1, y: this.listening ? 1.06 : 1 })
-      .animation({ curve: curves.springMotion(0.4, 0.7) })
-      .accessibilityText(this.listening ? '停止语音输入' : '语音输入')
-      .onClick((): void => { this.toggleVoice(); })
-    }
+  /** Something to send (typed, or documents added) and nothing under way. */
+  private canSend(): boolean {
+    return (this.draft.trim() !== '' || this.pending.length > 0) && !this.busy && !this.importing;
   }
 
-  /** With nothing typed and AI 语音 on, the send button is the voice-mode button (as in ChatGPT and Siri). */
-  @Builder private sendOrVoice(active: boolean) {
-    if (this.voiceEnabled && !active && !this.busy && this.draft.trim() === '' && AiVoiceInput.available()) {
+  /**
+   * With nothing typed and AI 语音 on, the send button is the voice-mode button (as in ChatGPT and Siri). Whether it
+   * can send is read here, from the state itself: a value handed to a @Builder is a copy that never updates, which
+   * left the button dark while typing. (Dictation is left to the input method's own voice input, which is better.)
+   */
+  @Builder private sendOrVoice() {
+    if (this.voiceEnabled && !this.canSend() && !this.busy && this.draft.trim() === '' && this.pending.length === 0 &&
+      AiVoiceInput.available()) {
       Stack() {
         SymbolGlyph($r('sys.symbol.waveform_1')).fontSize(18).fontColor(['#000000'])
       }
@@ -1205,12 +1246,11 @@ export struct AiChatView {
       .onClick((): void => { this.startVoiceMode(); })
       .transition(TransitionEffect.scale({ x: 0.6, y: 0.6 }).combine(TransitionEffect.OPACITY))
     } else {
-      AiSendButton({ active: active, buttonSize: 40, onTap: (): void => { this.submit(); } })
+      AiSendButton({ active: this.canSend(), buttonSize: 40, onTap: (): void => { this.submit(); } })
     }
   }
 
   private startVoiceMode(): void {
-    if (this.listening) { AiVoiceInput.cancel(); this.listening = false; }
     AiReadAloud.stop();
     this.hideKeyboard();
     this.persist();
@@ -1263,11 +1303,10 @@ export struct AiChatView {
     }
     Row({ space: 10 }) {
       this.addButton()
-      Text(this.listening ? '正在听，说完会自动停…' : this.pending.length > 0 ? '已添加 ' + this.pending.length.toString() + ' 个文件' :
-        '添加文档或图片').fontSize(13).fontColor(this.listening ? '#FF9F94' : '#8E8E93').layoutWeight(1)
+      Text(this.pending.length > 0 ? '已添加 ' + this.pending.length.toString() + ' 个文件' : '添加文档或图片')
+        .fontSize(13).fontColor('#8E8E93').layoutWeight(1)
         .onClick((): void => { void this.addDocuments(); })
-      this.micButton(40)
-      this.sendOrVoice((this.draft.trim() !== '' || this.pending.length > 0) && !this.importing)
+      this.sendOrVoice()
     }.width('100%')
     Text(this.privacyLine()).fontSize(11).lineHeight(16).fontColor('#8E8E93').width('100%')
   }
@@ -1336,7 +1375,7 @@ export struct AiChatView {
     Row({ space: 10 }) {
       Column() { this.addButton() }.margin({ bottom: 2 })
       AiInputCapsule() {
-        TextArea({ placeholder: this.listening ? '正在听…' : '继续聊…', text: this.draft })
+        TextArea({ placeholder: '继续聊…', text: this.draft })
           .id('aiChatDraft')
           .layoutWeight(1).fontSize(16).fontColor('#FFFFFF').placeholderColor('#8E8E93')
           .caretStyle({ width: 2.5, color: '#FFFFFF' }).backgroundColor(Color.Transparent)
@@ -1345,10 +1384,9 @@ export struct AiChatView {
           .enterKeyType(EnterKeyType.Send)
           .onChange((value: string): void => { this.draft = value; if (this.routeQuestion !== '') { this.routeQuestion = ''; } })
           .onSubmit((): void => { this.submit(); })
-        this.micButton(32)
       }
       Column() {
-        this.sendOrVoice((this.draft.trim() !== '' || this.pending.length > 0) && !this.busy && !this.importing)
+        this.sendOrVoice()
       }.margin({ bottom: 2 })
     }.width('100%').alignItems(VerticalAlign.Bottom)
     .onAreaChange((_old: Area, area: Area): void => {

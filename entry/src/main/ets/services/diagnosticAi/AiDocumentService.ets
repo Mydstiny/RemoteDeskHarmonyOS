@@ -255,6 +255,7 @@ export function aiDocumentErrorText(error: Object): string {
   if (code === 'AI_DOC_PDF_NO_TEXT') { return '这个 PDF 里没有可读的文字（可能是扫描件）'; }
   if (code === 'AI_DOC_PDF_UNAVAILABLE') { return '当前设备不支持读取 PDF'; }
   if (code === 'AI_DOC_EMPTY') { return '文件里没有读到文字'; }
+  if (code === 'AI_DOC_GONE') { return '这个文件已经不在设备上了'; }
   if (code === 'AI_DOC_IMAGE_NO_TEXT') { return '图片里没有识别到文字'; }
   if (code === 'AI_DOC_OCR_UNAVAILABLE') { return '当前设备不支持识别图片文字'; }
   return '读取文件失败，请确认文件没有损坏';
@@ -273,6 +274,18 @@ function documentsDir(context: common.Context): string {
   return dir;
 }
 
+function documentBytes(kind: string, title: string, content: string): Uint8Array {
+  return kind === 'docx' ? aiDocxBytes(title.replace(/\.(docx)$/i, ''), content) :
+    kind === 'xlsx' ? aiXlsxBytes(title.replace(/\.(xlsx)$/i, ''), content) :
+    new util.TextEncoder().encodeInto(content);
+}
+
+function writeFile(path: string, bytes: Uint8Array): void {
+  const file: fileIo.File = fileIo.openSync(path, fileIo.OpenMode.CREATE | fileIo.OpenMode.READ_WRITE | fileIo.OpenMode.TRUNC);
+  try { fileIo.writeSync(file.fd, bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)); }
+  finally { fileIo.closeSync(file); }
+}
+
 /** Write a document the AI produced. format: docx · xlsx · md · txt (anything else is written as docx). */
 export function aiCreateDocument(context: common.Context, title: string, format: string, content: string): AiDocument {
   const kind: string = ['docx', 'xlsx', 'md', 'txt'].indexOf(format) >= 0 ? format : 'docx';
@@ -280,14 +293,46 @@ export function aiCreateDocument(context: common.Context, title: string, format:
   const folder: string = documentsDir(context) + '/' + newId();
   ensureDir(folder);
   const path: string = folder + '/' + name;
-  const bytes: Uint8Array = kind === 'docx' ? aiDocxBytes(title.replace(/\.(docx)$/i, ''), content) :
-    kind === 'xlsx' ? aiXlsxBytes(title.replace(/\.(xlsx)$/i, ''), content) :
-    new util.TextEncoder().encodeInto(content);
-  const file: fileIo.File = fileIo.openSync(path, fileIo.OpenMode.CREATE | fileIo.OpenMode.READ_WRITE | fileIo.OpenMode.TRUNC);
-  try { fileIo.writeSync(file.fd, bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)); }
-  finally { fileIo.closeSync(file); }
+  const bytes: Uint8Array = documentBytes(kind, title, content);
+  writeFile(path, bytes);
   hilog.info(0x0000, 'AiChat', 'created %{public}s bytes=%{public}s', kind, bytes.length.toString());
   return new AiDocument(name, kind, path, bytes.length, Date.now());
+}
+
+/** Only files the AI wrote (in the app's own ai-documents folder) may be read back, rewritten or deleted here. */
+function ownDocument(document: AiDocument): boolean {
+  return document.path.indexOf('/ai-documents/') >= 0 && document.path.indexOf('..') < 0;
+}
+
+/** The text of a document the AI wrote, to answer about it or revise it. */
+export async function aiReadDocument(context: common.Context, document: AiDocument): Promise<string> {
+  if (!ownDocument(document) || !exists(document.path)) { throw new Error('AI_DOC_GONE'); }
+  return (await aiImportDocument(context, document.path, document.name)).text;
+}
+
+/**
+ * Rewrite a document the AI wrote, in place: the same file (so every card that shows it opens the new text), the
+ * same format and name.
+ */
+export function aiRewriteDocument(document: AiDocument, content: string): AiDocument {
+  if (!ownDocument(document) || !exists(document.path)) { throw new Error('AI_DOC_GONE'); }
+  const title: string = document.name.replace(/\.[^.]+$/, '');
+  const bytes: Uint8Array = documentBytes(document.format, title, content);
+  writeFile(document.path, bytes);
+  hilog.info(0x0000, 'AiChat', 'rewrote %{public}s bytes=%{public}s', document.format, bytes.length.toString());
+  return new AiDocument(document.name, document.format, document.path, bytes.length, Date.now());
+}
+
+/** Delete a document the AI wrote (the file and its folder). True when it is gone. */
+export function aiDeleteDocument(document: AiDocument): boolean {
+  if (!ownDocument(document)) { return false; }
+  try { if (exists(document.path)) { fileIo.unlinkSync(document.path); } } catch (_error) { return false; }
+  const folder: string = document.path.slice(0, document.path.lastIndexOf('/'));
+  if (folder.endsWith('/ai-documents') === false) {
+    try { if (fileIo.listFileSync(folder).length === 0) { fileIo.rmdirSync(folder); } } catch (_error) { /* left empty */ }
+  }
+  hilog.info(0x0000, 'AiChat', 'deleted a %{public}s document', document.format);
+  return !exists(document.path);
 }
 
 export function aiDocumentAvailable(document: AiDocument): boolean { return exists(document.path); }

@@ -31,9 +31,9 @@ import { DiagnosticAiModelCatalog } from '../../services/diagnosticAi/Diagnostic
 import { AI_CHAT_HEADER_HEIGHT, AI_VOICE_REQUEST, AiChatMemory, AiChatView } from './AiChatView';
 import { AI_VOICE_ENABLED } from '../../services/diagnosticAi/AiVoiceSettings';
 import { AiSegmented } from './AiSegmented';
-import { aiRouteSuggestion } from '../../services/diagnosticAi/AiChatRoutePolicy';
+import { aiAutoRoute, aiModeCommand } from '../../services/diagnosticAi/AiChatRoutePolicy';
 import { AI_CHAT_REFRESH_KEY } from '../../services/diagnosticAi/AiShareInbox';
-import { AI_ASSISTANT_HANDOFF } from '../../services/diagnosticAi/AiBridgeKeys';
+import { AI_ASSISTANT_HANDOFF, AI_MODE_REQUEST } from '../../services/diagnosticAi/AiBridgeKeys';
 
 /** A suggested question shown as a pill in the island; it follows what the user is asking about. */
 class AiSuggestion {
@@ -388,6 +388,8 @@ export struct DiagnosticAiAssistantPanel {
   private routeBypass: string = '';
   @StorageProp(AI_CHAT_REFRESH_KEY) @Watch('onChatRefresh') chatRefresh: number = 0;
   @StorageProp(AI_ASSISTANT_HANDOFF) @Watch('onAssistantHandoff') assistantHandoff: string = '';
+  /** 拜拜 / 回到文字 / 语音模式 / 切到助理…, typed in 聊天 or 助理, or chosen by the AI (switch_mode). */
+  @StorageProp(AI_MODE_REQUEST) @Watch('onModeRequest') modeRequest: string = '';
   /** AI 语音 (Beta) is on: with nothing typed, 助理's send button is the voice-mode button too. */
   @StorageProp(AI_VOICE_ENABLED) voiceEnabled: boolean = false;
   private suggestionTimer: number = -1;
@@ -719,16 +721,63 @@ export struct DiagnosticAiAssistantPanel {
     else { this.question = question; this.submitQuestion(); }
   }
 
-  /** In 助理, a general task (writing, a document) is better in 聊天: suggest it, and wait for the tap. */
+  /**
+   * In 助理, anything not about the app (writing, documents, the phone's functions, the web…) is 聊天's: it goes
+   * there by itself and is asked there.
+   */
   private suggestChat(question: string): boolean {
     const value: string = question.trim();
     if (!this.siriMode || this.mini || value === '' || this.routeBypass === value ||
-      aiRouteSuggestion(value, 'assistant', false) !== 'chat') {
+      aiAutoRoute(value, 'assistant', false) !== 'chat') {
       return false;
     }
     try { inputMethod.getController().hideTextInput(); } catch (_error) { /* keyboard already down */ }
-    this.getUIContext().animateTo({ curve: curves.springMotion(0.42, 0.86) }, (): void => { this.routeQuestion = value; });
+    this.switchMode('chat', value);
     return true;
+  }
+
+  /** A mode command typed here: done at once (in the orb's small chat, by the island's own panel). */
+  private takeCommand(text: string): boolean {
+    const command: string = aiModeCommand(text);
+    if (command === '') { return false; }
+    if (command === 'orb') {
+      if (!this.mini) { this.onFloat(); }
+      return true;
+    }
+    try { inputMethod.getController().hideTextInput(); } catch (_error) { /* keyboard already down */ }
+    if (this.mini) { AppStorage.setOrCreate(AI_MODE_REQUEST, command + '@' + Date.now().toString()); }
+    else { this.applyMode(command); }
+    return true;
+  }
+
+  /** A mode request from 聊天 or from the AI: once nothing is under way (the answer that asked for it has landed). */
+  private onModeRequest(): void {
+    if (!this.siriMode || this.mini) { return; }
+    const mode: string = this.modeRequest.split('@')[0];
+    let waited: number = 0;
+    const attempt = (): void => {
+      if (!this.alive) { return; }
+      this.chatBusy = AiChatMemory.requestId !== '';
+      if ((this.busy || this.capturing() || this.chatBusy) && waited < 15000) {
+        waited += 300;
+        setTimeout(attempt, 300);
+        return;
+      }
+      this.applyMode(mode);
+    };
+    setTimeout(attempt, 250);
+  }
+
+  private applyMode(mode: string): void {
+    hilog.info(0x0000, 'AiChat', 'mode command %{public}s', mode);
+    if (mode === 'exit') { this.onClose(); return; }
+    if (mode === 'voice') {
+      if (!this.voiceEnabled) { this.toast('AI 语音还没打开，可以在 设置 › AI 语音 里开启'); return; }
+      AppStorage.setOrCreate(AI_VOICE_REQUEST, Date.now());
+      return;
+    }
+    if (mode === 'assistant' && this.chatMode) { this.switchMode('assistant', ''); return; }
+    if ((mode === 'chat' || mode === 'text') && !this.chatMode) { this.switchMode('chat', ''); }
   }
 
   private reportActivity(): void {
@@ -1762,6 +1811,7 @@ export struct DiagnosticAiAssistantPanel {
 
   private submitQuestion(): void {
     if (this.question.trim() === '' || this.busy || this.capturing()) { return; }
+    if (this.takeCommand(this.question)) { this.question = ''; return; }
     if (this.suggestChat(this.question)) { return; }
     this.routeBypass = '';
     try { inputMethod.getController().hideTextInput(); } catch (_error) { /* keyboard already down */ }
@@ -1788,6 +1838,7 @@ export struct DiagnosticAiAssistantPanel {
   private submitDraftQuestion(): void {
     const value: string = this.draftQuestion.trim();
     if (value === '' || this.busy || this.capturing()) { return; }
+    if (this.takeCommand(value)) { this.draftQuestion = ''; return; }
     // The answer stays on screen while the suggestion waits.
     if (this.suggestChat(value)) { return; }
     if (this.result !== null) {
@@ -2100,13 +2151,25 @@ export struct DiagnosticAiAssistantPanel {
           .onChange((value: string): void => { this.draftQuestion = value; this.followTyping(value); })
           .onSubmit((): void => { this.submitDraftQuestion(); })
       }
-      this.sendOrVoice(this.draftQuestion.trim() !== '', 38, (): void => { this.submitDraftQuestion(); })
+      // Bottom-aligned (the button stays at the bottom if the field grows); on one line the field (44) and the button
+      // (38) share a centre line, hence the 3 under it.
+      Column() {
+        this.sendOrVoice('draft', 38, (): void => { this.submitDraftQuestion(); })
+      }.margin({ bottom: 3 })
     }.width('100%').alignItems(VerticalAlign.Bottom)
   }
 
-  /** The send button, or — nothing typed, AI 语音 on — the voice-mode button (as in 聊天). */
-  @Builder private sendOrVoice(active: boolean, size: number, send: () => void) {
-    if (this.voiceEnabled && !active && !this.busy && !this.mini) {
+  /** Whether the field ('draft': the follow-up bar, else the first question) has something to send. */
+  private fieldHasText(field: string): boolean {
+    return (field === 'draft' ? this.draftQuestion : this.question).trim() !== '';
+  }
+
+  /**
+   * The send button, or — nothing typed, AI 语音 on — the voice-mode button (as in 聊天). The field's text is read
+   * here from the state (a value handed to a @Builder is a copy that never updates: the button stayed dark).
+   */
+  @Builder private sendOrVoice(field: string, size: number, send: () => void) {
+    if (this.voiceEnabled && !this.fieldHasText(field) && !this.busy && !this.mini) {
       Stack() {
         SymbolGlyph($r('sys.symbol.waveform_1')).fontSize(size * 0.45).fontColor(['#000000'])
       }
@@ -2118,7 +2181,7 @@ export struct DiagnosticAiAssistantPanel {
       })
       .transition(TransitionEffect.scale({ x: 0.6, y: 0.6 }).combine(TransitionEffect.OPACITY))
     } else {
-      AiSendButton({ active: active, buttonSize: size, onTap: send })
+      AiSendButton({ active: this.fieldHasText(field), buttonSize: size, onTap: send })
     }
   }
 
@@ -2285,7 +2348,7 @@ export struct DiagnosticAiAssistantPanel {
                 .transition(this.pillTransition(index))
             }, (item: AiSuggestion): string => item.label)
           }.layoutWeight(1)
-          Stack() { this.sendOrVoice(this.question.trim() !== '', 36, (): void => { this.submitQuestion(); }) }
+          Stack() { this.sendOrVoice('question', 36, (): void => { this.submitQuestion(); }) }
             .transition(TransitionEffect.OPACITY.combine(TransitionEffect.scale({ x: 0.4, y: 0.4 }))
               .animation({ curve: curves.springMotion(0.6, 0.55), delay: 260 + 3 * 130 }))
         }.width('100%').alignItems(VerticalAlign.Bottom)

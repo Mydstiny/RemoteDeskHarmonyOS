@@ -6,6 +6,7 @@ import { AI_FLOAT_ORB, AiIslandGlass } from './AiIslandChrome';
 import { AiThinkingIndicator } from './AiMotionViews';
 import { AiLiftController, aiLiftLayer } from './AiLiftLayer';
 import { AiChatMemory } from './AiChatView';
+import { AI_FLOAT_REQUEST, AI_HANDOVER_FADE_DELAY_MS, AI_HANDOVER_FADE_MS, AI_HANDOVER_RECT } from '../../services/diagnosticAi/AiBridgeKeys';
 import { AI_ORB_HINT_TEXT, aiOrbHintWanted } from '../../services/diagnosticAi/AiOrbHintStore';
 import { AI_MOTION_DONE, AI_MOTION_OPEN, aiMotionStyle } from '../../services/diagnosticAi/DiagnosticAiMotionPolicy';
 
@@ -50,11 +51,17 @@ export struct AiIsland {
   @StorageProp('aiIsland.closeRequest') @Watch('onCloseRequest') closeRequest: number = 0;
   /** The chat asked for an app screen ('<id>@<time>'): open it as the assistant's own steps do. */
   @StorageProp('aiIsland.appAction') @Watch('onAppActionRequest') appActionRequest: string = '';
+  /** The AI's float_orb tool: the open panel floats as the orb, as its own 缩成悬浮球 does. */
+  @StorageProp(AI_FLOAT_REQUEST) @Watch('onFloatRequest') floatRequest: number = 0;
+  /** Voice mode floated: the island starts as the orb (a tap brings voice mode back). */
+  @Prop startFloat: boolean = false;
   /** Distance from the window top to the safe area (status bar); used only where there is no island anchor. */
   @Prop topInset: number = 24;
   @Prop deviceClass: DiagnosticAiDeviceClass = 'phone';
   /** Open straight into the panel (taking over from the voice card at the same place) rather than through the capsules. */
   @Prop quickOpen: boolean = false;
+  /** Voice mode confirmed an app screen: start as text mode's action does (status capsule → done mark → orb). */
+  @Prop startAction: string = '';
   onDismissed: () => void = (): void => {};
   /** Floating or not: the host lets touches through its overlay node only while the island floats. */
   onFloatingChanged: (floating: boolean) => void = (_floating: boolean): void => {};
@@ -106,6 +113,12 @@ export struct AiIsland {
   @State private islandBlur: number = 14;
   /** Height of the panel content as last laid out; the glass morphs to it. */
   @State private cardHeight: number = 0;
+  /** Taking over from the voice card: the glass waits unseen at its place until the card has grown to it. */
+  @State private glassIn: number = 1;
+  /** Until the cross-fade starts, the glass's place is told to the voice card again whenever it changes. */
+  private handoverOpen: boolean = false;
+  private handoverSent: boolean = false;
+  private handoverFading: boolean = false;
   @State private dragX: number = 0;
   @State private dragY: number = 0;
   private dragStartX: number = 0;
@@ -149,7 +162,25 @@ export struct AiIsland {
         try { win.on('keyboardHeightChange', this.onKeyboard); } catch (_error) { /* no keyboard events */ }
       }).catch((): void => { /* no window */ });
     }
-    this.later(16, (): void => { this.open(); });
+    this.later(16, (): void => {
+      const action: DiagnosticAiAppActionId | null = this.startAction !== '' ? diagnosticAiAppActionId(this.startAction) : null;
+      if (action === null && this.startFloat) {
+        // From voice: no panel to show — straight into the orb, above whatever is on screen.
+        this.panelMounted = true;
+        this.islandBlur = 0;
+        this.stage = 3;
+        this.contentOpacity = 0;
+        this.later(30, (): void => { this.floatChat(); });
+        return;
+      }
+      if (action === null) { this.open(); return; }
+      this.setStatusBarHidden(true);
+      // From voice: the panel is there but hidden, and the action's status capsule grows out of the island at once.
+      this.panelMounted = true;
+      this.islandBlur = 0;
+      this.morph((): void => { this.stage = 3; });
+      this.runAppAction(action);
+    });
   }
 
   aboutToDisappear(): void {
@@ -160,7 +191,7 @@ export struct AiIsland {
       try { this.keyboardWindow.off('keyboardHeightChange', this.onKeyboard); } catch (_error) { /* already off */ }
       this.keyboardWindow = null;
     }
-    this.setStatusBarHidden(false);
+    if (!this.handingOver) { this.setStatusBarHidden(false); }
   }
 
   /**
@@ -243,7 +274,10 @@ export struct AiIsland {
   }
 
   private open(): void {
-    if (this.quickOpen) { this.openDirect('liquid'); return; }
+    // Above the status bar from the first capsule (as the open panel is), so the system's own island — a live
+    // activity — does not draw over it.
+    this.setStatusBarHidden(true);
+    if (this.quickOpen) { this.openFromVoice(); return; }
     const style: string = aiMotionStyle(AI_MOTION_OPEN);
     if (style !== 'morph') { this.openDirect(style); return; }
     this.morph((): void => { this.stage = 1; });
@@ -287,6 +321,40 @@ export struct AiIsland {
     });
   }
 
+  /**
+   * From voice mode: the panel is laid out at once, unseen; the voice card (above it) grows to the glass's exact
+   * place and shape, then the two cross-fade — the card's dark glass becomes this one, and the chat focuses in.
+   */
+  private openFromVoice(): void {
+    this.panelMounted = true;
+    this.islandBlur = 0;
+    this.glassIn = 0;
+    this.contentOpacity = 0;
+    this.contentBlur = 14;
+    this.stage = 3;
+    this.handoverOpen = true;
+    // Once the content has been measured (onCardSize), or after a moment with whatever it has.
+    this.later(this.reducedMotion ? 0 : 200, (): void => { this.publishHandover(); });
+  }
+
+  private publishHandover(): void {
+    if (!this.handoverOpen || this.handoverFading) { return; }
+    const first: boolean = !this.handoverSent;
+    this.handoverSent = true;
+    AppStorage.setOrCreate(AI_HANDOVER_RECT, [this.topOffset(), this.glassWidth(), this.glassHeight(), this.glassRadius(),
+      Date.now()].map((n: number): string => n.toFixed(1)).join(','));
+    if (!first) { return; }
+    this.later(this.reducedMotion ? 0 : AI_HANDOVER_FADE_DELAY_MS, (): void => {
+      this.handoverFading = true;
+      this.setStatusBarHidden(true);
+      const show = (): void => { this.glassIn = 1; this.contentOpacity = 1; this.contentBlur = 0; };
+      if (this.reducedMotion) { show(); } else {
+        this.getUIContext().animateTo({ duration: AI_HANDOVER_FADE_MS, curve: Curve.EaseInOut }, show);
+      }
+      this.later(this.reducedMotion ? 0 : AI_HANDOVER_FADE_MS, (): void => { this.revealed = true; this.handoverOpen = false; });
+    });
+  }
+
   /** status → panel: the status line and ring fade and defocus while the surface keeps growing; content focuses in. */
   private revealPanel(): void {
     this.setStatusBarHidden(true);
@@ -298,6 +366,8 @@ export struct AiIsland {
 
   private setCompact(value: boolean, hint: boolean = true): void {
     if (value === this.compact) { return; }
+    // The island's own orb, floating over a screen voice mode opened: back to voice mode.
+    if (!value && AiChatMemory.voiceResume && !this.working) { this.resumeVoice(); return; }
     // Back to the panel: an orb lifted from the island's own orb goes with it.
     if (!value && this.liftLayer !== null) { this.closeLift(); this.lifted = false; }
     if (value && hint && !this.lifted && aiOrbHintWanted(this.getUIContext().getHostContext(), 'compact')) {
@@ -373,7 +443,8 @@ export struct AiIsland {
       return;
     }
     try { inputMethod.getController().hideTextInput(); } catch (_error) { /* keyboard already down */ }
-    this.setStatusBarHidden(false);
+    // The status capsule stays above the status bar too; the bar comes back with the orb (setCompact).
+    this.setStatusBarHidden(true);
     this.fade(120, 0, (): void => { this.contentOpacity = 0; this.contentBlur = 10; });
     this.morph((): void => { this.executing = '正在执行：' + diagnosticAiAppActionLabel(action); });
     this.fade(240, 160, (): void => { this.statusOpacity = 1; this.statusBlur = 0; });
@@ -429,7 +500,7 @@ export struct AiIsland {
       if (generation !== this.compactGeneration || !this.compact || this.liftLayer !== null) { return; }
       const x: number = (this.areaWidth - AI_FLOAT_ORB) / 2 + this.dragX;
       const y: number = this.topOffset() + this.dragY;
-      this.liftUp('', 'none', 'chat', 'chat', false, x, y);
+      this.liftUp('', 'none', AiChatMemory.active ? 'chat' : 'assistant', 'chat', false, x, y);
       // The layer fades in over the island's orb (same orb, same spot); then the island's steps aside.
       this.later(140, (): void => { if (this.liftLayer !== null) { this.lifted = true; } });
     });
@@ -483,6 +554,20 @@ export struct AiIsland {
       .catch((): void => { this.liftLayer = null; this.liftController = null; content.dispose(); });
   }
 
+  /** Hand back to voice mode: the orb (lifted or the island's own) goes, and voice mode opens on its last answer. */
+  private resumeVoice(): void {
+    AiChatMemory.voiceResume = false;
+    // Voice mode takes over at once (and keeps the status bar hidden): nothing to give back here.
+    this.handingOver = true;
+    this.closeLift();
+    this.lifted = false;
+    this.stopExecutingPoll();
+    this.clearTimers();
+    this.stage = 0;
+    this.onDismissed();
+    AppStorage.setOrCreate('aiVoice.resumeRequest', Date.now());
+  }
+
   /**
    * The orb was tapped: close the screen the action opened and open the panel again, growing out of the spot where
    * the orb was (x, y: its top-left in the window) rather than from where the island last floated.
@@ -490,6 +575,8 @@ export struct AiIsland {
   private backFromOrb(x: number, y: number): void {
     // A screen an app action opened closes; whatever the user opened while 聊天 floated stays.
     if (this.liftMode !== 'chat') { this.closeAppActionScreen(); }
+    // The action came from voice mode: the orb brings voice mode back (its panel, listening), not the text panel.
+    if (AiChatMemory.voiceResume) { this.resumeVoice(); return; }
     this.dragX = x - (this.areaWidth - AI_FLOAT_ORB) / 2;
     this.dragY = Math.max(0, y - this.topOffset());
     this.closeLift();
@@ -527,8 +614,18 @@ export struct AiIsland {
   /** The panel laid out new content: morph the glass to it. */
   private onCardSize(height: number): void {
     if (height <= 0 || Math.abs(height - this.cardHeight) < 0.5) { return; }
+    if (this.handoverOpen && !this.handoverFading) {
+      // Still unseen: take the size at once and tell the voice card where to grow to.
+      this.cardHeight = height;
+      this.publishHandover();
+      return;
+    }
     if (this.cardHeight <= 0 || this.stage < 3) { this.cardHeight = height; return; }
     this.morph((): void => { this.cardHeight = height; });
+  }
+
+  private onFloatRequest(): void {
+    if (this.floatRequest > 0 && this.stage >= 3 && !this.compact && !this.closing && this.executing === '') { this.floatChat(); }
   }
 
   private onAppActionRequest(): void {
@@ -552,7 +649,6 @@ export struct AiIsland {
     this.closing = true;
     this.clearTimers();
     try { inputMethod.getController().hideTextInput(); } catch (_error) { /* keyboard already down */ }
-    this.setStatusBarHidden(false);
     this.fade(140, 0, (): void => { this.contentOpacity = 0; this.contentBlur = 10; this.statusOpacity = 0; });
     this.later(this.handingOver ? 60 : 80, (): void => { this.morph((): void => { this.stage = 1; }); });
     // Handing over, the capsule leaves as the droplet (mounted at ~300 ms over it) starts to swell.
@@ -560,7 +656,11 @@ export struct AiIsland {
       this.getUIContext().animateTo({ duration: this.handingOver ? 160 : 220, curve: Curve.EaseIn },
         (): void => { this.stage = 0; });
     });
-    this.later(this.handingOver ? 520 : 760, (): void => { this.onDismissed(); });
+    this.later(this.handingOver ? 520 : 760, (): void => {
+      // The bar comes back once the capsule is gone — unless voice mode took over (it keeps the bar hidden).
+      if (!this.handingOver) { this.setStatusBarHidden(false); }
+      this.onDismissed();
+    });
   }
 
   private panelWidth(): number {
@@ -678,7 +778,7 @@ export struct AiIsland {
           glassWidth: this.glassWidth(),
           glassHeight: this.glassHeight(),
           radius: this.glassRadius()
-        }).opacity(this.compact ? 0 : 1)
+        }).opacity(this.compact ? 0 : this.glassIn)
         this.capsuleContent()
         // The panel content, mounted early and kept hidden until the glass has grown to it.
         if (this.panelMounted) {

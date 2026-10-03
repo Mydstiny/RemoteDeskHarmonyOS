@@ -122,7 +122,9 @@ console.log('PASS shared strings, slides, entities and HTML read as plain text')
 
 // ---------------------------------------------------------------- routing
 const route = load(D + 'AiChatRoutePolicy', {
-  './DiagnosticAiSettingsActionPolicy': { diagnosticAiSettingIntents: q => /画质|色深/.test(q) ? [{}] : [] }
+  './DiagnosticAiSettingsActionPolicy': { diagnosticAiSettingIntents: q => /画质|色深/.test(q) ? [{}] : [] },
+  './DiagnosticAiAgentService': { diagnosticAiAgentModeForQuestion: q => /反馈/.test(q) ? 'feedback' :
+    /画质|色深/.test(q) ? 'configure' : /连不上|失败|黑屏|卡顿/.test(q) ? 'diagnose' : 'answer' }
 });
 assert.equal(route.aiRouteSuggestion('RDP 连不上怎么办', 'chat', false), 'assistant');
 assert.equal(route.aiRouteSuggestion('把画质调成速度优先', 'chat', false), 'assistant');
@@ -132,7 +134,47 @@ assert.equal(route.aiRouteSuggestion('帮我写一份周报', 'assistant', false
 assert.equal(route.aiRouteSuggestion('把这段话翻译成英文', 'assistant', false), 'chat');
 assert.equal(route.aiRouteSuggestion('SSH 连接失败', 'assistant', false), '');
 assert.equal(route.aiRouteSuggestion('怎么添加主机', 'assistant', false), '');
+for (const q of ['缩成悬浮球', '进入悬浮球模式。', '帮我缩成悬浮球', '先收起来', '最小化']) { assert.ok(route.aiQuestionIsFloat(q), q); }
+for (const q of ['悬浮球的样式怎么改', '把悬浮球动效换成玻璃球', '收起来的东西在哪']) { assert.ok(!route.aiQuestionIsFloat(q), q); }
 console.log('PASS routing suggests 助理 for app questions and 聊天 for general tasks, never both ways at once');
+
+// Every mode hands over by itself: 聊天 → 助理 only to diagnose or send feedback; 助理 → 聊天 for anything not about the app.
+assert.equal(route.aiAutoRoute('RDP 连不上怎么办', 'chat', false), 'assistant');
+assert.equal(route.aiAutoRoute('RDP 黑屏了帮我反馈给开发者', 'chat', false), 'assistant');
+assert.equal(route.aiAutoRoute('把画质调成速度优先', 'chat', false), '');
+assert.equal(route.aiAutoRoute('帮我写一份周报', 'chat', false), '');
+assert.equal(route.aiAutoRoute('RDP 连不上怎么办', 'chat', true), '');
+assert.equal(route.aiAutoRoute('帮我写一份周报', 'assistant', false), 'chat');
+assert.equal(route.aiAutoRoute('十分钟后提醒我喝水', 'assistant', false), 'chat');
+assert.equal(route.aiAutoRoute('SSH 连接失败', 'assistant', false), '');
+assert.equal(route.aiAutoRoute('怎么添加主机', 'assistant', false), '');
+// Goodbyes and mode commands, said or typed in any mode.
+for (const q of ['拜拜', '好的拜拜。', '拜拜啦', '再见', '那就先这样吧，拜拜', '退出', '退出吧', '关闭AI', '没事了谢谢', '好了，谢谢，就这样吧', '晚安']) {
+  assert.ok(route.aiQuestionIsGoodbye(q), q);
+  assert.equal(route.aiModeCommand(q), 'exit', q);
+}
+for (const q of ['怎么跟同事礼貌地说再见，帮我写三种说法', '退出登录怎么操作', '关闭深色模式']) {
+  assert.ok(!route.aiQuestionIsGoodbye(q), q);
+}
+for (const [q, mode] of [['回到文字模式', 'text'], ['切换到文字聊天', 'text'], ['我要打字', 'text'], ['退出语音模式', 'text'],
+  ['文字模式', 'text'], ['切换到语音模式', 'voice'], ['语音模式', 'voice'], ['切到助理', 'assistant'], ['交给助理吧', 'assistant'],
+  ['切到聊天模式', 'chat'], ['缩成悬浮球', 'orb'], ['帮我写一份周报', ''], ['把语音设置打开', ''], ['RDP 连不上', '']]) {
+  assert.equal(route.aiModeCommand(q), mode, q);
+}
+console.log('PASS goodbyes close the AI and mode commands switch it, from any mode; each mode hands over by itself');
+
+// 联网搜索: Bing result pages read into title, address and summary; HTML to plain text.
+const web = load(D + 'AiWebTools', { '@kit.NetworkKit': {}, '@kit.PerformanceAnalysisKit': { hilog: { info() {}, warn() {} } } });
+const page = '<ol><li class="b_algo"><h2><a href="https://example.com/a?x=1&amp;y=2" h="x">杭州 <strong>西湖</strong></a></h2>' +
+  '<div class="b_caption"><p>西湖位于杭州市&nbsp;西部。</p></div></li><li class="b_algo"><h2><a href="javascript:void(0)">坏链接</a></h2></li>' +
+  '<li class="b_algo"><h2><a href="https://b.example/">第二条</a></h2></li></ol>';
+const found = web.aiParseBingResults(page, 6);
+assert.equal(found.length, 2);
+assert.equal(found[0].title, '杭州 西湖');
+assert.equal(found[0].url, 'https://example.com/a?x=1&y=2');
+assert.equal(found[0].snippet, '西湖位于杭州市 西部。');
+assert.equal(web.aiHtmlText('<script>x()</script><p>a&lt;b</p><style>p{}</style>'), 'a<b');
+console.log('PASS web search results parse to title, address and summary; pages read as text');
 
 // ---------------------------------------------------------------- document blocks
 const chat = load(D + 'AiChatService', {
@@ -141,7 +183,8 @@ const chat = load(D + 'AiChatService', {
   './AiDocumentService': {}, './DiagnosticAiModels': {},
   './AiSystemTools': { AI_CONFIRM_TOOLS: [], aiActionFor: () => '', aiRunSystemTool: async () => '' },
   './DiagnosticAiSettingsActionPolicy': { diagnosticAiSettingSpec: () => undefined, diagnosticAiSettingCurrent: () => null,
-    diagnosticAiSettingValueLabel: (_id, value) => value }
+    diagnosticAiSettingValueLabel: (_id, value) => value },
+  './AiWebTools': { aiWebSearch: async () => '', aiReadWebpage: async () => '' }
 });
 const answer = '好的，周报如下。\n<document title="第 40 周周报" format="docx">\n# 周报\n- 完成\n</document>\n请查看。';
 assert.deepEqual(Array.from(chat.aiChatDocumentBlocks(answer), b => Array.from(b)), [['第 40 周周报', 'docx', '# 周报\n- 完成']]);
@@ -151,6 +194,20 @@ assert.deepEqual(Array.from(chat.aiChatSuggestions('好的。\n<suggest>生成 W
 assert.equal(chat.aiChatStripSuggestions('正文\n<suggest>a|b</suggest>'), '正文');
 assert.equal(chat.aiChatStripSuggestions('正文\n<suggest>被截断'), '正文');
 console.log('PASS document blocks become files and leave the answer text; suggested next steps become pills');
+
+// ---------------------------------------------------------------- memory (update_memory)
+let mem = chat.aiMemoryEdit('', 'add', '我喜欢简洁的回答', '');
+assert.equal(mem[0], '我喜欢简洁的回答');
+mem = chat.aiMemoryEdit(mem[0], 'add', '常用主机是办公室电脑', '');
+assert.equal(mem[0], '我喜欢简洁的回答\n常用主机是办公室电脑');
+assert.match(chat.aiMemoryEdit(mem[0], 'add', '我喜欢简洁的回答', '')[1], /已经记着/);
+assert.equal(chat.aiMemoryEdit(mem[0], 'replace', '常用主机是家里的 NAS', '常用主机')[0], '我喜欢简洁的回答\n常用主机是家里的 NAS');
+const forgot = chat.aiMemoryEdit(mem[0], 'remove', '简洁', '');
+assert.equal(forgot[0], '常用主机是办公室电脑');
+assert.match(forgot[1], /已忘掉 1 条/);
+assert.match(chat.aiMemoryEdit(mem[0], 'remove', '生日', '')[1], /没有/);
+assert.equal(chat.aiMemoryEdit(mem[0], 'clear', '', '')[0], '');
+console.log('PASS memory: add (no duplicates), replace, remove and clear, one note a line');
 
 // ---------------------------------------------------------------- sessions
 const storeModule = load(D + 'DiagnosticAiConversationStore');
@@ -254,7 +311,7 @@ const system = load(D + 'AiSystemTools', {
   '@kit.CameraKit': {}, '@kit.ContactsKit': {}, '@kit.LocationKit': {}, '@kit.NetworkKit': {}, '@kit.BackgroundTasksKit': {},
   '@kit.NotificationKit': {}, '@kit.TelephonyKit': {}, '@kit.MediaLibraryKit': {},
   '@kit.PerformanceAnalysisKit': { hilog: { info() {}, warn() {} } }, './AiDocumentService': {},
-  './DiagnosticAiSettingsActionPolicy': {}
+  './DiagnosticAiSettingsActionPolicy': {}, '@kit.ShareKit': {}, './DiagnosticAiConversationStore': {}
 });
 const t = system.aiParseLocalTime('2030-03-05 14:30');
 assert.equal(new Date(t).getFullYear(), 2030);
@@ -272,7 +329,9 @@ assert.equal(system.aiActionFor('a5', 'navigate', { destination: '虹桥机场' 
 assert.ok(system.AI_CONFIRM_TOOLS.includes('call_phone') && !system.AI_CONFIRM_TOOLS.includes('read_calendar'));
 for (const tool of catalog.AI_TOOLS.filter(t => t.group === 'system')) {
   assert.ok(['read_clipboard', 'copy_to_clipboard', 'device_status', 'get_location', 'read_calendar', 'add_calendar_event',
-    'pick_contact', 'add_contact', 'flashlight', 'recognize_image_text'].includes(tool.fn) || system.AI_CONFIRM_TOOLS.includes(tool.fn),
+    'pick_contact', 'add_contact', 'flashlight', 'recognize_image_text', 'share_text', 'open_system_settings',
+    'list_reminders'].includes(tool.fn) ||
+    system.AI_CONFIRM_TOOLS.includes(tool.fn),
     tool.fn + ' is neither run at once nor confirmed');
 }
 assert.match(system.aiActionErrorText({ code: 1700001, message: 'Notification is not enabled.' }), /通知被关闭/);
@@ -280,6 +339,18 @@ assert.match(system.aiActionErrorText({ code: 1700002 }), /上限/);
 assert.equal(system.aiActionErrorText({ code: 16000050, message: 'Internal error.' }), '系统返回错误 16000050：Internal error.');
 assert.equal(system.aiActionErrorText(new Error('没有提醒权限')), '没有提醒权限');
 assert.equal(system.aiActionErrorText({}), '没有完成，请稍后再试');
+assert.equal(system.aiActionFor('a6', 'cancel_reminder', { id: 7, title: '喝水' }).title, '取消提醒：喝水');
+assert.match(system.aiActionFor('a7', 'cancel_reminder', { title: '喝水' }), /编号/);
+assert.ok(system.AI_CONFIRM_TOOLS.includes('cancel_reminder'));
+// Create, read, update and delete for what the AI makes or keeps: every tool exists, is on and has a valid schema.
+for (const fn of ['switch_mode', 'create_document', 'list_documents', 'read_document', 'update_document', 'delete_document',
+  'list_conversations', 'delete_conversation', 'update_memory', 'edit_host', 'delete_host', 'list_reminders', 'cancel_reminder']) {
+  const tool = catalog.AI_TOOLS.find(t => t.fn === fn);
+  assert.ok(tool && tool.defaultOn, fn + ' exists and is on by default');
+  assert.doesNotThrow(() => JSON.parse(tool.schema), fn + ' schema is valid JSON');
+  assert.notEqual(catalog.aiToolStatus(fn, ''), '正在调用工具', fn + ' has its own status line');
+}
+assert.equal(new Set(catalog.AI_TOOLS.map(t => t.fn)).size, catalog.AI_TOOLS.length, 'tool names are unique');
 for (const fn of ['change_setting', 'open_app_screen', 'ask_assistant']) {
   const tool = catalog.AI_TOOLS.find(t => t.fn === fn);
   assert.ok(tool && tool.group === 'app' && tool.defaultOn, fn + ' is an app tool, on by default');

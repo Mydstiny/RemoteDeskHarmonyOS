@@ -81,6 +81,16 @@ export function aiLiftLayer(controller: AiLiftController) {
  */
 @Component
 struct AiLiftLayer {
+  /** AI 语音 › 按住 AI 按钮说话 is on: the orb too can be held to talk. */
+  @StorageProp('aiVoice.holdToTalk') holdToTalk: boolean = false;
+  private holdingTalk: boolean = false;
+
+  private releaseTalk(): void {
+    if (!this.holdingTalk) { return; }
+    this.holdingTalk = false;
+    AppStorage.setOrCreate('aiVoice.hold', 'up:' + Date.now().toString());
+  }
+
   controller: AiLiftController = new AiLiftController();
   /** Layer size and where it starts in the window (the dialog may begin under the status bar). */
   @State private layerW: number = 360;
@@ -548,6 +558,15 @@ struct AiLiftLayer {
         })
         // A double tap is told apart from a tap (the tap waits a moment); a drag wins over both.
         .gesture(GestureGroup(GestureMode.Exclusive,
+          // AI 语音 › 按住说话: hold the orb to talk, let go to send.
+          LongPressGesture({ duration: 450 })
+            .onAction((): void => {
+              if (this.phase !== 2 || this.dragging || !this.holdToTalk) { return; }
+              this.holdingTalk = true;
+              AppStorage.setOrCreate('aiVoice.hold', 'down:' + Date.now().toString());
+            })
+            .onActionEnd((): void => { this.releaseTalk(); })
+            .onActionCancel((): void => { this.releaseTalk(); }),
           TapGesture({ count: 2 }).onAction((): void => { this.orbDoubleTapped(); }),
           TapGesture({ count: 1 }).onAction((): void => { this.orbTapped(); })))
         .parallelGesture(PanGesture({ distance: 4 })

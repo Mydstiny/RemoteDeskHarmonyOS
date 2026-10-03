@@ -54,6 +54,23 @@ export const AI_TOOLS: AiToolSpec[] = [
     'documents', true, functionJson('read_attachment', '读取用户添加的附件的后续内容（附件较长时，消息里只放了开头）。',
       '"name":{"type":"string","description":"附件文件名"},"offset":{"type":"integer","description":"从第几个字符开始读"}',
       '"name","offset"')),
+  // The documents the AI wrote: listed, read back, rewritten, deleted (deleting waits for 确认).
+  new AiToolSpec('documents.list', 'list_documents', '文档列表', '列出 AI 生成过、还在设备上的文档',
+    'documents', true, functionJson('list_documents',
+      '列出 AI 为用户生成过、仍保存在设备上的文档：名称、格式、大小、生成时间、所在对话。用户提到“之前生成的文档”或要修改、删除文档时先用它查看。',
+      '', '')),
+  new AiToolSpec('documents.readOwn', 'read_document', '读取生成的文档', '读取 AI 生成过的文档内容，用来回答或修改',
+    'documents', true, functionJson('read_document', '读取一份 AI 生成过的文档的正文（Word、Excel 会转成文字）。修改文档前先读出原文。',
+      '"name":{"type":"string","description":"文档名称（list_documents 里的名称）"},"offset":{"type":"integer","description":"从第几个字符开始读，默认 0"}',
+      '"name"')),
+  new AiToolSpec('documents.update', 'update_document', '修改文档', '按你的要求改写已生成的文档（还是同一个文件）',
+    'documents', true, functionJson('update_document',
+      '改写一份 AI 生成过的文档：用新的完整正文覆盖原文件（文件名和格式不变，对话里的文档卡片打开的就是新内容）。只在用户要求修改已有文档时使用；要另存一份新文档用 create_document。',
+      '"name":{"type":"string","description":"文档名称（list_documents 里的名称）"},' +
+      '"content":{"type":"string","description":"修改后的完整正文，格式要求同 create_document"}', '"name","content"')),
+  new AiToolSpec('documents.delete', 'delete_document', '删除文档', '删除 AI 生成的文档；先显示确认卡片',
+    'documents', true, functionJson('delete_document', '删除一份 AI 生成过的文档（从设备上删掉文件）。会先显示确认卡片，用户确认后才删除。要删多份就分别调用。',
+      '"name":{"type":"string","description":"文档名称（list_documents 里的名称）"}', '"name"')),
   new AiToolSpec('app.hosts', 'list_hosts', '主机列表', '主机名称、协议、分组、最近连接时间和网络状态；不含地址、账号和密码',
     'app', true, functionJson('list_hosts', '列出用户在 RemoteDesktop 里保存的远程主机：名称、协议、分组、最近连接时间、最近一次网络状态。不含地址和凭据。',
       '"protocol":{"type":"string","description":"只看某种协议：rdp、rustdesk、ssh、vnc、moonlight；留空为全部"}', '')),
@@ -69,12 +86,33 @@ export const AI_TOOLS: AiToolSpec[] = [
       '"setting_id","value"')),
   new AiToolSpec('app.openScreen', 'open_app_screen', '打开页面', '打开 App 里的页面：添加主机、云同步、诊断日志、各类设置',
     'app', true, functionJson('open_app_screen',
-      '打开 RemoteDesktop 里的一个页面让用户自己操作（例如添加主机、云同步、某类设置）。screen 只能是以下 id 之一：' + appScreens(),
+      '打开 RemoteDesktop 里的一个页面让用户自己操作（例如添加主机、云同步、某类设置）。会先显示卡片，用户确认后才打开。screen 只能是以下 id 之一：' + appScreens(),
       '"screen":{"type":"string","description":"页面 id"}', '"screen"')),
   new AiToolSpec('app.assistant', 'ask_assistant', '交给助理', '连接诊断、抓取日志、问题反馈交给 AI 助理处理',
     'app', true, functionJson('ask_assistant',
       '把需要 AI 助理处理的事交给它：诊断远程连接问题、抓取和分析诊断日志、生成问题反馈邮件。助理会在“助理”模式里接着处理。question 写清楚用户要什么。',
       '"question":{"type":"string","description":"交给助理的问题，用用户的原话"}', '"question"')),
+  new AiToolSpec('app.editHost', 'edit_host', '编辑主机', '打开某台主机的编辑页，由你修改并保存（先显示确认卡片）',
+    'app', true, functionJson('edit_host',
+      '打开用户一台远程主机的编辑页（改名称、地址、账号、分组等由用户在编辑页里完成并保存；你看不到地址和凭据，不要替用户填写）。会先显示确认卡片。',
+      '"name":{"type":"string","description":"主机名称"},"protocol":{"type":"string","enum":["rdp","rustdesk","ssh","vnc","moonlight",""],"description":"协议，可不填"}',
+      '"name"')),
+  new AiToolSpec('app.deleteHost', 'delete_host', '删除主机', '删除一台保存的主机：先显示确认卡片，再由 App 的删除确认把关',
+    'app', true, functionJson('delete_host',
+      '删除用户保存的一台远程主机。会先显示确认卡片；用户确认后，App 还会弹出自己的删除确认（加锁的主机需要验证），用户再次确认才删除。',
+      '"name":{"type":"string","description":"主机名称"},"protocol":{"type":"string","enum":["rdp","rustdesk","ssh","vnc","moonlight",""],"description":"协议，可不填"}',
+      '"name"')),
+  new AiToolSpec('app.conversations', 'list_conversations', '对话记录', '列出保存的聊天和助理对话',
+    'app', true, functionJson('list_conversations', '列出这个账号保存的 AI 对话记录（聊天和助理）：标题、类型、最后更新时间、轮数、生成的文档数。', '', '')),
+  new AiToolSpec('app.deleteConversation', 'delete_conversation', '删除对话', '删除保存的对话记录；先显示确认卡片',
+    'app', true, functionJson('delete_conversation',
+      '删除一条保存的对话记录（不能删除正在进行的这段对话）。会先显示确认卡片。title 用 list_conversations 里的标题；要删多条就分别调用。对话里生成的文档不会一起删除，需要时另用 delete_document。',
+      '"title":{"type":"string","description":"对话标题"}', '"title"')),
+  new AiToolSpec('app.memory', 'update_memory', '记忆', '记住、改写或忘掉你让 AI 记住的事',
+    'app', true, functionJson('update_memory',
+      '修改“用户希望你记住”的内容（AI 个性化设置 › 记忆）。用户说“记住……”“以后……”时 add；说“忘掉/不要记……”时 remove；要改掉某条时 replace（old 为原来的说法）；说“清空记忆”时 clear。只记用户明确要求记住的事，不要记密码、验证码等敏感信息。',
+      '"action":{"type":"string","enum":["add","remove","replace","clear"]},"text":{"type":"string","description":"要记住或要忘掉的内容（一句话）"},' +
+      '"old":{"type":"string","description":"replace 时，原来记住的那句话"}', '"action"')),
   new AiToolSpec('app.usage', 'ai_usage', 'AI 用量', '最近的 AI 请求次数、Token 和估算费用',
     'app', true, functionJson('ai_usage', '读取最近若干天的 AI 用量：请求次数、Token、估算费用。',
       '"days":{"type":"integer","description":"最近几天，默认 7"}', '')),
@@ -100,6 +138,11 @@ export const AI_TOOLS: AiToolSpec[] = [
     'system', true, functionJson('set_reminder', '设置一个提醒。会先在对话里显示确认卡片，用户确认后才设置。',
       '"title":{"type":"string","description":"提醒内容"},"time":{"type":"string","description":"提醒时间 YYYY-MM-DD HH:mm（本地时间）"},' +
       '"minutes":{"type":"integer","description":"或者多少分钟后提醒"},"notes":{"type":"string"}', '"title"')),
+  new AiToolSpec('system.reminder.list', 'list_reminders', '查看提醒', '列出 AI 设置的、还没到点的提醒',
+    'system', true, functionJson('list_reminders', '列出本应用设置的、还没有触发的提醒（编号、内容、时间）。用户问“我有哪些提醒”或要取消提醒时先用它查看。', '', '')),
+  new AiToolSpec('system.reminder.cancel', 'cancel_reminder', '取消提醒', '取消一个提醒；先显示确认卡片',
+    'system', true, functionJson('cancel_reminder', '取消一个本应用设置的提醒。会先显示确认卡片。id 用 list_reminders 返回的编号。',
+      '"id":{"type":"integer","description":"提醒编号"},"title":{"type":"string","description":"提醒内容（卡片上显示）"}', '"id"')),
   new AiToolSpec('system.contact.pick', 'pick_contact', '选择联系人', '弹出通讯录让你选一个人，AI 只拿到你选的那一个',
     'system', true, functionJson('pick_contact', '弹出系统通讯录让用户选择一个联系人，返回姓名、电话和邮箱。需要某人的电话或邮箱时使用。', '', '')),
   new AiToolSpec('system.contact.add', 'add_contact', '新建联系人', '在系统通讯录的新建页填好信息，由你点保存',
@@ -120,7 +163,31 @@ export const AI_TOOLS: AiToolSpec[] = [
   new AiToolSpec('system.flashlight', 'flashlight', '手电筒', '打开或关闭手电筒',
     'system', true, functionJson('flashlight', '打开或关闭手电筒。', '"on":{"type":"boolean","description":"true 打开，false 关闭"}', '"on"')),
   new AiToolSpec('system.ocr', 'recognize_image_text', '识别图片文字', '从相册选一张图片，识别里面的文字（在本机完成）',
-    'system', true, functionJson('recognize_image_text', '让用户从相册选择一张图片（截图、照片），在本机识别其中的文字并返回。', '', ''))
+    'system', true, functionJson('recognize_image_text', '让用户从相册选择一张图片（截图、照片），在本机识别其中的文字并返回。', '', '')),
+  new AiToolSpec('system.share', 'share_text', '分享', '把一段文字交给系统分享面板，发到微信、备忘录等',
+    'system', true, functionJson('share_text', '打开系统分享面板分享一段文字（用户在面板里选择分享到哪个应用）。',
+      '"text":{"type":"string","description":"要分享的文字"},"title":{"type":"string","description":"标题，可选"}', '"text"')),
+  new AiToolSpec('system.settings', 'open_system_settings', '系统设置', '打开 WLAN、蓝牙、移动网络、位置或本应用权限等系统设置页',
+    'system', true, functionJson('open_system_settings',
+      '打开手机的系统设置页面让用户自己调整（应用不能直接改系统开关）。page：wifi=WLAN，bluetooth=蓝牙，mobile_network=移动网络，location=位置信息，app_info=本应用的信息与权限，home=设置首页。',
+      '"page":{"type":"string","enum":["wifi","bluetooth","mobile_network","location","app_info","home"]}', '"page"')),
+  new AiToolSpec('app.connect', 'connect_host', '连接主机', '按名字连接你保存的远程主机（先显示确认卡片）',
+    'app', true, functionJson('connect_host',
+      '连接用户保存的一台远程主机（RDP、RustDesk、SSH、VNC、Moonlight）。name 用主机名称（可先用 list_hosts 查看）；会先显示确认卡片，确认后开始连接。',
+      '"name":{"type":"string","description":"主机名称"},"protocol":{"type":"string","enum":["rdp","rustdesk","ssh","vnc","moonlight",""],"description":"协议，可不填"}',
+      '"name"')),
+  new AiToolSpec('app.float', 'float_orb', '悬浮球', '把 AI 缩成悬浮球停在当前页面上，点一下回到对话',
+    'app', true, functionJson('float_orb', '把 AI 对话（或语音模式）缩成悬浮球停在屏幕上，用户可以继续操作 App，点一下悬浮球回到对话。用户说“缩成悬浮球”“进入悬浮球模式”“先收起来”时使用。', '', '')),
+  new AiToolSpec('app.mode', 'switch_mode', '切换模式', '回到文字、进入语音模式、在助理和聊天之间切换，或结束对话',
+    'app', true, functionJson('switch_mode',
+      '切换 AI 的模式或结束对话：text=回到文字聊天，voice=进入语音模式，assistant=切到助理（诊断、日志、反馈、应用设置），chat=切到聊天，orb=缩成悬浮球，exit=关闭 AI（用户说拜拜、退出、就这样吧时）。用户明确要切换或结束时才用。',
+      '"mode":{"type":"string","enum":["text","voice","assistant","chat","orb","exit"]}', '"mode"')),
+  new AiToolSpec('web.search', 'web_search', '联网搜索', '用必应搜索网络上的最新信息（只发送搜索词）',
+    'web', true, functionJson('web_search', '联网搜索最新信息（新闻、价格、天气、营业时间、产品资料等）。返回前几条结果的标题、网址和摘要。',
+      '"query":{"type":"string","description":"搜索词"}', '"query"')),
+  new AiToolSpec('web.read', 'read_webpage', '读取网页', '读取一个网页的正文，用来回答细节',
+    'web', true, functionJson('read_webpage', '读取一个网页的正文（搜索结果里的网址或用户给的网址），用来回答细节问题。',
+      '"url":{"type":"string","description":"http(s) 网址"}', '"url"')),
 ];
 
 export function aiToolSpec(id: string): AiToolSpec | undefined {
@@ -284,6 +351,14 @@ export function aiParseSkill(text: string, fileName: string, id: string): AiSkil
 export function aiToolStatus(fn: string, detail: string): string {
   if (fn === 'create_document') { return detail !== '' ? '正在生成《' + detail + '》' : '正在生成文档'; }
   if (fn === 'read_attachment') { return detail !== '' ? '正在继续阅读《' + detail + '》' : '正在继续阅读文档'; }
+  if (fn === 'list_documents') { return '正在查看生成过的文档'; }
+  if (fn === 'read_document') { return detail !== '' ? '正在阅读《' + detail + '》' : '正在阅读文档'; }
+  if (fn === 'update_document') { return detail !== '' ? '正在修改《' + detail + '》' : '正在修改文档'; }
+  if (fn === 'list_conversations') { return '正在查看对话记录'; }
+  if (fn === 'update_memory') { return '正在更新记忆'; }
+  if (fn === 'list_reminders') { return '正在查看提醒'; }
+  if (fn === 'edit_host' || fn === 'delete_host') { return '正在查找主机'; }
+  if (fn === 'delete_document' || fn === 'delete_conversation' || fn === 'cancel_reminder') { return '正在准备确认卡片'; }
   if (fn === 'list_hosts') { return '正在查看主机列表'; }
   if (fn === 'connection_history') { return '正在翻看连接记录'; }
   if (fn === 'app_settings') { return '正在查看应用设置'; }
@@ -291,6 +366,13 @@ export function aiToolStatus(fn: string, detail: string): string {
   if (fn === 'change_setting') { return '正在准备修改设置'; }
   if (fn === 'open_app_screen') { return '正在打开页面'; }
   if (fn === 'ask_assistant') { return '正在交给 AI 助理'; }
+  if (fn === 'web_search') { return detail !== '' ? '正在搜索「' + detail + '」' : '正在联网搜索'; }
+  if (fn === 'read_webpage') { return '正在阅读网页'; }
+  if (fn === 'connect_host') { return '正在查找主机'; }
+  if (fn === 'float_orb') { return '正在缩成悬浮球'; }
+  if (fn === 'switch_mode') { return '正在切换'; }
+  if (fn === 'share_text') { return '正在打开分享'; }
+  if (fn === 'open_system_settings') { return '正在打开系统设置'; }
   if (fn === 'read_clipboard') { return '正在读取剪贴板'; }
   if (fn === 'copy_to_clipboard') { return '正在复制到剪贴板'; }
   if (fn === 'device_status') { return '正在查看设备状态'; }

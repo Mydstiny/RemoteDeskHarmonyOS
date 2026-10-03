@@ -12,10 +12,10 @@ import { diagnosticAiProviderIsHarmonyLocal } from '../../services/diagnosticAi/
 import { DiagnosticAiAssistantPreferences, DiagnosticAiConversationStore, defaultDiagnosticAiAssistantPreferences } from '../../services/diagnosticAi/DiagnosticAiConversationStore';
 import { DiagnosticAiModelCatalog } from '../../services/diagnosticAi/DiagnosticAiModelCatalog';
 import { AiChatReply, AiChatService, AiChatTurn } from '../../services/diagnosticAi/AiChatService';
-import { AI_APP_ACTION_REQUEST, AI_ASSISTANT_HANDOFF } from '../../services/diagnosticAi/AiBridgeKeys';
+import { AI_ASSISTANT_HANDOFF, AI_FLOAT_REQUEST, AI_HANDOVER_FADE_DELAY_MS, AI_HANDOVER_FADE_MS, AI_HANDOVER_RECT, AI_MODE_REQUEST } from '../../services/diagnosticAi/AiBridgeKeys';
 import { AiSkillStore } from '../../services/diagnosticAi/AiSkillStore';
 import { aiThinkingPhrases } from '../../services/diagnosticAi/AiSkillCatalog';
-import { aiQuestionIsAboutApp } from '../../services/diagnosticAi/AiChatRoutePolicy';
+import { aiModeCommand, aiQuestionIsAboutApp } from '../../services/diagnosticAi/AiChatRoutePolicy';
 import { DiagnosticAiAgentMode, DiagnosticAiAgentService, diagnosticAiAgentModeForQuestion } from '../../services/diagnosticAi/DiagnosticAiAgentService';
 import { DiagnosticAiResult, DiagnosticAiSettingProposal } from '../../services/diagnosticAi/DiagnosticAiModels';
 import { AiSettingChoice, diagnosticAiProposalChoice, diagnosticAiProposalIsSafe, diagnosticAiSettingActionText, diagnosticAiSettingCurrent, diagnosticAiSettingIntents } from '../../services/diagnosticAi/DiagnosticAiSettingsActionPolicy';
@@ -32,9 +32,15 @@ export const AI_VOICE_HOLD_EVENT: string = 'aiVoice.hold';
 
 /** Same logical canvas as the island (AiIsland): phones scale by width. */
 const AI_REF_WIDTH: number = 375;
-const BYE: RegExp = /^(再见|拜拜|退出|结束|没事了|不用了|好了谢谢|谢谢就这样)[。！!.]*$/;
 const YES: RegExp = /^(好|好的|好啊|确认|可以|行|是的|是|对|嗯|没问题|执行|去吧)[。！!.]*$/;
 const NO: RegExp = /^(不|不要|取消|算了|不用)[。！!.]*$/;
+
+/**
+ * Talking over the answer: the echo-cancelled microphone this loud (0…1) for this long stops the voice. With only the
+ * answer playing it reads 0.00–0.01 (the echo is removed), so a normal voice is enough.
+ */
+const AI_BARGE_LEVEL: number = 0.3;
+const AI_BARGE_MS: number = 160;
 
 /** What voice mode asks of the model on top of the usual chat instructions. */
 const VOICE_STYLE: string = '。当前是语音对话（像 Siri 一样）：回答显示在没有输入框的面板里，同时被朗读出来。先用一两句口语说结论，' +
@@ -66,12 +72,20 @@ export struct AiVoiceIsland {
    * panel seems to gather into the droplet; 'island' — the camera island itself (a long press on the AI button).
    */
   @Prop startShape: string = 'island';
+  /** Coming back from the orb over a screen voice mode opened: the last answer and its cards, listening again. */
+  @Prop resume: boolean = false;
   @StorageProp('diagnosticAiReducedMotion') reducedMotion: boolean = false;
   @StorageProp('currentTheme') theme: string = 'light';
   @StorageProp(AI_VOICE_HOLD_EVENT) @Watch('onHoldEvent') holdEvent: string = '';
+  /** Handing over to the chat panel: where its glass is (AiIsland says so once it has laid itself out). */
+  @StorageProp(AI_HANDOVER_RECT) @Watch('onHandoverRect') handoverRect: string = '';
   onDismissed: () => void = (): void => {};
   /** Open the full chat on this conversation. */
   onOpenChat: () => void = (): void => {};
+  /** A confirmed card opens an app screen: the island takes over (status capsule, done mark, the orb above it). */
+  onOpenScreen: (action: string) => void = (_action: string): void => {};
+  /** Voice mode floats as the orb over the page; a tap on the orb brings it back. */
+  onFloat: () => void = (): void => {};
 
   /** start · pill · listen · think · speak · answer · error */
   @State private phase: string = 'start';
@@ -87,6 +101,14 @@ export struct AiVoiceIsland {
   @State private panelListening: boolean = false;
   /** The surface is handing over to the chat panel (fading while the panel opens under it). */
   @State private handingOver: boolean = false;
+  /** Closing: the island's capsule sinks into the island (shrinking toward the top as it fades), as text mode's does. */
+  @State private leaving: boolean = false;
+  /** The chat panel's glass (top, width, height, radius) the surface grows to while handing over; top < 0 none yet. */
+  @State private handTop: number = -1;
+  @State private handWidth: number = 0;
+  @State private handHeight: number = 0;
+  @State private handRadius: number = 0;
+  private awaitingPanel: boolean = false;
   /** What the thinking capsule says (as in text mode): lines that fit the question, a tool's own status first. */
   @State private status: string = '';
   private clock: number = 0;
@@ -116,6 +138,8 @@ export struct AiVoiceIsland {
   @State private areaHeight: number = 720;
   @State private holding: boolean = false;
   private targetLevel: number = 0;
+  /** Level of the voice being played (our own player reports it), for the speaking light. */
+  private outLevel: number = 0;
   private islandTop: number = -1;
   private cutoutTop: number = -1;
   private pillWidth: number = 120;
@@ -152,11 +176,29 @@ export struct AiVoiceIsland {
     } catch (_error) { /* the turn below fails closed */ }
     if (AiChatMemory.owner !== this.owner) { AiChatMemory.clear(this.owner); }
     this.holding = this.mode === 'hold';
+    // From the first frame to the last, voice mode sits above the status bar: the system's own island (a live
+    // activity) must not draw over the droplet or the card.
+    this.setStatusBarHidden(true);
     this.placeOnCutout();
     this.startClock();
-    // Appear where the start shape is, then swell into the droplet (listen()).
+    // Appear where the start shape is, then swell into the droplet (listen()) — or, coming back from the orb, open
+    // the panel again on the last answer and listen there.
+    const last: AiChatMessage | undefined = this.resume ? this.lastAnswer() : undefined;
     this.later(16, (): void => {
       this.getUIContext().animateTo({ duration: 140, curve: Curve.EaseOut }, (): void => { this.shown = true; });
+      if (last !== undefined) {
+        this.answerMessageId = last.id;
+        this.answer = last.text;
+        this.answerBlocks = aiMarkdownBlocks(last.text);
+        this.shownBlocks = this.answerBlocks.length;
+        this.actions = last.actions;
+        this.documents = last.documents.map((d: AiDocument): string => d.name);
+        this.suggestions = last.suggestions.slice(0, 3);
+        this.setStatusBarHidden(true);
+        this.go('answer');
+        this.later(260, (): void => { this.listen(); });
+        return;
+      }
       this.later(this.startShape === 'panel' ? 60 : 30, (): void => { this.listen(); });
     });
   }
@@ -170,11 +212,20 @@ export struct AiVoiceIsland {
     this.stopTyping();
     this.stopClock();
     AiVoiceInput.cancel();
+    void AiVoiceInput.stopMonitor();
     if (!this.keepSpeech) { AiReadAloud.stop(); }
-    this.setStatusBarHidden(false);
+    // Handed over to the island, which keeps the bar hidden and gives it back itself.
+    if (!this.handingOver) { this.setStatusBarHidden(false); }
   }
 
   private context(): common.UIAbilityContext { return this.getUIContext().getHostContext() as common.UIAbilityContext; }
+
+  private lastAnswer(): AiChatMessage | undefined {
+    for (let i = AiChatMemory.messages.length - 1; i >= 0; i--) {
+      if (AiChatMemory.messages[i].role === 'assistant') { return AiChatMemory.messages[i]; }
+    }
+    return undefined;
+  }
 
   private later(ms: number, action: () => void): void { this.timers.push(setTimeout(action, ms)); }
   private clearTimers(): void {
@@ -240,18 +291,11 @@ export struct AiVoiceIsland {
   private tick(): void {
     this.clock = Date.now();
     if (this.handingOver) { return; }
-    const target: number = this.phase === 'speak' ? this.speechLevel() : this.phase === 'listen' ? this.targetLevel : 0;
+    const target: number = this.phase === 'speak' ? Math.min(1, this.outLevel * 1.15) :
+      this.phase === 'listen' || this.panelListening ? this.targetLevel : 0;
     const k: number = target > this.level ? 0.34 : 0.1;
     const next: number = this.level + (target - this.level) * k;
     if (Math.abs(next - this.level) > 0.002) { this.level = next; }
-  }
-
-  /** While the voice reads: a speech-like rise and fall (the players report no level). */
-  private speechLevel(): number {
-    const t: number = this.clock / 1000;
-    const syllable: number = Math.abs(Math.sin(t * 7.1)) * Math.abs(Math.sin(t * 2.3 + 0.7));
-    const phrase: number = 0.55 + 0.45 * Math.sin(t * 0.9);
-    return Math.min(1, 0.18 + 0.72 * syllable * phrase);
   }
 
   // ------------------------------------------------------------------ geometry
@@ -305,8 +349,12 @@ export struct AiVoiceIsland {
   private pillW(): number { return this.pillWidth + 16; }
   private pillH(): number { return this.pillHeight + 8; }
 
+  /** Closing: the AI island's compact capsule (AiIsland stage 1), where text mode also closes through. */
+  private closingCapsule(): boolean { return this.phase === 'capsule'; }
+
   private surfaceWidth(): number {
-    if (this.startFromPanel()) { return this.panelCapsuleWidth(); }
+    if (this.handTop >= 0) { return this.handWidth; }
+    if (this.startFromPanel() || this.closingCapsule()) { return this.panelCapsuleWidth(); }
     if (this.phase === 'listen') { return Math.min(196 * this.k(), Math.max(150 * this.k(), this.pillWidth * 1.32)); }
     if (this.phase === 'think' || this.cardPhase()) { return this.cardWidth(); }
     return this.pillW();
@@ -316,7 +364,8 @@ export struct AiVoiceIsland {
   private listenEdgeHeight(): number { return this.transcript.length > 18 ? 104 : 80; }
 
   private surfaceHeight(): number {
-    if (this.startFromPanel()) { return this.panelCapsuleHeight(); }
+    if (this.handTop >= 0) { return this.handHeight; }
+    if (this.startFromPanel() || this.closingCapsule()) { return this.panelCapsuleHeight(); }
     if (this.phase === 'listen') { return this.surfaceWidth() * 0.72; }
     if (this.phase === 'think') { return this.statusHeight(); }
     if (this.cardPhase()) {
@@ -329,7 +378,8 @@ export struct AiVoiceIsland {
   }
 
   private surfaceTop(): number {
-    if (this.startFromPanel()) { return this.panelAnchorTop(); }
+    if (this.handTop >= 0) { return this.handTop; }
+    if (this.startFromPanel() || this.closingCapsule()) { return this.panelAnchorTop(); }
     if (this.phase === 'listen') { return this.islandTop - 3; }
     if (this.phase === 'think') { return this.panelAnchorTop(); }
     if (this.cardPhase()) { return Math.max(4, this.islandTop - 8); }
@@ -337,6 +387,7 @@ export struct AiVoiceIsland {
   }
 
   private surfaceRadius(): number {
+    if (this.handTop >= 0) { return this.handRadius; }
     if (this.phase === 'listen') { return this.surfaceHeight() * 0.47; }
     if (this.cardPhase()) { return 38 * this.k(); }
     if (this.phase === 'think') { return Math.min(this.surfaceHeight() / 2, 46 * this.k()); }
@@ -351,12 +402,19 @@ export struct AiVoiceIsland {
 
   // ------------------------------------------------------------------ the conversation
 
-  private listen(): void {
+  private listen(overAnswer: boolean = false): void {
     if (this.closing) { return; }
+    // A new turn before anything is stopped: the answer's reading, ending below, must find itself outdated (it would
+    // otherwise let go of the microphone the user is talking into).
+    const generation: number = ++this.turnGeneration;
     const afterSpeech: boolean = this.cardPhase();
     // Once there is an answer, the conversation goes on in the panel (as Siri's does): its lower edge listens.
     const inPanel: boolean = this.cardPhase() && this.phase !== 'error' && this.answer !== '';
+    const stopAt: number = Date.now();
     AiReadAloud.stop();
+    if (Date.now() - stopAt > 50) {
+      hilog.warn(0x0000, 'AiChat', 'voice stop took %{public}s ms', (Date.now() - stopAt).toString());
+    }
     this.targetLevel = 0;
     this.transcript = '';
     this.stopTyping();
@@ -370,27 +428,29 @@ export struct AiVoiceIsland {
       this.go('answer');
     } else {
       this.panelListening = false;
-      this.setStatusBarHidden(false);
       this.go('listen');
     }
-    const generation: number = ++this.turnGeneration;
     this.retries = 0;
     this.quietSince = Date.now();
     // Right after the answer was read, give the speaker a moment to let go of the audio before the microphone opens.
-    this.later(afterSpeech && !this.reducedMotion ? 320 : 0, (): void => {
-      if (generation === this.turnGeneration && !this.closing) { this.hear(generation); }
+    // (Talking over the answer, the microphone is already live: no pause, and what was said so far goes first.)
+    this.later(afterSpeech && !overAnswer && !this.reducedMotion ? 320 : 0, (): void => {
+      if (generation === this.turnGeneration && !this.closing) { this.hear(generation, overAnswer); }
     });
   }
 
   /** One recognition session for this turn. */
-  private hear(generation: number): void {
+  private hear(generation: number, overAnswer: boolean = false): void {
     const startedAt: number = Date.now();
+    hilog.info(0x0000, 'AiChat', 'voice hear over=%{public}s phase=%{public}s', String(overAnswer), this.phase);
     void AiVoiceInput.start(this.context(), (text: string, _final: boolean): void => {
       if (generation === this.turnGeneration) { this.transcript = text; this.typeIn(); }
     }, (problem: string): void => {
       if (generation !== this.turnGeneration || this.closing) { return; }
       this.targetLevel = 0;
       const question: string = this.transcript.trim();
+      hilog.info(0x0000, 'AiChat', 'voice hear ended chars=%{public}s after=%{public}s ms', question.length.toString(),
+        (Date.now() - startedAt).toString());
       // The recognizer may hand back a lone full stop for silence or noise: that is nothing said.
       if (question.replace(/[\s。，、！？!?,.…~～]/g, '') !== '') { void this.ask(question, generation); return; }
       if (problem !== '') { this.fail(problem); return; }
@@ -415,7 +475,7 @@ export struct AiVoiceIsland {
     }, (level: number): void => {
       // Room noise sits under ~0.28: below it the light stays a thin line; speech swells it.
       if (generation === this.turnGeneration) { this.targetLevel = Math.max(0, (level - 0.28) / 0.72); }
-    });
+    }, overAnswer, this.owner);
   }
 
   /** Catch the shown characters up with what was heard, one at a time; the rest glide aside to make room. */
@@ -462,7 +522,7 @@ export struct AiVoiceIsland {
 
   private async ask(question: string, generation: number): Promise<void> {
     hilog.info(0x0000, 'AiChat', 'voice heard chars=%{public}s', question.length.toString());
-    if (BYE.test(question)) { await this.say('好的。', generation); this.openChat(false); return; }
+    // A card waiting for an answer first ("不用了" cancels it there, rather than ending voice mode).
     const waiting: AiChatAction | undefined = this.pendingAction();
     if (waiting !== undefined && YES.test(question)) { await this.confirm(waiting, generation); return; }
     if (waiting !== undefined && NO.test(question)) {
@@ -471,6 +531,9 @@ export struct AiVoiceIsland {
       this.next(generation);
       return;
     }
+    // 拜拜 / 回到文字 / 切到助理 / 悬浮球: done at once.
+    const command: string = aiModeCommand(question);
+    if (command !== '') { await this.applyMode(command, generation, ''); return; }
     // 助理 or 聊天, decided for every question. About the app (how to, its settings): 助理 answers here, its cards in
     // the voice panel. A fault to diagnose or a report to send needs 助理's capture and mail flow: it carries on there.
     if (aiQuestionIsAboutApp(question)) {
@@ -508,8 +571,11 @@ export struct AiVoiceIsland {
     AiChatMemory.messages = AiChatMemory.messages.concat([asked]);
     const requestId: string = newMessageId();
     AiChatMemory.requestId = requestId;
-    const screenBefore: string = AppStorage.get<string>(AI_APP_ACTION_REQUEST) ?? '';
     const handoffBefore: string = AppStorage.get<string>(AI_ASSISTANT_HANDOFF) ?? '';
+    const floatBefore: number = AppStorage.get<number>(AI_FLOAT_REQUEST) ?? 0;
+    const modeBefore: string = AppStorage.get<string>(AI_MODE_REQUEST) ?? '';
+    // 记忆 may have changed (update_memory in an earlier turn).
+    try { this.preferences = this.conversationStore.assistantPreferences(); } catch (_error) { /* keep what we have */ }
     try {
       const turns: AiChatTurn[] = AiChatMemory.messages
         .filter((m: AiChatMessage): boolean => m.role === 'user' || m.role === 'assistant')
@@ -539,10 +605,16 @@ export struct AiVoiceIsland {
         this.openChat(false);
         return;
       }
-      // An app screen was opened: get out of its way, and say what is there on the way out.
-      if ((AppStorage.get<string>(AI_APP_ACTION_REQUEST) ?? '') !== screenBefore) {
+      // The AI changed mode (switch_mode): its short reply is said on the way.
+      const modeNow: string = AppStorage.get<string>(AI_MODE_REQUEST) ?? '';
+      if (modeNow !== modeBefore && modeNow.split('@')[0] !== 'voice') {
+        await this.applyMode(modeNow.split('@')[0], generation, reply.text);
+        return;
+      }
+      // The AI floated voice mode (float_orb): say the short reply on the way into the orb.
+      if ((AppStorage.get<number>(AI_FLOAT_REQUEST) ?? 0) !== floatBefore) {
         void AiReadAloud.speak(this.context(), this.owner, answer.id, reply.text, (_id: string): void => {});
-        this.close(true);
+        this.floatToOrb(true);
         return;
       }
       // Everything else — the answer, cards to confirm, documents, next steps — opens in the voice panel.
@@ -643,6 +715,26 @@ export struct AiVoiceIsland {
     }
   }
 
+  /**
+   * A mode the user asked for (or the AI chose with switch_mode): 'exit' closes the AI, 'text' / 'chat' go to the
+   * chat panel, 'assistant' to 助理, 'orb' floats. `words` is said on the way ('' for the usual short line).
+   */
+  private async applyMode(mode: string, generation: number, words: string): Promise<void> {
+    hilog.info(0x0000, 'AiChat', 'voice mode command %{public}s', mode);
+    if (mode === 'voice') {
+      await this.say(words !== '' ? words : '我在听，请说。', generation);
+      this.next(generation);
+      return;
+    }
+    const line: string = words !== '' ? words : mode === 'exit' ? '好的，再见。' : '';
+    if (line !== '') {
+      void AiReadAloud.speak(this.context(), this.owner, 'voice-mode', line, (_id: string): void => {});
+    }
+    if (mode === 'exit') { this.close(line !== ''); return; }
+    if (mode === 'orb') { this.floatToOrb(line !== ''); return; }
+    this.openChat(line !== '', mode === 'assistant');
+  }
+
   /** Shows the card with `text` and reads it; resolves when the voice is done (or stopped). */
   private async say(text: string, generation: number): Promise<void> {
     this.stopStatus();
@@ -652,9 +744,51 @@ export struct AiVoiceIsland {
     this.setStatusBarHidden(true);
     this.startReveal();
     this.go('speak');
+    // Full duplex: our own player (echo-cancelled) reads, and hands-free the microphone listens for the user meanwhile.
+    if (this.mode === 'hands') { this.watchForBargeIn(generation); }
     const note: string = await AiReadAloud.speak(this.context(), this.owner, 'voice-' + generation.toString(), text,
-      (_id: string): void => {});
+      (_id: string): void => {}, true, (level: number): void => { this.outLevel = level; });
+    this.outLevel = 0;
+    // Read to the end (no barge-in): the microphone that waited for one is not needed any more — unless the user is
+    // talking into it.
+    if (generation === this.turnGeneration && !AiVoiceInput.monitorClaimed()) { void AiVoiceInput.stopMonitor(); }
     if (note !== '' && generation === this.turnGeneration) { this.note = note; }
+  }
+
+  /**
+   * While the answer is read: the echo-cancelled microphone. The user talking (loud enough, long enough — the
+   * answer's own echo is mostly removed) stops the voice, and recognition starts with what they already said.
+   */
+  private watchForBargeIn(generation: number): void {
+    const startedAt: number = Date.now();
+    let loudSince: number = 0;
+    let peak: number = 0;
+    let loggedAt: number = 0;
+    void AiVoiceInput.startMonitor(this.context(), (level: number): void => {
+      if (generation !== this.turnGeneration || this.phase !== 'speak' || this.closing) { return; }
+      const now: number = Date.now();
+      peak = Math.max(peak, level);
+      if (now - loggedAt > 1000) {
+        hilog.info(0x0000, 'AiChat', 'duplex mic=%{public}s out=%{public}s', peak.toFixed(2), this.outLevel.toFixed(2));
+        loggedAt = now;
+        peak = 0;
+      }
+      if (now - startedAt < 400) { return; }
+      if (level >= AI_BARGE_LEVEL) {
+        if (loudSince === 0) { loudSince = now; }
+        else if (now - loudSince >= AI_BARGE_MS) { this.bargeIn(); }
+      } else {
+        loudSince = 0;
+      }
+    });
+  }
+
+  /** The user talked over the answer: the voice stops and recognition takes over the microphone already listening. */
+  private bargeIn(): void {
+    hilog.info(0x0000, 'AiChat', 'voice interrupted by speech');
+    // First, before the voice stops: the microphone keeps everything from here on for the recognizer.
+    const claimed: boolean = AiVoiceInput.claimMonitor();
+    this.listen(claimed);
   }
 
   /** After an answer (unless the user already talked over it): listen again (hands-free), or wait as the card. */
@@ -733,11 +867,28 @@ export struct AiVoiceIsland {
   }
 
   private async confirm(action: AiChatAction, generation: number): Promise<void> {
+    // The host's edit sheet or delete dialog comes up over the app: voice mode waits there as the orb.
+    if (action.tool === 'edit_host' || action.tool === 'delete_host') {
+      this.setActionStatus(action, 'running', '');
+      this.floatToOrb();
+      const context: common.UIAbilityContext = this.context();
+      setTimeout((): void => {
+        aiRunAction(context, action, this.owner).then((result: string): void => { this.setActionStatus(action, 'done', result); })
+          .catch((error: Object): void => { this.setActionStatus(action, 'failed', aiActionErrorText(error)); });
+      }, 380);
+      return;
+    }
+    if (action.tool === 'open_app_screen') {
+      let screen: string = '';
+      try { screen = String((JSON.parse(action.args) as Record<string, Object>)['screen'] ?? ''); } catch (_error) { screen = ''; }
+      this.setActionStatus(action, 'done', '已打开');
+      this.openScreen(screen);
+      return;
+    }
     this.setActionStatus(action, 'running', '');
     try {
-      const result: string = await aiRunAction(this.context(), action);
+      const result: string = await aiRunAction(this.context(), action, this.owner);
       this.setActionStatus(action, 'done', result);
-      if (action.tool === 'open_app_screen') { this.close(); return; }
       await this.say(result !== '' ? result : '好了。', generation);
     } catch (error) {
       const why: string = aiActionErrorText(error as Object);
@@ -792,45 +943,147 @@ export struct AiVoiceIsland {
     this.keepSpeech = keepSpeech;
     this.turnGeneration++;
     AiVoiceInput.cancel();
+    void AiVoiceInput.stopMonitor();
     if (!keepSpeech) { AiReadAloud.stop(); }
     this.clearTimers();
     this.stopReveal();
     this.stopStatus();
     this.stopTyping();
-    this.setStatusBarHidden(false);
-    // Gather into a black pill a little larger than the camera, then fade there (no shrinking: it must keep the camera
-    // covered to the last frame, as Siri goes back into the island).
-    this.go('pill');
-    this.later(this.cardPhase() ? 380 : 300, (): void => {
-      this.getUIContext().animateTo({ duration: 180, curve: Curve.EaseIn }, (): void => { this.shown = false; });
+    // As text mode closes (AiIsland.close), on the same beats: what the surface shows leaves first; the surface —
+    // card, droplet or thinking capsule — gathers into the island's capsule over the camera; the capsule then sinks
+    // into the island. Each step starts while the one before is settling, so it reads as one movement.
+    const fromCard: boolean = this.cardPhase();
+    if (fromCard || this.contentIn) { this.fadeContent(false, 140, 0); }
+    this.later(this.reducedMotion ? 0 : (fromCard ? 80 : 0), (): void => {
+      const gather = (): void => { this.panelListening = false; this.transcript = ''; this.phase = 'capsule'; };
+      if (this.reducedMotion) { gather(); } else {
+        this.getUIContext().animateTo({ curve: curves.springMotion(0.42, 0.86) }, gather);
+      }
     });
-    this.later(this.cardPhase() ? 600 : 520, (): void => { this.onDismissed(); });
+    this.later(this.reducedMotion ? 0 : 520, (): void => {
+      this.getUIContext().animateTo({ duration: this.reducedMotion ? 0 : 220, curve: Curve.EaseIn }, (): void => {
+        this.leaving = true;
+        this.shown = false;
+      });
+    });
+    this.later(this.reducedMotion ? 0 : 760, (): void => {
+      this.setStatusBarHidden(false);
+      this.onDismissed();
+    });
   }
 
-  /** Back to the chat panel (every way out of voice mode but a swipe up); `keepSpeech` lets a reading go on. */
-  private openChat(keepSpeech: boolean = false): void {
+  /**
+   * A confirmed screen: voice mode steps out and the island runs the action as text mode does (状态胶囊 → done mark
+   * → the orb above the opened screen). The orb remembers it came from voice: a tap brings voice mode back.
+   */
+  private openScreen(screen: string): void {
+    if (this.closing || screen === '') { return; }
+    hilog.info(0x0000, 'AiChat', 'voice opens screen %{public}s', screen);
+    this.closing = true;
+    this.turnGeneration++;
+    AiVoiceInput.cancel();
+    void AiVoiceInput.stopMonitor();
+    AiReadAloud.stop();
+    this.clearTimers();
+    this.stopReveal();
+    this.stopStatus();
+    AiChatMemory.voiceResume = true;
+    this.handingOver = true;
+    this.onOpenScreen(screen);
+    this.fadeContent(false, 120, 0);
+    this.later(160, (): void => {
+      this.getUIContext().animateTo({ duration: 220, curve: Curve.EaseInOut }, (): void => {
+        this.handingOver = true;
+        this.shown = false;
+      });
+    });
+    this.later(420, (): void => { this.onDismissed(); });
+  }
+
+  /** Into the orb: the island takes over as the floating orb; tapping it brings voice mode back here. */
+  private floatToOrb(keepSpeech: boolean = false): void {
+    if (this.closing) { return; }
+    hilog.info(0x0000, 'AiChat', 'voice floats as the orb');
+    this.closing = true;
+    this.keepSpeech = keepSpeech;
+    this.turnGeneration++;
+    AiVoiceInput.cancel();
+    void AiVoiceInput.stopMonitor();
+    if (!keepSpeech) { AiReadAloud.stop(); }
+    this.clearTimers();
+    this.stopReveal();
+    this.stopStatus();
+    this.stopTyping();
+    AiChatMemory.voiceResume = true;
+    this.go('pill');
+    this.later(200, (): void => {
+      this.setStatusBarHidden(false);
+      this.handingOver = true;
+      this.onFloat();
+      this.getUIContext().animateTo({ duration: 180, curve: Curve.EaseIn }, (): void => { this.shown = false; });
+    });
+    this.later(420, (): void => { this.onDismissed(); });
+  }
+
+  /**
+   * Back to the chat panel (every way out of voice mode but a swipe up and 拜拜); `keepSpeech` lets a reading go on;
+   * `toAssistant` opens it in 助理.
+   */
+  private openChat(keepSpeech: boolean = false, toAssistant: boolean = false): void {
     if (this.closing) { return; }
     hilog.info(0x0000, 'AiChat', 'voice open chat phase=%{public}s', this.phase);
     this.closing = true;
     this.keepSpeech = keepSpeech;
     this.turnGeneration++;
     AiVoiceInput.cancel();
+    void AiVoiceInput.stopMonitor();
     if (!keepSpeech) { AiReadAloud.stop(); }
     this.clearTimers();
     this.stopReveal();
     this.stopStatus();
-    this.setStatusBarHidden(false);
-    AiChatMemory.active = true;
+    this.stopTyping();
+    this.handingOver = true;
+    AiChatMemory.active = !toAssistant;
     aiChatRefresh();
-    // The chat panel opens right under the card (same place, same dark glass); the card then dissolves into it.
+    // One surface into the other: what the card shows leaves first, and whatever shape voice mode was in (droplet,
+    // capsule, card) becomes the card's dark glass; the chat panel is laid out unseen underneath and says where its
+    // glass is (onHandoverRect): the card grows to exactly that, then the two cross-fade.
+    this.fadeContent(false, 140, 0);
+    this.morph((): void => { this.panelListening = false; this.transcript = ''; this.phase = 'answer'; });
+    this.awaitingPanel = true;
     this.onOpenChat();
-    this.later(this.reducedMotion ? 0 : 220, (): void => {
-      this.getUIContext().animateTo({ duration: 260, curve: Curve.EaseInOut }, (): void => {
-        this.handingOver = true;
-        this.shown = false;
-      });
+    // No word from the panel (it was already open): simply dissolve, as before.
+    this.later(700, (): void => {
+      if (this.handTop >= 0) { return; }
+      this.awaitingPanel = false;
+      this.getUIContext().animateTo({ duration: 260, curve: Curve.EaseInOut }, (): void => { this.shown = false; });
+      this.later(300, (): void => { this.onDismissed(); });
     });
-    this.later(520, (): void => { this.onDismissed(); });
+  }
+
+  /** The chat panel's glass, for the handover: grow to it (again, if it changed), then cross-fade into it once. */
+  private onHandoverRect(): void {
+    if (!this.awaitingPanel) { return; }
+    const parts: number[] = this.handoverRect.split(',').map((x: string): number => Number(x));
+    if (parts.length < 4 || parts.slice(0, 4).some((n: number): boolean => !Number.isFinite(n)) || parts[1] <= 0 || parts[2] <= 0) {
+      return;
+    }
+    const first: boolean = this.handTop < 0;
+    const apply = (): void => {
+      this.handTop = parts[0]; this.handWidth = parts[1]; this.handHeight = parts[2]; this.handRadius = parts[3];
+    };
+    if (this.reducedMotion) { apply(); } else {
+      this.getUIContext().animateTo({ curve: curves.springMotion(0.4, 0.88) }, apply);
+    }
+    if (!first) { return; }
+    hilog.info(0x0000, 'AiChat', 'voice hands over to the panel');
+    this.later(this.reducedMotion ? 0 : AI_HANDOVER_FADE_DELAY_MS, (): void => {
+      this.awaitingPanel = false;
+      if (this.reducedMotion) { this.shown = false; } else {
+        this.getUIContext().animateTo({ duration: AI_HANDOVER_FADE_MS, curve: Curve.EaseInOut }, (): void => { this.shown = false; });
+      }
+      this.later((this.reducedMotion ? 0 : AI_HANDOVER_FADE_MS) + 40, (): void => { this.onDismissed(); });
+    });
   }
 
   // ------------------------------------------------------------------ drawing
@@ -1032,14 +1285,10 @@ export struct AiVoiceIsland {
           ['#FF000000', Math.min(0.6, this.headerHeight() / Math.max(1, this.surfaceHeight()))],
           ['#00000000', Math.min(0.95, (this.headerHeight() + 46) / Math.max(1, this.surfaceHeight()))]] })
         .opacity(this.cardPhase() ? 1 : 0)
-      // Droplet: a lens — light gathered low inside the glass, a soft sheen along the top.
+      // Droplet: a lens — light gathered low inside the glass.
       Column().width('100%').height('100%')
         .radialGradient({ center: ['50%', '100%'], radius: this.surfaceWidth() * 0.62,
           colors: [['#2EFFFFFF', 0], ['#0DFFFFFF', 0.45], ['#00FFFFFF', 1]] })
-        .opacity(this.listening() ? 1 : 0)
-      Column().width(this.surfaceWidth() * 0.56).height(4).borderRadius(2)
-        .linearGradient({ angle: 180, colors: [['#59FFFFFF', 0], ['#00FFFFFF', 1]] })
-        .position({ x: this.surfaceWidth() * 0.22, y: 3 })
         .opacity(this.listening() ? 1 : 0)
       // The light, swelling with the voice; it gathers into the middle as the droplet leaves.
       if (this.listening()) {
@@ -1067,12 +1316,21 @@ export struct AiVoiceIsland {
       if (this.cardPhase() || this.contentIn) {
         this.cardBody()
       }
-      // A fine glass edge on the droplet, a hairline on the card, none on the black capsules.
-      Column().width('100%').height('100%').borderRadius(this.surfaceRadius())
-        .border({ width: this.listening() ? 0.8 : 0.5,
-          color: this.listening() ? { top: '#40FFFFFF', left: '#24FFFFFF', right: '#24FFFFFF', bottom: '#4DFFFFFF' } :
-            this.cardPhase() ? '#40FFFFFF' : '#00FFFFFF' })
-        .hitTestBehavior(HitTestMode.None)
+      // A fine glass edge on the droplet, a hairline on the card, none on the black capsules — but the island's own
+      // capsule (closing) has text mode's rim: pale along the bottom, faint at the sides.
+      if (this.closingCapsule()) {
+        Column().width('100%').height('100%').borderRadius(this.surfaceRadius())
+          .border({ width: { top: 0, left: 0.6, right: 0.6, bottom: 1.2 },
+            color: { top: '#00FFFFFF', left: '#14FFFFFF', right: '#14FFFFFF', bottom: '#59FFFFFF' } })
+          .hitTestBehavior(HitTestMode.None)
+          .transition(TransitionEffect.OPACITY.animation({ duration: 200 }))
+      } else {
+        Column().width('100%').height('100%').borderRadius(this.surfaceRadius())
+          .border({ width: this.listening() ? 0.8 : 0.5,
+            color: this.listening() ? { top: '#40FFFFFF', left: '#24FFFFFF', right: '#24FFFFFF', bottom: '#4DFFFFFF' } :
+              this.cardPhase() ? '#40FFFFFF' : '#00FFFFFF' })
+          .hitTestBehavior(HitTestMode.None)
+      }
     }
     .width(this.surfaceWidth()).height(this.surfaceHeight())
     .borderRadius(this.surfaceRadius()).clip(true)
@@ -1114,6 +1372,7 @@ export struct AiVoiceIsland {
       Stack() { this.surface() }
         .position({ x: (this.areaWidth - this.surfaceWidth()) / 2, y: this.surfaceTop() })
         .opacity(this.shown ? 1 : 0)
+        .scale({ x: this.leaving ? 0.7 : 1, y: this.leaving ? 0.7 : 1, centerX: '50%', centerY: 0 })
         .gesture(PanGesture({ direction: PanDirection.Up, distance: 24 })
           .onActionEnd((event: GestureEvent): void => { if (event.offsetY < -40) { this.close(); } }))
       if (this.listening() && (this.transcript !== '' || this.paused)) {
