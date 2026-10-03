@@ -7811,8 +7811,9 @@ struct HostListPage {
         // Rejected before the preflight panel opens; still leave evidence so a
         // capture never shows zero RustDesk events for an attempted connect.
         this.recordRustDeskPreflightEvent('failed', 0, -26);
-        this.recordRustDeskRouteStage(host, 'failed',
-          host.rustdeskDirectEnabled ? 'input' : 'validation', 0, 0);
+        // 'validation' never opened an attempt, so it cannot close another
+        // one; the address class still says why a direct input was rejected.
+        this.recordRustDeskRouteStage(host, 'failed', 'validation', 0, 0);
         this.releaseConnectionAttempt(host.id);
         promptAction.showToast({ message: rustDeskError, duration: 2600 });
         return;
@@ -11912,6 +11913,8 @@ struct HostListPage {
       while (Date.now() - startedAt < timeoutMs) {
         if (generation !== this.rustDeskProPreflightGeneration) {
           this.recordRustDeskPreflightEvent('cancelled', generation, -100, sid);
+          this.recordRustDeskRouteStage(host, 'cancelled', 'cancelled', sid,
+            Date.now() - preflightStartedAtMs);
           this.submitRustDeskProExactDisconnect(preflightDisconnectIdentity);
           return;
         }
@@ -11919,6 +11922,8 @@ struct HostListPage {
         if (activeConnectionScope.ownerScopeId !== connectionScope.ownerScopeId ||
           activeConnectionScope.generation !== connectionScope.generation) {
           this.recordRustDeskPreflightEvent('cancelled', generation, -101, sid);
+          this.recordRustDeskRouteStage(host, 'cancelled', 'cancelled', sid,
+            Date.now() - preflightStartedAtMs);
           this.submitRustDeskProExactDisconnect(preflightDisconnectIdentity);
           return;
         }
@@ -11998,6 +12003,9 @@ struct HostListPage {
       if (generation !== this.rustDeskProPreflightGeneration) {
         this.recordRustDeskPreflightEvent('cancelled', generation, -100,
           preflightDisconnectIdentity === null ? 0 : preflightDisconnectIdentity.sessionId);
+        this.recordRustDeskRouteStage(host, 'cancelled', 'cancelled',
+          preflightDisconnectIdentity === null ? 0 : preflightDisconnectIdentity.sessionId,
+          Date.now() - preflightStartedAtMs);
         return;
       }
       const failureScope = AccountSessionCoordinator.getInstance().currentScope();
@@ -12005,6 +12013,9 @@ struct HostListPage {
         failureScope.generation !== connectionScope.generation) {
         this.recordRustDeskPreflightEvent('cancelled', generation, -101,
           preflightDisconnectIdentity === null ? 0 : preflightDisconnectIdentity.sessionId);
+        this.recordRustDeskRouteStage(host, 'cancelled', 'cancelled',
+          preflightDisconnectIdentity === null ? 0 : preflightDisconnectIdentity.sessionId,
+          Date.now() - preflightStartedAtMs);
         return;
       }
       this.rustDeskProTwoFactorActive = false;

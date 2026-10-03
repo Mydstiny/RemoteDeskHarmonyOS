@@ -2007,6 +2007,7 @@ struct RemoteDesktop {
   private rustDeskGeometrySyncTimer: number = -1;
   private rustDeskQualityConfirmTimer: number = -1;
   private rustDeskQualityConfirmation: RustDeskQualityConfirmation | null = null;
+  private rustDeskQualityConfirmSessionId: number = -1;
   private vncGeometrySyncTimer: number = -1;
   private vncSurfaceResizeRefreshTimer: number = -1;
   @State @Watch('onHarmonyShortcutInputOwnerChange')
@@ -7983,6 +7984,7 @@ struct RemoteDesktop {
     const state: RustDeskQualityConfirmation =
       beginRustDeskQualityConfirmation(quality, Date.now(), baseline);
     this.rustDeskQualityConfirmation = state;
+    this.rustDeskQualityConfirmSessionId = sessionId;
     this.rustDeskQualityConfirmTimer = setInterval((): void => {
       if (this.rustDeskQualityConfirmation !== state) { return; }
       if (!this.connected || this.sessionId !== sessionId || !this.isRustDeskSession()) {
@@ -7995,7 +7997,7 @@ struct RemoteDesktop {
       const evaluation: RustDeskQualityEvaluation =
         evaluateRustDeskQualityConfirmation(state, sample, nowMs);
       if (!rustDeskQualityVerdictIsFinal(evaluation.verdict)) { return; }
-      this.stopRustDeskQualityConfirmation();
+      this.stopRustDeskQualityConfirmation(false);
       recordRustDeskQualityResult(sessionId, quality, evaluation.verdict,
         evaluation.currentBitrateKbps, nowMs - state.startedAtMs);
       promptAction.showToast({
@@ -8004,12 +8006,23 @@ struct RemoteDesktop {
     }, RUSTDESK_QUALITY_POLL_INTERVAL_MS);
   }
 
-  private stopRustDeskQualityConfirmation(): void {
+  /**
+   * Stops the pending confirmation. A request stopped before its verdict
+   * (newer tier, disconnect, session change, page exit) is recorded as
+   * superseded so the capture does not show it as an open, unconfirmed change.
+   */
+  private stopRustDeskQualityConfirmation(recordSuperseded: boolean = true): void {
     if (this.rustDeskQualityConfirmTimer >= 0) {
       clearInterval(this.rustDeskQualityConfirmTimer);
       this.rustDeskQualityConfirmTimer = -1;
     }
+    const pending: RustDeskQualityConfirmation | null = this.rustDeskQualityConfirmation;
     this.rustDeskQualityConfirmation = null;
+    if (pending !== null && recordSuperseded) {
+      recordRustDeskQualityResult(this.rustDeskQualityConfirmSessionId, pending.quality, 'superseded', 0,
+        Date.now() - pending.startedAtMs);
+    }
+    this.rustDeskQualityConfirmSessionId = -1;
   }
 
   private setRustDeskCodecPref(codec: number): void {

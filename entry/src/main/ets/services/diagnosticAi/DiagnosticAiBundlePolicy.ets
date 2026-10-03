@@ -1,13 +1,74 @@
 import { DiagnosticCaptureEvent, DiagnosticCaptureRuntime, FrozenDiagnosticCapture } from '../DiagnosticCaptureRuntime';
-import { DiagnosticModuleId, diagnosticAllModules } from '../DiagnosticCapturePolicy';
+import {
+  DIAGNOSTIC_CAPTURE_SCHEMA_VERSION,
+  DiagnosticModuleId,
+  diagnosticAllModules
+} from '../DiagnosticCapturePolicy';
 import { diagnosticEventInFacets } from '../DiagnosticCaptureFacetPolicy';
+import {
+  DiagnosticEvidenceCoverage,
+  DiagnosticMissingEvidence,
+  DiagnosticModuleCoverage,
+  diagnosticEvidenceCoverage,
+  diagnosticMissingEvidenceDescription
+} from '../DiagnosticEvidenceCoveragePolicy';
+import { DiagnosticRdpGraphicsFacts } from '../RdpGraphicsEvidencePolicy';
 
 export interface DiagnosticAiCapturePlan { modules: DiagnosticModuleId[]; durationMinutes: number; consentId: string; }
-export interface DiagnosticAiBundle { captureId: string; schemaVersion: number; modules: DiagnosticModuleId[]; eventCount: number; bytes: number; text: string; }
+/** schemaVersion is the capture schema the bundle was cut from; the bundle text itself carries bundleVersion. */
+export interface DiagnosticAiBundle {
+  captureId: string; schemaVersion: number; modules: DiagnosticModuleId[]; eventCount: number; bytes: number; text: string;
+  /** Evidence gaps of the whole capture, also present in the text; absent on bundles built elsewhere. */
+  missingEvidence?: string[];
+}
 interface DiagnosticAiSafeEvent {
+  ref: string;
   sequence: number; elapsedMs: number; moduleId: DiagnosticModuleId; eventCode: string; level: string; outcome: string;
   generation: number; code: number; durationMs: number; count: number; bytes: number; runtime: Object; network: Object; window: Object;
 }
+interface DiagnosticAiMissingEvidenceRow { code: string; meaning: string; }
+interface DiagnosticAiQualityFact { ref: string; quality: number; resultCode: number; remoteBitrateKbps: number; }
+interface DiagnosticAiDirectStageFact {
+  ref: string; outcome: string; source: number; stage: number; addressClass: number;
+}
+interface DiagnosticAiFactSummary {
+  rdpGraphicsRef: string;
+  rdpGraphics: Object | null;
+  rustDeskQuality: DiagnosticAiQualityFact[];
+  rustDeskDirectStages: DiagnosticAiDirectStageFact[];
+}
+interface DiagnosticAiBundleCoverage {
+  coverageComplete: boolean;
+  moduleCoverage: Record<string, DiagnosticModuleCoverage>;
+  missingEvidence: DiagnosticAiMissingEvidenceRow[];
+}
+/** JSON layout of DiagnosticAiBundle.text (bundleVersion 2). */
+interface DiagnosticAiBundleDocument {
+  bundleVersion: number;
+  captureSchemaVersion: number;
+  captureId: string;
+  profile: string;
+  modules: DiagnosticModuleId[];
+  focus: string[];
+  droppedEventCount: number;
+  evidenceCoverage: DiagnosticAiBundleCoverage;
+  factSummary: DiagnosticAiFactSummary;
+  evidenceRules: string;
+  events: Object[];
+}
+
+/** Version of the JSON layout inside DiagnosticAiBundle.text. */
+export const DIAGNOSTIC_AI_BUNDLE_VERSION: number = 2;
+
+/**
+ * Rules sent with every bundle. Conclusions must cite event refs, and a gap
+ * listed in missingEvidence is reported as unconfirmed, never guessed.
+ */
+export const DIAGNOSTIC_AI_EVIDENCE_RULES: string =
+  '证据规则：evidenceRefs 只能填写诊断包 events 中的 ref（如 capture-2/session-1/g0/seq-18），每个确定结论至少引用一条；' +
+  'evidenceCoverage.missingEvidence 列出的项目是缺失的证据，相关结论只能写成“未确认”并放进 unknowns，不能当作事实；' +
+  'RDP 线上编码只看 runtime.rdpGraphics.wireCodec 与 h264Status，requestedMode 只是客户端请求；' +
+  'RustDesk 画质是否生效只看 rustdesk_quality_result 的结论码，2/3 才算远端码率已调整。';
 
 export function diagnosticAiModulesForQuestion(question: string): DiagnosticModuleId[] {
   const value = question.toLowerCase();
@@ -34,12 +95,55 @@ function compactFacts(facts: Object): Object {
   return JSON.parse(text === undefined || text === '' ? '{}' : text) as Object;
 }
 
-function safeEvent(event: DiagnosticCaptureEvent): DiagnosticAiSafeEvent {
-  return { sequence: event.sequence, elapsedMs: event.elapsedMs, moduleId: event.moduleId,
+/** Stable, address-free reference of one event inside one capture. */
+export function diagnosticAiEventRef(captureId: string, event: DiagnosticCaptureEvent): string {
+  return captureId + '/' + (event.sessionRef === '' ? 'app' : event.sessionRef) + '/g' +
+    event.generation.toString() + '/seq-' + event.sequence.toString();
+}
+
+function safeEvent(captureId: string, event: DiagnosticCaptureEvent): DiagnosticAiSafeEvent {
+  return { ref: diagnosticAiEventRef(captureId, event),
+    sequence: event.sequence, elapsedMs: event.elapsedMs, moduleId: event.moduleId,
     eventCode: event.eventCode, level: event.level, outcome: event.outcome,
     generation: event.generation, code: event.code, durationMs: event.durationMs,
     count: event.count, bytes: event.bytes, runtime: compactFacts(event.runtime), network: compactFacts(event.network),
     window: compactFacts(event.window) };
+}
+
+function factSummary(capture: FrozenDiagnosticCapture): DiagnosticAiFactSummary {
+  const summary: DiagnosticAiFactSummary = {
+    rdpGraphicsRef: '', rdpGraphics: null, rustDeskQuality: [], rustDeskDirectStages: []
+  };
+  let latestGraphics: DiagnosticRdpGraphicsFacts | undefined = undefined;
+  for (let index: number = 0; index < capture.events.length; index++) {
+    const event: DiagnosticCaptureEvent = capture.events[index];
+    const graphics: DiagnosticRdpGraphicsFacts | undefined = event.runtime.rdpGraphics;
+    if (graphics !== undefined && graphics.evidenceLevel !== 'missing') {
+      latestGraphics = graphics;
+      summary.rdpGraphicsRef = diagnosticAiEventRef(capture.captureId, event);
+    }
+    if (event.eventCode === 'rustdesk_quality_result') {
+      summary.rustDeskQuality.push({ ref: diagnosticAiEventRef(capture.captureId, event),
+        quality: event.generation, resultCode: event.code, remoteBitrateKbps: event.count });
+    }
+    if (event.eventCode === 'rustdesk_direct_stage') {
+      summary.rustDeskDirectStages.push({ ref: diagnosticAiEventRef(capture.captureId, event),
+        outcome: event.outcome, source: event.generation, stage: event.code, addressClass: event.count });
+    }
+  }
+  // Keep the newest rows: the latest verdict/stage is what the question is
+  // about; every row is still present in the events list.
+  summary.rustDeskQuality = summary.rustDeskQuality.slice(-8);
+  summary.rustDeskDirectStages = summary.rustDeskDirectStages.slice(-12);
+  // Kept whole (not compacted): false/'none' values are evidence here.
+  summary.rdpGraphics = latestGraphics === undefined ? null : latestGraphics as Object;
+  return summary;
+}
+
+function missingEvidenceRows(coverage: DiagnosticEvidenceCoverage): DiagnosticAiMissingEvidenceRow[] {
+  return coverage.missingEvidence.map((code: DiagnosticMissingEvidence): DiagnosticAiMissingEvidenceRow => {
+    return { code: code, meaning: diagnosticMissingEvidenceDescription(code) };
+  });
 }
 
 /**
@@ -54,12 +158,25 @@ export function diagnosticAiBundleFromCapture(capture: FrozenDiagnosticCapture |
   const informative: boolean = focused.some((event: DiagnosticCaptureEvent): boolean =>
     !(event.moduleId === 'core.app' && event.eventCode.indexOf('capture_') === 0));
   const rows: Object[] = (informative ? focused : capture.events)
-    .map((event: DiagnosticCaptureEvent): Object => safeEvent(event));
-  const text = JSON.stringify({ captureId: capture.captureId, profile: capture.profile, modules: capture.selectedModules,
-    focus: focus, droppedEventCount: capture.droppedEventCount, events: rows });
+    .map((event: DiagnosticCaptureEvent): Object => safeEvent(capture.captureId, event));
+  // Coverage and the fact summary describe the whole capture, not only the
+  // focused sub-modules, so a gap outside the focus is still visible.
+  const coverage: DiagnosticEvidenceCoverage = diagnosticEvidenceCoverage(capture);
+  const document: DiagnosticAiBundleDocument = {
+    bundleVersion: DIAGNOSTIC_AI_BUNDLE_VERSION, captureSchemaVersion: DIAGNOSTIC_CAPTURE_SCHEMA_VERSION,
+    captureId: capture.captureId, profile: capture.profile, modules: capture.selectedModules, focus: focus,
+    droppedEventCount: capture.droppedEventCount,
+    evidenceCoverage: {
+      coverageComplete: coverage.coverageComplete, moduleCoverage: coverage.moduleCoverage,
+      missingEvidence: missingEvidenceRows(coverage)
+    },
+    factSummary: factSummary(capture), evidenceRules: DIAGNOSTIC_AI_EVIDENCE_RULES, events: rows
+  };
+  const text: string = JSON.stringify(document);
   if (text.length > 1024 * 1024) { return null; }
-  return { captureId: capture.captureId, schemaVersion: 8, modules: capture.selectedModules.slice(),
-    eventCount: rows.length, bytes: text.length, text };
+  return { captureId: capture.captureId, schemaVersion: DIAGNOSTIC_CAPTURE_SCHEMA_VERSION,
+    modules: capture.selectedModules.slice(), eventCount: rows.length, bytes: text.length, text,
+    missingEvidence: coverage.missingEvidence.slice() };
 }
 
 export function diagnosticAiCaptureStatus(runtime: DiagnosticCaptureRuntime): string {

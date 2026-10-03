@@ -277,6 +277,7 @@ import diagnosticRuntimeSnapshotPolicyTest from './DiagnosticRuntimeSnapshotPoli
 import rdpGraphicsEvidencePolicyTest from './RdpGraphicsEvidencePolicy.test';
 import rustDeskQualityConfirmationPolicyTest from './RustDeskQualityConfirmationPolicy.test';
 import rustDeskDirectRoutePolicyTest from './RustDeskDirectRoutePolicy.test';
+import diagnosticEvidenceCoveragePolicyTest from './DiagnosticEvidenceCoveragePolicy.test';
 import diagnosticAiPolicyTest from './DiagnosticAiPolicy.test';
 import diagnosticAiAgentPolicyTest from './DiagnosticAiAgentPolicy.test';
 import appCloneContextTest from './AppCloneContext.test';
@@ -560,6 +561,7 @@ export default function testsuite() {
   rdpGraphicsEvidencePolicyTest();
   rustDeskQualityConfirmationPolicyTest();
   rustDeskDirectRoutePolicyTest();
+  diagnosticEvidenceCoveragePolicyTest();
   diagnosticAiPolicyTest();
   diagnosticAiAgentPolicyTest();
   appCloneContextTest();

@@ -61,6 +61,10 @@ import {
   DiagnosticCaptureRuntime,
   FrozenDiagnosticCapture
 } from './DiagnosticCaptureRuntime';
+import {
+  DiagnosticEvidenceCoverage,
+  diagnosticEvidenceCoverage
+} from './DiagnosticEvidenceCoveragePolicy';
 
 export type DiagnosticSerializationCode =
   'ok' | 'not_ready' | 'invalid_capture' | 'too_large' | 'invalid_jsonl';
@@ -146,6 +150,8 @@ interface DiagnosticSummaryLine {
   expectedModuleCount: number;
   expectedEventCount: number;
   moduleEventCounts: Record<string, number>;
+  /** Schema v9: per-module coverage and explicit evidence gaps, recomputed by the validator. */
+  evidenceCoverage: DiagnosticEvidenceCoverage;
 }
 
 function emptySerialization(code: DiagnosticSerializationCode): DiagnosticSerializationResult {
@@ -732,7 +738,7 @@ export function validateDiagnosticJsonl(text: string): boolean {
       'kind', 'schemaVersion', 'eventCount', 'droppedEventCount',
       'approximateCaptureBytes', 'serializedBytes', 'profile', 'fullLog',
       'eventCatalogVersion', 'expectedModuleCount', 'expectedEventCount',
-      'moduleEventCounts'
+      'moduleEventCounts', 'evidenceCoverage'
     ])) { return false; }
     if (jsonString(first, 'kind') !== 'manifest' || jsonString(last, 'kind') !== 'summary' ||
       jsonNumber(first, 'schemaVersion') !== DIAGNOSTIC_CAPTURE_SCHEMA_VERSION ||
@@ -853,6 +859,12 @@ export function validateDiagnosticJsonl(text: string): boolean {
     for (let i: number = 0; i < countKeys.length; i++) {
       if (jsonNumber(actualCounts, countKeys[i]) !== expectedCounts[countKeys[i]]) { return false; }
     }
+    // Coverage is derived data: it must equal what the exported events imply.
+    const coverageValue: Object = last['evidenceCoverage'];
+    if (typeof coverageValue !== 'object' || coverageValue === null ||
+      JSON.stringify(coverageValue) !== JSON.stringify(diagnosticEvidenceCoverage(reconstructed))) {
+      return false;
+    }
     return true;
   } catch (_err) {
     return false;
@@ -894,6 +906,7 @@ export function serializeDiagnosticCapture(
       lines.push(JSON.stringify(eventLine(validCapture.events[i])));
     }
     const counts: Record<string, number> = moduleCounts(validCapture);
+    const coverage: DiagnosticEvidenceCoverage = diagnosticEvidenceCoverage(validCapture);
     const summaryWithoutSize: DiagnosticSummaryLine = {
       kind: 'summary',
       schemaVersion: DIAGNOSTIC_CAPTURE_SCHEMA_VERSION,
@@ -906,7 +919,8 @@ export function serializeDiagnosticCapture(
       eventCatalogVersion: DIAGNOSTIC_EVENT_CATALOG_VERSION,
       expectedModuleCount: validCapture.selectedModules.length,
       expectedEventCount: diagnosticEventCatalogSize(),
-      moduleEventCounts: counts
+      moduleEventCounts: counts,
+      evidenceCoverage: coverage
     };
     lines.push(JSON.stringify(summaryWithoutSize));
     let text: string = '';
@@ -925,7 +939,8 @@ export function serializeDiagnosticCapture(
         eventCatalogVersion: DIAGNOSTIC_EVENT_CATALOG_VERSION,
         expectedModuleCount: validCapture.selectedModules.length,
         expectedEventCount: diagnosticEventCatalogSize(),
-        moduleEventCounts: counts
+        moduleEventCounts: counts,
+        evidenceCoverage: coverage
       };
       lines[lines.length - 1] = JSON.stringify(summary);
       text = lines.join('\n') + '\n';
@@ -946,7 +961,8 @@ export function serializeDiagnosticCapture(
         eventCatalogVersion: DIAGNOSTIC_EVENT_CATALOG_VERSION,
         expectedModuleCount: validCapture.selectedModules.length,
         expectedEventCount: diagnosticEventCatalogSize(),
-        moduleEventCounts: counts
+        moduleEventCounts: counts,
+        evidenceCoverage: coverage
       };
       lines[lines.length - 1] = JSON.stringify(finalSummary);
       text = lines.join('\n') + '\n';

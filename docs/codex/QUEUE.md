@@ -1,12 +1,14 @@
 # RemoteDesk Queue
 
-Updated: 2026-10-03 Asia/Shanghai
+Updated: 2026-10-04 Asia/Shanghai
 
 ## Now
 
 - 电脑端 RemoteDesk 插件：Codex/DSH 二维码默认、`remotedesk://pair` 链接回退和 App 解析已实现；本机 Codex/DSH 服务与 loopback 控制面板可达，Claude Code 仅完成 2.1.286 probe-only 骨架，等待独立协议/权限/会话验收后再做功能对齐。
 
 - Pro「诊断与 AI 帮助」抓取结束修复 checkpoint `03faf926`：stop/bundle/cancel/deadline、账号/Pro/profile/capture generation fence、端侧模型 init timeout、reducedMotion 与跨 HostList/密钥保险库/中继页入口状态已实现；capture 5/5、settings 7 组、UI lifecycle 8/8、双 Hvigor、Light/diff 与独立复核 PASS。真实 Provider、账号切换实机、Phone/Pad/PC 视觉/输入和邮件验收未完成，继续保持 experimental；用户 Pro 两文件未纳入提交。
+
+- RDP/RustDesk 可观测性、EasyTier 直连与画质：[合并计划](plans/2026-10-03-rdp-rustdesk-observability-direct-quality-plan.md) checkpoint A `ddb2d9952` 与 checkpoint B（覆盖率 + AI 取证包 v2）已实现并独立复核。下一步：P1 用同一 Windows RDP 服务端对照官方客户端确认 `rdpGraphics.wireCodec`/H.264 状态；EasyTier 两端用同一虚拟 IP/端口/密码与官方 RustDesk A/B 并导出含 `rustdesk_direct_stage` 的日志；切换画质观察远端码率结论；之后再评估 P8（H.264、直连→中继回退、4:4:4、自定义画质）。
 
 - RDP/RustDesk 高级显示计划：[2026-10-01 计划](plans/2026-10-01-rdp-rustdesk-pro-display-resolution-scale-plan.md) 的 P1 运行时闭环已实现，`b69d3c9f` 经 `/root/review_display_final` PASS，并补齐 marker 失败 fail-closed 回归；RDP/RustDesk profile 已按账号×主机×协议×设备隔离，RustDesk 能力/Pro/peer 权限门控保持封闭。编译、assembleHap、显示选择 5/5、Pro entry/runtime、Light/diff/state PASS；ohosTest 为 00306054。下一步是实际 Windows/RustDesk peer/设备矩阵与 Release/PR 验收。
 

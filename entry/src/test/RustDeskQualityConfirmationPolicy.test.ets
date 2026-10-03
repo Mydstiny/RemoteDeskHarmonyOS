@@ -13,6 +13,7 @@ import {
 import {
   RUSTDESK_QUALITY_RESULT_NOT_REPORTED,
   RUSTDESK_QUALITY_RESULT_RAISED,
+  RUSTDESK_QUALITY_RESULT_SUPERSEDED,
   rustDeskQualityResultCode
 } from '../main/ets/services/RustDeskDiagnosticEvents';
 
@@ -65,6 +66,10 @@ export default function rustDeskQualityConfirmationPolicyTest(): void {
         RUSTDESK_QUALITY_CONFIRM_WINDOW_MS);
       expect(result.verdict).assertEqual('not_reported');
       expect(rustDeskQualityResultCode(result.verdict)).assertEqual(RUSTDESK_QUALITY_RESULT_NOT_REPORTED);
+      // Codes are documented in the AI glossary and must stay stable.
+      expect(rustDeskQualityResultCode('superseded')).assertEqual(RUSTDESK_QUALITY_RESULT_SUPERSEDED);
+      expect(RUSTDESK_QUALITY_RESULT_SUPERSEDED).assertEqual(6);
+      expect(rustDeskQualityResultCode('pending')).assertEqual(0);
       expect(rustDeskQualityVerdictMessage(2, result))
         .assertEqual('画质优先已发送，远端未报告码率，无法确认是否生效');
     });

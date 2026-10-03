@@ -59,6 +59,7 @@ cache.set(path.resolve(root, 'entry/src/main/ets/components/RdpDiagnosticsHud.et
 load('entry/src/test/RdpGraphicsEvidencePolicy.test.ets').default();
 load('entry/src/test/RustDeskQualityConfirmationPolicy.test.ets').default();
 load('entry/src/test/RustDeskDirectRoutePolicy.test.ets').default();
+load('entry/src/test/DiagnosticEvidenceCoveragePolicy.test.ets').default();
 
 const svc = 'entry/src/main/ets/services/';
 const graphics = load(svc + 'RdpGraphicsEvidencePolicy.ets');
@@ -114,6 +115,36 @@ test('a tampered rdpGraphics section invalidates the exported JSONL', () => {
     .replace('"h264Status":"gated_off"', '"h264Status":"in_use"');
   assert.notEqual(tampered, result.text);
   assert.equal(exporter.validateDiagnosticJsonl(tampered), false);
+});
+
+test('summary carries recomputed evidence coverage and rejects a forged one', () => {
+  const runtime = new DiagnosticCaptureRuntime({ uptimeMs: () => 1000, wallTimeMs: () => 1700000000000 });
+  runtime.start(10, ['connection.rdp', 'connection.rustdesk']);
+  const facts = policy.emptyDiagnosticRuntimeFacts();
+  const stats = observedStats();
+  stats.gfxEvidence.capsConfirmed = false;
+  stats.gfxEvidence.capsConfirmedVersion = 'unknown';
+  stats.gfxEvidence.capsConfirmedAvc = false;
+  stats.gfxEvidence.surfaceCommands = 0;
+  stats.gfxEvidence.surfaceCommandBytes = 0;
+  stats.gfxEvidence.wireCodec = 'none';
+  stats.gfxEvidence.wireCodecMask = 0;
+  facts.rdpGraphics = graphics.rdpGraphicsFactsFromRenderStats(stats);
+  runtime.record('connection.rdp', 'rdp_runtime_snapshot', 'state', 7, 0, 0, 0, 0, 0, facts);
+  runtime.stop();
+  const result = exporter.serializeDiagnosticCapture(runtime.frozenCapture());
+  assert.equal(result.ok, true, result.code);
+  const lines = result.text.trim().split('\n').map(JSON.parse);
+  const summary = lines[lines.length - 1];
+  assert.deepEqual(summary.evidenceCoverage.missingEvidence,
+    ['rdp_gfx_caps_unconfirmed', 'rdp_wire_codec_unobserved', 'rustdesk_activity_unobserved']);
+  assert.equal(summary.evidenceCoverage.coverageComplete, false);
+  assert.equal(summary.evidenceCoverage.moduleCoverage['connection.rustdesk'], 'no_events');
+  // Same byte length so only the recomputed-coverage comparison can reject it.
+  const forged = result.text.replace('"coverageComplete":false', '"coverageComplete":true ');
+  assert.notEqual(forged, result.text);
+  assert.equal(Buffer.byteLength(forged), Buffer.byteLength(result.text));
+  assert.equal(exporter.validateDiagnosticJsonl(forged), false);
 });
 
 let failed = 0;

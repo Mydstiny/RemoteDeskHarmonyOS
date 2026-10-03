@@ -1,6 +1,7 @@
 import { DiagnosticCaptureActionCode, DiagnosticEventOutcome } from '../DiagnosticCaptureRuntime';
 import { DiagnosticCaptureCoordinator } from '../DiagnosticCaptureCoordinator';
 import { DiagnosticAiCapturePlan, diagnosticAiBundleFromCapture, DiagnosticAiBundle, diagnosticAiPlanValid } from './DiagnosticAiBundlePolicy';
+import { diagnosticEvidenceCoverage } from '../DiagnosticEvidenceCoveragePolicy';
 
 export class DiagnosticAiCaptureOrchestrator {
   private static instance: DiagnosticAiCaptureOrchestrator;
@@ -34,6 +35,16 @@ export class DiagnosticAiCaptureOrchestrator {
   bundle(owner: string, focus: string[] = []): DiagnosticAiBundle | null {
     if (owner !== this.owner) { return null; }
     return diagnosticAiBundleFromCapture(this.coordinator.bundle(owner, 'ai'), focus);
+  }
+
+  /**
+   * Evidence gaps of the owner's frozen capture: what the capture could not
+   * answer (empty when there is no capture or the caller does not own it).
+   */
+  missingEvidence(owner: string): string[] {
+    if (owner !== this.owner) { return []; }
+    const capture = this.coordinator.bundle(owner, 'ai');
+    return capture === null ? [] : diagnosticEvidenceCoverage(capture).missingEvidence.slice();
   }
 
   discard(owner: string, captureId: string = ''): DiagnosticCaptureActionCode {

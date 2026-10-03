@@ -114,6 +114,8 @@ export const RUSTDESK_QUALITY_RESULT_RAISED: number = 2;
 export const RUSTDESK_QUALITY_RESULT_LOWERED: number = 3;
 export const RUSTDESK_QUALITY_RESULT_UNCHANGED: number = 4;
 export const RUSTDESK_QUALITY_RESULT_NOT_REPORTED: number = 5;
+/** The pending request was replaced by a newer tier or abandoned by disconnect/page exit. */
+export const RUSTDESK_QUALITY_RESULT_SUPERSEDED: number = 6;
 
 export function rustDeskQualityResultCode(verdict: string): number {
   switch (verdict) {
@@ -122,6 +124,7 @@ export function rustDeskQualityResultCode(verdict: string): number {
     case 'bitrate_lowered': return RUSTDESK_QUALITY_RESULT_LOWERED;
     case 'bitrate_unchanged': return RUSTDESK_QUALITY_RESULT_UNCHANGED;
     case 'not_reported': return RUSTDESK_QUALITY_RESULT_NOT_REPORTED;
+    case 'superseded': return RUSTDESK_QUALITY_RESULT_SUPERSEDED;
     default: return 0;
   }
 }
@@ -147,7 +150,8 @@ export function recordRustDeskQualityResult(sessionId: number, quality: number, 
   const code: number = rustDeskQualityResultCode(verdict);
   const outcome: DiagnosticOutcome = code === RUSTDESK_QUALITY_RESULT_RAISED ||
     code === RUSTDESK_QUALITY_RESULT_LOWERED ? 'succeeded' :
-    (code === RUSTDESK_QUALITY_RESULT_SEND_FAILED ? 'failed' : 'state');
+    (code === RUSTDESK_QUALITY_RESULT_SEND_FAILED ? 'failed' :
+      (code === RUSTDESK_QUALITY_RESULT_SUPERSEDED ? 'cancelled' : 'state'));
   recordDiagnosticEvent('connection.rustdesk', 'rustdesk_quality_result', outcome, Math.max(0, sessionId),
     quality, code, Math.max(0, Math.round(elapsedMs)), Math.max(0, Math.round(currentBitrateKbps)));
 }

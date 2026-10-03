@@ -342,4 +342,22 @@ FreeRDP 子模块、FFmpeg、OpenSSL、RustDesk 上游依赖、SSH、VNC、Moonl
 - `max_edge_px` 删除；分辨率继续由 2026-10-01 显示计划负责。
 - 补发刷新偏离上游 `sessionSetImageQuality` 的行为，最小间隔 750 ms 合并。
 
-仍未完成、需要设备/服务端：P1 现场基线、P8 实验（H.264、直连→中继回退、4:4:4、自定义画质）、P9 设备矩阵。P4 的覆盖率汇总与 P7 AI bundle v2 在 checkpoint B 实施。
+独立复核首轮 FAIL（B1 RDP 字节仍混入本机拷贝量、B2 重定向改写 ServerHostname 导致回退作用域不一致、B3 连接入口校验拒绝不写事件）及 7 个低优先级项，修复后复核 PASS。提交 `ddb2d9952`。
+
+### 13.2 Checkpoint B（2026-10-04，P4 覆盖率与 P7 AI 取证接口）
+
+| 计划项 | 落地内容 | 主要文件 |
+|---|---|---|
+| P4 覆盖率 | 导出摘要新增 `evidenceCoverage`：逐模块 `observed/no_events`，以及闭合的缺失证据码（事件被丢弃、RDP 无活动/无原生图形证据/GFX 未确认/线上编码未观测、RustDesk 无活动/画质无结论/连接阶段未结束）；校验器按导出事件重算并逐字比对 | `DiagnosticEvidenceCoveragePolicy.ets`、`DiagnosticCaptureExportService.ets` |
+| P7 AI bundle v2 | 每条事件带稳定引用 `capture-N/session-M/gG/seq-S`；包内含覆盖率、缺失证据（附中文含义）、事实摘要（最新 RDP 图形证据、画质结论、直连阶段）与证据规则（结论必须引用 ref，缺失项只能写“未确认”）；编排器新增 `missingEvidence(owner)` | `DiagnosticAiBundlePolicy.ets`、`DiagnosticAiCaptureOrchestrator.ets` |
+
+缩减与差异（如实记录）：
+
+- 原计划的 native 事件环形缓冲（M1）未实现，改用“原生累计证据快照轮询 + 协商变化事件”；原生层只保存有界计数，不在回调中做序列化或 IO。
+- `compare_sessions` 未实现：编排器同一时间只保留一份冻结抓取。
+- 证据规则通过取证包正文传给模型，未修改 Provider 提示词；端侧模型只读取包尾部，可能看不到规则。
+- 画质子菜单的缩放提示读取非响应式缓存，只在顶栏重新渲染时刷新（已知限制）。
+- RDP 的 `rdp_gfx_caps_unconfirmed`、`rdp_wire_codec_unobserved` 按整份抓取统计：同一抓取里只要有一个 RDP 会话确认了能力或观测到线上编码，就不会再为其他会话报缺失；需要逐会话判断时看各事件的 `runtime.rdpGraphics`。
+- 复核首轮 FAIL（C1 用户取消的连接未记录阶段结束，导致覆盖率误报“连接阶段未结束”）及建议项 C2（未出结论即被取代的画质请求）、C3（入口校验失败可能关闭其他尝试）已修复：取消路径记录 `cancelled` 阶段，被取代的画质请求记结论码 6，入口拒绝统一记 `validation`。
+
+仍未完成、需要设备/服务端：P1 现场基线、P8 实验（H.264、直连→中继回退、4:4:4、自定义画质）、P9 设备矩阵。
