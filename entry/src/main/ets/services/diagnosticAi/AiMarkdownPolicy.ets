@@ -145,3 +145,49 @@ export function aiMarkdownBlocks(text: string): AiMdBlock[] {
   flush();
   return blocks;
 }
+
+/** A line as it is said: links read as their text, bare addresses as 链接, leftover Markdown marks dropped. */
+function spokenLine(line: string): string {
+  return aiMarkdownPlain(line)
+    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/https?:\/\/[^\s，。、）)]+/g, '链接')
+    .replace(/[*_~`#]+/g, '')
+    .replace(/\s*(->|=>|→)\s*/g, '，然后')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/** Ends a spoken part with a pause, so neighbouring lines are not read as one breathless sentence. */
+function withPause(part: string): string {
+  return /[。！？!?；;：:，,…]$/.test(part) ? part : part + '。';
+}
+
+/**
+ * What reading an answer aloud says: the same blocks the chat draws, as plain sentences. Headings and list items
+ * become their own sentences, a table is read row by row as 列名：值, a code block is only mentioned, and no Markdown
+ * mark (**, #, |, `) is ever spoken.
+ */
+export function aiSpeechText(markdown: string): string {
+  const parts: string[] = [];
+  aiMarkdownBlocks(markdown).forEach((block: AiMdBlock): void => {
+    if (block.kind === 'rule') { return; }
+    if (block.kind === 'code') { parts.push('这里有一段代码，请在屏幕上查看。'); return; }
+    if (block.kind === 'table') {
+      const header: string[] = block.rows.length > 0 ? block.rows[0].map((cell: string): string => spokenLine(cell)) : [];
+      block.rows.slice(1).forEach((row: string[]): void => {
+        const cells: string[] = row.map((cell: string, c: number): string => {
+          const value: string = spokenLine(cell);
+          const name: string = c < header.length ? header[c] : '';
+          return value === '' ? '' : name !== '' && c > 0 ? name + '：' + value : value;
+        }).filter((cell: string): boolean => cell !== '');
+        if (cells.length > 0) { parts.push(withPause(cells.join('，'))); }
+      });
+      return;
+    }
+    const text: string = block.spans.map((span: AiMdSpan): string => span.text).join('').split('\n')
+      .map((line: string): string => spokenLine(line)).filter((line: string): boolean => line !== '').join('，');
+    if (text === '') { return; }
+    parts.push(withPause(block.kind === 'number' ? block.marker.replace('.', '、') + text : text));
+  });
+  return parts.join('\n');
+}

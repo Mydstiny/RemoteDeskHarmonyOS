@@ -1,3 +1,4 @@
+import { diagnosticAiAppActionCatalog } from './DiagnosticAiAppActionPolicy';
 /**
  * 工具与技能 for the AI chat. A tool is something the app does for the model (write a document, read an added file,
  * look at the hosts or the connection log); each can be switched off in 设置 › AI 工具与技能, and app data leaves the
@@ -29,6 +30,13 @@ export class AiToolSpec {
   }
 }
 
+/** The app screens the chat may open, as id=label pairs (the assistant's own catalog, minus in-session actions). */
+function appScreens(): string {
+  return diagnosticAiAppActionCatalog().split('\n').map((line: string): string[] => line.split('|'))
+    .filter((parts: string[]): boolean => parts.length >= 2 && !parts[0].startsWith('session.'))
+    .map((parts: string[]): string => parts[0] + '=' + parts[1].replace(/["\\]/g, '')).join('；');
+}
+
 function functionJson(name: string, description: string, properties: string, required: string): string {
   return '{"type":"function","function":{"name":"' + name + '","description":"' + description +
     '","parameters":{"type":"object","properties":{' + properties + '},"required":[' + required + ']}}}';
@@ -54,6 +62,19 @@ export const AI_TOOLS: AiToolSpec[] = [
       '"days":{"type":"integer","description":"最近几天，1 到 45，默认 7"}', '')),
   new AiToolSpec('app.settings', 'app_settings', '应用设置', '当前的连接、显示和 AI 设置（只读，不会修改）',
     'app', true, functionJson('app_settings', '读取 RemoteDesktop 当前的设置项和取值（只读）。', '', '')),
+  new AiToolSpec('app.changeSetting', 'change_setting', '修改设置', '按你的要求修改 App 设置，先显示确认卡片，你确认后才生效',
+    'app', true, functionJson('change_setting',
+      '修改 RemoteDesktop 的一项设置（主题、画质、键盘、AI 动效等）。setting_id 和 value 必须来自 app_settings 返回的清单（每行：id|名称|可选值=说明|当前值）；会先给用户显示确认卡片，用户确认后才生效。',
+      '"setting_id":{"type":"string","description":"设置 id，例如 ui.theme"},"value":{"type":"string","description":"可选值里的值，例如 dark、true"}',
+      '"setting_id","value"')),
+  new AiToolSpec('app.openScreen', 'open_app_screen', '打开页面', '打开 App 里的页面：添加主机、云同步、诊断日志、各类设置',
+    'app', true, functionJson('open_app_screen',
+      '打开 RemoteDesktop 里的一个页面让用户自己操作（例如添加主机、云同步、某类设置）。screen 只能是以下 id 之一：' + appScreens(),
+      '"screen":{"type":"string","description":"页面 id"}', '"screen"')),
+  new AiToolSpec('app.assistant', 'ask_assistant', '交给助理', '连接诊断、抓取日志、问题反馈交给 AI 助理处理',
+    'app', true, functionJson('ask_assistant',
+      '把需要 AI 助理处理的事交给它：诊断远程连接问题、抓取和分析诊断日志、生成问题反馈邮件。助理会在“助理”模式里接着处理。question 写清楚用户要什么。',
+      '"question":{"type":"string","description":"交给助理的问题，用用户的原话"}', '"question"')),
   new AiToolSpec('app.usage', 'ai_usage', 'AI 用量', '最近的 AI 请求次数、Token 和估算费用',
     'app', true, functionJson('ai_usage', '读取最近若干天的 AI 用量：请求次数、Token、估算费用。',
       '"days":{"type":"integer","description":"最近几天，默认 7"}', '')),
@@ -267,6 +288,9 @@ export function aiToolStatus(fn: string, detail: string): string {
   if (fn === 'connection_history') { return '正在翻看连接记录'; }
   if (fn === 'app_settings') { return '正在查看应用设置'; }
   if (fn === 'ai_usage') { return '正在统计 AI 用量'; }
+  if (fn === 'change_setting') { return '正在准备修改设置'; }
+  if (fn === 'open_app_screen') { return '正在打开页面'; }
+  if (fn === 'ask_assistant') { return '正在交给 AI 助理'; }
   if (fn === 'read_clipboard') { return '正在读取剪贴板'; }
   if (fn === 'copy_to_clipboard') { return '正在复制到剪贴板'; }
   if (fn === 'device_status') { return '正在查看设备状态'; }

@@ -7,6 +7,21 @@ import { AI_MODE_CHAT, DiagnosticAiRequestLog } from './DiagnosticAiRequestLog';
 import { AiAttachment, AiDocument, aiCreateDocument, aiDocumentKindLabel } from './AiDocumentService';
 import { AiSkill, AiToolSpec, aiSkillsForQuestion, aiToolByFunction, aiToolStatus } from './AiSkillCatalog';
 import { AI_CONFIRM_TOOLS, AiChatAction, aiActionFor, aiRunSystemTool } from './AiSystemTools';
+import { AiSettingChoice, AiSettingSpec, diagnosticAiSettingCurrent, diagnosticAiSettingSpec, diagnosticAiSettingValueLabel } from './DiagnosticAiSettingsActionPolicy';
+import { diagnosticAiAppActionId, diagnosticAiAppActionLabel } from './DiagnosticAiAppActionPolicy';
+import { AI_APP_ACTION_REQUEST, AI_ASSISTANT_HANDOFF } from './AiBridgeKeys';
+
+
+/** A setting's choice as the model wrote it: the stored value, its label, or 开/关 words for a switch. */
+function settingChoice(spec: AiSettingSpec, raw: string): AiSettingChoice | undefined {
+  const value: string = raw.trim().toLowerCase();
+  if (spec.isBoolean()) {
+    if (['true', 'on', '1', 'yes', '开启', '打开', '启用', '开'].indexOf(value) >= 0) { return spec.choices[0]; }
+    if (['false', 'off', '0', 'no', '关闭', '停用', '禁用', '关'].indexOf(value) >= 0) { return spec.choices[1]; }
+  }
+  return spec.choices.find((choice: AiSettingChoice): boolean =>
+    choice.value.toLowerCase() === value || choice.label.toLowerCase() === value);
+}
 
 /**
  * 聊天模式: the assistant as a general chatbot. It sees what the user typed, the documents the user added, and — only
@@ -385,6 +400,38 @@ export class AiChatService {
           '请用一句话说明将要做什么，并提醒用户点确认；不要说“已设置”“已完成”。';
       }
       return await aiRunSystemTool(context, name, input);
+    }
+    if (name === 'change_setting') {
+      const settingId: string = stringField(input, 'setting_id').trim();
+      const spec: AiSettingSpec | undefined = diagnosticAiSettingSpec(settingId);
+      if (spec === undefined) { return '没有这个设置：' + settingId + '。请先用 app_settings 查看可以修改的设置清单。'; }
+      const choice: AiSettingChoice | undefined = settingChoice(spec, stringField(input, 'value'));
+      if (choice === undefined) {
+        return '「' + spec.label + '」没有这个取值，可选：' + spec.choices.map((c: AiSettingChoice): string => c.label).join('、');
+      }
+      const current: string | null = diagnosticAiSettingCurrent(settingId);
+      if (current === choice.value) { return '「' + spec.label + '」已经是「' + choice.label + '」，不用修改。'; }
+      const args: Record<string, string> = {};
+      args['setting_id'] = settingId;
+      args['value'] = choice.value;
+      const action: AiChatAction = new AiChatAction('act-' + Date.now().toString(36) + actions.length.toString(), 'change_setting',
+        '把「' + spec.label + '」改为「' + choice.label + '」',
+        current !== null ? '现在是「' + diagnosticAiSettingValueLabel(settingId, current) + '」' : '应用设置', JSON.stringify(args));
+      actions.push(action);
+      return '还没有执行：已在对话里显示确认卡片「' + action.title + '」，用户确认后才会修改。请用一句话说明要改什么，并请用户确认；不要说“已修改”。';
+    }
+    if (name === 'open_app_screen') {
+      const screen: string = stringField(input, 'screen').trim();
+      const id = diagnosticAiAppActionId(screen);
+      if (id === null || screen.startsWith('session.')) { return '没有这个页面：' + screen + '。只能用工具说明里列出的页面 id。'; }
+      AppStorage.setOrCreate(AI_APP_ACTION_REQUEST, id + '@' + Date.now().toString());
+      return '已打开「' + diagnosticAiAppActionLabel(id) + '」页面。请用一句话告诉用户可以在这里做什么。';
+    }
+    if (name === 'ask_assistant') {
+      const question: string = stringField(input, 'question').trim();
+      if (question === '') { return '没有交出去：question 为空。'; }
+      AppStorage.setOrCreate(AI_ASSISTANT_HANDOFF, Date.now().toString() + '|' + question.slice(0, 500));
+      return '已交给 AI 助理，它会在“助理”里接着处理（诊断、抓日志或反馈）。请只用一句话告诉用户已交给助理。';
     }
     const days: number = Math.max(1, Math.min(45, parseInt(stringField(input, 'days'), 10) || 7));
     try {

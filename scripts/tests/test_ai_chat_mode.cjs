@@ -62,6 +62,21 @@ assert.deepEqual(Array.from(blocks[6].rows, r => Array.from(r)), [['项目', '�
 assert.equal(blocks[9].text, 'code line');
 console.log('PASS Markdown blocks: headings, lists, tables, quotes, rules, code and inline marks');
 
+// Reading aloud never says a Markdown mark: a line that starts with bold used to lose one * and read the rest.
+const spoken = md.aiSpeechText([
+  '**赶车提醒**：留出 40 分钟', '## 路线', '- **地铁**：9 号线 -> 10 号线', '1. 打开 [官网](https://developer.huawei.com/cn/)',
+  '| 方式 | 耗时 |', '| --- | --- |', '| 地铁 | 80 分钟 |', '---', '```', 'rm -rf /', '```', '详见 https://example.com/a?b=1 页面'
+].join('\n'));
+assert.doesNotMatch(spoken, /[*#|`]/);
+assert.match(spoken, /^赶车提醒：留出 40 分钟。/);
+assert.match(spoken, /路线。\n地铁：9 号线，然后10 号线。/);
+assert.match(spoken, /1、打开 官网。/);
+assert.match(spoken, /地铁，耗时：80 分钟。/);
+assert.match(spoken, /这里有一段代码/);
+assert.doesNotMatch(spoken, /rm -rf|https?:/);
+assert.match(spoken, /详见 链接 页面。$/);
+console.log('PASS read aloud text: no Markdown marks, tables by row, links and code not spelled out');
+
 // ---------------------------------------------------------------- zip + Office
 const zip = load(D + 'AiZipWriter');
 const sample = new TextEncoder().encode('hello zip');
@@ -124,7 +139,9 @@ const chat = load(D + 'AiChatService', {
   '@kit.PerformanceAnalysisKit': { hilog: { info() {}, warn() {} } },
   './DiagnosticAiProviderCatalog': {}, './DiagnosticAiProviderService': {}, './DiagnosticAiRequestLog': {},
   './AiDocumentService': {}, './DiagnosticAiModels': {},
-  './AiSystemTools': { AI_CONFIRM_TOOLS: [], aiActionFor: () => '', aiRunSystemTool: async () => '' }
+  './AiSystemTools': { AI_CONFIRM_TOOLS: [], aiActionFor: () => '', aiRunSystemTool: async () => '' },
+  './DiagnosticAiSettingsActionPolicy': { diagnosticAiSettingSpec: () => undefined, diagnosticAiSettingCurrent: () => null,
+    diagnosticAiSettingValueLabel: (_id, value) => value }
 });
 const answer = '好的，周报如下。\n<document title="第 40 周周报" format="docx">\n# 周报\n- 完成\n</document>\n请查看。';
 assert.deepEqual(Array.from(chat.aiChatDocumentBlocks(answer), b => Array.from(b)), [['第 40 周周报', 'docx', '# 周报\n- 完成']]);
@@ -236,7 +253,8 @@ const system = load(D + 'AiSystemTools', {
   '@kit.AbilityKit': { abilityAccessCtrl: {}, common: {} }, '@kit.BasicServicesKit': {}, '@kit.CalendarKit': {},
   '@kit.CameraKit': {}, '@kit.ContactsKit': {}, '@kit.LocationKit': {}, '@kit.NetworkKit': {}, '@kit.BackgroundTasksKit': {},
   '@kit.NotificationKit': {}, '@kit.TelephonyKit': {}, '@kit.MediaLibraryKit': {},
-  '@kit.PerformanceAnalysisKit': { hilog: { info() {}, warn() {} } }, './AiDocumentService': {}
+  '@kit.PerformanceAnalysisKit': { hilog: { info() {}, warn() {} } }, './AiDocumentService': {},
+  './DiagnosticAiSettingsActionPolicy': {}
 });
 const t = system.aiParseLocalTime('2030-03-05 14:30');
 assert.equal(new Date(t).getFullYear(), 2030);
@@ -262,6 +280,12 @@ assert.match(system.aiActionErrorText({ code: 1700002 }), /上限/);
 assert.equal(system.aiActionErrorText({ code: 16000050, message: 'Internal error.' }), '系统返回错误 16000050：Internal error.');
 assert.equal(system.aiActionErrorText(new Error('没有提醒权限')), '没有提醒权限');
 assert.equal(system.aiActionErrorText({}), '没有完成，请稍后再试');
+for (const fn of ['change_setting', 'open_app_screen', 'ask_assistant']) {
+  const tool = catalog.AI_TOOLS.find(t => t.fn === fn);
+  assert.ok(tool && tool.group === 'app' && tool.defaultOn, fn + ' is an app tool, on by default');
+  assert.doesNotThrow(() => JSON.parse(tool.schema), fn + ' schema is valid JSON');
+}
+assert.doesNotMatch(catalog.AI_TOOLS.find(t => t.fn === 'open_app_screen').schema, /session\./);
 console.log('PASS system tools: local times, confirm cards (past time, masked number, http only) and every tool routed');
 
 fs.rmSync(tmp, { recursive: true, force: true });

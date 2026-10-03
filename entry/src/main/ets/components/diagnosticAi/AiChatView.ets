@@ -12,6 +12,7 @@ import { AiChatAppData, AiChatReply, AiChatService, AiChatTurn } from '../../ser
 import { AiAttachment, AiDocument, aiCreateDocument, aiDocumentAvailable, aiDocumentErrorText, aiDocumentKind, aiDocumentKindLabel, aiImportDocument, aiOpenDocument, aiPickDocuments, aiPrintDocument, aiSaveDocumentAs, aiShareDocument, aiTextAttachment } from '../../services/diagnosticAi/AiDocumentService';
 import { AiChatAction, aiActionErrorText, aiRunAction } from '../../services/diagnosticAi/AiSystemTools';
 import { AiReadAloud, AiVoiceInput } from '../../services/diagnosticAi/AiSpeech';
+import { AI_VOICE_ENABLED } from '../../services/diagnosticAi/AiVoiceSettings';
 import { AiMdBlock, AiMdSpan, aiMarkdownBlocks } from '../../services/diagnosticAi/AiMarkdownPolicy';
 import { aiRouteSuggestion } from '../../services/diagnosticAi/AiChatRoutePolicy';
 import { AI_CHAT_REFRESH_KEY, AiShareInbox, AiSharedItem, aiChatRefresh } from '../../services/diagnosticAi/AiShareInbox';
@@ -26,6 +27,9 @@ import { ProAppRuntime } from '../../services/pro/ProAppRuntime';
 import { ProEntries } from '../../services/pro/ProEntries';
 import { PRO_DIAGNOSTICS_ASSISTANT_FEATURE } from '../../services/pro/ProFeatureCatalog';
 import { AccountSessionCoordinator } from '../../services/AccountSessionCoordinator';
+
+/** AppStorage: a request to start voice mode (hands-free); the home page opens it (AiVoiceIsland). */
+export const AI_VOICE_REQUEST: string = 'aiVoice.request';
 
 /** Most documents one chat holds at a time. */
 const AI_CHAT_MAX_ATTACHMENTS: number = 5;
@@ -107,7 +111,7 @@ export class AiChatMemory {
   }
 }
 
-function newMessageId(): string {
+export function newMessageId(): string {
   return Date.now().toString(36) + Math.floor(Math.random() * 46656).toString(36);
 }
 
@@ -127,7 +131,7 @@ export function aiChatResumeSession(owner: string, session: DiagnosticAiConversa
 }
 
 /** The chat as a saved session (AI 对话记录 › 聊天): one turn per question and its answer. */
-function aiChatSaveSession(store: DiagnosticAiConversationStore, sessionId: string, messages: AiChatMessage[],
+export function aiChatSaveSession(store: DiagnosticAiConversationStore, sessionId: string, messages: AiChatMessage[],
   profile: DiagnosticAiProviderProfile | undefined): void {
   const turns: DiagnosticAiConversationTurn[] = [];
   for (let i: number = 0; i < messages.length; i++) {
@@ -155,7 +159,7 @@ function aiChatSaveSession(store: DiagnosticAiConversationStore, sessionId: stri
   });
 }
 
-function aiChatErrorText(error: Object): string {
+export function aiChatErrorText(error: Object): string {
   const value: string = error instanceof Error ? error.message : '';
   if (value.indexOf('LOCAL_MODEL_PC_ONLY') >= 0) { return '鸿蒙端侧小模型目前只支持 PC/2in1'; }
   if (value.indexOf('LOCAL_MODEL') >= 0) { return '鸿蒙端侧小模型当前不可用'; }
@@ -170,6 +174,90 @@ function aiChatErrorText(error: Object): string {
   if (value.indexOf('NETWORK') >= 0) { return 'AI 服务暂时无法连接，请检查网络'; }
   if (value.indexOf('EMPTY_RESULT') >= 0) { return 'AI 服务返回了空结果，请重试'; }
   return 'AI 请求失败，请重试';
+}
+
+/** The AI service profile the chat uses: the one chosen in 辅助 AI 配置, or the only one with a model. */
+export function aiChatSelectedProfile(store: DiagnosticAiProfileStore): DiagnosticAiProviderProfile | undefined {
+  try {
+    const profiles: DiagnosticAiProviderProfile[] = store.list();
+    const settings = store.settingsSnapshot();
+    const selected: DiagnosticAiProviderProfile | undefined = profiles.find((value: DiagnosticAiProviderProfile): boolean =>
+      value.providerId === settings.selectedProviderId && value.modelId === settings.selectedModelId && value.modelId !== '' &&
+      (settings.selectedAuthMode === '' || value.authMode === settings.selectedAuthMode));
+    if (selected !== undefined) { return selected; }
+    const candidates: DiagnosticAiProviderProfile[] = profiles.filter((value: DiagnosticAiProviderProfile): boolean => value.modelId !== '');
+    return candidates.length === 1 ? candidates[0] : undefined;
+  } catch (_error) { return undefined; }
+}
+
+/** Whether the current account may use the AI chat (the AI 助理 Pro entry). */
+export function aiChatAllowed(): boolean {
+  return ProEntries.visible(PRO_DIAGNOSTICS_ASSISTANT_FEATURE, ProAppRuntime.getInstance().context());
+}
+
+/** Whether `owner` is still the signed-in account. */
+export function aiChatOwnerStill(owner: string): boolean {
+  const scope = AccountSessionCoordinator.getInstance().currentScope();
+  const current: string = scope.ownerScopeId.trim() === '' ? 'device-local' : scope.ownerScopeId;
+  return current === owner;
+}
+
+/** The assistant's personalisation as one line for the model. */
+export function aiChatPreferenceText(p: DiagnosticAiAssistantPreferences): string {
+  const tone: string = p.personality === 'warm' ? '亲切' : p.personality === 'concise' ? '简洁' :
+    p.personality === 'technical' ? '专业' : '平衡';
+  const length: string = p.verbosity === 'concise' ? '简短' : p.verbosity === 'detailed' ? '详细' : '适中';
+  return '助手名字：' + p.name + '；语气：' + tone + '；回答长度：' + length + '；语言：' + (p.language === 'en-US' ? '英文' : '中文');
+}
+
+/** A message as the model sees it in the history: documents added or made, and what became of confirm cards. */
+export function aiChatTurnText(message: AiChatMessage): string {
+  if (message.role === 'user') {
+    return message.text + (message.attachments.length > 0 ? '\n（添加了文档：' + message.attachments.join('、') + '）' : '');
+  }
+  // What became of its confirm cards, so the model does not ask again for one already done.
+  const actions: string = message.actions.map((a: AiChatAction): string => a.title + '：' +
+    (a.status === 'done' ? '用户已确认，' + a.result : a.status === 'cancelled' ? '用户已取消' :
+      a.status === 'failed' ? '执行失败，' + a.result : '等待用户确认')).join('；');
+  return message.text + (message.documents.length > 0 ?
+    '\n（已生成文档：' + message.documents.map((d: AiDocument): string => d.name).join('、') + '）' : '') +
+    (actions !== '' ? '\n（确认卡片：' + actions + '）' : '');
+}
+
+function aiChatUsageText(conversationStore: DiagnosticAiConversationStore, days: number): string {
+  const since: number = Date.now() - days * 24 * 3600 * 1000;
+  const rows: DiagnosticAiDailyUsage[] = (conversationStore.usage().daily ?? [])
+    .filter((row: DiagnosticAiDailyUsage): boolean => new Date(row.day).getTime() >= since - 24 * 3600 * 1000);
+  if (rows.length === 0) { return '最近 ' + days.toString() + ' 天没有 AI 请求。'; }
+  const total = (pick: (row: DiagnosticAiDailyUsage) => number): number =>
+    rows.reduce((sum: number, row: DiagnosticAiDailyUsage): number => sum + pick(row), 0);
+  return '最近 ' + days.toString() + ' 天：' + total((r: DiagnosticAiDailyUsage): number => r.requestCount).toString() + ' 次请求，' +
+    tokenWords(total((r: DiagnosticAiDailyUsage): number => r.promptTokens + r.completionTokens)) + ' Token，估算 ¥' +
+    total((r: DiagnosticAiDailyUsage): number => r.estimatedCostCny).toFixed(2) + '。\n' +
+    rows.map((r: DiagnosticAiDailyUsage): string => r.day + '：' + r.requestCount.toString() + ' 次，' +
+      tokenWords(r.promptTokens + r.completionTokens) + ' Token，¥' + r.estimatedCostCny.toFixed(2)).join('\n');
+}
+
+/** The app data the chat's tools may read (hosts, connection log, settings, AI usage). */
+export function aiChatAppData(conversationStore: DiagnosticAiConversationStore): AiChatAppData {
+  return {
+    hosts: (protocol: string): string => aiHostsText(AiAppDataBridge.hosts(), protocol),
+    connections: (days: number): string => aiConnectionsText(ConnectionJournal.recent(days)
+      .map((e: ConnectionJournalEntry): AiConnectionRow => ({ at: e.at, label: e.label, protocol: e.protocol, outcome: e.outcome,
+        detail: e.detail })), days, AiAppDataBridge.hosts()),
+    settings: (): string => diagnosticAiSettingCatalog(),
+    usage: (days: number): string => aiChatUsageText(conversationStore, days)
+  };
+}
+
+/** Counts one answer in AI 用量监控. */
+export function aiChatRecordUsage(conversationStore: DiagnosticAiConversationStore, modelCatalog: DiagnosticAiModelCatalog,
+  profile: DiagnosticAiProviderProfile, reply: AiChatReply): void {
+  const usage = reply.usage;
+  const cost: number = modelCatalog.estimateCost(profile.providerId, profile.modelId, usage.promptTokens,
+    usage.completionTokens, usage.cachedTokens);
+  conversationStore.recordUsage(usage.promptTokens, usage.completionTokens, usage.cachedTokens, cost,
+    profile.providerId, profile.modelId, usage.estimated === true, true);
 }
 
 function sizeLabel(bytes: number): string {
@@ -221,6 +309,8 @@ export struct AiChatView {
   @Prop deviceClass: string = 'phone';
   @Prop owner: string = 'device-local';
   @StorageProp(AI_CHAT_REFRESH_KEY) @Watch('reloadFromMemory') refreshToken: number = 0;
+  /** AI 语音 (Beta) is on: the empty field offers voice mode. */
+  @StorageProp(AI_VOICE_ENABLED) voiceEnabled: boolean = false;
   /** To 助理 (with a question to ask there, or '' just to switch). */
   onSwitchMode: (mode: string, question: string) => void = (_mode: string, _question: string): void => {};
   onActivityChanged: (active: boolean) => void = (_active: boolean): void => {};
@@ -344,28 +434,11 @@ export struct AiChatView {
     AiChatMemory.pending = this.pending.slice();
   }
 
-  private allowed(): boolean {
-    return ProEntries.visible(PRO_DIAGNOSTICS_ASSISTANT_FEATURE, ProAppRuntime.getInstance().context());
-  }
+  private allowed(): boolean { return aiChatAllowed(); }
 
-  private ownerStill(): boolean {
-    const scope = AccountSessionCoordinator.getInstance().currentScope();
-    const current: string = scope.ownerScopeId.trim() === '' ? 'device-local' : scope.ownerScopeId;
-    return current === this.owner;
-  }
+  private ownerStill(): boolean { return aiChatOwnerStill(this.owner); }
 
-  private selectedProfile(): DiagnosticAiProviderProfile | undefined {
-    try {
-      const profiles: DiagnosticAiProviderProfile[] = this.store.list();
-      const settings = this.store.settingsSnapshot();
-      const selected: DiagnosticAiProviderProfile | undefined = profiles.find((value: DiagnosticAiProviderProfile): boolean =>
-        value.providerId === settings.selectedProviderId && value.modelId === settings.selectedModelId && value.modelId !== '' &&
-        (settings.selectedAuthMode === '' || value.authMode === settings.selectedAuthMode));
-      if (selected !== undefined) { return selected; }
-      const candidates: DiagnosticAiProviderProfile[] = profiles.filter((value: DiagnosticAiProviderProfile): boolean => value.modelId !== '');
-      return candidates.length === 1 ? candidates[0] : undefined;
-    } catch (_error) { return undefined; }
-  }
+  private selectedProfile(): DiagnosticAiProviderProfile | undefined { return aiChatSelectedProfile(this.store); }
 
   private toast(message: string): void {
     try { this.getUIContext().getPromptAction().showToast({ message: message, duration: 2200 }); } catch (_error) { /* no toast */ }
@@ -416,30 +489,7 @@ export struct AiChatView {
 
   // ------------------------------------------------------------------ app data for the tools
 
-  private appData(): AiChatAppData {
-    return {
-      hosts: (protocol: string): string => aiHostsText(AiAppDataBridge.hosts(), protocol),
-      connections: (days: number): string => aiConnectionsText(ConnectionJournal.recent(days)
-        .map((e: ConnectionJournalEntry): AiConnectionRow => ({ at: e.at, label: e.label, protocol: e.protocol, outcome: e.outcome,
-          detail: e.detail })), days, AiAppDataBridge.hosts()),
-      settings: (): string => diagnosticAiSettingCatalog(),
-      usage: (days: number): string => this.usageText(days)
-    };
-  }
-
-  private usageText(days: number): string {
-    const since: number = Date.now() - days * 24 * 3600 * 1000;
-    const rows: DiagnosticAiDailyUsage[] = (this.conversationStore.usage().daily ?? [])
-      .filter((row: DiagnosticAiDailyUsage): boolean => new Date(row.day).getTime() >= since - 24 * 3600 * 1000);
-    if (rows.length === 0) { return '最近 ' + days.toString() + ' 天没有 AI 请求。'; }
-    const total = (pick: (row: DiagnosticAiDailyUsage) => number): number =>
-      rows.reduce((sum: number, row: DiagnosticAiDailyUsage): number => sum + pick(row), 0);
-    return '最近 ' + days.toString() + ' 天：' + total((r: DiagnosticAiDailyUsage): number => r.requestCount).toString() + ' 次请求，' +
-      tokenWords(total((r: DiagnosticAiDailyUsage): number => r.promptTokens + r.completionTokens)) + ' Token，估算 ¥' +
-      total((r: DiagnosticAiDailyUsage): number => r.estimatedCostCny).toFixed(2) + '。\n' +
-      rows.map((r: DiagnosticAiDailyUsage): string => r.day + '：' + r.requestCount.toString() + ' 次，' +
-        tokenWords(r.promptTokens + r.completionTokens) + ' Token，¥' + r.estimatedCostCny.toFixed(2)).join('\n');
-  }
+  private appData(): AiChatAppData { return aiChatAppData(this.conversationStore); }
 
   // ------------------------------------------------------------------ documents
 
@@ -547,12 +597,12 @@ export struct AiChatView {
 
   private toggleReadAloud(message: AiChatMessage): void {
     if (this.speakingId === message.id) { AiReadAloud.stop(); return; }
-    void AiReadAloud.speak(message.id, message.text, (id: string): void => {
+    void AiReadAloud.speak(this.context(), this.owner, message.id, message.text, (id: string): void => {
       if (!this.alive) { return; }
       this.speakingId = id;
       // The list only re-keys its rows when the array changes: hand it a new one so 朗读 / 停止朗读 redraws.
       this.messages = this.messages.slice();
-    });
+    }).then((note: string): void => { if (note !== '' && this.alive) { this.toast(note); } });
   }
 
   private setAction(messageId: string, action: AiChatAction, status: string, result: string): void {
@@ -638,26 +688,9 @@ export struct AiChatView {
     void this.ask(last.text, true);
   }
 
-  private turnText(message: AiChatMessage): string {
-    if (message.role === 'user') {
-      return message.text + (message.attachments.length > 0 ? '\n（添加了文档：' + message.attachments.join('、') + '）' : '');
-    }
-    // What became of its confirm cards, so the model does not ask again for one already done.
-    const actions: string = message.actions.map((a: AiChatAction): string => a.title + '：' +
-      (a.status === 'done' ? '用户已确认，' + a.result : a.status === 'cancelled' ? '用户已取消' :
-        a.status === 'failed' ? '执行失败，' + a.result : '等待用户确认')).join('；');
-    return message.text + (message.documents.length > 0 ?
-      '\n（已生成文档：' + message.documents.map((d: AiDocument): string => d.name).join('、') + '）' : '') +
-      (actions !== '' ? '\n（确认卡片：' + actions + '）' : '');
-  }
+  private turnText(message: AiChatMessage): string { return aiChatTurnText(message); }
 
-  private preferenceText(): string {
-    const p: DiagnosticAiAssistantPreferences = this.preferences;
-    const tone: string = p.personality === 'warm' ? '亲切' : p.personality === 'concise' ? '简洁' :
-      p.personality === 'technical' ? '专业' : '平衡';
-    const length: string = p.verbosity === 'concise' ? '简短' : p.verbosity === 'detailed' ? '详细' : '适中';
-    return '助手名字：' + p.name + '；语气：' + tone + '；回答长度：' + length + '；语言：' + (p.language === 'en-US' ? '英文' : '中文');
-  }
+  private preferenceText(): string { return aiChatPreferenceText(this.preferences); }
 
   private async ask(question: string, retry: boolean): Promise<void> {
     if (!this.allowed()) { this.error = '当前账号没有 AI 助理权限'; return; }
@@ -751,11 +784,7 @@ export struct AiChatView {
   }
 
   private recordUsage(profile: DiagnosticAiProviderProfile, reply: AiChatReply): void {
-    const usage = reply.usage;
-    const cost: number = this.modelCatalog.estimateCost(profile.providerId, profile.modelId, usage.promptTokens,
-      usage.completionTokens, usage.cachedTokens);
-    this.conversationStore.recordUsage(usage.promptTokens, usage.completionTokens, usage.cachedTokens, cost,
-      profile.providerId, profile.modelId, usage.estimated === true, true);
+    aiChatRecordUsage(this.conversationStore, this.modelCatalog, profile, reply);
   }
 
   private startNewChat(): void {
@@ -1005,7 +1034,8 @@ export struct AiChatView {
         Stack() {
           SymbolGlyph($r(action.tool === 'call_phone' ? 'sys.symbol.phone_fill' : action.tool === 'send_email' ?
             'sys.symbol.envelope_fill' : action.tool === 'navigate' ? 'sys.symbol.location_up_fill' : action.tool === 'open_link' ?
-            'sys.symbol.link' : 'sys.symbol.alarm_fill')).fontSize(20)
+            'sys.symbol.link' : action.tool === 'change_setting' ? 'sys.symbol.gearshape_fill' :
+            action.tool === 'open_app_screen' ? 'sys.symbol.chevron_right' : 'sys.symbol.alarm_fill')).fontSize(20)
             .fontColor([action.status === 'done' ? '#34C759' : action.status === 'failed' ? '#FF9F0A' : '#4A8DFF'])
         }.width(42).height(42).borderRadius(12).backgroundColor('#2C2C2E')
         Column({ space: 2 }) {
@@ -1164,6 +1194,29 @@ export struct AiChatView {
     }
   }
 
+  /** With nothing typed and AI 语音 on, the send button is the voice-mode button (as in ChatGPT and Siri). */
+  @Builder private sendOrVoice(active: boolean) {
+    if (this.voiceEnabled && !active && !this.busy && this.draft.trim() === '' && AiVoiceInput.available()) {
+      Stack() {
+        SymbolGlyph($r('sys.symbol.waveform_1')).fontSize(18).fontColor(['#000000'])
+      }
+      .width(40).height(40).borderRadius(20).backgroundColor('#FFFFFF')
+      .accessibilityText('语音模式')
+      .onClick((): void => { this.startVoiceMode(); })
+      .transition(TransitionEffect.scale({ x: 0.6, y: 0.6 }).combine(TransitionEffect.OPACITY))
+    } else {
+      AiSendButton({ active: active, buttonSize: 40, onTap: (): void => { this.submit(); } })
+    }
+  }
+
+  private startVoiceMode(): void {
+    if (this.listening) { AiVoiceInput.cancel(); this.listening = false; }
+    AiReadAloud.stop();
+    this.hideKeyboard();
+    this.persist();
+    AppStorage.setOrCreate(AI_VOICE_REQUEST, Date.now());
+  }
+
   @Builder private addButton() {
     Stack() {
       SymbolGlyph($r('sys.symbol.plus')).fontSize(18).fontColor(['#FFFFFF'])
@@ -1214,8 +1267,7 @@ export struct AiChatView {
         '添加文档或图片').fontSize(13).fontColor(this.listening ? '#FF9F94' : '#8E8E93').layoutWeight(1)
         .onClick((): void => { void this.addDocuments(); })
       this.micButton(40)
-      AiSendButton({ active: (this.draft.trim() !== '' || this.pending.length > 0) && !this.importing,
-        buttonSize: 40, onTap: (): void => { this.submit(); } })
+      this.sendOrVoice((this.draft.trim() !== '' || this.pending.length > 0) && !this.importing)
     }.width('100%')
     Text(this.privacyLine()).fontSize(11).lineHeight(16).fontColor('#8E8E93').width('100%')
   }
@@ -1279,8 +1331,10 @@ export struct AiChatView {
     } else {
       this.skillRow()
     }
+    // Bottom-aligned so the buttons stay at the bottom as the field grows; on one line the field (44) and the
+    // buttons (40) share a centre line, hence the 2 under each button.
     Row({ space: 10 }) {
-      this.addButton()
+      Column() { this.addButton() }.margin({ bottom: 2 })
       AiInputCapsule() {
         TextArea({ placeholder: this.listening ? '正在听…' : '继续聊…', text: this.draft })
           .id('aiChatDraft')
@@ -1293,8 +1347,9 @@ export struct AiChatView {
           .onSubmit((): void => { this.submit(); })
         this.micButton(32)
       }
-      AiSendButton({ active: (this.draft.trim() !== '' || this.pending.length > 0) && !this.busy && !this.importing,
-        buttonSize: 40, onTap: (): void => { this.submit(); } })
+      Column() {
+        this.sendOrVoice((this.draft.trim() !== '' || this.pending.length > 0) && !this.busy && !this.importing)
+      }.margin({ bottom: 2 })
     }.width('100%').alignItems(VerticalAlign.Bottom)
     .onAreaChange((_old: Area, area: Area): void => {
       const height: number = Number(area.height);

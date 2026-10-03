@@ -1,10 +1,13 @@
 import { ProBadge, proBadgeSummary } from '../components/ProBadge';
 import { AiIsland } from '../components/diagnosticAi/AiIsland';
+import { AI_VOICE_HOLD_EVENT, AiVoiceIsland } from '../components/diagnosticAi/AiVoiceIsland';
+import { AI_VOICE_ENABLED, AiVoiceSettings } from '../services/diagnosticAi/AiVoiceSettings';
+import { AI_APP_ACTION_REQUEST } from '../services/diagnosticAi/AiBridgeKeys';
 import { DiagnosticAiMotionStore } from '../services/diagnosticAi/DiagnosticAiMotionPolicy';
 import { DiagnosticAiSettingsBridge } from '../services/diagnosticAi/DiagnosticAiSettingsActionPolicy';
 import { AiTriageHost, DiagnosticAiHostBridge } from '../services/diagnosticAi/DiagnosticAiTriagePolicy';
 import { RDP_CERTIFICATE_BYPASS, RDP_CERTIFICATE_CANCEL, RDP_CERTIFICATE_CONTINUE_ONCE, RDP_CERTIFICATE_TRUST, recordRdpCertificateDecision } from '../services/RdpDiagnosticEvents';
-import { DiagnosticAiAppActionId } from '../services/diagnosticAi/DiagnosticAiAppActionPolicy';
+import { DiagnosticAiAppActionId, diagnosticAiAppActionId } from '../services/diagnosticAi/DiagnosticAiAppActionPolicy';
 import { PRO_ORDER_PENDING_KEY } from '../services/ProIntroRegistry';
 import { settingsUsageGuidePages } from '../services/GuideContentRegistry';
 import { ProBadgeSettingsPanel, ProFeatureDetailPanel } from '../components/ProFeatureManagerPanel';
@@ -810,7 +813,7 @@ import { DiagnosticAiOrb } from '../components/diagnosticAi/DiagnosticAiOrb';
 import { DiagnosticAiProfileStore } from '../services/diagnosticAi/DiagnosticAiProfileStore';
 import { DiagnosticAiAssistantPreferences, DiagnosticAiConversationSession, DiagnosticAiConversationStore, diagnosticAiSessionKind } from '../services/diagnosticAi/DiagnosticAiConversationStore';
 import { diagnosticAiResumeSession } from '../components/diagnosticAi/DiagnosticAiAssistantPanel';
-import { AiChatMemory, aiChatResumeSession } from '../components/diagnosticAi/AiChatView';
+import { AI_VOICE_REQUEST, AiChatMemory, aiChatResumeSession } from '../components/diagnosticAi/AiChatView';
 import { AI_SHARE_REQUEST_KEY, AiShareInbox, aiChatRefresh } from '../services/diagnosticAi/AiShareInbox';
 import { AiAppDataBridge, AiHostSummary } from '../services/diagnosticAi/AiAppDataBridge';
 import { DiagnosticAiOrbState } from '../services/diagnosticAi/DiagnosticAiModels';
@@ -980,6 +983,17 @@ struct HostListPage {
   @State aiIslandShown: boolean = false;
   /** The AI island floats as a capsule: its overlay lets every other touch reach the page. */
   @State aiIslandFloating: boolean = false;
+  /** AI 语音 (Beta): Siri-style voice mode over the page ('hands' from the chat, 'hold' from a long press). */
+  @State aiVoiceShown: boolean = false;
+  @State aiVoiceMode: string = 'hands';
+  /** Voice mode starts from the closing panel's capsule ('panel') or from the camera island ('island'). */
+  @State aiVoiceStart: string = 'island';
+  /** The island opens straight into the panel (taking over from the voice card) instead of its capsule sequence. */
+  @State aiIslandQuickOpen: boolean = false;
+  @StorageProp(AI_VOICE_REQUEST) @Watch('onAiVoiceRequest') aiVoiceRequest: number = 0;
+  @StorageProp(AI_VOICE_HOLD_EVENT) @Watch('onAiVoiceHold') aiVoiceHold: string = '';
+  /** The AI chat (or voice mode) asks for an app screen: the island opens it the usual way, or the page does. */
+  @StorageProp(AI_APP_ACTION_REQUEST) @Watch('onAiAppActionRequest') aiAppActionRequest: string = '';
   /** Debug builds only: Pro state override (跟随真实 / 模拟开启 / 模拟关闭) and the real state behind it. */
   @State proDebugMode: string = 'real';
   @State proRealStateText: string = '';
@@ -2181,6 +2195,7 @@ struct HostListPage {
     this.rdpAdvancedDisplayVisible = ProEntries.visible(PRO_RDP_ADVANCED_DISPLAY_FEATURE, this.rdpAdvancedDisplayContext());
     this.diagnosticAiConfigVisible = ProEntries.visible(PRO_DIAGNOSTICS_PROVIDER_FEATURE);
     this.diagnosticAiAssistantVisible = ProEntries.visible(PRO_DIAGNOSTICS_ASSISTANT_FEATURE);
+    this.refreshAiVoiceFlags();
     if (this.diagnosticAiAssistantVisible && AiShareInbox.pending()) { this.openSharedToAi(); }
     const orgVisible: boolean = ProEntries.visible('pro.hostManagement');
     const workspacesVisible: boolean = ProEntries.visible('pro.workspaces') &&
@@ -5552,9 +5567,10 @@ struct HostListPage {
       return settingsSecurityExpandedMaxHeight(SETTINGS_SECURITY_ACTION_ROW_COUNT);
     }
     if (section === SETTINGS_SECTION_DIAGNOSTICS) {
-      // Card title plus configuration, assistant, usage, personalization, session history, AI 动效 and classic-log
-      // rows. Keep enough room for the complete card; the native settings page remains independently scrollable.
-      return 545;
+      // Card title plus configuration, assistant, usage, personalization, session history, tools, AI 语音, AI 动效 and
+      // classic-log rows. Keep enough room for the complete card; the native settings page remains independently
+      // scrollable.
+      return 680;
     }
     if (section === SETTINGS_SECTION_TUTORIAL) {
       // Five action rows (更新日志, 快速认识, Pro 介绍, 操作引导, 连接前准备) plus the card title.
@@ -14232,7 +14248,11 @@ struct HostListPage {
         AiIsland({
           topInset: this.topSafeHeightVp(),
           deviceClass: this.isDesktopDevice ? 'pc' : this.breakpoint === 'sm' ? 'phone' : 'pad',
-          onDismissed: (): void => { this.aiIslandShown = false; this.aiIslandFloating = false; this.diagnosticAiOrbState = 'idle'; },
+          quickOpen: this.aiIslandQuickOpen,
+          onDismissed: (): void => {
+            this.aiIslandShown = false; this.aiIslandFloating = false; this.aiIslandQuickOpen = false;
+            this.diagnosticAiOrbState = 'idle';
+          },
           onFloatingChanged: (floating: boolean): void => { this.aiIslandFloating = floating; },
           onActivityChanged: (active: boolean): void => { this.diagnosticAiOrbState = active ? 'thinking' : 'open'; },
           onCaptureStateChanged: (capturing: boolean): void => {
@@ -14248,6 +14268,23 @@ struct HostListPage {
           }
         }).width('100%').height('100%').position({ x: 0, y: 0 }).zIndex(40)
         .hitTestBehavior(this.aiIslandFloating ? HitTestMode.Transparent : HitTestMode.Default)
+      }
+
+      if (this.aiVoiceShown && this.diagnosticAiAssistantVisible) {
+        AiVoiceIsland({
+          owner: this.assistantOwner(),
+          topInset: this.topSafeHeightVp(),
+          deviceClass: this.isDesktopDevice ? 'pc' : this.breakpoint === 'sm' ? 'phone' : 'pad',
+          mode: this.aiVoiceMode,
+          startShape: this.aiVoiceStart,
+          onDismissed: (): void => { this.aiVoiceShown = false; },
+          onOpenChat: (): void => {
+            // The panel opens at once under the voice card, which then dissolves into it.
+            this.aiIslandQuickOpen = true;
+            if (!this.aiIslandShown) { this.aiIslandShown = true; }
+            this.diagnosticAiOrbState = 'open';
+          }
+        }).width('100%').height('100%').position({ x: 0, y: 0 }).zIndex(41)
       }
 
       // Start ArkWeb/xterm while the host list is visible so opening an SSH
@@ -18738,6 +18775,8 @@ struct HostListPage {
                 this.cardDivider()
                 this.diagnosticSubRow(7)
                 this.cardDivider()
+                this.diagnosticSubRow(8)
+                this.cardDivider()
                 this.diagnosticSubRow(6)
                 this.cardDivider()
               }
@@ -20522,6 +20561,46 @@ struct HostListPage {
     }
   }
 
+  /** AI 语音's switches (on, 按住说话) for this account, mirrored for the chat and the AI button. */
+  private refreshAiVoiceFlags(): void {
+    try {
+      const settings: AiVoiceSettings = new AiVoiceSettings();
+      settings.init(getContext(this) as common.UIAbilityContext, this.assistantOwner());
+      settings.read();
+    } catch (_error) { /* stays off */ }
+  }
+
+  private onAiVoiceRequest(): void {
+    if (this.aiVoiceRequest > 0 && AppStorage.get<boolean>(AI_VOICE_ENABLED) === true) { this.openAiVoice('hands'); }
+  }
+
+  private onAiVoiceHold(): void {
+    if (this.aiVoiceHold.startsWith('down:') && !this.aiVoiceShown) { this.openAiVoice('hold'); }
+  }
+
+  private onAiAppActionRequest(): void {
+    const at: number = this.aiAppActionRequest.indexOf('@');
+    if (at <= 0 || !this.diagnosticAiAssistantVisible) { return; }
+    const id: DiagnosticAiAppActionId | null = diagnosticAiAppActionId(this.aiAppActionRequest.slice(0, at));
+    if (id === null) { return; }
+    // With the island open, it steps back to its status capsule and floats once the screen is up.
+    if (this.aiIslandShown && !this.aiIslandFloating) { AppStorage.setOrCreate('aiIsland.appAction', this.aiAppActionRequest); }
+    else { this.runAssistantAppAction(id); }
+  }
+
+  /** Voice mode takes over from the island (which folds away first). */
+  private openAiVoice(mode: string): void {
+    if (this.aiVoiceShown || !this.diagnosticAiAssistantVisible) { return; }
+    const islandOpen: boolean = this.aiIslandShown && !this.aiIslandFloating;
+    if (islandOpen) { AppStorage.setOrCreate('aiIsland.closeRequest', Date.now()); }
+    // From the panel: the droplet takes over from the capsule the panel gathers into as it closes.
+    setTimeout((): void => {
+      this.aiVoiceMode = mode;
+      this.aiVoiceStart = islandOpen ? 'panel' : 'island';
+      this.aiVoiceShown = true;
+    }, islandOpen ? 300 : 0);
+  }
+
   private onAiEntryOpenRequest(): void {
     if (this.aiEntryOpenRequest > 0) { this.openDiagnosticAiSection(1); }
   }
@@ -20576,19 +20655,27 @@ struct HostListPage {
       SymbolGlyph(kind === 0 ? $r('sys.symbol.gearshape_fill') : kind === 1 ? $r('sys.symbol.performance') :
         kind === 2 ? $r('sys.symbol.doc_plaintext') : kind === 3 ? $r('sys.symbol.performance') :
         kind === 4 ? $r('sys.symbol.person_crop_circle_fill') : kind === 6 ? $r('sys.symbol.wand_and_stars') :
-        kind === 7 ? $r('sys.symbol.puzzle_fill') : $r('sys.symbol.clock')).fontSize(22).fontColor([this.pal().text3])
+        kind === 7 ? $r('sys.symbol.puzzle_fill') : kind === 8 ? $r('sys.symbol.mic_fill_waves_left_and_right') :
+        $r('sys.symbol.clock')).fontSize(22).fontColor([this.pal().text3])
         .width(22).height(22).margin({ left: 9, right: 9 })
       Column() {
-        Text(kind === 0 ? '辅助 AI 配置' : kind === 1 ? '启动 AI 辅助' : kind === 2 ? '传统日志抓取' :
-          kind === 3 ? 'AI 用量监控' : kind === 4 ? 'AI 个性化设置' : kind === 6 ? 'AI 动效' : kind === 7 ? 'AI 工具与技能' :
-          'AI 对话记录')
-          .fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
-          .fontColor(this.pal().text).fontFamily(this.font())
+        Row({ space: 6 }) {
+          Text(kind === 0 ? '辅助 AI 配置' : kind === 1 ? '启动 AI 辅助' : kind === 2 ? '传统日志抓取' :
+            kind === 3 ? 'AI 用量监控' : kind === 4 ? 'AI 个性化设置' : kind === 6 ? 'AI 动效' : kind === 7 ? 'AI 工具与技能' :
+            kind === 8 ? 'AI 语音' : 'AI 对话记录')
+            .fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
+            .fontColor(this.pal().text).fontFamily(this.font())
+          if (kind === 8) {
+            Text('Beta').fontSize(10).fontWeight(FontWeight.Bold).fontColor(Color.White)
+              .padding({ left: 6, right: 6, top: 2, bottom: 2 }).borderRadius(6)
+              .linearGradient({ angle: 90, colors: [['#FF7A45', 0], ['#FF3D7F', 1]] })
+          }
+        }
         Text(kind === 0 ? '选择 AI 服务商、保存密钥并选择模型' : kind === 1 ? '询问应用、协助设置、诊断问题和生成反馈草稿' :
           kind === 2 ? '脱敏诊断日志的抓取、预览、保存与导出' : kind === 3 ? '按时间和订阅查看请求、Token 与费用' :
           kind === 4 ? '助手名称、性格、风格和本机用户画像记忆' :
           kind === 6 ? '思考动画、悬浮球、完成动画和展开方式' : kind === 7 ? '聊天可用的工具、技能库和自定义技能' :
-          '搜索、继续或删除历史对话')
+          kind === 8 ? '语音模式、按住说话和朗读引擎' : '搜索、继续或删除历史对话')
           .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
           .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).margin({ top: 2 })
       }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })

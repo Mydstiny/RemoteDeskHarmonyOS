@@ -11,7 +11,8 @@ import { diagnosticAiSettingIntents } from './DiagnosticAiSettingsActionPolicy';
 const APP_WORDS: string[] = ['remotedesktop', 'remote desktop', '远程桌面', 'rdp', 'rustdesk', 'vnc', 'moonlight', 'sunshine',
   'sftp', 'ssh', '串流', '主机列表', '这台主机', '我的主机', '添加主机', '连接主机', '远程连接', '远程控制', '抓日志', '抓取日志', '诊断日志',
   '这个应用', '这个app', '本应用', '这个软件', 'ai 配置', 'ai配置', '辅助 ai', '云同步', '主机同步', '跳板机', '网关', '剪贴板同步',
-  '远端', '被控端', '控制端', '私钥', '主机指纹'];
+  '远端', '被控端', '控制端', '私钥', '主机指纹', 'ai设置', 'ai 设置', 'ai 助理', 'ai助理', 'ai 动效', 'ai动效', '思考动画',
+  '悬浮球', 'ai 语音', 'ai语音', '朗读引擎', '深色模式', '浅色模式', '主题色', '光晕', '应用图标', '设置页'];
 
 /** Words of a general task the chat's tools are for. */
 const TASK_WORDS: string[] = ['写一', '写个', '写份', '写篇', '帮我写', '起草', '草拟', '润色', '改写', '续写', '扩写', '缩写', '翻译',

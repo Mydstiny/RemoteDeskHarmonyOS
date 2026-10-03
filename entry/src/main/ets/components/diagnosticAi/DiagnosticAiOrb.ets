@@ -1,5 +1,10 @@
+import { curves } from '@kit.ArkUI';
 import { DiagnosticAiOrbState } from '../../services/diagnosticAi/DiagnosticAiModels';
 import { AiLiquidGlassButton } from './AiIslandChrome';
+import { AI_VOICE_HOLD } from '../../services/diagnosticAi/AiVoiceSettings';
+
+/** AppStorage: 按住说话 presses ('down:<time>' / 'up:<time>'); AiVoiceIsland listens while it is held. */
+const AI_VOICE_HOLD_EVENT: string = 'aiVoice.hold';
 
 /**
  * Entry to 启动 AI 辅助 at the right end of the 远程主机 title row: a liquid-glass (沉浸光感) round button with the
@@ -12,6 +17,9 @@ export struct DiagnosticAiOrb {
   @Prop reducedMotion: boolean = false;
   @StorageProp('diagnosticAiReducedMotion') storedReducedMotion: boolean = false;
   @StorageProp('currentTheme') theme: string = 'light';
+  /** AI 语音 (Beta) › 按住 AI 按钮说话 is on. */
+  @StorageProp(AI_VOICE_HOLD) holdToTalk: boolean = false;
+  @State private held: boolean = false;
   onOpen: () => void = (): void => {};
 
   private label(): string {
@@ -22,6 +30,12 @@ export struct DiagnosticAiOrb {
   }
   private working(): boolean { return this.state === 'capturing' || this.state === 'thinking'; }
 
+  private release(): void {
+    if (!this.held) { return; }
+    this.held = false;
+    AppStorage.setOrCreate(AI_VOICE_HOLD_EVENT, 'up:' + Date.now().toString());
+  }
+
   build() {
     if (this.visible) {
       Stack() {
@@ -29,9 +43,20 @@ export struct DiagnosticAiOrb {
           reducedMotion: this.reducedMotion || this.storedReducedMotion })
       }
       .width(40).height(40)
+      .scale({ x: this.held ? 1.18 : 1, y: this.held ? 1.18 : 1 })
+      .animation({ curve: curves.springMotion(0.35, 0.65) })
       .responseRegion({ x: -4, y: -4, width: 48, height: 48 })
       .accessibilityText(this.label())
       .onClick((): void => { this.onOpen(); })
+      // 按住说话: hold to talk, let go to send.
+      .gesture(LongPressGesture({ duration: 380 })
+        .onAction((): void => {
+          if (!this.holdToTalk) { return; }
+          this.held = true;
+          AppStorage.setOrCreate(AI_VOICE_HOLD_EVENT, 'down:' + Date.now().toString());
+        })
+        .onActionEnd((): void => { this.release(); })
+        .onActionCancel((): void => { this.release(); }))
     }
   }
 }

@@ -28,10 +28,12 @@ import { AccountSessionCoordinator } from '../../services/AccountSessionCoordina
 import { DiagnosticAiAppAction, DiagnosticAiAppActionId, diagnosticAiAppActionLabel, diagnosticAiAppActionRequiresConfirmation, diagnosticAiAppActionsForSteps } from '../../services/diagnosticAi/DiagnosticAiAppActionPolicy';
 import { DiagnosticAiAssistantPreferences, DiagnosticAiConversationSession, DiagnosticAiConversationStore, DiagnosticAiConversationTurn } from '../../services/diagnosticAi/DiagnosticAiConversationStore';
 import { DiagnosticAiModelCatalog } from '../../services/diagnosticAi/DiagnosticAiModelCatalog';
-import { AI_CHAT_HEADER_HEIGHT, AiChatMemory, AiChatView } from './AiChatView';
+import { AI_CHAT_HEADER_HEIGHT, AI_VOICE_REQUEST, AiChatMemory, AiChatView } from './AiChatView';
+import { AI_VOICE_ENABLED } from '../../services/diagnosticAi/AiVoiceSettings';
 import { AiSegmented } from './AiSegmented';
 import { aiRouteSuggestion } from '../../services/diagnosticAi/AiChatRoutePolicy';
 import { AI_CHAT_REFRESH_KEY } from '../../services/diagnosticAi/AiShareInbox';
+import { AI_ASSISTANT_HANDOFF } from '../../services/diagnosticAi/AiBridgeKeys';
 
 /** A suggested question shown as a pill in the island; it follows what the user is asking about. */
 class AiSuggestion {
@@ -385,6 +387,9 @@ export struct DiagnosticAiAssistantPanel {
   @State private routeQuestion: string = '';
   private routeBypass: string = '';
   @StorageProp(AI_CHAT_REFRESH_KEY) @Watch('onChatRefresh') chatRefresh: number = 0;
+  @StorageProp(AI_ASSISTANT_HANDOFF) @Watch('onAssistantHandoff') assistantHandoff: string = '';
+  /** AI 语音 (Beta) is on: with nothing typed, 助理's send button is the voice-mode button too. */
+  @StorageProp(AI_VOICE_ENABLED) voiceEnabled: boolean = false;
   private suggestionTimer: number = -1;
   private readonly capture: DiagnosticAiCaptureOrchestrator = DiagnosticAiCaptureOrchestrator.getInstance();
   private readonly agent: DiagnosticAiAgentService = new DiagnosticAiAgentService();
@@ -556,6 +561,37 @@ export struct DiagnosticAiAssistantPanel {
       this.recoverPendingBundle();
     }
     this.timer = setInterval((): void => { this.syncCapture(); }, 500);
+    // A question handed to 助理 (by the chat's tool or by voice mode) just before this panel opened: ask it here.
+    const stamp: number = parseInt(this.assistantHandoff.split('|')[0], 10) || 0;
+    if (this.siriMode && !this.mini && this.assistantHandoff !== DiagnosticAiAssistantPanel.handledHandoff &&
+      Date.now() - stamp < 20000) {
+      this.chatMode = false;
+      this.onAssistantHandoff();
+    }
+  }
+
+  /** The value of the last question taken over from 聊天 (so a reopened panel does not ask it again). */
+  private static handledHandoff: string = '';
+
+  /** Take over a question in 助理 — once the chat request that handed it over has finished. */
+  private onAssistantHandoff(): void {
+    const value: string = this.assistantHandoff;
+    const bar: number = value.indexOf('|');
+    if (!this.siriMode || this.mini || bar <= 0 || value === DiagnosticAiAssistantPanel.handledHandoff) { return; }
+    DiagnosticAiAssistantPanel.handledHandoff = value;
+    const question: string = value.slice(bar + 1);
+    let waited: number = 0;
+    const attempt = (): void => {
+      if (!this.alive) { return; }
+      this.chatBusy = AiChatMemory.requestId !== '';
+      if ((this.busy || this.capturing() || this.chatBusy) && waited < 60000) {
+        waited += 400;
+        setTimeout(attempt, 400);
+        return;
+      }
+      this.switchMode('assistant', question);
+    };
+    setTimeout(attempt, 420);
   }
 
   aboutToDisappear(): void {
@@ -2064,9 +2100,26 @@ export struct DiagnosticAiAssistantPanel {
           .onChange((value: string): void => { this.draftQuestion = value; this.followTyping(value); })
           .onSubmit((): void => { this.submitDraftQuestion(); })
       }
-      AiSendButton({ active: this.draftQuestion.trim() !== '', buttonSize: 38,
-        onTap: (): void => { this.submitDraftQuestion(); } })
+      this.sendOrVoice(this.draftQuestion.trim() !== '', 38, (): void => { this.submitDraftQuestion(); })
     }.width('100%').alignItems(VerticalAlign.Bottom)
+  }
+
+  /** The send button, or — nothing typed, AI 语音 on — the voice-mode button (as in 聊天). */
+  @Builder private sendOrVoice(active: boolean, size: number, send: () => void) {
+    if (this.voiceEnabled && !active && !this.busy && !this.mini) {
+      Stack() {
+        SymbolGlyph($r('sys.symbol.waveform_1')).fontSize(size * 0.45).fontColor(['#000000'])
+      }
+      .width(size).height(size).borderRadius(size / 2).backgroundColor('#FFFFFF')
+      .accessibilityText('语音模式')
+      .onClick((): void => {
+        try { inputMethod.getController().hideTextInput(); } catch (_error) { /* keyboard already down */ }
+        AppStorage.setOrCreate(AI_VOICE_REQUEST, Date.now());
+      })
+      .transition(TransitionEffect.scale({ x: 0.6, y: 0.6 }).combine(TransitionEffect.OPACITY))
+    } else {
+      AiSendButton({ active: active, buttonSize: size, onTap: send })
+    }
   }
 
   private quickQuestion(mode: DiagnosticAiAgentMode, question: string): void {
@@ -2232,8 +2285,7 @@ export struct DiagnosticAiAssistantPanel {
                 .transition(this.pillTransition(index))
             }, (item: AiSuggestion): string => item.label)
           }.layoutWeight(1)
-          AiSendButton({ active: this.question.trim() !== '', buttonSize: 36,
-            onTap: (): void => { this.submitQuestion(); } })
+          Stack() { this.sendOrVoice(this.question.trim() !== '', 36, (): void => { this.submitQuestion(); }) }
             .transition(TransitionEffect.OPACITY.combine(TransitionEffect.scale({ x: 0.4, y: 0.4 }))
               .animation({ curve: curves.springMotion(0.6, 0.55), delay: 260 + 3 * 130 }))
         }.width('100%').alignItems(VerticalAlign.Bottom)

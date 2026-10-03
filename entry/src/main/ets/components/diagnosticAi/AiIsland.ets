@@ -1,7 +1,7 @@
 import { ComponentContent, curves, display, promptAction, window } from '@kit.ArkUI';
 import { inputMethod } from '@kit.IMEKit';
 import { DiagnosticAiAssistantPanel } from './DiagnosticAiAssistantPanel';
-import { DiagnosticAiAppActionId, diagnosticAiAppActionLabel, diagnosticAiAppActionMode } from '../../services/diagnosticAi/DiagnosticAiAppActionPolicy';
+import { DiagnosticAiAppActionId, diagnosticAiAppActionId, diagnosticAiAppActionLabel, diagnosticAiAppActionMode } from '../../services/diagnosticAi/DiagnosticAiAppActionPolicy';
 import { AI_FLOAT_ORB, AiIslandGlass } from './AiIslandChrome';
 import { AiThinkingIndicator } from './AiMotionViews';
 import { AiLiftController, aiLiftLayer } from './AiLiftLayer';
@@ -46,9 +46,15 @@ const AI_PHONE_ISLAND_WIDTH: number = 296; // phone capsule: room for a system i
 @Component
 export struct AiIsland {
   @StorageProp('diagnosticAiReducedMotion') reducedMotion: boolean = false;
+  /** Another surface (voice mode) is taking over: fold away as a close would. */
+  @StorageProp('aiIsland.closeRequest') @Watch('onCloseRequest') closeRequest: number = 0;
+  /** The chat asked for an app screen ('<id>@<time>'): open it as the assistant's own steps do. */
+  @StorageProp('aiIsland.appAction') @Watch('onAppActionRequest') appActionRequest: string = '';
   /** Distance from the window top to the safe area (status bar); used only where there is no island anchor. */
   @Prop topInset: number = 24;
   @Prop deviceClass: DiagnosticAiDeviceClass = 'phone';
+  /** Open straight into the panel (taking over from the voice card at the same place) rather than through the capsules. */
+  @Prop quickOpen: boolean = false;
   onDismissed: () => void = (): void => {};
   /** Floating or not: the host lets touches through its overlay node only while the island floats. */
   onFloatingChanged: (floating: boolean) => void = (_floating: boolean): void => {};
@@ -117,6 +123,8 @@ export struct AiIsland {
   private statusBarHidden: boolean = false;
   /** Height of the soft keyboard (vp); the open panel always ends above it. */
   @State private keyboardHeight: number = 0;
+  /** Folding away for voice mode (AiVoiceIsland takes over from the capsule). */
+  @State private handingOver: boolean = false;
   /** The island's own orb (capture, floating action): its one-time hint. */
   @State private compactHint: boolean = false;
   /**
@@ -235,6 +243,7 @@ export struct AiIsland {
   }
 
   private open(): void {
+    if (this.quickOpen) { this.openDirect('liquid'); return; }
     const style: string = aiMotionStyle(AI_MOTION_OPEN);
     if (style !== 'morph') { this.openDirect(style); return; }
     this.morph((): void => { this.stage = 1; });
@@ -522,6 +531,20 @@ export struct AiIsland {
     this.morph((): void => { this.cardHeight = height; });
   }
 
+  private onAppActionRequest(): void {
+    const at: number = this.appActionRequest.indexOf('@');
+    if (at <= 0 || this.closing) { return; }
+    const id: DiagnosticAiAppActionId | null = diagnosticAiAppActionId(this.appActionRequest.slice(0, at));
+    if (id !== null) { this.runAppAction(id); }
+  }
+
+  /** Voice mode is taking over: fold away quicker, without the ring, so the droplet grows out of a plain capsule. */
+  private onCloseRequest(): void {
+    if (this.closeRequest <= 0) { return; }
+    this.handingOver = true;
+    this.close();
+  }
+
   close(): void {
     // Never stop a running capture or analysis by folding away: float instead.
     if (this.working) { this.setCompact(true); return; }
@@ -531,11 +554,13 @@ export struct AiIsland {
     try { inputMethod.getController().hideTextInput(); } catch (_error) { /* keyboard already down */ }
     this.setStatusBarHidden(false);
     this.fade(140, 0, (): void => { this.contentOpacity = 0; this.contentBlur = 10; this.statusOpacity = 0; });
-    this.later(80, (): void => { this.morph((): void => { this.stage = 1; }); });
-    this.later(520, (): void => {
-      this.getUIContext().animateTo({ duration: 220, curve: Curve.EaseIn }, (): void => { this.stage = 0; });
+    this.later(this.handingOver ? 60 : 80, (): void => { this.morph((): void => { this.stage = 1; }); });
+    // Handing over, the capsule leaves as the droplet (mounted at ~300 ms over it) starts to swell.
+    this.later(this.handingOver ? 330 : 520, (): void => {
+      this.getUIContext().animateTo({ duration: this.handingOver ? 160 : 220, curve: Curve.EaseIn },
+        (): void => { this.stage = 0; });
     });
-    this.later(760, (): void => { this.onDismissed(); });
+    this.later(this.handingOver ? 520 : 760, (): void => { this.onDismissed(); });
   }
 
   private panelWidth(): number {
@@ -635,7 +660,7 @@ export struct AiIsland {
         .opacity(this.statusShape() ? this.statusOpacity : 0).blur(this.statusBlur)
     }
     .width(this.glassWidth()).height(this.glassHeight())
-    .opacity(this.showPanel() && this.executing === '' ? 0 : 1)
+    .opacity(this.handingOver || (this.showPanel() && this.executing === '') ? 0 : 1)
     .hitTestBehavior(HitTestMode.None)
   }
 

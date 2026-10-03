@@ -11,6 +11,9 @@ import { call } from '@kit.TelephonyKit';
 import { photoAccessHelper } from '@kit.MediaLibraryKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { aiRecognizeImageFile } from './AiDocumentService';
+import { diagnosticAiAppActionId, diagnosticAiAppActionLabel } from './DiagnosticAiAppActionPolicy';
+import { AI_APP_ACTION_REQUEST } from './AiBridgeKeys';
+import { diagnosticAiApplySetting, diagnosticAiSettingActionText, diagnosticAiSettingCurrent, diagnosticAiSettingValueLabel } from './DiagnosticAiSettingsActionPolicy';
 
 /**
  * 系统能力 for the AI chat. Read-only tools and tools that open a system screen the user confirms in (the calendar's
@@ -450,6 +453,22 @@ export async function aiRunAction(context: common.UIAbilityContext, action: AiCh
   if (action.tool === 'call_phone') {
     await call.makeCall(field(input, 'number').replace(/[^\d+]/g, ''));
     return '已打开拨号';
+  }
+  if (action.tool === 'change_setting') {
+    const settingId: string = field(input, 'setting_id');
+    const value: string = field(input, 'value');
+    if (diagnosticAiSettingCurrent(settingId) === value) {
+      return '「' + diagnosticAiSettingActionText(settingId) + '」已经是「' + diagnosticAiSettingValueLabel(settingId, value) + '」';
+    }
+    if (!diagnosticAiApplySetting(settingId, value)) { throw new Error('设置没有改成功，请到设置里手动修改'); }
+    return '已把「' + diagnosticAiSettingActionText(settingId) + '」改为「' + diagnosticAiSettingValueLabel(settingId, value) + '」';
+  }
+  if (action.tool === 'open_app_screen') {
+    const screen: string = field(input, 'screen');
+    const id = diagnosticAiAppActionId(screen);
+    if (id === null) { throw new Error('没有这个页面'); }
+    AppStorage.setOrCreate(AI_APP_ACTION_REQUEST, id + '@' + Date.now().toString());
+    return '已打开「' + diagnosticAiAppActionLabel(id) + '」';
   }
   if (action.tool === 'send_email') { return await sendEmail(context, input); }
   if (action.tool === 'navigate') { return await navigate(context, input); }

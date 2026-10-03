@@ -7,6 +7,7 @@ import { AppUiMetrics } from '../../common/AppUiMetrics';
 import { DiagnosticAiAssistantPanel } from './DiagnosticAiAssistantPanel';
 import { AiSegmented } from './AiSegmented';
 import { AiSkillsSettingsPanel } from './AiSkillsSettingsPanel';
+import { AiVoiceSettingsPanel } from './AiVoiceSettingsPanel';
 import { DiagnosticAiAuthMode, DiagnosticAiModelInfo, DiagnosticAiModelPriceEntry, DiagnosticAiProviderManifest, DiagnosticAiProviderProfile, DiagnosticAiSettings } from '../../services/diagnosticAi/DiagnosticAiModels';
 import { diagnosticAiHarmonyLocalDeviceSupported, diagnosticAiProviderCodingPlanAvailable, diagnosticAiProviderIsHarmonyLocal, diagnosticAiProviderManifests, diagnosticAiProviderNormalApiAvailable, diagnosticAiProviderSupportsDevice, HARMONY_LOCAL_MODEL_ID } from '../../services/diagnosticAi/DiagnosticAiProviderCatalog';
 import { diagnosticAiProviderManifest } from '../../services/diagnosticAi/DiagnosticAiProviderCatalog';
@@ -881,6 +882,7 @@ export struct DiagnosticAiSettingsSheet {
     if (this.section === 5) { return 'AI 对话记录'; }
     if (this.section === 6) { return 'AI 动效'; }
     if (this.section === 7) { return 'AI 工具与技能'; }
+    if (this.section === 8) { return 'AI 语音'; }
     return '辅助 AI 配置';
   }
   private headerDetail(): string {
@@ -890,6 +892,7 @@ export struct DiagnosticAiSettingsSheet {
     if (this.section === 5) { return '搜索、继续或删除历史对话'; }
     if (this.section === 6) { return '思考动画、悬浮球、完成动画和展开方式'; }
     if (this.section === 7) { return '聊天可用的工具、已安装的技能和技能库'; }
+    if (this.section === 8) { return 'Beta · 语音模式、按住说话和朗读引擎'; }
     return '选择 Provider、模型和数据外发策略';
   }
 
@@ -897,7 +900,7 @@ export struct DiagnosticAiSettingsSheet {
     Row({ space: 12 }) {
       Column() {
         SymbolGlyph(this.section === 1 ? $r('sys.symbol.performance') : this.section === 6 ? $r('sys.symbol.wand_and_stars') :
-          this.section === 7 ? $r('sys.symbol.puzzle_fill') :
+          this.section === 7 ? $r('sys.symbol.puzzle_fill') : this.section === 8 ? $r('sys.symbol.mic_fill_waves_left_and_right') :
           $r('sys.symbol.gearshape_fill'))
           .fontSize(20).fontColor([Color.White])
       }
@@ -1602,7 +1605,7 @@ export struct DiagnosticAiSettingsSheet {
     Column() {
         this.header()
         if ((this.section === 1 || this.section === 3 || this.section === 4 || this.section === 5 || this.section === 6 ||
-          this.section === 7) ?
+          this.section === 7 || this.section === 8) ?
           !this.assistantAllowed() : !this.providerAllowed()) {
           this.lockedCard()
         } else if (this.section === 1) {
@@ -1623,6 +1626,10 @@ export struct DiagnosticAiSettingsSheet {
           AiMotionSettingsPanel()
         } else if (this.section === 7) {
           AiSkillsSettingsPanel({ owner: this.owner })
+        } else if (this.section === 8) {
+          Scroll() {
+            AiVoiceSettingsPanel({ owner: this.owner })
+          }.layoutWeight(1).width('100%').scrollBar(BarState.Off).edgeEffect(EdgeEffect.Spring).align(Alignment.Top)
         } else {
           this.configSection()
         }
