@@ -123,7 +123,8 @@ console.log('PASS routing suggests 助理 for app questions and 聊天 for gener
 const chat = load(D + 'AiChatService', {
   '@kit.PerformanceAnalysisKit': { hilog: { info() {}, warn() {} } },
   './DiagnosticAiProviderCatalog': {}, './DiagnosticAiProviderService': {}, './DiagnosticAiRequestLog': {},
-  './AiDocumentService': {}, './DiagnosticAiModels': {}
+  './AiDocumentService': {}, './DiagnosticAiModels': {},
+  './AiSystemTools': { AI_CONFIRM_TOOLS: [], aiActionFor: () => '', aiRunSystemTool: async () => '' }
 });
 const answer = '好的，周报如下。\n<document title="第 40 周周报" format="docx">\n# 周报\n- 完成\n</document>\n请查看。';
 assert.deepEqual(Array.from(chat.aiChatDocumentBlocks(answer), b => Array.from(b)), [['第 40 周周报', 'docx', '# 周报\n- 完成']]);
@@ -230,5 +231,37 @@ assert.equal(journalModule.ConnectionJournal.recent(7).length, 2);
 journalModule.ConnectionJournal.init({}, () => 'owner-b');
 assert.equal(journalModule.ConnectionJournal.recent(7).length, 0);
 console.log('PASS the connection log merges a quick reconnect and stays per account');
+
+const system = load(D + 'AiSystemTools', {
+  '@kit.AbilityKit': { abilityAccessCtrl: {}, common: {} }, '@kit.BasicServicesKit': {}, '@kit.CalendarKit': {},
+  '@kit.CameraKit': {}, '@kit.ContactsKit': {}, '@kit.LocationKit': {}, '@kit.NetworkKit': {}, '@kit.BackgroundTasksKit': {},
+  '@kit.NotificationKit': {}, '@kit.TelephonyKit': {}, '@kit.MediaLibraryKit': {},
+  '@kit.PerformanceAnalysisKit': { hilog: { info() {}, warn() {} } }, './AiDocumentService': {}
+});
+const t = system.aiParseLocalTime('2030-03-05 14:30');
+assert.equal(new Date(t).getFullYear(), 2030);
+assert.equal(new Date(t).getMonth(), 2);
+assert.equal(new Date(t).getHours(), 14);
+assert.equal(new Date(system.aiParseLocalTime('2030年3月5日')).getHours(), 9);
+assert.ok(Number.isNaN(system.aiParseLocalTime('明天下午')));
+assert.match(system.aiActionFor('a1', 'set_reminder', { title: '开会', time: '2001-01-01 09:00' }), /已经过去/);
+const timer = system.aiActionFor('a2', 'set_reminder', { title: '喝水', minutes: 30 });
+assert.equal(timer.title, '提醒：喝水');
+assert.equal(timer.status, 'pending');
+assert.equal(system.aiActionFor('a3', 'call_phone', { number: '138-1234-5678', name: '张三' }).detail, '138****5678');
+assert.match(system.aiActionFor('a4', 'open_link', { url: 'javascript:alert(1)' }), /http/);
+assert.equal(system.aiActionFor('a5', 'navigate', { destination: '虹桥机场' }).title, '导航到 虹桥机场');
+assert.ok(system.AI_CONFIRM_TOOLS.includes('call_phone') && !system.AI_CONFIRM_TOOLS.includes('read_calendar'));
+for (const tool of catalog.AI_TOOLS.filter(t => t.group === 'system')) {
+  assert.ok(['read_clipboard', 'copy_to_clipboard', 'device_status', 'get_location', 'read_calendar', 'add_calendar_event',
+    'pick_contact', 'add_contact', 'flashlight', 'recognize_image_text'].includes(tool.fn) || system.AI_CONFIRM_TOOLS.includes(tool.fn),
+    tool.fn + ' is neither run at once nor confirmed');
+}
+assert.match(system.aiActionErrorText({ code: 1700001, message: 'Notification is not enabled.' }), /通知被关闭/);
+assert.match(system.aiActionErrorText({ code: 1700002 }), /上限/);
+assert.equal(system.aiActionErrorText({ code: 16000050, message: 'Internal error.' }), '系统返回错误 16000050：Internal error.');
+assert.equal(system.aiActionErrorText(new Error('没有提醒权限')), '没有提醒权限');
+assert.equal(system.aiActionErrorText({}), '没有完成，请稍后再试');
+console.log('PASS system tools: local times, confirm cards (past time, masked number, http only) and every tool routed');
 
 fs.rmSync(tmp, { recursive: true, force: true });

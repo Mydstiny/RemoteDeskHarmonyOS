@@ -42,7 +42,7 @@
     },
     {
       "name": "pasteboard_permission_reason",
-      "value": "仅在您于远程桌面中粘贴文件时读取系统剪贴板中的文件地址，用于将所选文件传输到远端"
+      "value": "在远程桌面中粘贴文件时读取文件地址，以及在 AI 聊天中按您的要求读取刚复制的文字"
     },
     {
       "name": "datasync_reason",
@@ -503,6 +503,18 @@
     {
       "name": "search_hosts",
       "value": "搜索主机..."
+    },
+    {
+      "name": "calendar_read_reason",
+      "value": "AI 聊天按您的要求查看接下来的日程，帮您安排时间"
+    },
+    {
+      "name": "location_reason",
+      "value": "AI 聊天按您的要求获取大致位置，用于附近和出行建议"
+    },
+    {
+      "name": "microphone_reason",
+      "value": "语音输入时识别您说的话，识别在本机完成"
     }
   ]
 }

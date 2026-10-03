@@ -56,7 +56,50 @@ export const AI_TOOLS: AiToolSpec[] = [
     'app', true, functionJson('app_settings', '读取 RemoteDesktop 当前的设置项和取值（只读）。', '', '')),
   new AiToolSpec('app.usage', 'ai_usage', 'AI 用量', '最近的 AI 请求次数、Token 和估算费用',
     'app', true, functionJson('ai_usage', '读取最近若干天的 AI 用量：请求次数、Token、估算费用。',
-      '"days":{"type":"integer","description":"最近几天，默认 7"}', ''))
+      '"days":{"type":"integer","description":"最近几天，默认 7"}', '')),
+  // 系统能力 — read-only ones and system confirm screens run at once; the rest wait for the user's 确认.
+  new AiToolSpec('system.clipboard', 'read_clipboard', '读取剪贴板', '读取你刚复制的文字（需要你允许读取剪贴板）',
+    'system', true, functionJson('read_clipboard', '读取用户剪贴板里的文字。用户说“刚复制的”“剪贴板里的”内容时使用。', '', '')),
+  new AiToolSpec('system.copy', 'copy_to_clipboard', '复制到剪贴板', '把译文、地址等结果直接复制好',
+    'system', true, functionJson('copy_to_clipboard', '把一段文字复制到用户剪贴板，方便粘贴到其他应用。',
+      '"text":{"type":"string","description":"要复制的文字"}', '"text"')),
+  new AiToolSpec('system.device', 'device_status', '设备状态', '电量、是否充电、网络类型、机型和当前时间',
+    'system', true, functionJson('device_status', '读取设备状态：电量、充电、网络类型、机型、系统版本和当前时间。', '', '')),
+  new AiToolSpec('system.location', 'get_location', '大致位置', '你所在的城市和区（需要你允许获取位置）',
+    'system', true, functionJson('get_location', '获取用户当前大致位置（城市、区、道路）。只在用户问附近、路线、当地相关的问题时使用。', '', '')),
+  new AiToolSpec('system.calendar.read', 'read_calendar', '读取日程', '查看本机日历里接下来的日程（需要你允许读取日历）',
+    'system', true, functionJson('read_calendar', '读取本机日历中从今天开始若干天的日程（目前可能只读得到本应用的日历，结果会说明读到的范围；读不到时不要断言用户没有安排）。',
+      '"days":{"type":"integer","description":"从今天起多少天，1 到 31，默认 7"}', '')),
+  new AiToolSpec('system.calendar.add', 'add_calendar_event', '添加日程', '在系统日历的新建页填好日程，由你点保存',
+    'system', true, functionJson('add_calendar_event', '打开系统日历的新建日程页面并填好内容，用户在系统页面里保存。',
+      '"title":{"type":"string","description":"日程标题"},"start":{"type":"string","description":"开始时间 YYYY-MM-DD HH:mm（本地时间）"},' +
+      '"end":{"type":"string","description":"结束时间 YYYY-MM-DD HH:mm，可省略"},"location":{"type":"string"},"notes":{"type":"string"},' +
+      '"allDay":{"type":"boolean"}', '"title","start"')),
+  new AiToolSpec('system.reminder', 'set_reminder', '定时提醒', '到点弹出提醒；先显示确认卡片，你点确认才设置',
+    'system', true, functionJson('set_reminder', '设置一个提醒。会先在对话里显示确认卡片，用户确认后才设置。',
+      '"title":{"type":"string","description":"提醒内容"},"time":{"type":"string","description":"提醒时间 YYYY-MM-DD HH:mm（本地时间）"},' +
+      '"minutes":{"type":"integer","description":"或者多少分钟后提醒"},"notes":{"type":"string"}', '"title"')),
+  new AiToolSpec('system.contact.pick', 'pick_contact', '选择联系人', '弹出通讯录让你选一个人，AI 只拿到你选的那一个',
+    'system', true, functionJson('pick_contact', '弹出系统通讯录让用户选择一个联系人，返回姓名、电话和邮箱。需要某人的电话或邮箱时使用。', '', '')),
+  new AiToolSpec('system.contact.add', 'add_contact', '新建联系人', '在系统通讯录的新建页填好信息，由你点保存',
+    'system', true, functionJson('add_contact', '打开系统新建联系人页面并填好信息，用户在系统页面里保存。',
+      '"name":{"type":"string"},"phone":{"type":"string"},"email":{"type":"string"},"company":{"type":"string"}', '"name"')),
+  new AiToolSpec('system.call', 'call_phone', '打电话', '先显示确认卡片，确认后打开拨号',
+    'system', true, functionJson('call_phone', '给某个号码打电话。会先显示确认卡片，用户确认后打开拨号界面。',
+      '"number":{"type":"string","description":"电话号码"},"name":{"type":"string","description":"对方称呼"}', '"number"')),
+  new AiToolSpec('system.mail', 'send_email', '写邮件', '在邮件应用里写好邮件，由你检查后发送',
+    'system', true, functionJson('send_email', '在邮件应用里写好一封邮件（收件人、主题、正文），用户检查后自己发送。会先显示确认卡片。',
+      '"to":{"type":"string","description":"收件人邮箱，可省略"},"subject":{"type":"string"},"body":{"type":"string"}', '"subject","body"')),
+  new AiToolSpec('system.navigate', 'navigate', '导航', '在地图应用里搜索目的地；先显示确认卡片',
+    'system', true, functionJson('navigate', '在地图应用里搜索并导航到一个地点。会先显示确认卡片。',
+      '"destination":{"type":"string","description":"目的地名称或地址"}', '"destination"')),
+  new AiToolSpec('system.link', 'open_link', '打开网页', '用浏览器打开网址；先显示确认卡片',
+    'system', true, functionJson('open_link', '用浏览器打开一个网址。会先显示确认卡片。',
+      '"url":{"type":"string","description":"http 或 https 网址"},"title":{"type":"string"}', '"url"')),
+  new AiToolSpec('system.flashlight', 'flashlight', '手电筒', '打开或关闭手电筒',
+    'system', true, functionJson('flashlight', '打开或关闭手电筒。', '"on":{"type":"boolean","description":"true 打开，false 关闭"}', '"on"')),
+  new AiToolSpec('system.ocr', 'recognize_image_text', '识别图片文字', '从相册选一张图片，识别里面的文字（在本机完成）',
+    'system', true, functionJson('recognize_image_text', '让用户从相册选择一张图片（截图、照片），在本机识别其中的文字并返回。', '', ''))
 ];
 
 export function aiToolSpec(id: string): AiToolSpec | undefined {
@@ -131,14 +174,26 @@ export const AI_SKILL_LIBRARY: AiSkill[] = [
   new AiSkill('study-plan', '学习计划', '按目标和时间排出学习或工作计划',
     '先确认目标、可用时间和截止日期（不足时给出合理假设并说明），再按周或按天给出计划表，每项有具体产出；用表格展示。',
     '帮我做一个学习计划，目标是：', ['计划', '安排', '日程', '学习'], 'builtin'),
+  new AiSkill('schedule', '日程安排', '查看日程、安排会议并加到日历',
+    '先调用 read_calendar 看用户这几天已有的安排，避开冲突给出建议时间；用户确定后调用 add_calendar_event 打开系统日历填好日程。' +
+    '时间用用户本地时间，“明天”“下周三”按今天的日期换算。', '帮我安排一下：', ['日程', '日历', '会议', '安排', '有空'], 'builtin'),
+  new AiSkill('remind-me', '提醒我', '到点提醒你做某件事',
+    '把用户说的时间换算成具体时间（YYYY-MM-DD HH:mm）或多少分钟后，调用 set_reminder；提醒内容写清楚要做什么。',
+    '提醒我', ['提醒', '记得', '别忘了', '闹钟', '分钟后'], 'builtin'),
+  new AiSkill('clipboard', '处理剪贴板', '翻译、总结或改写你刚复制的内容',
+    '先调用 read_clipboard 读取用户刚复制的内容，再按用户要求处理；结果较短时调用 copy_to_clipboard 复制好，方便用户直接粘贴。',
+    '帮我处理刚复制的内容：', ['剪贴板', '刚复制', '复制的'], 'builtin'),
+  new AiSkill('trip', '出行', '查位置、规划路线并打开地图',
+    '需要时调用 get_location 了解用户大致位置，给出路线和时间建议；用户要去某地时调用 navigate 打开地图。',
+    '帮我规划一下怎么去：', ['导航', '怎么去', '路线', '附近', '出行'], 'builtin'),
   new AiSkill('code-explain', '解释代码', '逐段解释代码或命令，并指出风险',
     '先用一句话说明代码/命令做什么，再逐段解释；指出可能的风险（删除数据、权限、安全问题）和改进建议。',
     '帮我解释这段代码：\n', ['代码', '命令', '脚本', '报错是什么意思'], 'builtin')
 ];
 
 /** Installed when a user has never changed the list. */
-export const AI_DEFAULT_SKILLS: string[] = ['weekly-report', 'meeting-minutes', 'doc-summary', 'translator', 'polish',
-  'excel-table', 'email-writer', 'ppt-outline'];
+export const AI_DEFAULT_SKILLS: string[] = ['weekly-report', 'schedule', 'remind-me', 'clipboard', 'meeting-minutes',
+  'doc-summary', 'translator', 'polish', 'excel-table', 'email-writer', 'ppt-outline', 'trip'];
 
 export function aiLibrarySkill(id: string): AiSkill | undefined {
   return AI_SKILL_LIBRARY.find((skill: AiSkill): boolean => skill.id === id);
@@ -212,6 +267,19 @@ export function aiToolStatus(fn: string, detail: string): string {
   if (fn === 'connection_history') { return '正在翻看连接记录'; }
   if (fn === 'app_settings') { return '正在查看应用设置'; }
   if (fn === 'ai_usage') { return '正在统计 AI 用量'; }
+  if (fn === 'read_clipboard') { return '正在读取剪贴板'; }
+  if (fn === 'copy_to_clipboard') { return '正在复制到剪贴板'; }
+  if (fn === 'device_status') { return '正在查看设备状态'; }
+  if (fn === 'get_location') { return '正在定位'; }
+  if (fn === 'read_calendar') { return '正在查看日程'; }
+  if (fn === 'add_calendar_event') { return '正在打开日历'; }
+  if (fn === 'pick_contact') { return '请在通讯录里选择联系人'; }
+  if (fn === 'add_contact') { return '正在打开通讯录'; }
+  if (fn === 'flashlight') { return '正在操作手电筒'; }
+  if (fn === 'recognize_image_text') { return '请选择图片，正在识别文字'; }
+  if (fn === 'set_reminder' || fn === 'call_phone' || fn === 'send_email' || fn === 'navigate' || fn === 'open_link') {
+    return '正在准备确认卡片';
+  }
   return '正在调用工具';
 }
 

@@ -3,6 +3,9 @@ import { zlib } from '@kit.BasicServicesKit';
 import { fileIo, fileUri, picker } from '@kit.CoreFileKit';
 import { pdfService } from '@kit.PDFKit';
 import { systemShare } from '@kit.ShareKit';
+import { image } from '@kit.ImageKit';
+import { textRecognition } from '@kit.CoreVisionKit';
+import { print } from '@kit.BasicServicesKit';
 import { util } from '@kit.ArkTS';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { aiDocxBytes, aiDocxText, aiHtmlText, aiPptxSlideText, aiXlsxBytes, aiXlsxSharedStrings, aiXlsxSheetText } from './AiOfficeFormat';
@@ -61,6 +64,7 @@ export function aiDocumentKind(name: string): string {
   const ext: string = name.lastIndexOf('.') >= 0 ? name.slice(name.lastIndexOf('.') + 1).toLowerCase() : '';
   if (ext === 'docx' || ext === 'xlsx' || ext === 'pptx' || ext === 'pdf') { return ext; }
   if (ext === 'html' || ext === 'htm') { return 'html'; }
+  if (['jpg', 'jpeg', 'png', 'webp', 'bmp', 'heic', 'heif', 'gif'].indexOf(ext) >= 0) { return 'image'; }
   if (['txt', 'md', 'markdown', 'csv', 'tsv', 'json', 'log', 'xml', 'yaml', 'yml', 'ini', 'conf', 'sh', 'py', 'js', 'ts',
     'ets', 'java', 'c', 'cpp', 'h', 'go', 'rs', 'sql'].indexOf(ext) >= 0) { return 'text'; }
   if (ext === 'doc' || ext === 'xls' || ext === 'ppt' || ext === 'wps' || ext === 'et' || ext === 'dps') { return 'legacy'; }
@@ -75,12 +79,13 @@ export function aiDocumentKindLabel(kind: string): string {
     case 'pdf': return 'PDF';
     case 'md': return 'Markdown';
     case 'html': return '网页';
+    case 'image': return '图片';
     default: return '文本';
   }
 }
 
 /** The file pickers' filter: the documents the chat can read. */
-const PICK_FILTER: string[] = ['文档|.docx,.xlsx,.pptx,.pdf,.txt,.md,.csv,.json,.html,.log'];
+const PICK_FILTER: string[] = ['文档和图片|.docx,.xlsx,.pptx,.pdf,.txt,.md,.csv,.json,.html,.log,.jpg,.jpeg,.png,.webp,.heic'];
 
 export async function aiPickDocuments(context: common.UIAbilityContext, max: number): Promise<string[]> {
   const options: picker.DocumentSelectOptions = new picker.DocumentSelectOptions();
@@ -180,6 +185,24 @@ function pdfText(path: string): string {
   } finally { document.releaseDocument(); }
 }
 
+/** The text in a picture (a screenshot, a photo of a page), read on the device. */
+export async function aiRecognizeImageFile(uriOrPath: string): Promise<string> {
+  if (!canIUse('SystemCapability.AI.OCR.TextRecognition')) { throw new Error('AI_DOC_OCR_UNAVAILABLE'); }
+  const file: fileIo.File = fileIo.openSync(uriOrPath, fileIo.OpenMode.READ_ONLY);
+  let pixels: image.PixelMap | null = null;
+  try {
+    const source: image.ImageSource = image.createImageSource(file.fd);
+    pixels = await source.createPixelMap();
+    await source.release();
+    await textRecognition.init();
+    const result: textRecognition.TextRecognitionResult = await textRecognition.recognizeText({ pixelMap: pixels });
+    return result.value;
+  } finally {
+    if (pixels !== null) { await pixels.release(); }
+    fileIo.closeSync(file);
+  }
+}
+
 /**
  * Copy a picked or shared file into the cache and read its text. Errors are AI_DOC_* codes for aiDocumentErrorText.
  */
@@ -191,7 +214,7 @@ export async function aiImportDocument(context: common.Context, uri: string, nam
   const id: string = newId();
   const dir: string = context.cacheDir + '/ai-import';
   ensureDir(dir);
-  const path: string = dir + '/' + id + '.' + (kind === 'text' || kind === 'html' ? 'txt' : kind);
+  const path: string = dir + '/' + id + '.' + (kind === 'text' || kind === 'html' ? 'txt' : kind === 'image' ? 'img' : kind);
   const source: fileIo.File = fileIo.openSync(uri, fileIo.OpenMode.READ_ONLY);
   let bytes: number = 0;
   try {
@@ -204,6 +227,7 @@ export async function aiImportDocument(context: common.Context, uri: string, nam
     if (kind === 'text') { text = readText(path); }
     else if (kind === 'html') { text = aiHtmlText(readText(path)); }
     else if (kind === 'pdf') { text = pdfText(path); }
+    else if (kind === 'image') { text = await aiRecognizeImageFile(path); if (text.trim() === '') { throw new Error('AI_DOC_IMAGE_NO_TEXT'); } }
     else { text = await officeText(context, path, kind); }
     if (text.trim() === '') { throw new Error('AI_DOC_EMPTY'); }
     hilog.info(0x0000, 'AiChat', 'imported %{public}s chars=%{public}s', kind, text.length.toString());
@@ -225,12 +249,14 @@ export function aiTextAttachment(name: string, text: string): AiAttachment {
 export function aiDocumentErrorText(error: Object): string {
   const code: string = error instanceof Error ? error.message : '';
   if (code === 'AI_DOC_LEGACY') { return '暂不支持旧版 .doc/.xls/.ppt，请在 WPS 里另存为 .docx/.xlsx/.pptx 后再添加'; }
-  if (code === 'AI_DOC_UNSUPPORTED') { return '暂不支持这种文件，可以添加 Word、Excel、PPT、PDF 或文本文件'; }
+  if (code === 'AI_DOC_UNSUPPORTED') { return '暂不支持这种文件，可以添加 Word、Excel、PPT、PDF、文本文件或图片'; }
   if (code === 'AI_DOC_TOO_LARGE') { return '文件太大（上限 20 MB）'; }
   if (code === 'AI_DOC_PDF_LOCKED') { return '这个 PDF 有密码，请先在其他应用里去掉密码'; }
   if (code === 'AI_DOC_PDF_NO_TEXT') { return '这个 PDF 里没有可读的文字（可能是扫描件）'; }
   if (code === 'AI_DOC_PDF_UNAVAILABLE') { return '当前设备不支持读取 PDF'; }
   if (code === 'AI_DOC_EMPTY') { return '文件里没有读到文字'; }
+  if (code === 'AI_DOC_IMAGE_NO_TEXT') { return '图片里没有识别到文字'; }
+  if (code === 'AI_DOC_OCR_UNAVAILABLE') { return '当前设备不支持识别图片文字'; }
   return '读取文件失败，请确认文件没有损坏';
 }
 
@@ -315,4 +341,9 @@ export async function aiSaveDocumentAs(context: common.UIAbilityContext, documen
   const target: fileIo.File = fileIo.openSync(targets[0], fileIo.OpenMode.READ_WRITE | fileIo.OpenMode.TRUNC);
   try { fileIo.copyFileSync(document.path, target.fd); } finally { fileIo.closeSync(target); }
   return true;
+}
+
+/** Send a document to the system print dialog (printers on the network, or save as PDF). */
+export async function aiPrintDocument(context: common.UIAbilityContext, document: AiDocument): Promise<void> {
+  await print.print([fileUri.getUriFromPath(document.path)], context);
 }

@@ -6,6 +6,7 @@ import { DiagnosticAiProviderService, diagnosticAiEstimateTokens, diagnosticAiRe
 import { AI_MODE_CHAT, DiagnosticAiRequestLog } from './DiagnosticAiRequestLog';
 import { AiAttachment, AiDocument, aiCreateDocument, aiDocumentKindLabel } from './AiDocumentService';
 import { AiSkill, AiToolSpec, aiSkillsForQuestion, aiToolByFunction, aiToolStatus } from './AiSkillCatalog';
+import { AI_CONFIRM_TOOLS, AiChatAction, aiActionFor, aiRunSystemTool } from './AiSystemTools';
 
 /**
  * 聊天模式: the assistant as a general chatbot. It sees what the user typed, the documents the user added, and — only
@@ -67,14 +68,17 @@ export class AiChatReply {
   usedTools: boolean;
   /** What the user may want next, as the model suggested it (shown as pills under the answer). */
   suggestions: string[];
+  /** Actions the model proposed, waiting for the user's 确认 (a reminder, a call, a mail…). */
+  actions: AiChatAction[];
 
   constructor(text: string, documents: AiDocument[], usage: DiagnosticAiUsageMetadata, usedTools: boolean,
-    suggestions: string[] = []) {
+    suggestions: string[] = [], actions: AiChatAction[] = []) {
     this.text = text;
     this.documents = documents;
     this.usage = usage;
     this.usedTools = usedTools;
     this.suggestions = suggestions;
+    this.actions = actions;
   }
 }
 
@@ -136,6 +140,10 @@ function chatSystemPrompt(request: AiChatRequest, active: AiSkill[], tools: bool
         '应用会把文档块保存为文件并显示「打开」按钮，块外只用一两句话说明。\n') :
       '- 用户关闭了生成文档的工具，只用文字回答。\n') +
     (tools && hasTool(on, 'read_attachment') ? '- 附件只放了开头、需要后面的内容时，调用 read_attachment。\n' : '') +
+    (tools && on.some((tool: AiToolSpec): boolean => tool.group === 'system') ?
+      '- 用户让你在手机上做事（提醒、日程、联系人、打电话、写邮件、导航、复制、手电筒、看剪贴板、识别图片文字等）时，直接调用对应工具，' +
+        '不要只告诉用户怎么做。提醒、打电话、写邮件、导航、打开网页会先在对话里显示确认卡片，用户点确认才执行：回答里说明要做什么并提醒点确认，' +
+        '不要说已经完成。日程和联系人会打开系统页面由用户保存。时间一律按用户本地时间写成 YYYY-MM-DD HH:mm。\n' : '') +
     '- 用户遇到 RemoteDesktop 本身的故障（连不上、黑屏、卡顿）或要修改应用设置时，提醒切换到「助理」模式，助理可以抓日志、直接改设置。\n' +
     '- 回答的最后另起一行，写出用户最可能想接着做的 2 到 3 件事，格式 <suggest>事情一|事情二|事情三</suggest>，每件 12 字以内、' +
     '以动词开头、贴合这次的内容（例如“生成 Word 文档”“翻译成英文”“再精简一些”“补充下周计划”）；应用会把它们显示成按钮，不要在正文里重复。\n' +
@@ -225,7 +233,7 @@ export class AiChatService {
   /** Provider/model pairs that refused a request with tools; they get the document-block protocol from then on. */
   private static toolsRefused: string[] = [];
 
-  async respond(context: common.Context, profile: DiagnosticAiProviderProfile, secret: string,
+  async respond(context: common.UIAbilityContext, profile: DiagnosticAiProviderProfile, secret: string,
     request: AiChatRequest): Promise<AiChatReply> {
     const startedAt: number = Date.now();
     const bytes: number = request.turns.reduce((sum: number, turn: AiChatTurn): number => sum + turn.content.length, 0) +
@@ -241,7 +249,7 @@ export class AiChatService {
     }
   }
 
-  private async respondLocal(context: common.Context, request: AiChatRequest): Promise<AiChatReply> {
+  private async respondLocal(context: common.UIAbilityContext, request: AiChatRequest): Promise<AiChatReply> {
     const history: string = request.turns.slice(0, request.turns.length - 1).slice(-4)
       .map((turn: AiChatTurn): string => (turn.role === 'assistant' ? '助手：' : '用户：') + turn.content).join('\n').slice(-900);
     const question: string = request.turns.length > 0 ? request.turns[request.turns.length - 1].content : '';
@@ -252,7 +260,7 @@ export class AiChatService {
       completionTokens: diagnosticAiEstimateTokens(answer), cachedTokens: 0, estimated: true }, false);
   }
 
-  private async respondRemote(context: common.Context, profile: DiagnosticAiProviderProfile, secret: string,
+  private async respondRemote(context: common.UIAbilityContext, profile: DiagnosticAiProviderProfile, secret: string,
     request: AiChatRequest): Promise<AiChatReply> {
     const manifest = diagnosticAiProviderManifest(profile.providerId);
     const key: string = profile.providerId + '\u001f' + profile.modelId;
@@ -276,6 +284,7 @@ export class AiChatService {
     let messages: Object[] = build(tools);
     const usage: DiagnosticAiUsageMetadata = { promptTokens: 0, completionTokens: 0, cachedTokens: 0 };
     const documents: AiDocument[] = [];
+    const actions: AiChatAction[] = [];
     let usedTools: boolean = false;
     let text: string = '';
     for (let round: number = 0; round <= MAX_TOOL_ROUNDS; round++) {
@@ -313,20 +322,25 @@ export class AiChatService {
       const echo: AiWireAssistantToolCalls = { role: 'assistant', content: message !== null ? stringField(message, 'content') : '',
         tool_calls: calls };
       messages.push(echo as Object);
-      calls.forEach((call: Object): void => {
+      // One by one: a tool may wait for the user (a picker, the calendar's own page).
+      for (const call of calls) {
         const row: Record<string, Object> = call as Record<string, Object>;
         const fnValue: Object | undefined = row['function'];
         const fn: Record<string, Object> = fnValue !== undefined && fnValue !== null && typeof fnValue === 'object' ?
           fnValue as Record<string, Object> : JSON.parse('{}') as Record<string, Object>;
-        const reply: AiWireToolMessage = { role: 'tool', tool_call_id: stringField(row, 'id'),
-          content: this.runTool(context, stringField(fn, 'name'), stringField(fn, 'arguments'), request, documents) };
+        const content: string = await this.runTool(context, stringField(fn, 'name'), stringField(fn, 'arguments'), request,
+          documents, actions);
+        const reply: AiWireToolMessage = { role: 'tool', tool_call_id: stringField(row, 'id'), content: content };
         messages.push(reply as Object);
-      });
+      }
       request.onProgress('正在整理回答');
       hilog.info(0x0000, 'AiChat', 'tool round %{public}s calls=%{public}s', round.toString(), calls.length.toString());
     }
-    if (text.trim() === '' && documents.length === 0) { throw new Error('DIAGNOSTIC_AI_EMPTY_RESULT'); }
-    return this.finish(context, text, documents, usage, usedTools);
+    if (text.trim() === '' && documents.length === 0 && actions.length === 0) { throw new Error('DIAGNOSTIC_AI_EMPTY_RESULT'); }
+    const reply: AiChatReply = this.finish(context, text, documents, usage, usedTools);
+    reply.actions = actions;
+    if (reply.text === '' && actions.length > 0) { reply.text = '请确认下面的操作。'; }
+    return reply;
   }
 
   /** Document blocks in the answer become files too (models without tools, or one that wrote a block anyway). */
@@ -344,8 +358,8 @@ export class AiChatService {
     return new AiChatReply(text, documents, usage, usedTools, suggestions);
   }
 
-  private runTool(context: common.Context, name: string, args: string, request: AiChatRequest,
-    documents: AiDocument[]): string {
+  private async runTool(context: common.UIAbilityContext, name: string, args: string, request: AiChatRequest,
+    documents: AiDocument[], actions: AiChatAction[]): Promise<string> {
     const attachments: AiAttachment[] = request.attachments;
     let input: Record<string, Object> = JSON.parse('{}') as Record<string, Object>;
     try {
@@ -361,6 +375,17 @@ export class AiChatService {
     }
     request.onProgress(aiToolStatus(name, name === 'create_document' ? stringField(input, 'title') :
       name === 'read_attachment' ? stringField(input, 'name').replace(/[《》]/g, '') : ''));
+    if (spec.group === 'system') {
+      if (AI_CONFIRM_TOOLS.indexOf(name) >= 0) {
+        const made: AiChatAction | string = aiActionFor('act-' + Date.now().toString(36) + actions.length.toString(), name, input);
+        if (typeof made === 'string') { return made as string; }
+        const action: AiChatAction = made as AiChatAction;
+        actions.push(action);
+        return '还没有执行：已在对话里显示确认卡片「' + action.title + '」（' + action.detail + '），用户点「确认」后才会执行。' +
+          '请用一句话说明将要做什么，并提醒用户点确认；不要说“已设置”“已完成”。';
+      }
+      return await aiRunSystemTool(context, name, input);
+    }
     const days: number = Math.max(1, Math.min(45, parseInt(stringField(input, 'days'), 10) || 7));
     try {
       if (name === 'list_hosts') { return request.appData.hosts(stringField(input, 'protocol').toLowerCase()); }

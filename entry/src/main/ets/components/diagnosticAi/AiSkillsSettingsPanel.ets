@@ -143,9 +143,10 @@ export struct AiSkillsSettingsPanel {
   }
 
   @Builder private toolsView() {
-    Text('开启的工具会在聊天需要时读取对应内容，并发送给你选择的 AI 服务；关闭后 AI 就看不到这部分数据。主机地址、账号、密码和密钥从不发送。')
+    Text('开启的工具会在聊天需要时读取对应内容，并发送给你选择的 AI 服务；关闭后 AI 就看不到这部分数据。主机地址、账号、密码和密钥从不发送。' +
+      '提醒、打电话、写邮件、导航和打开网页都会先显示确认卡片，日程和联系人在系统页面里由你保存。')
       .fontSize(12).lineHeight(18).fontColor(this.pal().text3).width('100%').padding({ left: 4, right: 4 })
-    ForEach([['documents', '文档'], ['app', 'App 数据']], (group: string[]): void => {
+    ForEach([['documents', '文档'], ['app', 'App 数据'], ['system', '系统能力']], (group: string[]): void => {
       Text(group[1]).fontSize(12).fontWeight(FontWeight.Medium).fontColor(this.pal().text3).width('100%')
         .padding({ left: 4, top: 6 })
       Column() {
