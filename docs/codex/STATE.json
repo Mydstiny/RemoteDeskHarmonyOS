@@ -3,28 +3,32 @@
   "task": "pro-purchase-foundation",
   "branch": "codex/pro-purchase-foundation",
   "base": "8edc187868e94ed41634e8a6c4c4c072e3a48679",
-  "head": "d2d67115",
-  "phase": "Full acceptance active; Pro 诊断与 AI 帮助 P1 ordinary API/Coding Plan separation implemented; independent follow-up review and real Provider/account/device/mail acceptance pending",
-  "currentFocus": "Pro 诊断与 AI 帮助：复核 ordinary API/Coding Plan 分离；真实 Provider、官方用途、账号切换实机和设备/邮件验收保持开放",
+  "head": "03faf926",
+  "phase": "Full acceptance active; Pro 诊断与 AI 帮助抓取结束/动效生命周期 checkpoint 已实现并独立复核 PASS；真实 Provider/account/device/mail acceptance pending",
+  "currentFocus": "Pro 诊断与 AI 帮助：抓取结束状态机、异步作用域围栏和 reducedMotion 已闭合；继续真实 Provider、账号切换实机、设备视觉/邮件验收",
   "status": "in-progress",
   "latestIncrement": {
     "date": "2026-10-03",
-    "commit": "d2d67115",
-    "parentCommit": "9614dd09",
+    "commit": "03faf926",
+    "parentCommit": "dbe13e60b",
     "scope": [
+      "entry/src/main/ets/components/diagnosticAi/AiIsland.ets",
+      "entry/src/main/ets/components/diagnosticAi/AiIslandChrome.ets",
+      "entry/src/main/ets/components/diagnosticAi/DiagnosticAiAssistantPanel.ets",
+      "entry/src/main/ets/components/diagnosticAi/DiagnosticAiOrb.ets",
       "entry/src/main/ets/components/diagnosticAi/DiagnosticAiSettingsSheet.ets",
-      "entry/src/main/ets/services/diagnosticAi/DiagnosticAiAuthPolicy.ets",
-      "entry/src/main/ets/services/diagnosticAi/DiagnosticAiBillingPolicy.ets",
-      "entry/src/main/ets/services/diagnosticAi/DiagnosticAiProviderCatalog.ets",
-      "scripts/tests/test_diagnostic_ai_settings.cjs",
-      "docs/codex/plans/2026-10-02-pro-diagnostic-ai-account-coding-plan-upgrade.md",
-      "docs/codex/CURRENT.md",
-      "docs/codex/QUEUE.md"
+      "entry/src/main/ets/components/diagnosticAi/XiaoyiOrb.ets",
+      "entry/src/main/ets/pages/HostListPage.ets",
+      "entry/src/main/ets/pages/KeyVaultPage.ets",
+      "entry/src/main/ets/pages/RustDeskRelayPage.ets",
+      "entry/src/main/ets/services/diagnosticAi/DiagnosticAiCaptureOrchestrator.ets",
+      "entry/src/main/ets/services/diagnosticAi/DiagnosticAiProviderService.ets",
+      "scripts/tests/test_diagnostic_ai_capture_end.cjs"
     ],
-    "status": "ordinary-api-coding-plan-separation",
-    "reviewTaskId": "/root/diagnostic_ai_review",
-    "reviewResult": "PASS; independent follow-up review diagnostic-ai-p1-api-coding-plan-d2d67115-20261003; real Provider/account/device/mail acceptance remains open",
-    "validation": "bundled DevEco TypeScript diagnostic settings test 7 groups PASS; default@OhosTestCompileArkTS BUILD SUCCESSFUL; signed assembleHap BUILD SUCCESSFUL; git diff --check PASS; Light compliance PASS; signed HAP SHA-256 bd0ff21e35d651dc5bcc7905c2104a375f98deb12a5e811044062beaafe064a8 installed with hdc install -r on 127.0.0.1:5555 and 192.168.31.156:38451; 192.168.31.118:40123 offline; optional ohosTest 00306054 unavailable; real Provider/official Coding Plan/account/device visual/mail acceptance not run"
+    "status": "capture-lifecycle-motion-closed",
+    "reviewTaskId": "/root/diagnostic_ai_review_final",
+    "reviewResult": "PASS; no P0/P1 findings; real Provider/account/device/mail acceptance remains open",
+    "validation": "DevEco bundled TypeScript capture 5/5, settings 7 groups, UI lifecycle 8/8; default@OhosTestCompileArkTS BUILD SUCCESSFUL in 2m25.287s; signed assembleHap BUILD SUCCESSFUL in 6m1.190s; git diff --check PASS; Light compliance PASS; signed HAP SHA-256 e708ac53d94e704c5331cbcc5c8fbb14d31424d58675f41928e0b03c7fc4e7ad; device install and real Provider/account/device/mail acceptance not run"
   },
   "next": "安全远端分支同步已具备条件；继续保留真实 Provider、官方用途、账号切换实机、设备视觉、邮件和生产权益开放边界。未来 Coding Plan Manifest 只有在官方资料核验后才可启用。",
   "blockers": [
@@ -38,7 +42,7 @@
     "AI 会话管理和继续对话已完成代码门禁并安装到两台设备；需在设备上确认六行诊断卡片不再被反馈项截断、会话点击弹窗布局、原订阅恢复和实际 Provider 响应。",
     "本轮新增 typed appActions、settingProposals 与 execute/floating/inline 模式，需用真实 Provider 验证结构化动作/设置返回、敏感确认和三端执行动画；构建不能证明真实模型会返回动作或网络可达。",
     "账户/Coding Plan P0 尚未完成独立复核；P1 OAuth/设备授权、官方用途和真实 Provider 条款核验未完成，Coding Plan 保持 review_required/experimental.",
-    "P1 auth/profile and Provider request-boundary increments 96bdd311/9614dd09 plus ordinary API/Coding Plan separation d2d67115 independently PASS; overall merge still waits on preserved user-owned Pro files and external Provider/account/device/mail acceptance."
+    "Diagnostic AI capture checkpoint 03faf926 independently PASS; real Provider authorization/terms/quota, account-switch device behavior, Phone/Pad/PC visual/input and mail acceptance remain open; user Pro files stay dirty and excluded."
   ],
   "planPaths": [
     "docs/codex/plans/2026-09-06-pro-purchase-foundation.md",
@@ -60,7 +64,8 @@
     "taskIds": [
       "/root/review_pro_plan",
       "/root/diagnostic_ai_review",
-      "/root/review_display_final"
+      "/root/review_display_final",
+      "/root/diagnostic_ai_review_final"
     ],
     "scope": [
       "entry/src/main/ets/services/pro",
@@ -284,13 +289,13 @@
     "reason": "P1 diagnostic AI scope independently PASS in receipt diagnostic-ai-p1-9614dd09-20261003; overall task remains REVIEW_REQUIRED because preserved user-owned Pro files are dirty and external acceptance is open."
   },
   "lastVerification": {
-    "scope": "P1 diagnostic AI auth/profile and Provider request boundaries plus current shared App tree",
-    "testCompile": "PASS exit 0; BUILD SUCCESSFUL with isolated cache (latest rerun exit 0)",
-    "assembleHap": "PASS exit 0; BUILD SUCCESSFUL in 6.494 s on latest rerun",
+    "scope": "diagnostic AI capture lifecycle, async fences, reduced-motion renderers and shared AI entry wiring",
+    "testCompile": "PASS exit 0; default@OhosTestCompileArkTS BUILD SUCCESSFUL in 2m25.287s with isolated project cache",
+    "assembleHap": "PASS exit 0; signed assembleHap BUILD SUCCESSFUL in 6m1.190s with isolated project cache",
     "release": "NOT RUN; mandatory default assembleHap gate used",
-    "diagnosticTests": "PASS 6/6 with DevEco bundled TypeScript",
+    "diagnosticTests": "PASS capture 5/5; settings 7 groups; UI lifecycle 8/8; independent AI review suites PASS except unrelated ui_workspace fixture and legacy ui_parity string assertion",
     "compliance": "PASS Light and git diff --check",
-    "device": "ProviderService-fix HAP f93a064a73d3573b8e80cc6535bcadd16baf7c814ae6fb6072b56937d4eb0b30 install -r succeeded on 127.0.0.1:5555 and 192.168.31.156:38451; 192.168.31.118:40123 offline during final update; UI/provider/account/mail acceptance not run",
+    "device": "NOT RUN; signed HAP generated but no device install; real Provider/account/device/mail acceptance remains open",
     "optionalOhosTest": "UNAVAILABLE task 00306054 not registered"
   },
   "updated": "2026-10-03",
@@ -2084,6 +2089,14 @@
     "status": "PASS",
     "reviewTaskId": "/root/diagnostic_ai_review",
     "reviewedHead": "d2d671158136a2e6ba0d541ebec11fc27526622d",
+    "externalAcceptance": "OPEN: real Provider authorization/terms/quota, account-switch device behavior, Phone/Pad/PC visual/input and mail"
+  },
+  "diagnosticAiCaptureReview": {
+    "receiptId": "diagnostic-ai-capture-review-03faf926-20261003",
+    "status": "PASS",
+    "reviewTaskId": "/root/diagnostic_ai_review_final",
+    "reviewedHead": "03faf926",
+    "findings": "none P0/P1",
     "externalAcceptance": "OPEN: real Provider authorization/terms/quota, account-switch device behavior, Phone/Pad/PC visual/input and mail"
   }
 }
