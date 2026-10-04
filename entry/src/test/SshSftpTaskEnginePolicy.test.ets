@@ -8,6 +8,7 @@ import {
   shouldReleaseSshSftpRuntimeOnPageTeardown
 } from '../main/ets/services/SshSftpTaskEngine';
 import { SshSftpTaskRecord } from '../main/ets/services/SshSftpTaskPolicy';
+import { withOverrides } from './helpers/RecordTestUtils';
 
 export default function sshSftpTaskEnginePolicyTest(): void {
   describe('SshSftpTaskEnginePolicy', (): void => {
@@ -81,9 +82,7 @@ export default function sshSftpTaskEnginePolicyTest(): void {
         sequence: 8, stage: 'committing', updatedAt: 40,
         sourcePath: 'source.bin', targetPath: '/target.bin', commitState: 'renaming'
       };
-      const cancelled: SshSftpTaskRecord = {
-        ...committing, sequence: 9, stage: 'cancelled', updatedAt: 41
-      };
+      const cancelled: SshSftpTaskRecord = withOverrides(committing, { 'sequence': 9, 'stage': 'cancelled', 'updatedAt': 41 });
       const completed: SshSftpTaskRecord | null = reconcileSshSftpStoppedRemoteCommit(
         cancelled, committing, 1024, 10, 42);
 
@@ -93,17 +92,17 @@ export default function sshSftpTaskEnginePolicyTest(): void {
       expect((completed as SshSftpTaskRecord).partialSize).assertEqual(-1);
       expect((completed as SshSftpTaskRecord).commitState).assertEqual('renamed');
 
-      const paused: SshSftpTaskRecord = { ...cancelled, stage: 'paused' };
+      const paused: SshSftpTaskRecord = withOverrides(cancelled, { 'stage': 'paused' });
       expect(reconcileSshSftpStoppedRemoteCommit(paused, committing, 1024, 11, 43)?.stage)
         .assertEqual('completed');
-      const wrongTarget: SshSftpTaskRecord = { ...cancelled, targetPath: '/other.bin' };
+      const wrongTarget: SshSftpTaskRecord = withOverrides(cancelled, { 'targetPath': '/other.bin' });
       expect(reconcileSshSftpStoppedRemoteCommit(
         wrongTarget, committing, 1024, 11, 43) === null).assertTrue();
       expect(reconcileSshSftpStoppedRemoteCommit(
-        { ...cancelled, stage: 'transferring' }, committing, 1024, 11, 43) === null)
+        withOverrides(cancelled, { 'stage': 'transferring' }), committing, 1024, 11, 43) === null)
         .assertTrue();
       expect(reconcileSshSftpStoppedRemoteCommit(
-        cancelled, { ...committing, commitState: 'renamed' }, 1024, 11, 43) === null)
+        cancelled, withOverrides(committing, { 'commitState': 'renamed' }), 1024, 11, 43) === null)
         .assertTrue();
     });
 
@@ -117,9 +116,7 @@ export default function sshSftpTaskEnginePolicyTest(): void {
         sequence: 12, stage: 'transferring', updatedAt: 50,
         sourcePath: '/source.bin', targetPath: 'target.bin'
       };
-      const paused: SshSftpTaskRecord = {
-        ...exporting, sequence: 13, stage: 'paused', updatedAt: 51
-      };
+      const paused: SshSftpTaskRecord = withOverrides(exporting, { 'sequence': 13, 'stage': 'paused', 'updatedAt': 51 });
       const completed: SshSftpTaskRecord | null = reconcileSshSftpStoppedDownloadExport(
         paused, exporting, 2048, 14, 52);
 
@@ -128,26 +125,22 @@ export default function sshSftpTaskEnginePolicyTest(): void {
       expect((completed as SshSftpTaskRecord).verifiedOffset).assertEqual(2048);
       expect((completed as SshSftpTaskRecord).partialSize).assertEqual(-1);
       expect((completed as SshSftpTaskRecord).commitState).assertUndefined();
-      const cancelled: SshSftpTaskRecord = { ...paused, stage: 'cancelled' };
+      const cancelled: SshSftpTaskRecord = withOverrides(paused, { 'stage': 'cancelled' });
       expect(reconcileSshSftpStoppedDownloadExport(
         cancelled, exporting, 2048, 15, 53)?.stage).assertEqual('completed');
 
-      const unknownSize: SshSftpTaskRecord = {
-        ...paused, totalBytes: -1, sourceSize: -1
-      };
-      const unknownAttempt: SshSftpTaskRecord = {
-        ...exporting, totalBytes: -1, sourceSize: -1
-      };
+      const unknownSize: SshSftpTaskRecord = withOverrides(paused, { 'totalBytes': -1, 'sourceSize': -1 });
+      const unknownAttempt: SshSftpTaskRecord = withOverrides(exporting, { 'totalBytes': -1, 'sourceSize': -1 });
       expect(reconcileSshSftpStoppedDownloadExport(
         unknownSize, unknownAttempt, 2048, 15, 53)?.totalBytes).assertEqual(2048);
       expect(reconcileSshSftpStoppedDownloadExport(
-        { ...paused, targetPath: 'other.bin' }, exporting, 2048, 15, 53) === null)
+        withOverrides(paused, { 'targetPath': 'other.bin' }), exporting, 2048, 15, 53) === null)
         .assertTrue();
       expect(reconcileSshSftpStoppedDownloadExport(
-        { ...paused, stage: 'transferring' }, exporting, 2048, 15, 53) === null)
+        withOverrides(paused, { 'stage': 'transferring' }), exporting, 2048, 15, 53) === null)
         .assertTrue();
       expect(reconcileSshSftpStoppedDownloadExport(
-        paused, { ...exporting, direction: 'upload' }, 2048, 15, 53) === null)
+        paused, withOverrides(exporting, { 'direction': 'upload' }), 2048, 15, 53) === null)
         .assertTrue();
     });
   });

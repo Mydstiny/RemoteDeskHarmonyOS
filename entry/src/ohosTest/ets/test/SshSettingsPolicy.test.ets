@@ -10,13 +10,15 @@ import {
   isValidSshTerminalFontSize,
   isValidSshTerminalForegroundColor,
   resolveSshTerminalAppearance,
-  resolveSshTerminalAppearanceFromCloudSettings
+  resolveSshTerminalAppearanceFromCloudSettings,
+  SshTerminalAppearance,
+  SSH_DEFAULT_TERMINAL_LINE_SPACING
 } from '../../../main/ets/services/SshSettingsPolicy';
 
 export default function sshSettingsPolicyTest(): void {
   describe('SshSettingsPolicy_Appearance', (): void => {
     it('new_key_value_should_win_over_legacy_value', 0, (): void => {
-      const result = resolveSshTerminalAppearance('#00FFAA', '#FF0000', 24, 14);
+      const result = resolveSshTerminalAppearance('#00FFAA', '#FF0000', 24, 14, 0, 0);
       expect(result.foregroundColor).assertEqual('#00FFAA');
       expect(result.fontSize).assertEqual(24);
     });
@@ -32,7 +34,7 @@ export default function sshSettingsPolicyTest(): void {
       expect(isValidSshTerminalForegroundColor('#FFFFFF')).assertTrue();
       expect(isValidSshTerminalFontSize(11)).assertFalse();
       expect(isValidSshTerminalFontSize(33)).assertFalse();
-      const result = resolveSshTerminalAppearance('#GG0000', 'rgb(0,0,0)', 40, 0);
+      const result = resolveSshTerminalAppearance('#GG0000', 'rgb(0,0,0)', 40, 0, 0, 0);
       expect(result.foregroundColor).assertEqual(SSH_DEFAULT_TERMINAL_FOREGROUND_COLOR);
       expect(result.fontSize).assertEqual(SSH_DEFAULT_TERMINAL_FONT_SIZE);
     });
@@ -43,12 +45,14 @@ export default function sshSettingsPolicyTest(): void {
     });
 
     it('cloud_patch_should_validate_and_preserve_partial_local_values', 0, (): void => {
-      const fallback = { foregroundColor: '#ABCDEF', fontSize: 26 };
+      const fallback: SshTerminalAppearance = {
+        foregroundColor: '#ABCDEF', fontSize: 26, lineSpacing: SSH_DEFAULT_TERMINAL_LINE_SPACING
+      };
       const settings: Record<string, string | number | boolean> = {
-        sshTerminalForegroundColor: '#00FFAA',
-        terminalFgColor: '#FF0000',
-        sshTerminalFontSize: 40,
-        terminalFontSize: 22
+        'sshTerminalForegroundColor': '#00FFAA',
+        'terminalFgColor': '#FF0000',
+        'sshTerminalFontSize': 40,
+        'terminalFontSize': 22
       };
       const result = resolveSshTerminalAppearanceFromCloudSettings(settings, fallback);
       expect(hasSshTerminalAppearanceCloudSettings(settings)).assertTrue();
@@ -56,7 +60,7 @@ export default function sshSettingsPolicyTest(): void {
       expect(result.fontSize).assertEqual(22);
 
       const partial: Record<string, string | number | boolean> = {
-        sshTerminalForegroundColor: 'invalid'
+        'sshTerminalForegroundColor': 'invalid'
       };
       const partialResult = resolveSshTerminalAppearanceFromCloudSettings(partial, fallback);
       expect(partialResult.foregroundColor).assertEqual('#ABCDEF');

@@ -1,3 +1,4 @@
+import { describe, it, expect } from '@ohos/hypium';
 import {
   diagnosticAiModulesForQuestion,
   diagnosticAiPlanValid

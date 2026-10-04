@@ -12,7 +12,9 @@ import {
   vncNetworkEndpointRequiresLocalStorage,
   vncGatewayPayload,
   vncHostPayload,
-  vncTrustPayload
+  vncTrustPayload,
+  VncGatewayValues,
+  VncHostValues
 } from '../main/ets/services/VncModelPolicy';
 import { encodePlainVncSecret } from '../main/ets/services/VncSecretStoragePolicy';
 
@@ -50,7 +52,7 @@ export default function vncRecordPolicyTest(): void {
     });
 
     it('canonicalizes_global_ipv6_endpoints_and_keeps_repeater_target_ids_opaque', 0, (): void => {
-      const direct = {
+      const direct: VncHostValues = {
         label: 'IPv6', host: '[2001:0DB8:0:0:0:0:0:20]', port: 5900, username: '', gatewayId: '',
         transport: 'direct_tcp' as 'direct_tcp', repeaterMode: 'mode12' as 'mode12',
         rememberPassword: false, viewOnly: true, displayOverrideEnabled: false, scalingMode: 'fit' as 'fit',
@@ -70,7 +72,7 @@ export default function vncRecordPolicyTest(): void {
       scopedHostRecord.payloadHashSha256 = vncPayloadHashSha256(scopedHostRecord.payload);
       expect(vncRecordContainsDevicePrivateEndpoint(scopedHostRecord)).assertTrue();
 
-      const repeater = {
+      const repeater: VncHostValues = {
         label: 'opaque', host: 'target:id/42', port: 5901, username: '', gatewayId: 'gateway-1',
         transport: 'ultravnc_repeater' as 'ultravnc_repeater', repeaterMode: 'mode12' as 'mode12',
         rememberPassword: false, viewOnly: true, displayOverrideEnabled: false, scalingMode: 'fit' as 'fit',
@@ -80,7 +82,7 @@ export default function vncRecordPolicyTest(): void {
       expect(validateVncHost(repeater).length).assertEqual(0);
       expect(vncHostPayload(repeater).indexOf('"host":"target:id/42"') >= 0).assertTrue();
 
-      const gateway = {
+      const gateway: VncGatewayValues = {
         label: 'gateway', transport: 'ultravnc_repeater' as 'ultravnc_repeater',
         host: '[2001:0DB8::30]', port: 5901, path: '', repeaterMode: 'mode12' as 'mode12',
         targetId: '42', tls: true, enabled: true
@@ -133,11 +135,11 @@ export default function vncRecordPolicyTest(): void {
       valid.payloadHashSha256 = 'not-a-hash';
       expect(vncRecordIsValid(valid)).assertFalse();
       const row: Record<string, string> = {
-        id: 'wire-host', userid: 'user-test', recordtype: 'not-a-record-type',
-        ownerid: 'user-test', ownertype: 'account', secretkind: '', payload: '{}',
-        ciphertext: '', envelopeversion: '0', cryptoversion: '0', keyversion: '0',
-        aadversion: '0', payloadhashsha256: vncPayloadHashSha256('{}'), syncversion: '1',
-        schemaversion: '1', resetepoch: '0', createdat: '1', updatedat: '2', deletedat: '0'
+        'id': 'wire-host', 'userid': 'user-test', 'recordtype': 'not-a-record-type',
+        'ownerid': 'user-test', 'ownertype': 'account', 'secretkind': '', 'payload': '{}',
+        'ciphertext': '', 'envelopeversion': '0', 'cryptoversion': '0', 'keyversion': '0',
+        'aadversion': '0', 'payloadhashsha256': vncPayloadHashSha256('{}'), 'syncversion': '1',
+        'schemaversion': '1', 'resetepoch': '0', 'createdat': '1', 'updatedat': '2', 'deletedat': '0'
       };
       expect(vncRecordIsValid(vncRecordFromCloudRow(row))).assertFalse();
     });

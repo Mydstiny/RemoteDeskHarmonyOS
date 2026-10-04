@@ -27,26 +27,26 @@ export default function cloudSensitiveTransferPolicyTest(): void {
     it('requires_every_scalar_and_nested_secret_to_be_ciphertext', 0,
       (): void => {
         expect(cloudTableRowsAreUploadSafe('remotehosts', [{
-          id: 'host-1', passward: 'enc-v3:password'
+          'id': 'host-1', 'passward': 'enc-v3:password'
         }], true, encrypted)).assertTrue();
         expect(cloudTableRowsAreUploadSafe('remotehosts', [{
-          id: 'host-1', passward: 'plaintext'
+          'id': 'host-1', 'passward': 'plaintext'
         }], true, encrypted)).assertFalse();
         expect(cloudTableRowsAreUploadSafe('rustdeskrelays', [{
-          id: 'relay-1', apipassword: 'enc-v3:api',
-          key: 'enc-v3:key',
-          accountsjson: '[{"id":"a","password":"enc-v3:account"}]'
+          'id': 'relay-1', 'apipassword': 'enc-v3:api',
+          'key': 'enc-v3:key',
+          'accountsjson': '[{"id":"a","password":"enc-v3:account"}]'
         }], true, encrypted)).assertTrue();
         expect(cloudTableRowsAreUploadSafe('rustdeskrelays', [{
-          id: 'relay-1',
-          accountsjson: '[{"id":"a","password":"plaintext"}]'
+          'id': 'relay-1',
+          'accountsjson': '[{"id":"a","password":"plaintext"}]'
         }], true, encrypted)).assertFalse();
       });
 
     it('accepts_legacy_plaintext_download_only_without_an_active_crypto_contract',
       0, (): void => {
         const rows: Array<Record<string, string>> = [{
-          id: 'credential-1', password: 'legacy-plaintext'
+          'id': 'credential-1', 'password': 'legacy-plaintext'
         }];
         expect(cloudTableRowsAreDownloadCompatible(
           'rdpcredentials', rows, false, encrypted)).assertTrue();
@@ -57,7 +57,7 @@ export default function cloudSensitiveTransferPolicyTest(): void {
     it('blocks_device_private_ssh_endpoints_but_keeps_global_ipv6_portable', 0,
       (): void => {
         const global: Array<Record<string, string>> = [{
-          id: 'ssh-global', protocol: 'ssh', host: '2001:db8::20'
+          'id': 'ssh-global', 'protocol': 'ssh', 'host': '2001:db8::20'
         }];
         expect(cloudTableRowsAreUploadSafe(
           'remotehosts', global, false, encrypted)).assertTrue();
@@ -65,8 +65,8 @@ export default function cloudSensitiveTransferPolicyTest(): void {
           'remotehosts', global, false, encrypted)).assertTrue();
 
         const scopedProxy: Array<Record<string, string>> = [{
-          id: 'ssh-scoped-proxy', protocol: 'ssh', host: '2001:db8::20',
-          proxyhost: 'fe80::30%wlan0'
+          'id': 'ssh-scoped-proxy', 'protocol': 'ssh', 'host': '2001:db8::20',
+          'proxyhost': 'fe80::30%wlan0'
         }];
         expect(cloudTableRowsAreUploadSafe(
           'remotehosts', scopedProxy, false, encrypted)).assertFalse();
@@ -74,7 +74,7 @@ export default function cloudSensitiveTransferPolicyTest(): void {
           'remotehosts', scopedProxy, false, encrypted)).assertFalse();
 
         const scoped: Array<Record<string, string>> = [{
-          id: 'ssh-scoped', protocol: 'ssh', host: 'fe80::20%wlan0'
+          'id': 'ssh-scoped', 'protocol': 'ssh', 'host': 'fe80::20%wlan0'
         }];
         expect(cloudTableRowsAreUploadSafe(
           'remotehosts', scoped, false, encrypted)).assertFalse();
@@ -82,12 +82,12 @@ export default function cloudSensitiveTransferPolicyTest(): void {
           'remotehosts', scoped, false, encrypted)).assertFalse();
 
         const malformedScope: Array<Record<string, string>> = [{
-          id: 'ssh-numeric', protocol: 'ssh', host: 'fe80::20%12'
+          'id': 'ssh-numeric', 'protocol': 'ssh', 'host': 'fe80::20%12'
         }];
         expect(cloudTableRowsAreDownloadCompatible(
           'remotehosts', malformedScope, false, encrypted)).assertFalse();
         expect(cloudTableRowsAreUploadSafe('remotehosts', [{
-          id: 'rdp-legacy', protocol: 'rdp', host: 'fe80::20%wlan0'
+          'id': 'rdp-legacy', 'protocol': 'rdp', 'host': 'fe80::20%wlan0'
         }], false, encrypted)).assertFalse();
       });
 

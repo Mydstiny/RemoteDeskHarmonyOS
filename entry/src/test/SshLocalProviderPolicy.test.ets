@@ -11,7 +11,7 @@ import {
   SshLocalFileProvider
 } from '../main/ets/services/SshLocalFileProvider';
 
-function capabilities(overrides: Object = {}): SshLocalProviderCapabilities {
+function capabilities(overrides: Object = {} as Record<string, Object>): SshLocalProviderCapabilities {
   const base: SshLocalProviderCapabilities = {
     folderSelection: false, folderAuthorization: false, folderObtain: false,
     pickerImport: true, pickerExport: true, share: true, externalDrag: false
@@ -43,9 +43,9 @@ export default function sshLocalProviderPolicyTest(): void {
   describe('SshLocalProviderPolicy', (): void => {
     it('selects a durable directory provider only when all folder APIs exist', 0, (): void => {
       const plan = resolveSshLocalProviderPlan(capabilities({
-        folderSelection: true, folderAuthorization: true, folderObtain: true,
-        externalDrag: true
-      }));
+        'folderSelection': true, 'folderAuthorization': true, 'folderObtain': true,
+        'externalDrag': true
+      } as Record<string, Object>));
       expect(plan.kind).assertEqual('directory');
       expect(plan.canPersistAuthorization).assertTrue();
       expect(plan.supportsAtomicReplace).assertFalse();
@@ -54,7 +54,7 @@ export default function sshLocalProviderPolicyTest(): void {
     });
 
     it('falls back to the app transfer box without folder authorization', 0, (): void => {
-      const plan = resolveSshLocalProviderPlan(capabilities({ externalDrag: true }));
+      const plan = resolveSshLocalProviderPlan(capabilities({ 'externalDrag': true } as Record<string, Object>));
       expect(plan.kind).assertEqual('transferBox');
       expect(plan.supportsAtomicReplace).assertTrue();
       expect(plan.supportsExternalDrag).assertTrue();
@@ -64,7 +64,7 @@ export default function sshLocalProviderPolicyTest(): void {
     });
 
     it('fails closed when neither folder nor picker capability exists', 0, (): void => {
-      const plan = resolveSshLocalProviderPlan(capabilities({ pickerImport: false, pickerExport: false }));
+      const plan = resolveSshLocalProviderPlan(capabilities({ 'pickerImport': false, 'pickerExport': false } as Record<string, Object>));
       expect(plan.kind).assertEqual('none');
       expect(resolveSshLocalProviderState(plan, 'granted')).assertEqual('unavailable');
       expect(canUseSshLocalProviderAction(plan, 'ready', 'browse')).assertFalse();

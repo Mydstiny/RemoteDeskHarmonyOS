@@ -14,6 +14,7 @@ import {
   SSH_PROXY_PROFILE_PREFERENCES_NAME,
   setSshProxyProfilePreferenceAdapterForTest
 } from '../main/ets/services/SshProxyProfileStore';
+import { withOverrides } from './helpers/RecordTestUtils';
 
 class MemoryProxyPreferences implements SshProxyProfilePreferenceAdapter {
   readonly values: Map<string, string> = new Map<string, string>();
@@ -75,7 +76,7 @@ function jumpProxyProfile(hostId: string): SshProxyProfileV1 {
 export default function sshProxyProfileStoreTest(): void {
   describe('SshProxyProfileStore', (): void => {
     let adapter: MemoryProxyPreferences = new MemoryProxyPreferences();
-    const context: common.Context = undefined as common.Context;
+    const context: common.Context = {} as common.Context;
 
     beforeEach((): void => {
       adapter = new MemoryProxyPreferences();
@@ -126,9 +127,9 @@ export default function sshProxyProfileStoreTest(): void {
       const validRaw: string = serializeSshProxyProfiles([valid]) as string;
       const invalidPayloads: string[] = [
         '{not-json',
-        JSON.stringify([{ ...valid, schemaVersion: 2 }]),
+        JSON.stringify([withOverrides(valid, { 'schemaVersion': 2 })]),
         JSON.stringify([valid, valid]),
-        JSON.stringify([{ ...valid, token: 'secret' }])
+        JSON.stringify([withOverrides(valid, { 'token': 'secret' })])
       ];
       for (let index: number = 0; index < invalidPayloads.length; index++) {
         adapter = new MemoryProxyPreferences();

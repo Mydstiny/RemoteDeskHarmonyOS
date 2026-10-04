@@ -13,7 +13,8 @@ import {
 import {
   MoonlightBridgeCapabilities,
   MoonlightHostContext,
-  MoonlightHostServiceResult
+  MoonlightHostServiceResult,
+  MoonlightNativeRequestKey
 } from '../main/ets/services/MoonlightHostService';
 import {
   MoonlightHostUnpairControlPort,
@@ -126,7 +127,7 @@ function capabilities(ready: boolean = true): MoonlightBridgeCapabilities {
 
 function serviceResult(context: MoonlightHostContext,
   ok: boolean = true): MoonlightHostServiceResult {
-  const key = {
+  const key: MoonlightNativeRequestKey = {
     requestId: 1,
     generation: context.generation,
     ownerToken: context.ownerToken

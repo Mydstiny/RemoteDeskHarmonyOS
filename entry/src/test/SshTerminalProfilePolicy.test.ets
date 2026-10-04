@@ -62,7 +62,7 @@ function profile(id: string, name: string,
 export default function sshTerminalProfilePolicyTest(): void {
   describe('SshTerminalProfilePolicy', (): void => {
     let adapter: MemoryTerminalProfilePreferences = new MemoryTerminalProfilePreferences();
-    const context: common.Context = undefined as common.Context;
+    const context: common.Context = {} as common.Context;
 
     beforeEach((): void => {
       adapter = new MemoryTerminalProfilePreferences();
@@ -122,32 +122,32 @@ export default function sshTerminalProfilePolicyTest(): void {
         globalProfileId: 'safe',
         profiles: [
           {
-            schemaVersion: 1,
-            id: 'safe',
-            name: 'Safe',
-            settings: { fontSize: 19, password: 'secret', privateKey: '/private/key' },
-            updatedAtMs: 1,
-            terminalOutput: 'do-not-save'
-          },
+            'schemaVersion': 1,
+            'id': 'safe',
+            'name': 'Safe',
+            'settings': { 'fontSize': 19, 'password': 'secret', 'privateKey': '/private/key' } as Record<string, Object>,
+            'updatedAtMs': 1,
+            'terminalOutput': 'do-not-save'
+          } as Record<string, Object>,
           {
-            schemaVersion: 1,
-            id: 'bad',
-            name: 'Bad',
-            settings: { scrollback: -1 },
-            updatedAtMs: 1
-          },
+            'schemaVersion': 1,
+            'id': 'bad',
+            'name': 'Bad',
+            'settings': { 'scrollback': -1 } as Record<string, Object>,
+            'updatedAtMs': 1
+          } as Record<string, Object>,
           {
-            schemaVersion: 1,
-            id: 'wrong-type',
-            name: 'Wrong type',
-            settings: { foregroundColor: 42, palette: [1, 2, 3] },
-            updatedAtMs: 1
-          }
+            'schemaVersion': 1,
+            'id': 'wrong-type',
+            'name': 'Wrong type',
+            'settings': { 'foregroundColor': 42, 'palette': [1, 2, 3] } as Record<string, Object>,
+            'updatedAtMs': 1
+          } as Record<string, Object>
         ],
         hostAssignments: [
-          { hostId: 'host-a', profileId: 'safe' },
-          { hostId: '', profileId: 'safe' },
-          { hostId: 'host-b', profileId: 'bad' }
+          { 'hostId': 'host-a', 'profileId': 'safe' } as Record<string, Object>,
+          { 'hostId': '', 'profileId': 'safe' } as Record<string, Object>,
+          { 'hostId': 'host-b', 'profileId': 'bad' } as Record<string, Object>
         ],
         sessionId: 88
       });

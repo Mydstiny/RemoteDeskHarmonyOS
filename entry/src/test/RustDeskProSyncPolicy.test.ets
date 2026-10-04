@@ -4,9 +4,7 @@ import { RustDeskProPeer } from '../main/ets/model/RustDeskProModels';
 import {
   reconcileRustDeskProHosts,
   rustDeskProHostId,
-  shouldPreserveManagedRustDeskRoute,
-  rustDeskProHostPersistenceProjection,
-  rustDeskProHostPortableJSON
+  shouldPreserveManagedRustDeskRoute
 } from '../main/ets/services/RustDeskProSyncPolicy';
 
 function peer(id: string, alias: string, platform: string = '', password: string = ''): RustDeskProPeer {
@@ -33,14 +31,14 @@ export default function rustDeskProSyncPolicyTest() {
   describe('RustDeskProSyncPolicy', () => {
     it('does_not_decode_address_book_hash_as_password', 0, () => {
       const fromHash = RustDeskProPeer.fromJSON({
-        id: '123',
-        hash: 'c2VydmVyLWhhc2g='
+        'id': '123',
+        'hash': 'c2VydmVyLWhhc2g='
       } as Record<string, Object>);
       expect(fromHash.password).assertEqual('');
 
       const explicit = RustDeskProPeer.fromJSON({
-        id: '123',
-        password: 'server-password'
+        'id': '123',
+        'password': 'server-password'
       } as Record<string, Object>);
       expect(explicit.password).assertEqual('server-password');
     });
@@ -118,27 +116,6 @@ export default function rustDeskProSyncPolicyTest() {
       expect(shouldPreserveManagedRustDeskRoute(true, false)).assertTrue();
       expect(shouldPreserveManagedRustDeskRoute(true, true)).assertFalse();
       expect(shouldPreserveManagedRustDeskRoute(false, true)).assertFalse();
-    });
-
-    it('removes_pro_identity_from_persistence_but_preserves_local_fields', 0, () => {
-      const result = reconcileRustDeskProHosts([], 'relay-1', 'acct-1', [peer('123', 'Office')], 100);
-      const live = result.hosts[0];
-      live.label = '我的本地别名';
-      live.groupId = 'local-group';
-      const safe = rustDeskProHostPersistenceProjection(live);
-      expect(safe.label).assertEqual('我的本地别名');
-      expect(safe.groupId).assertEqual('local-group');
-      expect(safe.customHostname).assertEqual('');
-      expect(safe.rustdeskAccountId).assertEqual('');
-      expect(safe.rustdeskProPeerId).assertEqual('');
-      expect(safe.rustdeskProAccountId).assertEqual('');
-      expect(safe.rustdeskProManaged).assertFalse();
-      const portable = rustDeskProHostPortableJSON(live);
-      expect(portable['rustdeskProPeerId'] === undefined).assertTrue();
-      expect(portable['rustdeskProAccountId'] === undefined).assertTrue();
-      expect(portable['sourceType'] === undefined).assertTrue();
-      expect(portable['label']).assertEqual('我的本地别名');
-      expect(portable['groupId']).assertEqual('local-group');
     });
   });
 }

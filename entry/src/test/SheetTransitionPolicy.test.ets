@@ -11,8 +11,12 @@ import {
   shouldAllowSftpRootSheetDismiss,
   shouldUseSftpExpandedWorkspace,
   sftpExpandedWorkspaceMinHeight,
-  shouldDriveSftpNativeDismissAction
+  shouldDriveSftpNativeDismissAction,
+  SftpRootSheetDismissState,
+  SftpPeerSelectionCommitState,
+  SftpPeerPickerMountState
 } from '../main/ets/services/SheetTransitionPolicy';
+import { withOverrides } from './helpers/RecordTestUtils';
 
 export default function sheetTransitionPolicyTest() {
   describe('SheetTransitionPolicy', (): void => {
@@ -43,7 +47,7 @@ export default function sheetTransitionPolicyTest() {
     });
 
     it('mounts_nested_picker_only_after_parent_surface_is_live', 0, (): void => {
-      const base = {
+      const base: SftpPeerPickerMountState = {
         openRequested: true,
         parentVisible: true,
         parentSurfaceReady: true,
@@ -55,14 +59,14 @@ export default function sheetTransitionPolicyTest() {
         pickerClosing: false
       };
       expect(shouldMountSftpPeerPicker(base)).assertTrue();
-      expect(shouldMountSftpPeerPicker({ ...base, rootSheetVisible: false })).assertFalse();
-      expect(shouldMountSftpPeerPicker({ ...base, parentSurfaceReady: false })).assertFalse();
-      expect(shouldMountSftpPeerPicker({ ...base, openRequested: false })).assertFalse();
-      expect(shouldMountSftpPeerPicker({ ...base, pickerClosing: true })).assertFalse();
+      expect(shouldMountSftpPeerPicker(withOverrides(base, { 'rootSheetVisible': false }))).assertFalse();
+      expect(shouldMountSftpPeerPicker(withOverrides(base, { 'parentSurfaceReady': false }))).assertFalse();
+      expect(shouldMountSftpPeerPicker(withOverrides(base, { 'openRequested': false }))).assertFalse();
+      expect(shouldMountSftpPeerPicker(withOverrides(base, { 'pickerClosing': true }))).assertFalse();
     });
 
     it('commits_peer_selection_only_after_child_sheet_disappears', 0, (): void => {
-      const base = {
+      const base: SftpPeerSelectionCommitState = {
         pendingHostId: 'host-oracle',
         pendingSelectionEpoch: 7,
         activeSelectionEpoch: 7,
@@ -72,22 +76,22 @@ export default function sheetTransitionPolicyTest() {
         pickerClosing: false
       };
       expect(shouldCommitSftpPeerSelection(base)).assertTrue();
-      expect(shouldCommitSftpPeerSelection({ ...base, pickerVisible: true })).assertFalse();
-      expect(shouldCommitSftpPeerSelection({ ...base, pickerClosing: true })).assertFalse();
-      expect(shouldCommitSftpPeerSelection({ ...base, rootClosing: true })).assertFalse();
-      expect(shouldCommitSftpPeerSelection({ ...base, activeSelectionEpoch: 8 })).assertFalse();
-      expect(shouldCommitSftpPeerSelection({ ...base, pendingHostId: '' })).assertFalse();
+      expect(shouldCommitSftpPeerSelection(withOverrides(base, { 'pickerVisible': true }))).assertFalse();
+      expect(shouldCommitSftpPeerSelection(withOverrides(base, { 'pickerClosing': true }))).assertFalse();
+      expect(shouldCommitSftpPeerSelection(withOverrides(base, { 'rootClosing': true }))).assertFalse();
+      expect(shouldCommitSftpPeerSelection(withOverrides(base, { 'activeSelectionEpoch': 8 }))).assertFalse();
+      expect(shouldCommitSftpPeerSelection(withOverrides(base, { 'pendingHostId': '' }))).assertFalse();
     });
 
     it('defers_interactive_root_dismissal_until_surface_is_ready', 0, (): void => {
-      const base = {
+      const base: SftpRootSheetDismissState = {
         mountMatches: true,
         rootSurfaceReady: true,
         programmaticClose: false,
         transferBusy: false
       };
-      expect(shouldAllowSftpRootSheetDismiss({ ...base, rootSurfaceReady: false })).assertFalse();
-      expect(shouldAllowSftpRootSheetDismiss({ ...base, transferBusy: true })).assertFalse();
+      expect(shouldAllowSftpRootSheetDismiss(withOverrides(base, { 'rootSurfaceReady': false }))).assertFalse();
+      expect(shouldAllowSftpRootSheetDismiss(withOverrides(base, { 'transferBusy': true }))).assertFalse();
       expect(shouldAllowSftpRootSheetDismiss(base)).assertTrue();
     });
 

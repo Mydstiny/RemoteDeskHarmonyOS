@@ -17,7 +17,9 @@ import {
   SshStartupCommandV1,
   sshSnippetEditableAsQuickCommand,
   sshStartupExecutionKey,
-  startupCommandMayRun
+  startupCommandMayRun,
+  SshStartupFence,
+  SshHistoryCaptureContext
 } from '../main/ets/services/ssh/productivity/SshProductivityPolicy';
 import {
   SSH_PRODUCTIVITY_LEGACY_CLAIM_KEY,
@@ -28,6 +30,7 @@ import {
   SshProductivityScopePort,
   SshProductivityStore
 } from '../main/ets/services/ssh/productivity/SshProductivityStore';
+import { withOverrides } from './helpers/RecordTestUtils';
 
 class MemoryProductivityPersistence implements SshProductivityPersistencePort {
   value: string | null = '';
@@ -117,7 +120,7 @@ export default function sshProductivityPolicyTest(): void {
       const crypto = new FakeProductivityCrypto();
       crypto.available = false; crypto.setupComplete = false;
       const scope = new FakeProductivityScope();
-      const context: common.Context = undefined as common.Context;
+      const context: common.Context = {} as common.Context;
       const store = new SshProductivityStore(persistence, crypto, scope);
       expect(store.init(context)).assertTrue();
       expect(store.upsertSnippet(executableSnippet('plain-command'))).assertTrue();
@@ -140,7 +143,7 @@ export default function sshProductivityPolicyTest(): void {
       const crypto = new FakeProductivityCrypto();
       crypto.available = false; crypto.setupComplete = false;
       const scope = new FakeProductivityScope();
-      const context: common.Context = undefined as common.Context;
+      const context: common.Context = {} as common.Context;
       const store = new SshProductivityStore(persistence, crypto, scope);
       expect(store.init(context)).assertTrue();
       expect(store.upsertSnippet(executableSnippet('upgrade-command'))).assertTrue();
@@ -172,7 +175,7 @@ export default function sshProductivityPolicyTest(): void {
       const crypto = new FakeProductivityCrypto();
       crypto.available = false; crypto.setupComplete = false;
       const store = new SshProductivityStore(persistence, crypto, new FakeProductivityScope());
-      expect(store.init(undefined as common.Context)).assertTrue();
+      expect(store.init({} as common.Context)).assertTrue();
       expect(store.upsertSnippet(executableSnippet('kept'))).assertTrue();
       const before: string = persistence.value as string;
       persistence.failWrite = true;
@@ -244,16 +247,16 @@ export default function sshProductivityPolicyTest(): void {
     });
 
     it('history_should_fail_closed_in_sensitive_terminal_modes', 0, (): void => {
-      const base = {
+      const base: SshHistoryCaptureContext = {
         hostId: 'host-one', command: 'echo safe', nowMs: 100, enabled: true,
         hostDisabled: false, passwordPrompt: false, rawMode: false,
         fullscreenMode: false, secretExpansion: false
       };
       expect(captureSshHistory(base, 1)?.command).assertEqual('echo safe');
-      expect(captureSshHistory({ ...base, passwordPrompt: true }, 2)).assertNull();
-      expect(captureSshHistory({ ...base, rawMode: true }, 3)).assertNull();
-      expect(captureSshHistory({ ...base, fullscreenMode: true }, 4)).assertNull();
-      expect(captureSshHistory({ ...base, secretExpansion: true }, 5)).assertNull();
+      expect(captureSshHistory(withOverrides(base, { 'passwordPrompt': true }), 2)).assertNull();
+      expect(captureSshHistory(withOverrides(base, { 'rawMode': true }), 3)).assertNull();
+      expect(captureSshHistory(withOverrides(base, { 'fullscreenMode': true }), 4)).assertNull();
+      expect(captureSshHistory(withOverrides(base, { 'secretExpansion': true }), 5)).assertNull();
     });
 
     it('local_tracker_should_only_submit_locally_admitted_printable_commands', 0,
@@ -291,13 +294,13 @@ export default function sshProductivityPolicyTest(): void {
       });
 
     it('startup_should_run_once_only_after_authentication_and_host_key', 0, (): void => {
-      const fence = { hostId: 'host-one', sessionId: 7, generation: 3,
+      const fence: SshStartupFence = { hostId: 'host-one', sessionId: 7, generation: 3,
         authenticated: true, hostKeyVerified: true };
       expect(startupCommandMayRun(fence, '')).assertTrue();
       const key: string = sshStartupExecutionKey(fence);
       expect(startupCommandMayRun(fence, key)).assertFalse();
-      expect(startupCommandMayRun({ ...fence, authenticated: false }, '')).assertFalse();
-      expect(startupCommandMayRun({ ...fence, hostKeyVerified: false }, '')).assertFalse();
+      expect(startupCommandMayRun(withOverrides(fence, { 'authenticated': false }), '')).assertFalse();
+      expect(startupCommandMayRun(withOverrides(fence, { 'hostKeyVerified': false }), '')).assertFalse();
     });
 
     it('history_search_should_stay_host_scoped_and_keep_pinned_records', 0, (): void => {
@@ -318,7 +321,7 @@ export default function sshProductivityPolicyTest(): void {
         const persistence: MemoryProductivityPersistence = new MemoryProductivityPersistence();
         const crypto: FakeProductivityCrypto = new FakeProductivityCrypto();
         const store: SshProductivityStore = new SshProductivityStore(persistence, crypto);
-        const context: common.Context = undefined as common.Context;
+        const context: common.Context = {} as common.Context;
         expect(store.init(context)).assertTrue();
         expect((persistence.value as string).indexOf('schemaVersion')).assertEqual(-1);
         const before: string = persistence.value as string;
@@ -332,7 +335,7 @@ export default function sshProductivityPolicyTest(): void {
     it('encrypted_store_should_persist_update_and_remove_quick_commands', 0, (): void => {
       const persistence: MemoryProductivityPersistence = new MemoryProductivityPersistence();
       const crypto: FakeProductivityCrypto = new FakeProductivityCrypto();
-      const context: common.Context = undefined as common.Context;
+      const context: common.Context = {} as common.Context;
       const store: SshProductivityStore = new SshProductivityStore(persistence, crypto);
       expect(store.init(context)).assertTrue();
       const created = buildSshQuickCommandSnippet({
@@ -363,7 +366,7 @@ export default function sshProductivityPolicyTest(): void {
         const persistence: MemoryProductivityPersistence = new MemoryProductivityPersistence();
         const crypto: FakeProductivityCrypto = new FakeProductivityCrypto();
         const store: SshProductivityStore = new SshProductivityStore(persistence, crypto);
-        const context: common.Context = undefined as common.Context;
+        const context: common.Context = {} as common.Context;
         expect(store.init(context)).assertTrue();
         expect(store.upsertSnippet(snippet())).assertTrue();
         expect(store.setStartupCommand({
@@ -376,9 +379,9 @@ export default function sshProductivityPolicyTest(): void {
         expect(store.snapshot().startupCommands[0].snippetId).assertEqual('startup-one');
         const contaminated: SshProductivityDocumentV1 = emptySshProductivityDocument();
         contaminated.startupCommands.push({
-          hostId: 'host-one', snippetId: 'snippet-one', enabled: true,
-          command: 'top-secret-value'
-        } as SshStartupCommandV1);
+          'hostId': 'host-one', 'snippetId': 'snippet-one', 'enabled': true,
+          'command': 'top-secret-value'
+        } as Record<string, Object> as Object as SshStartupCommandV1);
       const encoded: string = encodeSshProductivityDocument(contaminated);
       expect(encoded.indexOf('top-secret-value')).assertEqual(-1);
       expect((decodeSshProductivityDocument(encoded) as SshProductivityDocumentV1)
@@ -403,7 +406,7 @@ export default function sshProductivityPolicyTest(): void {
         const persistence: MemoryProductivityPersistence = new MemoryProductivityPersistence();
         const crypto: FakeProductivityCrypto = new FakeProductivityCrypto();
         const scope: FakeProductivityScope = new FakeProductivityScope();
-        const context: common.Context = undefined as common.Context;
+        const context: common.Context = {} as common.Context;
         const first: SshProductivityStore = new SshProductivityStore(persistence, crypto, scope);
         const second: SshProductivityStore = new SshProductivityStore(persistence, crypto, scope);
         expect(first.init(context)).assertTrue();
@@ -430,7 +433,7 @@ export default function sshProductivityPolicyTest(): void {
         const persistence: MemoryProductivityPersistence = new MemoryProductivityPersistence();
         const crypto: FakeProductivityCrypto = new FakeProductivityCrypto();
         const scope: FakeProductivityScope = new FakeProductivityScope();
-        const context: common.Context = undefined as common.Context;
+        const context: common.Context = {} as common.Context;
         const store: SshProductivityStore = new SshProductivityStore(persistence, crypto, scope);
         expect(store.init(context)).assertTrue();
         for (let index: number = 0; index < 200; index++) {
@@ -448,7 +451,7 @@ export default function sshProductivityPolicyTest(): void {
       const persistence: MemoryProductivityPersistence = new MemoryProductivityPersistence();
       const crypto: FakeProductivityCrypto = new FakeProductivityCrypto();
       const scope: FakeProductivityScope = new FakeProductivityScope();
-      const context: common.Context = undefined as common.Context;
+      const context: common.Context = {} as common.Context;
       const store: SshProductivityStore = new SshProductivityStore(persistence, crypto, scope);
       expect(store.init(context)).assertTrue();
       expect(store.upsertSnippet(executableSnippet('owner-a'))).assertTrue();
@@ -472,7 +475,7 @@ export default function sshProductivityPolicyTest(): void {
     });
 
     it('store_should_never_accept_or_copy_plaintext_persistence', 0, (): void => {
-      const context: common.Context = undefined as common.Context;
+      const context: common.Context = {} as common.Context;
       const crypto: FakeProductivityCrypto = new FakeProductivityCrypto();
       const scope: FakeProductivityScope = new FakeProductivityScope();
       const legacyPersistence: MemoryProductivityPersistence =
@@ -500,7 +503,7 @@ export default function sshProductivityPolicyTest(): void {
 
     it('legacy_migration_failure_should_not_create_an_empty_owner_slot', 0,
       (): void => {
-        const context: common.Context = undefined as common.Context;
+        const context: common.Context = {} as common.Context;
         const crypto: FakeProductivityCrypto = new FakeProductivityCrypto();
         const scope: FakeProductivityScope = new FakeProductivityScope();
         const persistence: MemoryProductivityPersistence = new MemoryProductivityPersistence();
@@ -525,7 +528,7 @@ export default function sshProductivityPolicyTest(): void {
 
     it('legacy_claim_write_should_retry_from_the_durable_owner_slot', 0,
       (): void => {
-        const context: common.Context = undefined as common.Context;
+        const context: common.Context = {} as common.Context;
         const crypto: FakeProductivityCrypto = new FakeProductivityCrypto();
         const scope: FakeProductivityScope = new FakeProductivityScope();
         const persistence: MemoryProductivityPersistence = new MemoryProductivityPersistence();
@@ -552,7 +555,7 @@ export default function sshProductivityPolicyTest(): void {
 
     it('protected_legacy_should_migrate_only_for_the_authenticating_account', 0,
       (): void => {
-        const context: common.Context = undefined as common.Context;
+        const context: common.Context = {} as common.Context;
         const crypto: FakeProductivityCrypto = new FakeProductivityCrypto();
         const scope: FakeProductivityScope = new FakeProductivityScope();
         scope.fence = { ownerScopeId: 'owner-a', generation: 2 };
@@ -600,7 +603,7 @@ export default function sshProductivityPolicyTest(): void {
 
     it('fresh_store_should_fail_closed_when_encrypt_throws_or_returns_empty', 0,
       (): void => {
-        const context: common.Context = undefined as common.Context;
+        const context: common.Context = {} as common.Context;
         const throwingCrypto: FakeProductivityCrypto = new FakeProductivityCrypto();
         throwingCrypto.failEncrypt = true;
         expect(new SshProductivityStore(new MemoryProductivityPersistence(), throwingCrypto)

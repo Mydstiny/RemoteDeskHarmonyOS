@@ -60,7 +60,7 @@ export default function sshTerminalSearchShortcutPolicyTest(): void {
         requestId: 3,
         query: 'fatal',
         direction: 'next',
-        options: { caseSensitive: false, wholeWord: true, regex: false },
+        options: { 'caseSensitive': false, 'wholeWord': true, 'regex': false } as Record<string, Object>,
         password: 'must-not-cross-bridge'
       }));
       expect(decoded !== null).assertTrue();
@@ -69,7 +69,7 @@ export default function sshTerminalSearchShortcutPolicyTest(): void {
         requestId: 3,
         query: 'fatal',
         direction: 'sideways',
-        options: { caseSensitive: false, wholeWord: true, regex: false }
+        options: { 'caseSensitive': false, 'wholeWord': true, 'regex': false } as Record<string, Object>
       }))).assertNull();
     });
 

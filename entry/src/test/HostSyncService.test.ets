@@ -60,7 +60,7 @@ export default function hostSyncServiceTest() {
       expect(host.customHostname).assertEqual('server.example.test');
       expect(host.rdpClientHostname).assertEqual('HARMONY-CLIENT');
       const savedBinding: string = rdpRestrictedAdminSecretBindingForHost(host, 1);
-      const reloaded: RemoteHost = RemoteHost.fromJSON(host.toJSON() as Record<string, Object>);
+      const reloaded: RemoteHost = RemoteHost.fromJSON(host.toJSON());
       expect(rdpRestrictedAdminSecretBindingForHost(reloaded, 1)).assertEqual(savedBinding);
       expect(savedBinding.startsWith('rdp-binding-v3|')).assertTrue();
     });

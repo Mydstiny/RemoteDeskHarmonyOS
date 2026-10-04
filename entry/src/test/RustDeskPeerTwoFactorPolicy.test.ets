@@ -38,9 +38,11 @@ import {
   rustDeskPeerTwoFactorAutoSubmitError,
   RUSTDESK_PEER_2FA_MIN_REMAINING_SECONDS,
   rustDeskPeerTwoFactorPendingDeadlineFromReceivedAt,
-  rustDeskPeerTwoFactorPendingDeadlineExpired
+  rustDeskPeerTwoFactorPendingDeadlineExpired,
+  RustDeskPeerTwoFactorAutoSubmitInput
 } from '../main/ets/services/RustDeskPeerTwoFactorPolicy';
 import { auditedDescribe as describe, auditedIt as it } from '../main/ets/services/FocusedTestRegistrationAudit';
+import { jsonRecord } from './helpers/RecordTestUtils';
 
 function makeLegacyPeerHost(hostId: string): RemoteHost {
   const host: RemoteHost = new RemoteHost();
@@ -117,7 +119,7 @@ export default function rustDeskPeerTwoFactorPolicyTest(): void {
       expect(generated.counter).assertEqual(0);
       expect(generated.validUntilMs).assertEqual(30000);
       expect(generated.valid).assertTrue();
-      const json: Record<string, Object> = entry.toJSON() as Record<string, Object>;
+      const json: Record<string, Object> = jsonRecord(entry.toJSON());
       expect(json['counter']).assertUndefined();
       expect(json['validUntilMs']).assertUndefined();
       expect(json['valid']).assertUndefined();
@@ -209,9 +211,9 @@ export default function rustDeskPeerTwoFactorPolicyTest(): void {
           new RustDeskPeerTwoFactorController();
         const ticket = controller.begin('session-auth-cancel', entry.id, 100000);
         let authenticateCalls: number = 0;
-        const input = {
-          clock: { now: (): number => 1000,
-            sleep: async (_milliseconds: number): Promise<void> => {} },
+        const input: RustDeskPeerTwoFactorAutoSubmitInput = {
+          clock: { 'now': (): number => 1000,
+            'sleep': async (_milliseconds: number): Promise<void> => {} },
           loadEntry: (): TotpEntry => entry,
           authenticate: async (): Promise<boolean> => {
             authenticateCalls++;
@@ -237,9 +239,9 @@ export default function rustDeskPeerTwoFactorPolicyTest(): void {
         let authenticateCalls: number = 0;
         let submitCalls: number = 0;
         let authenticationAllowed: boolean = false;
-        const input = {
-          clock: { now: (): number => 1000,
-            sleep: async (_milliseconds: number): Promise<void> => {} },
+        const input: RustDeskPeerTwoFactorAutoSubmitInput = {
+          clock: { 'now': (): number => 1000,
+            'sleep': async (_milliseconds: number): Promise<void> => {} },
           loadEntry: (): TotpEntry => entry,
           authenticate: async (): Promise<boolean> => {
             authenticateCalls++;
@@ -270,9 +272,9 @@ export default function rustDeskPeerTwoFactorPolicyTest(): void {
         const ticket = controller.begin('session-keyvault-fence', entry.id, 100000);
         let loadCalls: number = 0;
         let available: boolean = false;
-        const input = {
-          clock: { now: (): number => 1000,
-            sleep: async (_milliseconds: number): Promise<void> => {} },
+        const input: RustDeskPeerTwoFactorAutoSubmitInput = {
+          clock: { 'now': (): number => 1000,
+            'sleep': async (_milliseconds: number): Promise<void> => {} },
           loadEntry: (): TotpEntry | undefined => {
             loadCalls++;
             return available ? entry : undefined;
@@ -299,9 +301,9 @@ export default function rustDeskPeerTwoFactorPolicyTest(): void {
         const ticket = controller.begin('session-auth-exception', entry.id, 100000);
         let authenticateCalls: number = 0;
         let shouldThrow: boolean = true;
-        const input = {
-          clock: { now: (): number => 1000,
-            sleep: async (_milliseconds: number): Promise<void> => {} },
+        const input: RustDeskPeerTwoFactorAutoSubmitInput = {
+          clock: { 'now': (): number => 1000,
+            'sleep': async (_milliseconds: number): Promise<void> => {} },
           loadEntry: (): TotpEntry => entry,
           authenticate: async (): Promise<boolean> => {
             authenticateCalls++;
@@ -339,9 +341,9 @@ export default function rustDeskPeerTwoFactorPolicyTest(): void {
         const controller: RustDeskPeerTwoFactorController = new RustDeskPeerTwoFactorController();
         const ticket = controller.begin('session-wrong', entry.id, 100000);
         let submissions: number = 0;
-        const input = {
-          clock: { now: (): number => 1000,
-            sleep: async (_milliseconds: number): Promise<void> => {} },
+        const input: RustDeskPeerTwoFactorAutoSubmitInput = {
+          clock: { 'now': (): number => 1000,
+            'sleep': async (_milliseconds: number): Promise<void> => {} },
           loadEntry: (): TotpEntry => entry,
           authenticate: async (): Promise<boolean> => true,
           submit: (_code: string): boolean => { submissions++; return submissions > 1; }
@@ -360,8 +362,8 @@ export default function rustDeskPeerTwoFactorPolicyTest(): void {
         const controller: RustDeskPeerTwoFactorController =
           new RustDeskPeerTwoFactorController();
         const ticket = controller.begin('session-race', entry.id, 100000);
-        let authStarted: (() => void) | null = null;
-        let releaseAuth: (() => void) | null = null;
+        let authStarted: (() => void) | null = null as (() => void) | null;
+        let releaseAuth: (() => void) | null = null as (() => void) | null;
         const started: Promise<void> = new Promise<void>((resolve: () => void): void => {
           authStarted = resolve;
         });
@@ -369,9 +371,9 @@ export default function rustDeskPeerTwoFactorPolicyTest(): void {
           releaseAuth = resolve;
         });
         let submitCalls: number = 0;
-        const input = {
-          clock: { now: (): number => 1000,
-            sleep: async (_milliseconds: number): Promise<void> => {} },
+        const input: RustDeskPeerTwoFactorAutoSubmitInput = {
+          clock: { 'now': (): number => 1000,
+            'sleep': async (_milliseconds: number): Promise<void> => {} },
           loadEntry: (): TotpEntry => entry,
           authenticate: async (): Promise<boolean> => {
             if (authStarted !== null) { authStarted(); authStarted = null; }
@@ -398,7 +400,7 @@ export default function rustDeskPeerTwoFactorPolicyTest(): void {
         const controller = new RustDeskPeerTwoFactorController();
         const first = controller.begin('session-replacement', entry.id, 5000);
         let authenticationStarted: (() => void) | null = null;
-        let releaseAuthentication: (() => void) | null = null;
+        let releaseAuthentication: (() => void) | null = null as (() => void) | null;
         const started = new Promise<void>((resolve: () => void): void => {
           authenticationStarted = resolve;
         });
@@ -576,9 +578,9 @@ export default function rustDeskPeerTwoFactorPolicyTest(): void {
         const controller = new RustDeskPeerTwoFactorController();
         const first = controller.begin('session-cleanup', entry.id, 100000);
         let submissions: number = 0;
-        const input = {
-          clock: { now: (): number => 1000,
-            sleep: async (_milliseconds: number): Promise<void> => {} },
+        const input: RustDeskPeerTwoFactorAutoSubmitInput = {
+          clock: { 'now': (): number => 1000,
+            'sleep': async (_milliseconds: number): Promise<void> => {} },
           loadEntry: (): TotpEntry => entry,
           authenticate: async (): Promise<boolean> => true,
           submit: (_code: string): boolean => { submissions++; return true; }
@@ -642,7 +644,7 @@ export default function rustDeskPeerTwoFactorPolicyTest(): void {
           new MemoryPeerTwoFactorPreferences();
         setRustDeskPeerTwoFactorPreferenceAdapterForTest(adapter);
         try {
-          const context: common.Context = undefined as common.Context;
+          const context: common.Context = {} as common.Context;
           const first: RustDeskPeerTwoFactorBindingStore =
             new RustDeskPeerTwoFactorBindingStore();
           expect(first.bindContext(context, 'owner-a')).assertTrue();
@@ -847,10 +849,10 @@ export default function rustDeskPeerTwoFactorPolicyTest(): void {
     it('decodes_legacy_cloud_extension_before_adapter_allowlist_filtering', 0, (): void => {
       const raw: string = JSON.stringify({
         _remoteDeskExtensionV1: {
-          rustdeskTotpEntryId: 'entry-cloud-legacy',
-          rustdeskTotpAutoSubmit: true,
-          rustdeskTotpDeviceId: 'test-device'
-        }
+          'rustdeskTotpEntryId': 'entry-cloud-legacy',
+          'rustdeskTotpAutoSubmit': true,
+          'rustdeskTotpDeviceId': 'test-device'
+        } as Record<string, Object>
       });
       const candidate: RustDeskPeerTwoFactorLegacyCandidate | null =
         decodeRustDeskPeerTwoFactorLegacyDisplayConfig(raw, 'owner-a', 'cloud-host');
@@ -899,9 +901,9 @@ export default function rustDeskPeerTwoFactorPolicyTest(): void {
       store.bindForTest('owner-a');
       const host: RemoteHost = makeLegacyPeerHost('legacy-backup-host');
       const backupRows: Array<Record<string, string>> = [{
-        id: host.id,
-        rustdeskTotpEntryId: 'entry-backup',
-        rustdeskTotpAutoSubmit: '1'
+        'id': host.id,
+        'rustdeskTotpEntryId': 'entry-backup',
+        'rustdeskTotpAutoSubmit': '1'
       }];
       const backupExtensions: Array<Record<string, string>> = [];
       const candidates: RustDeskPeerTwoFactorLegacyCandidate[] =

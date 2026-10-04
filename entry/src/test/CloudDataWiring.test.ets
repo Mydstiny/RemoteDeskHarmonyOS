@@ -65,6 +65,7 @@ import {
   pendingRestoreResolutionTables,
   writeFullRestoreQuarantineMarkers
 } from '../main/ets/services/CloudStoreRestoreResolutionWiring';
+import { withoutKey } from './helpers/RecordTestUtils';
 
 class DeferredSignal {
   promise: Promise<void>;
@@ -500,7 +501,7 @@ class MetadataMapQueryPort
   }
 
   delete(key: string): void {
-    delete this.values[key];
+    this.values = withoutKey(this.values, key);
   }
 
   has(key: string): boolean {
@@ -629,7 +630,7 @@ class FakeRestoreResolutionPort
           CLOUD_SELECTION_REENABLE_BARRIERS_KEY)) {
       return false;
     }
-    delete this.values[key];
+    this.values = withoutKey(this.values, key);
     return true;
   }
 }
@@ -759,8 +760,7 @@ class FakeVncCompletionPort
     if (this.fault === 'delete') {
       return false;
     }
-    delete this.working[
-      CLOUD_DOWNLOAD_TRANSACTION_KEY];
+    this.working = withoutKey(this.working, CLOUD_DOWNLOAD_TRANSACTION_KEY);
     return true;
   }
 
@@ -889,15 +889,13 @@ class FakeVncFinalizationPort
 
   releaseBarrier(): boolean {
     this.events.push('release');
-    delete this.working[
-      CLOUD_SELECTION_REENABLE_BARRIERS_KEY];
+    this.working = withoutKey(this.working, CLOUD_SELECTION_REENABLE_BARRIERS_KEY);
     return true;
   }
 
   deleteCheckpoint(): boolean {
     this.events.push('delete');
-    delete this.working[
-      VNC_SELECTION_REENABLE_TRANSACTION_KEY];
+    this.working = withoutKey(this.working, VNC_SELECTION_REENABLE_TRANSACTION_KEY);
     return true;
   }
 
@@ -1045,8 +1043,7 @@ class FakeVncStartupRecoveryIo
       return false;
     }
     if (previousPhase === null) {
-      delete this.working[
-        CLOUD_SELECTION_REENABLE_BARRIERS_KEY];
+      this.working = withoutKey(this.working, CLOUD_SELECTION_REENABLE_BARRIERS_KEY);
     } else {
       this.working[
         CLOUD_SELECTION_REENABLE_BARRIERS_KEY] =
@@ -1062,7 +1059,7 @@ class FakeVncStartupRecoveryIo
     if (this.fault === 'delete') {
       return false;
     }
-    delete this.working[key];
+    this.working = withoutKey(this.working, key);
     return true;
   }
 

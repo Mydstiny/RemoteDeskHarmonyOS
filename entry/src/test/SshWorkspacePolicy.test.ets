@@ -250,7 +250,7 @@ export default function sshWorkspacePolicyTest(): void {
       adapter.value = true;
       setSshWorkspaceCapabilityPreferenceAdapterForTest(adapter);
       const store: SshWorkspaceCapabilityStore = new SshWorkspaceCapabilityStore();
-      const context: common.Context = undefined as common.Context;
+      const context: common.Context = {} as common.Context;
       expect(store.load(context)).assertTrue();
       adapter.value = 'not-a-boolean';
       expect(store.load(context)).assertFalse();

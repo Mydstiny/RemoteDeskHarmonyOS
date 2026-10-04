@@ -35,7 +35,8 @@ import {
   settingsMoonlightExpandedMaxHeight,
   settingsRdpExpandedMaxHeight,
   settingsSecurityExpandedMaxHeight,
-  settingsVncExpandedMaxHeight
+  settingsVncExpandedMaxHeight,
+  SETTINGS_SECTION_VNC
 } from '../main/ets/services/SettingsAccordionPolicy';
 
 export default function settingsAccordionPolicyTest() {

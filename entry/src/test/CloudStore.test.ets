@@ -18,6 +18,7 @@ import {
 import { RemoteHost, DisplayConfig, RemoteHostJSON } from '../main/ets/model/RemoteHost';
 import { SshKey, SshKeyType, SshKeyJSON } from '../main/ets/model/SshKey';
 import { TotpEntry, TotpAlgorithm, TotpEntryJSON } from '../main/ets/model/TotpEntry';
+import { jsonRecord } from './helpers/RecordTestUtils';
 
 export default function cloudStoreTest() {
 
@@ -290,7 +291,7 @@ export default function cloudStoreTest() {
       host.createdAt = 1717000000000;
 
       const json = host.toJSON();
-      const restored = RemoteHost.fromJSON(json as Record<string, Object>);
+      const restored = RemoteHost.fromJSON(json);
 
       expect(restored.id).assertEqual(host.id);
       expect(restored.userId).assertEqual(host.userId);
@@ -415,8 +416,8 @@ export default function cloudStoreTest() {
       const host = new RemoteHost();
       host.locked = true;
       const json = host.toJSON();
-      expect((json as Record<string, Object>)['locked']).assertEqual(true);
-      const restored = RemoteHost.fromJSON(json as Record<string, Object>);
+      expect(jsonRecord(json)['locked']).assertEqual(true);
+      const restored = RemoteHost.fromJSON(json);
       expect(restored.locked).assertTrue();
     });
 
@@ -424,23 +425,23 @@ export default function cloudStoreTest() {
       const host = new RemoteHost();
       host.locked = false;
       const json = host.toJSON();
-      const restored = RemoteHost.fromJSON(json as Record<string, Object>);
+      const restored = RemoteHost.fromJSON(json);
       expect(restored.locked).assertFalse();
     });
 
     it('legacy_favorite_field_should_be_ignored', 0, () => {
       const host = new RemoteHost();
-      const legacy: Record<string, Object> = host.toJSON() as Record<string, Object>;
+      const legacy: Record<string, Object> = jsonRecord(host.toJSON());
       legacy['isFavorite'] = true;
-      const restored = RemoteHost.fromJSON(legacy as RemoteHostJSON);
-      expect(Object.prototype.hasOwnProperty.call(restored.toJSON(), 'isFavorite')).assertFalse();
+      const restored = RemoteHost.fromJSON(JSON.parse(JSON.stringify(legacy)) as RemoteHostJSON);
+      expect(Object.keys(restored.toJSON()).indexOf('isFavorite')).assertEqual(-1);
     });
 
     it('sshUseKey_true_roundtrip', 0, () => {
       const host = new RemoteHost();
       host.sshUseKey = true;
       const json = host.toJSON();
-      const restored = RemoteHost.fromJSON(json as Record<string, Object>);
+      const restored = RemoteHost.fromJSON(json);
       expect(restored.sshUseKey).assertTrue();
     });
   });

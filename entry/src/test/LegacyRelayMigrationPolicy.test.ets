@@ -15,11 +15,11 @@ export default function legacyRelayMigrationPolicyTest(): void {
         relayPort: 21117,
         apiPassword: 'legacy-secret',
         accounts: [{
-          id: 'account-1',
-          relayId: 'relay-1',
-          username: 'alice',
-          password: 'legacy-account-secret'
-        }]
+          'id': 'account-1',
+          'relayId': 'relay-1',
+          'username': 'alice',
+          'password': 'legacy-account-secret'
+        } as Record<string, Object>]
       }]));
       expect(rows !== null).assertTrue();
       expect((rows || []).length).assertEqual(1);

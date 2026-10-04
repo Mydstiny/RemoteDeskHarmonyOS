@@ -8,7 +8,8 @@ import {
   sshSftpOffsetIsValid,
   sshSftpPartialSuffix,
   sshSftpSkipRemovalDecision,
-  writeSshSftpPayloadFully
+  writeSshSftpPayloadFully,
+  SshSftpFileIdentity
 } from '../main/ets/services/SshSftpIntegrityPolicy';
 
 export default function sshSftpIntegrityPolicyTest(): void {
@@ -20,7 +21,7 @@ export default function sshSftpIntegrityPolicyTest(): void {
     });
 
     it('requires both source size and mtime for resume identity', 0, (): void => {
-      const identity = { size: 10, mtime: 20 };
+      const identity: SshSftpFileIdentity = { size: 10, mtime: 20 };
       expect(sshSftpIdentityMatches(identity, { size: 10, mtime: 20 })).assertTrue();
       expect(sshSftpIdentityMatches(identity, { size: 11, mtime: 20 })).assertFalse();
       expect(sshSftpIdentityMatches(identity, { size: 10, mtime: 21 })).assertFalse();

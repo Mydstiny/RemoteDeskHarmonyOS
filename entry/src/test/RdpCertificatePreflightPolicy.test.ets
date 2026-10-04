@@ -30,7 +30,8 @@ import {
   shouldUseRdpTlsWithoutNla,
   shouldPersistRdpCertificateTrust,
   shouldRequireRdpCertificateConfirmation,
-  shouldFallbackToNativeRdpConnectionAfterResolverFailure
+  shouldFallbackToNativeRdpConnectionAfterResolverFailure,
+  RDP_CERTIFICATE_UNKNOWN_TRUST_MODE
 } from '../main/ets/services/RdpCertificatePreflightPolicy';
 
 export default function rdpCertificatePreflightPolicyTest() {

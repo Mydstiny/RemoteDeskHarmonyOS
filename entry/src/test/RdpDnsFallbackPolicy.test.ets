@@ -19,7 +19,7 @@ export default function rdpDnsFallbackPolicyTest() {
       expect(rdpDnsFallbackCandidates([
         '192.0.2.10', '192.0.2.10', 'rdp.example.test',
         '2001:db8::10', '192.0.2.11'
-      ], 2)).toEqual(['192.0.2.10', '2001:db8::10']);
+      ], 2)).assertDeepEquals(['192.0.2.10', '2001:db8::10']);
     });
 
     it('allows_fallback_only_for_hostname_direct_routes', 0, (): void => {

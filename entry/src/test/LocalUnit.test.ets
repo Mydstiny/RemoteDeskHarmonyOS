@@ -15,6 +15,7 @@ import {
 import { UserAccount } from '../main/ets/model/UserAccount';
 import { RdpCredential } from '../main/ets/model/RdpCredential';
 import { normalizeRdpClientHostname } from '../main/ets/services/RdpConnectionIdentityPolicy';
+import { jsonRecord } from './helpers/RecordTestUtils';
 
 export default function localUnitTest() {
   describe('RemoteHost_Data_Model', () => {
@@ -64,7 +65,7 @@ export default function localUnitTest() {
       host.lockType = LockType.PASSWORD;
 
       const json = host.toJSON();
-      const restored = RemoteHost.fromJSON(json as Record<string, Object>);
+      const restored = RemoteHost.fromJSON(json);
 
       expect(restored.id).assertEqual(host.id);
       expect(restored.label).assertEqual(host.label);
@@ -95,7 +96,7 @@ export default function localUnitTest() {
       host.sshKeyPassphraseConfigured = true;
       host.sshProxyPasswordConfigured = true;
       host.sshProxyKeyPassphraseConfigured = true;
-      const serialized: Record<string, Object> = host.toJSON() as Record<string, Object>;
+      const serialized: Record<string, Object> = jsonRecord(host.toJSON());
       expect(serialized['passwordConfigured']).assertUndefined();
       expect(serialized['sshKeyDataConfigured']).assertUndefined();
       expect(serialized['sshKeyPassphraseConfigured']).assertUndefined();
@@ -125,7 +126,7 @@ export default function localUnitTest() {
       const credential = new RdpCredential();
       credential.passwordConfigured = true;
       const credentialJson: Record<string, Object> =
-        credential.toJSON() as Record<string, Object>;
+        jsonRecord(credential.toJSON());
       expect(credentialJson['passwordConfigured']).assertUndefined();
       expect(credential.runtimeClone().passwordConfigured).assertTrue();
       credential.passwordConfigured = false;
@@ -193,7 +194,7 @@ export default function localUnitTest() {
       expect(host.isValid()).assertFalse();
       expect(host.getValidationErrors().length).assertEqual(1);
 
-      const serialized: Record<string, Object> = host.toJSON() as Record<string, Object>;
+      const serialized: Record<string, Object> = jsonRecord(host.toJSON());
       expect(serialized['username']).assertEqual('');
       expect(serialized['password']).assertEqual('');
       expect(serialized['rdpCredentialId']).assertEqual('');
@@ -278,7 +279,7 @@ export default function localUnitTest() {
       expect(account.unionId).assertEqual('union_123');
       expect(account.displayName).assertEqual('TestUser');
 
-      const json: Record<string, Object> = account.toJSON();
+      const json = account.toJSON();
       const restored = UserAccount.fromJSON(json);
 
       expect(restored.isLoggedIn).assertTrue();

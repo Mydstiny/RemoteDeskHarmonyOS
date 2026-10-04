@@ -1,4 +1,6 @@
 import { describe, it, expect } from '@ohos/hypium';
+import { ClipboardBridgeRestartGuardInput, ClipboardBridgeStartGuardInput } from '../main/ets/services/ClipboardSyncPolicy';
+import { withOverrides } from './helpers/RecordTestUtils';
 import {
   clipboardReadPermissionErrorCode,
   clipboardSyncEnabledForProtocol,
@@ -88,7 +90,7 @@ export default function clipboardSyncPolicyTest(): void {
       expect(shouldAttemptRemoteClipboard(initialHash, 1907, true)).assertTrue();
     });
     it('fences_delayed_bridge_start_after_background_or_toggle_off', 0, (): void => {
-      const active = {
+      const active: ClipboardBridgeStartGuardInput = {
         requestedGeneration: 3,
         currentGeneration: 3,
         requestedSessionId: 41,
@@ -101,16 +103,16 @@ export default function clipboardSyncPolicyTest(): void {
         enabled: true
       };
       expect(shouldStartClipboardBridge(active)).assertTrue();
-      expect(shouldStartClipboardBridge({ ...active, currentGeneration: 4 })).assertFalse();
-      expect(shouldStartClipboardBridge({ ...active, background: true })).assertFalse();
-      expect(shouldStartClipboardBridge({ ...active, enabled: false })).assertFalse();
+      expect(shouldStartClipboardBridge(withOverrides(active, { 'currentGeneration': 4 }))).assertFalse();
+      expect(shouldStartClipboardBridge(withOverrides(active, { 'background': true }))).assertFalse();
+      expect(shouldStartClipboardBridge(withOverrides(active, { 'enabled': false }))).assertFalse();
     });
     it('closes_clipboard_synchronously_on_background_entry', 0, (): void => {
       expect(shouldStopClipboardBridgeForBackground(true)).assertTrue();
       expect(shouldStopClipboardBridgeForBackground(false)).assertFalse();
     });
     it('restarts_after_foreground_return_even_when_preserve_did_not_finish', 0, (): void => {
-      const foreground = {
+      const foreground: ClipboardBridgeRestartGuardInput = {
         connected: true,
         sessionId: 41,
         bridgePresent: false,
@@ -119,10 +121,10 @@ export default function clipboardSyncPolicyTest(): void {
         enabled: true
       };
       expect(shouldRestartClipboardBridge(foreground)).assertTrue();
-      expect(shouldRestartClipboardBridge({ ...foreground, background: true })).assertFalse();
-      expect(shouldRestartClipboardBridge({ ...foreground, minimized: true })).assertFalse();
-      expect(shouldRestartClipboardBridge({ ...foreground, bridgePresent: true })).assertFalse();
-      expect(shouldRestartClipboardBridge({ ...foreground, enabled: false })).assertFalse();
+      expect(shouldRestartClipboardBridge(withOverrides(foreground, { 'background': true }))).assertFalse();
+      expect(shouldRestartClipboardBridge(withOverrides(foreground, { 'minimized': true }))).assertFalse();
+      expect(shouldRestartClipboardBridge(withOverrides(foreground, { 'bridgePresent': true }))).assertFalse();
+      expect(shouldRestartClipboardBridge(withOverrides(foreground, { 'enabled': false }))).assertFalse();
     });
   });
 }

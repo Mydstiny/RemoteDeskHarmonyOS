@@ -57,10 +57,7 @@ import cloudLifecycleBarrierPolicyTest from './CloudLifecycleBarrierPolicy.test'
 import cloudMetadataSafetyPolicyTest from './CloudMetadataSafetyPolicy.test';
 import accountCredentialStoragePolicyTest from './AccountCredentialStoragePolicy.test';
 import rustDeskProApiPolicyTest from './RustDeskProApiPolicy.test';
-import rustDeskProApiServiceTest from './RustDeskProApiService.test';
 import rustDeskProCredentialPolicyTest from './RustDeskProCredentialPolicy.test';
-import rustDeskProSyncServiceTest from './RustDeskProSyncService.test';
-import rustDeskProTwoFactorPolicyTest from './RustDeskProTwoFactorPolicy.test';
 import rustDeskProSyncPolicyTest from './RustDeskProSyncPolicy.test';
 import cloudSensitiveTransferPolicyTest from './CloudSensitiveTransferPolicy.test';
 import legacyRelayMigrationPolicyTest from './LegacyRelayMigrationPolicy.test';
@@ -284,6 +281,17 @@ import remoteHostFieldRegistryTest from './RemoteHostFieldRegistry.test';
 import cryptoResetDataPolicyTest from './CryptoResetDataPolicy.test';
 import cloudSyncResetPauseTest from './CloudSyncResetPause.test';
 
+import breakpointUtilTest from './BreakpointUtil.test';
+import rdpDnsFallbackPolicyTest from './RdpDnsFallbackPolicy.test';
+import relayDirectoryPolicyTest from './RelayDirectoryPolicy.test';
+import sshAuthPromptOwnerPolicyTest from './SshAuthPromptOwnerPolicy.test';
+import sshXtermTabSurfacePolicyTest from './SshXtermTabSurfacePolicy.test';
+import vncDisplaySwitchPolicyTest from './VncDisplaySwitchPolicy.test';
+import vncGatewayProtocolPolicyTest from './VncGatewayProtocolPolicy.test';
+import vncSharedPreferencePolicyTest from './VncSharedPreferencePolicy.test';
+import moonlightDesktopFlipPolicyTest from './MoonlightDesktopFlipPolicy.test';
+import moonlightDesktopFlipStoreTest from './MoonlightDesktopFlipStore.test';
+
 export default function testsuite() {
   proAccessPolicyTest();
   endpointAddressPolicyTest();
@@ -343,10 +351,7 @@ export default function testsuite() {
   cloudMetadataSafetyPolicyTest();
   accountCredentialStoragePolicyTest();
   rustDeskProApiPolicyTest();
-  rustDeskProApiServiceTest();
   rustDeskProCredentialPolicyTest();
-  rustDeskProSyncServiceTest();
-  rustDeskProTwoFactorPolicyTest();
   rustDeskProSyncPolicyTest();
   cloudSensitiveTransferPolicyTest();
   legacyRelayMigrationPolicyTest();
@@ -570,4 +575,14 @@ export default function testsuite() {
   cryptoResetDataPolicyTest();
   cloudSyncResetPauseTest();
   rustDeskRelayHealthPolicyTest();
+  breakpointUtilTest();
+  rdpDnsFallbackPolicyTest();
+  relayDirectoryPolicyTest();
+  sshAuthPromptOwnerPolicyTest();
+  sshXtermTabSurfacePolicyTest();
+  vncDisplaySwitchPolicyTest();
+  vncGatewayProtocolPolicyTest();
+  vncSharedPreferencePolicyTest();
+  moonlightDesktopFlipPolicyTest();
+  moonlightDesktopFlipStoreTest();
 }

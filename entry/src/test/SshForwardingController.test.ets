@@ -15,6 +15,7 @@ import {
 } from '../main/ets/services/SshForwardingPolicy';
 import { SshForwardingRuntimeStore } from '../main/ets/services/SshForwardingRuntimeStore';
 import { SshSessionHandle, SshSessionLifecycleState } from '../main/ets/services/SshSessionStore';
+import { withOverrides } from './helpers/RecordTestUtils';
 
 class FakeForwardingNative implements SshForwardingNativePort {
   readonly generations: Map<number, number> = new Map<number, number>();
@@ -45,7 +46,7 @@ class FakeForwardingNative implements SshForwardingNativePort {
   configureSshForwarding(handle: SshSessionHandle, config: SshForwardingConfig): number {
     this.calls.push('configure:' + handle.sessionId.toString() + ':' +
       handle.generation.toString() + ':' + config.id);
-    this.configs.push({ ...config });
+    this.configs.push(withOverrides(config, {}));
     return this.configureCode;
   }
 
@@ -284,7 +285,10 @@ export default function sshForwardingControllerTest(): void {
         ownerChannelId: 'shell',
         ownerGeneration: 3,
         transferredBytes: 4096,
-        expiresAtMs: 0
+        expiresAtMs: 0,
+        actualBindHost: '',
+        actualBindPort: 0,
+        actualBindFamily: 0
       }];
       const refreshed = controller.snapshot(current);
       expect(refreshed.accepted).assertTrue();
@@ -292,8 +296,8 @@ export default function sshForwardingControllerTest(): void {
       expect(refreshed.runtimes[0].activeConnections).assertEqual(2);
       expect(refreshed.runtimes[0].transferredBytes).assertEqual(4096);
 
-      native.snapshots[0] = { ...native.snapshots[0], ownerGeneration: 2,
-        activeConnections: 7, transferredBytes: 8192 };
+      native.snapshots[0] = withOverrides(native.snapshots[0], { 'ownerGeneration': 2,
+        'activeConnections': 7, 'transferredBytes': 8192 });
       const staleOwner = controller.snapshot(current);
       expect(staleOwner.accepted).assertTrue();
       expect(staleOwner.runtimes[0].activeConnections).assertEqual(2);

@@ -84,10 +84,10 @@ function legacySevenTableDocument(): LocalBackupDocument {
     if (table !== 'vncrecordv2') { tables[table] = current[table]; }
   }
   tables['remotehosts'].push({
-    id: 'legacy-host',
-    userid: 'legacy-owner',
-    label: 'Legacy',
-    passward: 'legacy-password'
+    'id': 'legacy-host',
+    'userid': 'legacy-owner',
+    'label': 'Legacy',
+    'passward': 'legacy-password'
   });
   const inventory: string[] = Object.keys(tables);
   const payload: string = localBackupCanonicalPayload(
@@ -162,7 +162,7 @@ export default function dataLifecycleMatrixTest(): void {
           .assertFalse();
         expect(cloudTableRowsAreDownloadCompatible(
           'remotehosts', [{
-            id: 'host-1', passward: 'plaintext'
+            'id': 'host-1', 'passward': 'plaintext'
           }], true, encrypted)).assertFalse();
       });
 
@@ -170,21 +170,21 @@ export default function dataLifecycleMatrixTest(): void {
       0, (): void => {
         const tables = emptyTables();
         tables['rdpcredentials'].push({
-          id: 'credential-1',
-          userid: 'owner-a',
-          username: 'DOMAIN\\alice',
-          password: 'rdp-secret'
+          'id': 'credential-1',
+          'userid': 'owner-a',
+          'username': 'DOMAIN\\alice',
+          'password': 'rdp-secret'
         });
         tables['totpentries'].push({
-          id: 'totp-1',
-          userid: 'owner-a',
-          issuer: 'Example',
-          secret: 'totp-secret'
+          'id': 'totp-1',
+          'userid': 'owner-a',
+          'issuer': 'Example',
+          'secret': 'totp-secret'
         });
         tables['vncrecordv2'].push({
-          id: 'vnc-secret',
-          userid: 'owner-a',
-          recordtype: 'secret'
+          'id': 'vnc-secret',
+          'userid': 'owner-a',
+          'recordtype': 'secret'
         });
         const backup = createLocalBackupDocument(
           tables, 100, '1.0.8', [], {}, 'owner-a');
@@ -208,7 +208,8 @@ export default function dataLifecycleMatrixTest(): void {
         const plan = adaptLocalBackupDocumentForRestore(
           parsed, 'owner-a', true);
         expect(plan !== null).assertTrue();
-        expect(plan?.presentTables.indexOf('vncrecordv2') < 0)
+        if (plan === null) { return; }
+        expect(plan.presentTables.indexOf('vncrecordv2') < 0)
           .assertTrue();
         expect(plan?.tables['remotehosts'][0]['passward'] ===
           undefined).assertTrue();

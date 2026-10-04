@@ -30,8 +30,10 @@ import {
   SshSessionLogChunkV1,
   SshSessionLogDocumentV1,
   SshSessionLogRecordV1,
-  SshSessionLogSearchCursorV1
+  SshSessionLogSearchCursorV1,
+  SshSessionLogCaptureContextV1
 } from '../main/ets/services/ssh/log/SshSessionLogPolicy';
+import { withOverrides } from './helpers/RecordTestUtils';
 
 function record(id: string, text: string, timestamp: number = 100): SshSessionLogRecordV1 {
   return {
@@ -155,15 +157,15 @@ export default function sshSessionLogPolicyTest(): void {
     it('default_should_be_opt_in_and_sensitive_modes_should_fail_closed', 0, (): void => {
       const settings = defaultSshSessionLogSettings();
       expect(settings.enabled).assertFalse();
-      const base = {
+      const base: SshSessionLogCaptureContextV1 = {
         hostId: 'host-one', sessionId: 7, generation: 2, enabled: true, paused: false,
         passwordPrompt: false, mfaPrompt: false, passphrasePrompt: false,
         rawMode: false, fullscreenMode: false, secretExpansion: false
       };
       expect(sshSessionLogCaptureAllowed(base)).assertTrue();
-      expect(sshSessionLogCaptureAllowed({ ...base, passwordPrompt: true })).assertFalse();
-      expect(sshSessionLogCaptureAllowed({ ...base, fullscreenMode: true })).assertFalse();
-      expect(sshSessionLogCaptureAllowed({ ...base, generation: 0 })).assertFalse();
+      expect(sshSessionLogCaptureAllowed(withOverrides(base, { 'passwordPrompt': true }))).assertFalse();
+      expect(sshSessionLogCaptureAllowed(withOverrides(base, { 'fullscreenMode': true }))).assertFalse();
+      expect(sshSessionLogCaptureAllowed(withOverrides(base, { 'generation': 0 }))).assertFalse();
     });
 
     it('input_capture_should_require_a_trusted_command_editing_phase', 0, (): void => {

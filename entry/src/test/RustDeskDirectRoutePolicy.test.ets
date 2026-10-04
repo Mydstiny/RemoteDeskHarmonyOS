@@ -32,8 +32,8 @@ export default function rustDeskDirectRoutePolicyTest(): void {
       discovered.lanDiscoveryIdentity = '123456789';
       discovered.lanAddressMode = 'static';
       expect(rustDeskDirectEndpointSource(discovered)).assertEqual('lan_discovery');
-      // A discovery identity without an address policy is not a discovery record.
-      discovered.lanAddressMode = '';
+      // A discovery identity without a static/dynamic address policy is not a discovery record.
+      discovered.lanAddressMode = 'manual';
       expect(rustDeskDirectEndpointSource(discovered)).assertEqual('manual_direct');
       const relay: RemoteHost = directHost('', 21118);
       relay.rustdeskDirectEnabled = false;

@@ -54,14 +54,14 @@ export default function vncDisplaySwitchPolicyTest(): void {
       expect(shouldRequestVncDisplaySwitch(pending, 1, 0)).assertFalse();
       const effects: string[] = [];
       releaseVncInputForDisplaySwitch({
-        discardPendingMouseMove: (): void => effects.push('move'),
-        releaseCanvasPinchInput: (): void => effects.push('pinch'),
-        resetTouchGesture: (): void => effects.push('touch'),
-        releaseAllHeldKeys: (): void => effects.push('keys'),
-        clearHeldPointerState: (): void => effects.push('pointer'),
-        resetAllLatches: (): void => effects.push('latches'),
-        resetTouchpadState: (): void => effects.push('touchpad'),
-        invalidateViewport: (): void => effects.push('viewport')
+        discardPendingMouseMove: (): void => { effects.push('move'); },
+        releaseCanvasPinchInput: (): void => { effects.push('pinch'); },
+        resetTouchGesture: (): void => { effects.push('touch'); },
+        releaseAllHeldKeys: (): void => { effects.push('keys'); },
+        clearHeldPointerState: (): void => { effects.push('pointer'); },
+        resetAllLatches: (): void => { effects.push('latches'); },
+        resetTouchpadState: (): void => { effects.push('touchpad'); },
+        invalidateViewport: (): void => { effects.push('viewport'); }
       });
       expect(effects.join(',')).assertEqual(
         'move,pinch,touch,keys,pointer,latches,touchpad,viewport');

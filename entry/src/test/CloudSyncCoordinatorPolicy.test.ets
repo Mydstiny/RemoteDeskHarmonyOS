@@ -93,8 +93,8 @@ export default function cloudSyncCoordinatorPolicyTest(): void {
     it('merges_independent_dirty_markers_and_clears_only_a_covered_revision',
       0, (): void => {
         const merged: Record<string, number> = mergeMutationRevisionMaps(
-          { remotehosts: 10, sshkeys: 7 },
-          { remotehosts: 12, totpentries: 9 });
+          { 'remotehosts': 10, 'sshkeys': 7 },
+          { 'remotehosts': 12, 'totpentries': 9 });
         expect(merged['remotehosts']).assertEqual(12);
         expect(merged['sshkeys']).assertEqual(7);
         expect(merged['totpentries']).assertEqual(9);
@@ -188,13 +188,13 @@ export default function cloudSyncCoordinatorPolicyTest(): void {
       expect(cloudSyncTargetTableCompleted(null, 'remotehosts')).assertFalse();
       expect(cloudSyncTargetTableCompleted({}, 'remotehosts')).assertFalse();
       expect(cloudSyncTargetTableCompleted({
-        remotehosts: {
+        'remotehosts': {
           upload: { successful: 1, failed: 0, remained: 0 },
           download: { successful: 2, failed: 0, remained: 0 }
         }
       }, 'remotehosts')).assertTrue();
       expect(cloudSyncTargetTableCompleted({
-        remotehosts: {
+        'remotehosts': {
           upload: { successful: 0, failed: 0, remained: 1 },
           download: { successful: 0, failed: 0, remained: 0 }
         }
@@ -537,7 +537,7 @@ export default function cloudSyncCoordinatorPolicyTest(): void {
               tables: string[], failedTables: string[]
             ): Promise<boolean> => {
               tables.forEach((table: string): void =>
-                completedTables.push(table));
+                { completedTables.push(table); });
               expect(failedTables.join(','))
                 .assertEqual('moonlightrecordv1');
               return true;
@@ -546,7 +546,7 @@ export default function cloudSyncCoordinatorPolicyTest(): void {
           },
           (tables: string[]): void => {
             tables.forEach((table: string): void =>
-              appliedTables.push(table));
+              { appliedTables.push(table); });
           }
         );
         expect(result.ok).assertFalse();

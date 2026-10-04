@@ -20,13 +20,15 @@ import {
   sshSftpSessionSnapshotCanAttach,
   sshSftpTaskCommandTarget,
   sshSftpResumeDisposition,
-  upsertSshSftpTask
+  upsertSshSftpTask,
+  SshSftpTaskStage
 } from '../main/ets/services/SshSftpTaskPolicy';
 import { SshSftpTaskStore } from '../main/ets/services/SshSftpTaskStore';
 import {
   SshSftpSessionOwnerPolicy,
   SshSftpTrackedSession
 } from '../main/ets/services/SshSftpSessionOwnerPolicy';
+import { withOverrides } from './helpers/RecordTestUtils';
 
 function task(id: string, sequence: number): SshSftpTaskRecord {
   return {
@@ -41,19 +43,19 @@ export default function sshSftpTaskPolicyTest(): void {
   describe('SshSftpTaskPolicy', (): void => {
     it('normalizes persisted metadata and clamps invalid offsets', 0, (): void => {
       const normalized = normalizeSshSftpTaskRecord({
-        taskId: 'task-1', hostId: 'host-1', direction: 'upload', remotePath: './x', fileName: 'x',
-        totalBytes: 10, verifiedOffset: 99, stage: 'transferring', sequence: 2, updatedAt: 3
-      });
+        'taskId': 'task-1', 'hostId': 'host-1', 'direction': 'upload', 'remotePath': './x', 'fileName': 'x',
+        'totalBytes': 10, 'verifiedOffset': 99, 'stage': 'transferring', 'sequence': 2, 'updatedAt': 3
+      } as Record<string, Object>);
       expect(normalized !== null).assertTrue();
       expect(normalized?.isDirectory).assertFalse();
       expect(normalized?.verifiedOffset).assertEqual(10);
-      expect(normalizeSshSftpTaskRecord({ taskId: '', hostId: 'host', remotePath: '.', fileName: 'x' })).assertNull();
+      expect(normalizeSshSftpTaskRecord({ 'taskId': '', 'hostId': 'host', 'remotePath': '.', 'fileName': 'x' } as Record<string, Object>)).assertNull();
 
       const unknownTotal = normalizeSshSftpTaskRecord({
-        taskId: 'legacy-1', hostId: 'host-1', direction: 'download', remotePath: './x', fileName: 'x',
-        verifiedOffset: 0, sourceSize: 100, sourceMtime: 20, partialSize: 0, partialMtime: 21,
-        stage: 'waitingForConnection', sequence: 3, updatedAt: 4
-      });
+        'taskId': 'legacy-1', 'hostId': 'host-1', 'direction': 'download', 'remotePath': './x', 'fileName': 'x',
+        'verifiedOffset': 0, 'sourceSize': 100, 'sourceMtime': 20, 'partialSize': 0, 'partialMtime': 21,
+        'stage': 'waitingForConnection', 'sequence': 3, 'updatedAt': 4
+      } as Record<string, Object>);
       expect(unknownTotal !== null).assertTrue();
       expect(unknownTotal?.totalBytes).assertEqual(-1);
       expect(unknownTotal?.verifiedOffset).assertEqual(-1);
@@ -87,11 +89,9 @@ export default function sshSftpTaskPolicyTest(): void {
     it('turns persisted in-flight work into an explicit reconnect wait', 0, (): void => {
       const interruptedStages = ['inspecting', 'transferring', 'verifying', 'committing'];
       for (let index: number = 0; index < interruptedStages.length; index++) {
-        const interrupted: SshSftpTaskRecord = {
-          ...task('restore-' + index.toString(), 10),
-          stage: interruptedStages[index] as SshSftpTaskRecord['stage'],
-          sessionGeneration: 9
-        };
+        const interrupted: SshSftpTaskRecord = withOverrides(task('restore-' + index.toString(), 10), {
+          'stage': interruptedStages[index] as SshSftpTaskStage,
+          'sessionGeneration': 9 });
         const recovered: SshSftpTaskRecord =
           recoverInterruptedSshSftpTaskRecord(interrupted, 20 + index);
         expect(recovered.stage).assertEqual('waitingForConnection');
@@ -264,15 +264,13 @@ export default function sshSftpTaskPolicyTest(): void {
       expect(record.sessionGeneration).assertEqual(0);
       expect(record.schemaVersion).assertEqual(4);
 
-      const transferring: SshSftpTaskRecord = {
-        ...record,
-        stage: 'transferring',
-        verifiedOffset: 0,
-        partialSize: -1,
-        partialMtime: -1,
-        sequence: record.sequence + 1,
-        updatedAt: record.updatedAt + 1
-      };
+      const transferring: SshSftpTaskRecord = withOverrides(record, {
+        'stage': 'transferring',
+        'verifiedOffset': 0,
+        'partialSize': -1,
+        'partialMtime': -1,
+        'sequence': record.sequence + 1,
+        'updatedAt': record.updatedAt + 1 });
       expect(store.upsert(transferring)).assertTrue();
       expect(store.command(record.taskId, { kind: 'detach' }).accepted).assertTrue();
       const detached: SshSftpTaskRecord | null = store.get(record.taskId);
@@ -282,24 +280,20 @@ export default function sshSftpTaskPolicyTest(): void {
       expect(detached?.sourcePath).assertEqual('./source/folder/empty.txt');
       expect(detached?.targetPath).assertEqual('./target/folder/empty.txt');
 
-      const renaming: SshSftpTaskRecord = {
-        ...detached as SshSftpTaskRecord,
-        stage: 'committing',
-        commitState: 'renaming',
-        sequence: (detached as SshSftpTaskRecord).sequence + 1,
-        updatedAt: (detached as SshSftpTaskRecord).updatedAt + 1
-      };
+      const renaming: SshSftpTaskRecord = withOverrides(detached as SshSftpTaskRecord, {
+        'stage': 'committing',
+        'commitState': 'renaming',
+        'sequence': (detached as SshSftpTaskRecord).sequence + 1,
+        'updatedAt': (detached as SshSftpTaskRecord).updatedAt + 1 });
       expect(store.upsert(renaming)).assertTrue();
       expect(store.command(record.taskId, { kind: 'detach' }).accepted).assertTrue();
       expect(store.get(record.taskId)?.commitState).assertEqual('renaming');
 
-      const renamed: SshSftpTaskRecord = {
-        ...store.get(record.taskId) as SshSftpTaskRecord,
-        stage: 'committing',
-        commitState: 'renamed',
-        sequence: (store.get(record.taskId) as SshSftpTaskRecord).sequence + 1,
-        updatedAt: (store.get(record.taskId) as SshSftpTaskRecord).updatedAt + 1
-      };
+      const renamed: SshSftpTaskRecord = withOverrides(store.get(record.taskId) as SshSftpTaskRecord, {
+        'stage': 'committing',
+        'commitState': 'renamed',
+        'sequence': (store.get(record.taskId) as SshSftpTaskRecord).sequence + 1,
+        'updatedAt': (store.get(record.taskId) as SshSftpTaskRecord).updatedAt + 1 });
       expect(store.upsert(renamed)).assertTrue();
       expect(store.get(record.taskId)?.commitState).assertEqual('renamed');
     });
@@ -327,10 +321,8 @@ export default function sshSftpTaskPolicyTest(): void {
         channelId: 'shell', state: 3, stateName: 'Ready', eventSequence: 12,
         host: 'host-1', port: 22, backgroundLimited: false, lastEventType: 'ready'
       };
-      const stale: SshSessionSnapshot = { ...ready, errorCode: -6 };
-      const reconnecting: SshSessionSnapshot = {
-        ...ready, state: 6, stateName: 'Reconnecting'
-      };
+      const stale: SshSessionSnapshot = withOverrides(ready, { 'errorCode': -6 });
+      const reconnecting: SshSessionSnapshot = withOverrides(ready, { 'state': 6, 'stateName': 'Reconnecting' });
       expect(sshSftpSessionSnapshotCanAttach(7, 3, 2, ready)).assertTrue();
       expect(sshSftpSessionSnapshotCanAttach(7, 2, 2, stale)).assertFalse();
       expect(sshSftpSessionSnapshotCanAttach(7, 2, 2, ready)).assertFalse();
@@ -378,11 +370,9 @@ export default function sshSftpTaskPolicyTest(): void {
       expect(sftpEndpointPathIsSame(sameHost, './data.txt', sameHost, './data.txt')).assertTrue();
       expect(isValidSftpTransferSpec(samePath)).assertFalse();
 
-      const differentPath: SftpTransferSpec = {
-        ...samePath,
-        taskId: 'different-path',
-        targetPath: './copy/data.txt'
-      };
+      const differentPath: SftpTransferSpec = withOverrides(samePath, {
+        'taskId': 'different-path',
+        'targetPath': './copy/data.txt' });
       expect(sftpEndpointPathIsSame(sameHost, differentPath.sourcePath,
         sameHost, differentPath.targetPath)).assertFalse();
       expect(isValidSftpTransferSpec(differentPath)).assertTrue();

@@ -1,6 +1,8 @@
 import { describe, it, expect } from '@ohos/hypium';
 import {
   baseCanvasTransform,
+  CanvasTransform,
+  CanvasViewport,
   canvasTransformCanPan,
   canvasTransformDiffersFromBaseline,
   clampCanvasTransform,
@@ -17,7 +19,7 @@ import {
 
 export default function remoteCanvasTransformPolicyTest() {
   describe('RemoteCanvasTransformPolicy', () => {
-    const viewport = { surfaceWidth: 1000, surfaceHeight: 600, sourceWidth: 2000, sourceHeight: 1000 };
+    const viewport: CanvasViewport = { surfaceWidth: 1000, surfaceHeight: 600, sourceWidth: 2000, sourceHeight: 1000 };
 
     it('maps released scale values to stable settings values', 0, () => {
       expect(normalizeLocalViewScaleMode('original')).assertEqual('100');
