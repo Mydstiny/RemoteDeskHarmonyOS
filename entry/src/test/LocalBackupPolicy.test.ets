@@ -10,9 +10,11 @@ import {
   localBackupCanonicalPayload,
   localBackupSha256,
   LOCAL_BACKUP_PORTABLE_TABLES,
+  LocalBackupValidation,
   portableBackupScopeLeaseAllowed,
   validateCloudDownloadRollbackSnapshot,
   validateLocalBackupDocument,
+  validateLocalBackupDocumentDetailed,
   validateLocalBackupSnapshot
 } from '../main/ets/services/LocalBackupPolicy';
 import {
@@ -30,6 +32,12 @@ import {
   accountSessionLease,
   deviceLocalScopeToken
 } from '../main/ets/services/AccountScopePolicy';
+import {
+  LEGACY_V1_BACKUP,
+  LEGACY_V2_BACKUP,
+  LEGACY_V2_VNCRECORD_BACKUP,
+  LEGACY_V2_VNCRECORDS_BACKUP
+} from './fixtures/LegacyBackupFixtures';
 
 function emptyTables(): Record<string, Array<Record<string, string>>> {
   const tables: Record<string, Array<Record<string, string>>> = {};
@@ -700,6 +708,91 @@ export default function localBackupPolicyTest(): void {
         .assertEqual(0);
       expect(validateLocalBackupDocument(
         JSON.stringify(document)) !== null).assertTrue();
+    });
+
+    it('full_mode_drops_vnc_tombstones_and_passes_its_own_validation', 0, (): void => {
+      const owner: string = 'owner-a';
+      const tables = emptyTables();
+      const deleted: Record<string, string> =
+        portableVncHostRow(owner, 'vnc-deleted');
+      deleted['deletedat'] = '9';
+      tables['vncrecordv2'].push(portableVncHostRow(owner, 'vnc-host'), deleted);
+      const localDeleted: Record<string, string> =
+        portableVncHostRow(owner, 'vnc-local-deleted');
+      localDeleted['deletedat'] = '9';
+      localDeleted['localonly'] = '1';
+      const localTables: Record<string, Array<Record<string, string>>> = {};
+      localTables['vnclocalrecords'] = [localDeleted];
+      const document = createLocalBackupDocument(
+        tables, 100, '1.2.0', [], localTables, owner, 3, false, 'full');
+      expect(document.tables['vncrecordv2'].length).assertEqual(1);
+      expect(document.tables['vncrecordv2'][0]['id']).assertEqual('vnc-host');
+      expect(document.localTables?.['vnclocalrecords'].length).assertEqual(0);
+      expect(validateLocalBackupDocument(
+        JSON.stringify(document)) !== null).assertTrue();
+    });
+
+    it('restores_real_v1_and_v2_files_without_their_secrets', 0, (): void => {
+      // Files produced by the original builds, not by today's canonicalizer.
+      const fixtures: string[] = [
+        LEGACY_V1_BACKUP, LEGACY_V2_BACKUP, LEGACY_V2_VNCRECORDS_BACKUP, LEGACY_V2_VNCRECORD_BACKUP
+      ];
+      for (let i = 0; i < fixtures.length; i++) {
+        const validation: LocalBackupValidation = validateLocalBackupDocumentDetailed(fixtures[i]);
+        expect(validation.stage).assertEqual('');
+        expect(validation.document !== null).assertTrue();
+        const plan = adaptLocalBackupDocumentForRestore(
+          validation.document!, 'device-local:target', true);
+        expect(plan !== null).assertTrue();
+        const planText: string = JSON.stringify(plan);
+        expect(planText.indexOf('plaintext-secret')).assertEqual(-1);
+        expect(planText.indexOf('legacy-passphrase')).assertEqual(-1);
+        expect(plan!.presentTables.indexOf('cryptoparams')).assertEqual(-1);
+        expect(plan!.presentTables.indexOf('vncrecords')).assertEqual(-1);
+        expect(plan!.presentTables.indexOf('vncrecord')).assertEqual(-1);
+        expect(plan!.tables['remotehosts'][0]['userid']).assertEqual('device-local:target');
+        // Adopting a file without an account scope needs the user's consent.
+        expect(adaptLocalBackupDocumentForRestore(
+          validation.document!, 'device-local:target', false) === null).assertTrue();
+      }
+    });
+
+    it('rejects_content_a_legacy_hash_does_not_cover', 0, (): void => {
+      // v1/v2 hashes cover neither a manifest nor a Moonlight local table.
+      const withMoonlight: Record<string, Object> =
+        JSON.parse(LEGACY_V2_VNCRECORDS_BACKUP) as Record<string, Object>;
+      const local: Record<string, Object> = withMoonlight['localTables'] as Record<string, Object>;
+      local[MOONLIGHT_LOCAL_TABLE] = [] as Object;
+      expect(validateLocalBackupDocumentDetailed(JSON.stringify(withMoonlight)).stage)
+        .assertEqual('localTables');
+      const withManifest: Record<string, Object> =
+        JSON.parse(LEGACY_V2_BACKUP) as Record<string, Object>;
+      withManifest['manifest'] = JSON.parse('{"moonlight":{}}') as Object;
+      expect(validateLocalBackupDocumentDetailed(JSON.stringify(withManifest)).stage)
+        .assertEqual('manifest');
+    });
+
+    it('reports_the_failing_stage_and_backups_from_newer_versions', 0, (): void => {
+      const document = createLocalBackupDocument(
+        emptyTables(), 100, '1.2.0', [], {}, 'owner-a', 3, false, 'full');
+      const valid: LocalBackupValidation =
+        validateLocalBackupDocumentDetailed(JSON.stringify(document));
+      expect(valid.document !== null).assertTrue();
+      expect(valid.stage).assertEqual('');
+      expect(validateLocalBackupDocumentDetailed('{').stage).assertEqual('json');
+      expect(validateLocalBackupDocumentDetailed('[]').stage).assertEqual('shape');
+      const tampered = createLocalBackupDocument(
+        emptyTables(), 100, '1.2.0', [], {}, 'owner-a');
+      tampered.sha256 = '0'.repeat(64);
+      expect(validateLocalBackupDocumentDetailed(
+        JSON.stringify(tampered)).stage).assertEqual('hash');
+      const newer = createLocalBackupDocument(
+        emptyTables(), 100, '1.2.0', [], {}, 'owner-a');
+      newer.version = 4;
+      const result: LocalBackupValidation =
+        validateLocalBackupDocumentDetailed(JSON.stringify(newer));
+      expect(result.document === null).assertTrue();
+      expect(result.stage).assertEqual('unsupported_version');
     });
   });
 }

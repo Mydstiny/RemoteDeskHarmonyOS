@@ -172,6 +172,25 @@ const REMOTE_HOST_EXTENSION_SAFE: string[] = [
   'localrustdeskprosyncerror'
 ];
 
+/**
+ * Non-secret cloud-extension keys whose default value is dropped from a
+ * redacted backup. Hosts without a LAN binding then produce the same document
+ * an older app writes, so the older app can still import it; a non-default
+ * value is carried because dropping it loses the binding. The Restricted
+ * Admin source is only a selector (its single value is the NTLM hash), never
+ * the hash itself.
+ */
+const REMOTE_HOST_EXTENSION_DEFAULT_ELIDED: Record<string, string[]> = {
+  'lanaddressmode': ['', 'manual'],
+  'landiscoveryidentity': [''],
+  'lanlastresolvedat': ['', '0'],
+  'rdprestrictedadminsecretsource': ['', 'ntlm_hash']
+};
+// Own keys only: an extension key such as `constructor` must not resolve to
+// an inherited Object member.
+const REMOTE_HOST_EXTENSION_DEFAULT_ELIDED_KEYS: string[] =
+  Object.keys(REMOTE_HOST_EXTENSION_DEFAULT_ELIDED);
+
 const DISPLAY_CONFIG_SAFE: string[] = [
   'width', 'height', 'multiMonitor', 'monitorCount',
   'dynamicResolution', 'colorDepth'
@@ -234,6 +253,14 @@ function redactRemoteHostDisplayConfig(
       const keys: string[] = Object.keys(extension);
       for (let i = 0; i < keys.length; i++) {
         const key: string = keys[i];
+        if (REMOTE_HOST_EXTENSION_DEFAULT_ELIDED_KEYS.indexOf(key) >= 0) {
+          const elidedDefaults: string[] = REMOTE_HOST_EXTENSION_DEFAULT_ELIDED[key];
+          if (typeof extension[key] === 'string' &&
+            elidedDefaults.indexOf(extension[key]) < 0) {
+            safeExtension[key] = extension[key];
+          }
+          continue;
+        }
         if ((REMOTE_HOST_EXTENSION_SAFE.indexOf(key) >= 0 ||
           REMOTE_HOST_EXTENSION_TRUST.indexOf(key) >= 0) &&
           typeof extension[key] === 'string') {
@@ -316,10 +343,29 @@ function integerText(value: string): number {
   return Number.isFinite(parsed) ? Math.floor(parsed) : 0;
 }
 
+function vncRowIsTombstone(row: Record<string, string>): boolean {
+  return integerText(row['deletedat'] || '0') > 0;
+}
+
 function vncRowIsPortable(row: Record<string, string>): boolean {
   const recordType: string = row['recordtype'] || '';
   return recordType !== 'secret' && recordType !== 'trust' &&
-    integerText(row['deletedat'] || '0') <= 0;
+    !vncRowIsTombstone(row);
+}
+
+/**
+ * Deletion tombstones only propagate a delete through cloud sync. A merge
+ * restore never deletes, so neither backup mode carries them and both
+ * validators reject them.
+ */
+function liveVncRows(
+  rows: Array<Record<string, string>>
+): Array<Record<string, string>> {
+  const result: Array<Record<string, string>> = [];
+  for (let i = 0; i < rows.length; i++) {
+    if (!vncRowIsTombstone(rows[i])) { result.push(copyRowWithout(rows[i], [])); }
+  }
+  return result;
 }
 
 function redactVncRows(
@@ -494,7 +540,8 @@ export function redactPortableBackupData(
 /**
  * Complete backup selected explicitly by the user: existing protocol columns (including
  * passwords/private keys/2FA/tokens as stored, device trust, cryptoparams,
- * VNC secret rows and trust candidate metadata) is preserved. The local VNC
+ * VNC secret rows and trust candidate metadata) is preserved. VNC deletion
+ * tombstones are not carried (see liveVncRows). The local VNC
  * confirmation marker remains device-only and is never part of this data.
  * Moonlight is stricter: its client identity is omitted even here, while its
  * non-secret settings/host/profile rows and trust candidates are preserved.
@@ -526,6 +573,10 @@ export function fullPortableBackupData(
         safeRows.push(sanitizeRemoteHostRowForRdpCredentialPolicy(sourceRows[r]).row);
       }
       fullTables[names[i]] = safeRows;
+    } else if (names[i] === 'vncrecordv2') {
+      const sourceRows: Array<Record<string, string>> = tables[names[i]] || [];
+      fullTables[names[i]] = liveVncRows(sourceRows);
+      excludedRows += sourceRows.length - fullTables[names[i]].length;
     } else {
       fullTables[names[i]] = copyRows(tables[names[i]] || []);
     }
@@ -545,6 +596,10 @@ export function fullPortableBackupData(
           localTables[localNames[i]] || [], 'full', true);
       fullLocal[localNames[i]] = portable.rows;
       excludedRows += portable.excludedRows;
+    } else if (localNames[i] === 'vnclocalrecords') {
+      const sourceRows: Array<Record<string, string>> = localTables[localNames[i]] || [];
+      fullLocal[localNames[i]] = liveVncRows(sourceRows);
+      excludedRows += sourceRows.length - fullLocal[localNames[i]].length;
     } else {
       fullLocal[localNames[i]] = copyRows(localTables[localNames[i]] || []);
     }

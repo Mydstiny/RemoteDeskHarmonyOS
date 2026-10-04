@@ -13,11 +13,13 @@ import {
   createLocalBackupDocument,
   createLocalBackupRestorePreview,
   LocalBackupDocument,
+  LocalBackupValidation,
+  localBackupValidationStageCode,
   LOCAL_BACKUP_MAX_BYTES,
   localBackupSha256,
   portableBackupScopeLeaseAllowed,
   PortableBackupRestorePlan,
-  validateLocalBackupDocument
+  validateLocalBackupDocumentDetailed
 } from './LocalBackupPolicy';
 import {
   BackupRestorePreview,
@@ -32,14 +34,19 @@ import {
   AccountSessionLease,
   accountSessionLeaseEquals
 } from './AccountScopePolicy';
+import { recordDiagnosticEvent } from './DiagnosticCaptureRuntime';
 
 export class LocalBackupService {
   private static instance: LocalBackupService;
   private readonly cloud: CloudStore = CloudStore.getInstance();
   private lastErrorCode: BoundedDocumentIoCode | 'cancelled' | 'invalid_backup' |
     'unsafe_legacy_backup' | 'snapshot_failed' | 'owner_mismatch' |
-    'local_scope_required' |
+    'local_scope_required' | 'export_self_check_failed' | 'backup_newer_version' |
     'selection_expired' | 'restore_failed' = 'cancelled';
+  /** Failed validation stage of the last export self-check or selected file. */
+  private lastErrorStage: string = '';
+  /** Format version declared by the last rejected file, 0 when unknown. */
+  private lastErrorVersion: number = 0;
   private selectedPreview: BackupRestorePreview | null = null;
   private selectedDocumentFingerprint: string = '';
   private selectedLease: AccountSessionLease | null = null;
@@ -55,7 +62,28 @@ export class LocalBackupService {
     if (this.lastErrorCode === 'too_large') { return '备份文件过大'; }
     if (this.lastErrorCode === 'short_read') { return '备份文件读取不完整，请重新选择'; }
     if (this.lastErrorCode === 'short_write') { return '备份文件写入不完整，请更换保存位置后重试'; }
-    if (this.lastErrorCode === 'invalid_backup') { return '备份文件格式或完整性校验失败'; }
+    if (this.lastErrorCode === 'invalid_backup') {
+      if (this.lastErrorStage === 'json' || this.lastErrorStage === 'shape') {
+        return '所选文件不是有效的 RemoteDesktop 备份文件';
+      }
+      if (this.lastErrorVersion === 1 || this.lastErrorVersion === 2) {
+        // Old formats are canonicalized by today's code, so a mismatch is
+        // more likely an unsupported early build than a damaged file.
+        return '该备份来自早期版本（v' + this.lastErrorVersion.toString() +
+          '），包含当前版本无法识别的内容（阶段 ' + this.lastErrorStage + '），未写入任何数据';
+      }
+      if (this.lastErrorStage === 'hash') { return '备份文件内容已被修改或损坏，完整性校验失败'; }
+      return '备份文件未通过校验（阶段 ' + this.lastErrorStage + '），未写入任何数据';
+    }
+    if (this.lastErrorCode === 'backup_newer_version') {
+      return '该备份由更新版本的应用生成，请先升级应用后再恢复';
+    }
+    if (this.lastErrorCode === 'export_self_check_failed') {
+      // The document was produced by this app from local data, so a failure
+      // here is an app defect, not a problem with the chosen location.
+      return '备份生成后自检未通过（阶段 ' + this.lastErrorStage +
+        '），未保存任何文件。这是应用自身的问题，请导出诊断日志反馈';
+    }
     if (this.lastErrorCode === 'snapshot_failed') {
       return '无法取得一致的本地数据快照，未生成备份文件';
     }
@@ -103,6 +131,7 @@ export class LocalBackupService {
       return false;
     }
     const now: number = Date.now();
+    this.lastErrorStage = '';
     let snapshot: PortableBackupSnapshot;
     try {
       snapshot = this.cloud.createPortableBackupSnapshot();
@@ -112,12 +141,21 @@ export class LocalBackupService {
         'backup export snapshot failed');
       return false;
     }
-    const document: LocalBackupDocument = createLocalBackupDocument(
-      snapshot.tables, now, appVersion, snapshot.extensions,
-      snapshot.localTables, snapshot.accountScope,
-      snapshot.rdbSchemaVersion, snapshot.sourceCryptoConfigured,
-      sensitivityMode);
-    const bytes: Uint8Array = new util.TextEncoder().encode(JSON.stringify(document));
+    let document: LocalBackupDocument | null = null;
+    try {
+      document = createLocalBackupDocument(
+        snapshot.tables, now, appVersion, snapshot.extensions,
+        snapshot.localTables, snapshot.accountScope,
+        snapshot.rdbSchemaVersion, snapshot.sourceCryptoConfigured,
+        sensitivityMode);
+    } catch (_e) {
+      document = null;
+    }
+    if (document === null) {
+      return this.failExportSelfCheck('create');
+    }
+    const text: string = JSON.stringify(document);
+    const bytes: Uint8Array = new util.TextEncoder().encode(text);
     hilog.info(0x0001, 'LocalBackupService',
       'backup document created bytes=' + bytes.length.toString() +
       ' extensions=' + snapshot.extensions.length.toString());
@@ -126,6 +164,13 @@ export class LocalBackupService {
       hilog.error(0x0001, 'LocalBackupService',
         'backup export too large bytes=' + bytes.length.toString());
       return false;
+    }
+    // Self-check before anything touches storage: a document this app cannot
+    // read back must never be offered as a backup. The written files are then
+    // compared byte for byte with this validated text.
+    const selfCheck: LocalBackupValidation = validateLocalBackupDocumentDetailed(text);
+    if (selfCheck.document === null) {
+      return this.failExportSelfCheck(selfCheck.stage);
     }
     const baseName: string =
       'RemoteDesktop-backup-' + now.toString() + '.json';
@@ -194,6 +239,18 @@ export class LocalBackupService {
     }
   }
 
+  private failExportSelfCheck(stage: string): boolean {
+    this.lastErrorCode = 'export_self_check_failed';
+    this.lastErrorStage = stage;
+    hilog.error(0x0001, 'LocalBackupService',
+      'backup export self-check failed stage=' + stage);
+    // Code -3: the app could not read back its own document; count = stage.
+    recordDiagnosticEvent('data.local_store', 'local_backup_export', 'failed',
+      0, this.cloud.currentScope().generation, -3, 0,
+      localBackupValidationStageCode(stage));
+    return false;
+  }
+
   private writePrivateStagingFile(
     path: string, bytes: Uint8Array
   ): boolean {
@@ -211,6 +268,7 @@ export class LocalBackupService {
     }
   }
 
+  /** Reads an exported file back; its bytes must equal the validated document. */
   private verifyFile(path: string, expected: Uint8Array): boolean {
     const file = fileIo.openSync(path, fileIo.OpenMode.READ_ONLY);
     try {
@@ -223,13 +281,6 @@ export class LocalBackupService {
       }
       if (!LocalBackupService.bytesEqual(expected, verified.bytes)) {
         this.lastErrorCode = 'short_write';
-        return false;
-      }
-      const parsed: LocalBackupDocument | null =
-        validateLocalBackupDocument(
-          new util.TextDecoder().decodeToString(verified.bytes));
-      if (parsed === null) {
-        this.lastErrorCode = 'invalid_backup';
         return false;
       }
       return true;
@@ -254,6 +305,8 @@ export class LocalBackupService {
     this.selectedPreview = null;
     this.selectedDocumentFingerprint = '';
     this.selectedLease = null;
+    this.lastErrorStage = '';
+    this.lastErrorVersion = 0;
     const selectionScope = this.cloud.currentScope();
     const selectionLease: AccountSessionLease | null =
       this.cloud.currentAccountLease();
@@ -269,9 +322,22 @@ export class LocalBackupService {
       const size: number = fileIo.statSync(file.fd).size;
       const read = BoundedDocumentIo.readFully(file.fd, size, LOCAL_BACKUP_MAX_BYTES);
       if (!read.ok) { this.lastErrorCode = read.code; return null; }
-      const document: LocalBackupDocument | null =
-        validateLocalBackupDocument(new util.TextDecoder().decodeToString(read.bytes));
-      this.lastErrorCode = document ? 'cancelled' : 'invalid_backup';
+      const validation: LocalBackupValidation =
+        validateLocalBackupDocumentDetailed(new util.TextDecoder().decodeToString(read.bytes));
+      const document: LocalBackupDocument | null = validation.document;
+      this.lastErrorStage = validation.stage;
+      this.lastErrorVersion = validation.version;
+      this.lastErrorCode = document !== null ? 'cancelled' :
+        validation.stage === 'unsupported_version' ? 'backup_newer_version' : 'invalid_backup';
+      if (document === null) {
+        hilog.error(0x0001, 'LocalBackupService',
+          'backup selection rejected stage=' + validation.stage +
+          ' version=' + validation.version.toString());
+        // Code -3: the selected file was rejected before any write; count = stage.
+        recordDiagnosticEvent('data.local_store', 'local_backup_restore', 'failed',
+          0, selectionScope.generation, -3, 0,
+          localBackupValidationStageCode(validation.stage));
+      }
       if (document !== null) {
         this.selectedPreview =
           createLocalBackupRestorePreview(document);

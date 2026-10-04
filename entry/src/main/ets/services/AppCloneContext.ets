@@ -1,8 +1,12 @@
 import { common } from '@kit.AbilityKit';
+import { preferences } from '@kit.ArkData';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 
 const DOMAIN: number = 0x0029;
 const TAG: string = 'AppClone';
+const APP_PREFS_NAME: string = 'RemoteDesktopAppPrefs';
+/** Each clone has its own sandbox, so this opt-in is local to one clone. */
+export const APP_CLONE_CLIPBOARD_OPT_IN_KEY: string = 'appCloneClipboardBridgeOptIn';
 
 export interface AppClonePolicySnapshot {
   cloneIndex: number;
@@ -65,11 +69,17 @@ export function appCloneCloudOperationAllowed(
   return policy.cloudSyncAllowed;
 }
 
-/** SystemPasteboard is device-wide, so a clone must disable both bridge directions. */
+/**
+ * SystemPasteboard is device-wide, so a clone shares it with the main app.
+ * A clone keeps both bridge directions off unless the user opted in on that
+ * clone (user decision 2026-10-04); an unconfirmed instance never bridges.
+ */
 export function appCloneClipboardBridgeAllowed(
-  policy: AppClonePolicySnapshot
+  policy: AppClonePolicySnapshot,
+  cloneOptIn: boolean = false
 ): boolean {
-  return !policy.localOnly;
+  if (!policy.localOnly) { return true; }
+  return policy.detected && policy.isClone && cloneOptIn;
 }
 
 export function appCloneLocalDataSheetReturnCloses(
@@ -83,6 +93,7 @@ export class AppCloneContext {
   private static instance: AppCloneContext;
   private initialized: boolean = false;
   private policy: AppClonePolicySnapshot = appClonePolicyForIndex(-1);
+  private clipboardOptIn: boolean = false;
 
   static getInstance(): AppCloneContext {
     if (!AppCloneContext.instance) {
@@ -95,6 +106,7 @@ export class AppCloneContext {
     if (this.initialized) { return; }
     this.policy = appClonePolicyFromIndexReader((): number =>
       context.getApplicationContext().getCurrentAppCloneIndex());
+    this.clipboardOptIn = this.policy.isClone && AppCloneContext.readClipboardOptIn(context);
     this.initialized = true;
     hilog.info(DOMAIN, TAG,
       'instance policy detected=%{public}s clone=%{public}s index=%{public}d localOnly=%{public}s',
@@ -127,7 +139,40 @@ export class AppCloneContext {
   }
 
   clipboardBridgeAllowed(): boolean {
-    return appCloneClipboardBridgeAllowed(this.policy);
+    return appCloneClipboardBridgeAllowed(this.policy, this.clipboardOptIn);
+  }
+
+  cloneClipboardOptIn(): boolean { return this.policy.isClone && this.clipboardOptIn; }
+
+  /**
+   * Persists this clone's opt-in. Turning it off takes effect in memory first
+   * and stays off even if the write fails (fail closed); turning it on needs
+   * a successful write. Every bridge operation re-checks
+   * clipboardBridgeAllowed, so a change applies to the next operation.
+   */
+  setCloneClipboardOptIn(context: common.Context, enabled: boolean): boolean {
+    if (!this.policy.isClone) { return false; }
+    if (!enabled) { this.clipboardOptIn = false; }
+    try {
+      const prefs = preferences.getPreferencesSync(context, { name: APP_PREFS_NAME });
+      prefs.putSync(APP_CLONE_CLIPBOARD_OPT_IN_KEY, enabled);
+      prefs.flushSync();
+    } catch (_error) {
+      hilog.error(DOMAIN, TAG, 'clipboard opt-in write failed');
+      return false;
+    }
+    this.clipboardOptIn = enabled;
+    hilog.info(DOMAIN, TAG, 'clone clipboard opt-in=%{public}s', enabled.toString());
+    return true;
+  }
+
+  private static readClipboardOptIn(context: common.Context): boolean {
+    try {
+      const prefs = preferences.getPreferencesSync(context, { name: APP_PREFS_NAME });
+      return prefs.getSync(APP_CLONE_CLIPBOARD_OPT_IN_KEY, false) === true;
+    } catch (_error) {
+      return false;
+    }
   }
 
   localDataSheetReturnCloses(): boolean {

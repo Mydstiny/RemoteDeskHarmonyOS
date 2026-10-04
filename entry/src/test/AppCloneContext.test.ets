@@ -67,5 +67,19 @@ export default function appCloneContextTest(): void {
       expect(appCloneClipboardBridgeAllowed(clone)).assertFalse();
       expect(appCloneLocalDataSheetReturnCloses(clone)).assertTrue();
     });
+
+    it('lets_only_a_confirmed_clone_opt_in_to_the_shared_clipboard', 0, (): void => {
+      const main = appClonePolicyForIndex(0);
+      const clone = appClonePolicyForIndex(2);
+      const unconfirmed = appClonePolicyForIndex(-1);
+      expect(appCloneClipboardBridgeAllowed(clone, false)).assertFalse();
+      expect(appCloneClipboardBridgeAllowed(clone, true)).assertTrue();
+      // An unconfirmed instance never bridges, whatever was stored.
+      expect(appCloneClipboardBridgeAllowed(unconfirmed, true)).assertFalse();
+      expect(appCloneClipboardBridgeAllowed(main, false)).assertTrue();
+      // Opting in changes nothing else about the clone's isolation.
+      expect(appCloneCloudOperationAllowed(clone)).assertFalse();
+      expect(appCloneAccountTransitionAllowed(clone)).assertFalse();
+    });
   });
 }

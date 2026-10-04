@@ -19,6 +19,59 @@ export interface CloudSyncSheetSpec {
   canDismiss: boolean;
 }
 
+/**
+ * Tables whose secrets are end-to-end encrypted only after a master password
+ * is set; without one they are stored as entered and rely on the cloud
+ * space's own storage encryption (user decision 2026-10-04). Copy must never
+ * call that end-to-end encryption, and only secrets are end-to-end encrypted:
+ * addresses and user names always rely on the cloud space.
+ */
+const CLOUD_SYNC_SECRET_BEARING_TABLES: string[] = [
+  'remotehosts', 'rdpcredentials', 'rustdeskrelays', 'sshkeys', 'totpentries'
+];
+
+/**
+ * '' when no badge applies; otherwise the protection of the table's secrets.
+ * VNC is separate: without a master password a remembered VNC password is
+ * kept only on this device (plain_explicit_v1 rows are forced local-only), so
+ * no secret of that table reaches the cloud at all.
+ */
+export function cloudSyncTableProtectionLabel(table: string, cryptoConfigured: boolean): string {
+  if (table === 'vncrecordv2') { return cryptoConfigured ? '机密端到端加密' : ''; }
+  if (CLOUD_SYNC_SECRET_BEARING_TABLES.indexOf(table) < 0) { return ''; }
+  return cryptoConfigured ? '机密端到端加密' : '云空间加密';
+}
+
+export function cloudSyncTableDescription(table: string, cryptoConfigured: boolean): string {
+  if (table === 'usersettings') { return '仅同步主题、壁纸等可跨设备复用的外观偏好'; }
+  if (table === 'vncrecordv2') {
+    return cryptoConfigured ? 'VNC 设置、主机、Gateway、端到端加密的机密和 trust 候选元数据' :
+      'VNC 设置、主机、Gateway 和 trust 候选元数据；未设主密码时记住的 VNC 密码只保存在本机，不上传';
+  }
+  return cryptoConfigured ? '包含敏感数据：密码、密钥等机密已用主密码端到端加密，自动同步加密参数' :
+    '包含密码等敏感数据，由华为云空间加密存储，未做端到端加密';
+}
+
+export function cloudSyncManageTablesHint(cryptoConfigured: boolean): string {
+  const base: string = '取消勾选不会删除数据，只会停止此设备未来的上传和下载。';
+  return cryptoConfigured ? base + '密码、密钥等机密已用主密码端到端加密，加密参数随其同步；地址等普通配置由华为云空间加密存储。' :
+    base + '未设置主密码时，敏感数据由华为云空间的存储加密和华为账号保护，' +
+      '未做端到端加密；设置主密码后，密码、密钥等机密改为端到端加密。';
+}
+
+export function cloudSyncCryptoParamsDescription(cryptoConfigured: boolean): string {
+  return cryptoConfigured ? '为已选择的敏感数据提供解密能力，自动随其同步' :
+    '未设置主密码，暂无加密参数；设置后自动随敏感数据同步';
+}
+
+/** Status line of the master-password card in settings. */
+export function masterPasswordStatusText(cryptoConfigured: boolean, unlocked: boolean): string {
+  if (!cryptoConfigured) {
+    return '未启用 · 设置后主机密码、SSH 密钥、2FA 将端到端加密后再云同步';
+  }
+  return unlocked ? '已启用 · 密码、SSH 密钥、2FA 已端到端加密' : '已锁定 · 需解锁后解密数据';
+}
+
 export function cloudSyncSheetSpec(step: string): CloudSyncSheetSpec {
   if (step === CLOUD_SYNC_SHEET_DETAILS) {
     return {

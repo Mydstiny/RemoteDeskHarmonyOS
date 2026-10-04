@@ -104,6 +104,7 @@ import {
 } from '../services/AccountSessionCoordinator';
 import { AppCloneContext } from '../services/AppCloneContext';
 import { DataCrypto } from '../services/DataCrypto';
+import { masterPasswordSetupError } from '../services/MasterPasswordPolicy';
 import { CloudStore } from '../services/CloudStore';
 import { AccountSessionLease, accountSessionLeaseEquals } from '../services/AccountScopePolicy';
 import { cloudUserSettingIsSyncable } from '../services/CloudSyncSettingsPolicy';
@@ -792,7 +793,12 @@ import {
   CLOUD_SYNC_SHEET_RESTORE_CONFIRM,
   CLOUD_SYNC_SHEET_UPLOAD_CONFIRM,
   CloudSyncSheetSpec,
-  cloudSyncSheetSpec
+  cloudSyncCryptoParamsDescription,
+  cloudSyncManageTablesHint,
+  cloudSyncSheetSpec,
+  cloudSyncTableDescription,
+  cloudSyncTableProtectionLabel,
+  masterPasswordStatusText
 } from '../services/CloudSyncSheetPolicy';
 import {
   HALO_COLOR_DARK_KEY,
@@ -1103,6 +1109,7 @@ struct HostListPage {
   @State appCloneLocalOnly: boolean = false;
   @State appCloneIsClone: boolean = false;
   @State appCloneStatusText: string = '';
+  @State appCloneClipboardOptIn: boolean = false;
   @State hostSelectionMode: boolean = false;
   @State hostSelectedIds: Set<string> = new Set();
   @State hostReorderEnabled: boolean = false;
@@ -2492,6 +2499,7 @@ struct HostListPage {
     this.appCloneLocalOnly = appClone.isLocalOnly();
     this.appCloneIsClone = appClone.isClone();
     this.appCloneStatusText = appClone.snapshot().statusText;
+    this.appCloneClipboardOptIn = appClone.cloneClipboardOptIn();
     this.cloudConnectionAvailable =
       CloudStore.getInstance().isCloudAvailable();
     // Keep VNC storage isolated while preparing its display projection before
@@ -5141,6 +5149,23 @@ struct HostListPage {
       this.cloudSyncStep = CLOUD_SYNC_SHEET_DETAILS;
       this.popupSheetMode = 3;
     });
+  }
+
+  private setAppCloneClipboardOptIn(on: boolean): void {
+    const saved: boolean = AppCloneContext.getInstance().setCloneClipboardOptIn(
+      getContext(this) as common.Context, on);
+    const actual: boolean = AppCloneContext.getInstance().cloneClipboardOptIn();
+    // Mirror the switch first so a failed change still re-renders it back.
+    this.appCloneClipboardOptIn = on;
+    if (actual !== on) {
+      setTimeout((): void => { this.appCloneClipboardOptIn = actual; }, 0);
+    }
+    if (!saved) {
+      promptAction.showToast({
+        message: on ? '分身剪贴板未能开启，请重试' : '分身剪贴板已关闭，但设置未能保存',
+        duration: 2000
+      });
+    }
   }
 
   private returnToCloudSyncActions(): void {
@@ -17837,6 +17862,23 @@ struct HostListPage {
                       .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
                   }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 12 })
                 }.width('100%').height(72).padding({ left: 14, right: 16 })
+                if (this.appCloneIsClone) {
+                  this.cardDivider()
+                  Row() {
+                    Row() { SymbolGlyph($r('sys.symbol.text_clipboard')).fontSize(20).fontColor([this.accentColor]) }
+                      .width(40).height(40).borderRadius(20).backgroundColor(this.pal().card)
+                      .justifyContent(FlexAlign.Center)
+                    Column() {
+                      Text('允许分身同步剪贴板').fontSize(AppTheme.fontSize.body)
+                        .fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
+                      Text('系统剪贴板在主应用和分身之间共享；开启后分身中的远程会话会读写它')
+                        .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
+                    }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 12 })
+                    Toggle({ type: ToggleType.Switch, isOn: this.appCloneClipboardOptIn })
+                      .selectedColor(this.accentColor).scale({ x: 0.88, y: 0.88 })
+                      .onChange((on: boolean): void => { this.setAppCloneClipboardOptIn(on); })
+                  }.width('100%').height(72).padding({ left: 14, right: 16 })
+                }
               } else {
                 Row() {
                   Row() { SymbolGlyph($r('sys.symbol.cloud_fill')).fontSize(21).fontColor([this.accentColor]) }
@@ -18609,7 +18651,7 @@ struct HostListPage {
                   Text('端到端加密')
                     .fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
                     .fontColor(this.pal().text).fontFamily(this.font())
-                  Text(this.cryptoEnabled ? (this.cryptoUnlocked ? '已启用 · 数据已加密保护' : '已锁定 · 需解锁后解密数据') : '未启用 · 主机密码、SSH密钥、2FA将加密后云同步')
+                  Text(masterPasswordStatusText(this.cryptoEnabled, this.cryptoUnlocked))
                     .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
                     .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
                 }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 10 })
@@ -19871,7 +19913,7 @@ struct HostListPage {
               .fontSize(12).fontColor(this.accentColor).fontFamily(this.font())
               .lineHeight(19).margin({ top: 8 })
           }
-          Text('取消勾选不会删除数据，只会停止此设备未来的上传和下载。加密参数会随敏感数据自动保护。')
+          Text(cloudSyncManageTablesHint(this.cryptoEnabled))
             .fontSize(12).fontColor(this.pal().text3).fontFamily(this.font()).lineHeight(19).margin({ top: 8, bottom: 14 })
           Row() {
             Checkbox()
@@ -19920,9 +19962,15 @@ struct HostListPage {
               Column() {
                 Text(table === 'usersettings' ? '跨设备外观、分组与工作区' : table === 'remotehosts' ? '远程主机' : table === 'rdpcredentials' ? 'Windows 登录凭据' : table === 'rustdeskrelays' ? 'RustDesk 中继配置' : table === 'sshkeys' ? 'SSH 密钥' : table === 'totpentries' ? '双重验证动态口令' : table === 'vncrecordv2' ? 'VNC 记录（vncrecord）' : 'Moonlight 串流数据')
                   .fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
-                Text(table === 'usersettings' ? '仅同步主题、壁纸等可跨设备复用的外观偏好' : table === 'vncrecordv2' ? 'VNC 设置、主机、Gateway、加密机密和 trust 候选元数据' : '包含敏感数据，启用时自动同步加密参数')
+                Text(cloudSyncTableDescription(table, this.cryptoEnabled))
                   .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font()).margin({ top: 3 })
               }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 10 })
+              if (cloudSyncTableProtectionLabel(table, this.cryptoEnabled) !== '') {
+                Text(cloudSyncTableProtectionLabel(table, this.cryptoEnabled))
+                  .fontSize(10).fontColor(this.cryptoEnabled ? this.pal().success : '#B66A00')
+                  .fontFamily(this.font()).padding({ left: 6, right: 6, top: 2, bottom: 2 })
+                  .borderRadius(8).backgroundColor(this.pal().bg).margin({ left: 8 })
+              }
             }.width('100%').padding(14).borderRadius(14).backgroundColor(this.pal().surface).margin({ bottom: 8 })
           }, (table: string): string => table)
           Row() {
@@ -19930,10 +19978,9 @@ struct HostListPage {
               .selectedColor(this.accentColor).enabled(false)
             Column() {
               Text('加密参数').fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
-              Text('为已选择的敏感数据提供解密能力，自动随其同步').fontSize(11).fontColor(this.pal().text3).fontFamily(this.font()).margin({ top: 3 })
+              Text(cloudSyncCryptoParamsDescription(this.cryptoEnabled)).fontSize(11).fontColor(this.pal().text3).fontFamily(this.font()).margin({ top: 3 })
             }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 10 })
           }.width('100%').padding(14).borderRadius(14).backgroundColor(this.pal().surface).margin({ bottom: 8 })
-          Text('加密参数会自动随已选择的敏感数据同步。').fontSize(11).fontColor(this.pal().text3).fontFamily(this.font()).margin({ top: 6 })
         }.width('100%').padding({ left: 24, right: 24, top: 22, bottom: 28 }).alignItems(HorizontalAlign.Start)
       } else if (this.cloudSyncStep === CLOUD_SYNC_SHEET_DETAILS) {
         Column() {
@@ -20337,9 +20384,10 @@ struct HostListPage {
         }.width('100%')
       } else {
         // 设置模式: 输入密码 + 确认
-        TextInput({ placeholder: '输入主密码 (12-32位, 大写开头, 含特殊字符)', text: this.cryptoPwd })
+        TextInput({ placeholder: '输入主密码', text: this.cryptoPwd })
           .type(InputType.NEW_PASSWORD).enableAutoFill(true)
-          .passwordRules('begin:[upper],special:[yes],len:[maxlen:32,minlen:12]')
+          // Shapes the Password Vault suggestion only; typed passwords are not restricted.
+          .passwordRules('special:[yes],len:[maxlen:32,minlen:12]')
           .height(44).width('100%').fontSize(15)
           .backgroundColor(this.pal().surface).borderRadius(10)
           .padding({ left: 12, right: 12 }).margin({ bottom: 10 })
@@ -20358,7 +20406,7 @@ struct HostListPage {
           Blank().width(12)
           Button('启用加密').layoutWeight(1).height(44).fontSize(14)
             .backgroundColor(this.accentColor).fontColor('#FFFFFF').borderRadius(12)
-            .enabled(this.cryptoPwd.length >= 8 && this.cryptoPwd === this.cryptoPwdConfirm && !this.cryptoLoading)
+            .enabled(masterPasswordSetupError(this.cryptoPwd, this.cryptoPwdConfirm) === '' && !this.cryptoLoading)
             .onClick(async () => { await this.handleEnable(); })
         }.width('100%')
       }

@@ -52,6 +52,12 @@ export const LOCAL_BACKUP_PORTABLE_TABLES: string[] =
 const LEGACY_LOCAL_BACKUP_LOCAL_TABLES: string[] = ['vnclocalrecords'];
 const LOCAL_BACKUP_LOCAL_TABLES: string[] =
   LEGACY_LOCAL_BACKUP_LOCAL_TABLES.concat([MOONLIGHT_LOCAL_TABLE]);
+/**
+ * VNC cloud-table names written by v2 builds of 2026-07-26..30 before the
+ * table became vncrecordv2. Their rows use the vncrecordv2 columns; they are
+ * accepted so those files validate and are quarantined, never merged.
+ */
+const LEGACY_V2_VNC_TABLES: string[] = ['vncrecords', 'vncrecord'];
 
 /**
  * Portable backup is a local-store capability, not a cloud-account
@@ -241,7 +247,7 @@ export function localBackupColumnsForTable(table: string): string[] {
   if (table === 'rustdeskrelays') { return ['id', 'userid', 'idserver', 'idserverport', 'relayserver', 'relayport', 'apiserver', 'apiusername', 'apipassword', 'key', 'healthstatus', 'healthlatency', 'healthcheckedat', 'apiloginstatus', 'accountsjson', 'syncversion', 'createdat', 'updatedat']; }
   if (table === 'sshkeys') { return ['id', 'userid', 'label', 'keytype', 'publickey', 'privatekey', 'fingerprint', 'comment', 'locked', 'locktype', 'syncversion', 'createdat', 'updatedat', 'formatversion', 'privatekeyencrypted']; }
   if (table === 'totpentries') { return ['id', 'userid', 'issuer', 'account', 'displayname', 'secret', 'algorithm', 'digits', 'period', 'iconurl', 'locked', 'locktype', 'syncversion', 'createdat', 'updatedat']; }
-  if (table === 'vncrecordv2') {
+  if (table === 'vncrecordv2' || LEGACY_V2_VNC_TABLES.indexOf(table) >= 0) {
     return ['id', 'userid', 'recordtype', 'ownerid', 'ownertype', 'secretkind', 'payload', 'ciphertext', 'envelopeversion', 'cryptoversion', 'keyversion', 'aadversion', 'payloadhashsha256', 'syncversion', 'schemaversion', 'resetepoch', 'createdat', 'updatedat', 'deletedat'];
   }
   if (table === MOONLIGHT_CLOUD_TABLE) {
@@ -282,7 +288,7 @@ function localBackupIntegerColumns(table: string): string[] {
   if (table === 'rustdeskrelays') { return ['idserverport', 'relayport', 'healthlatency', 'healthcheckedat', 'syncversion', 'createdat', 'updatedat']; }
   if (table === 'sshkeys') { return ['keytype', 'locked', 'locktype', 'syncversion', 'createdat', 'updatedat', 'formatversion', 'privatekeyencrypted']; }
   if (table === 'totpentries') { return ['algorithm', 'digits', 'period', 'locked', 'locktype', 'syncversion', 'createdat', 'updatedat']; }
-  if (table === 'vncrecordv2') { return ['envelopeversion', 'cryptoversion', 'keyversion', 'aadversion', 'syncversion', 'schemaversion', 'resetepoch', 'createdat', 'updatedat', 'deletedat']; }
+  if (table === 'vncrecordv2' || LEGACY_V2_VNC_TABLES.indexOf(table) >= 0) { return ['envelopeversion', 'cryptoversion', 'keyversion', 'aadversion', 'syncversion', 'schemaversion', 'resetepoch', 'createdat', 'updatedat', 'deletedat']; }
   if (table === MOONLIGHT_CLOUD_TABLE) {
     return ['envelopeversion', 'cryptoversion', 'keyversion',
       'aadversion', 'syncversion', 'schemaversion', 'resetepoch',
@@ -363,8 +369,11 @@ export function localBackupCanonicalPayload(
   if (localTables !== undefined) {
     const orderedLocal: Record<string, Array<Record<string, string>>> = {};
     const presentLocalNames: string[] = Object.keys(localTables);
-    for (let i = 0; i < LOCAL_BACKUP_LOCAL_TABLES.length; i++) {
-      const table: string = LOCAL_BACKUP_LOCAL_TABLES[i];
+    // v2 files were hashed before the Moonlight local table existed.
+    const localInventory: string[] = version < 3 ?
+      LEGACY_LOCAL_BACKUP_LOCAL_TABLES : LOCAL_BACKUP_LOCAL_TABLES;
+    for (let i = 0; i < localInventory.length; i++) {
+      const table: string = localInventory[i];
       if (version < 3 || presentLocalNames.indexOf(table) >= 0) {
         orderedLocal[table] = localTables[table] || [];
       }
@@ -557,92 +566,163 @@ export function createLocalBackupDocument(
   };
 }
 
+/**
+ * Validation outcome. `stage` names the first check that failed ('' when the
+ * document is valid) so an export self-check failure, a damaged file and a
+ * backup written by a newer app can be told apart.
+ */
+export interface LocalBackupValidation {
+  document: LocalBackupDocument | null;
+  stage: string;
+  /** Declared format version, 0 when the file has none. */
+  version: number;
+}
+
+/** Stable numeric codes of validation stages for address-free diagnostic events. */
+const LOCAL_BACKUP_VALIDATION_STAGES: string[] = [
+  '', 'json', 'shape', 'unsupported_version', 'inventory', 'columns', 'v1-extensions',
+  'manifest', 'hash', 'rows', 'extensions', 'localTables', 'v3rows', 'exception', 'create'
+];
+
+export function localBackupValidationStageCode(stage: string): number {
+  const index: number = LOCAL_BACKUP_VALIDATION_STAGES.indexOf(stage);
+  return index >= 0 ? index : LOCAL_BACKUP_VALIDATION_STAGES.length;
+}
+
 export function validateLocalBackupDocument(text: string): LocalBackupDocument | null {
+  return validateLocalBackupDocumentDetailed(text).document;
+}
+
+export function validateLocalBackupDocumentDetailed(text: string): LocalBackupValidation {
+  let parsed: Object | null = null;
   try {
-    const document = JSON.parse(text) as LocalBackupDocument;
-    if (document.format !== LOCAL_BACKUP_FORMAT ||
-      (document.version !== 1 && document.version !== 2 &&
-        document.version !== LOCAL_BACKUP_VERSION) || !document.tables ||
-      !Number.isFinite(document.createdAt) || typeof document.appVersion !== 'string' ||
-      typeof document.sha256 !== 'string') {
-      hilog.error(0x0001, 'LocalBackupPolicy', 'validate stage=shape');
-      return null;
-    }
-    const names: string[] = Object.keys(document.tables);
-    const inventory: string[] = [];
-    const allowedTables: string[] = document.version >= 3
-      ? LOCAL_BACKUP_PORTABLE_TABLES : CLOUD_SYNC_TABLES;
-    for (let i = 0; i < allowedTables.length; i++) {
-      const table: string = allowedTables[i];
-      if (names.indexOf(table) >= 0) { inventory.push(table); }
-    }
-    if (inventory.length !== names.length) {
+    parsed = JSON.parse(text) as Object;
+  } catch (_e) {
+    hilog.error(0x0001, 'LocalBackupPolicy', 'validate stage=json');
+    return { document: null, stage: 'json', version: 0 };
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    hilog.error(0x0001, 'LocalBackupPolicy', 'validate stage=shape');
+    return { document: null, stage: 'shape', version: 0 };
+  }
+  const document: LocalBackupDocument = parsed as LocalBackupDocument;
+  const version: number = Number.isSafeInteger(document.version) ? document.version : 0;
+  try {
+    const stage: string = localBackupValidationFailureStage(document);
+    return { document: stage === '' ? document : null, stage, version };
+  } catch (_e) {
+    hilog.error(0x0001, 'LocalBackupPolicy', 'validate stage=exception');
+    return { document: null, stage: 'exception', version };
+  }
+}
+
+/** Returns '' when valid; on success `document.tables` is normalized in place. */
+function localBackupValidationFailureStage(document: LocalBackupDocument): string {
+  if (document.format === LOCAL_BACKUP_FORMAT &&
+    Number.isSafeInteger(document.version) &&
+    document.version > LOCAL_BACKUP_VERSION) {
+    hilog.error(0x0001, 'LocalBackupPolicy',
+      'validate stage=unsupported_version version=' + document.version.toString());
+    return 'unsupported_version';
+  }
+  if (document.format !== LOCAL_BACKUP_FORMAT ||
+    (document.version !== 1 && document.version !== 2 &&
+      document.version !== LOCAL_BACKUP_VERSION) || !document.tables ||
+    !Number.isFinite(document.createdAt) || typeof document.appVersion !== 'string' ||
+    typeof document.sha256 !== 'string') {
+    hilog.error(0x0001, 'LocalBackupPolicy', 'validate stage=shape');
+    return 'shape';
+  }
+  const names: string[] = Object.keys(document.tables);
+  const inventory: string[] = [];
+  const allowedTables: string[] = document.version >= 3
+    ? LOCAL_BACKUP_PORTABLE_TABLES : CLOUD_SYNC_TABLES.concat(LEGACY_V2_VNC_TABLES);
+  for (let i = 0; i < allowedTables.length; i++) {
+    const table: string = allowedTables[i];
+    if (names.indexOf(table) >= 0) { inventory.push(table); }
+  }
+  if (inventory.length !== names.length) {
+    hilog.error(0x0001, 'LocalBackupPolicy',
+      'validate stage=inventory names=' + names.join(','));
+    return 'inventory';
+  }
+  for (let i = 0; i < inventory.length; i++) {
+    const table: string = inventory[i];
+    const rows: Array<Record<string, string>> =
+      document.tables[table];
+    if (!Array.isArray(rows) ||
+      !backupRowsContainOnlyKnownColumns(table, rows)) {
       hilog.error(0x0001, 'LocalBackupPolicy',
-        'validate stage=inventory names=' + names.join(','));
-      return null;
+        'validate stage=columns table=' + table);
+      return 'columns';
     }
-    for (let i = 0; i < inventory.length; i++) {
-      const table: string = inventory[i];
-      const rows: Array<Record<string, string>> =
-        document.tables[table];
-      if (!Array.isArray(rows) ||
-        !backupRowsContainOnlyKnownColumns(table, rows)) {
-        hilog.error(0x0001, 'LocalBackupPolicy',
-          'validate stage=columns table=' + table);
-        return null;
-      }
+  }
+  if (document.version === 1 && document.extensions !== undefined) {
+    hilog.error(0x0001, 'LocalBackupPolicy', 'validate stage=v1-extensions');
+    return 'v1-extensions';
+  }
+  // v1/v2 hashes cover neither a manifest nor any local table other than
+  // vnclocalrecords, and no v1/v2 build wrote them; anything else is foreign.
+  if (document.version < 3 && document.manifest !== undefined) {
+    hilog.error(0x0001, 'LocalBackupPolicy', 'validate stage=manifest legacy');
+    return 'manifest';
+  }
+  if (document.version < 3 && document.localTables !== undefined &&
+    Object.keys(document.localTables).some((table: string): boolean =>
+      LEGACY_LOCAL_BACKUP_LOCAL_TABLES.indexOf(table) < 0)) {
+    hilog.error(0x0001, 'LocalBackupPolicy', 'validate stage=localTables legacy');
+    return 'localTables';
+  }
+  if (document.version >= 3 &&
+    !validateBackupManifestV3(document, inventory)) {
+    hilog.error(0x0001, 'LocalBackupPolicy', 'validate stage=manifest');
+    return 'manifest';
+  }
+  const canonical: string = localBackupCanonicalPayload(
+    document.createdAt, document.appVersion,
+    document.tables, document.extensions, document.version,
+    document.localTables, document.manifest, inventory);
+  // Hash the source shape before dropping ResultSet system columns. Existing
+  // backups created by older builds legitimately include #_deleted_flag.
+  if (localBackupSha256(canonical) !== document.sha256) {
+    hilog.error(0x0001, 'LocalBackupPolicy', 'validate stage=hash');
+    return 'hash';
+  }
+  const normalizedTables: Record<string, Array<Record<string, string>>> = {};
+  for (let i = 0; i < inventory.length; i++) {
+    const table: string = inventory[i];
+    normalizedTables[table] = normalizeLocalBackupRows(table, document.tables[table]);
+    if (!validateLocalBackupRows(table, normalizedTables[table])) {
+      hilog.error(0x0001, 'LocalBackupPolicy',
+        'validate stage=rows table=' + table);
+      return 'rows';
     }
-    if (document.version === 1 && document.extensions !== undefined) {
-      hilog.error(0x0001, 'LocalBackupPolicy', 'validate stage=v1-extensions');
-      return null;
-    }
-    if (document.version >= 3 &&
-      !validateBackupManifestV3(document, inventory)) {
-      hilog.error(0x0001, 'LocalBackupPolicy', 'validate stage=manifest');
-      return null;
-    }
-    const canonical: string = localBackupCanonicalPayload(
-      document.createdAt, document.appVersion,
-      document.tables, document.extensions, document.version,
-      document.localTables, document.manifest, inventory);
-    // Hash the source shape before dropping ResultSet system columns. Existing
-    // backups created by older builds legitimately include #_deleted_flag.
-    if (localBackupSha256(canonical) !== document.sha256) {
-      hilog.error(0x0001, 'LocalBackupPolicy', 'validate stage=hash');
-      return null;
-    }
-    const normalizedTables: Record<string, Array<Record<string, string>>> = {};
-    for (let i = 0; i < inventory.length; i++) {
-      const table: string = inventory[i];
-      normalizedTables[table] = normalizeLocalBackupRows(table, document.tables[table]);
-      if (!validateLocalBackupRows(table, normalizedTables[table])) {
-        hilog.error(0x0001, 'LocalBackupPolicy',
-          'validate stage=rows table=' + table);
-        return null;
-      }
-    }
-    if (document.version >= 2 && !validateLocalExtensions(
-      document.extensions || [], normalizedTables)) {
-      hilog.error(0x0001, 'LocalBackupPolicy', 'validate stage=extensions');
-      return null;
-    }
-    if (document.localTables !== undefined &&
-      !validateLocalTables(document.localTables, true)) {
-      hilog.error(0x0001, 'LocalBackupPolicy', 'validate stage=localTables');
-      return null;
-    }
-    if (document.version >= 3 &&
-      document.manifest?.crypto.mode === 'full'
-        ? !validateFullV3Rows(document, normalizedTables)
-        : !validateRedactedV3Rows(document, normalizedTables)) {
+  }
+  if (document.version >= 2 && !validateLocalExtensions(
+    document.extensions || [], normalizedTables)) {
+    hilog.error(0x0001, 'LocalBackupPolicy', 'validate stage=extensions');
+    return 'extensions';
+  }
+  if (document.localTables !== undefined &&
+    !validateLocalTables(document.localTables, true)) {
+    hilog.error(0x0001, 'LocalBackupPolicy', 'validate stage=localTables');
+    return 'localTables';
+  }
+  // Only v3 documents carry a manifest and per-mode row rules. v1/v2 input is
+  // adapted to a redacted merge plan by adaptLocalBackupDocumentForRestore.
+  if (document.version >= 3) {
+    const rowsValid: boolean = document.manifest?.crypto.mode === 'full'
+      ? validateFullV3Rows(document, normalizedTables)
+      : validateRedactedV3Rows(document, normalizedTables);
+    if (!rowsValid) {
       hilog.error(0x0001, 'LocalBackupPolicy',
         'validate stage=v3rows mode=' +
         (document.manifest?.crypto.mode || 'redacted'));
-      return null;
+      return 'v3rows';
     }
-    document.tables = normalizedTables;
-    return document;
-  } catch (_e) { return null; }
+  }
+  document.tables = normalizedTables;
+  return '';
 }
 
 function manifestSection(
@@ -1109,6 +1189,11 @@ export function adaptLocalBackupDocumentForRestore(
   for (let i = 0; i < sourcePresentTables.length; i++) {
     const table: string = sourcePresentTables[i];
     if (table === MOONLIGHT_CLOUD_TABLE) { continue; }
+    if (LEGACY_V2_VNC_TABLES.indexOf(table) >= 0) {
+      // Pre-vncrecordv2 rows have no restore path; count them as quarantined.
+      quarantinedRows += (portable.tables[table] || []).length;
+      continue;
+    }
     const sourceRows: Array<Record<string, string>> = portable.tables[table];
     const transferableRows: Array<Record<string, string>> = [];
     for (let rowIndex: number = 0; rowIndex < sourceRows.length; rowIndex++) {

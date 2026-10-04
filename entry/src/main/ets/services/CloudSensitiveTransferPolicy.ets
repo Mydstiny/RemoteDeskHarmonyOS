@@ -239,9 +239,13 @@ export function moonlightCloudRowsAreDownloadCompatible(
 }
 
 /**
- * Native-first is stricter than download compatibility. Even an empty
- * sensitive table remains blocked while crypto is disabled, because it may
- * carry local reset/delete intent that must not become a remote wipe.
+ * Native-first admission for one physical table. Encryption is the user's
+ * choice (confirmed 2026-10-04): without a configured crypto contract the
+ * secrets upload as stored and are protected only by the cloud space's own
+ * storage encryption and the account, which the sync UI states. With a
+ * contract every secret in the snapshot must be ciphertext. A local crypto
+ * disable/reset is kept from becoming a remote wipe by pausing these tables
+ * (cloudSelectionAfterLocalCryptoTransition), not by this gate.
  */
 export function cloudTableRowsAreUploadSafe(
   table: string,
@@ -261,10 +265,6 @@ export function cloudTableRowsAreUploadSafe(
       rows, cryptoConfigured, ciphertextProbe);
   }
   if (!cloudTableRequiresConfiguredCrypto(table)) { return true; }
-  // Encryption configuration is the user's explicit choice, never a
-  // presumption. Without a configured crypto contract the secrets upload as
-  // stored (plaintext, chosen by the user); with a configured contract every
-  // secret in the snapshot must be ciphertext.
   if (!cryptoConfigured) { return true; }
   if (table === 'cryptoparams') { return true; }
   return encryptedRowsAreSafe(table, rows, ciphertextProbe);

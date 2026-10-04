@@ -4826,9 +4826,10 @@ struct RemoteDesktop {
    * AppStorage preferences as a fallback.
    */
   private clipboardBridgeEnabledForSession(): boolean {
-    // SystemPasteboard is shared at device scope. A clone must not read from
-    // or write to it, otherwise two simultaneous remote sessions can relay
-    // clipboard text across the main app and its clone.
+    // SystemPasteboard is shared at device scope. A clone reads or writes it
+    // only after its user opted in on that clone, because two simultaneous
+    // remote sessions could otherwise relay clipboard text across the main
+    // app and its clone without anyone choosing that.
     if (!AppCloneContext.getInstance().clipboardBridgeAllowed()) {
       return false;
     }

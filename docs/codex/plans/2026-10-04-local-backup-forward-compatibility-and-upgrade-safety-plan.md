@@ -1,252 +1,283 @@
-# 本地备份前向兼容与升级安全计划
+# 云同步与数据管理安全审计、本地备份前向兼容与升级安全计划（v2）
 
-日期：2026-10-04。状态：**计划已落盘，待实施；本轮只写计划、复审并提交，不构建、不修改应用实现。**
+日期：2026-10-04（Asia/Shanghai）。状态：**PLAN-ONLY；用户已于 2026-10-04 确认 D1–D6（见第 7 节），计划可执行，等待开工指令。本文件更新不改应用代码、不构建、不装机。**
 
-## 1. 背景与已确认问题
+本版取代同文件的 v1（Codex 于 `f12e07241` 提交的“本地备份前向兼容与升级安全计划”）。v1 的目标与不变边界保留；v1 认定的根因经代码核对与复现后**更正**；范围扩大为整个云同步与数据管理子系统的安全审计（用户 2026-10-04 要求：排查安全策略过严、过松或逻辑不正确）。
 
-当前完整备份失败不是文件系统写入失败，而是备份生成后的二次校验失败。导出链路在
-[LocalBackupService.ets](../../../entry/src/main/ets/services/LocalBackupService.ets) 中先取得
-一致的本地快照，调用 `createLocalBackupDocument`，写入私有暂存文件，再对暂存文件和
-Picker 目标文件分别执行完整字节读取、字节比较和 `validateLocalBackupDocument`。
+## 0. 结论摘要
 
-当前实现存在一条确定的生产字段缺口：
-
-1. [CloudStore.ets](../../../entry/src/main/ets/services/CloudStore.ets) 的
-   `hostCloudExtensionValues` 会写入 `lanaddressmode`、`landiscoveryidentity`、
-   `lanlastresolvedat`。
-2. [BackupManifestV3.ets](../../../entry/src/main/ets/services/BackupManifestV3.ets) 的完整模式
-   会原样复制主机扩展 payload。
-3. [LocalBackupPolicy.ets](../../../entry/src/main/ets/services/LocalBackupPolicy.ets) 的
-   `validateLocalExtensions` 仍按 `REMOTE_HOST_EXTENSION_PAYLOAD_COLUMNS` 拒绝白名单之外
-   的 payload key。
-4. 这三个 LAN 字段不在该白名单中，所以只要某个主机扩展已保存这些字段，完整模式在
-   暂存文件校验阶段就返回 `invalid_backup`，界面最终显示“备份文件格式或完整性校验失败”。
-5. 脱敏模式先经过 `redactExtensionRows`，未知字段会被过滤掉，因此同一份数据可以成功
-   导出；这解释了“脱敏正常、完整失败”的差异。
-
-最小受控样本已经复现该差异：包含三个 LAN 字段的 `remotehosts` 扩展，脱敏文档校验通过，
-完整文档校验失败。这个样本证明校验器过严，但不授权直接放宽所有安全边界。
-
-## 2. 目标与不变边界
-
-目标是让安全策略只阻止真正的安全或完整性问题，让未知但结构正确的未来字段继续被保存、
-导出和升级后的版本读取；应用更新不得因为新版本不认识旧字段而丢失旧数据，也不得因为
-旧版本留下的字段而阻塞当前版本的健康功能。
-
-以下边界保持不变：
-
-1. 完整备份仍然是用户明确选择的敏感导出；源已配置加密时保留密文和必要加密参数，
-   未配置加密时明文导出仍需用户明确选择。
-2. 脱敏备份不携带密码、私钥、TOTP、登录令牌、本机确认 marker 或未分类的未来敏感字段。
-3. owner、store identity、scope generation、lease、文件哈希、manifest section 哈希、
-   RDB 事务和恢复前再次校验继续 fail-closed；本计划不通过删除这些门禁来“修复”导出。
-4. 设备信任、VNC/Moonlight 的设备绑定语义继续按现有策略处理；未知字段不得被错误解释成
-   已确认的 trust 或配对身份。
-5. 未知字段不得自动进入云同步协议。未被当前版本理解的 opaque 数据只在本地备份/本地
-   兼容存储中保留，等有明确 schema 的版本接管。
-
-## 3. 兼容性分类契约
-
-将扩展字段从单一“白名单/拒绝”改成带安全含义的分类。分类注册表必须同时被生产者、
-导出器、校验器和恢复器使用，避免再出现“写入端已新增字段、校验端忘记更新”的分裂。
-
-| 字段类别 | 完整备份 | 脱敏备份 | 恢复与升级 |
+| 编号 | 级别 | 一句话 | 证据 |
 |---|---|---|---|
-| 已知敏感字段 | 保留原始密文/明文形态，按用户选择和加密契约处理 | 删除 | 只有通过现有密钥、owner 和格式校验后才可进入敏感存储 |
-| 已知可迁移配置 | 保留 | 保留 | 按当前 schema 解释 |
-| 已知设备信任/公开元数据 | 按既有设备信任策略保留 | 按现有脱敏策略保留 | 不生成本机确认状态，不自动扩大信任范围 |
-| 未知但值为字符串、记录身份和 owner 正确的字段 | 原样作为 opaque 字段保留，记录数量和 schema 来源 | 默认删除，除非注册表明确标为可脱敏 | 保存在本地兼容表；新版本认识后再提升为正式字段 |
-| 未知对象/数组、非字符串敏感值或不符合类型约束的字段 | 记录为受影响字段并阻止“完整成功”声明；原始本地数据保持不变 | 删除并记录脱敏计数 | 不猜测、不强制转换、不写入业务字段 |
-| 记录 id、tablename、recordid、owner、payload JSON 不一致 | 拒绝该记录/该 artifact | 拒绝或按现有安全规则隔离 | 不自动归属当前账号，不清空目标数据 |
+| F1 | 高 | **完整备份必然失败**：删过任一 VNC 记录后，VNC 软删除行被完整导出原样带上，而完整模式校验拒绝 `deletedat>0` | 代码 + 宿主机复现 |
+| F2 | 高 | **完整备份恢复会覆盖目标设备的加密参数**；目标若已用别的盐配置过主密码，其原有密文永久不可解，若再选“以本机为准上传”会波及云端 | 代码 |
+| F3 | 中（D1 已决策：保留现行为） | 未设主密码时，勾选敏感表会把**未做端到端加密**的密码/SSH 私钥/TOTP/中继密码存入华为云空间；界面文案暗示“已加密保护”；函数注释与代码相反 → 只修文案与注释 | 代码 + 提交记录 |
+| F4 | 中高（D2 已决策） | 脱敏备份携带并在恢复时**直接生效** SSH 主机公钥/RDP 证书信任，可被构造的备份预置信任；恢复预览却写“不含设备信任” | 代码 + 复现 |
+| F5 | 中（D5 已决策：保留） | 脱敏备份**静默丢弃** LAN 三字段与 `rdprestrictedadminsecretsource`（两份白名单漂移），还计为“删除的敏感字段” | 复现 |
+| F6 | 中 | 云扩展块和 `displayconfig` 按“当前已知键”重建：**新版本在其他设备写入的新键会被旧版本抹掉并回传** | 代码 |
+| F7 | 中（D3 已决策：不设限制） | 主密码规则两套：设置页要求 12 位+大写开头+特殊字符；设置面板与 `DataCrypto` 要求 8 位；“32 位上限”从未执行 | 代码 |
+| F8 | 中（需真机） | 冲突策略不一致：启动时先“本地优先”推送脏表再下载；回前台/云事件直接“云端优先”，并发修改时本地待上传改动可能被覆盖 | 代码 |
+| F9 | 中 | 手动下载、重新启用同步表、恢复后“下载云端”等云端优先路径不做本地快照；校验失败时坏数据已落库，却提示“已回滚本次下载” | 代码 |
+| F10 | 中 | v1 认定的根因（LAN 字段进入本地扩展 payload）**当前没有生产写入路径**；LAN 字段只写在 `displayconfig` 云扩展块，完整模式校验对其放行 | 代码 + 复现 + git 历史 |
+| F11 | 中（D4 已决策） | “忘记主密码→重置”整行删除全部主机/凭据/密钥/2FA/中继/VNC，并整表清空 `localextensions`（含设备信任、个性化、凭据/中继/密钥关联），确认文案只写“所有加密数据” | 代码 |
+| F19 | 高（实施中新发现） | **v1/v2 旧格式备份自 2026-07-31 起全部无法恢复**：校验末尾的三元表达式优先级错误，让旧格式也走 v3 脱敏规则并因缺少 manifest 抛错 | 代码 + 宿主机复现 + git 历史 |
+| F12–F18 | 低/待验证 | 账号绑定的平台假设、规范云库被占用后的无交接、分身剪贴板全关、S1 未加密主库、云空间清空导致全设备清空、导出自检错误文案、`cryptoparams` 云端冲突 | 见第 2 节 |
 
-“完整备份成功”只在所有必需 section 和记录都通过完整性验证，或所有未知字段都已按
-opaque 契约保留时成立。被隔离的记录不得被静默丢弃后仍显示完整成功；需要使用单独的
-受影响计数和明确错误码。未知 key 本身不再作为安全错误，错误应落在类型、身份、owner、
-认证或哈希边界上。
+已核实做得对的部分见 2.4，避免把健康机制当成问题改掉。
 
-### 3.1 Opaque section 的落地格式
+## 1. 审计范围、方法与限制
 
-为避免把未认识字段偷偷塞回当前业务表，只有需要携带 opaque 字段时才生成备份格式
-`version=4`；没有 opaque 字段的文档继续生成现有 v3，保持旧版本可读。v4 在现有文档外层
-增加可选的 `opaque` 区段，结构固定为：
+- 范围：`CloudStore`（1.6 万行，重点看导出/恢复/下载/加密/作用域路径）、`CloudSyncCoordinator`、`CloudSensitiveTransferPolicy`、`CloudSyncSelectionPolicy/Store`、`CloudLifecycleSafetyPolicy`、`AccountScopePolicy`、`AccountSessionCoordinator`、`PlatformCloudIdentity*`、`DataCrypto`、`CryptoLifecyclePolicy`、`LocalBackupPolicy/Service`、`BackupManifestV3`、`CloudTableAdapter`、`MoonlightBackupPolicy`、`VncRecordPolicy`、`AppCloneContext`、`RustDeskProCredentialStore`、`AccountCredentialStoragePolicy`、AI 数据工具入口，以及 `HostListPage`/`MasterPasswordSetupPage` 中的同步/备份/加密界面。
+- 方法：
+  1. 读决策点代码并与界面文案、注释、测试对照；
+  2. 用 DevEco 自带 TypeScript 把真实 `LocalBackupPolicy`/`BackupManifestV3`/`CloudTableAdapter` 转译后在宿主机运行，构造快照复现导出→校验结果（脚本位于本次会话 scratchpad，S0 会转为仓库测试）；
+  3. 查 git 历史确认字段/策略引入时的意图；
+  4. 只读检查 3 台已连接设备（emulator、MLR-AL10、SGT-AL10）的 hilog 缓冲区：无备份失败记录（已滚动或失败发生在用户自己操作的手机）。
+- 限制：平台云同步冲突语义、`cryptoparams` 云端冲突、云空间清空行为需要真机与真实华为云账号验证，本文标为“待验证”。启动恢复状态机未逐条审完，列为专项任务 S7。
 
-```text
-opaque: {
-  schemaVersion: 1,
-  fields: [{
-    table, recordId, owner, location: "row" | "payload",
-    key, value, valueType: "string", sourceSchemaVersion
-  }]
-}
-```
+### 1.1 宿主机复现结果（真实策略代码）
 
-`fields` 按 `table + recordId + location + key` 排序后参加 canonical payload 和独立
-`local:opaque` manifest section 的 SHA-256；外层 `sha256` 仍覆盖 manifest、已知字段、
-扩展和 opaque 区段。manifest 增加可选的 `opaqueSchemaVersion`、`opaqueFieldCount` 和
-`opaqueByteCount`，旧 v3 文档不增加这些字段。恢复只把 opaque 条目写入新的本地-only
-`backupopaque` 兼容表（绑定 owner/store/generation、sourceSchemaVersion、sourceHash、
-recordId、location、key、value），不写入分布式表、业务列、认证配置或 trust 状态。
+| 场景 | 脱敏 | 完整 |
+|---|---|---|
+| 基线（一台 SSH 主机） | 通过 | 通过 |
+| LAN 键在本地扩展 payload（v1 假设的位置） | 通过 | **失败** `stage=extensions key=lanaddressmode` |
+| LAN 键在 `displayconfig` 云扩展块（生产实际位置） | 通过 | 通过 |
+| `vncrecordv2` 软删除行（删过 VNC 主机/网关/密钥） | 通过 | **失败** `stage=v3rows mode=full` |
+| `vnclocalrecords` 软删除行 | 通过 | **失败** `stage=v3rows mode=full` |
+| 云扩展块 LAN 键 + `rdprestrictedadminsecretsource` 在脱敏备份中 | 文档有效，但 4 个键被丢弃 | — |
+| 本地扩展中的 SSH/RDP 信任字段在脱敏备份中 | 保留，manifest `deviceTrustIncluded:true` | — |
 
-每个 key 必须匹配 `^[a-z][a-z0-9_]{0,127}$`；table、recordId、owner 各不超过 256 字节；
-单值不超过 64 KiB UTF-8；单记录 opaque 不超过 4 MiB；单个 artifact 的 opaque 不超过
-8 MiB、4096 条，且仍受现有 32 MiB 总备份上限约束。超限返回独立的
-`opaque_limit_exceeded`，不截断、不静默丢弃、不把结果标为完整成功。
+## 2. 审计发现
 
-旧版本遇到 v4 或 `opaque` 区段时，在任何写入前返回明确的“需要升级以读取未来字段”；
-不得把已知部分导入后声称完整恢复。新版本继续完整读取 v1/v2/v3；v4 没有 opaque 时
-也必须可以降级生成等价 v3 供旧版本使用。
+### 2.1 已确认缺陷（高）
 
-## 4. 生产者与校验器的单一 schema 来源
+**F1 完整备份必然失败（VNC 软删除）**
+- 删除 VNC 主机/网关/密钥时写软删除行：`deletedAt=now`（[CloudStore.ets:14156](../../../entry/src/main/ets/services/CloudStore.ets)）；除“清空全部数据”外从不清理。
+- 导出只排除平台云删除标记 `#_deleted_flag`，不排除应用层 `deletedat>0`（[CloudStore.ets:4356](../../../entry/src/main/ets/services/CloudStore.ets)）。
+- 脱敏模式用 `vncRowIsPortable` 过滤软删除（[BackupManifestV3.ets:319](../../../entry/src/main/ets/services/BackupManifestV3.ets)）；完整模式 `fullPortableBackupData` 原样复制（[BackupManifestV3.ets:505](../../../entry/src/main/ets/services/BackupManifestV3.ets)）。
+- 完整模式校验明确要求 `deletedat==0`（[LocalBackupPolicy.ets:921](../../../entry/src/main/ets/services/LocalBackupPolicy.ets)）。
+- 现有测试只覆盖脱敏模式的软删除（[LocalBackupPolicy.test.ets:674](../../../entry/src/test/LocalBackupPolicy.test.ets)），所以缺陷未被发现。
+- 结论：这是“导出端与校验端契约分裂”，与 v1 想解决的问题同类，但发生在**行级**，而且对真实用户必然触发。界面最终显示“备份文件格式或完整性校验失败”。
 
-新增一个只描述便携备份数据契约的 schema registry（名称和文件路径在实施时确定，建议
-放在 `entry/src/main/ets/services/`），至少提供：
+**F2 完整恢复覆盖目标设备加密参数**
+- 完整备份在源已配置加密时携带 `cryptoparams`（盐、校验值、状态）。
+- 恢复走 `mergePortableRows` 的字段级合并（[CloudStore.ets:4708](../../../entry/src/main/ets/services/CloudStore.ets)），对 `cryptoparams` 没有任何特殊处理；其行 ID 由账号+键名确定性派生，同账号恢复必然命中并覆盖目标行。`cryptoparams` 不属于带 `userid` 的表，也不走 owner 校验。
+- 恢复计划、预览、确认界面、`mergePortableBackup`（[CloudStore.ets:5022](../../../entry/src/main/ets/services/CloudStore.ets)）提交前后都不比较“目标已配置的加密契约”。
+- 每次 `setMasterPassword` 都生成新随机盐，所以“新手机单独设主密码后恢复旧手机完整备份”就会触发：目标原有密文在新盐派生的密钥下 GCM 认证失败，永久不可解；恢复后表处于“恢复未上传”隔离，若用户选“以本机为准覆盖云端”，错误参数会进入云端并影响所有设备。
 
-- 每张表及 `localextensions` 的已知列、整数列、owner 列和不可迁移列；
-- 主机扩展字段的 `secret`、`safe`、`trust`、`device_local`、`opaque_forward` 分类；
-- 当前应用写入字段的生产者清单；
-- 当前版本能解释的字段版本和最早写入版本；
-- 由 registry 生成或直接复用的导出、脱敏、校验和恢复规则。
+### 2.2 安全策略问题（2026-10-04 已决策）
 
-实施时先把 `lanaddressmode`、`landiscoveryidentity`、`lanlastresolvedat` 纳入正确的
-非敏感分类，并明确它们在脱敏备份中是否应保留。若产品决定它们属于可跨设备配置，加入
-脱敏安全集合；若它们仍需设备本地语义，则完整备份保留、脱敏备份删除，但两种模式都
-必须能通过合法性校验。
+**F3 无主密码时敏感数据明文上云，且告知不足**
+- `cloudTableRowsAreUploadSafe` 在未配置加密时直接放行敏感表（[CloudSensitiveTransferPolicy.ets:268](../../../entry/src/main/ets/services/CloudSensitiveTransferPolicy.ets)），由 `97859c82a`（2026-07-31）刻意引入：“是否加密由用户明确选择”。
+- 但同函数上方注释仍写“即使空的敏感表在加密关闭时也保持阻断”（[CloudSensitiveTransferPolicy.ets:242](../../../entry/src/main/ets/services/CloudSensitiveTransferPolicy.ets)），与代码相反。
+- 同步管理界面对敏感表的说明是“包含敏感数据，启用时自动同步加密参数”“加密参数会随敏感数据自动保护”（[HostListPage.ets:19874](../../../entry/src/main/ets/pages/HostListPage.ets)、[19923](../../../entry/src/main/ets/pages/HostListPage.ets)），会让未设主密码的用户误以为已端到端加密。
+- 默认只自动同步 Moonlight（[CloudSyncSelectionPolicy.ets](../../../entry/src/main/ets/services/CloudSyncSelectionPolicy.ets)），敏感表需用户手动勾选；设置主密码后各行会记入变更日志，下次同步用密文替换云端旧明文（已核实）。
+- **D1 决策**：允许无主密码同步敏感表（依赖华为云空间自身的存储加密与账号保护），不加拦截、不加同意弹窗。落地只做“如实告知”：
+  - 注释改为与代码一致（未配置加密时放行，由用户选择是否端到端加密）；
+  - 同步管理里敏感表的说明按加密状态区分：未设主密码时写“由华为云空间存储加密与华为账号保护，未做端到端加密；设置主密码后改为端到端加密”，已设主密码时才写“已端到端加密，自动同步加密参数”；
+  - 敏感表行内加一个小状态标签“端到端加密 / 云空间加密”。
+  - 说明：云空间存储加密的密钥由服务方管理，不等于端到端加密；这是用户已知并接受的取舍，文案不得暗示端到端。
 
-增加一项静态契约检查：扫描 `CloudStore` 等写入点的字段集合，与 registry 的生产者集合
-比较；新增字段没有分类和兼容版本时，测试阶段失败，而不是等用户导出时失败。
+**F4 设备信任从脱敏备份导入并立即生效**
+- 脱敏模式保留 `REMOTE_HOST_EXTENSION_TRUST`（SSH 主机公钥、RDP/网关证书指纹与信任模式），manifest 标 `deviceTrustIncluded:true`；恢复时合并进本地扩展，直接成为“已信任”。
+- 恢复预览却写“该备份为脱敏配置，不含……设备信任（SSH 公钥/RDP 证书）”（[HostListPage.ets:5377](../../../entry/src/main/ets/pages/HostListPage.ets)）。
+- 外层 SHA-256 不是带密钥的签名，任何人都能构造一个合法备份预置攻击者的证书指纹/主机公钥，实现首连免告警的中间人。
+- 补充：`BackupManifestV3.ets:130` 的注释把“所有模式都保留信任”写成了有意设计（理由是公钥/证书不是秘密），但它忽略了恢复时信任会**直接生效**这一点。
+- **D2 决策**：脱敏备份不带设备信任；完整备份恢复的 SSH/RDP 信任降级为“待确认”，首次连接时重新确认（与 VNC 现有候选语义一致）。落地要点见 S3-D2。
 
-## 5. 完整模式与脱敏模式的校验分层
+**F7 主密码规则不一致**
+- `DataCrypto.setMasterPassword` 实际只要求 ≥8 位（[DataCrypto.ets:211](../../../entry/src/main/ets/services/DataCrypto.ets)）；设置面板只要 8 位即可提交（[HostListPage.ets:20361](../../../entry/src/main/ets/pages/HostListPage.ets)）；独立设置页要求 ≥12、首字母大写、含特殊字符（[MasterPasswordSetupPage.ets:220](../../../entry/src/main/ets/pages/MasterPasswordSetupPage.ets)）；两处占位提示“12-32 位”，上限从未执行。
+- 主密码的校验值随 `cryptoparams` 上云，可被离线暴力尝试（每次尝试需 PBKDF2 60 万次，但很短的密码仍可被穷举）。
+- **D3 决策**：主密码不设长度与复杂度限制。落地：一个共享的 `masterPasswordAcceptable()`，只要求非空、两次输入一致；去掉 `DataCrypto` 的 8 位检查、设置页的 12 位/大写开头/特殊字符检查、设置面板的 8 位按钮门槛、“12-32 位”占位提示；不截断、不 trim。设置界面保留一行非阻断说明“主密码忘记后无法找回”（现有文案若已有则不新增）。已有密码的解锁路径不变。
 
-校验顺序保持“外层结构 → section/行完整性 → 敏感策略 → 业务恢复适配”，但每层只判断
-自己负责的风险：
+**F11 重置加密的破坏范围**
+- 重置（`resetCryptoV3Exclusive`，[CloudStore.ets:11404](../../../entry/src/main/ets/services/CloudStore.ets)）调用 `clearAllTablesInActiveTransaction`（[CloudStore.ets:10751](../../../entry/src/main/ets/services/CloudStore.ets)）：整行删除当前账号的主机、RDP 凭据、SSH 密钥、TOTP、中继、VNC，包括地址、端口、用户名等非敏感配置；**整表**删除 `localextensions`（设备信任、本机个性化、凭据/中继/密钥关联都在里面）和本地变更日志；清空中继控制面配置；为每张表记一条 `clear` 变更。确认文案只写“所有加密数据将被永久删除”（[HostListPage.ets:20323](../../../entry/src/main/ets/pages/HostListPage.ets)）。
+- 代码注释说明它“刻意不是远程擦除协议”，并在重置时暂停敏感表同步；但之后重新启用敏感同步时，这些删除/`clear` 意图如何与云端交互，需要在实施时核实（见 S3-D4 第 4 条）。
+- **D4 决策**：只清空加密字段，保留主机地址等普通配置。落地要点见 S3-D4。
 
-1. **外层结构**：format、version、manifest、canonical hash、section hash、大小和读取
-   完整性必须严格验证。
-2. **行与身份**：id 唯一、tablename/recordid 绑定、owner 与当前 scope 一致、JSON 是
-   对象、值类型符合字段类别；未知字符串字段可以进入 opaque 集合。
-3. **敏感策略**：完整模式允许用户明确选择的敏感数据；脱敏模式对未分类字段默认按
-   敏感处理，不因“当前版本不认识”而误把它当成安全配置。
-4. **业务适配**：只有 registry 已知字段才能进入当前业务模型；opaque 字段留在兼容区，
-   不参与连接、认证、云上传或设备信任判断。
+### 2.3 中低风险与待验证
 
-`validateLocalExtensions` 不得再把“未知 key”与“伪造 owner/坏 JSON/错误类型/重复绑定”
-混为同一个失败原因。诊断只记录脱敏后的表、阶段、字段名和计数，不记录 payload 值、
-密码、token、地址或私钥。
+**F5 脱敏备份丢弃可跨设备配置**：`displayconfig` 云扩展块的键由 `REMOTE_HOST_CLOUD_EXTENSION_COLUMNS` 决定（[CloudTableAdapter.ets:88](../../../entry/src/main/ets/services/CloudTableAdapter.ets)），脱敏保留清单是 `BackupManifestV3` 里另一份 `REMOTE_HOST_EXTENSION_SAFE`（[BackupManifestV3.ets:157](../../../entry/src/main/ets/services/BackupManifestV3.ets)）。两份已漂移：`lanaddressmode`、`landiscoveryidentity`、`lanlastresolvedat`、`rdprestrictedadminsecretsource` 在云同步里是跨设备配置，在脱敏备份里却被删掉并计入 `removedSecretFields`。后果：脱敏恢复后静态 LAN 主机失去绑定与发现身份，受限管理员 RDP 主机丢失密钥来源设置。**D5 决策：保留**。四者都按非敏感配置保留；NTLM hash 本身仍是设备本地密钥，不进任何备份。
+- 实施细化（2026-10-04）：每台主机保存时都会写入这四个键（多为默认值），而已发布版本的脱敏校验会把它们删掉再比较，所以只要新版备份里出现这些键，旧版就会拒绝导入。因此只保留**非默认值**（`lanaddressmode=static`、非空发现身份、非 0 解析时间）；默认值不写入，没有 LAN 绑定的主机生成的脱敏备份与旧版完全一致。`rdprestrictedadminsecretsource` 当前唯一取值就是默认的 `ntlm_hash`（只是选择器，不是 hash），按同一规则不写入、不再计为“删除的敏感字段”。代价：含 LAN 绑定主机的新版脱敏备份，旧版应用会在写入前安全拒绝。
 
-## 6. 更新应用与老数据承接
+**F6 跨版本抹除未知键**：`decodeRemoteHostDisplayPayload` 只保留当前已知键（[CloudTableAdapter.ets:225](../../../entry/src/main/ets/services/CloudTableAdapter.ets)），保存主机时按已知键重建云扩展块（[CloudStore.ets:9236](../../../entry/src/main/ets/services/CloudStore.ets)）与 `displayconfig` 顶层；本地扩展 `saveHostExtension`（[CloudStore.ets:9273](../../../entry/src/main/ets/services/CloudStore.ets)）也用 `ON_CONFLICT_REPLACE` 重写。多设备混用新旧版本时，新版本写入的新键会被旧版本保存一次就抹掉，并经云同步传回。修复：保存时保留现有行中未知的字符串键（有数量/大小上限，不解释、不参与业务）。这是 v1 第 6.2 条在**云路径**上的真实落点。
 
-升级路径必须区分“读取旧数据”“写入新字段”“降级到旧版本”三个问题：
+**F8 冲突策略不一致（待真机）**：已有本地修改的设备启动时先对脏表做“本地优先”推送再“云端优先”下载（[CloudSyncCoordinator.ets:870](../../../entry/src/main/ets/services/CloudSyncCoordinator.ets)）；回前台与云事件直接“云端优先”（[CloudSyncCoordinator.ets:1110](../../../entry/src/main/ets/services/CloudSyncCoordinator.ets)）。按平台语义，云端优先在双方都修改同一行时以云端为准，自动推送失败后仍待上传的本地修改可能被覆盖。需真机确认平台语义后统一：回前台前先推送脏表，或冲突时保留双方并提示。
 
-1. **读旧数据**：v1/v2/v3 备份、旧 `passward`/扩展字段、旧 VNC/Moonlight section、
-   旧 owner/空 owner 和旧加密参数按其原格式读取；缺少可选 section 是 no-op，不清空
-   当前表。
-2. **写新字段**：更新已知字段时采用 read-modify-write，保留同一 payload 中未认识的
-   opaque 字段；不能用“当前版本已知字段全集”重建 payload 后把未来字段抹掉。
-3. **迁移事务**：迁移携带 owner、store identity、generation、operation id、源修订和
-   迁移 marker；主 RDB 内使用真实事务，Preferences/扩展使用现有持久回执和恢复门闩。
-   迁移失败保留原始数据和旧 marker，不能写空值冒充迁移完成。
-4. **新备份给旧版本**：若旧版本无法安全保留 opaque 字段，导入前必须明确报“不支持的
-   扩展字段/需要升级”，不得静默导入已知部分后宣称完整恢复。
-5. **旧备份给新版本**：新版本接受缺失字段并使用默认/NULL 语义；旧字段只有在 owner、
-   认证和格式验证通过后才迁移，不因一条坏记录阻塞其他健康记录。
-6. **旧 owner/空 owner**：v1/v2 只能先解析和展示来源，不能自动认领当前账号；只有用户
-   明确确认 legacy owner adoption、当前 scope lease 有效且来源记录通过格式/哈希校验时，
-   才能执行目标 owner 重绑。v3 的 foreign owner、空 owner 或 opaque owner 不匹配继续
-   拒绝或隔离，不能通过默认值归属当前账号。
-7. **账号与 app clone**：继续以 active scope lease 为准；更新或恢复过程中重新核对
-   owner、store identity、storeInstanceId 和 generation，旧账号结果不能写入新账号。
-8. **云边界**：未知 opaque 字段不自动进入现有云表或云 payload。若未来需要跨设备同步，
-   先增加明确的云 schema、版本和兼容策略，再单独验收。
+**F9 下载校验失败后的“回滚”不一致**：只有启动/回前台/云事件三种自动下载在开始前给本地做快照（[CloudStore.ets:5861](../../../entry/src/main/ets/services/CloudStore.ets)）；其他云端优先路径在校验失败时直接返回（[CloudStore.ets:6167](../../../entry/src/main/ets/services/CloudStore.ets)），平台已写入本地的数据不会恢复，但失败文案统一写“已回滚本次下载”。修复：所有云端优先路径统一快照+恢复，或改为如实提示。另：整表校验（`whole_snapshot`）下，一条旧版明文行会让所有设备整表下载失败，建议参考 Moonlight 的逐行隔离。
 
-## 7. 原始数据、失败与恢复语义
+**F10 v1 根因更正**：LAN 三字段自 `2c1132385`（2026-08-22）起只写在 `hostCloudExtensionValues`→`displayconfig` 云扩展块；`saveHostExtension`、迁移、设备信任迁移、恢复合并都不会把它们写进 `localextensions` 的主机 payload；完整模式校验对 `displayconfig` 内部不做白名单检查。v1 的“最小受控样本”是人为构造的位置。该位置仍是潜在风险（未来字段、旧备份恢复），保留为前向兼容加固项，但**不是**当前完整备份失败的原因（F1 才是）。
 
-- 导出是只读快照，不为了满足新白名单改写用户 RDB。
-- 未知但结构合法的字段在完整模式中原样保存；校验失败不能通过“删字段再重算 hash”
-  伪造完整备份。
-- 顶层表行新增列和 `localextensions.payload` 新增 key 分开处理：v3 的既有已知列契约继续
-  严格校验；v4 对 owner/身份正确、值为字符串的未来行列抽取到 `opaque.fields`，而不是
-  直接放回当前表。未知表名、未知 owner 列或非字符串行列值不能自动抽取，必须隔离并给出
-  不支持的 schema 错误。
-- 单条数据损坏时保留源数据，返回包含表/阶段/字段类别的可诊断错误；不清空目标库，
-  不把局部结果标成完整成功。
-- 恢复时只合并文件中实际存在且通过 owner/lease/哈希验证的字段；缺表、空表和缺字段
-  不删除本机数据。
-- 任何从 opaque 升级为正式字段的迁移必须可重复、可回滚到原始 opaque 表示，并记录
-  迁移版本和源 hash。
+**F12 账号绑定的平台假设（低）**：平台身份证明只证明“系统分布式账号已登录”，`proveCurrentCloudAccount` 收到的 App UnionID 未使用（[PlatformCloudIdentityService.ets:38](../../../entry/src/main/ets/services/PlatformCloudIdentityService.ets)），代码注释承认 API23 无法证明两者是同一人（[PlatformCloudIdentityPolicy.ets:113](../../../entry/src/main/ets/services/PlatformCloudIdentityPolicy.ets)）。现有的存储平台指纹校验在系统账号切换后会阻断，加上 Account Kit 通常就用系统账号登录，实际风险较低。建议：在计划/文档中显式记录该平台假设；首次云绑定时提示“云数据存入当前系统华为账号的云空间”。
 
-内部校验报告统一使用 `valid`、`valid_with_opaque`、`unsupported_version`、`invalid`、
-`quarantined` 五类状态，并携带 `reasonCode`、`stage`、`table`、脱敏后的 `recordId`、
-`unknownFieldCount`、`opaqueFieldCount`、`opaqueByteCount` 和 `quarantinedCount`。现有
-布尔/nullable API 可以由该报告兼容包装，但 UI、诊断和恢复日志不得再把所有失败压成同一
-个“格式或完整性错误”。
+**F13 规范云库被占用后无交接（低，过严）**：同一系统用户下若规范云库 `remotedesktop.db` 已归另一账号，新账号永久退到本地哈希库、不能云同步（[CloudStore.ets:1390](../../../entry/src/main/ets/services/CloudStore.ets)）。当旧 owner 记录的平台指纹已与当前系统账号不符时，可提供显式的“把旧数据迁到其本地库并接管云库”流程。
 
-## 8. 实施分期
+**F14 分身剪贴板全关**：分身同时关闭两个方向的剪贴板桥接（[AppCloneContext.ets:69](../../../entry/src/main/ets/services/AppCloneContext.ets)，唯一调用点 [RemoteDesktop.ets:4832](../../../entry/src/main/ets/pages/RemoteDesktop.ets)），理由是系统剪贴板全机共享，但主应用同样使用全机剪贴板，分身里远程会话复制粘贴完全不可用。**D6 决策：默认关闭，允许用户在分身中手动开启**，落地见 S3-D6。
 
-### P0：冻结契约与样本
+**F15 主库存储取舍（低）**：主 RDB 为 S1、未开 RDB 加密；未设主密码时凭据仅受系统文件级加密保护。记录为已知取舍；提高等级需评估对云同步与已安装数据的兼容影响。
 
-- 固定当前 v1/v2/v3 备份 JSON、`localextensions`、加密开启/关闭/锁定、device-local
-  与 Huawei-account scope 的去敏样本。
-- 建立生产者字段清单，确认 LAN 三字段和其他历史/未来字段的来源、敏感级别与 owner 规则。
-- 定义完整、脱敏、opaque、quarantine 四种验证结果，以及 UI/诊断错误码映射。
+**F16 云空间清空的连锁影响（待真机）**：账号绑定正常时“确为空快照”的证明恒成立（[CloudStore.ets:6117](../../../entry/src/main/ets/services/CloudStore.ets)），自动云端优先会接受空表。若用户在华为云空间里清空本应用数据，下一次同步可能把所有设备的本地主机清空。需真机验证；建议区分“云端被重置”（本地行此前已同步、云端整体消失）与“用户在其他设备删除”，前者先询问。
 
-### P1：registry 与校验器
+**F17 导出自检的错误归因（低）**：导出后的自检失败与“用户选的文件损坏”共用 `invalid_backup` 和“备份文件格式或完整性校验失败”（[LocalBackupService.ets:58](../../../entry/src/main/ets/services/LocalBackupService.ets)），把应用自身缺陷说成文件问题，也不带阶段信息。修复：区分 `export_self_check_failed(stage)` 与 `invalid_backup(reason)`，并记录脱敏诊断事件。
 
-- 引入单一 registry，替换 `LocalBackupPolicy` 和备份 manifest 中重复的字段白名单。
-- 让完整模式保留合法 opaque 字段；让脱敏模式默认删除未分类字段。
-- 保留现有 hash、manifest、section、scope lease、owner 和加密门禁。
-- 为写入生产者增加“字段必须已注册”的静态/主机测试。
+**F19 v1/v2 旧格式备份无法恢复（实施中新发现，已在 S1 修复）**：`validateLocalBackupDocument` 末尾写成 `version >= 3 && mode === 'full' ? !full : !redacted`，v1/v2 文件条件为假，进入 `validateRedactedV3Rows`，随后读取不存在的 `manifest.accountScope` 抛错（或因密钥字段被脱敏比较拒绝），统一返回“格式或完整性校验失败”。由 `651683042`（2026-07-31，引入完整模式）带入；`LocalBackupPolicy.test.ets` 中 4 个旧格式用例一直失败但未被执行（ohosTest 编译本身另有历史错误）。修复为只对 v3 执行按模式的行校验；宿主机脚本现在实际运行这些用例。
 
-### P2：升级和恢复适配
+**F18 `cryptoparams` 云端冲突（待真机）**：同一账号下两台各自设过主密码的设备，在开启敏感同步时会共用同一组 `cryptoparams` 行 ID；未找到内容冲突检测。若云端优先下载覆盖本机参数，后果与 F2 相同。需真机验证；与 F2 共用“加密契约比较”机制修复。
 
-- 对 `CloudStore` 的扩展写入统一使用 registry，更新已知字段时保留未知 payload。
-- 为旧备份、旧扩展、缺 section、旧加密参数、旧 owner 和 app clone 增加兼容适配与持久 marker。
-- 将 opaque 字段写入 `backupopaque` 本地兼容表，禁止未经注册的云上传、连接认证和 trust 激活；
-  同时加入 v4 解析、canonical hash、manifest section 和旧版本拒绝路径。
+### 2.4 已核实做得对的部分（不要改坏）
 
-### P3：回归与故障注入
+- PBKDF2-SHA256 60 万次 + AES-256-GCM；新格式把账号/表/记录/字段绑进 AAD；旧格式仅兼容读取。
+- 主密码已配置但本次未解锁时，敏感写入一律 `unlock_required`，不会落明文；读取时锁定的密文显示为空，不会把密文当明文。
+- 启用加密时每条被加密的行都记入变更日志，下次同步用密文替换云端旧明文。
+- RustDesk Pro 令牌、账号凭据存系统 Asset Store，`THIS_DEVICE` + `DEVICE_FIRST_UNLOCKED`。
+- 分身只保存本机、不登录账号、不云同步；实例状态读不到时 fail-closed。
+- AI 数据工具的编辑/删除都经界面确认，给 AI 的主机摘要不含地址、用户名、密钥。
+- 备份导出/恢复都校验 owner、store identity、generation、lease；恢复是字段级合并、缺表/缺列不删除本机数据，本地扩展 payload 合并保留已有未知键。
+- 恢复确认文案对 v1/v2 旧备份会写明“确认后绑定当前本地数据作用域”。
+- Moonlight 导出与校验复用同一过滤函数，两端天然一致（F1 的修复应采用同样模式）。
+- 敏感表默认不同步，需用户勾选；关闭/重置加密会自动暂停敏感同步，防止明文覆盖或远程清空。
 
-- 覆盖字段新增、字段未知、字段删除、key 顺序变化、重复 id、错误 owner、坏 JSON、非字符串
-  值、旧 schema、未来 schema 和 hash/manifest 篡改。
-- 覆盖导出中断、Picker 取消、短读/短写、重启、账号切换、scope generation 变化、迁移中断
-  和恢复重试。
-- 证明完整备份不会因合法未来字段失败，也证明不安全/损坏记录不会被静默放行。
+## 3. 对 v1 计划的修订
 
-### P4：设备和升级验收
+1. **根因**：从“LAN 字段被扩展白名单拒绝”改为“VNC 软删除行级契约分裂（F1）”；LAN 场景降为前向兼容加固。
+2. **v4 + opaque 区段 + `backupopaque` 新表：降级为条件性远期项**。理由：
+   - 扩展字段本来就以 `payload` JSON 字符串原样进出备份，恢复合并会保留已有未知键，前向兼容只需让完整模式校验接受“未知但为字符串”的 payload 键、脱敏模式继续按白名单删除；
+   - 当前版本导出只选已知列（`exportTableRows` 用 `localBackupColumnsForTable`），不会产生未知行列；
+   - 新增本地表意味着 RDB 迁移、恢复路径和云边界的新风险，与收益不相称。
+   - 只有将来某版本确实需要跨版本保留“行级新列”时，才重新启用 v1 第 3.1 节设计。
+3. **“旧版本遇到 v4 返回需要升级”**：已发布版本无法修改。它们遇到未知版本或未知键，会在写入前统一报“格式或完整性校验失败”（安全但文案泛化）。只有本计划之后的版本才能给出明确的“需要升级”提示。
+4. **单一 registry 范围扩大**：不只覆盖本地扩展 payload，还要覆盖：行级契约（软删除、owner）、`CloudTableAdapter` 云扩展列、`BackupManifestV3` 的 `SECRET_COLUMNS/SAFE/TRUST`、`LocalBackupPolicy` 列/payload 白名单、`CloudSensitiveTransferPolicy.SENSITIVE_COLUMNS`、`RemoteHostDeviceTrustPolicy.DEVICE_LOCAL_TRUST_KEYS`。F1、F5 都是这些清单之间漂移造成的；另一处已发现的漂移：`remotehosts` 的密钥列在 `SECRET_COLUMNS` 中是 `password/passward/sshkeydata/sshkeypassphrase`，在 `SENSITIVE_COLUMNS` 中只有 `passward/sshkeydata`（实施时确认 `password`、`sshkeypassphrase` 是否仍有写入，再统一）。D4 的“只清空加密字段”也必须以 registry 的 secret 分类为唯一来源。
+5. **v1 第 6.2 条（读改写保留未知字段）**：落点从“本地扩展”扩展到“云扩展块与 `displayconfig`”（F6），后者才是多设备混用版本时真实发生数据丢失的路径。
+6. 新增加密契约保护（F2/F18）、敏感数据告知（F3）、信任导入降级（F4）、同步一致性（F8/F9/F16）、fail-closed 可退出性审计（S7）。
 
-- 在受控副本上用旧版安装数据执行旧版 → 当前版保留数据更新，不卸载、不重置、不重新 setup。
-- 在 Phone/Pad/PC 与 app clone 组合中验证完整/脱敏导出、导入、重启、账号切换和恢复隔离。
-- 用旧备份恢复到新版本，再用新版本读取和再次导出；验证未知字段仍在且没有进入云同步。
-- 另行验证同账号云数据、加密锁定状态、VNC/Moonlight 可选表和协议连接数据，不把主机数量
-  或导出成功当成秘密可用性证明。
+## 4. Registry 契约（保留 v1 第 3–5 节的分类思想，修订如下）
 
-## 9. 必须新增的验证用例
+- 位置：`entry/src/main/ets/services/PortableDataSchemaRegistry.ets`（实施时可调整名称）。
+- 每个字段分类：`secret`、`safe`（可跨设备配置）、`trust`（设备信任，恢复时为候选）、`device_local`（不导出）、`opaque_forward`（未知，完整模式原样保留、脱敏删除）。
+- 每张表的行级规则：owner 列、软删除列与“导出是否包含软删除”、整数列、不可迁移列。
+- 消费方：导出（完整/脱敏）、导出自检、导入校验、恢复合并、云扩展投影、敏感上传检查。各模块旧清单改为从 registry 派生，**不得**再各自维护。
+- 闭包测试：扫描生产者（`hostExtensionValues`、`hostCloudExtensionValues`、`remoteHostLocalPersonalizationValues`、各 `saveLocalExtension` 调用、行写入桶）的键集合，与 registry 求差集；新增字段未分类时测试失败。
+- 校验分层（沿用 v1 第 5 节）：外层结构/哈希 → 行与身份 → 敏感策略 → 业务适配；未知 key 本身不再是安全错误，错误落在类型、身份、owner、认证、哈希上。
+- 结果报告：`valid`、`valid_with_opaque`、`unsupported_version`、`invalid`、`quarantined`，携带 `reasonCode`、`stage`、`table`、计数；界面和诊断按原因给出不同文案（F17）。
 
-1. `remotehosts` 扩展包含三个 LAN 字段时，完整和脱敏文档都能按各自策略校验。
-2. 完整模式包含一个未来字符串字段时，导出 → 校验 → 恢复 → 再导出保持 key/value 和 hash。
-3. 脱敏模式遇到未知字段时不携带该值，且 manifest/section hash 仍正确。
-4. 顶层表行未知列与 payload 未知 key 都能进入 v4 opaque section；未知表名、对象/数组、
-   非字符串秘密、非法 JSON 或错误 owner 时，不静默放行、不清空源数据。
-5. opaque section 的 key/值/记录/总量上限、manifest section hash、外层 canonical hash
-   和 `backupopaque` 恢复回读均通过；超限返回 `opaque_limit_exceeded`。
-6. 旧版本读取 v4 时在写入前明确返回需要升级；新版本读取 v1/v2/v3 文件缺失可选 section
-   时恢复只合并实际存在字段。
-7. 新版本更新已知字段时，旧/未来 opaque 字段不会被重建逻辑抹掉。
-8. legacy owner/空 owner 只有显式 adoption 才能重绑；foreign owner 始终隔离或拒绝。
-9. 加密 active/locked/disabled、明文明确同意、错误主密码和缺少 cryptoparams 各自进入
-   正确的边界，不用一个通用“格式错误”掩盖。
-10. 账号切换、app clone、store reopen 和 generation 变化不会让旧导出/恢复结果写入新 scope。
-11. 生产者字段集合与 registry 闭包检查通过；不存在“生产者已写、校验器未识别”的差集。
-12. 完整模式的合法扩展不再因为字段白名单过严失败；真正的完整性/身份/认证错误仍失败。
+## 5. 执行分期（准备执行）
 
-## 10. 完成条件与交付边界
+实施遵守 AGENTS.md：当前活动分支 `codex/pro-purchase-foundation`（Codex 正在其上进行 AI 相关的并发未提交改动，实施时只暂存本任务文件）；每期独立 checkpoint、双 Hvigor 门禁、Light/diff、独立复核后提交。
 
-计划实施完成前，不得声称完整备份已恢复或老版本升级已验收。实施交付至少需要：
+### S0 取证与先写失败用例（不改行为）
+1. 请用户在出问题的手机上点一次“完整备份”，同时抓 hilog（`LocalBackupPolicy validate stage=…`、`extension invalid payload key=…`），确认 F1 是不是用户遇到的那次失败；没有设备就以本计划的复现结果为准。
+2. 把本次宿主机复现转为仓库测试（`entry/src/test/LocalBackupPolicy.test.ets` 新增完整模式用例 + `scripts/tests/` 宿主机脚本），覆盖 1.1 节全部场景；F1、F5 的用例先以失败状态提交到用例清单。
+3. 冻结 v1/v2/v3 备份、加密开启/关闭/锁定、device-local 与华为账号作用域的去敏样本。
 
-- registry、导出/脱敏/校验/恢复四条路径使用同一分类来源；
-- LAN 三字段的回归失败被关闭，且新增未来字段样本通过；
-- 旧 v1/v2/v3、加密生命周期、scope lease、app clone 和更新保留数据样本通过；
-- 真实 RDB/Picker 的字节完整性、恢复事务和失败后原始数据保留证据通过；
-- 独立复审无 P0/P1/P2；
-- 按变更范围执行当前 AGENTS 要求的测试编译、`assembleHap`、Light 合规和设备/升级验收。
+### S1 立即修复（低风险，可单独交付）
+1. F1：完整导出与脱敏一致地排除 VNC 软删除行（`vncrecordv2`、`vnclocalrecords`），或让完整模式校验复用导出投影；补完整模式软删除用例。
+1a. F19：修复旧格式校验的优先级错误；新增宿主机脚本 `scripts/tests/test_data_management_safety.cjs`，直接运行 `LocalBackupPolicy`、`CloudSyncSheetPolicy`、`MasterPasswordPolicy`、`AppCloneContext` 的 hypium 用例。
+2. F17：区分导出自检失败与导入文件无效，错误码带阶段；记录脱敏诊断事件。
+3. F3（D1）：注释与同步管理文案改为如实描述，敏感表加“端到端加密 / 云空间加密”状态标签；上传行为不变。
+4. F5（D5）：四个键按“非默认值才保留”加入脱敏保留集合（见 F5 实施细化），并加跨清单一致性测试（云扩展每个键都必须被脱敏保留或按默认值省略）。
 
-本次只提交本计划文件。按用户要求，本轮不执行构建、签名、设备安装、数据迁移或代码修复。
+### S2 加密契约保护（高优先级）
+1. F2：恢复前比较备份与目标的加密契约（KDF 版本/迭代、盐、校验值、`crypto_status`）。
+   - 目标未配置加密：可导入（与现状一致），恢复后要求输入备份主密码解锁；
+   - 目标已配置且契约一致：正常合并；
+   - 目标已配置且不一致：拒绝合并 `cryptoparams` 与密文字段，只导入非敏感配置并明确提示；后续可选“输入备份主密码→用目标密钥重新加密导入”。
+2. F18：真机验证两台独立配置主密码设备开启敏感同步的行为；若会覆盖，下载前比较契约，不一致时暂停敏感同步并提示二选一。
+
+### S3 产品决策项落地（D1 已并入 S1；D5 已并入 S1）
+四项互相独立，各自一个 checkpoint，顺序为 D3 → D6 → D2 → D4（由易到难；D4 依赖 S2 的加密契约比较）。
+
+**S3-D3 主密码不设限制（F7）**
+1. 新增共享 `masterPasswordAcceptable(password, confirm)`：非空且两次一致即通过。
+2. 替换三处检查：`DataCrypto.setMasterPassword` 的 8 位检查（[DataCrypto.ets:212](../../../entry/src/main/ets/services/DataCrypto.ets)）、`MasterPasswordSetupPage.canSubmit/doSetup` 的 12 位/大写开头/特殊字符（[MasterPasswordSetupPage.ets:190](../../../entry/src/main/ets/pages/MasterPasswordSetupPage.ets)、[220](../../../entry/src/main/ets/pages/MasterPasswordSetupPage.ets)）、设置面板按钮的 8 位门槛（[HostListPage.ets:20361](../../../entry/src/main/ets/pages/HostListPage.ets)）。
+3. 两处占位提示“12-32 位, 大写开头, 含特殊字符”改为“输入主密码”。
+4. 验收：1 位密码可设置并可解锁；空密码、两次不一致被拒；已有 8–12 位密码解锁不受影响。
+
+**S3-D6 分身剪贴板手动开启（F14）**
+1. `appCloneClipboardBridgeAllowed(policy, cloneOptIn)`：主应用恒为允许；分身只在 `cloneOptIn` 为真时允许。开关是分身自己沙箱内的本机偏好，默认关闭，不进备份、不云同步。
+2. 开关只在分身中显示（放在分身的本机数据/设置区），说明文案：“系统剪贴板在主应用和分身之间共享。开启后，分身中的远程会话会读写这个共享剪贴板。”
+3. 开启后仍服从各协议自己的剪贴板开关（RDP/RustDesk 全局开关、VNC 主机开关）；`RemoteDesktop.clipboardBridgeEnabledForSession` 的唯一入口改为读取新函数。
+4. 验收：分身默认无剪贴板桥接；开启后双向可用；关闭后立即停止；主应用行为不变。
+
+**S3-D2 设备信任：脱敏不带、完整恢复降级（F4）**
+1. 脱敏导出：删除 `REMOTE_HOST_EXTENSION_TRUST` 全部键，计入 `removedDeviceTrustFields`，manifest `deviceTrustIncluded=false`；更新 `BackupManifestV3.ets:130` 注释。
+2. 脱敏导入：已发布版本生成的脱敏备份**确实含有**信任字段，所以不能拒收；校验通过后剥离信任键并在预览中显示“备份中的设备信任已忽略”。这同时防御构造的备份。
+3. 完整恢复降级（纯函数，便于测试），作用于 SSH 主机、SSH 跳板主机、RDP 证书、RDP 网关证书四组字段：
+   - `*trustmode` → 0（SSH 未信任 / `RDP_CERTIFICATE_UNKNOWN_TRUST_MODE`）；
+   - `*trustedat` → 0；
+   - `rdp*allowuntrustedroot`、`rdp*allowhostmismatch` → false（例外放行也是信任决定）；
+   - 指纹、公钥、证书主题、路由身份保留作参考。
+   VNC 已有候选语义，保持不变。v1/v2 旧备份同样经过降级。
+4. 不降级本机已有的信任：目标主机在本机已有非 0 信任模式时，保留本机信任字段，忽略备份中的信任。
+5. 首次连接：信任模式为 0 时走现有首次确认流程。实施时逐一核实四组流程不会把“已有指纹 + 模式 0”误报成“主机密钥已变更”告警（SSH 依据 [SshHostKeyTrustPolicy.ets:119](../../../entry/src/main/ets/services/SshHostKeyTrustPolicy.ets) 只认模式 1，跳板主机变更检测见 [HostListPage.ets:10397](../../../entry/src/main/ets/pages/HostListPage.ets)）。可选增强：确认框提示“与备份记录的指纹一致/不一致”。
+6. 恢复预览文案：完整备份“包含设备信任记录，恢复后首次连接需重新确认”；脱敏备份“不含设备信任”。
+7. 设备信任本来就不走云同步（`RemoteHostDeviceTrustPolicy` 只投影本机信任），本项不涉及云端。
+
+**S3-D4 重置只清空加密字段（F11）**
+1. 以 registry 的 secret 分类为准逐表处理（registry 未落地前以 `SECRET_COLUMNS` ∪ `SENSITIVE_COLUMNS` 为准）：
+   - `remotehosts`：清空 `password/passward/sshkeydata/sshkeypassphrase`，`passwordConfigured=false`，地址、端口、用户名、协议设置保留；
+   - `rdpcredentials`：清空 `password`，名称/用户名/域保留；
+   - `rustdeskrelays`：清空 `apipassword/key` 以及 `accountsjson` 内的密钥字段（只保留账号名等非密钥项；做不到逐项则整列清空）；中继控制面令牌继续清除（它们是密钥）；
+   - `sshkeys`：清空 `privatekey`，名称、公钥、指纹保留，界面标记“需重新导入私钥”，主机对密钥的引用保持有效；
+   - `totpentries`：清空 `secret`，发行方/账号名保留，界面标记“需重新绑定”；
+   - VNC：只对 `recordType==='secret'` 的记录写软删除（现有格式：密文为空），主机/网关/设置/信任记录保留；
+   - `localextensions`：不再整表删除（其中的关联、个性化、设备信任都不是密文）；
+   - 本地变更日志：不再整表删除，改为对被修改的行记 `update`。
+2. 事务、生命周期状态（`reset_pending → reset_committed`）、`crypto_status=disabled`、VNC reset epoch 的写法保持不变，只替换“删什么”。
+3. 界面适配：密码为空的主机连接时按“未保存密码”提示输入；空私钥的 SSH 密钥、空 secret 的 TOTP 显示需重新导入/绑定，不能崩溃或当作有效密钥使用。
+4. 云端语义（保持“不是远程擦除”）：重置仍暂停敏感表同步。实施前先核实现有重新启用路径对 `clear`/删除意图的处理；新行为下，重新启用敏感同步时**不得**用本机的空字段静默覆盖云端仍可被其他设备解密的密文，必须让用户选择“以云端为准（输入原主密码后可用）”或“以本机为准（云端旧密文一并清空）”。这一步复用 S2 的加密契约比较（重置后若设了新主密码，本机与云端的契约必然不一致）。
+5. 确认文案列出会清空的内容（各类密码、SSH 私钥、2FA 密钥、中继密钥、VNC 密码/令牌）和会保留的内容（主机地址、端口、用户名、分组与显示设置、设备信任）。
+6. 验收：重置后主机列表与设置完整保留、所有密钥字段为空、无任何密文残留；未重新启用同步前云端不变；重新启用时出现二选一且两种选择结果正确。
+
+### S4 Registry 与前向兼容
+1. 引入 registry，替换五处清单（见第 3 节第 4 条），加生产者闭包测试。
+2. 完整模式校验接受未知字符串 payload 键并计数；脱敏模式默认删除未分类键。
+3. F6：`saveHostExtension`、云扩展块投影与 `displayconfig` 写回改为读改写，保留未知字符串键（数量/大小上限；不参与连接、认证、信任或上传判断，只是不抹除）。
+4. 版本策略：继续生成 v3；不新增 `backupopaque` 表（见第 3 节第 2 条）。
+
+### S5 同步一致性（先真机验证再改）
+F8（回前台前先推送脏表，或统一冲突策略并提示）、F9（所有云端优先路径统一快照+恢复；整表校验改为逐行隔离）、F16（区分云端重置与用户删除）。
+
+### S6 账号与云库
+F12（记录平台假设、首次绑定提示）、F13（显式云库交接流程）。
+
+### S7 fail-closed 状态可退出性审计
+逐个列出持久化阻断标记（恢复隔离、同步范围重新启用屏障、系统回调超时隔离、加密生命周期事务、持久化降级本地模式、前向兼容 schema 本地模式、恢复必需标记等），逐个确认：有用户可见说明、有退出路径、有测试覆盖；不满足的补齐。
+
+### S8 设备与升级验收
+沿用 v1 第 8 节 P4：旧版 → 当前版保留数据升级；Phone/Pad/PC 与分身组合的完整/脱敏导出导入、重启、账号切换；两台设备的云同步冲突、加密契约冲突与云空间清空场景。
+
+## 6. 验证用例（在 v1 第 9 节基础上增补）
+
+1. 删过 VNC 主机/网关/密钥后，完整备份导出→自检→选择文件校验全部通过；软删除不进入完整备份。
+2. 目标已用不同盐配置加密时，完整恢复不覆盖 `cryptoparams`、不导入密文字段，原有密文仍可用旧主密码解开；契约一致时正常合并。
+3. 脱敏备份保留 LAN 三字段与 `rdprestrictedadminsecretsource`，`removedSecretFields` 不再计入它们；脱敏恢复后静态 LAN 主机绑定不变。
+4. D2：新导出的脱敏备份不含设备信任、manifest `deviceTrustIncluded=false`；旧版脱敏备份（含信任字段）仍能导入，但信任被剥离且预览提示；构造的“脱敏备份 + 攻击者指纹”恢复后不产生任何已信任记录；完整恢复的四组信任模式均为 0、例外放行为 false、指纹保留；本机已有信任不被降级；四组首次连接都弹首次确认而不是“密钥已变更”告警。
+5. 云扩展块/`displayconfig`/本地扩展中的未知字符串键在旧版本保存主机后仍保留，不进入业务判断。
+6. 生产者键集合与 registry 闭包检查通过；六处旧清单不再独立存在。
+7. D3：三处入口共用 `masterPasswordAcceptable`；1 位密码可设置并解锁；空密码与两次不一致被拒；已有密码解锁不受影响；界面不再出现“12-32 位/大写开头/特殊字符”。
+8. D1：同步管理中敏感表的文案按加密状态区分，未设主密码时不出现“自动保护/加密”字样，状态标签正确；上传行为与现状一致。
+9. 每条云端优先路径在校验失败时都恢复下载前数据，或如实提示未回滚。
+10. 导出自检失败的文案与导入文件损坏的文案不同，并带阶段。
+11. D4：重置后各表行与非密钥列保留、所有 secret 列为空、无密文残留；VNC 只有 secret 记录被软删除；`localextensions` 中的关联、个性化与设备信任保留；空密码主机/空私钥/空 TOTP 的界面行为正确；重新启用敏感同步出现二选一，“以云端为准”后输入原主密码可恢复，“以本机为准”后云端密文被清空。
+12. D6：分身默认无剪贴板桥接；开启后双向可用并服从各协议开关；关闭立即生效；主应用不受影响；开关不进备份、不云同步。
+13. v1 第 9 节第 2、3、6–10、12 条继续有效（第 4、5 条中与 `backupopaque`/v4 相关部分随第 3 节第 2 条降级）。
+
+## 7. 用户决策（2026-10-04 已确认）
+
+| 编号 | 问题 | 决策 |
+|---|---|---|
+| D1 | 无主密码时敏感表能否上云（F3） | **允许**，依赖华为云空间自身加密；只修正文案与注释，如实区分“云空间加密”与“端到端加密” |
+| D2 | 设备信任能否随备份导入（F4） | **脱敏不带；完整恢复后降级为待确认，首次连接重新确认** |
+| D3 | 主密码规则（F7） | **不设长度与复杂度限制**（仅非空、两次一致） |
+| D4 | 忘记密码重置的范围（F11） | **只清空加密字段，保留主机地址等普通配置** |
+| D5 | LAN 三字段与受限管理员密钥来源在脱敏备份中保留（F5） | **保留** |
+| D6 | 分身剪贴板（F14） | **默认关闭，允许用户手动开启** |
+| D7 | 实施顺序 | 未单独答复，按默认：S0+S1 → S2 → S3（D3 → D6 → D2 → D4）→ S4 → S5 → S6 → S7 → S8 |
+
+## 8. 完成条件
+
+- F1、F2 关闭并有回归用例；F3–F7、F11、F14 按第 7 节决策落地；F8、F9、F16、F18 完成真机验证并按结论修复或记录为可接受风险；
+- registry 成为导出/脱敏/校验/恢复/云扩展/敏感上传的唯一字段来源，闭包测试通过；
+- S7 列出的每个阻断标记都有说明、退出路径与测试；
+- 每期双 Hvigor 门禁、Light/diff、独立复核无 P0/P1/P2；设备与升级验收（S8）完成前不宣称“备份与升级已验收”。
+
+本轮只更新本计划文件，不改应用实现、不构建、不装机。

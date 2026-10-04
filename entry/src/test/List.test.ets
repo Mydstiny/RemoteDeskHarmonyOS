@@ -281,6 +281,7 @@ import diagnosticEvidenceCoveragePolicyTest from './DiagnosticEvidenceCoveragePo
 import diagnosticAiPolicyTest from './DiagnosticAiPolicy.test';
 import diagnosticAiAgentPolicyTest from './DiagnosticAiAgentPolicy.test';
 import appCloneContextTest from './AppCloneContext.test';
+import masterPasswordPolicyTest from './MasterPasswordPolicy.test';
 
 export default function testsuite() {
   proAccessPolicyTest();
@@ -565,5 +566,6 @@ export default function testsuite() {
   diagnosticAiPolicyTest();
   diagnosticAiAgentPolicyTest();
   appCloneContextTest();
+  masterPasswordPolicyTest();
   rustDeskRelayHealthPolicyTest();
 }
