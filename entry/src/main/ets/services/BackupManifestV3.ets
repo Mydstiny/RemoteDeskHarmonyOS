@@ -17,16 +17,21 @@ import {
   sanitizeRemoteHostExtensionForRdpCredentialPolicy,
   sanitizeRemoteHostRowForRdpCredentialPolicy
 } from './RdpSessionCredentialPolicy';
+import { remoteHostDeviceTrustKeys } from './RemoteHostDeviceTrustPolicy';
+import { CryptoEnvelopeKind, classifyCryptoEnvelope } from './CryptoEnvelopePolicy';
+import { vncSecretStorageModeFromPayload } from './VncSecretStoragePolicy';
 
 export type BackupSectionKind = 'cloud_table' | 'local_extensions' |
   'local_table';
 export type BackupSectionState = 'absent' | 'empty' | 'rows';
 export type BackupRestoreMode = 'merge' | 'replace_selected';
 /**
- * redacted: portable config only (no passwords/private keys/2FA/tokens).
+ * redacted: portable config only (no passwords/private keys/2FA/tokens and,
+ * since 2026-10-04, no SSH/RDP device trust).
  * full: complete backup chosen by the user; existing protocol secrets are kept as stored
  * (ciphertext when the source has crypto, plaintext otherwise by the user's
- * explicit choice), public device trust is kept as data. VNC trust rows are
+ * explicit choice), public device trust is kept as data and restored only as
+ * candidates that must be confirmed again. VNC trust rows are
  * candidates/metadata only; the device-local confirmation marker is never
  * portable. Moonlight client identity remains device-bound and is omitted in
  * both modes; only its trust candidates are added by full mode.
@@ -127,31 +132,18 @@ const SECRET_COLUMNS: Record<string, string[]> = {
   'totpentries': ['secret']
 };
 
-// Device trust columns (SSH host public keys, RDP certificates) are retained
-// in every backup mode; they are public data, not secrets. VNC trust rows are
-// intentionally different: redacted backups omit them, while full backups
-// carry only candidate metadata and never the local confirmation marker.
+// Device trust (SSH host/jump-host keys, RDP/RD Gateway certificates) is not
+// secret, but importing it as trusted would let a crafted file pre-trust an
+// attacker's key (user decision 2026-10-04). Redacted backups therefore omit
+// it; full backups keep it as data and a restore demotes it to candidates.
+// Validation still accepts redacted files written before this change, which
+// contain trust: the restore plan drops it. VNC trust rows follow the same
+// rule through their own candidate model.
+const REMOTE_HOST_EXTENSION_TRUST: string[] = remoteHostDeviceTrustKeys();
 
-const REMOTE_HOST_EXTENSION_TRUST: string[] = [
-  'sshhostkeyalgorithm', 'sshhostkeyfingerprintsha256',
-  'sshhostkeyrawbase64', 'sshhostkeytrustedat', 'sshhostkeytrustmode',
-  'sshhostkeyrouteidentity',
-  'sshjumphostkeyalgorithm', 'sshjumphostkeyfingerprintsha256',
-  'sshjumphostkeyrawbase64', 'sshjumphostkeytrustedat', 'sshjumphostkeytrustmode',
-  'rdpcertificatefingerprintsha256', 'rdpcertificatesubject',
-  'rdpcertificateissuer', 'rdpcertificatecommonname',
-  'rdpcertificatenotbeforems', 'rdpcertificatenotafterms',
-  'rdpcertificatetrustedat', 'rdpcertificatetrustmode',
-  'rdpcertificateallowuntrustedroot',
-  'rdpcertificateallowhostmismatch', 'rdpcertificaterouteidentity',
-  'rdpgatewaycertificatefingerprintsha256',
-  'rdpgatewaycertificatesubject', 'rdpgatewaycertificateissuer',
-  'rdpgatewaycertificatecommonname', 'rdpgatewaycertificatenotbeforems',
-  'rdpgatewaycertificatenotafterms', 'rdpgatewaycertificatetrustedat',
-  'rdpgatewaycertificatetrustmode',
-  'rdpgatewaycertificateallowuntrustedroot',
-  'rdpgatewaycertificateallowhostmismatch',
-  'rdpgatewaycertificaterouteidentity'
+/** Secret keys inside a remotehosts local-extension payload. */
+const REMOTE_HOST_EXTENSION_SECRET_KEYS: string[] = [
+  'password', 'sshkeypassphrase', 'sshproxypassword', 'sshproxykeypassphrase'
 ];
 
 const REMOTE_HOST_EXTENSION_SAFE: string[] = [
@@ -204,6 +196,11 @@ interface RedactedDisplayConfig {
   removedDeviceTrustFields: number;
 }
 
+interface RedactedExtensionRows {
+  rows: Array<Record<string, string>>;
+  removedDeviceTrustFields: number;
+}
+
 function copyRowWithout(
   source: Record<string, string>, removed: string[]
 ): Record<string, string> {
@@ -226,7 +223,7 @@ function copyRows(
 }
 
 function redactRemoteHostDisplayConfig(
-  raw: string
+  raw: string, retainDeviceTrust: boolean
 ): RedactedDisplayConfig {
   const result: RedactedDisplayConfig = {
     value: '',
@@ -261,8 +258,15 @@ function redactRemoteHostDisplayConfig(
           }
           continue;
         }
-        if ((REMOTE_HOST_EXTENSION_SAFE.indexOf(key) >= 0 ||
-          REMOTE_HOST_EXTENSION_TRUST.indexOf(key) >= 0) &&
+        if (REMOTE_HOST_EXTENSION_TRUST.indexOf(key) >= 0) {
+          if (retainDeviceTrust && typeof extension[key] === 'string') {
+            safeExtension[key] = extension[key];
+          } else {
+            result.removedDeviceTrustFields++;
+          }
+          continue;
+        }
+        if (REMOTE_HOST_EXTENSION_SAFE.indexOf(key) >= 0 &&
           typeof extension[key] === 'string') {
           safeExtension[key] = extension[key];
         } else {
@@ -380,9 +384,11 @@ function redactVncRows(
 
 function redactExtensionRows(
   rows: Array<Record<string, string>>,
-  connectTimeHostIds: string[]
-): Array<Record<string, string>> {
+  connectTimeHostIds: string[],
+  retainDeviceTrust: boolean
+): RedactedExtensionRows {
   const result: Array<Record<string, string>> = [];
+  let removedDeviceTrustFields: number = 0;
   for (let i = 0; i < rows.length; i++) {
     const policyRow: Record<string, string> =
       sanitizeRemoteHostExtensionForRdpCredentialPolicy(
@@ -397,8 +403,12 @@ function redactExtensionRows(
       const payload: Record<string, string> = {};
       const keys: string[] = Object.keys(source);
       for (let k = 0; k < keys.length; k++) {
-          if ((REMOTE_HOST_EXTENSION_SAFE.indexOf(keys[k]) >= 0 ||
-            REMOTE_HOST_EXTENSION_TRUST.indexOf(keys[k]) >= 0) &&
+          const trustKey: boolean = REMOTE_HOST_EXTENSION_TRUST.indexOf(keys[k]) >= 0;
+          if (trustKey && !retainDeviceTrust) {
+            removedDeviceTrustFields++;
+            continue;
+          }
+          if ((REMOTE_HOST_EXTENSION_SAFE.indexOf(keys[k]) >= 0 || trustKey) &&
             typeof source[keys[k]] === 'string') {
             payload[keys[k]] = source[keys[k]];
           }
@@ -411,18 +421,20 @@ function redactExtensionRows(
     }
     result.push(next);
   }
-  return result;
+  return { rows: result, removedDeviceTrustFields };
 }
 
 /**
- * Produce the only currently supported portable payload: account-scoped,
- * redacted configuration. A separate password-protected sensitive format is
- * intentionally not implied by this mode.
+ * Produce the redacted portable payload: account-scoped configuration
+ * without secrets or device trust. `retainDeviceTrust` exists only so the
+ * validator can re-redact files written before trust was excluded and still
+ * compare them byte for byte; exports and restore plans never retain it.
  */
 export function redactPortableBackupData(
   tables: Record<string, Array<Record<string, string>>>,
   extensions: Array<Record<string, string>>,
-  localTables: Record<string, Array<Record<string, string>>>
+  localTables: Record<string, Array<Record<string, string>>>,
+  retainDeviceTrust: boolean = false
 ): PortableBackupRedactionResult {
   const redactedTables: Record<string, Array<Record<string, string>>> = {};
   let removedSecretFields: number = 0;
@@ -467,11 +479,11 @@ export function redactPortableBackupData(
       continue;
     }
     const secretColumns: string[] = SECRET_COLUMNS[table] || [];
-    // Device trust (SSH host public keys, RDP certificates) is NOT secret and
-    // is intentionally retained in every backup mode; only secret columns are
-    // removed by the redacted mode. VNC trust rows were handled above and are
-    // excluded from this portable configuration mode.
-    const removed: string[] = secretColumns;
+    // Only remotehosts rows carry legacy device-trust columns; current builds
+    // keep trust in the device-local extension instead.
+    const trustColumns: string[] = table === 'remotehosts' && !retainDeviceTrust
+      ? REMOTE_HOST_EXTENSION_TRUST : [];
+    const removed: string[] = secretColumns.concat(trustColumns);
     const nextRows: Array<Record<string, string>> = [];
     for (let r = 0; r < sourceRows.length; r++) {
       const sourceRow: Record<string, string> = table === 'remotehosts'
@@ -482,6 +494,11 @@ export function redactPortableBackupData(
           removedSecretFields++;
         }
       }
+      for (let c = 0; c < trustColumns.length; c++) {
+        if (sourceRow[trustColumns[c]] !== undefined) {
+          removedDeviceTrustFields++;
+        }
+      }
       const removedForRow: string[] = table === 'remotehosts'
         ? removed.concat(['displayconfig']) : removed;
       const next: Record<string, string> =
@@ -490,7 +507,7 @@ export function redactPortableBackupData(
         sourceRow['displayconfig'] !== undefined) {
         const display: RedactedDisplayConfig =
           redactRemoteHostDisplayConfig(
-            sourceRow['displayconfig']);
+            sourceRow['displayconfig'], retainDeviceTrust);
         removedSecretFields += display.removedSecretFields;
         removedDeviceTrustFields +=
           display.removedDeviceTrustFields;
@@ -503,8 +520,10 @@ export function redactPortableBackupData(
     redactedTables[table] = nextRows;
   }
 
-  const redactedExtensions: Array<Record<string, string>> =
-    redactExtensionRows(extensions, connectTimeHostIds);
+  const redactedExtensionRows: RedactedExtensionRows =
+    redactExtensionRows(extensions, connectTimeHostIds, retainDeviceTrust);
+  const redactedExtensions: Array<Record<string, string>> = redactedExtensionRows.rows;
+  removedDeviceTrustFields += redactedExtensionRows.removedDeviceTrustFields;
   excludedRows += extensions.length - redactedExtensions.length;
 
   const redactedLocal: Record<string, Array<Record<string, string>>> = {};
@@ -612,6 +631,177 @@ export function fullPortableBackupData(
     removedDeviceTrustFields: 0,
     excludedRows
   };
+}
+
+/**
+ * Removes every secret from a full-backup payload while keeping all other
+ * data, for a restore whose ciphertext belongs to another master password:
+ * secret columns, VNC secret records, secret keys in host extensions,
+ * Restricted Admin hash rows and the backup's crypto parameters.
+ */
+export function withoutPortableSecretFields(
+  data: PortableBackupData
+): PortableBackupRedactionResult {
+  const tables: Record<string, Array<Record<string, string>>> = {};
+  let removedSecretFields: number = 0;
+  let excludedRows: number = 0;
+  const names: string[] = Object.keys(data.tables);
+  for (let i = 0; i < names.length; i++) {
+    const table: string = names[i];
+    const sourceRows: Array<Record<string, string>> = data.tables[table] || [];
+    if (table === 'cryptoparams') {
+      excludedRows += sourceRows.length;
+      continue;
+    }
+    if (table === 'vncrecordv2') {
+      const kept: Array<Record<string, string>> = [];
+      for (let r = 0; r < sourceRows.length; r++) {
+        if ((sourceRows[r]['recordtype'] || '') === 'secret') { excludedRows++; continue; }
+        kept.push(copyRowWithout(sourceRows[r], []));
+      }
+      tables[table] = kept;
+      continue;
+    }
+    const secretColumns: string[] = SECRET_COLUMNS[table] || [];
+    const rows: Array<Record<string, string>> = [];
+    for (let r = 0; r < sourceRows.length; r++) {
+      for (let c = 0; c < secretColumns.length; c++) {
+        if (sourceRows[r][secretColumns[c]] !== undefined) { removedSecretFields++; }
+      }
+      rows.push(copyRowWithout(sourceRows[r], secretColumns));
+    }
+    tables[table] = rows;
+  }
+  const extensions: Array<Record<string, string>> = [];
+  for (let i = 0; i < data.extensions.length; i++) {
+    const row: Record<string, string> = data.extensions[i];
+    const table: string = row['tablename'] || '';
+    if (table === 'rdprestrictedadminsecrets') { excludedRows++; continue; }
+    const next: Record<string, string> = copyRowWithout(row, []);
+    if (table === 'remotehosts') {
+      try {
+        const payload: Record<string, string> =
+          JSON.parse(row['payload'] || '{}') as Record<string, string>;
+        for (let k = 0; k < REMOTE_HOST_EXTENSION_SECRET_KEYS.length; k++) {
+          if (payload[REMOTE_HOST_EXTENSION_SECRET_KEYS[k]] !== undefined) {
+            removedSecretFields++;
+          }
+        }
+        next['payload'] = JSON.stringify(
+          copyRowWithout(payload, REMOTE_HOST_EXTENSION_SECRET_KEYS));
+      } catch (_e) {
+        excludedRows++;
+        continue;
+      }
+    }
+    extensions.push(next);
+  }
+  const localTables: Record<string, Array<Record<string, string>>> = {};
+  const localNames: string[] = Object.keys(data.localTables);
+  for (let i = 0; i < localNames.length; i++) {
+    const table: string = localNames[i];
+    const sourceRows: Array<Record<string, string>> = data.localTables[table] || [];
+    const kept: Array<Record<string, string>> = [];
+    for (let r = 0; r < sourceRows.length; r++) {
+      if (table === 'vnclocalrecords' && (sourceRows[r]['recordtype'] || '') === 'secret') {
+        excludedRows++;
+        continue;
+      }
+      kept.push(copyRowWithout(sourceRows[r], []));
+    }
+    localTables[table] = kept;
+  }
+  return {
+    tables,
+    extensions,
+    localTables,
+    removedSecretFields,
+    removedDeviceTrustFields: 0,
+    excludedRows
+  };
+}
+
+/**
+ * Only well-formed envelopes this app writes count as ciphertext here. A
+ * plaintext password such as "2024:Spring" also has a version-like prefix,
+ * and must not make a genuinely unencrypted backup look encrypted.
+ */
+function secretValueIsCiphertext(value: string): boolean {
+  const kind: CryptoEnvelopeKind = classifyCryptoEnvelope(value);
+  return kind === 'legacy_v1' || kind === 'vnc_v2' || kind === 'scoped_v3';
+}
+
+function relayAccountsCarryCiphertext(raw: string): boolean {
+  try {
+    const parsed: Object = JSON.parse(raw) as Object;
+    if (!Array.isArray(parsed)) { return false; }
+    const accounts: Array<Record<string, Object>> = parsed as Array<Record<string, Object>>;
+    for (let i = 0; i < accounts.length; i++) {
+      const account: Record<string, Object> = accounts[i];
+      if (account !== null && typeof account === 'object' &&
+        typeof account['password'] === 'string' &&
+        secretValueIsCiphertext(account['password'] as string)) {
+        return true;
+      }
+    }
+  } catch (_e) {
+    return false;
+  }
+  return false;
+}
+
+function vncRowsCarryCiphertext(rows: Array<Record<string, string>>): boolean {
+  for (let i = 0; i < rows.length; i++) {
+    const row: Record<string, string> = rows[i];
+    if ((row['recordtype'] || '') === 'secret' && (row['ciphertext'] || '') !== '' &&
+      vncSecretStorageModeFromPayload(row['payload'] || '') !== 'plain_explicit_v1') {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Whether any secret in the payload is ciphertext (an envelope this device
+ * can only open with the matching crypto contract). Plaintext secrets and
+ * explicit plaintext VNC envelopes do not count.
+ */
+export function portableDataCarriesCiphertext(data: PortableBackupData): boolean {
+  const names: string[] = Object.keys(data.tables);
+  for (let i = 0; i < names.length; i++) {
+    const table: string = names[i];
+    const rows: Array<Record<string, string>> = data.tables[table] || [];
+    if (table === 'vncrecordv2') {
+      if (vncRowsCarryCiphertext(rows)) { return true; }
+      continue;
+    }
+    const columns: string[] = Object.keys(SECRET_COLUMNS).indexOf(table) >= 0 ?
+      SECRET_COLUMNS[table] : [];
+    for (let r = 0; r < rows.length; r++) {
+      for (let c = 0; c < columns.length; c++) {
+        const value: string = rows[r][columns[c]] || '';
+        if (columns[c] === 'accountsjson') {
+          if (relayAccountsCarryCiphertext(value)) { return true; }
+        } else if (secretValueIsCiphertext(value)) {
+          return true;
+        }
+      }
+    }
+  }
+  for (let i = 0; i < data.extensions.length; i++) {
+    if ((data.extensions[i]['tablename'] || '') !== 'remotehosts') { continue; }
+    try {
+      const payload: Record<string, string> =
+        JSON.parse(data.extensions[i]['payload'] || '{}') as Record<string, string>;
+      for (let k = 0; k < REMOTE_HOST_EXTENSION_SECRET_KEYS.length; k++) {
+        const value: string | undefined = payload[REMOTE_HOST_EXTENSION_SECRET_KEYS[k]];
+        if (typeof value === 'string' && secretValueIsCiphertext(value)) { return true; }
+      }
+    } catch (_e) {
+      continue;
+    }
+  }
+  return vncRowsCarryCiphertext(data.localTables['vnclocalrecords'] || []);
 }
 
 export function backupSectionSha256(

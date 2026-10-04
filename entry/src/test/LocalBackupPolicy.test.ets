@@ -12,6 +12,10 @@ import {
   LOCAL_BACKUP_PORTABLE_TABLES,
   LocalBackupValidation,
   portableBackupScopeLeaseAllowed,
+  planForTargetCryptoContract,
+  portableRestorePlanTrustedGroups,
+  PortableBackupRestorePlan,
+  withholdPortableRestoreSecrets,
   validateCloudDownloadRollbackSnapshot,
   validateLocalBackupDocument,
   validateLocalBackupDocumentDetailed,
@@ -32,6 +36,8 @@ import {
   accountSessionLease,
   deviceLocalScopeToken
 } from '../main/ets/services/AccountScopePolicy';
+import { LEGACY_REDACTED_BACKUP_WITH_TRUST } from './fixtures/LegacyRedactedBackupFixture';
+import { backupCryptoContract } from '../main/ets/services/BackupCryptoContractPolicy';
 import {
   LEGACY_V1_BACKUP,
   LEGACY_V2_BACKUP,
@@ -253,6 +259,29 @@ export default function localBackupPolicyTest(): void {
         expect(restorePlan !== null).assertTrue();
         expect((restorePlan?.tables['vncrecordv2'] || []).length).assertEqual(1);
         expect((restorePlan?.localTables['vnclocalrecords'] || []).length).assertEqual(0);
+        // Restored trust is a candidate: fingerprints stay, nothing is trusted,
+        // and remotehosts rows carry no trust columns into the merge.
+        expect(portableRestorePlanTrustedGroups(restorePlan!)).assertEqual(0);
+        expect(restorePlan!.extensions[0]['payload'].indexOf('"sshhostkeyfingerprintsha256":"trust"') >= 0)
+          .assertTrue();
+        expect(restorePlan!.extensions[0]['payload'].indexOf('"sshhostkeytrustmode":"0"') >= 0)
+          .assertTrue();
+        expect(restorePlan!.tables['remotehosts'][0]['sshhostkeyfingerprintsha256'] === undefined)
+          .assertTrue();
+        expect(restorePlan!.tables['remotehosts'][0]['displayconfig'].indexOf('nested-fingerprint'))
+          .assertEqual(-1);
+        // A different master password on the target withholds every secret.
+        const withheld = withholdPortableRestoreSecrets(restorePlan!);
+        expect(withheld.presentTables.indexOf('cryptoparams')).assertEqual(-1);
+        expect(withheld.tables['cryptoparams'] === undefined).assertTrue();
+        expect(withheld.tables['remotehosts'][0]['passward'] === undefined).assertTrue();
+        expect(withheld.tables['remotehosts'][0]['label']).assertEqual('host');
+        expect(withheld.tables['sshkeys'][0]['privatekey'] === undefined).assertTrue();
+        expect(withheld.tables['sshkeys'][0]['publickey']).assertEqual('public');
+        expect(withheld.tables['totpentries'][0]['secret'] === undefined).assertTrue();
+        expect(withheld.extensions[0]['payload'].indexOf('sshkeypassphrase')).assertEqual(-1);
+        expect(withheld.extensions[0]['payload'].indexOf('sshproxypassword')).assertEqual(-1);
+        expect(withheld.extensions[0]['payload'].indexOf('rustdeskdirectport') >= 0).assertTrue();
         expect(document.manifest?.trust.plaintextConsentIncluded)
           .assertFalse();
         expect(document.tables['cryptoparams'] !== undefined)
@@ -331,7 +360,8 @@ export default function localBackupPolicyTest(): void {
       expect(parsed?.extensions?.[0]['payload'].indexOf('rdpendpointmode') >= 0).assertTrue();
       expect(parsed?.extensions?.[0]['payload'].indexOf('rdpclienthostname') >= 0).assertTrue();
       expect(parsed?.extensions?.[0]['payload'].indexOf('sshproxytype') >= 0).assertTrue();
-      expect(parsed?.extensions?.[0]['payload'].indexOf('sshjumphostkeyalgorithm') >= 0).assertTrue();
+      // Jump-host trust is device trust and is not part of a redacted backup.
+      expect(parsed?.extensions?.[0]['payload'].indexOf('sshjumphostkeyalgorithm') < 0).assertTrue();
       expect(parsed?.extensions?.[0]['payload'].indexOf('localdisplayconfig') >= 0).assertTrue();
       expect(parsed?.extensions?.[0]['payload'].indexOf(
         'localrustdeskdesktopflipmode') >= 0).assertTrue();
@@ -354,17 +384,17 @@ export default function localBackupPolicyTest(): void {
         const extensions: Array<Record<string, string>> = [{
           id: 'remotehosts:ssh-global', tablename: 'remotehosts',
           recordid: 'ssh-global',
-          payload: '{"sshhostkeyfingerprintsha256":"SHA256:global"}',
+          payload: '{"sshhostkeyfingerprintsha256":"SHA256:global","sshkeyid":"key-global"}',
           updatedat: '100'
         }, {
           id: 'remotehosts:ssh-scoped-proxy', tablename: 'remotehosts',
           recordid: 'ssh-scoped-proxy',
-          payload: '{"sshhostkeyfingerprintsha256":"SHA256:scoped-proxy"}',
+          payload: '{"sshhostkeyfingerprintsha256":"SHA256:scoped-proxy","sshkeyid":"key-proxy"}',
           updatedat: '100'
         }, {
           id: 'remotehosts:ssh-scoped', tablename: 'remotehosts',
           recordid: 'ssh-scoped',
-          payload: '{"sshhostkeyfingerprintsha256":"SHA256:scoped"}',
+          payload: '{"sshhostkeyfingerprintsha256":"SHA256:scoped","sshkeyid":"key-scoped"}',
           updatedat: '100'
         }];
 
@@ -438,7 +468,7 @@ export default function localBackupPolicyTest(): void {
         .assertTrue();
     });
 
-    it('redacts_secrets_and_totp_but_retains_device_trust', 0, (): void => {
+    it('redacts_secrets_totp_and_device_trust', 0, (): void => {
       const tables = emptyTables();
       tables['cryptoparams'].push({
         id: 'salt', key: 'crypto_salt', value: 'secret'
@@ -488,12 +518,12 @@ export default function localBackupPolicyTest(): void {
         .assertTrue();
       expect(document.tables['remotehosts'][0]['passward'] ===
         undefined).assertTrue();
-      // Device trust (public SSH host key / RDP certificate material) is not
-      // secret and is intentionally retained in every backup mode.
+      // Device trust would be imported as trusted, so redacted backups omit it.
+      expect(document.manifest?.trust.deviceTrustIncluded).assertFalse();
       expect(document.tables['remotehosts'][0]
-        ['sshhostkeyfingerprintsha256']).assertEqual('fingerprint');
+        ['sshhostkeyfingerprintsha256'] === undefined).assertTrue();
       expect(document.tables['remotehosts'][0]['displayconfig']
-        .indexOf('nested-fingerprint') >= 0).assertTrue();
+        .indexOf('nested-fingerprint') < 0).assertTrue();
       expect(document.tables['remotehosts'][0]['displayconfig']
         .indexOf('nested-password') < 0).assertTrue();
       expect(document.tables['remotehosts'][0]['displayconfig']
@@ -503,8 +533,7 @@ export default function localBackupPolicyTest(): void {
       expect(document.tables['remotehosts'][0]['displayconfig']
         .indexOf('rdpendpointmode') >= 0).assertTrue();
       expect(document.extensions?.[0]['payload'])
-        .assertEqual('{"sshhostkeyfingerprintsha256":"trust",' +
-          '"rustdeskdirectport":"21117"}');
+        .assertEqual('{"rustdeskdirectport":"21117"}');
       expect(JSON.stringify(document).indexOf('rustdesktotpentryid'))
         .assertEqual(-1);
       expect(JSON.stringify(document).indexOf('rustdesktotpautosubmit'))
@@ -519,6 +548,22 @@ export default function localBackupPolicyTest(): void {
         .assertEqual('{"accentColor":"#336699"}');
       expect(validateLocalBackupDocument(
         JSON.stringify(document)) !== null).assertTrue();
+    });
+
+    it('accepts_older_redacted_files_with_trust_but_never_restores_it', 0, (): void => {
+      // Written by 1.2.0 before trust was excluded (or crafted to look so).
+      const parsed: LocalBackupDocument | null =
+        validateLocalBackupDocument(LEGACY_REDACTED_BACKUP_WITH_TRUST);
+      expect(parsed !== null).assertTrue();
+      expect(LEGACY_REDACTED_BACKUP_WITH_TRUST.indexOf('SHA256:attacker') >= 0).assertTrue();
+      const plan = adaptLocalBackupDocumentForRestore(parsed!, 'owner-test', false);
+      expect(plan !== null).assertTrue();
+      expect(portableRestorePlanTrustedGroups(plan!)).assertEqual(0);
+      expect(JSON.stringify(plan!.extensions).indexOf('attacker')).assertEqual(-1);
+      expect(JSON.stringify(plan!.tables['remotehosts']).indexOf('attacker')).assertEqual(-1);
+      expect(plan!.extensions[0]['payload']).assertEqual('{"rustdeskdirectport":"21117"}');
+      expect(plan!.tables['remotehosts'][0]['displayconfig'].indexOf('rustdeskdirectport') >= 0)
+        .assertTrue();
     });
 
     it('rejects_v3_restore_into_a_different_account', 0, (): void => {
@@ -770,6 +815,63 @@ export default function localBackupPolicyTest(): void {
       withManifest['manifest'] = JSON.parse('{"moonlight":{}}') as Object;
       expect(validateLocalBackupDocumentDetailed(JSON.stringify(withManifest)).stage)
         .assertEqual('manifest');
+    });
+
+    it('never_lets_a_restore_replace_this_devices_crypto_contract', 0, (): void => {
+      const owner: string = 'owner-crypto';
+      const fullPlan = (salt: string, password: string): PortableBackupRestorePlan => {
+        const tables = emptyTables();
+        const row = (values: string[]): Record<string, string> => {
+          const result: Record<string, string> = {};
+          for (let i = 0; i + 1 < values.length; i += 2) { result[values[i]] = values[i + 1]; }
+          return result;
+        };
+        if (salt !== '') {
+          tables['cryptoparams'].push(row(['id', owner + ':crypto_salt', 'key', 'crypto_salt', 'value', salt]));
+          tables['cryptoparams'].push(row(['id', owner + ':crypto_verifier', 'key', 'crypto_verifier',
+            'value', 'v-' + salt]));
+        }
+        tables['remotehosts'].push(row(['id', 'host-1', 'userid', owner, 'label', 'host', 'passward', password]));
+        const document = createLocalBackupDocument(tables, 100, '1.2.0', [], {}, owner, 3,
+          salt !== '', 'full');
+        return adaptLocalBackupDocumentForRestore(document, owner, false)!;
+      };
+      const ciphertext: string = '3:nonce:cipher:tag';
+      // Different contract: keep the device's parameters, import no ciphertext.
+      const other = planForTargetCryptoContract(fullPlan('salt-a', ciphertext),
+        backupCryptoContract('salt-b', 'v-salt-b'));
+      expect(other.decision).assertEqual('secrets_withheld');
+      expect(other.plan.presentTables.indexOf('cryptoparams')).assertEqual(-1);
+      expect(other.plan.tables['cryptoparams'] === undefined).assertTrue();
+      expect(other.plan.tables['remotehosts'][0]['passward'] === undefined).assertTrue();
+      expect(other.plan.tables['remotehosts'][0]['label']).assertEqual('host');
+      // Same contract: secrets merge, parameters stay the device's own.
+      const same = planForTargetCryptoContract(fullPlan('salt-a', ciphertext),
+        backupCryptoContract('salt-a', 'v-salt-a'));
+      expect(same.decision).assertEqual('keep_target');
+      expect(same.plan.presentTables.indexOf('cryptoparams')).assertEqual(-1);
+      expect(same.plan.tables['remotehosts'][0]['passward']).assertEqual(ciphertext);
+      // No master password on this device: adopt the backup's parameters.
+      const adopt = planForTargetCryptoContract(fullPlan('salt-a', ciphertext),
+        backupCryptoContract('', ''));
+      expect(adopt.decision).assertEqual('adopt');
+      expect(adopt.plan.tables['cryptoparams'].length).assertEqual(2);
+      // A file without a contract that still carries ciphertext is corrupt
+      // or crafted: its secrets are withheld, never merged as plaintext.
+      const crafted = planForTargetCryptoContract(fullPlan('', ciphertext),
+        backupCryptoContract('salt-b', 'v-salt-b'));
+      expect(crafted.decision).assertEqual('secrets_withheld');
+      expect(crafted.plan.tables['remotehosts'][0]['passward'] === undefined).assertTrue();
+      // A genuinely unencrypted full backup keeps its plaintext secrets.
+      const plain = planForTargetCryptoContract(fullPlan('', 'plain-password'),
+        backupCryptoContract('salt-b', 'v-salt-b'));
+      expect(plain.decision).assertEqual('keep_target');
+      expect(plain.plan.tables['remotehosts'][0]['passward']).assertEqual('plain-password');
+      // A plaintext password that merely looks versioned is still plaintext.
+      const lookalike = planForTargetCryptoContract(fullPlan('', '2024:Spring'),
+        backupCryptoContract('', ''));
+      expect(lookalike.decision).assertEqual('keep_target');
+      expect(lookalike.plan.tables['remotehosts'][0]['passward']).assertEqual('2024:Spring');
     });
 
     it('reports_the_failing_stage_and_backups_from_newer_versions', 0, (): void => {

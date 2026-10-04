@@ -282,6 +282,8 @@ import diagnosticAiPolicyTest from './DiagnosticAiPolicy.test';
 import diagnosticAiAgentPolicyTest from './DiagnosticAiAgentPolicy.test';
 import appCloneContextTest from './AppCloneContext.test';
 import masterPasswordPolicyTest from './MasterPasswordPolicy.test';
+import backupCryptoContractPolicyTest from './BackupCryptoContractPolicy.test';
+import remoteHostDeviceTrustRestorePolicyTest from './RemoteHostDeviceTrustRestorePolicy.test';
 
 export default function testsuite() {
   proAccessPolicyTest();
@@ -567,5 +569,7 @@ export default function testsuite() {
   diagnosticAiAgentPolicyTest();
   appCloneContextTest();
   masterPasswordPolicyTest();
+  backupCryptoContractPolicyTest();
+  remoteHostDeviceTrustRestorePolicyTest();
   rustDeskRelayHealthPolicyTest();
 }

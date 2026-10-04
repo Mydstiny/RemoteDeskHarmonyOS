@@ -57,6 +57,8 @@ load('entry/src/test/LocalBackupPolicy.test.ets').default();
 load('entry/src/test/CloudSyncSheetPolicy.test.ets').default();
 load('entry/src/test/MasterPasswordPolicy.test.ets').default();
 load('entry/src/test/AppCloneContext.test.ets').default();
+load('entry/src/test/BackupCryptoContractPolicy.test.ets').default();
+load('entry/src/test/RemoteHostDeviceTrustRestorePolicy.test.ets').default();
 
 const svc = 'entry/src/main/ets/services/';
 const backup = load(svc + 'LocalBackupPolicy.ets');
@@ -151,6 +153,32 @@ test('redacted backup ignores inherited object names in the cloud extension', ()
   assert.equal(display.width, 1280);
   assert.equal(display._remoteDeskExtensionV1.sshkeyid, 'k1');
   assert.notEqual(roundTrip(document), null);
+});
+
+test('only encrypted VNC secret envelopes count as ciphertext', () => {
+  const manifest = load(svc + 'BackupManifestV3.ets');
+  const plainSecret = Object.assign(vncRow('vnc-plain', 'secret', 0), {
+    payload: '{"storageMode":"plain_explicit_v1"}', ciphertext: 'plain:v1:aGVsbG8=' });
+  const encryptedSecret = Object.assign(vncRow('vnc-encrypted', 'secret', 0), {
+    payload: '{"storageMode":"encrypted_v3"}', ciphertext: '3:n:c:t' });
+  const empty = { tables: {}, extensions: [], localTables: {} };
+  assert.equal(manifest.portableDataCarriesCiphertext(Object.assign({}, empty, { tables: { vncrecordv2: [plainSecret] } })), false);
+  assert.equal(manifest.portableDataCarriesCiphertext(Object.assign({}, empty, { tables: { vncrecordv2: [encryptedSecret] } })), true);
+  assert.equal(manifest.portableDataCarriesCiphertext(Object.assign({}, empty, { localTables: { vnclocalrecords: [encryptedSecret] } })), true);
+  const relay = { id: 'r1', userid: owner, accountsjson: '[{"username":"a","password":"3:n:c:t"}]' };
+  assert.equal(manifest.portableDataCarriesCiphertext(Object.assign({}, empty, { tables: { rustdeskrelays: [relay] } })), true);
+  const extension = { id: 'remotehosts:h1', tablename: 'remotehosts', recordid: 'h1', payload: '{"sshkeypassphrase":"1:iv:data"}' };
+  assert.equal(manifest.portableDataCarriesCiphertext(Object.assign({}, empty, { extensions: [extension] })), true);
+});
+
+test('redacted plans pass the crypto planner unchanged', () => {
+  const contract = load(svc + 'BackupCryptoContractPolicy.ets');
+  const document = backup.createLocalBackupDocument(tables({ remotehosts: [hostRow('h1')] }), 100, '1.2.0', [], {}, owner,
+    3, false, 'redacted');
+  const plan = backup.adaptLocalBackupDocumentForRestore(document, owner, false);
+  const resolved = backup.planForTargetCryptoContract(plan, contract.backupCryptoContract('salt', 'verifier'));
+  assert.equal(resolved.plan, plan);
+  assert.equal(resolved.decision, 'keep_target');
 });
 
 let failed = 0;

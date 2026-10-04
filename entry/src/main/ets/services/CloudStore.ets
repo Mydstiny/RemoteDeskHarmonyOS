@@ -128,6 +128,7 @@ import {
   CloudUserSettingValue
 } from './CloudSyncSettingsPolicy';
 import {
+  LocalBackupDocument,
   localBackupColumnsForTable,
   localBackupExtensionOwnerTable,
   localBackupLocalExtensionColumns,
@@ -135,9 +136,18 @@ import {
   localBackupLocalTableNames,
   portableBackupScopeLeaseAllowed,
   PortableBackupRestorePlan,
+  PortableRestoreCryptoPlan,
+  adaptLocalBackupDocumentForRestore,
+  planForTargetCryptoContract,
+  portableRestoreCryptoDecision,
   validateCloudDownloadRollbackSnapshot,
   validateLocalBackupSnapshot
 } from './LocalBackupPolicy';
+import {
+  BackupCryptoContract,
+  BackupCryptoRestoreDecision,
+  backupCryptoContract
+} from './BackupCryptoContractPolicy';
 import {
   DataMutationCode,
   DataMutationResult,
@@ -195,6 +205,7 @@ import {
 import {
   extractLegacyRemoteHostDeviceTrust,
   mergeRemoteHostDeviceTrust,
+  mergeRestoredRemoteHostDeviceTrust,
   projectRemoteHostDeviceTrust,
   remoteHostDeviceTrustIsMeaningful
 } from './RemoteHostDeviceTrustPolicy';
@@ -802,6 +813,8 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
   private cloudDownloadCheckpointOperation:
     CloudDownloadTransactionOperation | null = null;
   private localRestoreActive: boolean = false;
+  /** Crypto decision of the last successful full-backup restore (UI feedback). */
+  private lastPortableCryptoDecision: string = '';
   private localRestorePending: boolean = false;
   // Device-local starts unbound. AccountSessionCoordinator supplies identity
   // from the current Account Kit authorization; this store verifies that it
@@ -4954,7 +4967,7 @@ try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
           'portable extension skipped (invalid owner/reference): ' + id);
         continue;
       }
-      const incoming: Record<string, string> =
+      const incomingPayload: Record<string, string> =
         JSON.parse(source['payload'] || '{}') as
           Record<string, string>;
       const predicates =
@@ -4974,6 +4987,11 @@ try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
       } finally {
         existingRows.close();
       }
+      // Restored SSH/RDP trust arrives as candidates; it never replaces a
+      // trust decision this device already made.
+      const incoming: Record<string, string> = table === 'remotehosts'
+        ? mergeRestoredRemoteHostDeviceTrust(merged, incomingPayload)
+        : incomingPayload;
       const incomingKeys: string[] = Object.keys(incoming);
       for (let k = 0; k < incomingKeys.length; k++) {
         merged[incomingKeys[k]] = incoming[incomingKeys[k]];
@@ -5014,14 +5032,48 @@ try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
     return changed;
   }
 
+  /** This device's crypto contract (salt and verifier) for restore decisions. */
+  private currentCryptoContract(): BackupCryptoContract {
+    return backupCryptoContract(
+      this.readCryptoParamForCurrentStore('crypto_salt'),
+      this.readCryptoParamForCurrentStore('crypto_verifier'));
+  }
+
+  /**
+   * What a restore of this full backup would do with its crypto data
+   * (preview). It looks at the same adapted plan the restore applies, so
+   * rows the plan quarantines cannot change the answer.
+   */
+  portableBackupCryptoRestoreDecision(
+    document: LocalBackupDocument
+  ): BackupCryptoRestoreDecision {
+    const plan: PortableBackupRestorePlan | null = adaptLocalBackupDocumentForRestore(
+      document, this.currentOwnerScopeId(), document.version < 3);
+    if (plan !== null) {
+      return planForTargetCryptoContract(plan, this.currentCryptoContract()).decision;
+    }
+    return portableRestoreCryptoDecision({
+      tables: document.tables,
+      extensions: document.extensions || [],
+      localTables: document.localTables || {}
+    }, this.currentCryptoContract());
+  }
+
+  /** Decision applied by the last successful portable restore ('' before any). */
+  lastPortableRestoreCryptoDecision(): string {
+    return this.lastPortableCryptoDecision;
+  }
+
   /**
    * Apply a validated portable plan as a field-level merge. Missing sections
    * and missing columns are no-ops, so an old/redacted backup cannot clear a
-   * newer table or overwrite an existing password with NULL.
+   * newer table or overwrite an existing password with NULL. A device's own
+   * master-password contract is never replaced (see BackupCryptoContractPolicy).
    */
   async mergePortableBackup(
-    plan: PortableBackupRestorePlan
+    sourcePlan: PortableBackupRestorePlan
   ): Promise<boolean> {
+    let plan: PortableBackupRestorePlan = sourcePlan;
     const fullBackup: boolean =
       plan.sensitivityMode === 'full';
     if (!this.store ||
@@ -5036,8 +5088,18 @@ try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
     let transactionCommitted: boolean = false;
     let changed: number = 0;
     let moonlightRestoreChanged: boolean = false;
+    let cryptoDecision: BackupCryptoRestoreDecision = 'keep_target';
     try {
       this.store.beginTransaction();
+      // Decided inside the transaction from the committed target contract.
+      if (fullBackup) {
+        const resolved: PortableRestoreCryptoPlan =
+          planForTargetCryptoContract(plan, this.currentCryptoContract());
+        plan = resolved.plan;
+        cryptoDecision = resolved.decision;
+        hilog.info(0x0001, 'CloudSync',
+          'portable restore crypto decision=' + cryptoDecision);
+      }
       let cloudQuarantineChanged: number = 0;
       for (let i = 0; i < plan.presentTables.length; i++) {
         const table: string = plan.presentTables[i];
@@ -5138,6 +5200,7 @@ try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
       }
       this.commitTrackedTransaction();
       transactionCommitted = true;
+      this.lastPortableCryptoDecision = fullBackup ? cryptoDecision : '';
       // The durable RDB commit is the operation truth. Runtime selection,
       // notification, and logging are post-commit conveniences and must never
       // turn a successful restore into a reported rollback/failure.

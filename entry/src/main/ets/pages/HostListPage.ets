@@ -105,6 +105,12 @@ import {
 import { AppCloneContext } from '../services/AppCloneContext';
 import { DataCrypto } from '../services/DataCrypto';
 import { masterPasswordSetupError } from '../services/MasterPasswordPolicy';
+import {
+  BackupCryptoRestoreDecision,
+  backupCryptoContractFromRows,
+  backupCryptoRestoreNotice,
+  backupCryptoWithheldMessage
+} from '../services/BackupCryptoContractPolicy';
 import { CloudStore } from '../services/CloudStore';
 import { AccountSessionLease, accountSessionLeaseEquals } from '../services/AccountScopePolicy';
 import { cloudUserSettingIsSyncable } from '../services/CloudSyncSettingsPolicy';
@@ -5375,6 +5381,8 @@ struct HostListPage {
     if (!this.pendingLocalRestore) { this.cloudSyncError = '请重新选择备份文件'; return; }
     const backup: LocalBackupService =
       LocalBackupService.getInstance();
+    const backupConfigured: boolean = backupCryptoContractFromRows(
+      this.pendingLocalRestore.tables['cryptoparams'] || []).configured;
     const restored: boolean = await backup.restore(
       this.pendingLocalRestore,
       this.pendingLocalRestore.version < 3);
@@ -5383,9 +5391,13 @@ struct HostListPage {
       return;
     }
     this.pendingLocalRestore = null;
+    const secretsWithheld: boolean =
+      CloudStore.getInstance().lastPortableRestoreCryptoDecision() === 'secrets_withheld';
     promptAction.showToast({
-      message: '本地配置已合并，未自动上传到云端',
-      duration: 1800
+      message: secretsWithheld ?
+        '本地配置已合并，未自动上传到云端。' + backupCryptoWithheldMessage(backupConfigured) :
+        '本地配置已合并，未自动上传到云端',
+      duration: secretsWithheld ? 4000 : 1800
     });
     this.closeSettingsLeafSheet();
   }
@@ -5399,11 +5411,20 @@ struct HostListPage {
     const legacy: string = preview.legacyOwnerUnbound
       ? '；旧版文件将在确认后绑定当前本地数据作用域' : '';
     const redacted: string = !preview.secretsIncluded
-      ? '；该备份为脱敏配置，不含密码、SSH 私钥、2FA 与设备信任（SSH 公钥/RDP 证书），恢复后需重新导入/确认' : '';
+      ? '；该备份为脱敏配置，不含密码、SSH 私钥与 2FA；设备信任（SSH 公钥/RDP 证书）不会导入，首次连接时需重新确认' :
+      '；完整备份中的 SSH/RDP 设备信任会作为待确认记录导入，首次连接时需重新确认';
+    let crypto: string = '';
+    if (this.pendingLocalRestore !== null && preview.secretsIncluded) {
+      const decision: BackupCryptoRestoreDecision = CloudStore.getInstance()
+        .portableBackupCryptoRestoreDecision(this.pendingLocalRestore);
+      crypto = backupCryptoRestoreNotice(decision,
+        backupCryptoContractFromRows(this.pendingLocalRestore.tables['cryptoparams'] || []).configured,
+        this.cryptoEnabled, true);
+    }
     return '格式 v' + preview.formatVersion.toString() +
       ' · ' + preview.rowCount.toString() + ' 行 · ' +
       preview.presentTables.length.toString() + ' 个数据表' +
-      legacy + redacted;
+      legacy + redacted + crypto;
   }
 
   private currentCloudSyncSheetSpec(): CloudSyncSheetSpec {
@@ -20059,7 +20080,7 @@ struct HostListPage {
                   .fontSize(18).fontColor([this.backupFullMode ? this.pal().text3 : this.accentColor])
                 Column() {
                   Text('脱敏配置（推荐）').fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
-                  Text('不含密码、SSH 私钥、2FA 与登录令牌；保留 SSH/RDP 设备信任，VNC trust 候选和本机确认标记均不导出')
+                  Text('不含密码、SSH 私钥、2FA、登录令牌与 SSH/RDP 设备信任；VNC trust 候选和本机确认标记均不导出')
                     .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font()).lineHeight(17).margin({ top: 2 })
                 }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 10 })
               }.width('100%').padding(12).borderRadius(14).backgroundColor(this.pal().surface)
@@ -20071,7 +20092,7 @@ struct HostListPage {
                   .fontSize(18).fontColor([this.backupFullMode ? this.accentColor : this.pal().text3])
                 Column() {
                   Text('完整备份').fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
-                  Text('包含密码、SSH 私钥、2FA、VNC 配置与 trust 候选；本机 confirmation marker 不导出。源已加密则携带加密参数（恢复需相同主密码），未加密则按你的选择以明文保存')
+                  Text('包含密码、SSH 私钥、2FA、VNC 配置与 trust 候选；SSH/RDP 设备信任恢复后需重新确认，本机 confirmation marker 不导出。源已加密则携带加密参数（恢复到未设主密码的设备时使用相同主密码解锁），未加密则按你的选择以明文保存')
                     .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font()).lineHeight(17).margin({ top: 2 })
                 }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 10 })
               }.width('100%').padding(12).borderRadius(14).backgroundColor(this.pal().surface).margin({ top: 8 })
@@ -20082,8 +20103,8 @@ struct HostListPage {
             Text('影响范围').fontSize(12).fontWeight(FontWeight.Medium).fontColor(this.pal().text2).fontFamily(this.font())
             Text(this.cloudSyncStep === CLOUD_SYNC_SHEET_BACKUP_CONFIRM
               ? (this.backupFullMode
-                ? '全部连接配置、密码、私钥、2FA、VNC 配置与 trust 候选；不含本机 confirmation marker'
-                : '连接配置与个性化设置；保留 SSH/RDP 设备信任，不含密码、私钥、2FA、登录令牌和 VNC trust marker')
+                ? '全部连接配置、密码、私钥、2FA、VNC 配置与 trust 候选；设备信任恢复为待确认，不含本机 confirmation marker'
+                : '连接配置与个性化设置；不含密码、私钥、2FA、登录令牌、SSH/RDP 设备信任和 VNC trust marker')
               : (this.cloudSyncStep === CLOUD_SYNC_SHEET_RESTORE_CONFIRM
                 ? this.localRestorePreviewSummary()
                 : '主机、RDP 凭据、RustDesk 中继、SSH 密钥、2FA、加密参数和个性化设置'))

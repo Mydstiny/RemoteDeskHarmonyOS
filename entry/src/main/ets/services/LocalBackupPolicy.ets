@@ -15,8 +15,22 @@ import {
   PortableBackupData,
   PortableBackupRedactionResult,
   fullPortableBackupData,
-  redactPortableBackupData
+  portableDataCarriesCiphertext,
+  redactPortableBackupData,
+  withoutPortableSecretFields
 } from './BackupManifestV3';
+import {
+  BackupCryptoContract,
+  BackupCryptoRestoreDecision,
+  backupCryptoContractFromRows,
+  backupCryptoRowsToMerge,
+  decideBackupCryptoRestore
+} from './BackupCryptoContractPolicy';
+import {
+  demoteRemoteHostDeviceTrust,
+  remoteHostDeviceTrustKeys,
+  withoutRemoteHostDeviceTrust
+} from './RemoteHostDeviceTrustPolicy';
 import {
   vncRecordFromCloudRow,
   vncRecordIsValid
@@ -479,7 +493,8 @@ function createBackupManifestV3(
       verifierIncluded: sensitivityMode === 'full' && sourceCryptoConfigured
     },
     trust: {
-      deviceTrustIncluded: true,
+      // Redacted backups exclude SSH/RDP device trust (2026-10-04).
+      deviceTrustIncluded: sensitivityMode === 'full',
       vncTrustCandidatesIncluded: sensitivityMode === 'full' && hasActiveVncTrustRows(data),
       // The confirmation marker is stored only in device-local Preferences;
       // it is never present in either localTables or the cloud table.
@@ -921,10 +936,12 @@ function validateRedactedV3Rows(
   normalizedTables: Record<string, Array<Record<string, string>>>
 ): boolean {
   const manifest: BackupManifestV3 = document.manifest as BackupManifestV3;
+  // Files written before 2026-10-04 carry device trust in redacted mode, so
+  // the comparison re-redacts with trust retained; the restore plan drops it.
   const redacted: PortableBackupRedactionResult =
     redactPortableBackupData(
       normalizedTables, document.extensions || [],
-      document.localTables || {});
+      document.localTables || {}, true);
   // Compare with key-order-insensitive canonical JSON: exporters may build
   // rows (e.g. redacted user settings) in a different key order than the
   // normalized inventory without changing the data.
@@ -1076,6 +1093,200 @@ function reboundRows(
   return result;
 }
 
+/** displayconfig without legacy device-trust keys in its cloud extension. */
+function displayConfigWithoutDeviceTrust(raw: string): string {
+  try {
+    const root: Record<string, Object> = JSON.parse(raw || '{}') as Record<string, Object>;
+    if (!root || Array.isArray(root)) { return raw; }
+    const extension: Object | undefined = root['_remoteDeskExtensionV1'];
+    if (extension === undefined || extension === null || typeof extension !== 'object' ||
+      Array.isArray(extension)) {
+      return raw;
+    }
+    root['_remoteDeskExtensionV1'] =
+      withoutRemoteHostDeviceTrust(extension as Record<string, string>) as Object;
+    return JSON.stringify(root);
+  } catch (_e) {
+    return raw;
+  }
+}
+
+/**
+ * Device trust is restored only as candidates (user decision 2026-10-04):
+ * remotehosts rows never carry trust columns into a restore (current builds
+ * keep trust in the device-local extension), legacy trust keys inside the
+ * displayconfig cloud extension are dropped, and extension payloads keep
+ * their fingerprints with the trust mode, time and exceptions reset.
+ * Redacted plans arrive here already without trust.
+ */
+function portableDataWithCandidateTrust(
+  data: PortableBackupRedactionResult
+): PortableBackupRedactionResult {
+  const tables: Record<string, Array<Record<string, string>>> = {};
+  const names: string[] = Object.keys(data.tables);
+  for (let i = 0; i < names.length; i++) {
+    const table: string = names[i];
+    if (table !== 'remotehosts') {
+      tables[table] = data.tables[table];
+      continue;
+    }
+    const rows: Array<Record<string, string>> = [];
+    const sourceRows: Array<Record<string, string>> = data.tables[table] || [];
+    for (let r = 0; r < sourceRows.length; r++) {
+      const row: Record<string, string> = withoutRemoteHostDeviceTrust(sourceRows[r]);
+      if (row['displayconfig'] !== undefined) {
+        row['displayconfig'] = displayConfigWithoutDeviceTrust(row['displayconfig']);
+      }
+      rows.push(row);
+    }
+    tables[table] = rows;
+  }
+  const extensions: Array<Record<string, string>> = [];
+  for (let i = 0; i < data.extensions.length; i++) {
+    const extension: Record<string, string> = data.extensions[i];
+    if ((extension['tablename'] || '') !== 'remotehosts') {
+      extensions.push(extension);
+      continue;
+    }
+    const next: Record<string, string> = {};
+    const keys: string[] = Object.keys(extension);
+    for (let k = 0; k < keys.length; k++) { next[keys[k]] = extension[keys[k]]; }
+    try {
+      const payload: Record<string, string> =
+        JSON.parse(extension['payload'] || '{}') as Record<string, string>;
+      next['payload'] = JSON.stringify(demoteRemoteHostDeviceTrust(payload));
+    } catch (_e) {
+      // Validation already rejected unreadable payloads; keep the row as is.
+    }
+    extensions.push(next);
+  }
+  return {
+    tables,
+    extensions,
+    localTables: data.localTables,
+    removedSecretFields: data.removedSecretFields,
+    removedDeviceTrustFields: data.removedDeviceTrustFields,
+    excludedRows: data.excludedRows
+  };
+}
+
+/** Number of device-trust keys a restore plan would write (tests and diagnostics). */
+export function portableRestorePlanTrustedGroups(plan: PortableBackupRestorePlan): number {
+  const modeKeys: string[] = remoteHostDeviceTrustKeys().filter((key: string): boolean =>
+    key.endsWith('trustmode'));
+  let trusted: number = 0;
+  for (let i = 0; i < plan.extensions.length; i++) {
+    try {
+      const payload: Record<string, string> =
+        JSON.parse(plan.extensions[i]['payload'] || '{}') as Record<string, string>;
+      for (let k = 0; k < modeKeys.length; k++) {
+        const value: string | undefined = payload[modeKeys[k]];
+        if (value !== undefined && value !== '' && value !== '0') { trusted++; }
+      }
+    } catch (_e) {
+      continue;
+    }
+  }
+  return trusted;
+}
+
+/**
+ * Crypto decision for restoring this payload onto a device with `target`.
+ * A payload without a crypto contract must not carry ciphertext; if it does
+ * (corrupt or crafted), no key here can open it, so its secrets are withheld
+ * instead of being merged as if they were plaintext.
+ */
+export function portableRestoreCryptoDecision(
+  data: PortableBackupData,
+  target: BackupCryptoContract
+): BackupCryptoRestoreDecision {
+  const backup: BackupCryptoContract =
+    backupCryptoContractFromRows(data.tables['cryptoparams'] || []);
+  const decision: BackupCryptoRestoreDecision = decideBackupCryptoRestore(backup, target);
+  if (!backup.configured && portableDataCarriesCiphertext(data)) { return 'secrets_withheld'; }
+  return decision;
+}
+
+export interface PortableRestoreCryptoPlan {
+  plan: PortableBackupRestorePlan;
+  decision: BackupCryptoRestoreDecision;
+}
+
+/**
+ * The plan a full-backup restore may apply on a device with `target` (F2):
+ * secrets withheld when they belong to another contract, and the backup's
+ * cryptoparams kept only when an unconfigured device adopts them. Redacted
+ * plans carry neither and pass through unchanged.
+ */
+export function planForTargetCryptoContract(
+  plan: PortableBackupRestorePlan,
+  target: BackupCryptoContract
+): PortableRestoreCryptoPlan {
+  if (plan.sensitivityMode !== 'full') { return { plan, decision: 'keep_target' }; }
+  const decision: BackupCryptoRestoreDecision = portableRestoreCryptoDecision(
+    { tables: plan.tables, extensions: plan.extensions, localTables: plan.localTables }, target);
+  const next: PortableBackupRestorePlan =
+    decision === 'secrets_withheld' ? withholdPortableRestoreSecrets(plan) : plan;
+  if (next.tables['cryptoparams'] === undefined) { return { plan: next, decision }; }
+  const rows: Array<Record<string, string>> =
+    backupCryptoRowsToMerge(next.tables['cryptoparams'], decision);
+  const tables: Record<string, Array<Record<string, string>>> = {};
+  const names: string[] = Object.keys(next.tables);
+  for (let i = 0; i < names.length; i++) {
+    if (names[i] !== 'cryptoparams' || rows.length > 0) {
+      tables[names[i]] = names[i] === 'cryptoparams' ? rows : next.tables[names[i]];
+    }
+  }
+  return {
+    plan: {
+      sourceFormatVersion: next.sourceFormatVersion,
+      sourceAccountScope: next.sourceAccountScope,
+      targetAccountScope: next.targetAccountScope,
+      legacyOwnerAdopted: next.legacyOwnerAdopted,
+      restoreMode: next.restoreMode,
+      sensitivityMode: next.sensitivityMode,
+      tables,
+      extensions: next.extensions,
+      localTables: next.localTables,
+      presentTables: rows.length > 0 ? next.presentTables.slice() :
+        next.presentTables.filter((table: string): boolean => table !== 'cryptoparams'),
+      presentLocalTables: next.presentLocalTables.slice(),
+      extensionsPresent: next.extensionsPresent,
+      quarantinedRows: next.quarantinedRows
+    },
+    decision
+  };
+}
+
+/**
+ * Restore plan without the backup's secrets, used when its ciphertext
+ * belongs to a different master password than this device's (F2).
+ */
+export function withholdPortableRestoreSecrets(
+  plan: PortableBackupRestorePlan
+): PortableBackupRestorePlan {
+  const stripped: PortableBackupRedactionResult = withoutPortableSecretFields({
+    tables: plan.tables,
+    extensions: plan.extensions,
+    localTables: plan.localTables
+  });
+  return {
+    sourceFormatVersion: plan.sourceFormatVersion,
+    sourceAccountScope: plan.sourceAccountScope,
+    targetAccountScope: plan.targetAccountScope,
+    legacyOwnerAdopted: plan.legacyOwnerAdopted,
+    restoreMode: plan.restoreMode,
+    sensitivityMode: plan.sensitivityMode,
+    tables: stripped.tables,
+    extensions: stripped.extensions,
+    localTables: stripped.localTables,
+    presentTables: plan.presentTables.filter((table: string): boolean => table !== 'cryptoparams'),
+    presentLocalTables: plan.presentLocalTables.slice(),
+    extensionsPresent: plan.extensionsPresent,
+    quarantinedRows: plan.quarantinedRows + stripped.excludedRows
+  };
+}
+
 function validPortableVncRows(
   rows: Array<Record<string, string>>, owner: string
 ): Array<Record<string, string>> {
@@ -1175,9 +1386,9 @@ export function adaptLocalBackupDocumentForRestore(
   }
   const portable: PortableBackupRedactionResult =
     sensitivityMode === 'full'
-      ? fullPortableBackupData(
+      ? portableDataWithCandidateTrust(fullPortableBackupData(
           document.tables, document.extensions || [],
-          document.localTables || {})
+          document.localTables || {}))
       : redactPortableBackupData(
           document.tables, document.extensions || [],
           document.localTables || {});
