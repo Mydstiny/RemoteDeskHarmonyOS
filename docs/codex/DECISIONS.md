@@ -160,3 +160,15 @@ changes produce `REVIEW_REQUIRED`; a missing report produces `RESUME_REVIEW` and
 must reuse the recorded reviewer task rather than dispatching a duplicate after
 context compression. Review status is separate from build, device, endpoint,
 cloud, and release readiness.
+
+## D-025 - The compile gate does not compile unit tests
+
+`default@OhosTestCompileArkTS` compiles only the main `entry` sources; it never
+compiles `entry/src/test`. Test files get a strict ArkTS compile only from
+`ohosTest@OhosTestCompileArkTS` (module `entry@ohosTest`), and only the files
+imported by `entry/src/ohosTest/ets/test/List.test.ets`. On 2026-10-04 that task
+fails with 300 pre-existing errors (299 ArkTS, 1 unresolved module), so hypium tests cannot run on a device and a
+passing compile gate proves nothing about test code. Until it is repaired,
+verify new test files by compiling them through a temporary ohosTest list (no
+new errors) and by running them in a host runner; record both, and never report
+the compile gate as test verification.

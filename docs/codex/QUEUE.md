@@ -10,6 +10,8 @@ Updated: 2026-10-04 Asia/Shanghai
 
 - RDP/RustDesk 可观测性、EasyTier 直连与画质：[合并计划](plans/2026-10-03-rdp-rustdesk-observability-direct-quality-plan.md) checkpoint A `ddb2d9952` 与 checkpoint B（覆盖率 + AI 取证包 v2）已实现并独立复核。下一步：P1 用同一 Windows RDP 服务端对照官方客户端确认 `rdpGraphics.wireCodec`/H.264 状态；EasyTier 两端用同一虚拟 IP/端口/密码与官方 RustDesk A/B 并导出含 `rustdesk_direct_stage` 的日志；切换画质观察远端码率结论；之后再评估 P8（H.264、直连→中继回退、4:4:4、自定义画质）。
 
+- 本地备份/云同步/数据管理安全：[计划](plans/2026-10-04-local-backup-forward-compatibility-and-upgrade-safety-plan.md) S0–S4 已提交（`9dab7e2ac`..`62cd22c68`）并独立复核 PASS。下一步：S5（F8/F9/F16）与 F18 需两台真机、同一华为账号验证后再改；S6 平台假设与云库交接；S7 阻断标记退出路径审计；S8 Phone/Pad/PC 与旧版→新版保留数据升级验收（含重置后“以本机为准覆盖云端”流程）。待用户确认：修复 `ohosTest@OhosTestCompileArkTS` 的 300 个历史错误并纳入门禁。
+
 - RDP/RustDesk 高级显示计划：[2026-10-01 计划](plans/2026-10-01-rdp-rustdesk-pro-display-resolution-scale-plan.md) 的 P1 运行时闭环已实现，`b69d3c9f` 经 `/root/review_display_final` PASS，并补齐 marker 失败 fail-closed 回归；RDP/RustDesk profile 已按账号×主机×协议×设备隔离，RustDesk 能力/Pro/peer 权限门控保持封闭。编译、assembleHap、显示选择 5/5、Pro entry/runtime、Light/diff/state PASS；ohosTest 为 00306054。下一步是实际 Windows/RustDesk peer/设备矩阵与 Release/PR 验收。
 
 - Pro 工作区与高级主机管理：W0/H1/S1/S2/S3 基础实现已提交准备；继续 H2 分组胶囊/H3 批量操作/H4 导入导出/S3 编辑器/S4 当前会话捕获，并完成设备验收。

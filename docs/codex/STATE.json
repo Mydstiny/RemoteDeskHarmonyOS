@@ -2154,5 +2154,64 @@
       "compliance": "PASS Light gate and git diff --check",
       "deviceAcceptance": "NOT RUN; Windows RDP server, EasyTier A/B, RustDesk peer and Phone/Pad/PC acceptance remain open"
     }
+  },
+  "dataManagementSafety": {
+    "planPath": "docs/codex/plans/2026-10-04-local-backup-forward-compatibility-and-upgrade-safety-plan.md",
+    "decisions": {
+      "D1": "sensitive tables may sync without a master password; copy states cloud-space vs end-to-end encryption",
+      "D2": "redacted backups exclude SSH/RDP device trust; full restores demote it to candidates",
+      "D3": "no master password length/complexity rules (non-empty + confirmation)",
+      "D4": "forgotten-password reset clears only encrypted fields",
+      "D5": "redacted backups keep non-default LAN binding values",
+      "D6": "app clones may opt in to the shared clipboard (default off)"
+    },
+    "commits": {
+      "batch1": "9dab7e2ac",
+      "batch2": "59a03e1c3",
+      "batch3": "8c2fe3ce1",
+      "batch4": "62cd22c68"
+    },
+    "receipts": [
+      "data-management-safety-batch1-9dab7e2ac-20261004",
+      "data-management-safety-batch2-59a03e1c3-20261004",
+      "data-management-safety-batch3-8c2fe3ce1-20261004",
+      "data-management-safety-batch4-62cd22c68-20261004"
+    ],
+    "implemented": [
+      "F1 full backup without VNC tombstones",
+      "F17 validation stages, distinct errors and diagnostic events",
+      "F19 v1/v2 and early v2 restore",
+      "D1 truthful sync protection wording",
+      "D3 no master password rules",
+      "D5 non-default LAN values in redacted backups",
+      "D6 clone clipboard opt-in",
+      "F2 restore never replaces this device's crypto contract",
+      "D2 redacted backups without device trust; full restores demote trust to candidates",
+      "D4 reset clears only encrypted fields",
+      "F20 reset can no longer wipe the cloud by itself (durable upload pause, explicit release)",
+      "S4 remote-host field registry with closure tests",
+      "F6 synced displayconfig keeps fields written by newer versions",
+      "Newer-version backup message for v3 files"
+    ],
+    "open": [
+      "S5 F8/F9/F16 and F18 need two devices on one Huawei account",
+      "S6 F12/F13 platform assumptions and cloud store handover",
+      "S7 exit-path audit for durable blocking markers",
+      "S8 Phone/Pad/PC, upgrade with kept data, two-device conflict and reset acceptance",
+      "ohosTest@OhosTestCompileArkTS has 300 pre-existing errors (repair awaits user decision)"
+    ],
+    "userFilesNotCommitted": [
+      "entry/src/main/ets/components/ProPurchaseSheet.ets",
+      "entry/src/main/ets/services/pro/ProBillingService.ets"
+    ],
+    "status": "s0-s4-committed-review-pass-device-pending",
+    "verification": {
+      "default@OhosTestCompileArkTS": "PASS BUILD SUCCESSFUL on each batch's final tree (49.523 s, 58.343 s, 35.704 s, 16.281 s); compiles main sources only, not entry/src/test (D-025)",
+      "assembleHap": "PASS signed BUILD SUCCESSFUL on each batch's final tree (54.424 s, 51.624 s, 36.678 s, 19.048 s)",
+      "host": "PASS scripts/tests/test_data_management_safety.cjs 74/74 on the final tree (real legacy backup fixtures; real CloudSyncCoordinator for the reset pause)",
+      "ohosTest": "FAIL pre-existing: ohosTest@OhosTestCompileArkTS 300 errors (299 ArkTS, 1 unresolved module); the new test files add none when compiled through a temporary ohosTest list (list restored)",
+      "compliance": "PASS Light gate and git diff --cached --check for each commit",
+      "deviceAcceptance": "NOT RUN; no install by user instruction; two-device, upgrade and Phone/Pad/PC acceptance remain open"
+    }
   }
 }
