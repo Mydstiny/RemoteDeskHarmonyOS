@@ -46,6 +46,7 @@ import { ProEntries } from '../services/pro/ProEntries';
 import { ProBadge } from '../components/ProBadge';
 import { ProAppRuntime } from '../services/pro/ProAppRuntime';
 import {
+  PRO_DIAGNOSTICS_ASSISTANT_FEATURE,
   PRO_RDP_ADVANCED_DISPLAY_FEATURE,
   PRO_RUSTDESK_ADVANCED_DISPLAY_FEATURE
 } from '../services/pro/ProFeatureCatalog';
@@ -244,7 +245,9 @@ import {
 } from '../services/GuideVisibilityPolicy';
 import { GuideVisibilityService } from '../services/GuideVisibilityService';
 import { RemoteCursorOverlay, RemoteCursorOverlayState } from '../components/RemoteCursorOverlay';
-import { RemoteSessionTopBar, RemoteSessionTopBarActions } from '../components/RemoteSessionTopBar';
+import { RemoteSessionTopBar, RemoteSessionTopBarActions, runRemoteSessionAiAction } from '../components/RemoteSessionTopBar';
+import { SessionAiHost } from '../components/diagnosticAi/SessionAiHost';
+import { DiagnosticAiAppActionId } from '../services/diagnosticAi/DiagnosticAiAppActionPolicy';
 import { RustDeskDiagnosticsHud } from '../components/RustDeskDiagnosticsHud';
 import { VncDiagnosticsHud } from '../components/VncDiagnosticsHud';
 import {
@@ -1294,6 +1297,8 @@ struct RemoteDesktop {
   @StorageLink('rdpTlsWithoutNla') rdpTlsWithoutNla: boolean = false;
   @State vncControlMode: number = 0; // VNC-only: 0=touchpad, 1=direct touch, 2=keyboard/mouse
   @State @Watch('onRustDeskDiagnosticsSettingChange') vncShowDiagnostics: boolean = false;
+  /** Bumped by the side bar's AI button: SessionAiHost brings up the AI as the orb with its small chat. */
+  @State aiSessionOpenRequest: number = 0;
   private vncDisplayScaleMode: VncDisplayScaleMode = 'fit';
   private vncCustomScalePercent: number = 100;
   private vncImageQualityPreset: VncImageQualityPreset = 'balanced';
@@ -2426,7 +2431,7 @@ struct RemoteDesktop {
     const portraitEnabled: boolean = this.remotePortraitDisplayEnabledForCurrentProtocol();
     const naturalRailHeight: number = vncToolbarRailHeight(
       deviceClass, this.isVncViewOnlySession(), collapsed, availableHeight,
-      this.vncDisplayCapabilities.monitorCount, portraitEnabled);
+      this.vncDisplayCapabilities.monitorCount, portraitEnabled, this.sessionAiVisible());
     const railHeight: number = portraitActive ? this.remotePortraitSidebarHeight(
       availableHeight, naturalRailHeight) : naturalRailHeight;
     const request: OverlayPlacementRequest = {
@@ -2457,9 +2462,9 @@ struct RemoteDesktop {
         railHeight: portraitActive ? this.remotePortraitSidebarHeight(
           availableHeight,
           vncToolbarRailHeight(deviceClass, this.isVncViewOnlySession(), true,
-            availableHeight, this.vncDisplayCapabilities.monitorCount, portraitEnabled)) :
+            availableHeight, this.vncDisplayCapabilities.monitorCount, portraitEnabled, this.sessionAiVisible())) :
           vncToolbarRailHeight(deviceClass, this.isVncViewOnlySession(), true,
-            availableHeight, this.vncDisplayCapabilities.monitorCount, portraitEnabled),
+            availableHeight, this.vncDisplayCapabilities.monitorCount, portraitEnabled, this.sessionAiVisible()),
         menuWidth: 0,
         menuHeight: 0,
         expanded: false
@@ -2695,6 +2700,10 @@ struct RemoteDesktop {
 
   private vncToolbarActions(): VncSessionToolbarActions {
     return {
+      onOpenAi: (): void => {
+        this.markVncToolbarInteraction();
+        this.openSessionAi();
+      },
       onTogglePortraitDisplay: (): void => {
         this.markVncToolbarInteraction();
         this.toggleRemotePortraitDisplay();
@@ -6257,7 +6266,62 @@ struct RemoteDesktop {
     }
   }
 
+  /** Pro AI 助理 in this session: its button in the side bar (or the PC top bar). */
+  private sessionAiVisible(): boolean {
+    return ProEntries.visible(PRO_DIAGNOSTICS_ASSISTANT_FEATURE, ProAppRuntime.getInstance().context());
+  }
+
+  /** The side bar's edge, for the AI's orb to keep clear of: RDP/RustDesk rails on the right, VNC's where it is. */
+  private sessionAiAvoidSide(): string {
+    if (remoteTopBarLayout(this.isDesktopDevice, this.breakpoint, this.isPadDevice).deviceClass === 'pc') { return ''; }
+    if (this.currentProtocolName() === 'vnc') { return this.vncToolbarPreferredSide; }
+    return 'right';
+  }
+
+  private openSessionAi(): void { this.aiSessionOpenRequest = Date.now(); }
+
+  /** The AI's session actions (session.*), through the same handlers as this session's toolbar. */
+  private runSessionAiAction(action: DiagnosticAiAppActionId): boolean {
+    if (this.isRustDeskSession()) {
+      return runRemoteSessionAiAction(action, this.remoteSessionTopBarActions(), {
+        privacyMode: this.rustdeskPrivacyMode, audioEnabled: this.rustdeskAudioEnabled,
+        clipboardEnabled: this.rustdeskClipboardEnabled, filePasteEnabled: this.rustdeskFilePasteEnabled,
+        imageQuality: this.rustdeskImageQuality, codec: this.rustdeskCodec, showLocalCursor: this.rustdeskShowLocalCursor,
+        browseMode: this.rustdeskBrowseMode, relativeMouseMode: this.rustdeskRelativeMouseMode,
+        reverseWheel: this.reverseWheelForCurrentProtocol(), swapMouseButtons: this.rustdeskSwapMouseButtons,
+        diagnosticsEnabled: this.rustdeskShowDiagnostics
+      });
+    }
+    if (this.isRdpRemoteSession()) {
+      switch (action) {
+        case 'session.keyboard': this.openRdpKeyboard(); return true;
+        case 'session.modifiers': this.openRdpShortcutPanel(); return true;
+        case 'session.ctrlAltDel': this.sendCtrlAltDel(); return true;
+        case 'session.fileTransfer': this.openFileTransferPanel(); return true;
+        case 'session.diagnostics': this.setRdpDiagnosticsPreference(!this.rdpShowDiagnostics); return true;
+        case 'session.portrait': this.toggleRemotePortraitDisplay(); return true;
+        case 'session.resetCanvas': this.resetCanvasTransformFromMenu(); return true;
+        case 'session.disconnect': this.handleRdpToolbarAction('disconnect'); return true;
+        default: return false;
+      }
+    }
+    if (this.currentProtocolName() === 'vnc') {
+      const vnc: VncSessionToolbarActions = this.vncToolbarActions();
+      switch (action) {
+        case 'session.keyboard': vnc.onToggleKeyboard(); return true;
+        case 'session.modifiers': vnc.onOpenShortcuts(); return true;
+        case 'session.diagnostics': vnc.onToggleDiagnostics(); return true;
+        case 'session.portrait': vnc.onTogglePortraitDisplay(); return true;
+        case 'session.resetCanvas': vnc.onResetCanvas(); return true;
+        case 'session.disconnect': vnc.onDisconnect(); return true;
+        default: return false;
+      }
+    }
+    return false;
+  }
+
   private handleRdpToolbarAction(action: RdpToolbarAction): void {
+    if (action === 'ai') { this.openSessionAi(); return; }
     if (action === 'portrait') { this.toggleRemotePortraitDisplay(); return; }
     if (action === 'control') { this.toggleRdpControlCenter(); return; }
     if (action === 'fileTransfer') { this.openFileTransferPanel(); return; }
@@ -8239,7 +8303,8 @@ struct RemoteDesktop {
       },
       onUnsupported: (actionId: string, reason: string): void => {
         this.toastUnsupportedRustDeskAction(actionId, reason);
-      }
+      },
+      onOpenAi: (): void => { this.openSessionAi(); }
     };
   }
 
@@ -23777,6 +23842,7 @@ struct RemoteDesktop {
           portraitDisplayEnabled: this.remotePortraitDisplayEnabledForCurrentProtocol(),
           portraitDisplayActive: this.remotePortraitDisplayActiveForCurrentProtocol(),
           diagnosticsEnabled: this.vncShowDiagnostics,
+          aiVisible: this.sessionAiVisible(),
           canvasResetAvailable: this.canvasTransformGestureModified,
           collapsed: this.vncToolbarCollapsed,
           viewportWidth: this.currentRemoteSessionSidebarViewport().width,
@@ -23806,6 +23872,7 @@ struct RemoteDesktop {
               portraitDisplayEnabled: this.remotePortraitDisplayEnabledForCurrentProtocol(),
               portraitDisplayActive: this.remotePortraitDisplayActiveForCurrentProtocol(),
               availableHeight: this.rdpToolbarAvailableHeight(),
+              aiVisible: this.sessionAiVisible(),
               onAction: (action: RdpToolbarAction): void => { this.handleRdpToolbarAction(action); }
             })
           }.width('100%').height(this.rdpToolbarAvailableHeight())
@@ -23825,6 +23892,7 @@ struct RemoteDesktop {
               portraitDisplayEnabled: this.remotePortraitDisplayEnabledForCurrentProtocol(),
               portraitDisplayActive: this.remotePortraitDisplayActiveForCurrentProtocol(),
               availableHeight: this.rdpToolbarAvailableHeight(),
+              aiVisible: this.sessionAiVisible(),
               onAction: (action: RdpToolbarAction): void => { this.handleRdpToolbarAction(action); }
             })
           }.width('100%').height(80).position({ x: 0, y: 0 })
@@ -23953,6 +24021,18 @@ struct RemoteDesktop {
           pendingDisplayResolution: this.rustDeskDisplayPendingResolution,
           capabilities: this.currentSessionCapabilities(),
           actions: this.remoteSessionTopBarActions()
+        })
+      }
+
+      // The AI in this session (RDP, RustDesk, VNC): the orb, its small chat and voice mode, in the AI top layer.
+      if (this.connected && this.sessionAiVisible()) {
+        SessionAiHost({
+          openRequest: this.aiSessionOpenRequest,
+          deviceClass: remoteTopBarLayout(this.isDesktopDevice, this.breakpoint, this.isPadDevice).deviceClass === 'pc' ? 'pc' :
+            remoteTopBarLayout(this.isDesktopDevice, this.breakpoint, this.isPadDevice).deviceClass === 'pad' ? 'pad' : 'phone',
+          avoidSide: this.sessionAiAvoidSide(),
+          avoidWidth: 72,
+          onSessionAction: (action: DiagnosticAiAppActionId): boolean => this.runSessionAiAction(action)
         })
       }
 

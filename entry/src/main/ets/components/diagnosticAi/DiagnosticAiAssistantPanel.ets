@@ -20,6 +20,9 @@ import { DiagnosticAiProviderService, diagnosticAiEstimateTokens } from '../../s
 import { AI_MODE_MODELS, AI_REQUEST_AUTH, AI_REQUEST_NETWORK, AI_REQUEST_RATE_LIMIT, AI_REQUEST_SERVER, AI_REQUEST_TIMEOUT, AiRequestRecord, DiagnosticAiRequestLog, diagnosticAiErrorCategory, diagnosticAiRequestCategoryLabel, recordAiConfigProblem } from '../../services/diagnosticAi/DiagnosticAiRequestLog';
 import { DiagnosticAiAgentMode, DiagnosticAiAgentService, diagnosticAiAgentModeForQuestion, diagnosticAiAgentModeLabel } from '../../services/diagnosticAi/DiagnosticAiAgentService';
 import { diagnosticAiMailDraft } from '../../services/diagnosticAi/DiagnosticAiMailPolicy';
+import { AI_DEVELOPER_EMAIL, AiMailDraft, aiMailAttachment, aiMailStamp, aiOpenMailEditor } from '../../services/diagnosticAi/AiMailService';
+import { DiagnosticAiFeatureRequest } from '../../services/diagnosticAi/DiagnosticAiConversationStore';
+import { CURRENT_RELEASE_VERSION } from '../../services/ReleaseNotesRegistry';
 import { AiSettingChoice, diagnosticAiOptimizationIntents, diagnosticAiSettingIntents, diagnosticAiApplyProposal, diagnosticAiApplySetting, diagnosticAiProposalChoice, diagnosticAiSettingActionText, diagnosticAiSettingCurrent, diagnosticAiSettingSpec, diagnosticAiSettingValueLabel } from '../../services/diagnosticAi/DiagnosticAiSettingsActionPolicy';
 import { ProAppRuntime } from '../../services/pro/ProAppRuntime';
 import { ProEntries } from '../../services/pro/ProEntries';
@@ -34,6 +37,7 @@ import { AiSegmented } from './AiSegmented';
 import { aiAutoRoute, aiModeCommand } from '../../services/diagnosticAi/AiChatRoutePolicy';
 import { AI_CHAT_REFRESH_KEY } from '../../services/diagnosticAi/AiShareInbox';
 import { AI_ASSISTANT_HANDOFF, AI_MODE_REQUEST } from '../../services/diagnosticAi/AiBridgeKeys';
+import { AiSessionRouter } from '../../services/diagnosticAi/AiSessionRouter';
 
 /** A suggested question shown as a pill in the island; it follows what the user is asking about. */
 class AiSuggestion {
@@ -304,7 +308,6 @@ export struct DiagnosticAiAssistantPanel {
   /** Capturing or analyzing; drives the edge glow of the sheet around the panel. */
   onActivityChanged: (active: boolean) => void = (_active: boolean): void => {};
   @State private lastActive: boolean = false;
-  onOpenMailDraft: (subject: string, body: string) => void = (_subject: string, _body: string): void => {};
   @State question: string = '';
   @State private agentMode: DiagnosticAiAgentMode = 'answer';
   @State private awaitingCapture: boolean = false;
@@ -362,6 +365,9 @@ export struct DiagnosticAiAssistantPanel {
   @State private mailPreviewVisible: boolean = false;
   @State private mailSubject: string = '';
   @State private mailBody: string = '';
+  /** The diagnostic log written as a file for the mail, and the feature requests riding along with it. */
+  @State private mailAttachments: string[] = [];
+  private mailRequestIds: string[] = [];
   /** The result starts as a compact answer; the expand control reveals the full conversation surface. */
   @State private expandedResult: boolean = false;
   @State private draftQuestion: string = '';
@@ -752,7 +758,8 @@ export struct DiagnosticAiAssistantPanel {
 
   /** A mode request from 聊天 or from the AI: once nothing is under way (the answer that asked for it has landed). */
   private onModeRequest(): void {
-    if (!this.siriMode || this.mini) { return; }
+    // A session's AI in front answers its own 拜拜 / 语音模式 (AiIsland in sessionMode); this panel is the host list's.
+    if (!this.siriMode || this.mini || AiSessionRouter.sessionActive()) { return; }
     const mode: string = this.modeRequest.split('@')[0];
     let waited: number = 0;
     const attempt = (): void => {
@@ -763,6 +770,8 @@ export struct DiagnosticAiAssistantPanel {
         setTimeout(attempt, 300);
         return;
       }
+      // The user may have gone into a session's AI meanwhile.
+      if (AiSessionRouter.sessionActive()) { return; }
       this.applyMode(mode);
     };
     setTimeout(attempt, 250);
@@ -1754,18 +1763,15 @@ export struct DiagnosticAiAssistantPanel {
         }.width('100%')
         Button('生成邮件草稿').height(42).width('100%').borderRadius(21).backgroundColor(this.pal().surface)
           .fontColor(this.accent)
-          .onClick((): void => {
-            const draft = diagnosticAiMailDraft(this.question, this.result as DiagnosticAiResult, {
-              captureId: 'latest', schemaVersion: 8, modules: this.modules,
-              text: this.latestBundleText, eventCount: this.eventCount, bytes: this.latestBundleText.length
-            });
-            this.mailSubject = draft.subject; this.mailBody = draft.body; this.mailPreviewVisible = true;
-          })
+          .onClick((): void => { this.prepareMailDraft(); })
       }
       if (this.mailPreviewVisible) {
         Column({ space: 8 }) {
           Text('邮件预览').fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.pal().text).width('100%')
           Text('主题：' + this.mailSubject).fontSize(12).fontColor(this.pal().text2).width('100%')
+          if (this.mailAttachments.length > 0) {
+            Text('附件：' + this.mailAttachmentNames().join('、')).fontSize(12).fontColor(this.pal().text2).width('100%')
+          }
           Scroll() {
             Text(this.mailBody).fontSize(11).lineHeight(16).fontColor(this.pal().text).width('100%')
               .copyOption(CopyOptions.InApp)
@@ -1775,7 +1781,7 @@ export struct DiagnosticAiAssistantPanel {
               .fontColor(this.pal().text).onClick((): void => { this.mailPreviewVisible = false; })
             Button('打开系统邮件').layoutWeight(1).height(40).borderRadius(20).backgroundColor(this.accent)
               .fontColor(Color.White)
-              .onClick((): void => { this.onOpenMailDraft(this.mailSubject, this.mailBody); this.mailPreviewVisible = false; })
+              .onClick((): void => { void this.openMailDraft(); })
           }.width('100%')
         }.width('100%').padding(12).backgroundColor(this.pal().surface).borderRadius(14)
       }
@@ -2042,6 +2048,50 @@ export struct DiagnosticAiAssistantPanel {
     this.focusQuestion();
   }
 
+  private mailAttachmentNames(): string[] {
+    return this.mailAttachments.map((path: string): string => path.slice(path.lastIndexOf('/') + 1));
+  }
+
+  /**
+   * The diagnosis mail: the log goes in as a file (never pasted into the text), the body is the structured draft
+   * (概述 · 初步诊断 · 详细诊断 · 建议步骤 · 尚未确认), and the user's pending feature requests ride along.
+   */
+  private prepareMailDraft(): void {
+    const context: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
+    const attachments: string[] = [];
+    if (this.latestBundleText !== '') {
+      try {
+        attachments.push(aiMailAttachment(context, 'RemoteDesktop-diagnostics-' + aiMailStamp(Date.now()) + '.json',
+          this.latestBundleText));
+      } catch (_error) { this.status = '诊断日志没能写成附件，邮件里不会带上日志'; }
+    }
+    const requests: DiagnosticAiFeatureRequest[] = this.conversationStore.featureRequests()
+      .filter((row: DiagnosticAiFeatureRequest): boolean => row.sentAt === 0);
+    this.mailRequestIds = requests.map((row: DiagnosticAiFeatureRequest): string => row.id);
+    this.mailAttachments = attachments;
+    const draft = diagnosticAiMailDraft({ question: this.question, result: this.result,
+      attachmentNames: this.mailAttachmentNames(),
+      featureRequests: requests.map((row: DiagnosticAiFeatureRequest): string => row.text),
+      appVersion: CURRENT_RELEASE_VERSION });
+    this.mailSubject = draft.subject; this.mailBody = draft.body; this.mailPreviewVisible = true;
+  }
+
+  /** To the developer, in the user's mail app (they check and send it there; nothing is sent from here). */
+  private async openMailDraft(): Promise<void> {
+    this.mailPreviewVisible = false;
+    try {
+      const note: string = await aiOpenMailEditor(getContext(this) as common.UIAbilityContext,
+        new AiMailDraft([AI_DEVELOPER_EMAIL], this.mailSubject, this.mailBody, this.mailAttachments));
+      if (this.mailRequestIds.length > 0) {
+        this.conversationStore.markFeatureRequestsSent(this.mailRequestIds, Date.now());
+        this.mailRequestIds = [];
+      }
+      if (note !== '') { this.toast(note); }
+    } catch (_error) {
+      this.toast('未找到可用的邮件应用');
+    }
+  }
+
   private runAction(action: AiAction): void {
     if (!this.actionsAllowed()) {
       this.pendingAppAction = null;
@@ -2049,17 +2099,8 @@ export struct DiagnosticAiAssistantPanel {
       return;
     }
     if (action.special === 'new') { this.startNewConversation(); return; }
-    if (action.special === 'mailOpen') {
-      this.onOpenMailDraft(this.mailSubject, this.mailBody); this.mailPreviewVisible = false; return;
-    }
-    if (action.special === 'mail') {
-      const draft = diagnosticAiMailDraft(this.question, this.result as DiagnosticAiResult, {
-        captureId: 'latest', schemaVersion: 8, modules: this.modules,
-        text: this.latestBundleText, eventCount: this.eventCount, bytes: this.latestBundleText.length
-      });
-      this.mailSubject = draft.subject; this.mailBody = draft.body; this.mailPreviewVisible = true;
-      return;
-    }
+    if (action.special === 'mailOpen') { void this.openMailDraft(); return; }
+    if (action.special === 'mail') { this.prepareMailDraft(); return; }
     if (action.special === 'applyAll') {
       const all: AiAction[] = this.pendingSettingActions();
       const changed: number = all.filter((item: AiAction): boolean => this.applySettingAction(item)).length;
@@ -2445,6 +2486,9 @@ export struct DiagnosticAiAssistantPanel {
             if (this.mailPreviewVisible) {
               Column({ space: 6 }) {
                 Text('邮件预览 · ' + this.mailSubject).fontSize(13).fontColor('#FFFFFF').width('100%')
+                if (this.mailAttachments.length > 0) {
+                  Text('附件：' + this.mailAttachmentNames().join('、')).fontSize(12).fontColor('#8E8E93').width('100%')
+                }
                 Scroll() {
                   Text(this.mailBody).fontSize(12).lineHeight(17).fontColor('#C7C7CC').width('100%')
                     .copyOption(CopyOptions.InApp)

@@ -1,5 +1,5 @@
-export const CURRENT_RELEASE_VERSION: string = '1.1.6';
-export const CURRENT_RELEASE_VERSION_CODE: number = 1001007;
+export const CURRENT_RELEASE_VERSION: string = '1.2.0';
+export const CURRENT_RELEASE_VERSION_CODE: number = 1001008;
 
 export interface ReleaseNotePage {
   id: string;
@@ -15,12 +15,14 @@ export interface ReleaseNotePage {
 
 /** One-line summary shown under the version in the 1.1.6+ 「新功能」 list. */
 export function releaseHeadline(version: string): string {
+  if (version === '1.2.0') { return 'AI 助理全面登场：聊天、语音、连接中的悬浮球都能用；所有 Pro 功能免费试用。'; }
   if (version === '1.1.6') { return 'RDP 会话内传文件、VNC 多显示器切换、竖屏会话更顺手，连接、终端与设置体验全面打磨。'; }
   return '';
 }
 
 export function pagesForReleasedVersion(version: string): ReleaseNotePage[] {
   if (version === CURRENT_RELEASE_VERSION) { return currentReleasePages(); }
+  if (version === '1.1.6') { return release116Pages(); }
   if (version === '1.1.5.1') { return release1151Pages(); }
   if (version === '1.1.5') { return release115Pages(); }
   if (version === '1.1.4') { return release114Pages(); }
@@ -32,8 +34,55 @@ export function currentReleasePageCount(): number {
   return currentReleasePages().length;
 }
 
-// Release builds keep Pro closed, so Pro features appear only as a 即将推出 preview.
+// 1.2.0: the free Pro trial leads, then AI 助理 and everything it can now do; 1.1.6 is summed up last for anyone
+// updating straight from an older version.
 function currentReleasePages(): ReleaseNotePage[] {
+  return [
+    {
+      id: 'release-pro-trial', symbol: $rawfile('icons/key.svg'), glyph: $r('sys.symbol.star_fill'),
+      tag: '免费试用', title: 'Pro 全部功能免费试用',
+      desc: '正式收费前，所有用户都能免费使用已开发的全部 Pro 功能：AI 助理、工作区、高级主机管理、远端显示方案、个性化、同账号接续等。开始收费前会在应用内提前通知。'
+    },
+    {
+      id: 'release-ai-assistant', symbol: $rawfile('icons/cloud.svg'), glyph: $r('sys.symbol.wand_and_stars'),
+      tag: '新功能', title: 'AI 助理：聊天与助理',
+      desc: '聊天能写作、翻译、总结，读你添加的文档并生成 Word 和 Excel；助理专管 RemoteDesktop 的连接、设置和诊断。问题该归谁，它们会自己转交。'
+    },
+    {
+      id: 'release-ai-voice', symbol: $rawfile('icons/command-line.svg'), glyph: $r('sys.symbol.mic_fill_waves_left_and_right'),
+      tag: 'Beta', title: 'AI 语音',
+      desc: '在「设置 → AI 语音」打开后，可以像 Siri 一样和 AI 说话：回答时随时插话打断，连续对话，说“回到文字”“拜拜”就切换或退出。朗读和识别都可选本机或云端。'
+    },
+    {
+      id: 'release-ai-tools', symbol: $rawfile('icons/cog-6-tooth.svg'), glyph: $r('sys.symbol.checkmark_shield'),
+      tag: '新功能', title: 'AI 能帮你动手',
+      desc: '设提醒、查日程、联网搜索、分享、改设置、连接主机；它生成的文档、设的提醒、记住的事、对话记录和主机，也能查看、修改和删除。会改动数据的操作都先给你确认。'
+    },
+    {
+      id: 'release-ai-session', symbol: $rawfile('icons/computer-desktop.svg'), glyph: $r('sys.symbol.smal_window_playback'),
+      tag: '新功能', title: '连接中也能用 AI',
+      desc: 'RDP、RustDesk、VNC、Moonlight 的侧栏和 SSH 的「更多」里都有 AI。它以悬浮球加小对话框出现：单击退出、双击说话、长按拖动，横竖屏都会避开侧栏。'
+    },
+    {
+      id: 'release-ai-feedback', symbol: $rawfile('icons/shield-check.svg'), glyph: $r('sys.symbol.envelope_fill'),
+      tag: '新功能', title: '需求收集与反馈邮件',
+      desc: '你随口提的想法，AI 会记下来；说一声“把需求发给开发者”，就整理成邮件。诊断邮件也重新排版：初步诊断、详细诊断、逐条建议，诊断日志作为附件。'
+    },
+    {
+      id: 'release-ai-layout', symbol: $rawfile('icons/computer-desktop.svg'), glyph: $r('sys.symbol.rectangle_on_rectangle'),
+      tag: '改进', title: 'AI 始终在最上层，PC 左下角一键打开',
+      desc: '语音模式、AI 面板和悬浮球不再被设置页等弹窗挡住；PC 大屏上，AI 按钮移到左下角，和「+」并排。'
+    },
+    {
+      id: 'release-1-1-6-summary', symbol: $rawfile('icons/folder-open.svg'), glyph: $r('sys.symbol.folder_fill'),
+      tag: '改进', title: '也包含 1.1.6 的全部更新',
+      desc: 'RDP 会话里直接传文件、VNC 多显示器切换、竖屏显示方式与侧栏高度、点按输入框弹出键盘、RDP 证书预检可跳过，以及 SSH、RustDesk 与设置页的多项打磨。'
+    }
+  ];
+}
+
+// The 1.1.6 notes, as they shipped: Pro appeared only as a 即将推出 preview.
+function release116Pages(): ReleaseNotePage[] {
   return [
     {
       id: 'release-rdp-file-transfer', symbol: $rawfile('icons/folder-open.svg'), glyph: $r('sys.symbol.folder_fill'),

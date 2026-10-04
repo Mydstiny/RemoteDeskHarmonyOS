@@ -148,6 +148,23 @@ assert.equal(route.aiAutoRoute('帮我写一份周报', 'assistant', false), 'ch
 assert.equal(route.aiAutoRoute('十分钟后提醒我喝水', 'assistant', false), 'chat');
 assert.equal(route.aiAutoRoute('SSH 连接失败', 'assistant', false), '');
 assert.equal(route.aiAutoRoute('怎么添加主机', 'assistant', false), '');
+// A feature idea goes to 聊天 (it keeps the list) from any mode; a fault report still goes to 助理.
+for (const q of ['要是能在 RDP 里录屏就好了', '希望 SSH 能支持分屏', '把我的需求发给开发者', '能不能加个暗色终端主题']) {
+  assert.ok(route.aiQuestionIsFeatureIdea(q), q);
+  assert.equal(route.aiAutoRoute(q, 'chat', false), '', q);
+  assert.equal(route.aiAutoRoute(q, 'assistant', false), 'chat', q);
+}
+assert.equal(route.aiQuestionIsFeatureIdea('RDP 连不上怎么办'), false);
+assert.equal(route.aiQuestionIsFeatureIdea('我希望能连上公司的电脑'), false, 'asking for help is not a feature request');
+for (const q of ['RDP 连不上，我想要一个解决办法', 'SSH 老是断开，有没有改进建议', '我的需求是让 SSH 不断开', '你对这个报错有什么想法',
+  '1.2.0 有什么新功能', '帮我写一份需求文档', '希望有人能帮我解决连不上的问题', '要是能连上就好了',
+  '如果能正常连接就好了，RDP 一直报错', 'RDP 连接能不能加速', 'SSH 能不能加密传输', '希望能有办法解决断连', 'RDP 能不能支持多显示器']) {
+  assert.equal(route.aiQuestionIsFeatureIdea(q), false, q);
+}
+for (const q of ['RDP 老是断开，能不能加个自动重连', '希望有个暗色主题', '我想要一个分屏的功能', '我有个想法：主机卡片可以拖动排序',
+  '帮我记下这个需求', '给你提个建议，加个批量主机操作', '要是能在 SSH 里分屏就好了', '希望可以有主机分组颜色']) {
+  assert.ok(route.aiQuestionIsFeatureIdea(q), q);
+}
 // Goodbyes and mode commands, said or typed in any mode.
 for (const q of ['拜拜', '好的拜拜。', '拜拜啦', '再见', '那就先这样吧，拜拜', '退出', '退出吧', '关闭AI', '没事了谢谢', '好了，谢谢，就这样吧', '晚安']) {
   assert.ok(route.aiQuestionIsGoodbye(q), q);
@@ -236,6 +253,51 @@ assert.equal(store.clearSessions('chat'), true);
 assert.deepEqual(Array.from(store.listSessions(), s => s.id), ['a1']);
 console.log('PASS 助理 and 聊天 sessions, memory and usage stay apart; clearing one kind keeps the other');
 
+// ---------------------------------------------------------------- feature requests (需求收集)
+const requests = new storeModule.DiagnosticAiConversationStore();
+requests.init({}, 'request-owner');
+assert.ok(requests.addFeatureRequest('希望 SSH 支持分屏'));
+assert.equal(requests.addFeatureRequest('希望SSH支持分屏。'), null, 'the same request is kept once');
+assert.ok(requests.addFeatureRequest('RDP 能录屏'));
+assert.equal(requests.featureRequests().length, 2);
+const firstId = requests.featureRequests()[0].id;
+assert.ok(requests.markFeatureRequestsSent([firstId], 1234));
+assert.equal(requests.featureRequests().find(row => row.id === firstId).sentAt, 1234);
+assert.ok(requests.addFeatureRequest('希望 SSH 支持分屏'), 'a sent request may be asked for again');
+assert.equal(requests.removeFeatureRequests('录屏'), 1);
+const other = new storeModule.DiagnosticAiConversationStore();
+other.init({}, 'someone-else');
+assert.equal(other.featureRequests().length, 0, 'requests are per account');
+const keptCount = requests.featureRequests().length;
+assert.equal(requests.removeFeatureRequests(''), keptCount, 'an empty text clears the list');
+assert.equal(requests.featureRequests().length, 0);
+console.log('PASS feature requests: kept per account, no duplicates while waiting, marked sent, removable');
+
+// ---------------------------------------------------------------- mails: structured, the log as an attachment
+const mailPolicy = load(D + 'DiagnosticAiMailPolicy');
+const diagnosis = { summary: 'RDP 在握手阶段被服务器断开，最可能是 NLA 凭据被拒。', severity: 'medium', confidence: 0.72,
+  evidenceRefs: [], hypotheses: ['NLA 凭据错误（rdp.auth 1326）', '服务器只允许 TLS 1.2'], unknowns: ['服务器是否启用了 NLA'],
+  recommendedReadOnlySteps: ['核对用户名和密码', '在服务器上检查远程桌面设置', '重新连接一次'], settingProposals: [], appActions: [],
+  knowledgeVersion: 'kb-v6', createdAt: 1, developerNotes: '10:01:02 rdp.auth 1326\n10:01:03 断开' };
+const mail = mailPolicy.diagnosticAiMailDraft({ question: 'RDP 连不上', result: diagnosis,
+  attachmentNames: ['RemoteDesktop-diagnostics-20261004-100000.json'], featureRequests: ['希望 SSH 支持分屏'], appVersion: '1.2.0' });
+assert.match(mail.subject, /RDP 连不上/);
+for (const part of ['一、问题概述', '二、初步诊断', '严重程度：中 · 置信度：72%', '三、详细诊断', '（一）可能的原因',
+  '1. NLA 凭据错误', '2. 服务器只允许 TLS 1.2', '（二）技术分析', '四、建议步骤', '1. 核对用户名和密码', '3. 重新连接一次',
+  '五、尚未确认', '六、用户提出的功能需求', '七、附件', 'RemoteDesktop-diagnostics-20261004-100000.json', 'App 版本：1.2.0']) {
+  assert.ok(mail.body.includes(part), 'mail has ' + part);
+}
+assert.ok(mail.body.indexOf('二、初步诊断') < mail.body.indexOf('三、详细诊断'));
+assert.equal(/[{}]/.test(mail.body), false, 'no log JSON pasted into the mail');
+const early = mailPolicy.diagnosticAiMailDraft({ question: '', result: null, attachmentNames: [], featureRequests: [], appVersion: '1.2.0' });
+assert.match(early.body, /还没有完成分析/);
+assert.equal(early.body.includes('、附件'), false, 'no attachment section without attachments');
+const wish = mailPolicy.aiFeatureRequestMail(['希望 SSH 支持分屏', 'RDP 能录屏'], '多开终端时用得上', '1.2.0');
+assert.equal(wish.subject, 'RemoteDesktop 功能需求（2 条）');
+assert.match(wish.body, /1\. 希望 SSH 支持分屏\n2\. RDP 能录屏/);
+assert.match(wish.body, /补充说明：\n多开终端时用得上/);
+console.log('PASS mails: overview, preliminary and detailed diagnosis, numbered steps, attachments by name, no inline log');
+
 
 // ---------------------------------------------------------------- tools and skills
 const catalog = load(D + 'AiSkillCatalog');
@@ -311,7 +373,8 @@ const system = load(D + 'AiSystemTools', {
   '@kit.CameraKit': {}, '@kit.ContactsKit': {}, '@kit.LocationKit': {}, '@kit.NetworkKit': {}, '@kit.BackgroundTasksKit': {},
   '@kit.NotificationKit': {}, '@kit.TelephonyKit': {}, '@kit.MediaLibraryKit': {},
   '@kit.PerformanceAnalysisKit': { hilog: { info() {}, warn() {} } }, './AiDocumentService': {},
-  './DiagnosticAiSettingsActionPolicy': {}, '@kit.ShareKit': {}, './DiagnosticAiConversationStore': {}
+  './DiagnosticAiSettingsActionPolicy': {}, '@kit.ShareKit': {}, './DiagnosticAiConversationStore': {},
+  './AiMailService': { AI_DEVELOPER_EMAIL: 'dev@example.com', AiMailDraft: class {}, aiOpenMailEditor: async () => '' }
 });
 const t = system.aiParseLocalTime('2030-03-05 14:30');
 assert.equal(new Date(t).getFullYear(), 2030);
@@ -343,7 +406,7 @@ assert.equal(system.aiActionFor('a6', 'cancel_reminder', { id: 7, title: '喝水
 assert.match(system.aiActionFor('a7', 'cancel_reminder', { title: '喝水' }), /编号/);
 assert.ok(system.AI_CONFIRM_TOOLS.includes('cancel_reminder'));
 // Create, read, update and delete for what the AI makes or keeps: every tool exists, is on and has a valid schema.
-for (const fn of ['switch_mode', 'create_document', 'list_documents', 'read_document', 'update_document', 'delete_document',
+for (const fn of ['manage_feature_requests', 'switch_mode', 'create_document', 'list_documents', 'read_document', 'update_document', 'delete_document',
   'list_conversations', 'delete_conversation', 'update_memory', 'edit_host', 'delete_host', 'list_reminders', 'cancel_reminder']) {
   const tool = catalog.AI_TOOLS.find(t => t.fn === fn);
   assert.ok(tool && tool.defaultOn, fn + ' exists and is on by default');

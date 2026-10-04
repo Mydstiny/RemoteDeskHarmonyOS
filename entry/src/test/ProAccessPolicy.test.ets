@@ -43,7 +43,7 @@ export default function proAccessPolicyTest(): void {
     it('keeps_core_free_and_denies_unknown_or_planned', 0, (): void => {
       expect(proFeatureAccess('core.connection', context(), 'free', []).executable).assertTrue();
       expect(proFeatureAccess('missing', context(), 'active', [PRO_LIFETIME]).visible).assertFalse();
-      expect(proFeatureAccess('pro.workspaces', context(), 'active', [PRO_LIFETIME]).reason).assertEqual('planned');
+      expect(proFeatureAccess('pro.security.phonePasskey', context(), 'active', [PRO_LIFETIME]).reason).assertEqual('planned');
     });
     it('lifetime_covers_new_features_but_not_old_feature_lists', 0, (): void => {
       expect(resolveProFeatureAccess(feature('version.one'), context(), 'active', grant().entitlementIds).executable).assertTrue();

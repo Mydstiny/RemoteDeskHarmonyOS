@@ -3,7 +3,7 @@
  *
  * 内容与设置页「简单使用教程」共享功能介绍，仅收尾页按入口区分。
  */
-import { router } from '@kit.ArkUI';
+import { promptAction, router } from '@kit.ArkUI';
 import { preferences } from '@kit.ArkData';
 import { Palette, buildDark, buildLight } from '../common/Theme';
 import {
@@ -17,7 +17,7 @@ import {
 } from '../services/ReleaseNotesRegistry';
 import { GuideShowcase, WhatsNewList } from '../components/guide/GuideShowcase';
 import { ProShowcase } from '../components/guide/ProShowcase';
-import { PRO_ORDER_PENDING_KEY } from '../services/ProIntroRegistry';
+import { markProTrialStarted } from '../services/pro/ProTrialNotice';
 import {
   clampGuidePageIndex,
   ensureGuidePages,
@@ -205,15 +205,10 @@ struct GuidePage {
    */
   @Builder guidePanel(isSheet: boolean) {
     if (isSheet && this.stage === 'pro') {
+      // 1.2.0: everyone has Pro free. The popup's one way out is 立即试用 (it cannot be swiped or backed away).
       ProShowcase({
-        primaryLabel: '完成',
-        orderLabel: '现在订购',
-        onPrimary: (): void => { this.finish(); },
-        onOrder: (): void => {
-          // The Pro page lives on the home page: finish the guide and let the home page open it.
-          AppStorage.setOrCreate(PRO_ORDER_PENDING_KEY, true);
-          this.finish();
-        }
+        actionLabel: '立即试用',
+        onAction: (): void => { this.startProTrial(); }
       })
       .width('100%').height('100%')
       .backgroundColor(this.pal().sheetBg)
@@ -261,11 +256,18 @@ struct GuidePage {
     .bindSheet($$this.showGuideSheet, this.guideSheet(), {
       height: this.guideSheetHeight(),
       preferType: this.presentGuideAsBottomSheet() || this.proIntroOnPhone() ? SheetType.BOTTOM : SheetType.CENTER,
-      dragBar: this.presentGuideAsBottomSheet() || this.proIntroOnPhone(),
+      // No drag bar on the Pro 功能介绍: it is not dismissed by dragging.
+      dragBar: (this.presentGuideAsBottomSheet() || this.proIntroOnPhone()) && this.stage !== 'pro',
       backgroundColor: this.pal().sheetBg,
       blurStyle: BlurStyle.NONE,
       showClose: false,
       maskColor: 'rgba(0,0,0,0.28)',
+      // The Pro 功能介绍 closes only through 立即试用; finishing, a reflow at a new breakpoint and going to the
+      // background still close it as before, and so does everything about the release notes.
+      onWillDismiss: (action: DismissSheetAction): void => {
+        if (this.stage === 'pro' && !this.isFinishing && !this.reflowingSheet && !this.appInBackground) { return; }
+        action.dismiss();
+      },
       onDisappear: (): void => { this.handleGuideSheetDisappear(); }
     })
   }
@@ -299,6 +301,15 @@ struct GuidePage {
     this.reflowingSheet = false;
     this.showGuideSheet = false;
     this.scheduleGuideSheetReopen();
+  }
+
+  /** 立即试用: the trial is on for everyone; record that the user was told, say so, and carry on. */
+  private startProTrial(): void {
+    markProTrialStarted(getContext(this));
+    try {
+      promptAction.showToast({ message: '已开启 Pro 免费试用，全部 Pro 功能可以直接使用', duration: 2600 });
+    } catch (_error) { /* no toast */ }
+    this.finish();
   }
 
   private finish(): void {

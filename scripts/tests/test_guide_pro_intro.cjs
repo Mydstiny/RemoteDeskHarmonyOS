@@ -25,7 +25,7 @@ let passed = 0;
 function test(name, fn) { fn(); passed++; console.log('PASS ' + name); }
 const hex = /^#[0-9A-F]{6}$/;
 
-test('Pro 功能介绍 lists eight distinct areas with colors and two or three tags each', () => {
+test('Pro 功能介绍 lists eight distinct areas, AI 助理 first and featured, with colors and two or three tags each', () => {
   const pro = load('entry/src/main/ets/services/ProIntroRegistry.ets');
   const items = pro.proIntroItems();
   assert.equal(items.length, 8);
@@ -35,11 +35,19 @@ test('Pro 功能介绍 lists eight distinct areas with colors and two or three t
     assert.ok(item.tags.length >= 2 && item.tags.length <= 3, item.id + ' tags');
     assert.ok(item.title.length > 0 && item.desc.length > 0);
   });
+  assert.equal(items[0].id, 'pro-intro-ai-assistant');
+  assert.equal(items[0].featured, true);
+  assert.ok(items[0].points.length >= 4, 'the featured AI card lists what it does');
+  assert.equal(items.filter(item => item.featured).length, 1);
+  assert.equal(items[1].id, 'pro-intro-ai');
+  assert.equal(items.some(item => item.id === 'pro-intro-diagnostics'), false, 'diagnostics merged into AI 助理');
   // Copies: callers cannot change the registry.
   items[0].tags.push('x'); assert.equal(pro.proIntroItems()[0].tags.length, items[0].tags.length - 1);
+  items[0].points.push('x'); assert.equal(pro.proIntroItems()[0].points.length, items[0].points.length - 1);
   assert.notEqual(pro.proIntroStatus(true), pro.proIntroStatus(false));
+  assert.match(pro.proIntroStatus(true), /免费试用/);
   assert.match(pro.proIntroStatus(false), /正式开放/);
-  assert.deepEqual([...pro.proIntroPromises()], ['一次购买', '不自动续费', '核心连接永久免费']);
+  assert.deepEqual([...pro.proIntroPromises()], ['全部功能免费试用', '收费前提前通知', '核心连接永久免费']);
 });
 
 test('first-install guide has nine colored slides, device page fourth, start last', () => {
@@ -56,13 +64,22 @@ test('first-install guide has nine colored slides, device page fourth, start las
   assert.equal(guide.settingsUsageGuidePages('phone').length, 9);
 });
 
-test('1.1.6 notes end with the Pro preview and keep every item tagged', () => {
+test('1.2.0 notes lead with the free Pro trial; the 1.1.6 notes are kept as they shipped', () => {
   const notes = load('entry/src/main/ets/services/ReleaseNotesRegistry.ets');
+  assert.equal(notes.CURRENT_RELEASE_VERSION, '1.2.0');
+  assert.equal(notes.CURRENT_RELEASE_VERSION_CODE, 1001008);
   const pages = notes.pagesForReleasedVersion(notes.CURRENT_RELEASE_VERSION);
-  assert.equal(pages.length, 14);
-  assert.equal(pages[pages.length - 1].id, 'release-pro-preview');
-  assert.equal(pages[pages.length - 1].tag, '即将推出');
+  assert.equal(pages.length, 8);
+  assert.equal(pages[0].id, 'release-pro-trial');
+  assert.equal(pages[0].tag, '免费试用');
+  assert.match(notes.releaseHeadline('1.2.0'), /免费试用/);
   pages.forEach(page => assert.ok((page.tag || '').length > 0, page.id));
+  const older = notes.pagesForReleasedVersion('1.1.6');
+  assert.equal(older.length, 14);
+  assert.equal(older[older.length - 1].id, 'release-pro-preview');
+  assert.equal(older[older.length - 1].tag, '即将推出');
+  const app = read('AppScope/app.json5');
+  assert.match(app, /"versionCode": 1001008,\s*"versionName": "1\.2\.0"/);
 });
 
 test('both startup flows continue into the Pro sheet, which also opens from 设置 → 教程', () => {
@@ -70,7 +87,7 @@ test('both startup flows continue into the Pro sheet, which also opens from 设�
   assert.match(guidePage, /onPrimary: \(\): void => \{ this\.showProIntro\(\); \}/);
   assert.match(guidePage, /onFinish: \(\): void => \{ this\.showProIntro\(\); \}/);
   assert.match(guidePage, /onSkip: \(\): void => \{ this\.showProIntro\(\); \}/);
-  assert.match(guidePage, /if \(isSheet && this\.stage === 'pro'\) \{\s*ProShowcase\(/);
+  assert.match(guidePage, /if \(isSheet && this\.stage === 'pro'\) \{\s*(\/\/[^\n]*\n\s*)*ProShowcase\(/);
   // A reflow at a new breakpoint is not a dismissal.
   assert.match(guidePage, /this\.stage === 'pro' && !this\.appInBackground && !this\.reflowingSheet/);
   const about = read('entry/src/main/ets/components/AboutSettingsSheet.ets');
@@ -83,17 +100,18 @@ test('both startup flows continue into the Pro sheet, which also opens from 设�
   assert.equal(/Purchase|Billing|ProAppRuntime|Entitlement/.test(imports), false);
 });
 
-test('Pro 功能介绍 has 完成 on the left and 现在订购 on the right, which reaches the Pro page', () => {
+test('Pro 功能介绍 has one button, 立即试用, and the startup popup cannot be dismissed any other way', () => {
   const showcase = read('entry/src/main/ets/components/guide/ProShowcase.ets');
-  assert.ok(showcase.indexOf('Button(this.primaryLabel).layoutWeight(1)') < showcase.indexOf('Button(this.orderLabel)'));
-  const about = read('entry/src/main/ets/components/AboutSettingsSheet.ets');
-  assert.match(about, /orderLabel: '现在订购'[\s\S]{0,200}onOrder: \(\): void => \{ this\.onOrderPro\(\); \}/);
-  const host = read('entry/src/main/ets/pages/HostListPage.ets');
-  assert.match(host, /onOrderPro: \(\): void => \{ this\.openSettingsLeafSheet\(SETTINGS_SHEET_PRO\); \}/);
-  assert.match(host, /onPageShow\(\): void \{\s*this\.pageActive = true;\s*this\.openPendingProOrder\(\);/);
-  assert.match(host, /AppStorage\.setOrCreate\(PRO_ORDER_PENDING_KEY, false\);/);
+  assert.equal((showcase.match(/Button\(/g) || []).length, 1, 'a single button');
+  assert.match(showcase, /actionLabel: string = '立即试用'/);
+  assert.match(showcase, /previewStyle: 'capsule', previewMotion: 'sweep'/, 'the hero shows 极光流彩');
+  assert.equal(showcase.includes("previewStyle: 'warp'"), false);
   const guidePage = read('entry/src/main/ets/pages/GuidePage.ets');
-  assert.match(guidePage, /AppStorage\.setOrCreate\(PRO_ORDER_PENDING_KEY, true\);\s*this\.finish\(\);/);
+  assert.match(guidePage, /actionLabel: '立即试用',\s*onAction: \(\): void => \{ this\.startProTrial\(\); \}/);
+  assert.match(guidePage, /onWillDismiss: \(action: DismissSheetAction\): void => \{\s*if \(this\.stage === 'pro' && !this\.isFinishing && !this\.reflowingSheet && !this\.appInBackground\) \{ return; \}\s*action\.dismiss\(\);/);
+  assert.match(guidePage, /markProTrialStarted\(getContext\(this\)\);[\s\S]{0,240}this\.finish\(\);/);
+  const about = read('entry/src/main/ets/components/AboutSettingsSheet.ets');
+  assert.match(about, /actionLabel: proTrialStarted\(getContext\(this\)\) \? '继续使用 Pro' : '立即试用'/);
 });
 
 console.log(passed + ' guide and Pro intro checks passed');

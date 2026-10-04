@@ -33,6 +33,7 @@ import {
 } from '../services/ReleaseNotesRegistry';
 import { GuideShowcase, WhatsNewList } from './guide/GuideShowcase';
 import { ProShowcase } from './guide/ProShowcase';
+import { markProTrialStarted, proTrialStarted } from '../services/pro/ProTrialNotice';
 
 @Component
 export struct AboutSettingsSheet {
@@ -211,12 +212,11 @@ export struct AboutSettingsSheet {
 
   @Builder proIntroSheet() {
     Column() {
+      // Opened from 设置 → 教程, so it can be closed; its one button starts the trial (or carries on with it).
       ProShowcase({
-        primaryLabel: '完成',
-        orderLabel: '现在订购',
+        actionLabel: proTrialStarted(getContext(this)) ? '继续使用 Pro' : '立即试用',
         showClose: true,
-        onPrimary: (): void => { this.onClose(); },
-        onOrder: (): void => { this.onOrderPro(); },
+        onAction: (): void => { markProTrialStarted(getContext(this)); this.onClose(); },
         onClose: (): void => { this.onClose(); }
       })
     }

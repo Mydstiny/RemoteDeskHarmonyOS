@@ -1,8 +1,9 @@
 import { ProBadge, proBadgeSummary } from '../components/ProBadge';
-import { AiIsland } from '../components/diagnosticAi/AiIsland';
-import { AI_VOICE_HOLD_EVENT, AiVoiceIsland } from '../components/diagnosticAi/AiVoiceIsland';
+import { AI_VOICE_HOLD_EVENT } from '../components/diagnosticAi/AiVoiceIsland';
+import { AiIslandLayerParams, AiTopLayer, AiVoiceLayerParams } from '../components/diagnosticAi/AiTopLayer';
+import { AiSessionRouter, aiIsSessionPage } from '../services/diagnosticAi/AiSessionRouter';
 import { AI_VOICE_ENABLED, AiVoiceSettings } from '../services/diagnosticAi/AiVoiceSettings';
-import { AI_APP_ACTION_REQUEST } from '../services/diagnosticAi/AiBridgeKeys';
+import { AI_APP_ACTION_REQUEST, AI_FLOAT_REQUEST } from '../services/diagnosticAi/AiBridgeKeys';
 import { DiagnosticAiMotionStore } from '../services/diagnosticAi/DiagnosticAiMotionPolicy';
 import { DiagnosticAiSettingsBridge } from '../services/diagnosticAi/DiagnosticAiSettingsActionPolicy';
 import { AiTriageHost, DiagnosticAiHostBridge } from '../services/diagnosticAi/DiagnosticAiTriagePolicy';
@@ -991,17 +992,20 @@ struct HostListPage {
   /** 诊断与 AI 帮助 sub-settings that need Pro; 传统日志抓取 is always there. */
   @State diagnosticAiConfigVisible: boolean = false;
   /** Shared through AppStorage so the AI entry on the 密钥保险库 and 中继 tabs follows the same entitlement. */
-  @StorageLink('aiEntryAssistantVisible') diagnosticAiAssistantVisible: boolean = false;
+  @StorageLink('aiEntryAssistantVisible') @Watch('syncAiLayers') diagnosticAiAssistantVisible: boolean = false;
   /** Which sub-setting the diagnostic AI sheet shows: 0 = 辅助 AI 配置, 1 = 启动 AI 辅助. */
   @State diagnosticAiSection: number = 0;
   /** Session selected from AI history; native sheet replacement carries it into section 1. */
   @State diagnosticAiResumeSessionId: string = '';
   /** 启动 AI 辅助 opens as the AI island at the top center; it unmounts after folding away. */
-  @State aiIslandShown: boolean = false;
+  @State @Watch('syncAiLayers') aiIslandShown: boolean = false;
+  /** The island and voice mode, each in the AI top layer while shown (above every sheet and dialog). */
+  private aiIslandLayer: AiTopLayer = new AiTopLayer();
+  private aiVoiceLayer: AiTopLayer = new AiTopLayer();
   /** The AI island floats as a capsule: its overlay lets every other touch reach the page. */
   @State aiIslandFloating: boolean = false;
   /** AI 语音 (Beta): Siri-style voice mode over the page ('hands' from the chat, 'hold' from a long press). */
-  @State aiVoiceShown: boolean = false;
+  @State @Watch('syncAiLayers') aiVoiceShown: boolean = false;
   @State aiVoiceMode: string = 'hands';
   /** Voice mode starts from the closing panel's capsule ('panel') or from the camera island ('island'). */
   @State aiVoiceStart: string = 'island';
@@ -2923,6 +2927,31 @@ struct HostListPage {
     // A workspace entry whose session page covered the list counts as opened once the list returns.
     if (this.proWorkspaceRun !== null && connectingRunIndex(this.proWorkspaceRun as WorkspaceRun) >= 0) {
       this.proWorkspacePageHidden = true;
+    }
+    // Once the pushed page is in place (going to the background leaves the list on top).
+    setTimeout((): void => { this.foldAiUnderSession(); }, 120);
+  }
+
+  /**
+   * A remote session (or Moonlight's app list on the way to one) covered the list in this window: the list's AI
+   * layers would stay above it, so voice mode closes and the AI goes away — the session has its own AI in its side
+   * bar. A capture or an answer still running keeps its orb, so the user can come back to it.
+   */
+  private foldAiUnderSession(): void {
+    let top: string = '';
+    try { top = this.getUIContext().getRouter().getState().name; } catch (_error) { return; }
+    if (!aiIsSessionPage(top) && top !== 'MoonlightAppCatalogPage') { return; }
+    if (this.aiVoiceShown) { this.aiVoiceShown = false; }
+    if (!this.aiIslandShown) { return; }
+    if (this.diagnosticAiOrbState === 'thinking' || this.diagnosticAiOrbState === 'capturing') {
+      // Still working: an open panel floats as the orb instead of covering the session.
+      if (!this.aiIslandFloating) { AppStorage.setOrCreate(AI_FLOAT_REQUEST, Date.now()); }
+    } else {
+      hilog.info(0x0000, 'AiChat', 'host list AI folds under %{public}s', top);
+      this.aiIslandShown = false; this.aiIslandFloating = false; this.aiIslandQuickOpen = false;
+      this.aiIslandStartAction = '';
+      this.aiIslandStartFloat = false;
+      this.diagnosticAiOrbState = 'idle';
     }
   }
 
@@ -5874,6 +5903,8 @@ struct HostListPage {
   }
 
   aboutToDisappear(): void {
+    this.aiIslandLayer.close();
+    this.aiVoiceLayer.close();
     DiagnosticAiSettingsBridge.unregister(this.assistantSettingApplier);
     DiagnosticAiHostBridge.unregister(this.assistantHostLister);
     AiAppDataBridge.unregister(this.chatHostLister);
@@ -14364,66 +14395,7 @@ struct HostListPage {
         }
       }.width('100%').height('100%')
 
-      if (this.aiIslandShown && this.diagnosticAiAssistantVisible) {
-        AiIsland({
-          topInset: this.topSafeHeightVp(),
-          deviceClass: this.isDesktopDevice ? 'pc' : this.breakpoint === 'sm' ? 'phone' : 'pad',
-          quickOpen: this.aiIslandQuickOpen,
-          startAction: this.aiIslandStartAction,
-          startFloat: this.aiIslandStartFloat,
-          onDismissed: (): void => {
-            this.aiIslandShown = false; this.aiIslandFloating = false; this.aiIslandQuickOpen = false;
-            this.aiIslandStartAction = '';
-            this.aiIslandStartFloat = false;
-            this.diagnosticAiOrbState = 'idle';
-          },
-          onFloatingChanged: (floating: boolean): void => { this.aiIslandFloating = floating; },
-          onActivityChanged: (active: boolean): void => { this.diagnosticAiOrbState = active ? 'thinking' : 'open'; },
-          onCaptureStateChanged: (capturing: boolean): void => {
-            if (capturing) { this.diagnosticAiOrbState = 'capturing'; }
-            else if (this.diagnosticAiOrbState === 'capturing') { this.diagnosticAiOrbState = 'open'; }
-          },
-          onOpenMailDraft: (subject: string, body: string): void => { void this.openFeedbackEmail(subject, body); },
-          onAppAction: (action: DiagnosticAiAppActionId): void => { this.runAssistantAppAction(action); },
-          isAppActionScreenOpen: (): boolean => this.showAddSheet || this.showSettingsLeafSheet,
-          closeAppActionScreen: (): void => {
-            if (this.showAddSheet) { this.requestAddSheetClose(); }
-            if (this.showSettingsLeafSheet) { this.closeSettingsLeafSheet(); }
-          }
-        }).width('100%').height('100%').position({ x: 0, y: 0 }).zIndex(40)
-        .hitTestBehavior(this.aiIslandFloating ? HitTestMode.Transparent : HitTestMode.Default)
-      }
-
-      if (this.aiVoiceShown && this.diagnosticAiAssistantVisible) {
-        AiVoiceIsland({
-          owner: this.assistantOwner(),
-          topInset: this.topSafeHeightVp(),
-          deviceClass: this.isDesktopDevice ? 'pc' : this.breakpoint === 'sm' ? 'phone' : 'pad',
-          mode: this.aiVoiceMode,
-          startShape: this.aiVoiceStart,
-          resume: this.aiVoiceResume,
-          onFloat: (): void => {
-            this.aiIslandStartAction = '';
-            this.aiIslandStartFloat = true;
-            this.aiIslandQuickOpen = false;
-            if (!this.aiIslandShown) { this.aiIslandShown = true; }
-          },
-          onOpenScreen: (action: string): void => {
-            // The island runs the action as text mode's would, and floats as the orb over the opened screen.
-            this.aiIslandStartAction = action;
-            this.aiIslandQuickOpen = false;
-            if (!this.aiIslandShown) { this.aiIslandShown = true; }
-            this.diagnosticAiOrbState = 'open';
-          },
-          onDismissed: (): void => { this.aiVoiceShown = false; },
-          onOpenChat: (): void => {
-            // The panel opens at once under the voice card, which then dissolves into it.
-            this.aiIslandQuickOpen = true;
-            if (!this.aiIslandShown) { this.aiIslandShown = true; }
-            this.diagnosticAiOrbState = 'open';
-          }
-        }).width('100%').height('100%').position({ x: 0, y: 0 }).zIndex(41)
-      }
+      // AiIsland and AiVoiceIsland live in the AI top layer (above sheets and dialogs): syncAiLayers.
 
       // Start ArkWeb/xterm while the host list is visible so opening an SSH
       // host does not pay the first WebView/vendor-script cold-start cost.
@@ -14501,6 +14473,23 @@ struct HostListPage {
             this.handleAddSheetDisappear();
           }
         })
+        // PC: the AI beside 「+」 at the bottom left — the same round size, a glass disc holding the AI orb (which keeps
+        // its states: thinking, capturing, hold to talk).
+        if (this.isDesktopDevice && this.hostAiOrbAvailable()) {
+          Stack() {
+            DiagnosticAiOrb({ visible: true, state: this.diagnosticAiOrbState as DiagnosticAiOrbState,
+              onOpen: (): void => { this.openDiagnosticAiSection(1); } })
+          }
+          .width(hostListFabSizeVp(this.breakpoint))
+          .height(hostListFabSizeVp(this.breakpoint))
+          .borderRadius(hostListFabSizeVp(this.breakpoint) / 2)
+          .backgroundColor(this.pal().card)
+          .border({ width: 0.5, color: this.pal().cardBorder })
+          .shadow({ radius: 14, color: '#26000000', offsetY: 4 })
+          .margin({ left: 16 })
+          .accessibilityText('AI 助理')
+          .onClick((): void => { this.openDiagnosticAiSection(1); })
+        }
       }
       .width('100%')
       .padding({ left: this.fabEdgePadding(), right: this.fabEdgePadding() })
@@ -16591,7 +16580,8 @@ struct HostListPage {
                   DiagnosticAiOrb({ visible: true, state: this.diagnosticAiOrbState as DiagnosticAiOrbState,
                     onOpen: (): void => { this.openDiagnosticAiSection(1); } })
                     .margin({ right: 12 })
-                    .visibility(this.hostAiOrbShown() ? Visibility.Visible : Visibility.Hidden)
+                    // PC: the AI is at the bottom left beside 「+」; the title keeps the room so its row never moves.
+                    .visibility(this.hostAiOrbShown() && !this.isDesktopDevice ? Visibility.Visible : Visibility.Hidden)
                 }
               Row() {
                 Text('⌕').fontSize(18).fontColor(this.pal().text3).margin({ left: 14, right: 8 })
@@ -16624,7 +16614,7 @@ struct HostListPage {
                 if (this.hostAiOrbAvailable()) {
                   DiagnosticAiOrb({ visible: true, state: this.diagnosticAiOrbState as DiagnosticAiOrbState,
                     onOpen: (): void => { this.openDiagnosticAiSection(1); } })
-                    .visibility(this.hostAiOrbShown() ? Visibility.Visible : Visibility.Hidden)
+                    .visibility(this.hostAiOrbShown() && !this.isDesktopDevice ? Visibility.Visible : Visibility.Hidden)
                 }
               }.width('100%').padding({ left: 24, right: 24, bottom: 8 })
               Row() {
@@ -17352,10 +17342,7 @@ struct HostListPage {
         initialResumeSessionId: this.diagnosticAiResumeSessionId,
         onClose: (): void => { this.closeSettingsLeafSheet(); },
         onOpenSession: (sessionId: string): void => { this.openDiagnosticAiSession(sessionId); },
-        onAppAction: (action: DiagnosticAiAppActionId): void => { this.runAssistantAppAction(action); },
-        onOpenMailDraft: (subject: string, body: string): void => {
-          void this.openFeedbackEmail(subject, body);
-        }
+        onAppAction: (action: DiagnosticAiAppActionId): void => { this.runAssistantAppAction(action); }
       })
     } else if (this.settingsLeafSheetMode === SETTINGS_SHEET_DIAGNOSTIC_LOG) {
       DiagnosticCaptureSettingsSheet({
@@ -19750,6 +19737,7 @@ struct HostListPage {
           if (this.hostAiOrbAvailable()) {
             DiagnosticAiOrb({ visible: true, state: this.diagnosticAiOrbState as DiagnosticAiOrbState,
               onOpen: (): void => { this.openDiagnosticAiSection(1); } })
+              .visibility(this.isDesktopDevice ? Visibility.Hidden : Visibility.Visible)
           }
         }.width('100%').padding({ left: 24, right: 24, bottom: 8 })
       }.width('100%')
@@ -20709,18 +20697,26 @@ struct HostListPage {
   }
 
   private onAiVoiceRequest(): void {
+    // A remote session's own AI answers while it is in front (SessionAiHost).
+    if (AiSessionRouter.sessionActive()) { return; }
     if (this.aiVoiceRequest > 0 && AppStorage.get<boolean>(AI_VOICE_ENABLED) === true) { this.openAiVoice('hands'); }
   }
 
   private onAiVoiceHold(): void {
+    // A remote session's own AI answers while it is in front (SessionAiHost).
+    if (AiSessionRouter.sessionActive()) { return; }
     if (this.aiVoiceHold.startsWith('down:') && !this.aiVoiceShown) { this.openAiVoice('hold'); }
   }
 
   private onAiVoiceResume(): void {
+    // A remote session's own AI answers while it is in front (SessionAiHost).
+    if (AiSessionRouter.sessionActive()) { return; }
     if (this.aiVoiceResumeRequest > 0) { this.openAiVoice('hands', true); }
   }
 
   private onAiAppActionRequest(): void {
+    // A remote session's own AI answers while it is in front (SessionAiHost).
+    if (AiSessionRouter.sessionActive()) { return; }
     const at: number = this.aiAppActionRequest.indexOf('@');
     if (at <= 0 || !this.diagnosticAiAssistantVisible) { return; }
     const id: DiagnosticAiAppActionId | null = diagnosticAiAppActionId(this.aiAppActionRequest.slice(0, at));
@@ -20728,6 +20724,85 @@ struct HostListPage {
     // With the island open, it steps back to its status capsule and floats once the screen is up.
     if (this.aiIslandShown && !this.aiIslandFloating) { AppStorage.setOrCreate('aiIsland.appAction', this.aiAppActionRequest); }
     else { this.runAssistantAppAction(id); }
+  }
+
+  /** Opens or closes the AI top layers to match what is shown (as the in-page `if` used to). */
+  private syncAiLayers(): void {
+    const islandWanted: boolean = this.aiIslandShown && this.diagnosticAiAssistantVisible;
+    if (islandWanted && !this.aiIslandLayer.isOpen()) {
+      this.aiIslandLayer.openIsland(this.getUIContext(), this.aiIslandLayerParams());
+    } else if (!islandWanted && this.aiIslandLayer.isOpen()) {
+      this.aiIslandLayer.close();
+    }
+    const voiceWanted: boolean = this.aiVoiceShown && this.diagnosticAiAssistantVisible;
+    if (voiceWanted && !this.aiVoiceLayer.isOpen()) {
+      this.aiVoiceLayer.openVoice(this.getUIContext(), this.aiVoiceLayerParams());
+    } else if (!voiceWanted && this.aiVoiceLayer.isOpen()) {
+      this.aiVoiceLayer.close();
+    }
+  }
+
+  private aiDeviceClass(): 'phone' | 'pad' | 'pc' {
+    return this.isDesktopDevice ? 'pc' : this.breakpoint === 'sm' ? 'phone' : 'pad';
+  }
+
+  private aiIslandLayerParams(): AiIslandLayerParams {
+    const p: AiIslandLayerParams = new AiIslandLayerParams();
+    p.topInset = this.topSafeHeightVp();
+    p.deviceClass = this.aiDeviceClass();
+    p.quickOpen = this.aiIslandQuickOpen;
+    p.startAction = this.aiIslandStartAction;
+    p.startFloat = this.aiIslandStartFloat;
+    p.onDismissed = (): void => {
+      this.aiIslandShown = false; this.aiIslandFloating = false; this.aiIslandQuickOpen = false;
+      this.aiIslandStartAction = '';
+      this.aiIslandStartFloat = false;
+      this.diagnosticAiOrbState = 'idle';
+    };
+    p.onFloatingChanged = (floating: boolean): void => { this.aiIslandFloating = floating; };
+    p.onActivityChanged = (active: boolean): void => { this.diagnosticAiOrbState = active ? 'thinking' : 'open'; };
+    p.onCaptureStateChanged = (capturing: boolean): void => {
+      if (capturing) { this.diagnosticAiOrbState = 'capturing'; }
+      else if (this.diagnosticAiOrbState === 'capturing') { this.diagnosticAiOrbState = 'open'; }
+    };
+    p.onAppAction = (action: DiagnosticAiAppActionId): void => { this.runAssistantAppAction(action); };
+    p.isAppActionScreenOpen = (): boolean => this.showAddSheet || this.showSettingsLeafSheet;
+    p.closeAppActionScreen = (): void => {
+      if (this.showAddSheet) { this.requestAddSheetClose(); }
+      if (this.showSettingsLeafSheet) { this.closeSettingsLeafSheet(); }
+    };
+    return p;
+  }
+
+  private aiVoiceLayerParams(): AiVoiceLayerParams {
+    const p: AiVoiceLayerParams = new AiVoiceLayerParams();
+    p.owner = this.assistantOwner();
+    p.topInset = this.topSafeHeightVp();
+    p.deviceClass = this.aiDeviceClass();
+    p.mode = this.aiVoiceMode;
+    p.startShape = this.aiVoiceStart;
+    p.resume = this.aiVoiceResume;
+    p.onFloat = (): void => {
+      this.aiIslandStartAction = '';
+      this.aiIslandStartFloat = true;
+      this.aiIslandQuickOpen = false;
+      if (!this.aiIslandShown) { this.aiIslandShown = true; }
+    };
+    p.onOpenScreen = (action: string): void => {
+      // The island runs the action as text mode's would, and floats as the orb over the opened screen.
+      this.aiIslandStartAction = action;
+      this.aiIslandQuickOpen = false;
+      if (!this.aiIslandShown) { this.aiIslandShown = true; }
+      this.diagnosticAiOrbState = 'open';
+    };
+    p.onDismissed = (): void => { this.aiVoiceShown = false; };
+    p.onOpenChat = (): void => {
+      // The panel opens at once under the voice card, which then dissolves into it.
+      this.aiIslandQuickOpen = true;
+      if (!this.aiIslandShown) { this.aiIslandShown = true; }
+      this.diagnosticAiOrbState = 'open';
+    };
+    return p;
   }
 
   /** Voice mode takes over from the island (which folds away first). */

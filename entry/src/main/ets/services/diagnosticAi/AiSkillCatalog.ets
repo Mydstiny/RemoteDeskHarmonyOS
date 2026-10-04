@@ -113,6 +113,11 @@ export const AI_TOOLS: AiToolSpec[] = [
       '修改“用户希望你记住”的内容（AI 个性化设置 › 记忆）。用户说“记住……”“以后……”时 add；说“忘掉/不要记……”时 remove；要改掉某条时 replace（old 为原来的说法）；说“清空记忆”时 clear。只记用户明确要求记住的事，不要记密码、验证码等敏感信息。',
       '"action":{"type":"string","enum":["add","remove","replace","clear"]},"text":{"type":"string","description":"要记住或要忘掉的内容（一句话）"},' +
       '"old":{"type":"string","description":"replace 时，原来记住的那句话"}', '"action"')),
+  new AiToolSpec('app.featureRequests', 'manage_feature_requests', '需求收集', '记下你想要的新功能和改进想法，攒好后整理成邮件发给开发者',
+    'app', true, functionJson('manage_feature_requests',
+      '管理用户对 RemoteDesktop 的功能需求和改进想法（每个账号一份清单）。用户提出 App 还没有的功能、说“要是能……就好了”“希望能……”这类想法时，直接 add 记下（不用先问），并用一句话告诉用户已记下；用户说想要这些功能、让你把需求发给开发者时 send（会先显示确认卡片，确认后打开邮件应用，内容由你整理好的清单生成）；list 查看；remove 删除某条（text 为空则全部删除）。',
+      '"action":{"type":"string","enum":["add","list","remove","send"]},"text":{"type":"string","description":"add：一句话写清需求；remove：要删的那条的关键词"},' +
+      '"note":{"type":"string","description":"send 时可选的补充说明（例如使用场景）"}', '"action"')),
   new AiToolSpec('app.usage', 'ai_usage', 'AI 用量', '最近的 AI 请求次数、Token 和估算费用',
     'app', true, functionJson('ai_usage', '读取最近若干天的 AI 用量：请求次数、Token、估算费用。',
       '"days":{"type":"integer","description":"最近几天，默认 7"}', '')),
@@ -152,8 +157,11 @@ export const AI_TOOLS: AiToolSpec[] = [
     'system', true, functionJson('call_phone', '给某个号码打电话。会先显示确认卡片，用户确认后打开拨号界面。',
       '"number":{"type":"string","description":"电话号码"},"name":{"type":"string","description":"对方称呼"}', '"number"')),
   new AiToolSpec('system.mail', 'send_email', '写邮件', '在邮件应用里写好邮件，由你检查后发送',
-    'system', true, functionJson('send_email', '在邮件应用里写好一封邮件（收件人、主题、正文），用户检查后自己发送。会先显示确认卡片。',
-      '"to":{"type":"string","description":"收件人邮箱，可省略"},"subject":{"type":"string"},"body":{"type":"string"}', '"subject","body"')),
+    'system', true, functionJson('send_email',
+      '在邮件应用里写好一封邮件（收件人、主题、正文，可附上 AI 生成过的文档），用户检查后自己发送。会先显示确认卡片。正文要分段清楚：先一句话说明来意，再分点写要点，需要对方做的事按 1. 2. 3. 一步一句写出来；文件作为附件，不要把文件内容整段贴进正文。',
+      '"to":{"type":"string","description":"收件人邮箱，可省略"},"subject":{"type":"string"},"body":{"type":"string"},' +
+      '"attach":{"type":"array","items":{"type":"string"},"description":"要附上的、AI 生成过的文档名称（list_documents 里的名称），可省略"}',
+      '"subject","body"')),
   new AiToolSpec('system.navigate', 'navigate', '导航', '在地图应用里搜索目的地；先显示确认卡片',
     'system', true, functionJson('navigate', '在地图应用里搜索并导航到一个地点。会先显示确认卡片。',
       '"destination":{"type":"string","description":"目的地名称或地址"}', '"destination"')),
@@ -371,6 +379,7 @@ export function aiToolStatus(fn: string, detail: string): string {
   if (fn === 'connect_host') { return '正在查找主机'; }
   if (fn === 'float_orb') { return '正在缩成悬浮球'; }
   if (fn === 'switch_mode') { return '正在切换'; }
+  if (fn === 'manage_feature_requests') { return '正在整理需求清单'; }
   if (fn === 'share_text') { return '正在打开分享'; }
   if (fn === 'open_system_settings') { return '正在打开系统设置'; }
   if (fn === 'read_clipboard') { return '正在读取剪贴板'; }

@@ -7,6 +7,8 @@ const HINT_VERSION: string = '.v2';
 
 /** What the floating orb's one-time hint says. */
 export const AI_ORB_HINT_TEXT: string = '单击展开主对话 · 双击启动小对话框';
+/** The same in a remote session, where the orb taps differently ('session' path). */
+export const AI_SESSION_ORB_HINT_TEXT: string = '单击退出 AI · 双击语音 · 按住拖动';
 
 /**
  * The floating orb explains its taps the first time it appears by each way in: after an app action ('action'), when

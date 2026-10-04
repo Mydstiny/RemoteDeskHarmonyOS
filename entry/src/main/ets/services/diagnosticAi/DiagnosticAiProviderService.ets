@@ -574,7 +574,9 @@ export class DiagnosticAiProviderService {
       : input.mode === 'diagnose'
         ? '用户描述了一个问题。若没有诊断包：先简要分析最可能的原因；设置目录里有能直接改善这个问题的设置时（例如卡顿或延迟可以降低色深、选择速度优先或更合适的编码，没有声音可以打开远程音频，想看帧率可以打开诊断信息），一定给出对应的 settingProposals，reason 写清能改善什么；同时给出 capturePlan，选与问题最相关的日志子模块，方便进一步确认原因；如果还需要用户补充信息才能确定抓什么，给出 clarifyQuestions（最多 3 个问题，每个 2 到 5 个简短选项，格式 [{"question":"…","options":["…","…"]}]），应用会让用户点选回答后再抓取，不要问应用能自己读到的设置。如果有诊断包：只引用其中事实分析，不再给 capturePlan，但仍可给出能改善问题的 settingProposals。'
         : input.mode === 'feedback'
-          ? '用户希望把问题反馈给开发者。先总结需要收集的信息；不要自动发送邮件。'
+          ? '用户希望把问题反馈给开发者，你的结果会被整理成一封结构清楚的邮件（诊断日志作为附件）：summary 写一两句初步诊断结论；' +
+            'hypotheses 每条写一个可能原因，并带上依据；developerNotes 用短句分行写技术分析（事件代码、错误码、时间线），不要写成一大段；' +
+            'recommendedReadOnlySteps 一条一步写出建议，按先后顺序；unknowns 写还需要确认的事。没有诊断包时说明需要收集哪些信息。不要自动发送邮件。'
           : '用户在询问 RemoteDesktop 的使用方法、隐私、安全或功能。直接回答并给出简短步骤。';
     const prompt = modeInstruction + '\n问题：' + input.question +
       '\n最近对话：' + input.history + '\n本地知识：' + input.knowledge +

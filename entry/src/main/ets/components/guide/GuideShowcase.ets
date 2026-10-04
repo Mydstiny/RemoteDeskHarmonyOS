@@ -307,6 +307,8 @@ function tagColor(tag: string, accent: string): string {
   if (tag === '改进') { return '#30A46C'; }
   if (tag === '修复') { return '#F08C00'; }
   if (tag === '即将推出') { return '#9B5DE5'; }
+  if (tag === '免费试用') { return '#E2557B'; }
+  if (tag === 'Beta') { return '#7B61FF'; }
   return accent;
 }
 

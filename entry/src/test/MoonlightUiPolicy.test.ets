@@ -38,6 +38,7 @@ import {
   moonlightToolbarDeviceClass,
   moonlightToolbarLayout,
   moonlightToolbarItems,
+  MoonlightToolbarItem,
   moonlightUsesEntryAbilityImmersiveBars,
   shouldDeferMoonlightDisappear
 } from '../main/ets/services/MoonlightUiPolicy';
@@ -483,6 +484,20 @@ export default function moonlightUiPolicyTest(): void {
       expect(moonlightMetric(8.25, ' ms', 1)).assertEqual('8.3 ms');
       expect(moonlightMetricPairUs(-1, -1)).assertEqual('—');
       expect(moonlightMetricPairUs(8200, 13400)).assertEqual('8.2 / 13.4 ms');
+    });
+    it('adds_the_ai_action_before_diagnostics_only_when_visible', 0, (): void => {
+      const breakpoints: string[] = ['sm', 'xl'];
+      for (const breakpoint of breakpoints) {
+        const items = moonlightToolbarItems(breakpoint, true, true, true, 0, true, '触控板', false, false, true);
+        const actions: string[] = items.map((item: MoonlightToolbarItem): string => item.action);
+        expect(actions.indexOf('ai')).assertEqual(actions.indexOf('diagnostics') - 1);
+        expect(moonlightToolbarItems(breakpoint, true, true, true)
+          .some((item: MoonlightToolbarItem): boolean => item.action === 'ai')).assertFalse();
+      }
+      // The wide bar keeps its width: the AI takes the place of the 音频 note.
+      const wide = moonlightToolbarItems('xl', true, true, true, 0, true, '触控板', false, false, true);
+      expect(wide.length).assertEqual(moonlightToolbarItems('xl', true, true, true).length);
+      expect(wide.some((item: MoonlightToolbarItem): boolean => item.action === 'audio')).assertFalse();
     });
   });
 }

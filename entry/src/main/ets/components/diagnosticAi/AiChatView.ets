@@ -22,7 +22,7 @@ import { AiSkillStore } from '../../services/diagnosticAi/AiSkillStore';
 import { AiAppDataBridge, AiConnectionRow, aiConnectionsText, aiHostsText } from '../../services/diagnosticAi/AiAppDataBridge';
 import { ConnectionJournal, ConnectionJournalEntry } from '../../services/ConnectionJournal';
 import { diagnosticAiSettingCatalog } from '../../services/diagnosticAi/DiagnosticAiSettingsActionPolicy';
-import { DiagnosticAiAssistantPreferences, DiagnosticAiConversationSession, DiagnosticAiConversationStore, DiagnosticAiConversationTurn, DiagnosticAiDailyUsage, DiagnosticAiTurnDocument, defaultDiagnosticAiAssistantPreferences, diagnosticAiSessionKind } from '../../services/diagnosticAi/DiagnosticAiConversationStore';
+import { DiagnosticAiAssistantPreferences, DiagnosticAiConversationSession, DiagnosticAiConversationStore, DiagnosticAiConversationTurn, DiagnosticAiDailyUsage, DiagnosticAiTurnDocument, DiagnosticAiFeatureRequest, defaultDiagnosticAiAssistantPreferences, diagnosticAiSessionKind } from '../../services/diagnosticAi/DiagnosticAiConversationStore';
 import { DiagnosticAiModelCatalog } from '../../services/diagnosticAi/DiagnosticAiModelCatalog';
 import { ProAppRuntime } from '../../services/pro/ProAppRuntime';
 import { ProEntries } from '../../services/pro/ProEntries';
@@ -282,6 +282,9 @@ export function aiChatAppData(conversationStore: DiagnosticAiConversationStore):
       preferences.manualMemorySummary = text;
       return conversationStore.saveAssistantPreferences(preferences);
     },
+    featureRequests: (): DiagnosticAiFeatureRequest[] => conversationStore.featureRequests(),
+    addFeatureRequest: (text: string): boolean => conversationStore.addFeatureRequest(text) !== null,
+    removeFeatureRequests: (text: string): number => conversationStore.removeFeatureRequests(text),
     hosts: (protocol: string): string => aiHostsText(AiAppDataBridge.hosts(), protocol),
     connections: (days: number): string => aiConnectionsText(ConnectionJournal.recent(days)
       .map((e: ConnectionJournalEntry): AiConnectionRow => ({ at: e.at, label: e.label, protocol: e.protocol, outcome: e.outcome,
@@ -361,6 +364,8 @@ export struct AiChatView {
   onOpenSkills: () => void = (): void => {};
   /** The small chat beside the floating orb: the latest exchange and a field; 展开 goes back to the island. */
   @Prop mini: boolean = false;
+  /** The small chat's 展开 (none in a session: there is no full panel there). */
+  @Prop canExpand: boolean = true;
   onExpand: () => void = (): void => {};
   onCardSize: (height: number) => void = (_height: number): void => {};
   @State private messages: AiChatMessage[] = [];
@@ -705,8 +710,9 @@ export struct AiChatView {
       AppStorage.setOrCreate(AI_MODE_REQUEST, command + '@' + Date.now().toString());
       return;
     }
-    // Diagnosing the app or sending feedback needs 助理's capture and mail flow: it goes there by itself.
-    if (this.routeBypass !== question &&
+    // Diagnosing the app or sending feedback needs 助理's capture and mail flow: it goes there by itself. The small
+    // chat has no 助理 beside it, so it answers there itself rather than dropping the question.
+    if (!this.mini && this.routeBypass !== question &&
       aiAutoRoute(question, 'chat', this.pending.length + this.attachments.length > 0) === 'assistant') {
       this.draft = '';
       this.hideKeyboard();
@@ -1076,7 +1082,8 @@ export struct AiChatView {
             'sys.symbol.envelope_fill' : action.tool === 'navigate' ? 'sys.symbol.location_up_fill' : action.tool === 'open_link' ?
             'sys.symbol.link' : action.tool === 'change_setting' ? 'sys.symbol.gearshape_fill' :
             action.tool === 'open_app_screen' ? 'sys.symbol.chevron_right' : action.tool === 'connect_host' ? 'sys.symbol.display' :
-            action.tool === 'edit_host' ? 'sys.symbol.square_and_pencil' : action.tool === 'delete_host' ||
+            action.tool === 'edit_host' ? 'sys.symbol.square_and_pencil' : action.tool === 'send_feature_requests' ?
+            'sys.symbol.envelope_fill' : action.tool === 'delete_host' ||
             action.tool === 'delete_document' || action.tool === 'delete_conversation' ? 'sys.symbol.trash_fill' :
             'sys.symbol.alarm_fill')).fontSize(20)
             .fontColor([action.status === 'done' ? '#34C759' : action.status === 'failed' ? '#FF9F0A' : '#4A8DFF'])
@@ -1438,11 +1445,13 @@ export struct AiChatView {
       Row({ space: 8 }) {
         SymbolGlyph($r('sys.symbol.ellipsis_bubble')).fontSize(14).fontColor(['#C7C7CC'])
         Text('聊天').fontSize(13).fontWeight(FontWeight.Medium).fontColor('#C7C7CC').layoutWeight(1)
-        this.glyphButton($r('sys.symbol.arrow_up_left_and_arrow_down_right'), '展开完整对话', (): void => {
-          this.hideKeyboard();
-          this.persist();
-          this.onExpand();
-        })
+        if (this.canExpand) {
+          this.glyphButton($r('sys.symbol.arrow_up_left_and_arrow_down_right'), '展开完整对话', (): void => {
+            this.hideKeyboard();
+            this.persist();
+            this.onExpand();
+          })
+        }
       }.width('100%')
       if (this.busy) {
         if (this.lastQuestion() !== '') {

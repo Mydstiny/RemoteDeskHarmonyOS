@@ -1,4 +1,8 @@
 import { MoonlightNativeStreamSnapshot } from '../services/MoonlightHostService';
+import { SessionAiHost } from '../components/diagnosticAi/SessionAiHost';
+import { ProEntries } from '../services/pro/ProEntries';
+import { ProAppRuntime } from '../services/pro/ProAppRuntime';
+import { PRO_DIAGNOSTICS_ASSISTANT_FEATURE } from '../services/pro/ProFeatureCatalog';
 import { diagnosticMoonlightRuntimeFacts } from '../services/DiagnosticRuntimeSnapshotPolicy';
 import { recordVideoOrientation } from '../services/VideoOrientationCapture';
 import {
@@ -386,6 +390,8 @@ struct MoonlightStreamPage {
   @StorageProp('currentBreakpoint') breakpoint: string = 'sm';
   @StorageProp('isDesktopDevice') isDesktopDevice: boolean = false;
   @StorageProp('isPadDevice') isPadDevice: boolean = false;
+  /** Bumped by the side bar's AI button: SessionAiHost brings up the AI as the orb with its small chat. */
+  @State aiSessionOpenRequest: number = 0;
   @StorageLink(HARMONY_SHORTCUT_BLOCKING_STORAGE_KEY)
   @Watch('onHarmonyShortcutBlockingChange')
   harmonyShortcutBlockingEncoded: string = '';
@@ -6018,7 +6024,13 @@ struct MoonlightStreamPage {
     }
   }
 
+  /** Pro AI 助理 in this stream: its button in the side bar (or the PC top bar). */
+  private sessionAiVisible(): boolean {
+    return ProEntries.visible(PRO_DIAGNOSTICS_ASSISTANT_FEATURE, ProAppRuntime.getInstance().context());
+  }
+
   private toolbarAction(action: MoonlightToolbarAction): void {
+    if (action === 'ai') { this.aiSessionOpenRequest = Date.now(); return; }
     if (action === 'more') { this.openSheet('control'); return; }
     if (action === 'resetCanvas') { this.resetMoonlightCanvasTransformFromMenu(); return; }
     if (action === 'portrait') { this.toggleMoonlightPortraitDisplay(); return; }
@@ -6350,6 +6362,16 @@ struct MoonlightStreamPage {
         .zIndex(120)
         .hitTestBehavior(HitTestMode.None)
 
+      // The AI in this stream: the orb, its small chat and voice mode, in the AI top layer.
+      if (this.sessionAiVisible()) {
+        SessionAiHost({
+          openRequest: this.aiSessionOpenRequest,
+          deviceClass: this.isDesktopDevice ? 'pc' : this.isPadDevice ? 'pad' : 'phone',
+          avoidSide: this.toolbarLayout().edgeRail ? 'right' : '',
+          avoidWidth: 72
+        })
+      }
+
       if (!this.moonlightSessionControlBarHidden()) {
         if (this.toolbarLayout().edgeRail) {
           Stack({ alignContent: Alignment.End }) {
@@ -6361,6 +6383,7 @@ struct MoonlightStreamPage {
             controlModeLabel: this.toolbarControlModeLabel(),
             portraitDisplayEnabled: this.moonlightPortraitDisplayActionVisible(),
             portraitDisplayActive: this.moonlightPortraitDisplayActive(),
+            aiVisible: this.sessionAiVisible(),
             diagnosticsVisible: this.diagnosticsVisible,
             canvasResetAvailable: this.moonlightCanvasTransformModified,
             terminationBusy: this.terminationBusy,
@@ -6399,6 +6422,7 @@ struct MoonlightStreamPage {
             controlModeLabel: this.toolbarControlModeLabel(),
             portraitDisplayEnabled: this.moonlightPortraitDisplayActionVisible(),
             portraitDisplayActive: this.moonlightPortraitDisplayActive(),
+            aiVisible: this.sessionAiVisible(),
             diagnosticsVisible: this.diagnosticsVisible,
             canvasResetAvailable: this.moonlightCanvasTransformModified,
             terminationBusy: this.terminationBusy,

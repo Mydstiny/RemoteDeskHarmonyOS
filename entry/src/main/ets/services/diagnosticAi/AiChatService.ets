@@ -5,6 +5,10 @@ import { diagnosticAiProviderIsHarmonyLocal, diagnosticAiProviderManifest } from
 import { DiagnosticAiProviderService, diagnosticAiEstimateTokens, diagnosticAiResponseMessage, diagnosticAiResponseText, diagnosticAiResponseUsage } from './DiagnosticAiProviderService';
 import { AI_MODE_CHAT, DiagnosticAiRequestLog } from './DiagnosticAiRequestLog';
 import { AiAttachment, AiDocument, aiCreateDocument, aiDocumentErrorText, aiDocumentKindLabel, aiReadDocument, aiRewriteDocument } from './AiDocumentService';
+import { DiagnosticAiFeatureRequest } from './DiagnosticAiConversationStore';
+import { DiagnosticAiMailDraft, aiFeatureRequestMail } from './DiagnosticAiMailPolicy';
+import { CURRENT_RELEASE_VERSION } from '../ReleaseNotesRegistry';
+import { aiAppGuide } from './DiagnosticAiKnowledgeBase';
 import { AiSkill, AiToolSpec, aiSkillsForQuestion, aiToolByFunction, aiToolStatus } from './AiSkillCatalog';
 import { AI_CONFIRM_TOOLS, AiChatAction, aiActionFor, aiRunSystemTool } from './AiSystemTools';
 import { AiSettingChoice, AiSettingSpec, diagnosticAiSettingCurrent, diagnosticAiSettingSpec, diagnosticAiSettingValueLabel } from './DiagnosticAiSettingsActionPolicy';
@@ -90,6 +94,10 @@ export interface AiChatAppData {
   memory: () => string;
   memoryEnabled: () => boolean;
   saveMemory: (text: string) => boolean;
+  /** 需求收集: the user's feature requests (sent ones too), adding one (false: empty or already waiting), removing. */
+  featureRequests: () => DiagnosticAiFeatureRequest[];
+  addFeatureRequest: (text: string) => boolean;
+  removeFeatureRequests: (text: string) => number;
 }
 
 function timeLabel(time: number): string {
@@ -247,6 +255,9 @@ function chatSystemPrompt(request: AiChatRequest, active: AiSkill[], tools: bool
     (tools && hasTool(on, 'list_documents') ?
       '- 用户要查看、修改或删除之前生成的文档时，先用 list_documents 找到它：修改先 read_document 读出原文，再用 update_document 写回完整的新正文；' +
         '删除用 delete_document。\n' : '') +
+    (tools && hasTool(on, 'manage_feature_requests') ?
+      '- 用户提出 App 还没有的功能、改进想法（“要是能……就好了”“希望……”）时，用 manage_feature_requests 记下，不必追问；' +
+        '用户想要这些功能或让你发给开发者时，用它 send。\n' : '') +
     (tools && hasTool(on, 'switch_mode') ?
       '- 用户要回到文字、进入语音模式、切到助理或聊天、缩成悬浮球，或者表示要结束（拜拜、退出、就这样吧）时，调用 switch_mode。\n' : '') +
     (tools ? '- 应用里的数据可以增删改查：记住或忘掉事情用 update_memory；对话记录用 list_conversations / delete_conversation；' +
@@ -256,7 +267,8 @@ function chatSystemPrompt(request: AiChatRequest, active: AiSkill[], tools: bool
       '- 用户让你在手机上做事（提醒、日程、联系人、打电话、写邮件、导航、复制、手电筒、看剪贴板、识别图片文字等）时，直接调用对应工具，' +
         '不要只告诉用户怎么做。提醒、打电话、写邮件、导航、打开网页会先在对话里显示确认卡片，用户点确认才执行：回答里说明要做什么并提醒点确认，' +
         '不要说已经完成。日程和联系人会打开系统页面由用户保存。时间一律按用户本地时间写成 YYYY-MM-DD HH:mm。\n' : '') +
-    '- 用户遇到 RemoteDesktop 本身的故障（连不上、黑屏、卡顿）或要修改应用设置时，提醒切换到「助理」模式，助理可以抓日志、直接改设置。\n' +
+    '- 用户遇到 RemoteDesktop 本身的故障（连不上、黑屏、卡顿）需要诊断或抓日志时，用 ask_assistant 交给「助理」；改设置可以直接用 change_setting。\n' +
+    '关于这个应用（回答用户的使用问题时以此为准，不要编造界面）：\n' + aiAppGuide() + '\n' +
     '- 回答的最后另起一行，写出用户最可能想接着做的 2 到 3 件事，格式 <suggest>事情一|事情二|事情三</suggest>，每件 12 字以内、' +
     '以动词开头、贴合这次的内容（例如“生成 Word 文档”“翻译成英文”“再精简一些”“补充下周计划”）；应用会把它们显示成按钮，不要在正文里重复。\n' +
     skillsContext(request.skills, active) +
@@ -490,6 +502,19 @@ export class AiChatService {
         stringField(input, 'name').replace(/[《》]/g, '') :
       name === 'web_search' ? stringField(input, 'query').slice(0, 20) : ''));
     if (spec.group === 'system') {
+      // A mail may carry documents the AI wrote: their files go along as attachments.
+      if (name === 'send_email') {
+        const wanted: Object | undefined = input['attach'];
+        const names: string[] = Array.isArray(wanted) ? (wanted as Object[]).map((x: Object): string => String(x)) : [];
+        const all: AiDocument[] = names.length > 0 ? request.appData.documents() : [];
+        const paths: string[] = [];
+        for (const wantedName of names) {
+          const found: AiDocument | string = pickByName<AiDocument>(all, (d: AiDocument): string => d.name, wantedName, '文档');
+          if (typeof found === 'string') { return (found as string) + '可以用 list_documents 查看有哪些文档。'; }
+          paths.push((found as AiDocument).path);
+        }
+        input['attachment_paths'] = paths;
+      }
       if (AI_CONFIRM_TOOLS.indexOf(name) >= 0) {
         const made: AiChatAction | string = aiActionFor('act-' + Date.now().toString(36) + actions.length.toString(), name, input);
         if (typeof made === 'string') { return made as string; }
@@ -616,6 +641,9 @@ export class AiChatService {
       }
       return changed[1] + '。请用一句话告诉用户。';
     }
+    if (name === 'manage_feature_requests') {
+      return this.featureRequestTool(input, request, actions);
+    }
     if (name === 'edit_host' || name === 'delete_host') {
       const found: AiTriageHost | string = this.findHost(input);
       if (typeof found === 'string') { return found as string; }
@@ -661,6 +689,47 @@ export class AiChatService {
       return chunk + (next < item.text.length ? '\n（下一段从 offset=' + next.toString() + ' 开始）' : '\n（已到结尾）');
     }
     return '没有这个工具：' + name;
+  }
+
+  /** 需求收集: add, list, remove, or send them to the developer (a card the user confirms, then the mail app). */
+  private featureRequestTool(input: Record<string, Object>, request: AiChatRequest, actions: AiChatAction[]): string {
+    const action: string = stringField(input, 'action').trim();
+    const text: string = stringField(input, 'text').trim();
+    const pending = (): DiagnosticAiFeatureRequest[] => request.appData.featureRequests()
+      .filter((row: DiagnosticAiFeatureRequest): boolean => row.sentAt === 0);
+    if (action === 'add') {
+      if (text === '') { return '没有记下：text 为空。'; }
+      if (!request.appData.addFeatureRequest(text)) { return '这条需求已经记着了，不用重复记。'; }
+      return '已记下（现在有 ' + pending().length.toString() + ' 条待发送的需求）。请用一句话告诉用户已记下，' +
+        '攒好后说“把需求发给开发者”就能整理成邮件。';
+    }
+    if (action === 'list') {
+      const rows: DiagnosticAiFeatureRequest[] = request.appData.featureRequests();
+      if (rows.length === 0) { return '还没有记下任何需求。'; }
+      return '需求清单（' + pending().length.toString() + ' 条待发送）：\n' + rows.map((row: DiagnosticAiFeatureRequest, i: number): string =>
+        (i + 1).toString() + '. ' + row.text + '（' + timeLabel(row.createdAt).slice(0, 10) + '，' +
+          (row.sentAt > 0 ? timeLabel(row.sentAt).slice(0, 10) + ' 已发送' : '待发送') + '）').join('\n');
+    }
+    if (action === 'remove') {
+      const removed: number = request.appData.removeFeatureRequests(text);
+      return removed > 0 ? '已删除 ' + removed.toString() + ' 条需求。' : '没有找到和「' + text + '」相关的需求。';
+    }
+    if (action === 'send') {
+      const rows: DiagnosticAiFeatureRequest[] = pending();
+      if (rows.length === 0) { return '没有待发送的需求。可以先告诉我你想要什么功能。'; }
+      const mail: DiagnosticAiMailDraft = aiFeatureRequestMail(rows.map((row: DiagnosticAiFeatureRequest): string => row.text),
+        stringField(input, 'note'), CURRENT_RELEASE_VERSION);
+      const args: Record<string, Object> = {};
+      args['ids'] = rows.map((row: DiagnosticAiFeatureRequest): string => row.id);
+      args['subject'] = mail.subject;
+      args['body'] = mail.body;
+      const card: AiChatAction = new AiChatAction('act-' + Date.now().toString(36) + actions.length.toString(),
+        'send_feature_requests', '把 ' + rows.length.toString() + ' 条需求发给开发者', '打开邮件应用，检查后由你发送',
+        JSON.stringify(args));
+      actions.push(card);
+      return '还没有发送：已显示确认卡片「' + card.title + '」，确认后打开邮件应用。请用一两句话概括要发的需求并请用户确认。';
+    }
+    return 'action 只能是 add、list、remove 或 send。';
   }
 
   /** The saved host the model named (by name, optionally one protocol); a string says why there is not one. */

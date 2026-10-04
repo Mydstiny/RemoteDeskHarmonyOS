@@ -177,7 +177,7 @@ export type RemoteTopBarMenuId = 'control' | 'display' | 'desktopFlip' |
 
 export type RemoteSessionPrimaryActionId = 'pin' | 'control' | 'display' |
   'desktopFlip' | 'keyboardMouse' | 'keyboard' | 'fileTransfer' |
-  'portrait' | 'diagnostics' | 'disconnect';
+  'portrait' | 'diagnostics' | 'disconnect' | 'ai';
 
 export type RustDeskTopBarSubMenuId = 'viewScale' | 'remoteDisplay' |
   'resolution' | 'imageQuality' | 'codec' | 'touchpadSpeed';
@@ -450,15 +450,16 @@ export function shouldUseRemoteSessionEdgeRail(protocol: string,
 /** Keep the desktop workaround out of the shared Phone/Pad edge rail. */
 export function remoteSessionPrimaryActionIds(protocol: string,
   deviceClass: RemoteTopBarDeviceClass = 'phone',
-  rustDeskPhoneTarget: boolean = false, portraitEnabled: boolean = false): RemoteSessionPrimaryActionId[] {
+  rustDeskPhoneTarget: boolean = false, portraitEnabled: boolean = false,
+  aiVisible: boolean = false): RemoteSessionPrimaryActionId[] {
   if (protocol !== 'rustdesk') { return []; }
-  if (deviceClass === 'pc' && !rustDeskPhoneTarget) {
-    return RUSTDESK_PC_PRIMARY_ACTION_IDS.slice();
-  }
-  const actions: RemoteSessionPrimaryActionId[] = RUSTDESK_PRIMARY_ACTION_IDS.slice();
-  if (portraitEnabled) {
+  const actions: RemoteSessionPrimaryActionId[] = deviceClass === 'pc' && !rustDeskPhoneTarget ?
+    RUSTDESK_PC_PRIMARY_ACTION_IDS.slice() : RUSTDESK_PRIMARY_ACTION_IDS.slice();
+  if (portraitEnabled && !(deviceClass === 'pc' && !rustDeskPhoneTarget)) {
     actions.splice(Math.max(0, actions.length - 1), 0, 'portrait');
   }
+  // The AI (for Pro): in the rail with the other tools, before 性能 and 断开.
+  if (aiVisible) { actions.splice(Math.max(0, actions.indexOf('diagnostics')), 0, 'ai'); }
   return actions;
 }
 

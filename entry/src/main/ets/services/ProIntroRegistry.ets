@@ -2,8 +2,8 @@
  * ProIntroRegistry — content of the Pro 功能介绍 sheet shown after the first-install guide, after the post-update
  * 「新功能」 list and from 「设置 → 教程」.
  *
- * Groups the Pro catalog by what a user gets, not by internal feature ids. Release builds keep Pro closed, so the
- * sheet is a preview there: it never offers a purchase and every item reads as 即将推出.
+ * Groups the Pro catalog by what a user gets, not by internal feature ids. AI 助理 leads, as one large featured card.
+ * In 1.2.0 everyone has Pro free (ProComplimentaryPolicy): the sheet introduces the trial and never sells.
  */
 /** AppStorage flag set by 「现在订购」 in the startup sheet; the home page opens the Pro page and clears it. */
 export const PRO_ORDER_PENDING_KEY: string = 'proOrderPending';
@@ -18,9 +18,33 @@ export interface ProIntroItem {
   /** Gradient of the icon tile (#RRGGBB). */
   hue: string;
   hue2: string;
+  /** Shown first, across the whole width, larger than the rest. */
+  featured?: boolean;
+  /** What the featured card lists, one line each. */
+  points?: string[];
 }
 
 const PRO_INTRO_ITEMS: ProIntroItem[] = [
+  {
+    id: 'pro-intro-ai-assistant', glyph: $r('sys.symbol.wand_and_stars'),
+    title: 'AI 助理', hue: '#5B8CFF', hue2: '#B455FF', featured: true,
+    desc: '用你自己配置的 AI，一句话就能办事：聊天写作、读文档出报告，设提醒、搜网页、改设置、管理主机；连接出问题时抓取脱敏日志帮你排查。',
+    tags: ['聊天 · 助理 · 语音', '文档与数据管理', '诊断与反馈'],
+    points: [
+      '聊天：写作、翻译、总结，生成和修改 Word、Excel，记住你交代的事',
+      'AI 语音（Beta）：像 Siri 一样说话，能随时打断，语音和文字随时切换',
+      '能动手：提醒、日程、搜索、分享、改设置、连接或管理主机，先给卡片再执行',
+      '助理诊断：抓取脱敏日志分析连接问题，整理好邮件和日志附件发给开发者',
+      '你的想法它会记下，攒好了说一声，就整理成需求邮件发给开发者',
+      '连接中也能用：各协议的侧栏里一点，悬浮球陪着你操作'
+    ]
+  },
+  {
+    id: 'pro-intro-ai', glyph: $r('sys.symbol.code_square'),
+    title: '远程 AI 工作台', hue: '#7B61FF', hue2: '#E25B8A',
+    desc: '连接自己电脑上的 Codex 或 DSH，查看执行过程、批准操作、恢复会话，代码在你的电脑上运行。',
+    tags: ['Codex', 'DSH', '局域网']
+  },
   {
     id: 'pro-intro-workspaces', glyph: $r('sys.symbol.rectangle_on_rectangle'),
     title: '工作区与布局', hue: '#4F7CFF', hue2: '#7B61FF',
@@ -52,38 +76,28 @@ const PRO_INTRO_ITEMS: ProIntroItem[] = [
     tags: ['组合键', '终端皮肤', 'Pro 标识']
   },
   {
-    id: 'pro-intro-ai', glyph: $r('sys.symbol.code_square'),
-    title: '远程 AI 工作台', hue: '#7B61FF', hue2: '#E25B8A',
-    desc: '连接自己电脑上的 Codex 或 DSH，查看执行过程、批准操作、恢复会话，代码在你的电脑上运行。',
-    tags: ['Codex', 'DSH', '局域网']
-  },
-  {
     id: 'pro-intro-knock', glyph: $r('sys.symbol.bolt_fill'),
     title: '碰一碰', hue: '#F2B705', hue2: '#FF8A3D',
-    desc: '手机碰一碰分享 SSH 连接；在鸿蒙 PC 的 SFTP 窗口直接接收手机发来的文件。',
+    desc: '手机碰一碰分享 SSH 连接；在鸿蒙 PC 的 SFTP 窗口直接接收手机发来的文件（验证完成后开放）。',
     tags: ['分享连接', '传文件']
-  },
-  {
-    id: 'pro-intro-diagnostics', glyph: $r('sys.symbol.performance'),
-    title: '诊断与 AI 帮助', hue: '#2BB673', hue2: '#00B8A9',
-    desc: '用你自己配置的 AI 分析脱敏后的诊断信息，给出排查建议；也能预览后一键打包诊断邮件。',
-    tags: ['自有 AI', '脱敏诊断', '邮件打包']
   }
 ];
 
 export function proIntroItems(): ProIntroItem[] {
   return PRO_INTRO_ITEMS.map((item: ProIntroItem): ProIntroItem => ({
     id: item.id, glyph: item.glyph, title: item.title, desc: item.desc, tags: item.tags.slice(),
-    hue: item.hue, hue2: item.hue2
+    hue: item.hue, hue2: item.hue2, featured: item.featured === true,
+    points: item.points !== undefined ? item.points.slice() : []
   }));
 }
 
-/** Line under the title. `open` is true only where Pro can be used (Debug, or a future Release that ships Pro). */
-export function proIntroStatus(open: boolean): string {
-  return open ? '在「设置 → Pro 功能」中查看每项功能的状态与开关' : '正在打磨中，正式开放后可在「设置」中开通';
+/** Line under the title. `trial`: the 1.2.0 free trial is on (every Pro feature is open to everyone). */
+export function proIntroStatus(trial: boolean): string {
+  return trial ? '现在全部 Pro 功能免费试用；正式收费前会在应用内提前通知，可在「设置 → Pro 功能」查看每项状态' :
+    '正在打磨中，正式开放后可在「设置」中开通';
 }
 
-/** Promises that hold whether or not Pro is open: one purchase and a free core. */
+/** What holds for the trial: everything free now, notice before charging, and a core that stays free. */
 export function proIntroPromises(): string[] {
-  return ['一次购买', '不自动续费', '核心连接永久免费'];
+  return ['全部功能免费试用', '收费前提前通知', '核心连接永久免费'];
 }

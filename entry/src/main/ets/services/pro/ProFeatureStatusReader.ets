@@ -13,7 +13,7 @@ export function proFeatureCurrentStatus(feature: ProFeature): ProFeatureStatus {
     if (!proSystemCapability(capability) || canIUse(capability)) { context.capabilities.push(capability); }
   });
   context.requestablePermissions = feature.permissions.slice();
-  return proFeatureStatus(feature, app.runtime.decision(feature.id, context), DEBUG);
+  return proFeatureStatus(feature, app.runtime.decision(feature.id, context), DEBUG, app.runtime.snapshot().complimentary);
 }
 
 export function proStateText(snapshot: ProRuntimeSnapshot): string {

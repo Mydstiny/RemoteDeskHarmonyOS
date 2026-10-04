@@ -50,8 +50,6 @@ import {
   remotePortraitSidebarHeightPx,
   normalizeRemotePortraitSidebarHeightMode
 } from '../services/RemotePortraitSidebarPolicy';
-import { DiagnosticAiOrb } from './diagnosticAi/DiagnosticAiOrb';
-import { AiIsland } from './diagnosticAi/AiIsland';
 import { ProAppRuntime } from '../services/pro/ProAppRuntime';
 import { ProEntries } from '../services/pro/ProEntries';
 import { PRO_DIAGNOSTICS_ASSISTANT_FEATURE } from '../services/pro/ProFeatureCatalog';
@@ -128,6 +126,57 @@ export interface RemoteSessionTopBarActions {
   onSetTouchpadSpeed: (speed: number) => void;
   onToggleDiagnostics: (on: boolean) => void;
   onUnsupported: (actionId: string, reason: string) => void;
+  /** The rail's AI button: the session's AI (SessionAiHost) appears as the orb with its small chat. */
+  onOpenAi: () => void;
+}
+
+/** The session's toggles the AI's session actions flip (read from the page that owns them). */
+export interface RemoteSessionAiToggles {
+  privacyMode: boolean;
+  audioEnabled: boolean;
+  clipboardEnabled: boolean;
+  filePasteEnabled: boolean;
+  imageQuality: number;
+  codec: number;
+  showLocalCursor: boolean;
+  browseMode: boolean;
+  relativeMouseMode: boolean;
+  reverseWheel: boolean;
+  swapMouseButtons: boolean;
+  diagnosticsEnabled: boolean;
+}
+
+/**
+ * The AI's session actions (session.*) on a RustDesk session, through the same guarded toolbar callbacks as a tap.
+ * False for an action the session does not have.
+ */
+export function runRemoteSessionAiAction(action: DiagnosticAiAppActionId, actions: RemoteSessionTopBarActions,
+  s: RemoteSessionAiToggles): boolean {
+  switch (action) {
+    case 'session.keyboard': actions.onOpenKeyboard(); return true;
+    case 'session.modifiers': actions.onOpenModifiers(); return true;
+    case 'session.fileTransfer': actions.onOpenFileTransfer(); return true;
+    case 'session.ctrlAltDel': actions.onCtrlAltDel(); return true;
+    case 'session.lock': actions.onLockRemote(); return true;
+    case 'session.privacy': actions.onTogglePrivacy(!s.privacyMode); return true;
+    case 'session.audio': actions.onToggleAudio(!s.audioEnabled); return true;
+    case 'session.clipboard': actions.onToggleClipboard(!s.clipboardEnabled); return true;
+    case 'session.filePaste': actions.onToggleFilePaste(!s.filePasteEnabled); return true;
+    case 'session.resetCanvas': actions.onResetCanvasTransform(); return true;
+    case 'session.rotate': actions.onRotateRemoteDisplay(); return true;
+    case 'session.portrait': actions.onTogglePortraitDisplay(); return true;
+    case 'session.display': actions.onOpenRustDeskResolution(); return true;
+    case 'session.quality': actions.onSetRustDeskImageQuality((s.imageQuality + 1) % 3); return true;
+    case 'session.codec': actions.onSetRustDeskCodec((s.codec + 1) % 3); return true;
+    case 'session.cursor': actions.onToggleShowLocalCursor(!s.showLocalCursor); return true;
+    case 'session.browseMode': actions.onToggleBrowseMode(!s.browseMode); return true;
+    case 'session.relativeMouse': actions.onToggleRelativeMouse(!s.relativeMouseMode); return true;
+    case 'session.reverseWheel': actions.onToggleReverseWheel(!s.reverseWheel); return true;
+    case 'session.swapButtons': actions.onToggleSwapMouseButtons(!s.swapMouseButtons); return true;
+    case 'session.diagnostics': actions.onToggleDiagnostics(!s.diagnosticsEnabled); return true;
+    case 'session.disconnect': actions.onDisconnect(); return true;
+    default: return false;
+  }
 }
 
 @Component
@@ -171,10 +220,6 @@ export struct RemoteSessionTopBar {
   @Prop @Watch('onKeyboardSurfaceChange') shortcutsOpen: boolean = false;
   @Prop diagnosticsEnabled: boolean = false;
   @StorageProp('diagnosticAiOrbEnabled') diagnosticAiOrbEnabled: boolean = false;
-  @State private diagnosticAiAssistantVisible: boolean = false;
-  @State private diagnosticAiIslandShown: boolean = false;
-  @State private diagnosticAiCaptureActive: boolean = false;
-  @State private diagnosticAiThinking: boolean = false;
   @Prop canvasResetAvailable: boolean = false;
   @Prop rustDeskDisplayCapabilities: RustDeskDisplayCapabilities = EMPTY_RUSTDESK_DISPLAY_CAPABILITIES;
   @Prop rustDeskDisplaySwitchState: RustDeskDisplaySwitchState = EMPTY_RUSTDESK_DISPLAY_SWITCH_STATE;
@@ -234,7 +279,8 @@ export struct RemoteSessionTopBar {
     onToggleSwapMouseButtons: (_on: boolean): void => {},
     onSetTouchpadSpeed: (_speed: number): void => {},
     onToggleDiagnostics: (_on: boolean): void => {},
-    onUnsupported: (_actionId: string, _reason: string): void => {}
+    onUnsupported: (_actionId: string, _reason: string): void => {},
+    onOpenAi: (): void => {}
   };
 
   private runAction(actionId: string, action: () => void): void {
@@ -343,40 +389,6 @@ export struct RemoteSessionTopBar {
     return ProEntries.visible(PRO_DIAGNOSTICS_ASSISTANT_FEATURE, ProAppRuntime.getInstance().context());
   }
 
-  private diagnosticAiState(): 'idle' | 'open' | 'capturing' | 'thinking' {
-    if (this.diagnosticAiCaptureActive) { return 'capturing'; }
-    if (this.diagnosticAiThinking) { return 'thinking'; }
-    return this.diagnosticAiAssistantVisible ? 'open' : 'idle';
-  }
-
-  /** Session-level execution modules used by the AI island. They call the same guarded toolbar callbacks as a tap. */
-  private runAssistantAppAction(action: DiagnosticAiAppActionId): void {
-    switch (action) {
-      case 'session.keyboard': this.actions.onOpenKeyboard(); return;
-      case 'session.modifiers': this.actions.onOpenModifiers(); return;
-      case 'session.fileTransfer': this.actions.onOpenFileTransfer(); return;
-      case 'session.ctrlAltDel': this.actions.onCtrlAltDel(); return;
-      case 'session.lock': this.actions.onLockRemote(); return;
-      case 'session.privacy': this.actions.onTogglePrivacy(!this.privacyMode); return;
-      case 'session.audio': this.actions.onToggleAudio(!this.audioEnabled); return;
-      case 'session.clipboard': this.actions.onToggleClipboard(!this.clipboardEnabled); return;
-      case 'session.filePaste': this.actions.onToggleFilePaste(!this.filePasteEnabled); return;
-      case 'session.resetCanvas': this.actions.onResetCanvasTransform(); return;
-      case 'session.rotate': this.actions.onRotateRemoteDisplay(); return;
-      case 'session.portrait': this.actions.onTogglePortraitDisplay(); return;
-      case 'session.display': this.actions.onOpenRustDeskResolution(); return;
-      case 'session.quality': this.actions.onSetRustDeskImageQuality((this.imageQuality + 1) % 3); return;
-      case 'session.codec': this.actions.onSetRustDeskCodec((this.codec + 1) % 3); return;
-      case 'session.cursor': this.actions.onToggleShowLocalCursor(!this.showLocalCursor); return;
-      case 'session.browseMode': this.actions.onToggleBrowseMode(!this.browseMode); return;
-      case 'session.relativeMouse': this.actions.onToggleRelativeMouse(!this.relativeMouseMode); return;
-      case 'session.reverseWheel': this.actions.onToggleReverseWheel(!this.reverseWheel); return;
-      case 'session.swapButtons': this.actions.onToggleSwapMouseButtons(!this.swapMouseButtons); return;
-      case 'session.diagnostics': this.actions.onToggleDiagnostics(!this.diagnosticsEnabled); return;
-      case 'session.disconnect': this.actions.onDisconnect(); return;
-      default: this.actions.onUnsupported(action, '当前 AI 会话动作需要从主机列表设置页执行'); return;
-    }
-  }
 
   private onKeyboardSurfaceChange(): void {
     this.scheduleAutoCollapse();
@@ -410,7 +422,7 @@ export struct RemoteSessionTopBar {
 
   private toolbarWidth(): number {
     const actionCount: number = remoteSessionPrimaryActionIds(
-      this.protocol, this.layout.deviceClass, this.rustDeskPhoneTarget).length +
+      this.protocol, this.layout.deviceClass, this.rustDeskPhoneTarget, false, this.diagnosticAiVisible()).length +
       (this.protocol === 'rustdesk' && this.explicitPhone ? 1 : 0);
     const count: number = Math.max(1, Math.min(this.layout.maxVisibleButtons, actionCount));
     return count * this.layout.iconSize + (count + 1) * this.layout.itemGap;
@@ -438,7 +450,7 @@ export struct RemoteSessionTopBar {
 
   private keyboardButtonIndex(): number {
     const actions: RemoteSessionPrimaryActionId[] = remoteSessionPrimaryActionIds(
-      this.protocol, this.layout.deviceClass, this.rustDeskPhoneTarget);
+      this.protocol, this.layout.deviceClass, this.rustDeskPhoneTarget, false, this.diagnosticAiVisible());
     const index: number = actions.indexOf('keyboard');
     return index >= 0 ? index : 0;
   }
@@ -480,7 +492,7 @@ export struct RemoteSessionTopBar {
 
   private edgeRailButtonCount(): number {
     return remoteSessionPrimaryActionIds(
-      this.protocol, this.layout.deviceClass, this.rustDeskPhoneTarget).length +
+      this.protocol, this.layout.deviceClass, this.rustDeskPhoneTarget, false, this.diagnosticAiVisible()).length +
       (this.protocol === 'rustdesk' && this.explicitPhone ? 1 : 0);
   }
 
@@ -1232,7 +1244,12 @@ export struct RemoteSessionTopBar {
 
   @Builder
   private primaryActionButton(actionId: RemoteSessionPrimaryActionId) {
-    if (actionId === 'pin') {
+    if (actionId === 'ai') {
+      this.iconButton($r('sys.symbol.wand_and_stars'), this.accentColor, (): void => {
+        this.actions.onOpenAi();
+        this.scheduleAutoCollapse();
+      }, 18, 'AI 助理')
+    } else if (actionId === 'pin') {
       this.iconButton(this.pinned ? $r('sys.symbol.pin_fill') : $r('sys.symbol.pin'),
         this.pinned ? '#3A3A3A' : this.accentColor, (): void => {
           this.pinned = !this.pinned;
@@ -1302,7 +1319,7 @@ export struct RemoteSessionTopBar {
       Column({ space: this.layout.itemGap }) {
         ForEach(remoteSessionPrimaryActionIds(
           this.protocol, this.layout.deviceClass, this.rustDeskPhoneTarget,
-          this.portraitDisplayEnabled),
+          this.portraitDisplayEnabled, this.diagnosticAiVisible()),
           (actionId: RemoteSessionPrimaryActionId): void => {
             this.primaryActionButton(actionId)
           }, (actionId: RemoteSessionPrimaryActionId): string =>
@@ -1316,7 +1333,7 @@ export struct RemoteSessionTopBar {
       Row({ space: this.layout.itemGap }) {
         ForEach(remoteSessionPrimaryActionIds(
           this.protocol, this.layout.deviceClass, this.rustDeskPhoneTarget,
-          this.portraitDisplayEnabled),
+          this.portraitDisplayEnabled, this.diagnosticAiVisible()),
           (actionId: RemoteSessionPrimaryActionId): void => {
             this.primaryActionButton(actionId)
           }, (actionId: RemoteSessionPrimaryActionId): string =>
@@ -1562,29 +1579,6 @@ export struct RemoteSessionTopBar {
         .height(this.collapsed ? REMOTE_SESSION_COLLAPSED_TOP_TOUCH_HEIGHT : 540)
         .position({ x: 0, y: 0 })
         .hitTestBehavior(HitTestMode.Transparent)
-      }
-      if (this.diagnosticAiVisible()) {
-        Row() {
-          DiagnosticAiOrb({
-            visible: true,
-            state: this.diagnosticAiState(),
-            onOpen: (): void => { this.diagnosticAiAssistantVisible = true; this.diagnosticAiIslandShown = true; }
-          })
-        }
-        .width('100%').padding({ top: 10, right: 12 }).justifyContent(FlexAlign.End)
-        .hitTestBehavior(HitTestMode.Transparent)
-      }
-      if (this.diagnosticAiAssistantVisible && this.diagnosticAiVisible() && this.diagnosticAiIslandShown) {
-        AiIsland({
-          topInset: 10,
-          deviceClass: this.layout.deviceClass === 'pc' ? 'pc' : this.layout.deviceClass === 'pad' ? 'pad' : 'phone',
-          onDismissed: (): void => { this.diagnosticAiAssistantVisible = false; this.diagnosticAiIslandShown = false; },
-          onFloatingChanged: (_floating: boolean): void => {},
-          onActivityChanged: (active: boolean): void => { this.diagnosticAiThinking = active; },
-          onCaptureStateChanged: (capturing: boolean): void => { this.diagnosticAiCaptureActive = capturing; },
-          onAppAction: (action: DiagnosticAiAppActionId): void => { this.runAssistantAppAction(action); }
-        }).width('100%').height('100%').position({ x: 0, y: 0 }).zIndex(30)
-          .hitTestBehavior(HitTestMode.Default)
       }
     }
     .width('100%')

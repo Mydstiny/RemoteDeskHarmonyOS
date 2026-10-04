@@ -8,6 +8,7 @@ import { common } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { Palette, buildDark, buildLight } from '../common/Theme';
 import { ProFeature, proFeatureProgress, proFeatures } from '../services/pro/ProFeatureCatalog';
+import { markProTrialStarted, proTrialStarted } from '../services/pro/ProTrialNotice';
 import {
   HuaweiProBillingProvider, ProStoreProduct, ProPurchaseCoordinator,
   PRO_LAUNCH_PRICE, PRO_REGULAR_PRICE, proBillingError, proRefundError
@@ -24,6 +25,9 @@ export struct ProPurchaseSheet {
   @State purchased: boolean = false;
   @State proLabel: string = '免费版';
   @State debugMode: ProDebugMode = 'real';
+  /** 1.2.0 free trial: Pro for everyone, so the page offers 立即试用 instead of a purchase. */
+  @State trial: boolean = false;
+  @State trialStarted: boolean = false;
   private unsubscribe: (() => void) | null = null;
   @State productId: string = '';
   @State storePrice: string = '';
@@ -38,6 +42,7 @@ export struct ProPurchaseSheet {
   aboutToAppear(): void {
     this.live = true;
     this.testing = ProAppRuntime.getInstance().sandboxSelected();
+    this.trialStarted = proTrialStarted(this.context());
     this.syncBilling();
     this.unsubscribe = ProAppRuntime.getInstance().runtime.subscribe((): void => {
       this.syncBilling();
@@ -45,7 +50,15 @@ export struct ProPurchaseSheet {
       this.proLabel = snapshot.label;
       this.debugMode = snapshot.mode;
       this.purchased = snapshot.effectiveState === 'active';
+      this.trial = snapshot.complimentary;
     });
+  }
+
+  /** 立即试用: everyone already has Pro; this records that the user started it and says what it means. */
+  private startTrial(): void {
+    markProTrialStarted(this.context());
+    this.trialStarted = true;
+    this.message = '已开启免费试用，全部 Pro 功能可以直接使用。';
   }
   aboutToDisappear(): void {
     this.live = false; this.generation++;
@@ -169,14 +182,19 @@ export struct ProPurchaseSheet {
             Text('全部协议免费连接，专业工具提升效率。')
               .fontSize(14).fontColor(this.pal().text2).textAlign(TextAlign.Center)
             Text(this.proLabel).fontSize(13).fontColor(this.accent)
-            Text('一次购买 · 不自动续费').fontSize(12).fontColor(this.accent)
+            if (this.trial) {
+              Text('1.2.0 起全部 Pro 功能免费试用 · 正式收费前会提前通知').fontSize(12).fontColor(this.accent)
+            } else {
+              Text('一次购买 · 不自动续费').fontSize(12).fontColor(this.accent)
+            }
           }.width('100%').padding({ top: 16, bottom: 18 })
           ForEach(this.proCatalog(),
             (feature: ProFeature, index: number): void => { this.featureCard(feature, index) },
             (feature: ProFeature): string => feature.id)
           Text('核心功能一直免费').fontSize(15).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
             .width('100%').margin({ top: 8 })
-          Text('协议连接、正常画质、键鼠操作、基础文件传输和安全更新保持免费。标注“规划中”的能力尚未交付，Pro 正式购买仍在准备中。')
+          Text(this.trial ? '协议连接、正常画质、键鼠操作、基础文件传输和安全更新永久免费。免费试用期间，其余已开发的 Pro 功能全部开放；标注“规划中”的能力尚未交付，碰一碰等验证中的功能稍后开放。' :
+            '协议连接、正常画质、键鼠操作、基础文件传输和安全更新保持免费。标注“规划中”的能力尚未交付，Pro 正式购买仍在准备中。')
             .fontSize(13).fontColor(this.pal().text2).lineHeight(21).width('100%')
           if (DEBUG) {
             ProUsbFidoProbePanel({ isOpen: (): boolean => this.live })
@@ -207,6 +225,11 @@ export struct ProPurchaseSheet {
               Text('测试商品：' + this.productId).fontSize(12).fontColor(this.pal().text2)
               Button('检查沙盒并读取商品').fontSize(13).enabled(!this.busy && this.productId.trim().length > 0)
                 .onClick((): void => { this.operate('load'); })
+              // During the free trial the main button is 立即试用: the sandbox purchase lives here.
+              if (this.trial && this.storePrice.length > 0) {
+                Button('沙盒购买 Pro · ' + this.storePrice).fontSize(13).enabled(!this.busy)
+                  .onClick((): void => { this.operate('buy'); })
+              }
               Button('申请沙盒订单退款').fontSize(13).enabled(!this.busy)
                 .onClick((): void => { this.operate('refund'); })
               Text('打开华为退款页面后自行确认。仅选择唯一的当前沙盒 Pro 订单，返回后重新核验权益。')
@@ -222,6 +245,19 @@ export struct ProPurchaseSheet {
         .animation({ duration: 240, curve: Curve.EaseOut })
         .onAppear((): void => { this.entered = true; })
       }.width('100%').layoutWeight(1).scrollBar(BarState.Off)
+      if (this.trial) {
+        Column({ space: 8 }) {
+          Text(this.trialStarted ? '全部 Pro 功能免费试用中。商户审核通过、正式收费前，会在应用内提前通知。' : this.message)
+            .fontSize(12).fontColor(this.pal().text2).lineHeight(18).width('100%')
+          Button(this.trialStarted ? 'Pro 试用中' : '立即试用')
+            .width('100%').height(48).fontSize(16).fontWeight(FontWeight.Medium)
+            .fontColor(Color.White).backgroundColor(this.accent)
+            .enabled(!this.trialStarted)
+            .onClick((): void => { this.startTrial(); })
+          Text('试用无需付款，也不会自动扣费').fontSize(11).fontColor(this.pal().text3)
+        }.width('100%').padding({ left: 24, right: 24, top: 12, bottom: 20 })
+        .backgroundColor(this.pal().sheetBg)
+      } else {
       Column({ space: 8 }) {
         Text(this.message).fontSize(12).fontColor(this.pal().text2).lineHeight(18).width('100%')
         if (this.storePrice.length === 0) {
@@ -242,6 +278,7 @@ export struct ProPurchaseSheet {
         }
       }.width('100%').padding({ left: 24, right: 24, top: 12, bottom: 20 })
         .backgroundColor(this.pal().sheetBg)
+      }
     }.width('100%').height('100%').backgroundColor(this.pal().sheetBg)
   }
 }

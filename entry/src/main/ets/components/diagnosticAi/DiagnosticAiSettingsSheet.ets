@@ -149,7 +149,6 @@ export struct DiagnosticAiSettingsSheet {
   @StorageProp('accentColor') accent: string = '#007DFF';
   @StorageProp('breakpoint') breakpoint: string = 'md';
   onClose: () => void = (): void => {};
-  onOpenMailDraft: (subject: string, body: string) => void = (_subject: string, _body: string): void => {};
   onAppAction: (action: DiagnosticAiAppActionId) => void = (_action: DiagnosticAiAppActionId): void => {};
   /** Replace the current native settings sheet with the assistant sheet for a saved session. */
   onOpenSession: (sessionId: string) => void = (_sessionId: string): void => {};
@@ -1613,8 +1612,7 @@ export struct DiagnosticAiSettingsSheet {
             embedded: true,
             resumeSessionId: this.resumeSessionId,
             onAppAction: (action: DiagnosticAiAppActionId): void => { this.onAppAction(action); },
-            onClose: (): void => { this.onClose(); },
-            onOpenMailDraft: (subject: string, body: string): void => { this.onOpenMailDraft(subject, body); }
+            onClose: (): void => { this.onClose(); }
           }).layoutWeight(1)
         } else if (this.section === 3) {
           this.usageSection()

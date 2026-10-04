@@ -30,6 +30,8 @@ export interface VncSessionToolbarActions {
   onResetCanvas: () => void;
   onToggleDiagnostics: () => void;
   onDisconnect: () => void;
+  /** Pro AI 助理: the session's AI as the orb with its small chat. */
+  onOpenAi: () => void;
   onCollapsedPointerMove: (x: number, y: number) => void;
 }
 
@@ -51,6 +53,8 @@ export struct VncSessionToolbar {
   @Prop portraitDisplayEnabled: boolean = false;
   @Prop portraitDisplayActive: boolean = false;
   @Prop diagnosticsEnabled: boolean = false;
+  /** Pro AI 助理: its button sits before 性能 and 断开. */
+  @Prop aiVisible: boolean = false;
   @Prop canvasResetAvailable: boolean = false;
   @Prop collapsed: boolean = false;
   @Prop viewportWidth: number = 0;
@@ -71,6 +75,7 @@ export struct VncSessionToolbar {
     onResetCanvas: (): void => {},
     onToggleDiagnostics: (): void => {},
     onDisconnect: (): void => {},
+    onOpenAi: (): void => {},
     onCollapsedPointerMove: (_x: number, _y: number): void => {}
   };
 
@@ -118,6 +123,9 @@ export struct VncSessionToolbar {
     } else if (actionId === 'diagnostics') {
       this.actionButton($r('sys.symbol.list_bullet'), '性能', this.diagnosticsEnabled,
         (): void => { this.actions.onToggleDiagnostics(); })
+    } else if (actionId === 'ai') {
+      this.actionButton($r('sys.symbol.wand_and_stars'), 'AI 助理', false,
+        (): void => { this.actions.onOpenAi(); })
     } else {
       this.actionButton($r('sys.symbol.xmark'), '断开', false,
         (): void => { this.actions.onDisconnect(); }, true)
@@ -146,7 +154,7 @@ export struct VncSessionToolbar {
   private primaryActionButtons(vertical: boolean) {
     if (vertical) {
       Column({ space: 5 }) {
-        ForEach(vncToolbarPrimaryActionIds(this.displayCount, this.portraitDisplayEnabled),
+        ForEach(vncToolbarPrimaryActionIds(this.displayCount, this.portraitDisplayEnabled, this.aiVisible),
           (actionId: VncToolbarPrimaryActionId): void => {
             this.primaryActionButtonWithReset(actionId)
           }, (actionId: VncToolbarPrimaryActionId): string =>
@@ -154,7 +162,7 @@ export struct VncSessionToolbar {
       }
     } else {
       Row({ space: 5 }) {
-        ForEach(vncToolbarPrimaryActionIds(this.displayCount, this.portraitDisplayEnabled),
+        ForEach(vncToolbarPrimaryActionIds(this.displayCount, this.portraitDisplayEnabled, this.aiVisible),
           (actionId: VncToolbarPrimaryActionId): void => {
             this.primaryActionButtonWithReset(actionId)
           }, (actionId: VncToolbarPrimaryActionId): string =>

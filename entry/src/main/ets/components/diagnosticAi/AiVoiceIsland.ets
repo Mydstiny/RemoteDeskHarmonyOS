@@ -15,7 +15,7 @@ import { AiChatReply, AiChatService, AiChatTurn } from '../../services/diagnosti
 import { AI_ASSISTANT_HANDOFF, AI_FLOAT_REQUEST, AI_HANDOVER_FADE_DELAY_MS, AI_HANDOVER_FADE_MS, AI_HANDOVER_RECT, AI_MODE_REQUEST } from '../../services/diagnosticAi/AiBridgeKeys';
 import { AiSkillStore } from '../../services/diagnosticAi/AiSkillStore';
 import { aiThinkingPhrases } from '../../services/diagnosticAi/AiSkillCatalog';
-import { aiModeCommand, aiQuestionIsAboutApp } from '../../services/diagnosticAi/AiChatRoutePolicy';
+import { aiModeCommand, aiQuestionIsAboutApp, aiQuestionIsFeatureIdea } from '../../services/diagnosticAi/AiChatRoutePolicy';
 import { DiagnosticAiAgentMode, DiagnosticAiAgentService, diagnosticAiAgentModeForQuestion } from '../../services/diagnosticAi/DiagnosticAiAgentService';
 import { DiagnosticAiResult, DiagnosticAiSettingProposal } from '../../services/diagnosticAi/DiagnosticAiModels';
 import { AiSettingChoice, diagnosticAiProposalChoice, diagnosticAiProposalIsSafe, diagnosticAiSettingActionText, diagnosticAiSettingCurrent, diagnosticAiSettingIntents } from '../../services/diagnosticAi/DiagnosticAiSettingsActionPolicy';
@@ -26,6 +26,7 @@ import { AiReadAloud, AiVoiceInput } from '../../services/diagnosticAi/AiSpeech'
 import { AiVoiceConfig, AiVoiceSettings } from '../../services/diagnosticAi/AiVoiceSettings';
 import { aiChatRefresh } from '../../services/diagnosticAi/AiShareInbox';
 import { AiDocument } from '../../services/diagnosticAi/AiDocumentService';
+import { aiIsSessionPage } from '../../services/diagnosticAi/AiSessionRouter';
 
 /** AppStorage: 按住说话 presses on the AI button ('down:<time>' / 'up:<time>'). */
 export const AI_VOICE_HOLD_EVENT: string = 'aiVoice.hold';
@@ -62,6 +63,8 @@ const VOICE_STYLE: string = '。当前是语音对话（像 Siri 一样）：回
  */
 @Component
 export struct AiVoiceIsland {
+  /** The AI top layer this lives in: back keys are '<surface>:<layerId>@<time>' (see AiTopLayer). */
+  @Prop layerId: string = '';
   @Prop owner: string = 'device-local';
   @Prop topInset: number = 24;
   @Prop deviceClass: string = 'phone';
@@ -74,9 +77,13 @@ export struct AiVoiceIsland {
   @Prop startShape: string = 'island';
   /** Coming back from the orb over a screen voice mode opened: the last answer and its cards, listening again. */
   @Prop resume: boolean = false;
+  /** In a remote session: the system bars stay as the session keeps them (voice mode never shows or hides them). */
+  @Prop keepSystemBars: boolean = false;
   @StorageProp('diagnosticAiReducedMotion') reducedMotion: boolean = false;
   @StorageProp('currentTheme') theme: string = 'light';
   @StorageProp(AI_VOICE_HOLD_EVENT) @Watch('onHoldEvent') holdEvent: string = '';
+  /** The back key reached the voice layer: voice mode closes, as a swipe up does. */
+  @StorageProp('aiTop.back') @Watch('onBackKey') backKey: string = '';
   /** Handing over to the chat panel: where its glass is (AiIsland says so once it has laid itself out). */
   @StorageProp(AI_HANDOVER_RECT) @Watch('onHandoverRect') handoverRect: string = '';
   onDismissed: () => void = (): void => {};
@@ -542,7 +549,8 @@ export struct AiVoiceIsland {
     if (command !== '') { await this.applyMode(command, generation, ''); return; }
     // 助理 or 聊天, decided for every question. About the app (how to, its settings): 助理 answers here, its cards in
     // the voice panel. A fault to diagnose or a report to send needs 助理's capture and mail flow: it carries on there.
-    if (aiQuestionIsAboutApp(question)) {
+    // A feature idea goes to 聊天 (it keeps the list); everything else about the app is 助理's.
+    if (aiQuestionIsAboutApp(question) && !aiQuestionIsFeatureIdea(question)) {
       const mode: DiagnosticAiAgentMode = diagnosticAiAgentModeForQuestion(question);
       if (mode === 'diagnose' || mode === 'feedback') {
         AppStorage.setOrCreate(AI_ASSISTANT_HANDOFF, Date.now().toString() + '|' + question.slice(0, 500));
@@ -719,6 +727,10 @@ export struct AiVoiceIsland {
       if (generation !== this.turnGeneration) { return; }
       this.fail(aiChatErrorText(error as Object));
     }
+  }
+
+  private onBackKey(): void {
+    if (this.backKey.startsWith('voice:' + this.layerId + '@') && !this.closing) { this.close(); }
   }
 
   /**
@@ -932,8 +944,15 @@ export struct AiVoiceIsland {
     }
   }
 
+  private sessionPageOnTop(): boolean {
+    try { return aiIsSessionPage(this.getUIContext().getRouter().getState().name); } catch (_error) { return false; }
+  }
+
   private setStatusBarHidden(hidden: boolean): void {
-    if (this.deviceClass !== 'phone' || hidden === this.statusBarHidden) { return; }
+    if (this.keepSystemBars || this.deviceClass !== 'phone') { return; }
+    // A session page came over the host list (voice connected a host): its bars are the session's.
+    if (this.sessionPageOnTop()) { this.statusBarHidden = false; return; }
+    if (hidden === this.statusBarHidden) { return; }
     this.statusBarHidden = hidden;
     const context = this.getUIContext().getHostContext();
     if (!context) { return; }

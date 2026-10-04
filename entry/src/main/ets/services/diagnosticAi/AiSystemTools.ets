@@ -13,6 +13,7 @@ import { photoAccessHelper } from '@kit.MediaLibraryKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { AiDocument, aiDeleteDocument, aiRecognizeImageFile } from './AiDocumentService';
 import { DiagnosticAiConversationStore } from './DiagnosticAiConversationStore';
+import { AI_DEVELOPER_EMAIL, AiMailDraft, aiOpenMailEditor } from './AiMailService';
 import { diagnosticAiAppActionId, diagnosticAiAppActionLabel } from './DiagnosticAiAppActionPolicy';
 import { AI_APP_ACTION_REQUEST } from './AiBridgeKeys';
 import { DiagnosticAiHostBridge } from './DiagnosticAiTriagePolicy';
@@ -342,8 +343,11 @@ export function aiActionFor(id: string, fn: string, input: Record<string, Object
   if (fn === 'send_email') {
     const subject: string = field(input, 'subject');
     if (subject === '' && field(input, 'body') === '') { return '邮件没有主题和正文。'; }
+    const files: Object | undefined = input['attachment_paths'];
+    const count: number = Array.isArray(files) ? (files as Object[]).length : 0;
     return new AiChatAction(id, fn, '写邮件：' + (subject !== '' ? subject : '（无主题）'),
-      (field(input, 'to') !== '' ? '发给 ' + field(input, 'to') + ' · ' : '') + '在邮件应用里检查后再发送', args);
+      (field(input, 'to') !== '' ? '发给 ' + field(input, 'to') + ' · ' : '') +
+        (count > 0 ? '附 ' + count.toString() + ' 个文件 · ' : '') + '在邮件应用里检查后再发送', args);
   }
   if (fn === 'navigate') {
     const place: string = field(input, 'destination');
@@ -479,21 +483,12 @@ async function startByType(context: common.UIAbilityContext, type: string, param
 
 async function sendEmail(context: common.UIAbilityContext, input: Record<string, Object>): Promise<string> {
   const to: string = field(input, 'to');
-  const subject: string = field(input, 'subject');
-  const body: string = field(input, 'body');
-  const params: Record<string, Object> = {};
-  params['sceneType'] = 1;
-  if (to !== '') { params['email'] = [encodeURI(to)]; }
-  params['subject'] = encodeURI(subject);
-  params['body'] = encodeURI(body);
-  try {
-    await startByType(context, 'mail', params);
-  } catch (_error) {
-    // No mail panel: a mailto link opens whatever handles mail.
-    await context.openLink('mailto:' + encodeURIComponent(to) + '?subject=' + encodeURIComponent(subject) + '&body=' +
-      encodeURIComponent(body), { appLinkingOnly: false });
-  }
-  return '已打开邮件应用';
+  const paths: Object | undefined = input['attachment_paths'];
+  const attachments: string[] = Array.isArray(paths) ? (paths as Object[]).map((p: Object): string => String(p)) : [];
+  const note: string = await aiOpenMailEditor(context, new AiMailDraft(to !== '' ? [to] : [], field(input, 'subject'),
+    field(input, 'body'), attachments));
+  return '已打开邮件应用' + (attachments.length > 0 ? '（带 ' + attachments.length.toString() + ' 个附件）' : '') +
+    (note !== '' ? '。' + note : '');
 }
 
 async function navigate(context: common.UIAbilityContext, input: Record<string, Object>): Promise<string> {
@@ -522,6 +517,18 @@ export async function aiRunAction(context: common.UIAbilityContext, action: AiCh
       throw new Error('没有删掉「' + name + '」，可能已经不在了');
     }
     return '已删除「' + name + '」';
+  }
+  if (action.tool === 'send_feature_requests') {
+    const ids: Object | undefined = input['ids'];
+    const note: string = await aiOpenMailEditor(context, new AiMailDraft([AI_DEVELOPER_EMAIL], field(input, 'subject'),
+      field(input, 'body')));
+    // Opened in the mail app: the requests count as sent (the user sends it there).
+    if (owner !== '' && Array.isArray(ids)) {
+      const store: DiagnosticAiConversationStore = new DiagnosticAiConversationStore();
+      store.init(context, owner);
+      store.markFeatureRequestsSent((ids as Object[]).map((id: Object): string => String(id)), Date.now());
+    }
+    return '已打开邮件应用，检查后发送即可' + (note !== '' ? '。' + note : '');
   }
   if (action.tool === 'delete_conversation') {
     if (owner === '') { throw new Error('不知道是哪个账号的对话'); }

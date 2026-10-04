@@ -19,7 +19,8 @@ assert.equal(proFeatureStatus(feature(), denied('purchaseRequired'), false).labe
 assert.equal(proFeatureStatus(feature(), denied('verificationRequired'), false).label, '等待验证');
 const experimental = proFeatureStatus(feature({ availability: 'experimental' }), denied('planned'), true);
 assert.equal(experimental.label, '实验中'); assert.match(experimental.detail, /沙盒或模拟/);
-assert.equal(proFeatureStatus(feature({ availability: 'experimental' }), denied('planned'), false).detail, '正式版暂未开放');
+assert.match(proFeatureStatus(feature({ availability: 'experimental' }), denied('planned'), false).detail, /^正式版暂未开放/);
+assert.match(proFeatureStatus(feature(), { visible: true, executable: true, reason: 'allowed' }, false, true).detail, /免费试用中/);
 assert.equal(proFeatureStatus(feature({ availability: 'planned' }), denied('planned'), true).label, '规划中');
 assert.match(proFeatureStatus(feature({ devices: ['pc'] }), denied('deviceUnsupported'), false).detail, /PC/);
 assert.match(proFeatureStatus(feature(), denied('versionUnsupported'), false).detail, /API 26/);

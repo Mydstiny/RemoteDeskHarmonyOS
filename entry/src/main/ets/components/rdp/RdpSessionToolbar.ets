@@ -24,7 +24,7 @@ import {
 } from '../../services/RdpSessionSidebarPolicy';
 
 export type RdpToolbarAction = 'control' | 'fileTransfer' | 'keyboard' | 'shortcuts' |
-  'ctrlAltDel' | 'resetCanvas' | 'refresh' | 'diagnostics' | 'portrait' | 'disconnect';
+  'ctrlAltDel' | 'resetCanvas' | 'refresh' | 'diagnostics' | 'portrait' | 'disconnect' | 'ai';
 
 interface RdpToolbarItem {
   action: RdpToolbarAction;
@@ -47,6 +47,8 @@ export struct RdpSessionToolbar {
   @Prop qualityColor: string = RDP_SESSION_CONTROL_ACCENT;
   @Prop portraitDisplayEnabled: boolean = false;
   @Prop portraitDisplayActive: boolean = false;
+  /** Pro AI 助理: its button sits right after RDP 控制. */
+  @Prop aiVisible: boolean = false;
   @Prop @Watch('onAvailableHeightChange') availableHeight: number = 640;
   @State private expanded: boolean = false;
   @State private pinned: boolean = false;
@@ -71,6 +73,9 @@ export struct RdpSessionToolbar {
       { action: 'diagnostics', label: '性能', dangerous: false },
       { action: 'disconnect', label: '断开', dangerous: true }
     ];
+    if (this.aiVisible) {
+      items.splice(1, 0, { action: 'ai', label: 'AI 助理', dangerous: false });
+    }
     if (this.portraitDisplayEnabled) {
       items.splice(items.length - 1, 0, {
         action: 'portrait', label: this.portraitDisplayActive ? '恢复横屏' : '竖屏显示', dangerous: false
@@ -99,6 +104,7 @@ export struct RdpSessionToolbar {
     if (action === 'refresh') { return $r('sys.symbol.bolt_fill'); }
     if (action === 'diagnostics') { return $r('sys.symbol.info_circle'); }
     if (action === 'portrait') { return $r('sys.symbol.rectangle_rotate'); }
+    if (action === 'ai') { return $r('sys.symbol.wand_and_stars'); }
     return $r('sys.symbol.xmark_circle_fill');
   }
 

@@ -78,7 +78,8 @@ test('purchase sheet observes delayed backend readiness without discarding a loa
     ProFeatureVisibilityPanel: { prepare: () => {} },
     HuaweiProBillingProvider: class { async product() { productCalls++; return { id: 'fixture.pro', price: '¥1', name: 'Fixture' }; } },
     ProPurchaseCoordinator: { enter: () => true, leave: () => {} },
-    ProPurchaseLifecycle: { capture: () => 1, current: () => true }, getContext: () => ({}) });
+    ProPurchaseLifecycle: { capture: () => 1, current: () => true }, getContext: () => ({}),
+    proTrialStarted: () => false, markProTrialStarted: () => {} });
   vm.runInContext(ts.transpileModule(source + '\nglobalThis.page = new ProPurchaseSheet();', {
     compilerOptions: { target: ts.ScriptTarget.ES2021, module: ts.ModuleKind.CommonJS } }).outputText, context);
   const page = context.page;

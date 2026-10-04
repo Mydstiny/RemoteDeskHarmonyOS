@@ -1,13 +1,15 @@
-import { ComponentContent, curves, display, promptAction, window } from '@kit.ArkUI';
+import { ComponentContent, curves, display, LevelOrder, promptAction, window } from '@kit.ArkUI';
 import { inputMethod } from '@kit.IMEKit';
 import { DiagnosticAiAssistantPanel } from './DiagnosticAiAssistantPanel';
 import { DiagnosticAiAppActionId, diagnosticAiAppActionId, diagnosticAiAppActionLabel, diagnosticAiAppActionMode } from '../../services/diagnosticAi/DiagnosticAiAppActionPolicy';
 import { AI_FLOAT_ORB, AiIslandGlass } from './AiIslandChrome';
 import { AiThinkingIndicator } from './AiMotionViews';
 import { AiLiftController, aiLiftLayer } from './AiLiftLayer';
-import { AiChatMemory } from './AiChatView';
-import { AI_FLOAT_REQUEST, AI_HANDOVER_FADE_DELAY_MS, AI_HANDOVER_FADE_MS, AI_HANDOVER_RECT } from '../../services/diagnosticAi/AiBridgeKeys';
+import { AI_VOICE_REQUEST, AiChatMemory } from './AiChatView';
+import { AI_VOICE_ENABLED } from '../../services/diagnosticAi/AiVoiceSettings';
+import { AI_FLOAT_REQUEST, AI_HANDOVER_FADE_DELAY_MS, AI_HANDOVER_FADE_MS, AI_HANDOVER_RECT, AI_MODE_REQUEST } from '../../services/diagnosticAi/AiBridgeKeys';
 import { AI_ORB_HINT_TEXT, aiOrbHintWanted } from '../../services/diagnosticAi/AiOrbHintStore';
+import { aiIsSessionPage } from '../../services/diagnosticAi/AiSessionRouter';
 import { AI_MOTION_DONE, AI_MOTION_OPEN, aiMotionStyle } from '../../services/diagnosticAi/DiagnosticAiMotionPolicy';
 
 export type DiagnosticAiDeviceClass = 'phone' | 'pad' | 'pc';
@@ -26,6 +28,8 @@ const AI_PANEL_RADIUS: number = 46;     // F020 corners ≈ 100…115 source px
 const AI_RING_COMPACT: number = 34;     // six-core ring, orbit radius ≈ 12.4
 const AI_RING_STATUS: number = 42;      // grows with the wide capsule
 const AI_PHONE_ISLAND_WIDTH: number = 296; // phone capsule: room for a system island with a live activity
+/** The lifted orb's layer: above the island's own (AiTopLayer, 99990), under voice mode (99995). */
+const AI_LIFT_ORDER: number = 99992;
 
 /**
  * 启动 AI 辅助 as one continuously morphing surface at the top of the window, rebuilt from the iOS 27 Siri reference
@@ -62,13 +66,31 @@ export struct AiIsland {
   @Prop quickOpen: boolean = false;
   /** Voice mode confirmed an app screen: start as text mode's action does (status capsule → done mark → orb). */
   @Prop startAction: string = '';
+  /**
+   * In a remote session (SessionAiHost): the AI appears as the orb with its small text chat; on that orb a tap
+   * leaves the AI, a double tap starts voice mode and a long press drags it, clear of the session's side bar.
+   */
+  @Prop sessionMode: boolean = false;
+  /** The session's side bar: which edge ('right' · 'left' · '') and how wide (vp), for the orb to keep clear of. */
+  @Prop sessionAvoidSide: string = '';
+  @Prop sessionAvoidWidth: number = 0;
+  /** Whether this AI answers requests now (a session's: while it is the one in front; see AiSessionRouter). */
+  answersNow: () => boolean = (): boolean => true;
+  /** The AI top layer this island lives in: back keys are '<surface>:<layerId>@<time>' (see AiTopLayer). */
+  @Prop layerId: string = '';
+  /**
+   * The back key reached the AI layer: an open panel folds away; a screen an app action opened closes; otherwise a
+   * floating orb (or the AI in a session) goes away. A running capture or analysis is never stopped by it.
+   */
+  @StorageProp('aiTop.back') @Watch('onBackKey') backKey: string = '';
+  /** In a session there is no panel to act on 拜拜 / 语音模式 typed in the small chat: the island does it. */
+  @StorageProp(AI_MODE_REQUEST) @Watch('onSessionModeRequest') modeRequest: string = '';
   onDismissed: () => void = (): void => {};
   /** Floating or not: the host lets touches through its overlay node only while the island floats. */
   onFloatingChanged: (floating: boolean) => void = (_floating: boolean): void => {};
   /** Mirrors provider thinking/capture activity to the persistent entry button on the host page. */
   onActivityChanged: (active: boolean) => void = (_active: boolean): void => {};
   onCaptureStateChanged: (capturing: boolean) => void = (_capturing: boolean): void => {};
-  onOpenMailDraft: (subject: string, body: string) => void = (_subject: string, _body: string): void => {};
   /** Opens the app screen an answer's step points to. */
   onAppAction: (action: DiagnosticAiAppActionId) => void = (_action: DiagnosticAiAppActionId): void => {};
   /** Whether a screen opened for an app action is showing. */
@@ -164,6 +186,13 @@ export struct AiIsland {
     }
     this.later(16, (): void => {
       const action: DiagnosticAiAppActionId | null = this.startAction !== '' ? diagnosticAiAppActionId(this.startAction) : null;
+      if (this.sessionMode) {
+        // In a session: no panel at all — the orb with its small text chat, right away. The island itself never
+        // shows (it stays at stage 0 and takes no touches), so the session underneath keeps every touch.
+        AiChatMemory.active = true;
+        this.later(30, (): void => { this.liftSession(); });
+        return;
+      }
       if (action === null && this.startFloat) {
         // From voice: no panel to show — straight into the orb, above whatever is on screen.
         this.panelMounted = true;
@@ -199,13 +228,21 @@ export struct AiIsland {
    * time and icons on top of the black. It is hidden while the panel is open and comes back for the capsules.
    */
   private setStatusBarHidden(hidden: boolean): void {
-    if (this.deviceClass !== 'phone' || hidden === this.statusBarHidden) { return; }
+    // A session keeps its own system bars (most run full screen): the AI never shows or hides them there — neither
+    // a session's own AI nor the host list's still floating over a session page.
+    if (this.sessionMode || this.deviceClass !== 'phone') { return; }
+    if (this.sessionPageOnTop()) { this.statusBarHidden = false; return; }
+    if (hidden === this.statusBarHidden) { return; }
     this.statusBarHidden = hidden;
     const context = this.getUIContext().getHostContext();
     if (!context) { return; }
     window.getLastWindow(context).then((win: window.Window): void => {
       win.setSpecificSystemBarEnabled('status', !hidden, true).catch((): void => { /* keep the bar as it is */ });
     }).catch((): void => { /* no window */ });
+  }
+
+  private sessionPageOnTop(): boolean {
+    try { return aiIsSessionPage(this.getUIContext().getRouter().getState().name); } catch (_error) { return false; }
   }
 
   private later(ms: number, action: () => void): void {
@@ -506,6 +543,44 @@ export struct AiIsland {
     });
   }
 
+  /** In a session: the orb, with its small chat open, at the edge away from the session's side bar. */
+  private liftSession(): void {
+    if (this.liftLayer !== null) { return; }
+    const left: boolean = this.sessionAvoidSide === 'right';
+    const x: number = left ? 14 : this.areaWidth - AI_FLOAT_ORB - 14;
+    const y: number = Math.max(this.topInset + 8, this.areaHeight * 0.22);
+    this.liftUp('', 'none', 'chat', 'session', true, x, y);
+    this.later(140, (): void => { if (this.liftLayer !== null) { this.lifted = true; } });
+  }
+
+  /**
+   * A tap on the session orb, or the back key while the AI floats: the AI goes away at once (the orb's own fade), and
+   * the page underneath is back as it was.
+   */
+  private leaveFromOrb(): void {
+    if (this.closing) { return; }
+    this.closing = true;
+    AiChatMemory.voiceResume = false;
+    this.closeLift();
+    this.lifted = false;
+    this.stopExecutingPoll();
+    this.clearTimers();
+    this.stage = 0;
+    this.setStatusBarHidden(false);
+    this.onDismissed();
+  }
+
+  /** A double tap on the session orb: voice mode, in this window (SessionAiHost opens it and closes the orb). */
+  private voiceFromOrb(): void {
+    if (AppStorage.get<boolean>(AI_VOICE_ENABLED) !== true) {
+      try {
+        this.getUIContext().getPromptAction().showToast({ message: 'AI 语音还没打开，可以在「设置 → AI 语音」里开启', duration: 2200 });
+      } catch (_error) { /* no toast */ }
+      return;
+    }
+    AppStorage.setOrCreate(AI_VOICE_REQUEST, Date.now());
+  }
+
   /** Open the lift layer: the 完成动画 first (or the orb right away when it is 不显示). */
   private liftUp(label: string, style: string, mode: string = 'assistant', hintPath: string = 'action',
     openChat: boolean = false, startX: number = -1, startY: number = -1): void {
@@ -529,6 +604,11 @@ export struct AiIsland {
     controller.label = label;
     controller.style = style;
     controller.onOrbTap = (x: number, y: number): void => { this.backFromOrb(x, y); };
+    controller.sessionMode = this.sessionMode;
+    controller.avoidSide = this.sessionAvoidSide;
+    controller.avoidWidth = this.sessionAvoidWidth;
+    controller.onExit = (): void => { this.leaveFromOrb(); };
+    controller.onVoice = (): void => { this.voiceFromOrb(); };
     controller.place = (dx: number, dy: number): void => {
       const layer: ComponentContent<AiLiftController> | null = this.liftLayer;
       if (layer === null) { return; }
@@ -543,6 +623,13 @@ export struct AiIsland {
     const options: promptAction.BaseDialogOptions = {
       isModal: false,
       autoCancel: false,
+      // Above the app's own dialogs and sheets opened later (a delete confirmation, a settings page), and above the
+      // island's own layer (whose hidden orb would otherwise take the lifted orb's touches): AI stays on top.
+      levelOrder: LevelOrder.clamp(AI_LIFT_ORDER),
+      // The back key: the island decides (as for its own layer); the orb never just disappears.
+      onWillDismiss: (_action: DismissDialogAction): void => {
+        AppStorage.setOrCreate('aiTop.back', 'island:' + this.layerId + '@' + Date.now().toString());
+      },
       alignment: DialogAlignment.TopStart,
       offset: { dx: 0, dy: 0 },
       maskColor: Color.Transparent,
@@ -551,7 +638,11 @@ export struct AiIsland {
       transition: TransitionEffect.OPACITY.animation({ duration: 120 })
     };
     this.getUIContext().getPromptAction().openCustomDialog(content, options)
-      .catch((): void => { this.liftLayer = null; this.liftController = null; content.dispose(); });
+      .catch((): void => {
+        this.liftLayer = null; this.liftController = null; content.dispose();
+        // A session's AI is only this orb: without it, the AI goes (its button can open it again).
+        if (this.sessionMode) { this.leaveFromOrb(); }
+      });
   }
 
   /** Hand back to voice mode: the orb (lifted or the island's own) goes, and voice mode opens on its last answer. */
@@ -573,6 +664,8 @@ export struct AiIsland {
    * the orb was (x, y: its top-left in the window) rather than from where the island last floated.
    */
   private backFromOrb(x: number, y: number): void {
+    // A session has no panel to come back to (its orb's tap leaves the AI instead).
+    if (this.sessionMode) { return; }
     // A screen an app action opened closes; whatever the user opened while 聊天 floated stays.
     if (this.liftMode !== 'chat') { this.closeAppActionScreen(); }
     // The action came from voice mode: the orb brings voice mode back (its panel, listening), not the text panel.
@@ -625,24 +718,64 @@ export struct AiIsland {
   }
 
   private onFloatRequest(): void {
+    if (this.sessionMode) { return; }
     if (this.floatRequest > 0 && this.stage >= 3 && !this.compact && !this.closing && this.executing === '') { this.floatChat(); }
   }
 
   private onAppActionRequest(): void {
     const at: number = this.appActionRequest.indexOf('@');
-    if (at <= 0 || this.closing) { return; }
+    if (at <= 0 || this.closing || this.sessionMode) { return; }
     const id: DiagnosticAiAppActionId | null = diagnosticAiAppActionId(this.appActionRequest.slice(0, at));
     if (id !== null) { this.runAppAction(id); }
   }
 
+  private onBackKey(): void {
+    if (!this.backKey.startsWith('island:' + this.layerId + '@') || this.closing) { return; }
+    // An app action is running, or a screen is up over the page (the AI's or the user's own): the key is for it.
+    if (this.executing !== '' || this.isAppActionScreenOpen()) {
+      this.closeAppActionScreen();
+      return;
+    }
+    // Floating (the orb, the lifted orb, or the AI in a session): the AI goes away — unless work is running, which
+    // only the orb itself may stop.
+    if (this.sessionMode || this.compact || this.lifted) {
+      if (!this.working) { this.leaveFromOrb(); return; }
+      // The AI layer takes the key while it floats; say why nothing else happens.
+      try {
+        this.getUIContext().getPromptAction().showToast({ message: 'AI 正在处理，点悬浮球可以查看或结束', duration: 2000 });
+      } catch (_error) { /* no toast */ }
+      return;
+    }
+    this.close();
+  }
+
+  /**
+   * 拜拜 / 语音模式 typed in a session's small chat, or chosen by the AI (elsewhere the hidden panel acts on them).
+   * Only the session AI in front answers; 助理 is not in a session, so asking for it says where it is.
+   */
+  private onSessionModeRequest(): void {
+    if (!this.sessionMode || this.closing || !this.answersNow()) { return; }
+    const mode: string = this.modeRequest.split('@')[0];
+    if (mode === 'exit') { this.leaveFromOrb(); return; }
+    if (mode === 'voice') { this.voiceFromOrb(); return; }
+    if (mode === 'assistant') {
+      try {
+        this.getUIContext().getPromptAction().showToast({ message: '助理在主机列表里，回到主机列表后可以打开', duration: 2200 });
+      } catch (_error) { /* no toast */ }
+    }
+  }
+
   /** Voice mode is taking over: fold away quicker, without the ring, so the droplet grows out of a plain capsule. */
   private onCloseRequest(): void {
-    if (this.closeRequest <= 0) { return; }
+    // The host list's voice mode never takes over from a session's AI (SessionAiHost runs its own).
+    if (this.closeRequest <= 0 || this.sessionMode) { return; }
     this.handingOver = true;
     this.close();
   }
 
   close(): void {
+    // In a session the AI is only ever the orb: it goes away as a tap on it does.
+    if (this.sessionMode) { this.leaveFromOrb(); return; }
     // Never stop a running capture or analysis by folding away: float instead.
     if (this.working) { this.setCompact(true); return; }
     if (this.closing) { return; }
@@ -729,7 +862,6 @@ export struct AiIsland {
       onActivityChanged: (active: boolean): void => { this.onWorkChanged(active); },
       onCaptureStateChanged: (capturing: boolean): void => { this.onCaptureChanged(capturing); },
       onClose: (): void => { this.close(); },
-      onOpenMailDraft: (subject: string, body: string): void => { this.onOpenMailDraft(subject, body); },
       onAppAction: (action: DiagnosticAiAppActionId): void => { this.runAppAction(action); },
       onFloat: (): void => { this.floatChat(); }
     }).width('100%')
@@ -768,70 +900,75 @@ export struct AiIsland {
     Stack({ alignContent: Alignment.Top }) {
       // The page behind stays as it is; a tap outside folds the island away (or floats it while working).
       // As a floating capsule there is no catcher at all, so the app underneath takes every touch.
-      if (!this.compact && this.executing === '') {
+      if (!this.compact && this.executing === '' && !this.lifted && !this.sessionMode) {
         Column().width('100%').height('100%').backgroundColor(Color.Transparent)
           .onClick((): void => { this.close(); })
       }
-      Stack({ alignContent: Alignment.Top }) {
-        // Floating, the orb is its own sphere; the glass fades out as it shrinks into it.
-        AiIslandGlass({
-          glassWidth: this.glassWidth(),
-          glassHeight: this.glassHeight(),
-          radius: this.glassRadius()
-        }).opacity(this.compact ? 0 : this.glassIn)
-        this.capsuleContent()
-        // The panel content, mounted early and kept hidden until the glass has grown to it.
-        if (this.panelMounted) {
-          Column() { this.panel() }
-            .width(this.contentCompact ? this.floatWidth() : this.panelWidth())
-            .padding({ top: this.compact ? this.headroom() : 0 })
-            .constraintSize({ maxHeight: this.panelMaxHeight() + 120 })
-            .opacity(this.showPanel() && this.executing === '' ? this.contentOpacity : 0)
-            .blur(this.contentBlur)
-            .hitTestBehavior(this.showPanel() && this.executing === '' ? HitTestMode.Default : HitTestMode.None)
-        }
-      }
-      .margin({ top: this.topOffset() })
-      .blur(this.islandBlur)
-      // While the capsule is lifted above an opened screen, the island itself steps aside.
-      .opacity(this.stage === 0 || this.lifted ? 0 : 1)
-      .scale({ x: this.stage === 0 ? 0.7 : this.orbPressed ? 0.88 : 1, y: this.stage === 0 ? 0.7 : this.orbPressed ? 0.88 : 1,
-        centerX: '50%', centerY: this.compact ? '50%' : 0 })
-      .translate({
-        x: this.compact ? this.dragX : 0,
-        y: this.compact ? this.dragY : 0
-      })
-      // The orb: a tap opens the panel again, a double tap the small chat beside it. Alongside the content's own
-      // gestures (they only act while compact); the drag below stays an ordinary gesture so scrolling wins over it.
-      .onTouch((event: TouchEvent): void => {
-        if (event.type === TouchType.Down) {
-          this.touchStartedCompact = this.compact;
-          if (this.compact) {
-            this.getUIContext().animateTo({ curve: curves.springMotion(0.25, 0.8) }, (): void => { this.orbPressed = true; });
+      // In a session nothing of the island shows: the AI is the lifted orb and its small chat.
+      if (!this.sessionMode) {
+        Stack({ alignContent: Alignment.Top }) {
+          // Floating, the orb is its own sphere; the glass fades out as it shrinks into it.
+          AiIslandGlass({
+            glassWidth: this.glassWidth(),
+            glassHeight: this.glassHeight(),
+            radius: this.glassRadius()
+          }).opacity(this.compact ? 0 : this.glassIn)
+          this.capsuleContent()
+          // The panel content, mounted early and kept hidden until the glass has grown to it.
+          if (this.panelMounted) {
+            Column() { this.panel() }
+              .width(this.contentCompact ? this.floatWidth() : this.panelWidth())
+              .padding({ top: this.compact ? this.headroom() : 0 })
+              .constraintSize({ maxHeight: this.panelMaxHeight() + 120 })
+              .opacity(this.showPanel() && this.executing === '' ? this.contentOpacity : 0)
+              .blur(this.contentBlur)
+              .hitTestBehavior(this.showPanel() && this.executing === '' && !this.lifted ? HitTestMode.Default : HitTestMode.None)
           }
-        } else if ((event.type === TouchType.Up || event.type === TouchType.Cancel) && this.orbPressed) {
-          this.getUIContext().animateTo({ curve: curves.springMotion(0.35, 0.6) }, (): void => { this.orbPressed = false; });
         }
-      })
-      .parallelGesture(GestureGroup(GestureMode.Exclusive,
-        TapGesture({ count: 2 }).onAction((): void => { if (this.touchStartedCompact) { this.liftFromCompact(); } }),
-        TapGesture({ count: 1 }).onAction((): void => {
-          if (this.touchStartedCompact && this.compact && this.executing === '') { this.setCompact(false); }
-        })))
-      .gesture(PanGesture({ direction: this.compact ? PanDirection.All : PanDirection.Up, distance: this.compact ? 8 : 24 })
-        .onActionStart((): void => { this.dragStartX = this.dragX; this.dragStartY = this.dragY; })
-        .onActionUpdate((event: GestureEvent): void => {
-          // The floating capsule follows the finger; the panel only reacts to a swipe up.
-          if (this.compact) {
-            const half: number = this.areaWidth / 2 - AI_FLOAT_ORB / 2 - 6;
-            this.dragX = Math.max(-half, Math.min(half, this.dragStartX + event.offsetX));
-            this.dragY = Math.max(0, Math.min(this.areaHeight - this.topOffset() - AI_FLOAT_ORB - 24,
-              this.dragStartY + event.offsetY));
+        .margin({ top: this.topOffset() })
+        .blur(this.islandBlur)
+        // While the capsule is lifted above an opened screen, the island itself steps aside.
+        .opacity(this.stage === 0 || this.lifted ? 0 : 1)
+        .scale({ x: this.stage === 0 ? 0.7 : this.orbPressed ? 0.88 : 1, y: this.stage === 0 ? 0.7 : this.orbPressed ? 0.88 : 1,
+          centerX: '50%', centerY: this.compact ? '50%' : 0 })
+        .translate({
+          x: this.compact ? this.dragX : 0,
+          y: this.compact ? this.dragY : 0
+        })
+        // The orb: a tap opens the panel again, a double tap the small chat beside it. Alongside the content's own
+        // gestures (they only act while compact); the drag below stays an ordinary gesture so scrolling wins over it.
+        .onTouch((event: TouchEvent): void => {
+          if (event.type === TouchType.Down) {
+            this.touchStartedCompact = this.compact;
+            if (this.compact) {
+              this.getUIContext().animateTo({ curve: curves.springMotion(0.25, 0.8) }, (): void => { this.orbPressed = true; });
+            }
+          } else if ((event.type === TouchType.Up || event.type === TouchType.Cancel) && this.orbPressed) {
+            this.getUIContext().animateTo({ curve: curves.springMotion(0.35, 0.6) }, (): void => { this.orbPressed = false; });
           }
         })
-        .onActionEnd((event: GestureEvent): void => {
-          if (!this.compact && event.offsetY < -40) { this.close(); }
-        }))
+        .parallelGesture(GestureGroup(GestureMode.Exclusive,
+          TapGesture({ count: 2 }).onAction((): void => { if (this.touchStartedCompact) { this.liftFromCompact(); } }),
+          TapGesture({ count: 1 }).onAction((): void => {
+            if (this.touchStartedCompact && this.compact && this.executing === '') { this.setCompact(false); }
+          })))
+        .gesture(PanGesture({ direction: this.compact ? PanDirection.All : PanDirection.Up, distance: this.compact ? 8 : 24 })
+          .onActionStart((): void => { this.dragStartX = this.dragX; this.dragStartY = this.dragY; })
+          .onActionUpdate((event: GestureEvent): void => {
+            // The floating capsule follows the finger; the panel only reacts to a swipe up.
+            if (this.compact) {
+              const half: number = this.areaWidth / 2 - AI_FLOAT_ORB / 2 - 6;
+              this.dragX = Math.max(-half, Math.min(half, this.dragStartX + event.offsetX));
+              this.dragY = Math.max(0, Math.min(this.areaHeight - this.topOffset() - AI_FLOAT_ORB - 24,
+                this.dragStartY + event.offsetY));
+            }
+          })
+          .onActionEnd((event: GestureEvent): void => {
+            if (!this.compact && event.offsetY < -40) { this.close(); }
+          }))
+        // Lifted, the orb in the layer above takes the touches; the island's own (hidden) orb must not.
+        .hitTestBehavior(this.lifted ? HitTestMode.None : HitTestMode.Default)
+      }
       if (this.compact && this.compactHint && !this.lifted) {
         Stack() {
           Text(AI_ORB_HINT_TEXT).fontSize(12).fontColor('#FFFFFF').maxLines(1).textAlign(TextAlign.Center).width('100%')
@@ -844,7 +981,8 @@ export struct AiIsland {
       }
     }
     .width('100%').height('100%')
-    .hitTestBehavior(this.stage === 0 ? HitTestMode.None : this.compact || this.executing !== '' ? HitTestMode.Transparent :
+    .hitTestBehavior(this.stage === 0 || this.lifted || this.sessionMode ? HitTestMode.None :
+      this.compact || this.executing !== '' ? HitTestMode.Transparent :
       this.stage >= 3 ? HitTestMode.Default : HitTestMode.Transparent)
     .onAreaChange((_old: Area, area: Area): void => {
       const w: number = Number(area.width);

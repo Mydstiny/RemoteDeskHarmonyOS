@@ -37,9 +37,11 @@ export default function guideContentRegistryTest(): void {
 
     it('covers_current_features_and_the_complete_release', 0, (): void => {
       const guide: GuideContentPage[] = firstInstallGuidePages();
-      // 1.1.6 notes are pending; the latest complete release remains 1.1.5.1.
-      expect(pagesForReleasedVersion(CURRENT_RELEASE_VERSION).length).assertEqual(0);
-      expect(currentReleasePageCount()).assertEqual(0);
+      // 1.2.0: the free Pro trial first, the AI pages, then a summary of 1.1.6 for older versions.
+      const current: ReleaseNotePage[] = pagesForReleasedVersion(CURRENT_RELEASE_VERSION);
+      expect(current.length).assertEqual(8);
+      expect(currentReleasePageCount()).assertEqual(8);
+      expect(current[0].id).assertEqual('release-pro-trial');
       const release: ReleaseNotePage[] = pagesForReleasedVersion('1.1.5.1');
       expect(containsGuidePage(guide, 'welcome-five-protocols')).assertTrue();
       expect(containsGuidePage(guide, 'session-toolkit')).assertTrue();

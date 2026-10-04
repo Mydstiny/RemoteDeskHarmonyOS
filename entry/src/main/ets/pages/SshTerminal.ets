@@ -9,7 +9,8 @@ import { ProContinuationService, proContinuationFailureText } from '../services/
 import { ProContinuationPreferences } from '../services/pro/ProContinuationPreferences';
 import { ProContinuationSecret, validProContinuationSecret } from '../services/pro/ProContinuationCredentials';
 import { ProEntries } from '../services/pro/ProEntries';
-import { PRO_PERSONALIZATION_FEATURE } from '../services/pro/ProFeatureCatalog';
+import { PRO_DIAGNOSTICS_ASSISTANT_FEATURE, PRO_PERSONALIZATION_FEATURE } from '../services/pro/ProFeatureCatalog';
+import { SessionAiHost } from '../components/diagnosticAi/SessionAiHost';
 import { SshSkinStore } from '../services/ssh/skin/SshSkinStore';
 import { SshSkin, sshSkinFont } from '../services/ssh/skin/SshSkinPolicy';
 import { ProConnectionDescription } from '../services/pro/ProConnectionEnvelope';
@@ -664,7 +665,7 @@ type SshProductivityShellPhase = 'idle' | 'prompt' | 'command' | 'executed';
 
 type SshHeaderAction = 'new-session' | 'tabs' | 'palette' | 'transfers' | 'restore' |
   'sidebar' | 'inspector' | 'profile' | 'reset-font' | 'search' | 'locale' | 'sftp' | 'forwarding' |
-  'orientation' | 'quick-commands';
+  'orientation' | 'quick-commands' | 'ai';
 
 const SSH_PTY_STARTUP_SETTLE_WINDOW_MS: number = 2500;
 const SSH_PTY_STARTUP_SETTLE_MS: number = 900;
@@ -983,6 +984,8 @@ struct SshTerminal {
   @State sftpRecoveredTasks: SshSftpTaskRecord[] = [];
   @State sftpDropHoverActive: boolean = false;
   @State isLandscape: boolean = false;
+  /** Bumped by 「更多 → AI 助理」: SessionAiHost brings up the AI as the orb with its small chat. */
+  @State aiSessionOpenRequest: number = 0;
   // Kept only in-memory to retry the current picker grant; never logged or placed in diagnostics.
   private sftpTransferUri: string = '';
   private sftpTransferRemotePath: string = '';
@@ -6978,6 +6981,11 @@ struct SshTerminal {
       this.sshWorkbenchEnabled, this.isDesktopDevice, this.isPadDevice);
   }
 
+  /** Pro AI 助理 in this terminal: 「更多 → AI 助理」. */
+  private sshAiVisible(): boolean {
+    return ProEntries.visible(PRO_DIAGNOSTICS_ASSISTANT_FEATURE, ProAppRuntime.getInstance().context());
+  }
+
   private sshHeaderActionPopupWidth(): number {
     const uiContext = this.getUIContext();
     const measureTextVp = (text: string, fontSize: number): number => {
@@ -6987,7 +6995,7 @@ struct SshTerminal {
       }));
     };
     const labels: string[] = [
-      '工作区与会话', '常用命令', '显示全部标签', '命令面板', '传输中心',
+      'AI 助理', '工作区与会话', '常用命令', '显示全部标签', '命令面板', '传输中心',
       '恢复未连接的工作区标签', '显示工作区侧栏', '收起工作区侧栏',
       '显示会话详情', '隐藏会话详情', '取消显示会话详情',
       '终端搜索', '终端外观', '恢复终端字号', '语言与地区',
@@ -7024,7 +7032,9 @@ struct SshTerminal {
         hostId !== this.hostId.trim()) {
         return;
       }
-      if (action === 'new-session') {
+      if (action === 'ai') {
+        this.aiSessionOpenRequest = Date.now();
+      } else if (action === 'new-session') {
         this.openSshTabPicker();
       } else if (action === 'tabs') {
         this.openSshTabPicker();
@@ -7088,6 +7098,9 @@ struct SshTerminal {
           .margin({ left: 14, right: 14, top: 8, bottom: 6 })
 
         Divider().strokeWidth(0.5).color(this.pal().cardBorder).width('100%')
+        if (this.sshAiVisible()) {
+          this.SshHeaderActionRow('AI 助理', '悬浮球加小对话框：单击退出，双击语音', 'ai')
+        }
         this.SshHeaderActionRow('新建 SSH 会话', '选择主机并打开新标签', 'new-session')
         // Continuation is automatic and managed in 设置 > Pro 功能; no per-session menu rows.
         this.SshHeaderActionRow('常用命令', this.sshProductivityReady
@@ -19117,6 +19130,15 @@ struct SshTerminal {
 
   build() {
     Stack({ alignContent: Alignment.TopStart }) {
+      // The AI in this terminal: the orb, its small chat and voice mode, in the AI top layer.
+      if (this.sshAiVisible()) {
+        SessionAiHost({
+          openRequest: this.aiSessionOpenRequest,
+          deviceClass: this.isDesktopDevice ? 'pc' : this.isPadDevice ? 'pad' : 'phone',
+          avoidSide: '',
+          avoidWidth: 0
+        })
+      }
       if (this.pcWindowAfterAuthentication && this.sessionWindowId.length === 0 &&
         !this.pcWindowHandoffComplete) {
         // Keep the unchanged SSH credential/host-key/MFA sheets on this page,

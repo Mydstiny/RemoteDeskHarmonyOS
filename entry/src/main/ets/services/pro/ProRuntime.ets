@@ -3,6 +3,7 @@ import { ProAccessContext, ProAccessDecision, ProEntitlementState, proFeatureAcc
   resolveProFeatureAccess } from './ProAccessPolicy';
 import { ProFeature, proFeatures, PRO_LIFETIME } from './ProFeatureCatalog';
 import { ProEntitlementService, ProEntitlementSnapshot } from './ProEntitlementService';
+import { ProComplimentaryGrant, proComplimentaryGrant } from './ProComplimentaryPolicy';
 export type ProDebugMode = 'real' | 'free' | 'pro';
 export interface ProRuntimeSnapshot {
   realState: ProEntitlementState;
@@ -11,6 +12,8 @@ export interface ProRuntimeSnapshot {
   label: string;
   needsRevalidation: boolean;
   refundPending: boolean;
+  /** Pro comes from the 1.2.0 free trial, not a purchase. */
+  complimentary: boolean;
 }
 export class ProRuntime {
   private debugMode: ProDebugMode = 'real';
@@ -27,14 +30,17 @@ export class ProRuntime {
   }
   snapshot(): ProRuntimeSnapshot {
     const real: ProEntitlementSnapshot = this.entitlement.snapshot();
-    let effectiveState = real.state;
+    // The free trial: Pro for everyone, on top of (never instead of) the real entitlement.
+    const granted: ProComplimentaryGrant = proComplimentaryGrant(real.state, real.entitlementIds, real.refundPending);
+    let effectiveState = granted.state;
     let mode: ProDebugMode = 'real';
     if (DEBUG && !real.refundPending) {
       mode = this.debugMode;
       if (mode === 'pro') { effectiveState = 'active'; }
       if (mode === 'free') { effectiveState = 'free'; }
     }
-    let label = effectiveState === 'active' ? 'Pro 已激活' : effectiveState === 'verificationRequired' ?
+    let label = effectiveState === 'active' ? (granted.complimentary ? 'Pro 免费试用中' : 'Pro 已激活') :
+      effectiveState === 'verificationRequired' ?
       '权益待验证' : effectiveState === 'revoked' ? 'Pro 权益已撤销' : '免费版';
     if (DEBUG) {
       if (mode === 'real' && real.environment === 'sandbox') { label = '沙盒 · ' + label; }
@@ -42,7 +48,8 @@ export class ProRuntime {
       if (mode === 'free') { label = '模拟免费'; }
     }
     return { realState: real.state, effectiveState, mode, label,
-      needsRevalidation: real.needsRevalidation, refundPending: real.refundPending };
+      needsRevalidation: real.needsRevalidation, refundPending: real.refundPending,
+      complimentary: granted.complimentary && mode === 'real' };
   }
   setDebugMode(mode: ProDebugMode): void {
     // Both this write and the read/override in snapshot/decision are removed from Release bytecode.
@@ -59,8 +66,9 @@ export class ProRuntime {
   resetDebugMode(): void { if (DEBUG) { this.debugMode = 'real'; } }
   decision(id: string, context: ProAccessContext): ProAccessDecision {
     const real = this.entitlement.snapshot();
-    let state = real.state;
-    let ids = real.entitlementIds;
+    const granted: ProComplimentaryGrant = proComplimentaryGrant(real.state, real.entitlementIds, real.refundPending);
+    let state = granted.state;
+    let ids = granted.ids;
     if (DEBUG && !real.refundPending) {
       if (this.debugMode === 'pro') { state = 'active'; ids = [PRO_LIFETIME]; }
       if (this.debugMode === 'free') { state = 'free'; ids = []; }

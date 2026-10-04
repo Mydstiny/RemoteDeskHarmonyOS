@@ -49,8 +49,14 @@ function environment(debug, clock = { now: 1000 }, mocks = {}) {
     }
   } };
 }
-function fixture(debug = true) {
-  const env = environment(debug);
+/** The 1.2.0 free trial, switched on or off for a fixture (the real policy, with its switch injected). */
+function trialPolicy(on) {
+  const real = environment(true).load('entry/src/main/ets/services/pro/ProComplimentaryPolicy.ets');
+  return { ...real, PRO_COMPLIMENTARY_TRIAL: on,
+    proComplimentaryGrant: (state, ids, refundPending) => real.proComplimentaryGrant(state, ids, refundPending, on) };
+}
+function fixture(debug = true, trial = false) {
+  const env = environment(debug, { now: 1000 }, { './ProComplimentaryPolicy': trialPolicy(trial) });
   const base = 'entry/src/main/ets/services/pro/';
   const { ProEntitlementService } = env.load(base + 'ProEntitlementService.ets');
   const catalog = env.load(base + 'ProFeatureCatalog.ets');
@@ -94,9 +100,9 @@ test('debug synchronizes subscribers without changing real entitlement or planne
 });
 test('Debug opens implemented experiments for real and simulated Pro; Release never does', async () => {
   const ctx = { appVersionCode: 100, apiVersion: 26, device: 'phone', protocol: 'ssh',
-    capabilities: ['SystemCapability.DistributedDataManager.DataObject.DistributedObject'],
-    grantedPermissions: ['ohos.permission.DISTRIBUTED_DATASYNC'], requestablePermissions: [] };
-  const id = 'pro.connection.continuation';
+    capabilities: ['SystemCapability.Collaboration.HarmonyShare'], grantedPermissions: [], requestablePermissions: [] };
+  // 碰一碰分享连接 stays an experiment in 1.2.0 (no app-linking domain yet).
+  const id = 'pro.connection.knockShare';
   for (const debug of [true, false]) {
     const f = fixture(debug);
     assert.equal(f.runtime.decision(id, ctx).visible, false, 'free users never see experiments');
@@ -111,6 +117,36 @@ test('Debug opens implemented experiments for real and simulated Pro; Release ne
     assert.equal(f.runtime.decision(id, ctx).executable, debug);
     f.runtime.dispose();
   }
+});
+test('1.2.0 free trial: everyone has Pro without a purchase; experiments, refunds and revocations still hold', async () => {
+  for (const debug of [true, false]) {
+    const f = fixture(debug, true);
+    const snapshot = f.runtime.snapshot();
+    assert.equal(snapshot.realState, 'free', 'nothing is signed or stored');
+    assert.equal(snapshot.effectiveState, 'active');
+    assert.equal(snapshot.complimentary, true);
+    assert.equal(snapshot.label.endsWith('Pro 免费试用中'), true);
+    assert.equal(f.runtime.decision('test.shipped', f.context).executable, true);
+    assert.equal(f.runtime.decision('pro.workspaces', f.context).executable, true);
+    assert.equal(f.runtime.decision('pro.diagnostics.assistant', f.context).executable, true, 'AI 助理 is open in Release');
+    assert.equal(f.runtime.decision('pro.workspaces', { ...f.context, apiVersion: 23 }).visible, false, 'version checks still apply');
+    const share = { ...f.context, protocol: 'ssh', capabilities: ['SystemCapability.Collaboration.HarmonyShare'] };
+    assert.equal(f.runtime.decision('pro.connection.knockShare', share).visible, debug, 'experiments stay closed in Release');
+    f.service.markRefundPending();
+    assert.equal(f.runtime.decision('test.shipped', f.context).executable, false, 'a pending refund is never overridden');
+    f.runtime.dispose();
+  }
+  const revoked = fixture(false, true);
+  revoked.verifier.result = { status: 'revoked', owner: 'a', environment: 'production' };
+  await revoked.service.reconcile([]);
+  assert.equal(revoked.runtime.decision('test.shipped', revoked.context).visible, false, 'a revoked purchase is not overridden');
+  revoked.runtime.dispose();
+  // Debug 「模拟免费」 still shows the free app during the trial.
+  const simulated = fixture(true, true);
+  simulated.runtime.setDebugMode('free');
+  assert.equal(simulated.runtime.decision('test.shipped', simulated.context).visible, false);
+  assert.equal(simulated.runtime.snapshot().complimentary, false);
+  simulated.runtime.dispose();
 });
 test('refund pending disables Debug Pro overrides until a signed revocation arrives', async () => {
   const f = fixture();

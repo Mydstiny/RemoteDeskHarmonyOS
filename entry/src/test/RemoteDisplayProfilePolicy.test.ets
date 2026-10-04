@@ -116,14 +116,15 @@ export default function remoteDisplayProfilePolicyTest(): void {
       expect(x11.allowed).assertTrue();
     });
 
-    it('registers_both_advanced_display_features_as_experimental_pro_entries', 0, (): void => {
+    it('registers_both_advanced_display_features_as_shipped_pro_entries', 0, (): void => {
       const catalog = proFeatures();
       const rdp = catalog.find((item): boolean => item.id === PRO_RDP_ADVANCED_DISPLAY_FEATURE);
       const rustDesk = catalog.find((item): boolean => item.id === PRO_RUSTDESK_ADVANCED_DISPLAY_FEATURE);
       expect(rdp !== undefined).assertTrue();
       expect(rustDesk !== undefined).assertTrue();
-      expect(rdp?.availability).assertEqual('experimental');
-      expect(rustDesk?.availability).assertEqual('experimental');
+      // Shipped in 1.2.0 (open during the free trial); still behind the Pro entitlement.
+      expect(rdp?.availability).assertEqual('available');
+      expect(rustDesk?.availability).assertEqual('available');
       expect(rdp?.requiredEntitlementId).assertEqual('pro.lifetime');
       expect(rustDesk?.requiredEntitlementId).assertEqual('pro.lifetime');
     });

@@ -356,6 +356,16 @@ export default function remoteSessionTopBarPolicyTest(): void {
   });
 
   describe('RemoteSessionTopBarPolicy_actions', (): void => {
+    it('adds_the_ai_action_before_diagnostics_only_when_visible', 0, (): void => {
+      const phone = remoteSessionPrimaryActionIds('rustdesk', 'phone', false, false, true);
+      expect(phone.indexOf('ai') >= 0).assertTrue();
+      expect(phone.indexOf('ai')).assertEqual(phone.indexOf('diagnostics') - 1);
+      expect(remoteSessionPrimaryActionIds('rustdesk', 'phone').indexOf('ai')).assertEqual(-1);
+      const pc = remoteSessionPrimaryActionIds('rustdesk', 'pc', false, false, true);
+      expect(pc.indexOf('ai')).assertEqual(pc.indexOf('diagnostics') - 1);
+      expect(remoteSessionPrimaryActionIds('rdp', 'phone', false, false, true).length).assertEqual(0);
+    });
+
     it('every_multi_choice_toolbar_row_should_have_a_secondary_menu', 0, (): void => {
       expect(rustDeskTopBarSubMenuForItem('viewScale')).assertEqual('viewScale');
       expect(rustDeskTopBarSubMenuForItem('remoteDisplay')).assertEqual('remoteDisplay');

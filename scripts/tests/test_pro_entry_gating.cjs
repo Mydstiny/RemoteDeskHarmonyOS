@@ -107,7 +107,8 @@ assert.match(hostSource, /section === SETTINGS_SECTION_DIAGNOSTICS && \(this\.di
 // The host-page AI entry follows the 启动 AI 辅助 entitlement.
 // The AI entry shows on every tab, and only while the account may use the assistant.
 assert.match(hostSource, /hostAiOrbShown\(\): boolean \{\s*return this\.hostAiOrbAvailable\(\);/);
-assert.match(hostSource, /hostAiOrbAvailable\(\): boolean \{\s*return this\.diagnosticAiOrbEnabled && this\.diagnosticAiAssistantVisible;/);
+// The AI entrance is always resident for Pro (f460f0faf): only the entitlement hides it.
+assert.match(hostSource, /hostAiOrbAvailable\(\): boolean \{[\s\S]{0,260}?return this\.diagnosticAiAssistantVisible;/);
 
 // 3. Regression: the settings app-icon row follows the entitlement.
 const host = sources.get('pages/HostListPage.ets');
@@ -138,7 +139,7 @@ assert.match(sources.get('services/ssh/skin/SshSkinStore.ets'),
   /resolveSshSkin\(this\.settings, hostId, ProEntries\.visible\(PRO_PERSONALIZATION_FEATURE\)\)/);
 console.log('PASS Pro entry points follow the entitlement through ProEntries and every Pro badge is registered');
 
-// New Pro surfaces remain entitlement-gated while Debug exposes their experimental stage.
+// Pro surfaces stay entitlement-gated; in 1.2.0 workspaces and host management ship (open during the free trial).
 const vm = require('node:vm');
 const entryTs = require(process.env.PRO_TYPESCRIPT_PATH || 'typescript');
 const catalogPath = path.resolve(__dirname, '../../entry/src/main/ets/services/pro/ProFeatureCatalog.ets');
@@ -156,7 +157,7 @@ for (const id of ['pro.workspaces', 'pro.hostManagement', 'pro.feedback']) {
     assert.match(entryModule.exports.proFeatureProgress(id), /Pro.*畅联群.*QQ 群/);
     continue;
   }
-  assert.equal(item.availability, 'experimental');
+  assert.equal(item.availability, 'available');
   assert.ok(item.devices.includes('phone')); assert.ok(item.devices.includes('tablet')); assert.ok(item.devices.includes('pc'));
 }
 assert.match(entryModule.exports.proFeatureProgress('pro.workspaces'), /已开发/);

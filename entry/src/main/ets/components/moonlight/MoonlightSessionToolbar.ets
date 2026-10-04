@@ -39,6 +39,8 @@ export struct MoonlightSessionToolbar {
   @Prop controlModeLabel: string = '触控板';
   @Prop portraitDisplayEnabled: boolean = false;
   @Prop portraitDisplayActive: boolean = false;
+  /** Pro AI 助理: its button before 性能. */
+  @Prop aiVisible: boolean = false;
   @Prop terminationBusy: boolean = false;
   @Prop @Watch('onMenuOpenChange') menuOpen: boolean = false;
   @Prop qualityColor: string = '#66DD7A';
@@ -69,7 +71,7 @@ export struct MoonlightSessionToolbar {
     const items: MoonlightToolbarItem[] = moonlightToolbarItems(
       this.breakpoint, this.audioAvailable, this.controllerAvailable, this.pipAvailable,
       layout.maxVisibleItems, this.keyboardAvailable, this.controlModeLabel,
-      this.portraitDisplayEnabled, this.portraitDisplayActive);
+      this.portraitDisplayEnabled, this.portraitDisplayActive, this.aiVisible);
     if (!this.canvasResetAvailable) { return items; }
     const resetItem: MoonlightToolbarItem = {
       action: 'resetCanvas', label: '复位', dangerous: false,
@@ -121,6 +123,7 @@ export struct MoonlightSessionToolbar {
     if (action === 'portrait') { return $r('sys.symbol.rectangle_rotate'); }
     if (action === 'diagnostics') { return $r('sys.symbol.info_circle'); }
     if (action === 'more') { return $r('sys.symbol.ellipsis_bubble'); }
+    if (action === 'ai') { return $r('sys.symbol.wand_and_stars'); }
     return $r('sys.symbol.xmark_circle_fill');
   }
 

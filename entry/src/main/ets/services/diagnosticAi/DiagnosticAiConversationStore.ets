@@ -182,6 +182,20 @@ function cloneSession(value: DiagnosticAiConversationSession): DiagnosticAiConve
 }
 
 /** Local-only, owner-scoped conversation history, assistant preferences and usage accounting. */
+/** A feature the user asked for, or an idea they had, kept (per account) until they send it to the developer. */
+export interface DiagnosticAiFeatureRequest {
+  id: string;
+  text: string;
+  createdAt: number;
+  /** When it went to the developer; 0 while it waits. */
+  sentAt: number;
+}
+
+function sameRequest(a: string, b: string): boolean {
+  const norm = (value: string): string => value.toLowerCase().replace(/[\s，。,.！!？?、；;：:“”"'‘’]/g, '');
+  return norm(a) === norm(b);
+}
+
 export class DiagnosticAiConversationStore {
   private context: common.Context | null = null;
   private owner: string = 'device-local';
@@ -402,5 +416,55 @@ export class DiagnosticAiConversationStore {
       confirmBeforeActions: value.confirmBeforeActions, updatedAt: Date.now() }));
       store.flushSync(); return true;
     } catch (_error) { return false; }
+  }
+
+  // ------------------------------------------------------------------ feature requests (需求收集)
+
+  featureRequests(): DiagnosticAiFeatureRequest[] {
+    const store = this.prefs(); if (store === null) { return []; }
+    try {
+      const parsed: Object = JSON.parse(store.getSync('featureRequests', '[]') as string) as Object;
+      if (!Array.isArray(parsed)) { return []; }
+      return (parsed as DiagnosticAiFeatureRequest[])
+        .filter((row: DiagnosticAiFeatureRequest): boolean => row !== null && typeof row.text === 'string' && row.text.trim() !== '')
+        .map((row: DiagnosticAiFeatureRequest): DiagnosticAiFeatureRequest => ({
+          id: typeof row.id === 'string' && row.id !== '' ? row.id : 'req-' + Number(row.createdAt).toString(36),
+          text: row.text.trim().slice(0, 300), createdAt: Number(row.createdAt) || 0, sentAt: Number(row.sentAt) || 0 }))
+        .slice(-100);
+    } catch (_error) { return []; }
+  }
+
+  private saveFeatureRequests(rows: DiagnosticAiFeatureRequest[]): boolean {
+    const store = this.prefs(); if (store === null) { return false; }
+    try { store.putSync('featureRequests', JSON.stringify(rows.slice(-100))); store.flushSync(); return true; }
+    catch (_error) { return false; }
+  }
+
+  /** Keeps a new request; null when it is empty or already waiting (the same words, give or take punctuation). */
+  addFeatureRequest(text: string): DiagnosticAiFeatureRequest | null {
+    const value: string = text.trim().replace(/\s+/g, ' ').slice(0, 300);
+    if (value === '') { return null; }
+    const rows: DiagnosticAiFeatureRequest[] = this.featureRequests();
+    if (rows.some((row: DiagnosticAiFeatureRequest): boolean => row.sentAt === 0 && sameRequest(row.text, value))) { return null; }
+    const now: number = Date.now();
+    const row: DiagnosticAiFeatureRequest = { id: 'req-' + now.toString(36) + Math.floor(Math.random() * 1296).toString(36),
+      text: value, createdAt: now, sentAt: 0 };
+    return this.saveFeatureRequests(rows.concat([row])) ? row : null;
+  }
+
+  /** Removes the requests whose text contains `text` (all of them for ''); the number removed. */
+  removeFeatureRequests(text: string): number {
+    const key: string = text.trim().toLowerCase();
+    const rows: DiagnosticAiFeatureRequest[] = this.featureRequests();
+    const kept: DiagnosticAiFeatureRequest[] = rows.filter((row: DiagnosticAiFeatureRequest): boolean =>
+      key !== '' && row.text.toLowerCase().indexOf(key) < 0 && key.indexOf(row.text.toLowerCase()) < 0);
+    if (kept.length === rows.length) { return 0; }
+    return this.saveFeatureRequests(kept) ? rows.length - kept.length : 0;
+  }
+
+  markFeatureRequestsSent(ids: string[], at: number): boolean {
+    const rows: DiagnosticAiFeatureRequest[] = this.featureRequests().map((row: DiagnosticAiFeatureRequest): DiagnosticAiFeatureRequest =>
+      ids.indexOf(row.id) >= 0 ? { id: row.id, text: row.text, createdAt: row.createdAt, sentAt: at } : row);
+    return this.saveFeatureRequests(rows);
   }
 }

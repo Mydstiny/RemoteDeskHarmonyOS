@@ -5,7 +5,7 @@ import { AI_FLOAT_ORB } from './AiIslandChrome';
 import { AiDoneMark, AiFloatingOrb, AiIslandRingsCheck } from './AiMotionViews';
 import { AiChatMemory, AiChatView } from './AiChatView';
 import { AI_CHAT_REFRESH_KEY } from '../../services/diagnosticAi/AiShareInbox';
-import { AI_ORB_HINT_TEXT, aiOrbHintWanted } from '../../services/diagnosticAi/AiOrbHintStore';
+import { AI_ORB_HINT_TEXT, AI_SESSION_ORB_HINT_TEXT, aiOrbHintWanted } from '../../services/diagnosticAi/AiOrbHintStore';
 
 /** The island's square when 灵动岛光环 opens out of it. */
 const AI_ISLAND_CARD: number = 148;
@@ -60,6 +60,15 @@ export class AiLiftController {
   /** Where the orb starts, in window coordinates (−1: its usual spot at the right edge). */
   startX: number = -1;
   startY: number = -1;
+  /**
+   * In a remote session: a tap leaves the AI (onExit), a double tap starts voice mode (onVoice), a press only drags,
+   * and the orb keeps clear of the session's side bar (on `avoidSide`, `avoidWidth` wide).
+   */
+  sessionMode: boolean = false;
+  onExit: () => void = (): void => {};
+  onVoice: () => void = (): void => {};
+  avoidSide: string = '';
+  avoidWidth: number = 0;
 }
 
 @Builder
@@ -144,6 +153,27 @@ struct AiLiftLayer {
   private dragStartY: number = 0;
   private timers: number[] = [];
   private keyboardWindow: window.Window | null = null;
+  /**
+   * The window turned or was resized (a session switching between landscape and portrait, a PC window): the layer
+   * takes the new size and the orb settles on the same side, fitted with its chat.
+   */
+  private readonly onWindowSize = (size: window.Size): void => {
+    const ui = this.getUIContext();
+    const width: number = ui.px2vp(size.width);
+    const height: number = ui.px2vp(size.height);
+    if (Math.abs(width - this.layerW) < 1 && Math.abs(height - this.windowH) < 1) { return; }
+    const onRight: boolean = this.orbOnRight();
+    this.toFull();
+    this.windowH = height;
+    if (this.anchored) { this.layerW = width; this.layerH = height - this.originY; }
+    if (this.phase !== 2 || this.dragging) { return; }
+    this.getUIContext().animateTo({ curve: curves.springMotion(0.45, 0.86) }, (): void => {
+      this.boxX = this.edgeX(onRight);
+      this.boxY = this.fitY(this.boxY);
+      this.syncChatSides(false);
+    });
+    this.restSoon(700);
+  };
   private readonly onKeyboard = (height: number): void => {
     const next: number = this.getUIContext().px2vp(height);
     this.toFull();
@@ -178,6 +208,7 @@ struct AiLiftLayer {
           }
         } catch (_error) { /* keep the fallbacks */ }
         try { win.on('keyboardHeightChange', this.onKeyboard); } catch (_error) { /* no keyboard events */ }
+        try { win.on('windowSizeChange', this.onWindowSize); } catch (_error) { /* no size events */ }
       }).catch((): void => { /* no window */ });
     }
   }
@@ -188,6 +219,7 @@ struct AiLiftLayer {
     if (this.restTimer !== -1) { clearTimeout(this.restTimer); this.restTimer = -1; }
     if (this.keyboardWindow !== null) {
       try { this.keyboardWindow.off('keyboardHeightChange', this.onKeyboard); } catch (_error) { /* already off */ }
+      try { this.keyboardWindow.off('windowSizeChange', this.onWindowSize); } catch (_error) { /* already off */ }
       this.keyboardWindow = null;
     }
   }
@@ -227,15 +259,17 @@ struct AiLiftLayer {
     this.restSoon(700);
   }
 
-  /** A tap: back to the island, from where the orb is. */
+  /** A tap: back to the island, from where the orb is (in a session: the AI goes away). */
   private orbTapped(): void {
     if (this.phase !== 2) { return; }
+    if (this.controller.sessionMode) { this.controller.onExit(); return; }
     this.controller.onOrbTap(this.boxX, this.boxY + this.originY);
   }
 
-  /** A double tap: the small chat beside the orb, or away again. */
+  /** A double tap: the small chat beside the orb, or away again (in a session: voice mode). */
   private orbDoubleTapped(): void {
     if (this.phase !== 2) { return; }
+    if (this.controller.sessionMode) { this.hintShown = false; this.controller.onVoice(); return; }
     this.hintShown = false;
     if (!this.chatShown) { this.unread = false; }
     this.setChatShown(!this.chatShown);
@@ -357,7 +391,14 @@ struct AiLiftLayer {
   }
   private hintY(): number { return this.boxY + (AI_FLOAT_ORB - AI_HINT_HEIGHT) / 2; }
 
-  private edgeX(right: boolean): number { return right ? this.layerW - AI_FLOAT_ORB - AI_EDGE : AI_EDGE; }
+  private edgeX(right: boolean): number {
+    // A session's side bar takes its edge: the orb rests just inside it.
+    const avoid: number = this.controller.sessionMode && this.controller.avoidSide === (right ? 'right' : 'left') ?
+      Math.max(0, this.controller.avoidWidth) : 0;
+    return right ? this.layerW - AI_FLOAT_ORB - AI_EDGE - avoid : AI_EDGE + avoid;
+  }
+
+  private hintText(): string { return this.controller.sessionMode ? AI_SESSION_ORB_HINT_TEXT : AI_ORB_HINT_TEXT; }
   private chatSpace(): number { return this.chatShown ? this.chatH + AI_CHAT_GAP : 0; }
 
   private chatX(): number {
@@ -456,6 +497,8 @@ struct AiLiftLayer {
     this.boxW = AI_FLOAT_ORB; this.boxH = AI_FLOAT_ORB; this.boxR = AI_FLOAT_ORB / 2;
     const fromIsland: boolean = this.controller.startX >= 0 && this.controller.startY >= 0;
     this.boxX = fromIsland ? Math.max(4, Math.min(this.layerW - AI_FLOAT_ORB - 4, this.controller.startX)) : this.edgeX(true);
+    // In a session: on the edge away from the side bar.
+    if (this.controller.sessionMode) { this.boxX = this.edgeX(this.controller.avoidSide !== 'right'); }
     this.boxY = this.fitY(fromIsland ? this.controller.startY - this.originY : this.layerH * 0.46);
     // Taking over the island's orb where it is: no pop.
     this.boxScale = fromIsland ? 1 : 0.6; this.boxOpacity = fromIsland ? 1 : 0;
@@ -465,7 +508,12 @@ struct AiLiftLayer {
       });
     });
     this.later(fromIsland ? 16 : 200, (): void => {
-      if (this.controller.openChat) { this.setChatShown(true); return; }
+      if (this.controller.openChat) {
+        this.setChatShown(true);
+        // A session's orb taps differently: say so the first time.
+        if (this.controller.sessionMode) { this.showHint(); }
+        return;
+      }
       // Just the orb, out of the way: a double tap brings the small chat.
       this.showHint();
       this.restSoon(700);
@@ -545,7 +593,8 @@ struct AiLiftLayer {
         .onVisibleAreaChange([0.0, 0.05, 0.5], (visible: boolean, ratio: number): void => {
           if (visible && ratio > 0.01) { this.overflowSeen = true; }
         }, true)
-        .accessibilityText(this.phase !== 2 ? this.controller.label :
+        .accessibilityText(this.phase !== 2 ? this.controller.label : this.controller.sessionMode ?
+          'AI 助手，单击退出，双击进入语音模式，按住可拖动' :
           (this.chatMode() ? 'AI 聊天' : 'AI 助手') + '，单击展开主对话，双击' + (this.chatShown ? '收起' : '启动') + '小对话框，按住可拖动')
         // A finger on the orb: it gives a little at once, before a tap or a double tap is known.
         .onTouch((event: TouchEvent): void => {
@@ -561,7 +610,8 @@ struct AiLiftLayer {
           // AI 语音 › 按住说话: hold the orb to talk, let go to send.
           LongPressGesture({ duration: 450 })
             .onAction((): void => {
-              if (this.phase !== 2 || this.dragging || !this.holdToTalk) { return; }
+              // In a session a press only drags (voice mode is a double tap there).
+              if (this.phase !== 2 || this.dragging || !this.holdToTalk || this.controller.sessionMode) { return; }
               this.holdingTalk = true;
               AppStorage.setOrCreate('aiVoice.hold', 'down:' + Date.now().toString());
             })
@@ -605,7 +655,7 @@ struct AiLiftLayer {
       if (this.phase === 2 && this.hintShown && !this.dragging) {
         // A box of its own size around the text, as the orb has: the layer's 1 vp anchor must not narrow the text.
         Stack() {
-          Text(AI_ORB_HINT_TEXT).fontSize(12).fontColor('#FFFFFF').maxLines(1).textAlign(TextAlign.Center).width('100%')
+          Text(this.hintText()).fontSize(12).fontColor('#FFFFFF').maxLines(1).textAlign(TextAlign.Center).width('100%')
         }
         .width(AI_HINT_WIDTH).height(AI_HINT_HEIGHT).borderRadius(AI_HINT_HEIGHT / 2).backgroundColor('#E61C1C1E')
         .border({ width: 0.5, color: '#33FFFFFF' })
@@ -615,7 +665,7 @@ struct AiLiftLayer {
       }
       if (this.chatShown && this.chatMode()) {
         AiChatView({ mini: true, owner: AiChatMemory.owner !== '' ? AiChatMemory.owner : 'device-local',
-          deviceClass: this.controller.deviceClass,
+          deviceClass: this.controller.deviceClass, canExpand: !this.controller.sessionMode,
           onCardSize: (height: number): void => { this.chatResized(height); },
           onActivityChanged: (active: boolean): void => { this.controller.onActivityChanged(active); },
           onExpand: (): void => { this.controller.onOrbTap(this.boxX, this.boxY + this.originY); } })

@@ -223,5 +223,12 @@ export default function vncSessionUiPolicyTest(): void {
       expect(moved.side).assertEqual('left');
       expect(moved.yRatio <= 520 / 760).assertTrue();
     });
+    it('adds_the_ai_action_before_diagnostics_and_grows_the_rail', 0, (): void => {
+      const actions = vncToolbarPrimaryActionIds(0, false, true);
+      expect(actions.length).assertEqual(7);
+      expect(actions.indexOf('ai')).assertEqual(actions.indexOf('diagnostics') - 1);
+      expect(vncToolbarRailHeight('phone', false, false, Number.MAX_SAFE_INTEGER, 0, false, true))
+        .assertEqual(vncToolbarRailHeight('phone', false, false) + 49);
+    });
   });
 }

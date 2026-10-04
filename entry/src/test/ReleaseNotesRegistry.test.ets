@@ -12,11 +12,24 @@ function containsPage(pages: ReleaseNotePage[], id: string): boolean {
 
 export default function releaseNotesRegistryTest(): void {
   describe('ReleaseNotesRegistry', (): void => {
-    it('lists_the_1_1_6_changes_with_pro_only_as_a_preview', 0, (): void => {
-      expect(CURRENT_RELEASE_VERSION).assertEqual('1.1.6');
+    it('lists_the_1_2_0_changes_led_by_the_free_pro_trial', 0, (): void => {
+      expect(CURRENT_RELEASE_VERSION).assertEqual('1.2.0');
       const pages: ReleaseNotePage[] = pagesForReleasedVersion(CURRENT_RELEASE_VERSION);
+      expect(pages.length).assertEqual(8);
+      expect(currentReleasePageCount()).assertEqual(8);
+      expect(pages[0].id).assertEqual('release-pro-trial');
+      expect(pages[0].tag).assertEqual('免费试用');
+      expect(containsPage(pages, 'release-ai-assistant')).assertTrue();
+      expect(containsPage(pages, 'release-ai-voice')).assertTrue();
+      expect(containsPage(pages, 'release-ai-session')).assertTrue();
+      expect(containsPage(pages, 'release-ai-feedback')).assertTrue();
+      expect(pages[pages.length - 1].id).assertEqual('release-1-1-6-summary');
+      pages.forEach((page: ReleaseNotePage): void => { expect((page.tag ?? '').length > 0).assertTrue(); });
+    });
+
+    it('keeps_the_1_1_6_changes_with_pro_only_as_a_preview', 0, (): void => {
+      const pages: ReleaseNotePage[] = pagesForReleasedVersion('1.1.6');
       expect(pages.length).assertEqual(14);
-      expect(currentReleasePageCount()).assertEqual(14);
       expect(containsPage(pages, 'release-portrait-sidebar')).assertTrue();
       expect(containsPage(pages, 'release-tap-keyboard')).assertTrue();
       expect(containsPage(pages, 'release-rdp-cert-preflight')).assertTrue();

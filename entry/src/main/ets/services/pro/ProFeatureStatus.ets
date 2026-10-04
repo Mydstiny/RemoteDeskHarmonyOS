@@ -32,14 +32,20 @@ export function proFeatureScope(feature: ProFeature): string {
   return parts.join(' · ');
 }
 
-/** Explains the current entitlement decision of one feature; display choice is shown separately. */
-export function proFeatureStatus(feature: ProFeature, decision: ProAccessDecision, debug: boolean): ProFeatureStatus {
-  if (decision.executable) { return { label: '可用', detail: '当前账号和设备可以使用', tone: 'ready' }; }
+/**
+ * Explains the current entitlement decision of one feature; display choice is shown separately. `complimentary`:
+ * Pro comes from the 1.2.0 free trial.
+ */
+export function proFeatureStatus(feature: ProFeature, decision: ProAccessDecision, debug: boolean,
+  complimentary: boolean = false): ProFeatureStatus {
+  if (decision.executable) {
+    return { label: '可用', detail: complimentary ? '免费试用中，当前设备可以使用' : '当前账号和设备可以使用', tone: 'ready' };
+  }
   const reason = decision.reason;
   if (reason === 'planned') {
     if (feature.availability === 'experimental') {
       return { label: '实验中', tone: 'experimental',
-        detail: debug ? '开通 Pro（沙盒或模拟）后可在 Debug 中测试' : '正式版暂未开放' };
+        detail: debug ? '开通 Pro（沙盒或模拟）后可在 Debug 中测试' : '正式版暂未开放，验证完成后随更新开放' };
     }
     return { label: '规划中', detail: '尚未交付', tone: 'planned' };
   }

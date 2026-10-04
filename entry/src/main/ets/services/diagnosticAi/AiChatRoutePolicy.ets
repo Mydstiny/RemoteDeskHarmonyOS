@@ -102,12 +102,33 @@ export function aiModeCommand(question: string): string {
 }
 
 /**
+ * A feature request or an idea ("要是能……就好了", "希望能支持……", "把需求发给开发者"): 聊天 keeps the list
+ * (manage_feature_requests), so it goes there from any mode. A fault report for the developer is not one.
+ */
+export function aiQuestionIsFeatureIdea(question: string): boolean {
+  const t: string = question.trim().toLowerCase();
+  if (t === '') { return false; }
+  // What only a feature request says — even next to a fault ("老是断开，能不能加个自动重连"). "希望能连上" asks for
+  // help, not a feature: 希望 counts only with 支持, 增加…; 能不能 only with 加个, 增加… ("能不能加速" is a question);
+  // 需求 and 新功能 only when they are being asked for or sent ("我的需求是…", "需求文档", "有什么新功能" are not).
+  if (/希望.{0,16}(支持|增加|加上|添加|新增|出个|做个|做一个)|(能不能|可不可以|可以不可以)(增加|添加|加个|加一个|做个|做一个|出个)|建议(增加|加上|支持|添加|做个|做一个)|需求.{0,4}(发给|告诉|交给|提交|整理)|(记下|记住|记一下)(这个|我的)?(需求|想法)|功能需求|功能建议|(想要|增加|添加|加个|加一个|做个|做一个)新功能|新功能(建议|需求)/.test(t)) {
+    return true;
+  }
+  // Softer wording ("要是能……就好了", "希望有……") counts only when it is not about getting something working
+  // ("要是能连上就好了", "希望能有办法解决断连") or a fault.
+  return /(要是|如果)能.{0,24}就好|希望.{0,16}(能有|可以有)|希望有|想要(一个|个).{0,12}功能|我有(个|一个)想法|提(个|一个|点)(改进)?建议|提(个|一个)需求/.test(t) &&
+    !/连上|连接|连得上|连通|解决|办法|修复|恢复|正常|报错|断连|加速|加密/.test(t) &&
+    diagnosticAiAgentModeForQuestion(question) !== 'diagnose';
+}
+
+/**
  * Where a question asked in `mode` ('assistant' | 'chat') should go, or '' to stay. 聊天 hands over to 助理 only what
  * needs 助理's capture and mail flow (diagnosing the app, feedback); 助理 hands to 聊天 everything not about the app.
  * A question with added documents stays in 聊天.
  */
 export function aiAutoRoute(question: string, mode: string, hasAttachments: boolean): string {
   if (question.trim() === '') { return ''; }
+  if (aiQuestionIsFeatureIdea(question)) { return mode === 'chat' ? '' : 'chat'; }
   if (mode === 'chat') {
     if (hasAttachments || !aiQuestionIsAboutApp(question)) { return ''; }
     const agent: string = diagnosticAiAgentModeForQuestion(question);
