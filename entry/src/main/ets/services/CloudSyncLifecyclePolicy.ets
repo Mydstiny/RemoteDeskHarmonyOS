@@ -67,6 +67,7 @@ function isFailureKind(value: string): boolean {
     value === 'restore_pending' ||
     value === 'no_selection' ||
     value === 'local_finalize' ||
+    value === 'crypto_reset_pending' ||
     value === 'unknown';
 }
 

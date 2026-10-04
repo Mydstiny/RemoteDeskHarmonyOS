@@ -280,6 +280,10 @@ export default function cloudSyncCoordinatorPolicyTest(): void {
       expect(shouldBlockAutomaticRetry('version_conflict')).assertTrue();
       expect(shouldBlockAutomaticRetry('network')).assertFalse();
       expect(shouldBlockAutomaticRetry('no_selection')).assertFalse();
+      // A forgotten-password reset pauses uploads; it is not a sync conflict.
+      expect(shouldBlockAutomaticRetry('crypto_reset_pending')).assertFalse();
+      expect(cloudSyncFailureMessage('crypto_reset_pending').indexOf('以本机为准覆盖云端') >= 0)
+        .assertTrue();
       expect(cloudSyncFailureMessage('version_conflict')).assertContain('版本冲突');
       expect(cloudSyncFailureMessage('no_selection')).assertContain('未启动云端传输');
     });

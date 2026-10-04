@@ -1226,6 +1226,8 @@ struct HostListPage {
   @State moonlightRestoreActivationState: string = 'clear';
   @State appearanceContentHeight: number = 0;
   private pendingLocalRestore: LocalBackupDocument | null = null;
+  /** Crypto line of the restore preview, decided once when the file is chosen. */
+  private pendingLocalRestoreCryptoNotice: string = '';
   @State sheetPwd: string = '';
   @State sheetPasswordChanged: boolean = false;
   private sheetPasswordFromStoredProjection: boolean = false;
@@ -5294,6 +5296,29 @@ struct HostListPage {
     }
   }
 
+  /** Explicit, destructive choice to let this device's reset state replace the cloud copy. */
+  private confirmReleaseCryptoResetUploadBlock(): void {
+    promptAction.showDialog({
+      title: '以本机为准覆盖云端？',
+      message: '之后的上传会用本机数据替换云端：重置时清空的密码、私钥、2FA、中继密钥和 VNC 机密会在云端和其他设备上一并清空，' +
+        '云端加密参数会改为本机当前的状态（未设置主密码时会被移除）。此操作不可撤销。',
+      buttons: [
+        { text: '取消', color: this.pal().text2 },
+        { text: '覆盖云端', color: this.pal().danger }
+      ]
+    }).then((value: Object): void => {
+      const result: Record<string, number> = value as Record<string, number>;
+      if (result['index'] !== 1) { return; }
+      if (!CloudStore.getInstance().releaseCryptoResetUploadBlock()) {
+        this.cloudSyncError = '未能解除上传暂停，请重试';
+        return;
+      }
+      this.cloudSyncError = '';
+      // The existing confirmation still governs the actual upload.
+      this.cloudSyncStep = CLOUD_SYNC_SHEET_UPLOAD_CONFIRM;
+    });
+  }
+
   private confirmMoonlightRestoreActivation(): void {
     promptAction.showDialog({
       title: '允许恢复的 Moonlight 数据上传？',
@@ -5366,6 +5391,8 @@ struct HostListPage {
         promptAction.showToast({ message: backup.getLastErrorMessage(), duration: 2200 });
         return;
       }
+      // Adapting a large backup is not free; decide once per selected file.
+      this.pendingLocalRestoreCryptoNotice = this.localRestoreCryptoNotice(document);
       this.openSettingsLeafSheet(SETTINGS_SHEET_POPUP, (): void => {
         this.pendingLocalRestore = document;
         this.cloudSyncError = '';
@@ -5402,6 +5429,14 @@ struct HostListPage {
     this.closeSettingsLeafSheet();
   }
 
+  private localRestoreCryptoNotice(document: LocalBackupDocument): string {
+    const decision: BackupCryptoRestoreDecision =
+      CloudStore.getInstance().portableBackupCryptoRestoreDecision(document);
+    return backupCryptoRestoreNotice(decision,
+      backupCryptoContractFromRows(document.tables['cryptoparams'] || []).configured,
+      this.cryptoEnabled, document.version >= 3 && document.manifest?.crypto.mode === 'full');
+  }
+
   private localRestorePreviewSummary(): string {
     const preview: BackupRestorePreview | null =
       LocalBackupService.getInstance().getSelectedPreview();
@@ -5413,14 +5448,7 @@ struct HostListPage {
     const redacted: string = !preview.secretsIncluded
       ? '；该备份为脱敏配置，不含密码、SSH 私钥与 2FA；设备信任（SSH 公钥/RDP 证书）不会导入，首次连接时需重新确认' :
       '；完整备份中的 SSH/RDP 设备信任会作为待确认记录导入，首次连接时需重新确认';
-    let crypto: string = '';
-    if (this.pendingLocalRestore !== null && preview.secretsIncluded) {
-      const decision: BackupCryptoRestoreDecision = CloudStore.getInstance()
-        .portableBackupCryptoRestoreDecision(this.pendingLocalRestore);
-      crypto = backupCryptoRestoreNotice(decision,
-        backupCryptoContractFromRows(this.pendingLocalRestore.tables['cryptoparams'] || []).configured,
-        this.cryptoEnabled, true);
-    }
+    const crypto: string = preview.secretsIncluded ? this.pendingLocalRestoreCryptoNotice : '';
     return '格式 v' + preview.formatVersion.toString() +
       ' · ' + preview.rowCount.toString() + ' 行 · ' +
       preview.presentTables.length.toString() + ' 个数据表' +
@@ -19934,6 +19962,18 @@ struct HostListPage {
               .fontSize(12).fontColor(this.accentColor).fontFamily(this.font())
               .lineHeight(19).margin({ top: 8 })
           }
+          if (CloudStore.getInstance().cryptoResetUploadBlockedTables().length > 0) {
+            Column() {
+              Text('主密码重置后，主机、凭据、密钥、2FA、中继、VNC 与加密参数的上传已暂停，云端和其他设备的数据保持不变。')
+                .fontSize(11).fontColor('#B66A00').fontFamily(this.font()).lineHeight(18).width('100%')
+              Button('以本机为准覆盖云端')
+                .fontSize(12).fontWeight(FontWeight.Medium)
+                .fontColor(Color.White).backgroundColor(this.pal().danger)
+                .height(36).borderRadius(12).width('100%').margin({ top: 8 })
+                .onClick((): void => { this.confirmReleaseCryptoResetUploadBlock(); })
+            }.width('100%').padding(12).borderRadius(12)
+              .backgroundColor(this.pal().surface).margin({ top: 8 })
+          }
           Text(cloudSyncManageTablesHint(this.cryptoEnabled))
             .fontSize(12).fontColor(this.pal().text3).fontFamily(this.font()).lineHeight(19).margin({ top: 8, bottom: 14 })
           Row() {
@@ -20388,7 +20428,7 @@ struct HostListPage {
         Text('⚠️ 确定要重置加密吗?')
           .fontSize(15).fontWeight(FontWeight.Bold).fontColor(this.pal().danger)
           .width('100%').margin({ bottom: 10 }).fontFamily(this.font())
-        Text('本机当前账号的所有加密数据将被永久删除，此操作不可恢复。\n跨设备远程清空协议尚未启用，其他设备不会被本次操作自动清空。')
+        Text('将清空本机当前账号的加密数据：主机密码、SSH 私钥与口令、2FA 密钥、RDP 凭据密码、RustDesk 中继密钥、VNC 密码与令牌，此操作不可恢复。\n主机地址、端口、用户名、分组、显示设置和 SSH/RDP 设备信任会保留（VNC 证书需重新确认），之后可重新填写密码或重新导入密钥。\n云端和其他设备的数据不会被清空：这些数据的上传会暂停，直到你在“云同步”中明确选择以本机为准覆盖云端。')
           .fontSize(12).fontColor(this.pal().text2).fontFamily(this.font())
           .width('100%').margin({ bottom: 16 })
         Row() {
@@ -20546,7 +20586,7 @@ struct HostListPage {
       this.cryptoResetCountdown = 0;
       this.refreshCryptoStatus();
       promptAction.showToast({
-        message: '加密已重置，本机加密数据已清空；敏感云同步已暂停',
+        message: '加密已重置：密码与密钥已清空，主机配置已保留；敏感数据上传已暂停',
         duration: 2600
       });
     } finally {

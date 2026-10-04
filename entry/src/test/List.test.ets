@@ -284,6 +284,8 @@ import appCloneContextTest from './AppCloneContext.test';
 import masterPasswordPolicyTest from './MasterPasswordPolicy.test';
 import backupCryptoContractPolicyTest from './BackupCryptoContractPolicy.test';
 import remoteHostDeviceTrustRestorePolicyTest from './RemoteHostDeviceTrustRestorePolicy.test';
+import cryptoResetDataPolicyTest from './CryptoResetDataPolicy.test';
+import cloudSyncResetPauseTest from './CloudSyncResetPause.test';
 
 export default function testsuite() {
   proAccessPolicyTest();
@@ -571,5 +573,7 @@ export default function testsuite() {
   masterPasswordPolicyTest();
   backupCryptoContractPolicyTest();
   remoteHostDeviceTrustRestorePolicyTest();
+  cryptoResetDataPolicyTest();
+  cloudSyncResetPauseTest();
   rustDeskRelayHealthPolicyTest();
 }

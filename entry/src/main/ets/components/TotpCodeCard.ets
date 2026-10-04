@@ -120,14 +120,28 @@ export struct TotpCodeCard {
     });
   }
 
+  /**
+   * The secret is empty while the master password is locked or after a
+   * forgotten-password reset cleared it; an empty key must never be shown as
+   * a code, because HMAC over an empty key still produces plausible digits.
+   */
+  private secretAvailable(): boolean {
+    return this.entry.secret.length > 0;
+  }
+
   private refresh(): void {
+    if (!this.secretAvailable()) {
+      this.codeStr = '';
+      this.remaining = 0;
+      return;
+    }
     const tc: TotpCode = TotpEngine.generateCode(this.entry);
     this.codeStr = tc.code;
     this.remaining = tc.remaining;
   }
 
   private copyCode(): void {
-    if (this.pageLocked || this.entry.locked) { return; }
+    if (this.pageLocked || this.entry.locked || !this.secretAvailable()) { return; }
     try {
       const data = pasteboard.createData(pasteboard.MIMETYPE_TEXT_PLAIN, this.codeStr);
       pasteboard.getSystemPasteboard().setDataSync(data);
@@ -440,10 +454,14 @@ export struct TotpCodeCard {
           Text('已锁定 · 需要验证')
             .fontSize(11).fontColor(this.pal().text3)
             .fontFamily(AppTheme.fontFamily).margin({ top: 2 })
+        } else if (!this.secretAvailable()) {
+          Text('密钥不可用 · 请解锁主密码或重新绑定')
+            .fontSize(11).fontColor(this.pal().text3)
+            .fontFamily(AppTheme.fontFamily).margin({ top: 2 })
         }
       }.alignItems(HorizontalAlign.Start).layoutWeight(1)
 
-      if (!this.entry.locked && !this.pageLocked) {
+      if (!this.entry.locked && !this.pageLocked && this.secretAvailable()) {
         Column() {
           Text(this.codeStr)
             .fontSize(26).fontWeight(FontWeight.Bold)

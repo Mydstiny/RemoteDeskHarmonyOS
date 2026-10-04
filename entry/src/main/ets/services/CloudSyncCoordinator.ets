@@ -96,6 +96,7 @@ function diagnosticCloudFailureCode(failure: CloudSyncFailureKind): number {
     case 'no_selection': return 9;
     case 'unknown': return 10;
     case 'local_finalize': return 11;
+    case 'crypto_reset_pending': return 12;
   }
 }
 
@@ -264,6 +265,12 @@ export interface CloudSyncCoordinatorHooks {
   loadDurableState?: () => CloudSyncDurableState | null;
   persistDurableState?: (state: CloudSyncDurableState) => boolean;
   selectionReenableBlocked?: (table: string) => boolean;
+  /**
+   * Uploads a forgotten-password reset paused until the user explicitly makes
+   * this device authoritative. Such tables are left out of every upload
+   * (paused, not failed), so downloads and other tables keep working.
+   */
+  cryptoResetUploadBlocked?: (table: string) => boolean;
 }
 
 /**
@@ -873,7 +880,8 @@ export class CloudSyncCoordinator {
       (selected.indexOf(table) >= 0 ||
         (table === VNC_CLOUD_TABLE && this.vncPhysicalTableSelected())) &&
       !this.isAutomaticSyncBlocked(table) &&
-      !this.selectionReenableBlocked(table));
+      !this.selectionReenableBlocked(table) &&
+      !this.uploadPausedByReset(table));
     const ordinaryPushable: string[] = pushable.filter((table: string): boolean => table !== VNC_CLOUD_TABLE);
     const vncPushable: boolean = pushable.indexOf(VNC_CLOUD_TABLE) >= 0 &&
       this.vncUploadTables().length > 0;
@@ -1145,12 +1153,16 @@ export class CloudSyncCoordinator {
     // cloud-first closed loop before any native-first upload. Skip them here
     // so one stuck table (e.g. vncrecord with an AGC-side schema problem)
     // cannot freeze every other table's manual upload.
+    // Tables a reset paused are never uploaded here; the user releases the
+    // pause explicitly first.
     const tables: string[] = base.tables.filter(
       (table: string): boolean =>
-        !this.selectionReenableBlocked(table) ||
-        (resolvingRestore &&
-          restoredTables.indexOf(table) >= 0));
+        !this.uploadPausedByReset(table) &&
+        (!this.selectionReenableBlocked(table) ||
+          (resolvingRestore &&
+            restoredTables.indexOf(table) >= 0)));
     const includeVnc: boolean = this.vncPhysicalTableSelected() &&
+      !this.uploadPausedByReset(VNC_CLOUD_TABLE) &&
       (!this.selectionReenableBlocked(VNC_CLOUD_TABLE) ||
         (resolvingRestore &&
           restoredTables.indexOf(
@@ -1172,13 +1184,15 @@ export class CloudSyncCoordinator {
         restoredTables);
     }
     if (tables.length === 0 && !includeVnc) {
+      const resetPaused: boolean = base.tables.some((table: string): boolean =>
+        this.uploadPausedByReset(table));
       const allBlocked: CloudSyncOperationResult = {
         ok: false,
         source: 'manualUpload',
         tables: [],
         failedTables: base.tables.slice(),
         rollbackFailed: false,
-        failureKind: 'unknown'
+        failureKind: resetPaused ? 'crypto_reset_pending' : 'unknown'
       };
       return Promise.resolve(allBlocked);
     }
@@ -1756,7 +1770,9 @@ export class CloudSyncCoordinator {
     if (forcePhysical && !this.vncPhysicalTableSelected()) {
       return Promise.resolve(this.skippedResult('automaticPush'));
     }
-    const tables: string[] = forcePhysical ? [VNC_CLOUD_TABLE] : this.vncUploadTables();
+    const tables: string[] = forcePhysical ?
+      (this.uploadPausedByReset(VNC_CLOUD_TABLE) ? [] : [VNC_CLOUD_TABLE]) :
+      this.vncUploadTables();
     if (tables.length === 0) { return Promise.resolve(this.skippedResult('automaticPush')); }
     const version: number = (this.automaticMutationVersions[VNC_CLOUD_TABLE] || 0) + 1;
     this.automaticMutationVersions[VNC_CLOUD_TABLE] = version;
@@ -1824,6 +1840,10 @@ export class CloudSyncCoordinator {
       hilog.warn(DOMAIN, TAG, 'automatic push blocked after cloud conflict table=' + table);
       return Promise.resolve(this.skippedResult('automaticPush'));
     }
+    if (this.uploadPausedByReset(table)) {
+      hilog.info(DOMAIN, TAG, 'automatic push paused after a forgotten-password reset table=' + table);
+      return Promise.resolve(this.skippedResult('automaticPush'));
+    }
     const activeSession = ActiveRemoteSessionRegistry.getInstance().getActive();
     if (activeSession !== null && activeSession.protocolConnected) {
       if (this.deferredAutomaticTables.indexOf(table) < 0) {
@@ -1840,8 +1860,11 @@ export class CloudSyncCoordinator {
     }
     // Sensitive selected tables always carry their cryptographic parameters first.
     // The snapshot is fixed now, so later selection changes cannot split this pair.
+    // Paused reset tables (only sensitive tables and cryptoparams) are left
+    // out; a non-sensitive table never needs cryptoparams to upload.
     const tables: string[] = selected.filter((candidate: string): boolean =>
-      candidate === 'cryptoparams' || candidate === table
+      (candidate === 'cryptoparams' || candidate === table) &&
+        !this.uploadPausedByReset(candidate)
     );
     const journalRevision: number = this.captureJournalRevisions([table])[table] || 0;
     return this.enqueueAutomaticRequest({ source: 'automaticPush', direction: 'nativeFirst', tables },
@@ -2038,17 +2061,30 @@ export class CloudSyncCoordinator {
    * empty local projection.
    */
   private vncUploadTables(): string[] {
-    return this.vncSyncTables();
+    if (this.uploadPausedByReset(VNC_CLOUD_TABLE)) { return []; }
+    return this.vncSyncTables().filter((table: string): boolean =>
+      !this.uploadPausedByReset(table));
   }
 
   private tablesForAutomaticRetry(retryKey: string): string[] {
-    if (this.selectionReenableBlocked(retryKey)) {
+    if (this.selectionReenableBlocked(retryKey) || this.uploadPausedByReset(retryKey)) {
       return [];
     }
     if (retryKey === VNC_CLOUD_TABLE) { return this.vncUploadTables(); }
     const selected: string[] = this.selectedTables();
     return selected.filter((candidate: string): boolean =>
-      candidate === 'cryptoparams' || candidate === retryKey);
+      (candidate === 'cryptoparams' || candidate === retryKey) &&
+        !this.uploadPausedByReset(candidate));
+  }
+
+  /** See CloudSyncCoordinatorHooks.cryptoResetUploadBlocked; unreadable counts as paused. */
+  private uploadPausedByReset(table: string): boolean {
+    if (!this.hooks || !this.hooks.cryptoResetUploadBlocked) { return false; }
+    try {
+      return this.hooks.cryptoResetUploadBlocked(table);
+    } catch (_error) {
+      return true;
+    }
   }
 
   private requestVncStartupPush(): Promise<CloudSyncOperationResult> {

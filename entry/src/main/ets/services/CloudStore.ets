@@ -144,6 +144,14 @@ import {
   validateLocalBackupSnapshot
 } from './LocalBackupPolicy';
 import {
+  cryptoResetExtensionPayload,
+  cryptoResetJournalTables,
+  cryptoResetRelayAccountsJson,
+  cryptoResetSecretColumns,
+  cryptoResetSecretTables,
+  cryptoResetUploadBlockTables
+} from './CryptoResetDataPolicy';
+import {
   BackupCryptoContract,
   BackupCryptoRestoreDecision,
   backupCryptoContract
@@ -558,6 +566,8 @@ const VNC_CLOUD_TABLE_RENAME_KEY: string =
 const VNC_LEGACY_MIGRATION_KEY: string = 'vnc_legacy_vncrecords_migrated_v1';
 const TABLE_MUTATION_RECORD_ID: string = '__table__';
 const VNC_RESET_EPOCH_KEY: string = 'vnc_reset_epoch';
+/** Per-table upload block written by a forgotten-password reset. */
+const CRYPTO_RESET_UPLOAD_BLOCK_PREFIX: string = 'crypto_reset_upload_block|';
 
 function vncPrivateOwnerKey(record: VncRecord): string {
   if (record.deletedAt > 0 ||
@@ -2754,7 +2764,9 @@ try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
         !this.forwardCompatibleSchemaLocalOnly &&
           this.persistCloudSyncDurableState(state),
       selectionReenableBlocked: (table: string): boolean =>
-        this.selectionReenableBlocked(table)
+        this.selectionReenableBlocked(table),
+      cryptoResetUploadBlocked: (table: string): boolean =>
+        this.cryptoResetUploadBlocked(table)
     };
   }
 
@@ -5886,6 +5898,14 @@ try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
           return;
         }
       }
+      if (direction === 'nativeFirst' && this.cryptoResetUploadBlocked(table)) {
+        this.lastSyncFailureKind = 'crypto_reset_pending';
+        this.lastError = label + ' ' + table +
+          ': upload blocked after a forgotten-password reset';
+        hilog.warn(0x0001, 'CloudSync', this.lastError);
+        resolve(false);
+        return;
+      }
       if (direction === 'nativeFirst' &&
           !this.nativeFirstTableIsSafe(table)) {
         this.lastSyncFailureKind = 'unsafe_payload';
@@ -8759,6 +8779,38 @@ try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
     }
   }
 
+  /**
+   * Whether uploads of `table` are blocked by a forgotten-password reset. An
+   * unreadable marker counts as blocked for the tables a reset can block.
+   */
+  cryptoResetUploadBlocked(table: string): boolean {
+    if (cryptoResetUploadBlockTables(VNC_CLOUD_TABLE).indexOf(table) < 0) { return false; }
+    const marker: CloudMetadataReadResult =
+      this.readLocalMetadataState(CRYPTO_RESET_UPLOAD_BLOCK_PREFIX + table);
+    return marker.state !== 'absent';
+  }
+
+  /** Tables whose uploads a reset currently blocks (for the sync sheet). */
+  cryptoResetUploadBlockedTables(): string[] {
+    return cryptoResetUploadBlockTables(VNC_CLOUD_TABLE).filter(
+      (table: string): boolean => this.cryptoResetUploadBlocked(table));
+  }
+
+  /**
+   * Explicit "make this device authoritative" after a reset. Later uploads
+   * may replace the cloud copy (and other devices' data) with this device's.
+   */
+  releaseCryptoResetUploadBlock(): boolean {
+    const tables: string[] = cryptoResetUploadBlockTables(VNC_CLOUD_TABLE);
+    for (let i = 0; i < tables.length; i++) {
+      if (!this.deleteLocalMetadata(CRYPTO_RESET_UPLOAD_BLOCK_PREFIX + tables[i])) {
+        return false;
+      }
+    }
+    hilog.warn(0x0001, 'CloudSync', '[resetCryptoV3] upload block released by the user');
+    return true;
+  }
+
   hasRestoredNotUploaded(): boolean {
     const pending: string[] | null =
       this.restoredTablesAwaitingDecision();
@@ -10803,41 +10855,156 @@ try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
     return count;
   }
 
-  private sensitiveBusinessTables(): string[] {
-    return [
-      'remotehosts', 'rdpcredentials', 'sshkeys', 'totpentries',
-      'rustdeskrelays', VNC_CLOUD_TABLE
-    ];
-  }
-
-  /** Caller owns the active transaction and the account physical store. */
-  private clearAllTablesInActiveTransaction(tables: string[]): void {
+  /**
+   * Caller owns the active transaction and the account physical store.
+   * Forgotten-password reset (user decision 2026-10-04): clear only the
+   * encrypted secrets, which no key can open any more. Rows, non-secret
+   * columns, device-local LAN hosts, key/credential/relay links and device
+   * trust stay; VNC secret records are removed and the remaining VNC records
+   * move to the new reset generation so they stay visible.
+   */
+  private clearEncryptedSecretsInActiveTransaction(
+    currentEpoch: number, nextEpoch: number
+  ): void {
     if (!this.store) {
       throw new Error('sensitive data store unavailable');
     }
-    // These local-only tables contain data for exactly one physical account
-    // store. They must be cleared before fresh delete intents are recorded.
-    this.store.deleteSync(
-      new relationalStore.RdbPredicates('localextensions'));
-    this.store.deleteSync(
-      new relationalStore.RdbPredicates(LOCAL_MUTATION_JOURNAL_TABLE));
-    const localVncPredicates =
-      new relationalStore.RdbPredicates(VNC_LOCAL_TABLE);
-    this.addCurrentOwnerPredicate(localVncPredicates);
-    this.store.deleteSync(localVncPredicates);
+    const now: number = Date.now();
+    const tables: string[] = cryptoResetSecretTables();
+    for (let i = 0; i < tables.length; i++) {
+      const table: string = tables[i];
+      const bucket: relationalStore.ValuesBucket = {};
+      const columns: string[] = cryptoResetSecretColumns(table);
+      for (let c = 0; c < columns.length; c++) { bucket[columns[c]] = ''; }
+      const predicates = new relationalStore.RdbPredicates(table);
+      this.addCurrentOwnerPredicate(predicates);
+      this.store.updateSync(bucket, predicates);
+      if (table === 'rustdeskrelays') {
+        this.clearRelayAccountPasswordsInActiveTransaction();
+      }
+    }
+    this.clearLocalExtensionSecretsInActiveTransaction(now);
     if (!this.clearRustDeskRelayControlPlaneProfiles()) {
       throw new Error('relay profile metadata clear failed');
     }
-    for (let i = 0; i < tables.length; i++) {
-      const predicates =
-        new relationalStore.RdbPredicates(tables[i]);
-      this.addCurrentOwnerPredicate(predicates);
-      this.store.deleteSync(predicates);
-      if (!this.recordTableMutation(tables[i], 'clear')) {
-        throw new Error('clear journal failed table=' + tables[i]);
+    const vncTables: string[] = [VNC_CLOUD_TABLE, VNC_LOCAL_TABLE];
+    for (let i = 0; i < vncTables.length; i++) {
+      const secrets = new relationalStore.RdbPredicates(vncTables[i]);
+      this.addCurrentOwnerPredicate(secrets);
+      secrets.equalTo('recordtype', 'secret');
+      this.store.deleteSync(secrets);
+      // Only the visible generation moves forward; rows hidden by an earlier
+      // reset must stay hidden.
+      const kept = new relationalStore.RdbPredicates(vncTables[i]);
+      this.addCurrentOwnerPredicate(kept);
+      kept.equalTo('resetepoch', currentEpoch);
+      const epochBucket: relationalStore.ValuesBucket = { resetepoch: nextEpoch };
+      this.store.updateSync(epochBucket, kept);
+    }
+    // The reset is local: none of its changes becomes a pending upload, so a
+    // re-enabled table's cloud-first download wins (see cryptoResetJournalTables).
+    const journalTables: string[] = cryptoResetJournalTables(VNC_CLOUD_TABLE, VNC_LOCAL_TABLE);
+    for (let i = 0; i < journalTables.length; i++) {
+      const journal = new relationalStore.RdbPredicates(LOCAL_MUTATION_JOURNAL_TABLE);
+      journal.equalTo('tablename', journalTables[i]);
+      this.store.deleteSync(journal);
+    }
+    // The platform tracks local changes of distributed tables by itself; keep
+    // every upload of these tables blocked until the user explicitly makes
+    // this device authoritative (releaseCryptoResetUploadBlock).
+    const blockedTables: string[] = cryptoResetUploadBlockTables(VNC_CLOUD_TABLE);
+    for (let i = 0; i < blockedTables.length; i++) {
+      if (!this.writeLocalMetadata(CRYPTO_RESET_UPLOAD_BLOCK_PREFIX + blockedTables[i], '1')) {
+        throw new Error('reset upload block write failed table=' + blockedTables[i]);
       }
-      hilog.info(0x0001, 'CloudSync',
-        '[clearAllTables] ' + tables[i] + ' 已清空');
+    }
+    hilog.info(0x0001, 'CloudSync',
+      '[resetCryptoV3] encrypted fields cleared; rows kept, VNC epoch ' +
+      currentEpoch.toString() + ' -> ' + nextEpoch.toString());
+  }
+
+  private clearRelayAccountPasswordsInActiveTransaction(): void {
+    if (!this.store) { throw new Error('relay store unavailable'); }
+    const predicates = new relationalStore.RdbPredicates('rustdeskrelays');
+    this.addCurrentOwnerPredicate(predicates);
+    const rows: relationalStore.ResultSet = this.store.querySync(predicates);
+    const updates: Array<Record<string, string>> = [];
+    try {
+      const idIndex: number = rows.getColumnIndex('id');
+      const accountsIndex: number = rows.getColumnIndex('accountsjson');
+      while (rows.goToNextRow()) {
+        const raw: string = accountsIndex >= 0 && !rows.isColumnNull(accountsIndex) ?
+          rows.getString(accountsIndex) : '';
+        const cleared: string = cryptoResetRelayAccountsJson(raw);
+        if (cleared !== raw) {
+          const update: Record<string, string> = {};
+          update['id'] = rows.getString(idIndex);
+          update['accountsjson'] = cleared;
+          updates.push(update);
+        }
+      }
+    } finally {
+      rows.close();
+    }
+    for (let i = 0; i < updates.length; i++) {
+      const bucket: relationalStore.ValuesBucket = { accountsjson: updates[i]['accountsjson'] };
+      const target = new relationalStore.RdbPredicates('rustdeskrelays');
+      target.equalTo('id', updates[i]['id']);
+      this.addCurrentOwnerPredicate(target);
+      this.store.updateSync(bucket, target);
+    }
+  }
+
+  private clearLocalExtensionSecretsInActiveTransaction(now: number): void {
+    if (!this.store) { throw new Error('local extension store unavailable'); }
+    const rows: relationalStore.ResultSet =
+      this.store.querySync(new relationalStore.RdbPredicates('localextensions'));
+    const removed: string[] = [];
+    const rewritten: Array<Record<string, string>> = [];
+    try {
+      const idIndex: number = rows.getColumnIndex('id');
+      const tableIndex: number = rows.getColumnIndex('tablename');
+      const payloadIndex: number = rows.getColumnIndex('payload');
+      while (rows.goToNextRow()) {
+        const id: string = rows.getString(idIndex);
+        const table: string = rows.getString(tableIndex);
+        let payload: Record<string, string> | null = null;
+        try {
+          const parsed: Object = JSON.parse(rows.getString(payloadIndex)) as Object;
+          payload = parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed) ?
+            parsed as Record<string, string> : null;
+        } catch (_e) {
+          payload = null;
+        }
+        // An unreadable payload cannot be cleared selectively; drop it as
+        // the previous whole-table reset did.
+        const cleared: Record<string, string> | null = payload === null ? null :
+          cryptoResetExtensionPayload(table, payload);
+        if (cleared === null) {
+          removed.push(id);
+        } else if (JSON.stringify(cleared) !== JSON.stringify(payload)) {
+          const update: Record<string, string> = {};
+          update['id'] = id;
+          update['payload'] = JSON.stringify(cleared);
+          rewritten.push(update);
+        }
+      }
+    } finally {
+      rows.close();
+    }
+    for (let i = 0; i < removed.length; i++) {
+      const predicates = new relationalStore.RdbPredicates('localextensions');
+      predicates.equalTo('id', removed[i]);
+      this.store.deleteSync(predicates);
+    }
+    for (let i = 0; i < rewritten.length; i++) {
+      const bucket: relationalStore.ValuesBucket = {
+        payload: rewritten[i]['payload'],
+        updatedat: now
+      };
+      const predicates = new relationalStore.RdbPredicates('localextensions');
+      predicates.equalTo('id', rewritten[i]['id']);
+      this.store.updateSync(bucket, predicates);
     }
   }
 
@@ -11444,9 +11611,11 @@ try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
   }
 
   /**
-   * Local forgotten-password reset. Account rows, local-only extensions,
-   * deletion intents, reset epoch and KDF material commit together. It is
-   * deliberately not a remote wipe protocol.
+   * Local forgotten-password reset. Cleared secrets, the VNC generation move,
+   * the reset epoch and KDF material commit together (only encrypted secrets
+   * are cleared since 2026-10-04). It is deliberately not a remote wipe
+   * protocol: the tables stay deselected and re-enabling them crosses the
+   * cloud-first barrier.
    */
   async resetCryptoV3(
     lease: AccountSessionLease | null
@@ -11488,10 +11657,10 @@ try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
     }
     this.cryptoLifecycleState = resetPending;
     try {
-      const nextEpoch: number = this.readVncResetEpoch() + 1;
-      const tables: string[] = this.sensitiveBusinessTables();
+      const currentEpoch: number = this.readVncResetEpoch();
+      const nextEpoch: number = currentEpoch + 1;
       this.store.beginTransaction();
-      this.clearAllTablesInActiveTransaction(tables);
+      this.clearEncryptedSecretsInActiveTransaction(currentEpoch, nextEpoch);
       this.clearCryptoSecretsInActiveTransaction();
       if (!rdbInsertSucceeded(this.store.insertSync(
         'cryptoparams',
@@ -11503,10 +11672,6 @@ try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
           this.cryptoParamBucket('crypto_status', 'disabled'),
           relationalStore.ConflictResolution.ON_CONFLICT_REPLACE))) {
         throw new Error('crypto reset marker write failed');
-      }
-      if (!this.recordTableMutation(
-        'cryptoparams', 'reset_local_v3')) {
-        throw new Error('crypto reset journal failed');
       }
       const committed: CryptoCommittedState = {
         status: 'disabled',
@@ -11537,6 +11702,10 @@ try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
       return false;
     }
     DataCrypto.getInstance().lock();
+    // Also acknowledge any legacy compatibility markers of these tables
+    // (best effort; the journal rows were already removed in the transaction).
+    this.discardMutationJournalForTables(
+      cryptoResetJournalTables(VNC_CLOUD_TABLE, VNC_LOCAL_TABLE));
     this.notifyCryptoReset();
     this.notifyDataSnapshotChanged();
     this.pushCryptoTransitionTables(true);

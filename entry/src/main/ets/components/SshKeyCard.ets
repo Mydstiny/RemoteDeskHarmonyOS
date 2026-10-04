@@ -184,6 +184,15 @@ export struct SshKeyCard {
               .borderRadius(3).backgroundColor(this.pal().text2 + '12')
               .margin({ left: 4 })
           }
+          // Empty while the master password is locked, or after a forgotten-
+          // password reset cleared it (re-import the private key).
+          if (this.sshKey.privateKey.length === 0) {
+            Text('私钥不可用')
+              .fontSize(10).fontColor('#B66A00')
+              .padding({ left: 4, right: 4, top: 1, bottom: 1 })
+              .borderRadius(3).backgroundColor('#B66A00' + '15')
+              .margin({ left: 4 })
+          }
           if (this.sshKey.locked) {
             Text('已锁定')
               .fontSize(10).fontColor('#FF9500')

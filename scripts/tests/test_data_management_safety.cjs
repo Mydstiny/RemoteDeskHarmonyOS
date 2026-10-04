@@ -41,6 +41,14 @@ function load(file) {
     if (id === '@kit.ArkData') return { relationalStore: {}, preferences: {} };
     if (id === '@kit.BasicServicesKit') return { deviceInfo: { deviceType: 'phone' } };
     if (id === '@kit.CoreFileKit' || id === '@kit.AbilityKit' || id === '@kit.ArkUI') return {};
+    if (id === '@ohos.systemDateTime') return { getUptime: () => 100, getTime: () => Date.now() };
+    // The sync coordinator reaches platform kits only through paths these
+    // tests do not exercise; any other kit resolves to an inert stub.
+    if (id.startsWith('@ohos.') || id.startsWith('@kit.') || id.endsWith('.so')) {
+      const inert = new Proxy(function () {}, { get: (_t, key) => key === '__esModule' ? false : inert,
+        apply: () => inert, construct: () => inert });
+      return new Proxy({}, { get: () => inert });
+    }
     if (!id.startsWith('.')) throw new Error('Unexpected import ' + id + ' from ' + file);
     const resolved = path.resolve(path.dirname(file), id + '.ets');
     if (!fs.existsSync(resolved) && fs.existsSync(path.resolve(path.dirname(file), id + '.d.ts'))) return {};
@@ -59,6 +67,8 @@ load('entry/src/test/MasterPasswordPolicy.test.ets').default();
 load('entry/src/test/AppCloneContext.test.ets').default();
 load('entry/src/test/BackupCryptoContractPolicy.test.ets').default();
 load('entry/src/test/RemoteHostDeviceTrustRestorePolicy.test.ets').default();
+load('entry/src/test/CryptoResetDataPolicy.test.ets').default();
+load('entry/src/test/CloudSyncResetPause.test.ets').default();
 
 const svc = 'entry/src/main/ets/services/';
 const backup = load(svc + 'LocalBackupPolicy.ets');
@@ -181,15 +191,25 @@ test('redacted plans pass the crypto planner unchanged', () => {
   assert.equal(resolved.decision, 'keep_target');
 });
 
-let failed = 0;
-for (const entry of tests) {
-  try {
-    entry.body();
-    console.log('PASS ' + entry.name);
-  } catch (error) {
-    failed++;
-    console.log('FAIL ' + entry.name + '\n  ' + (error && error.stack ? error.stack.split('\n').slice(0, 4).join('\n  ') : error));
+test('a forgotten-password reset pause has its own message and is not a sync conflict', () => {
+  const coordinator = load(svc + 'CloudSyncCoordinatorPolicy.ets');
+  // Paused, not a conflict: it must not stop downloads of the table.
+  assert.equal(coordinator.shouldBlockAutomaticRetry('crypto_reset_pending'), false);
+  assert.ok(coordinator.cloudSyncFailureMessage('crypto_reset_pending').indexOf('以本机为准覆盖云端') >= 0);
+});
+
+(async () => {
+  let failed = 0;
+  for (const entry of tests) {
+    try {
+      const result = entry.body();
+      if (result && typeof result.then === 'function') { await result; }
+      console.log('PASS ' + entry.name);
+    } catch (error) {
+      failed++;
+      console.log('FAIL ' + entry.name + '\n  ' + (error && error.stack ? error.stack.split('\n').slice(0, 4).join('\n  ') : error));
+    }
   }
-}
-console.log((tests.length - failed) + '/' + tests.length + ' passed');
-process.exit(failed === 0 ? 0 : 1);
+  console.log((tests.length - failed) + '/' + tests.length + ' passed');
+  process.exit(failed === 0 ? 0 : 1);
+})();
