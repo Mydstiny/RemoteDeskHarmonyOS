@@ -5,7 +5,13 @@ import { AI_FLOAT_ORB } from './AiIslandChrome';
 import { AiDoneMark, AiFloatingOrb, AiIslandRingsCheck } from './AiMotionViews';
 import { AiChatMemory, AiChatView } from './AiChatView';
 import { AI_CHAT_REFRESH_KEY } from '../../services/diagnosticAi/AiShareInbox';
-import { AI_ORB_HINT_TEXT, AI_SESSION_ORB_HINT_TEXT, aiOrbHintWanted } from '../../services/diagnosticAi/AiOrbHintStore';
+import { AI_ORB_HINT_TEXT, AI_ORB_VOICE_HINT_TEXT, AI_SESSION_ORB_HINT_TEXT, aiOrbHintWanted } from '../../services/diagnosticAi/AiOrbHintStore';
+import { AI_STYLE, aiInk } from '../../services/diagnosticAi/AiStylePolicy';
+import { AI_VOICE_ENABLED } from '../../services/diagnosticAi/AiVoiceSettings';
+import { AI_ORB_DICTATION, aiOrbDictationEncode } from '../../services/diagnosticAi/AiBridgeKeys';
+import { AiVoiceInput } from '../../services/diagnosticAi/AiSpeech';
+import { XyLiveLevel } from '../../services/diagnosticAi/AiXiaoyiLight';
+import { common } from '@kit.AbilityKit';
 
 /** The island's square when 灵动岛光环 opens out of it. */
 const AI_ISLAND_CARD: number = 148;
@@ -90,14 +96,74 @@ export function aiLiftLayer(controller: AiLiftController) {
  */
 @Component
 struct AiLiftLayer {
-  /** AI 语音 › 按住 AI 按钮说话 is on: the orb too can be held to talk. */
+  /** AI 语音 › 按住 AI 按钮说话 is on: the orb listens while held and sends when let go. */
   @StorageProp('aiVoice.holdToTalk') holdToTalk: boolean = false;
-  private holdingTalk: boolean = false;
+  @StorageProp(AI_VOICE_ENABLED) voiceEnabled: boolean = false;
+  @StorageProp(AI_STYLE) aiStyle: string = 'siri';
+  /** The chat beside the orb is waiting for an answer: the orb itself turns (its ring thinks). */
+  @State private chatBusy: boolean = false;
+  /**
+   * The orb is listening (a long press): it hears the user itself — no voice mode — and the words go into its small
+   * chat as they are recognized, sent there when the user stops (or lets go, with 按住说话).
+   */
+  @State private orbListening: boolean = false;
+  /** Held to talk: letting go sends. */
+  private listenHeld: boolean = false;
+  private heardText: string = '';
 
-  private releaseTalk(): void {
-    if (!this.holdingTalk) { return; }
-    this.holdingTalk = false;
-    AppStorage.setOrCreate('aiVoice.hold', 'up:' + Date.now().toString());
+  private toast(message: string): void {
+    try { this.getUIContext().getPromptAction().showToast({ message: message, duration: 2200 }); } catch (_error) { /* no toast */ }
+  }
+
+  private startOrbVoice(held: boolean): void {
+    if (this.phase !== 2 || this.controller.sessionMode || this.orbListening || this.dragging) { return; }
+    if (!this.voiceEnabled) { this.toast('AI 语音还没打开，可以在「设置 → AI 语音」里开启'); return; }
+    this.hintShown = false;
+    if (!this.chatShown) { this.unread = false; this.setChatShown(true); }
+    this.orbListening = true;
+    this.listenHeld = held;
+    this.heardText = '';
+    XyLiveLevel.value = 0;
+    AppStorage.setOrCreate(AI_ORB_DICTATION, aiOrbDictationEncode('listen', ''));
+    this.getUIContext().animateTo({ curve: curves.springMotion(0.3, 0.6) }, (): void => { this.boxScale = 1.1; });
+    hilog.info(0x0000, 'AiChat', 'orb listens held=%{public}s', String(held));
+    const owner: string = AiChatMemory.owner !== '' ? AiChatMemory.owner : 'device-local';
+    void AiVoiceInput.start(this.getUIContext().getHostContext() as common.UIAbilityContext,
+      (text: string, _final: boolean): void => {
+        if (!this.orbListening) { return; }
+        this.heardText = text;
+        AppStorage.setOrCreate(AI_ORB_DICTATION, aiOrbDictationEncode('listen', text));
+      },
+      (problem: string): void => {
+        const listening: boolean = this.orbListening;
+        this.endListening();
+        if (!listening) { return; }
+        // A lone full stop for silence or noise is nothing said.
+        const text: string = this.heardText.trim();
+        if (text.replace(/[\s。，、！？!?,.…~～]/g, '') !== '') {
+          AppStorage.setOrCreate(AI_ORB_DICTATION, aiOrbDictationEncode('done', text));
+        } else {
+          AppStorage.setOrCreate(AI_ORB_DICTATION, aiOrbDictationEncode('cancel', ''));
+          this.toast(problem !== '' ? problem : '没有听清，请再说一次');
+        }
+      },
+      (level: number): void => { XyLiveLevel.value = level; }, false, owner);
+  }
+
+  /** Done listening: send what was heard (`send`), or drop it. */
+  private stopOrbVoice(send: boolean): void {
+    if (!this.orbListening) { return; }
+    if (send) { AiVoiceInput.stop(); return; }
+    this.endListening();
+    AiVoiceInput.cancel();
+    AppStorage.setOrCreate(AI_ORB_DICTATION, aiOrbDictationEncode('cancel', ''));
+  }
+
+  private endListening(): void {
+    this.orbListening = false;
+    this.listenHeld = false;
+    XyLiveLevel.value = 0;
+    this.getUIContext().animateTo({ curve: curves.springMotion(0.35, 0.6) }, (): void => { this.boxScale = 1; });
   }
 
   controller: AiLiftController = new AiLiftController();
@@ -185,6 +251,8 @@ struct AiLiftLayer {
   };
 
   aboutToAppear(): void {
+    // Floated while an answer is still coming: the orb thinks from the start.
+    this.chatBusy = AiChatMemory.requestId !== '';
     this.topSafe = this.controller.topInset;
     this.layerW = this.controller.areaWidth;
     this.layerH = this.controller.areaHeight;
@@ -214,6 +282,11 @@ struct AiLiftLayer {
   }
 
   aboutToDisappear(): void {
+    if (this.orbListening) {
+      this.orbListening = false;
+      AiVoiceInput.cancel();
+      XyLiveLevel.value = 0;
+    }
     this.timers.forEach((id: number): void => { clearTimeout(id); });
     this.timers = [];
     if (this.restTimer !== -1) { clearTimeout(this.restTimer); this.restTimer = -1; }
@@ -231,6 +304,7 @@ struct AiLiftLayer {
   private onChatRefresh(): void {
     if (!this.chatMode() || this.phase !== 2) { return; }
     this.controller.onActivityChanged(AiChatMemory.requestId !== '');
+    this.chatBusy = AiChatMemory.requestId !== '';
     if (!this.chatShown && AiChatMemory.requestId === '') {
       this.getUIContext().animateTo({ curve: curves.springMotion(0.4, 0.7) }, (): void => { this.unread = true; });
     }
@@ -262,6 +336,8 @@ struct AiLiftLayer {
   /** A tap: back to the island, from where the orb is (in a session: the AI goes away). */
   private orbTapped(): void {
     if (this.phase !== 2) { return; }
+    // Listening: a tap means "that's all" — what was heard is sent.
+    if (this.orbListening) { this.stopOrbVoice(true); return; }
     if (this.controller.sessionMode) { this.controller.onExit(); return; }
     this.controller.onOrbTap(this.boxX, this.boxY + this.originY);
   }
@@ -269,6 +345,7 @@ struct AiLiftLayer {
   /** A double tap: the small chat beside the orb, or away again (in a session: voice mode). */
   private orbDoubleTapped(): void {
     if (this.phase !== 2) { return; }
+    if (this.orbListening) { this.stopOrbVoice(false); return; }
     if (this.controller.sessionMode) { this.hintShown = false; this.controller.onVoice(); return; }
     this.hintShown = false;
     if (!this.chatShown) { this.unread = false; }
@@ -398,7 +475,10 @@ struct AiLiftLayer {
     return right ? this.layerW - AI_FLOAT_ORB - AI_EDGE - avoid : AI_EDGE + avoid;
   }
 
-  private hintText(): string { return this.controller.sessionMode ? AI_SESSION_ORB_HINT_TEXT : AI_ORB_HINT_TEXT; }
+  private hintText(): string {
+    if (this.controller.sessionMode) { return AI_SESSION_ORB_HINT_TEXT; }
+    return this.voiceEnabled ? AI_ORB_VOICE_HINT_TEXT : AI_ORB_HINT_TEXT;
+  }
   private chatSpace(): number { return this.chatShown ? this.chatH + AI_CHAT_GAP : 0; }
 
   private chatX(): number {
@@ -579,7 +659,7 @@ struct AiLiftLayer {
               .width('100%').height('100%').opacity(this.doneOpacity)
           }
           if (this.orbMounted) {
-            AiFloatingOrb({ orbSize: AI_FLOAT_ORB }).opacity(this.orbOpacity)
+            AiFloatingOrb({ orbSize: AI_FLOAT_ORB, active: this.chatBusy, listening: this.orbListening }).opacity(this.orbOpacity)
           }
         }
         .width(this.boxW).height(this.boxH).borderRadius(this.boxR)
@@ -593,9 +673,11 @@ struct AiLiftLayer {
         .onVisibleAreaChange([0.0, 0.05, 0.5], (visible: boolean, ratio: number): void => {
           if (visible && ratio > 0.01) { this.overflowSeen = true; }
         }, true)
-        .accessibilityText(this.phase !== 2 ? this.controller.label : this.controller.sessionMode ?
+        .accessibilityText(this.phase !== 2 ? this.controller.label : this.orbListening ? 'AI 正在听，单击发送，双击取消' :
+          this.controller.sessionMode ?
           'AI 助手，单击退出，双击进入语音模式，按住可拖动' :
-          (this.chatMode() ? 'AI 聊天' : 'AI 助手') + '，单击展开主对话，双击' + (this.chatShown ? '收起' : '启动') + '小对话框，按住可拖动')
+          (this.chatMode() ? 'AI 聊天' : 'AI 助手') + '，单击展开主对话，双击' + (this.chatShown ? '收起' : '启动') +
+          '小对话框' + (this.voiceEnabled ? '，长按语音' : '') + '，按住可拖动')
         // A finger on the orb: it gives a little at once, before a tap or a double tap is known.
         .onTouch((event: TouchEvent): void => {
           if (this.phase !== 2 || this.dragging) { return; }
@@ -607,21 +689,22 @@ struct AiLiftLayer {
         })
         // A double tap is told apart from a tap (the tap waits a moment); a drag wins over both.
         .gesture(GestureGroup(GestureMode.Exclusive,
-          // AI 语音 › 按住说话: hold the orb to talk, let go to send.
+          // A long press: the orb listens, right here (the words go into its small chat). With 按住说话 it listens
+          // while held and sends when let go; otherwise it stops by itself when the user does (or at a tap).
           LongPressGesture({ duration: 450 })
             .onAction((): void => {
               // In a session a press only drags (voice mode is a double tap there).
-              if (this.phase !== 2 || this.dragging || !this.holdToTalk || this.controller.sessionMode) { return; }
-              this.holdingTalk = true;
-              AppStorage.setOrCreate('aiVoice.hold', 'down:' + Date.now().toString());
+              if (this.phase !== 2 || this.dragging || this.controller.sessionMode) { return; }
+              this.startOrbVoice(this.holdToTalk);
             })
-            .onActionEnd((): void => { this.releaseTalk(); })
-            .onActionCancel((): void => { this.releaseTalk(); }),
+            .onActionEnd((): void => { if (this.listenHeld) { this.stopOrbVoice(true); } })
+            .onActionCancel((): void => { if (this.listenHeld) { this.stopOrbVoice(true); } }),
           TapGesture({ count: 2 }).onAction((): void => { this.orbDoubleTapped(); }),
           TapGesture({ count: 1 }).onAction((): void => { this.orbTapped(); })))
         .parallelGesture(PanGesture({ distance: 4 })
           .onActionStart((): void => {
-            if (this.phase !== 2) { return; }
+            // Listening, the orb stays where it is (a finger drifting while it is held is not a drag).
+            if (this.phase !== 2 || this.orbListening) { return; }
             // The orb may now travel anywhere: the layer covers the window again until it settles.
             this.toFull();
             this.dragging = true;
@@ -657,7 +740,7 @@ struct AiLiftLayer {
         Stack() {
           Text(this.hintText()).fontSize(12).fontColor('#FFFFFF').maxLines(1).textAlign(TextAlign.Center).width('100%')
         }
-        .width(AI_HINT_WIDTH).height(AI_HINT_HEIGHT).borderRadius(AI_HINT_HEIGHT / 2).backgroundColor('#E61C1C1E')
+        .width(AI_HINT_WIDTH).height(AI_HINT_HEIGHT).borderRadius(AI_HINT_HEIGHT / 2).backgroundColor(aiInk(this.aiStyle, 'hint'))
         .border({ width: 0.5, color: '#33FFFFFF' })
         .position({ x: this.hintX() - this.offsetX(), y: this.hintY() - this.offsetY() })
         .hitTestBehavior(HitTestMode.None)
@@ -667,7 +750,7 @@ struct AiLiftLayer {
         AiChatView({ mini: true, owner: AiChatMemory.owner !== '' ? AiChatMemory.owner : 'device-local',
           deviceClass: this.controller.deviceClass, canExpand: !this.controller.sessionMode,
           onCardSize: (height: number): void => { this.chatResized(height); },
-          onActivityChanged: (active: boolean): void => { this.controller.onActivityChanged(active); },
+          onActivityChanged: (active: boolean): void => { this.chatBusy = active; this.controller.onActivityChanged(active); },
           onExpand: (): void => { this.controller.onOrbTap(this.boxX, this.boxY + this.originY); } })
           .width(this.chatWidth())
           .position({ x: this.chatX() - this.offsetX(), y: this.chatY() - this.offsetY() })
@@ -678,6 +761,7 @@ struct AiLiftLayer {
         DiagnosticAiAssistantPanel({ siriMode: true, forceDark: true, embedded: true, mini: true, revealed: true,
           deviceClass: this.controller.deviceClass === 'pc' ? 'pc' : this.controller.deviceClass === 'pad' ? 'pad' : 'phone',
           onCardSize: (_width: number, height: number): void => { this.chatResized(height); },
+          onActivityChanged: (active: boolean): void => { this.chatBusy = active; },
           onExpand: (): void => { this.controller.onOrbTap(this.boxX, this.boxY + this.originY); } })
           .width(this.chatWidth())
           .position({ x: this.chatX() - this.offsetX(), y: this.chatY() - this.offsetY() })

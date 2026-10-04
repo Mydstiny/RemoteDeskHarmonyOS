@@ -134,8 +134,27 @@ assert.equal(route.aiRouteSuggestion('帮我写一份周报', 'assistant', false
 assert.equal(route.aiRouteSuggestion('把这段话翻译成英文', 'assistant', false), 'chat');
 assert.equal(route.aiRouteSuggestion('SSH 连接失败', 'assistant', false), '');
 assert.equal(route.aiRouteSuggestion('怎么添加主机', 'assistant', false), '');
-for (const q of ['缩成悬浮球', '进入悬浮球模式。', '帮我缩成悬浮球', '先收起来', '最小化']) { assert.ok(route.aiQuestionIsFloat(q), q); }
-for (const q of ['悬浮球的样式怎么改', '把悬浮球动效换成玻璃球', '收起来的东西在哪']) { assert.ok(!route.aiQuestionIsFloat(q), q); }
+for (const q of ['缩成悬浮球', '进入悬浮球模式。', '帮我缩成悬浮球', '先收起来', '最小化', '切到悬浮窗', '切换成悬浮模式',
+  '进入小窗模式', '变成小窗', '悬浮窗模式吧']) { assert.ok(route.aiQuestionIsFloat(q), q); }
+for (const q of ['悬浮球的样式怎么改', '把悬浮球动效换成玻璃球', '收起来的东西在哪', '悬浮窗怎么关', '小窗模式是什么']) {
+  assert.ok(!route.aiQuestionIsFloat(q), q);
+}
+assert.equal(route.aiModeCommand('切到悬浮窗'), 'orb');
+// 新对话, said or typed in any mode: done at once.
+for (const q of ['新对话', '开个新对话', '新开一个对话吧', '开始新的对话', '清空对话', '清空聊天记录', '重新开始吧', '换个新话题']) {
+  assert.equal(route.aiModeCommand(q), 'new', q);
+}
+for (const q of ['新对话在哪里', '怎么开新对话', '对话记录在哪', '重新开始连接']) { assert.notEqual(route.aiModeCommand(q), 'new', q); }
+// A card waiting under the answer: a yes confirms it there (also the AI's own pill), a no cancels it.
+const card = '打开「AI 配置」';
+for (const q of ['确认', '好的', '好', '可以。', '确认打开 AI 配置', '打开 AI 配置', '确认打开', '打开吧', '确认打开「AI 配置」', '好的，打开吧']) {
+  assert.equal(route.aiPendingCardReply(q, card), 'confirm', q);
+}
+assert.equal(route.aiPendingCardReply('确认修改', '把「AI 风格」改为「小艺风格」'), 'confirm');
+for (const q of ['不用了', '取消', '算了吧', '先不打开']) { assert.equal(route.aiPendingCardReply(q, card), 'cancel', q); }
+for (const q of ['AI 配置在哪里', '打开云同步', '为什么悬浮球不能语音', '确认一下 Key 对不对', '']) {
+  assert.equal(route.aiPendingCardReply(q, card), '', q);
+}
 console.log('PASS routing suggests 助理 for app questions and 聊天 for general tasks, never both ways at once');
 
 // Every mode hands over by itself: 聊天 → 助理 only to diagnose or send feedback; 助理 → 聊天 for anything not about the app.
@@ -148,6 +167,12 @@ assert.equal(route.aiAutoRoute('帮我写一份周报', 'assistant', false), 'ch
 assert.equal(route.aiAutoRoute('十分钟后提醒我喝水', 'assistant', false), 'chat');
 assert.equal(route.aiAutoRoute('SSH 连接失败', 'assistant', false), '');
 assert.equal(route.aiAutoRoute('怎么添加主机', 'assistant', false), '');
+// A greeting stays where it is said, in either mode.
+for (const q of ['你好', '你好呀', '您好！', 'hello', '在吗？', '谢谢', '你是谁']) {
+  assert.equal(route.aiAutoRoute(q, 'assistant', false), '', q);
+  assert.equal(route.aiAutoRoute(q, 'chat', false), '', q);
+}
+assert.equal(route.aiAutoRoute('你好，帮我写一份周报', 'assistant', false), 'chat');
 // A feature idea goes to 聊天 (it keeps the list) from any mode; a fault report still goes to 助理.
 for (const q of ['要是能在 RDP 里录屏就好了', '希望 SSH 能支持分屏', '把我的需求发给开发者', '能不能加个暗色终端主题']) {
   assert.ok(route.aiQuestionIsFeatureIdea(q), q);

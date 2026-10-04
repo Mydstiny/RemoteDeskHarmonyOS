@@ -57,8 +57,9 @@ export function aiRouteSuggestion(question: string, mode: string, hasAttachments
  */
 export function aiQuestionIsFloat(question: string): boolean {
   const text: string = question.trim().replace(/[。！!，,？?\s]/g, '');
-  return /^(请)?(帮我)?(缩成|缩小成|进入|变成|切到|切换到|切换成|收成|收起成|变回)悬浮球(模式)?(吧)?$/.test(text) ||
-    /^(先)?(收起来|最小化|缩小|收起)(吧)?$/.test(text) || /^悬浮球模式$/.test(text);
+  // 悬浮窗 / 小窗 / 悬浮模式 are what people call the orb too ("切到悬浮窗" must not go to the AI as a question).
+  return /^(请)?(帮我)?(缩成|缩小成|进入|变成|切到|切换到|切换成|换成|改成|转成|收成|收起成|变回|回到)(悬浮球|悬浮窗|悬浮|小窗|小窗口)(模式)?(吧)?$/.test(text) ||
+    /^(先)?(收起来|最小化|缩小|收起)(吧)?$/.test(text) || /^(悬浮球|悬浮窗|悬浮|小窗)模式(吧)?$/.test(text);
 }
 
 function commandText(question: string): string {
@@ -94,10 +95,39 @@ export function aiModeCommand(question: string): string {
     /^语音模式(吧)?$/.test(t)) {
     return 'voice';
   }
+  // 新对话: the current one is kept in 对话记录, a new one starts (asked as a whole sentence, not "新对话在哪").
+  if (/^(请|帮我|我们)?((开|开个|开一个|开始|开始一个|来个|来一个|换个|换一个|开启|开启一个|再开一个)新的?|新开(一个|个)?|新建(一个|个)?|新的?)(对话|会话|聊天|话题)(吧)?$/.test(t) ||
+    /^(请|帮我)?(清空|清除|重置)(一下)?(当前|这个|这次)?的?(对话|会话|聊天)(记录)?(吧)?$/.test(t) ||
+    /^(那就|我们)?(重新开始|重开|重来)(一个)?(对话|聊天)?(吧)?$/.test(t)) {
+    return 'new';
+  }
   if (new RegExp('^' + to + '(ai)?助理(模式)?(吧)?$').test(t)) { return 'assistant'; }
   if (new RegExp('^' + to + '(ai)?聊天(模式)?(吧)?$').test(t)) { return 'chat'; }
   if (aiQuestionIsFloat(question)) { return 'orb'; }
   if (aiQuestionIsGoodbye(question)) { return 'exit'; }
+  return '';
+}
+
+/**
+ * The answer above shows one card waiting for the user (打开「AI 配置」, 把「…」改为「…」): a short yes ("确认", "好的",
+ * "打开吧", "确认打开 AI 配置" — also the AI's own suggestion pill) confirms it, a short no cancels it, right away, instead
+ * of going to the AI again (which only says the card is there). 'confirm' · 'cancel' · '' (not about the card).
+ */
+export function aiPendingCardReply(question: string, cardTitle: string): string {
+  const t: string = commandText(question).replace(/[「」『』“”"']/g, '');
+  if (t === '' || t.length > 24) { return ''; }
+  if (/^(不用了?|不要了?|取消|算了|先不|别|不)(打开|改|修改|执行|发|发送|连接|删除|删)?(了|吧|啦)?(谢谢)?$/.test(t)) { return 'cancel'; }
+  if (/^(好|好的|好滴|行|可以|嗯|嗯嗯|对|是|是的|确认|确定|没问题|ok|okay|yes|同意|去吧|开吧|就这样)(的|吧|啊|呀|了|啦)?$/.test(t)) {
+    return 'confirm';
+  }
+  const lead: RegExpExecArray | null = /^(请|帮我|那就|那|好的|好|行|可以|嗯)*(确认|确定|同意)?(帮我|给我)?/.exec(t);
+  const said: boolean = lead !== null && lead[2] !== undefined;
+  const rest: string = t.slice(lead !== null ? lead[0].length : 0).replace(/(吧|一下|了|啦)+$/, '');
+  if (rest === '') { return said ? 'confirm' : ''; }
+  // The card's own words ("打开 AI 配置" for 打开「AI 配置」), or just its verb ("打开吧", "确认修改").
+  const title: string = commandText(cardTitle).replace(/[「」『』“”"']/g, '');
+  if (rest.length >= 2 && (title === rest || title.startsWith(rest) || (said && title.indexOf(rest) >= 0))) { return 'confirm'; }
+  if (/^(打开|修改|改|执行|连接|发送|发|删除|删|进入|继续|开)$/.test(rest)) { return 'confirm'; }
   return '';
 }
 
@@ -126,8 +156,19 @@ export function aiQuestionIsFeatureIdea(question: string): boolean {
  * needs 助理's capture and mail flow (diagnosing the app, feedback); 助理 hands to 聊天 everything not about the app.
  * A question with added documents stays in 聊天.
  */
+/**
+ * A greeting or a word of thanks ("你好", "在吗", "谢谢", "你是谁"): either mode answers it where the user is — it is not
+ * a task for the other one.
+ */
+export function aiQuestionIsSmallTalk(question: string): boolean {
+  const t: string = commandText(question);
+  if (t === '' || t.length > 12) { return false; }
+  return /^(你好|您好|嗨|哈喽|哈啰|hello|hi|hey|在吗|在不在|在嘛|早|早安|早上好|上午好|中午好|下午好|晚上好|谢谢|多谢|谢啦|感谢|thanks|thankyou|你是谁|你叫什么|你叫什么名字|你能做什么|你会什么|你会做什么)(呀|啊|哦|哈|吗|呢|你|小艺|siri)*$/.test(t);
+}
+
 export function aiAutoRoute(question: string, mode: string, hasAttachments: boolean): string {
   if (question.trim() === '') { return ''; }
+  if (aiQuestionIsSmallTalk(question)) { return ''; }
   if (aiQuestionIsFeatureIdea(question)) { return mode === 'chat' ? '' : 'chat'; }
   if (mode === 'chat') {
     if (hasAttachments || !aiQuestionIsAboutApp(question)) { return ''; }

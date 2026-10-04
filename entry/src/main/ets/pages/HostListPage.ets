@@ -2286,6 +2286,12 @@ struct HostListPage {
       AppStorage.setOrCreate('diagnosticAiReducedMotion', value === 'true');
       return saved;
     }
+    // AI 风格 (and its window wash) are kept with the motion choices; a style brings its own motions.
+    if (id === 'ai.style' || id === 'ai.style.wash') {
+      const key: string = id === 'ai.style' ? 'aiStyle' : 'aiStyle.wash';
+      DiagnosticAiMotionStore.save(getContext(this), key, value);
+      return AppStorage.get<string>(key) === value;
+    }
     const motionKeys: string[] = ['thinking', 'orb', 'done', 'open', 'sendGlow', 'speed'];
     const kind: string = id.slice('ai.motion.'.length);
     if (id.indexOf('ai.motion.') === 0 && motionKeys.indexOf(kind) >= 0) {

@@ -785,6 +785,9 @@ export default class EntryAbility extends UIAbility {
 
       this.avoidAreaCallback = (data: window.AvoidAreaOptions): void => {
         if (data.type === window.AvoidAreaType.TYPE_SYSTEM) {
+          // The AI hides the status bar while its panel covers the top: the page keeps its inset, so nothing under
+          // the panel moves (and nothing jumps when the bar comes back).
+          if (data.area.topRect.height === 0 && AppStorage.get<boolean>('ai.statusBarHidden') === true) { return; }
           AppStorage.setOrCreate<number>('topRectHeight', data.area.topRect.height);
         } else if (data.type === window.AvoidAreaType.TYPE_NAVIGATION_INDICATOR) {
           AppStorage.setOrCreate<number>('bottomRectHeight', data.area.bottomRect.height);

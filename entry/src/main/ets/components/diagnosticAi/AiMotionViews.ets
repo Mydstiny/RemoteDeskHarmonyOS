@@ -6,6 +6,8 @@ import { AI_FLOAT_ORB, AiAssistantGlyph, AiCheckmark, AiSiriOrb } from './AiIsla
 import { AiVoiceOrb } from './AiVoiceOrb';
 import { AiAuroraOrb, AiAuroraRing, AiCoinDiscRing, AiCometOrbit, AiHaloRing, AiIslandRingsCheck, AiRippleCheck, AiSparkleCheck,
   AiVoiceStrands } from './AiMotionCanvas';
+import { AiXiaoyiRing } from './AiXiaoyiRing';
+import { AiGlassColors, aiXiaoyiGlass } from '../../services/diagnosticAi/AiStylePolicy';
 
 export { AiIslandRingsCheck };
 
@@ -49,6 +51,8 @@ export struct AiThinkingIndicator {
   @Prop still: boolean = false;
   /** The ring opens from a dot as it appears; false shows it open at once (it was already there, only unseen). */
   @Prop opensFromDot: boolean = true;
+  /** Frame cap for canvas styles that support it (120 where the display has it; settings previews use 20). */
+  @Prop maxFps: number = 120;
   @StorageProp(AI_MOTION_THINKING) saved: string = 'dots';
   @StorageProp(AI_MOTION_REDUCED) reduced: boolean = false;
 
@@ -71,6 +75,12 @@ export struct AiThinkingIndicator {
         AiCometOrbit({ ringSize: this.indicatorSize, still: this.still })
       } else if (this.effective() === 'wave') {
         AiVoiceOrb({ orbSize: this.indicatorSize, sphere: false, active: true, still: this.still })
+      } else if (this.effective() === 'xiaoyi') {
+        // Where Siri's ring turns, and as large (its ring is ~0.36 of the box, its glow spills past it): a canvas
+        // twice the box, centred on it, leaves the glow room.
+        AiXiaoyiRing({ ringSize: this.indicatorSize * 2, radius: this.indicatorSize * 0.4, mode: 'think', ripples: false,
+          still: this.still, maxFps: this.maxFps })
+          .position({ x: -this.indicatorSize / 2, y: -this.indicatorSize / 2 })
       } else if (this.effective() === 'minimal') {
         AiQuietDots({ dotsSize: this.indicatorSize })
       } else {
@@ -120,12 +130,79 @@ struct AiGlassOrb {
   }
 }
 
+/**
+ * 小艺光环球: a small blue → lavender glass sphere with the 小艺 ring inside; the ring rests, and tumbles while the
+ * assistant works.
+ */
+@Component
+struct AiXiaoyiOrb {
+  @Prop orbSize: number = AI_FLOAT_ORB;
+  @Prop active: boolean = false;
+  /** The orb is listening: its ring follows the voice (XyLiveLevel). */
+  @Prop listening: boolean = false;
+  @Prop still: boolean = false;
+  @Prop maxFps: number = 120;
+  @StorageProp('currentTheme') theme: string = 'light';
+
+  private glass(): AiGlassColors { return aiXiaoyiGlass(this.theme === 'dark'); }
+
+  build() {
+    Stack() {
+      Column().width(this.orbSize).height(this.orbSize).borderRadius(this.orbSize / 2)
+        .linearGradient({ angle: 135, colors: [[this.glass().from, 0], [this.glass().to, 1]] })
+      AiXiaoyiRing({ ringSize: this.orbSize, mode: this.listening ? 'listen' : this.active ? 'think' : 'idle',
+        live: this.listening, ripples: false, still: this.still, maxFps: this.maxFps })
+      // A glass sphere: a soft highlight on top and a fine rim.
+      Column().width(this.orbSize).height(this.orbSize).borderRadius(this.orbSize / 2)
+        .radialGradient({ center: ['50%', '8%'], radius: this.orbSize * 0.45, colors: [['#38FFFFFF', 0], ['#00FFFFFF', 1]] })
+        .hitTestBehavior(HitTestMode.None)
+      Column().width(this.orbSize).height(this.orbSize).borderRadius(this.orbSize / 2)
+        .border({ width: 1, color: { top: '#4DFFFFFF', left: '#40FFFFFF', right: '#40FFFFFF', bottom: '#66FFFFFF' } })
+        .hitTestBehavior(HitTestMode.None)
+    }.width(this.orbSize).height(this.orbSize).borderRadius(this.orbSize / 2).clip(true)
+    .shadow({ radius: 14, color: '#4D2B3A86', offsetY: 4 })
+  }
+}
+
+/** 小艺光环 done: the ring gathers out of a soft tilted blur, and a check strokes in at its middle. */
+@Component
+struct AiXiaoyiDone {
+  @Prop markSize: number = 30;
+  @Prop still: boolean = false;
+  @State private checked: number = 0;
+  /** Once the check is in, the ring rests as a still frame (nothing left to animate). */
+  @State private settled: boolean = false;
+
+  aboutToAppear(): void {
+    if (this.still) { this.checked = 1; this.settled = true; return; }
+    setTimeout((): void => {
+      this.getUIContext().animateTo({ curve: curves.springMotion(0.38, 0.62) }, (): void => { this.checked = 1; });
+    }, 480);
+    setTimeout((): void => { this.settled = true; }, 1300);
+  }
+
+  build() {
+    Stack() {
+      // The same ring throughout: once the check is in it simply stops where it is (no second ring, no jump).
+      AiXiaoyiRing({ ringSize: this.markSize, mode: 'speak', level: 0.3, ripples: false, opensFromBlur: !this.still,
+        still: this.settled })
+      SymbolGlyph($r('sys.symbol.checkmark')).fontSize(this.markSize * 0.4).fontWeight(FontWeight.Bold)
+        .fontColor(['#FFFFFF'])
+        .opacity(this.checked).scale({ x: 0.4 + 0.6 * this.checked, y: 0.4 + 0.6 * this.checked })
+    }.width(this.markSize).height(this.markSize)
+  }
+}
+
 /** The floating orb in the chosen style. */
 @Component
 export struct AiFloatingOrb {
   @Prop orbSize: number = AI_FLOAT_ORB;
   @Prop active: boolean = false;
+  /** Listening (a long press): the 小艺 orb's ring follows the voice; the other orbs show themselves busy. */
+  @Prop listening: boolean = false;
   @Prop style: string = '';
+  /** Frame cap for canvas styles that support it (120 where the display has it; settings previews use 20). */
+  @Prop maxFps: number = 120;
   /** One still frame (settings tiles that are not selected). */
   @Prop still: boolean = false;
   @StorageProp(AI_MOTION_ORB) saved: string = 'voice';
@@ -139,17 +216,20 @@ export struct AiFloatingOrb {
   build() {
     Stack() {
       if (this.effective() === 'sine') {
-        AiSiriOrb({ orbSize: this.orbSize, active: this.active, still: this.still })
+        AiSiriOrb({ orbSize: this.orbSize, active: this.active || this.listening, still: this.still })
       } else if (this.effective() === 'aurora') {
-        AiAuroraOrb({ orbSize: this.orbSize, active: this.active, still: this.still })
+        AiAuroraOrb({ orbSize: this.orbSize, active: this.active || this.listening, still: this.still })
       } else if (this.effective() === 'halo') {
-        AiHaloRing({ ringSize: this.orbSize, backdrop: true, active: this.active, still: this.still })
+        AiHaloRing({ ringSize: this.orbSize, backdrop: true, active: this.active || this.listening, still: this.still })
+      } else if (this.effective() === 'xiaoyiRing') {
+        AiXiaoyiOrb({ orbSize: this.orbSize, active: this.active, listening: this.listening, still: this.still,
+          maxFps: this.maxFps })
       } else if (this.effective() === 'xiaoyi') {
-        AiGlassOrb({ orbSize: this.orbSize, mark: true, active: this.active })
+        AiGlassOrb({ orbSize: this.orbSize, mark: true, active: this.active || this.listening })
       } else if (this.effective() === 'glass') {
-        AiGlassOrb({ orbSize: this.orbSize, mark: false, active: this.active })
+        AiGlassOrb({ orbSize: this.orbSize, mark: false, active: this.active || this.listening })
       } else {
-        AiVoiceOrb({ orbSize: this.orbSize, active: this.active, still: this.still })
+        AiVoiceOrb({ orbSize: this.orbSize, active: this.active || this.listening, still: this.still })
       }
     }.width(this.orbSize).height(this.orbSize)
   }
@@ -197,6 +277,8 @@ export struct AiDoneMark {
         AiRippleCheck({ markSize: this.markSize, still: this.still })
       } else if (this.chosen() === 'sparkle') {
         AiSparkleCheck({ markSize: this.markSize, still: this.still })
+      } else if (this.chosen() === 'xiaoyi') {
+        AiXiaoyiDone({ markSize: this.markSize, still: this.still })
       } else {
         AiCheckmark({ markSize: this.markSize })
       }

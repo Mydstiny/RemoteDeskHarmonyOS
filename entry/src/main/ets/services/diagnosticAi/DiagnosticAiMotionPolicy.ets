@@ -1,5 +1,6 @@
 import { common } from '@kit.AbilityKit';
 import { preferences } from '@kit.ArkData';
+import { AI_STYLE, AI_STYLE_WASH, AiStylePreset, aiStylePreset } from './AiStylePolicy';
 
 /**
  * AI 动效: how the assistant looks while it works. Each kind has a few styles; the choice is per device (not per
@@ -46,8 +47,19 @@ export class AiMotionKind {
 }
 
 export const AI_MOTION_KINDS: AiMotionKind[] = [
+  // The look as a whole; choosing one also sets the thinking ring, the orb and the done mark to match (each can still
+  // be changed on its own below).
+  new AiMotionKind(AI_STYLE, 'AI 风格', '整体外观：形态和交互不变，只换材质、配色和动画', 'siri', 'siri', [
+    new AiMotionOption('siri', 'Siri 风格', '深色烟熏玻璃，灵动岛面板'),
+    new AiMotionOption('xiaoyi', '小艺风格', '蓝紫渐变玻璃，流动的彩色光环')
+  ]),
+  new AiMotionKind(AI_STYLE_WASH, '窗口晕染', '小艺风格打开面板时，整个窗口铺一层淡淡的蓝紫', 'on', 'on', [
+    new AiMotionOption('on', '开', '任何屏幕比例都铺满窗口'),
+    new AiMotionOption('off', '关', '只有面板本身')
+  ]),
   new AiMotionKind(AI_MOTION_THINKING, '思考动画', '准备、思考和执行时转动的指示', 'dots', 'minimal', [
     new AiMotionOption('dots', '光点环', '六个光点公转，大小随波峰起伏'),
+    new AiMotionOption('xiaoyi', '小艺光环', '光环在固定的球形光晕里翻滚，颜色沿环流动'),
     new AiMotionOption('discs', '圆片环', '圆片像硬币一样翻转，整圈同时旋转'),
     new AiMotionOption('halo', '智能光环', '多彩光环在空间里翻转，带亮芯辉光'),
     new AiMotionOption('aurora', '极光环', '彩虹光环流转，柔和发光'),
@@ -58,6 +70,7 @@ export const AI_MOTION_KINDS: AiMotionKind[] = [
   ]),
   new AiMotionKind(AI_MOTION_ORB, '悬浮球', '抓取诊断和执行操作时浮在屏幕上的球', 'voice', 'glass', [
     new AiMotionOption('voice', '语音球', '梭形光带分层流动，带呼吸'),
+    new AiMotionOption('xiaoyiRing', '小艺光环球', '蓝紫渐变球里流动的彩色光环'),
     new AiMotionOption('aurora', '极光球', '几团彩色柔光在玻璃球里环绕'),
     new AiMotionOption('halo', '智能光环', '深色镜片里翻转的多彩光环'),
     new AiMotionOption('sine', '正弦光带', '细亮光线交织流动'),
@@ -66,6 +79,7 @@ export const AI_MOTION_KINDS: AiMotionKind[] = [
   ]),
   new AiMotionKind(AI_MOTION_DONE, '完成动画', '执行操作完成时的确认', 'check', 'none', [
     new AiMotionOption('check', '画圆打勾', '先画圆再画对勾，最后轻弹'),
+    new AiMotionOption('xiaoyi', '小艺光环', '光环从柔光里收拢成圆，荡开涟漪后打勾'),
     new AiMotionOption('island', '灵动岛光环', '展开成方块，光环翻转收拢后打勾'),
     new AiMotionOption('bounce', '弹出对勾', '对勾直接弹出'),
     new AiMotionOption('ripple', '涟漪扩散', '对勾出现后光环向外扩散'),
@@ -101,7 +115,8 @@ function kindOf(key: string): AiMotionKind | undefined {
 export function aiMotionStyle(key: string): string {
   const kind: AiMotionKind | undefined = kindOf(key);
   if (kind === undefined) { return ''; }
-  if (AppStorage.get<boolean>(AI_MOTION_REDUCED) === true) { return kind.quiet; }
+  // The look itself is not motion: reducing motion keeps the chosen style.
+  if (AppStorage.get<boolean>(AI_MOTION_REDUCED) === true && key !== AI_STYLE && key !== AI_STYLE_WASH) { return kind.quiet; }
   const value: string | undefined = AppStorage.get<string>(key);
   return value !== undefined && kind.options.some((o: AiMotionOption): boolean => o.id === value) ? value : kind.fallback;
 }
@@ -134,11 +149,20 @@ export class DiagnosticAiMotionStore {
   static save(context: common.Context, key: string, value: string): void {
     const kind: AiMotionKind | undefined = kindOf(key);
     if (kind === undefined || !kind.options.some((o: AiMotionOption): boolean => o.id === value)) { return; }
+    const before: string = AppStorage.get<string>(key) ?? kind.fallback;
     AppStorage.setOrCreate(key, value);
     try {
       const prefs = preferences.getPreferencesSync(context, { name: STORE_NAME });
       prefs.putSync(key, value);
       prefs.flush();
     } catch (_error) { /* the choice still applies for this launch */ }
+    // A style brings its own thinking ring, orb and done mark — only when it changes (choosing the current style again
+    // must not undo what was adjusted one by one).
+    if (key === AI_STYLE && value !== before) {
+      const preset: AiStylePreset = aiStylePreset(value);
+      DiagnosticAiMotionStore.save(context, AI_MOTION_THINKING, preset.thinking);
+      DiagnosticAiMotionStore.save(context, AI_MOTION_ORB, preset.orb);
+      DiagnosticAiMotionStore.save(context, AI_MOTION_DONE, preset.done);
+    }
   }
 }

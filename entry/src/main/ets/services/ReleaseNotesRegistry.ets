@@ -70,8 +70,8 @@ function currentReleasePages(): ReleaseNotePage[] {
     },
     {
       id: 'release-ai-layout', symbol: $rawfile('icons/computer-desktop.svg'), glyph: $r('sys.symbol.rectangle_on_rectangle'),
-      tag: '改进', title: 'AI 始终在最上层，PC 左下角一键打开',
-      desc: '语音模式、AI 面板和悬浮球不再被设置页等弹窗挡住；PC 大屏上，AI 按钮移到左下角，和「+」并排。'
+      tag: '改进', title: 'AI 始终在最上层，新增小艺风格',
+      desc: '语音模式、AI 面板和悬浮球不再被设置页等弹窗挡住，手机横屏、平板分屏和 PC 小窗口里也不会超出窗口；PC 大屏上，AI 按钮移到左下角，和「+」并排。设置 › AI 动效里可以换成小艺风格：蓝紫渐变和随声音起伏的彩色光环。'
     },
     {
       id: 'release-1-1-6-summary', symbol: $rawfile('icons/folder-open.svg'), glyph: $r('sys.symbol.folder_fill'),

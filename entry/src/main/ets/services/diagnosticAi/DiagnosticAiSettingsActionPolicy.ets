@@ -114,11 +114,14 @@ const SETTINGS: AiSettingSpec[] = [
     choices([['remote-expert', '远程桌面专家'], ['beginner-guide', '新手引导'], ['diagnostic-first', '排障优先'],
       ['privacy-first', '隐私优先']])),
   toggle('ai.reducedMotion', '减少 AI 动效', 'diagnosticAiReducedMotion', '关闭持续旋转和弹簧转场'),
-  new AiSettingSpec('ai.motion.thinking', 'AI 思考动画', 'aiMotion.thinking', choices([['dots', '光点环'], ['discs', '圆片环'],
+  new AiSettingSpec('ai.style', 'AI 风格', 'aiStyle', choices([['siri', 'Siri 风格'], ['xiaoyi', '小艺风格']]),
+    '小艺风格是蓝紫渐变和彩色光环，会一起换掉思考动画、悬浮球和完成动画'),
+  new AiSettingSpec('ai.style.wash', 'AI 窗口晕染', 'aiStyle.wash', choices([['on', '开'], ['off', '关']]), '小艺风格下才有'),
+  new AiSettingSpec('ai.motion.thinking', 'AI 思考动画', 'aiMotion.thinking', choices([['dots', '光点环'], ['xiaoyi', '小艺光环'], ['discs', '圆片环'],
     ['halo', '智能光环'], ['aurora', '极光环'], ['strands', '彩丝声波'], ['orbit', '彗星轨道'], ['wave', '语音波'], ['minimal', '简洁']])),
-  new AiSettingSpec('ai.motion.orb', 'AI 悬浮球样式', 'aiMotion.orb', choices([['voice', '语音球'], ['aurora', '极光球'],
+  new AiSettingSpec('ai.motion.orb', 'AI 悬浮球样式', 'aiMotion.orb', choices([['voice', '语音球'], ['xiaoyiRing', '小艺光环球'], ['aurora', '极光球'],
     ['halo', '智能光环'], ['sine', '正弦光带'], ['xiaoyi', '小艺标志'], ['glass', '玻璃球']])),
-  new AiSettingSpec('ai.motion.done', 'AI 完成动画', 'aiMotion.done', choices([['check', '画圆打勾'], ['island', '灵动岛光环'],
+  new AiSettingSpec('ai.motion.done', 'AI 完成动画', 'aiMotion.done', choices([['check', '画圆打勾'], ['xiaoyi', '小艺光环'], ['island', '灵动岛光环'],
     ['bounce', '弹出对勾'], ['ripple', '涟漪扩散'], ['sparkle', '粒子绽放'], ['none', '不显示']])),
   new AiSettingSpec('ai.motion.open', 'AI 展开动画', 'aiMotion.open', choices([['morph', '灵动岛形变'], ['liquid', '液态弹出'],
     ['focus', '模糊聚焦'], ['fade', '淡入'], ['none', '关闭']])),
@@ -299,6 +302,8 @@ function settingWords(id: string): string[] {
     case 'ai.verbosity': return ['回答长度', '回答详细', '说得详细', '说得简短'];
     case 'ai.role': return ['助手角色', 'ai 角色'];
     case 'ai.reducedMotion': return ['减少动效', '减少动画', '关闭动画'];
+    case 'ai.style': return ['ai 风格', 'ai 外观', '小艺风格', 'siri 风格', '小艺样式', 'siri 样式'];
+    case 'ai.style.wash': return ['窗口晕染', '晕染'];
     case 'ai.motion.thinking': return ['思考动画', '加载动画'];
     case 'ai.motion.orb': return ['悬浮球'];
     case 'ai.motion.done': return ['完成动画', '打勾动画'];

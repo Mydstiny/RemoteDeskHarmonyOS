@@ -36,7 +36,8 @@ import { AI_VOICE_ENABLED } from '../../services/diagnosticAi/AiVoiceSettings';
 import { AiSegmented } from './AiSegmented';
 import { aiAutoRoute, aiModeCommand } from '../../services/diagnosticAi/AiChatRoutePolicy';
 import { AI_CHAT_REFRESH_KEY } from '../../services/diagnosticAi/AiShareInbox';
-import { AI_ASSISTANT_HANDOFF, AI_MODE_REQUEST } from '../../services/diagnosticAi/AiBridgeKeys';
+import { AI_ASSISTANT_HANDOFF, AI_MODE_REQUEST, AI_ORB_DICTATION, AiOrbDictation, aiOrbDictationDecode } from '../../services/diagnosticAi/AiBridgeKeys';
+import { AI_STYLE, AiInkRole, aiInk, aiStyleIsXiaoyi, aiXiaoyiGlass } from '../../services/diagnosticAi/AiStylePolicy';
 import { AiSessionRouter } from '../../services/diagnosticAi/AiSessionRouter';
 
 /** A suggested question shown as a pill in the island; it follows what the user is asking about. */
@@ -271,6 +272,16 @@ export struct DiagnosticAiAssistantPanel {
   @Prop embedded: boolean = false;
   /** Inside the dark AI island the panel always uses the dark palette. */
   @Prop forceDark: boolean = false;
+  @StorageProp(AI_STYLE) aiStyle: string = 'siri';
+  @StorageProp('diagnosticAiReducedMotion') reducedMotion: boolean = false;
+  /** An answer just arrived: its paragraphs rise in one after another (cleared once they have). */
+  @State private answerFresh: boolean = false;
+  /** Beside the orb: what the orb hears goes into the field as it is recognized, and is asked when the user stops. */
+  @StorageProp(AI_ORB_DICTATION) @Watch('onDictation') dictation: string = '';
+  @State private dictating: boolean = false;
+  /** 新对话: the conversation lifts away first (clearing), then the empty question rises in (freshStart). */
+  @State private clearing: boolean = false;
+  @State private freshStart: boolean = false;
   /**
    * Siri-style text mode for the AI island: the question is typed straight into the card with the keyboard up,
    * small pill actions sit under it, and the result opens in the same card. Same capture and analysis as the panel.
@@ -501,6 +512,9 @@ export struct DiagnosticAiAssistantPanel {
     this.onCardSize(Number(area.width), Number(area.height));
   }
 
+  /** Ink on the AI glass follows the AI style; elsewhere (the settings sheet) it is Siri's, unchanged. */
+  private ink(role: AiInkRole): string { return aiInk(this.siriMode ? this.aiStyle : 'siri', role); }
+
   private pal(): Palette {
     return this.theme === 'light' && !this.forceDark ? buildLight(this.accent) : buildDark(this.accent);
   }
@@ -516,6 +530,28 @@ export struct DiagnosticAiAssistantPanel {
    * the black panel, a step more opaque than the shell, rising in from below while it comes into focus — as Siri
    * shows a notification card under its reply.
    */
+  private onDictation(): void {
+    if (!this.mini || !this.alive) { return; }
+    const heard: AiOrbDictation = aiOrbDictationDecode(this.dictation);
+    if (heard.state === 'listen') { this.dictating = true; this.draftQuestion = heard.text; return; }
+    this.dictating = false;
+    if (heard.state === 'done') { this.draftQuestion = heard.text; this.submitDraftQuestion(); return; }
+    if (heard.state === 'cancel') { this.draftQuestion = ''; }
+  }
+
+  /** The answer that just arrived rises in a paragraph at a time; one already shown does not move. */
+  private markAnswerFresh(): void {
+    this.answerFresh = true;
+    setTimeout((): void => { this.answerFresh = false; }, 1600);
+  }
+
+  private answerTransition(index: number): TransitionEffect {
+    if (!this.answerFresh || this.reducedMotion) { return TransitionEffect.IDENTITY; }
+    return TransitionEffect.OPACITY.combine(TransitionEffect.translate({ y: 14 }))
+      .combine(TransitionEffect.scale({ x: 0.985, y: 0.985, centerX: 0 }))
+      .animation({ curve: curves.springMotion(0.48, 0.88), delay: 60 + Math.min(index, 8) * 85 });
+  }
+
   private functionCardTransition(): TransitionEffect {
     return TransitionEffect.OPACITY
       .combine(TransitionEffect.translate({ y: 22 }))
@@ -530,6 +566,11 @@ export struct DiagnosticAiAssistantPanel {
   aboutToAppear(): void {
     this.alive = true;
     this.lifecycleGeneration++;
+    // Shown because the orb began to listen: the field shows what it hears from the start.
+    if (this.mini && aiOrbDictationDecode(this.dictation).state === 'listen') {
+      this.dictating = true;
+      this.draftQuestion = aiOrbDictationDecode(this.dictation).text;
+    }
     try { this.lastCapturePhase = this.capture.status().phase; } catch (_error) { this.lastCapturePhase = 'idle'; }
     const scope = AccountSessionCoordinator.getInstance().currentScope();
     this.owner = scope.ownerScopeId.trim() === '' ? 'device-local' : scope.ownerScopeId;
@@ -713,6 +754,9 @@ export struct DiagnosticAiAssistantPanel {
     if (mode === 'chat') {
       AiChatMemory.active = true;
       if (question !== '') {
+        // The chat about to show starts from this account's memory: settle it first, or its first look (a new owner)
+        // clears the question handed over and it is never asked.
+        if (AiChatMemory.owner !== this.owner) { AiChatMemory.clear(this.owner); }
         AiChatMemory.handoff = question;
         if (this.result === null) { this.question = ''; } else { this.draftQuestion = ''; }
       }
@@ -751,6 +795,8 @@ export struct DiagnosticAiAssistantPanel {
       return true;
     }
     try { inputMethod.getController().hideTextInput(); } catch (_error) { /* keyboard already down */ }
+    // 新对话 in 助理: at once, here (in 聊天 the chat view does it itself).
+    if (command === 'new') { this.startNewConversation(); return true; }
     if (this.mini) { AppStorage.setOrCreate(AI_MODE_REQUEST, command + '@' + Date.now().toString()); }
     else { this.applyMode(command); }
     return true;
@@ -785,6 +831,8 @@ export struct DiagnosticAiAssistantPanel {
       AppStorage.setOrCreate(AI_VOICE_REQUEST, Date.now());
       return;
     }
+    // 新对话: 助理 starts over here; 聊天's own view starts its new chat (it watches the same request).
+    if (mode === 'new') { if (!this.chatMode) { this.startNewConversation(); } return; }
     if (mode === 'assistant' && this.chatMode) { this.switchMode('assistant', ''); return; }
     if ((mode === 'chat' || mode === 'text') && !this.chatMode) { this.switchMode('chat', ''); }
   }
@@ -931,6 +979,7 @@ export struct DiagnosticAiAssistantPanel {
       }
       if (bundle === '' && mode !== 'diagnose') { this.addLocalSettingIntents(analyzed); }
       if (mode === 'diagnose') { this.addLocalOptimizations(analyzed); }
+      this.markAnswerFresh();
       this.result = analyzed;
       if (bundle === '') { this.adoptCapturePlan(analyzed, mode); }
       if (mode === 'diagnose' && bundle !== '' && this.pendingCaptureId !== '') {
@@ -1535,6 +1584,7 @@ export struct DiagnosticAiAssistantPanel {
         return;
       }
       this.addLocalOptimizations(analyzed);
+      this.markAnswerFresh();
       this.result = analyzed;
       // The user may still be in the session the app opened: say where the result is.
       if (reproduced) { this.toast('AI 诊断完成，回到 AI 助手查看结果'); }
@@ -1557,12 +1607,12 @@ export struct DiagnosticAiAssistantPanel {
   @Builder private triageView() {
     Column({ space: 10 }) {
       if (this.triageFacts() !== '') {
-        Text(this.triageFacts()).fontSize(12).lineHeight(17).fontColor('#C7C7CC').width('100%')
-          .padding({ left: 10, right: 10, top: 7, bottom: 7 }).borderRadius(12).backgroundColor('#1C1C1E')
+        Text(this.triageFacts()).fontSize(12).lineHeight(17).fontColor(this.ink('icon')).width('100%')
+          .padding({ left: 10, right: 10, top: 7, bottom: 7 }).borderRadius(12).backgroundColor(this.ink('surfaceDeep'))
       }
       ForEach(this.triagePairs(true), (pair: AiTriageExchange, index: number): void => {
         Row({ space: 8 }) {
-          Text(pair.question).fontSize(13).fontColor('#8E8E93')
+          Text(pair.question).fontSize(13).fontColor(this.ink('text2'))
           Text(pair.answer).fontSize(14).fontWeight(FontWeight.Medium).fontColor('#FFFFFF').layoutWeight(1)
             .textAlign(TextAlign.End).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
         }.width('100%')
@@ -1570,7 +1620,7 @@ export struct DiagnosticAiAssistantPanel {
       }, (pair: AiTriageExchange, index: number): string => 'triage-a' + index.toString() + pair.answer)
       if (this.aiChecks.length > 0 && this.triageCurrent === null) {
         Column({ space: 8 }) {
-          Text('AI 自检').fontSize(13).fontWeight(FontWeight.Medium).fontColor('#8E8E93').width('100%')
+          Text('AI 自检').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.ink('text2')).width('100%')
           ForEach(this.aiChecks, (item: AiCheckItem, index: number): void => {
             Row({ space: 10 }) {
               if (item.state === -1) {
@@ -1583,14 +1633,14 @@ export struct DiagnosticAiAssistantPanel {
               Column({ space: 2 }) {
                 Text(item.title).fontSize(14).fontWeight(FontWeight.Medium).fontColor('#FFFFFF').width('100%')
                 if (item.detail !== '') {
-                  Text(item.detail).fontSize(12).lineHeight(17).fontColor('#C7C7CC').width('100%')
+                  Text(item.detail).fontSize(12).lineHeight(17).fontColor(this.ink('icon')).width('100%')
                 }
               }.layoutWeight(1)
             }.width('100%').alignItems(VerticalAlign.Top)
             .transition(this.functionCardTransition())
           }, (item: AiCheckItem, index: number): string => 'aicheck-' + index.toString() + item.state.toString() + item.title)
           if (this.aiCheckAdvice !== '') {
-            Text(this.aiCheckAdvice).fontSize(14).lineHeight(20).fontColor('#E5E5EA').width('100%').margin({ top: 2 })
+            Text(this.aiCheckAdvice).fontSize(14).lineHeight(20).fontColor(this.ink('textSoft')).width('100%').margin({ top: 2 })
           }
         }.width('100%').padding(14).borderRadius(20).backgroundColor('#14FFFFFF')
         .transition(this.functionCardTransition())
@@ -1602,7 +1652,7 @@ export struct DiagnosticAiAssistantPanel {
             ForEach((this.triageCurrent as AiTriageQuestion).options, (option: AiTriageOption, index: number): void => {
               Text(option.label).fontSize(14).fontWeight(FontWeight.Medium).fontColor('#F2F2F7')
                 .height(34).padding({ left: 14, right: 14 }).borderRadius(17).margin({ right: 8, bottom: 8 })
-                .backgroundColor('#2E3A3A3C').border({ width: 0.5, color: '#26FFFFFF' })
+                .backgroundColor(this.ink('fillGray')).border({ width: 0.5, color: '#26FFFFFF' })
                 .transition(this.pillTransition(index))
                 .onClick((): void => { this.answerTriage(option); })
             }, (option: AiTriageOption): string => (this.triageCurrent as AiTriageQuestion).id + option.id)
@@ -1626,7 +1676,7 @@ export struct DiagnosticAiAssistantPanel {
             .fontSize(14).fontWeight(FontWeight.Medium)
             .fontColor('#FFFFFF')
           Text(this.planReason !== '' ? this.planReason : '只读取脱敏的结构化事件，不含密码、屏幕和文件内容')
-            .fontSize(12).lineHeight(17).fontColor('#C7C7CC').maxLines(3).textOverflow({ overflow: TextOverflow.Ellipsis })
+            .fontSize(12).lineHeight(17).fontColor(this.ink('icon')).maxLines(3).textOverflow({ overflow: TextOverflow.Ellipsis })
         }.layoutWeight(1).alignItems(HorizontalAlign.Start)
       }.width('100%').alignItems(VerticalAlign.Top)
       Flex({ wrap: FlexWrap.Wrap }) {
@@ -1636,14 +1686,14 @@ export struct DiagnosticAiAssistantPanel {
               SymbolGlyph($r('sys.symbol.checkmark')).fontSize(11).fontColor(['#000000'])
             }
             Text(facet.label).fontSize(12).fontWeight(FontWeight.Medium)
-              .fontColor(this.planFocus.indexOf(facet.id) >= 0 ? '#000000' : '#E5E5EA')
+              .fontColor(this.planFocus.indexOf(facet.id) >= 0 ? '#000000' : this.ink('textSoft'))
           }
           .height(28).padding({ left: 10, right: 10 }).borderRadius(14).margin({ right: 6, bottom: 6 })
-          .backgroundColor(this.planFocus.indexOf(facet.id) >= 0 ? '#F2F2F7' : '#2E3A3A3C')
+          .backgroundColor(this.planFocus.indexOf(facet.id) >= 0 ? '#F2F2F7' : this.ink('fillGray'))
           .accessibilityText(facet.label + '：' + facet.detail)
           .onClick((): void => { this.togglePlanFacet(facet.id); })
         }, (facet: DiagnosticCaptureFacet): string => facet.id)
-        Text(this.planShowAll ? '收起' : '更多…').fontSize(12).fontColor('#8E8E93')
+        Text(this.planShowAll ? '收起' : '更多…').fontSize(12).fontColor(this.ink('text2'))
           .height(28).padding({ left: 10, right: 10 }).margin({ bottom: 6 })
           .onClick((): void => {
             this.getUIContext().animateTo({ curve: curves.springMotion(0.42, 0.86) },
@@ -1651,28 +1701,28 @@ export struct DiagnosticAiAssistantPanel {
           })
       }.width('100%')
       Row({ space: 6 }) {
-        Text('时长').fontSize(12).fontColor('#8E8E93').margin({ right: 4 })
+        Text('时长').fontSize(12).fontColor(this.ink('text2')).margin({ right: 4 })
         ForEach(diagnosticPlanDurations(), (minutes: number): void => {
           Text(minutes.toString() + ' 分钟').fontSize(12).fontWeight(FontWeight.Medium)
-            .fontColor(this.planDuration === minutes ? '#000000' : '#E5E5EA')
+            .fontColor(this.planDuration === minutes ? '#000000' : this.ink('textSoft'))
             .height(26).padding({ left: 10, right: 10 }).borderRadius(13)
-            .backgroundColor(this.planDuration === minutes ? '#F2F2F7' : '#2E3A3A3C')
+            .backgroundColor(this.planDuration === minutes ? '#F2F2F7' : this.ink('fillGray'))
             .onClick((): void => { this.planDuration = minutes; })
         }, (minutes: number): string => 'dur-' + minutes.toString())
       }.width('100%')
       if (this.planSteps.length > 0) {
         Column({ space: 6 }) {
-          Text('抓取时请这样复现').fontSize(12).fontColor('#8E8E93').width('100%')
+          Text('抓取时请这样复现').fontSize(12).fontColor(this.ink('text2')).width('100%')
           ForEach(this.planSteps, (step: string, index: number): void => {
             Row({ space: 8 }) {
               Text((index + 1).toString()).fontSize(11).fontWeight(FontWeight.Bold).fontColor('#000000')
-                .width(18).height(18).textAlign(TextAlign.Center).borderRadius(9).backgroundColor('#E5E5EA')
-              Text(step).fontSize(13).lineHeight(19).fontColor('#E5E5EA').layoutWeight(1)
+                .width(18).height(18).textAlign(TextAlign.Center).borderRadius(9).backgroundColor(this.ink('textSoft'))
+              Text(step).fontSize(13).lineHeight(19).fontColor(this.ink('textSoft')).layoutWeight(1)
             }.width('100%').alignItems(VerticalAlign.Top)
           }, (_step: string, index: number): string => 'plan-step-' + index.toString())
         }.width('100%')
       }
-    }.width('100%').padding(14).borderRadius(24).backgroundColor('#F01C1C1F')
+    }.width('100%').padding(14).borderRadius(24).backgroundColor(this.ink('menu'))
     .border({ width: 0.5, color: '#1FFFFFFF' })
     .transition(this.functionCardTransition())
   }
@@ -2036,6 +2086,22 @@ export struct DiagnosticAiAssistantPanel {
   }
 
   private startNewConversation(): void {
+    if (this.clearing) { return; }
+    // Small (beside the orb) the answer has its own way out; in the island the conversation lifts away and fades,
+    // then the empty question rises in where it was.
+    if (this.mini || this.reducedMotion || (this.result === null && this.turns.length === 0)) { this.resetConversation(); return; }
+    try { inputMethod.getController().hideTextInput(); } catch (_error) { /* keyboard already down */ }
+    this.getUIContext().animateTo({ duration: 180, curve: Curve.EaseIn }, (): void => { this.clearing = true; });
+    setTimeout((): void => {
+      if (!this.alive) { return; }
+      this.freshStart = true;
+      this.resetConversation();
+      this.clearing = false;
+      setTimeout((): void => { this.freshStart = false; }, 900);
+    }, 190);
+  }
+
+  private resetConversation(): void {
     AiConversationMemory.clear(this.owner);
     this.questionLabel = '';
     this.triage = null; this.triageCurrent = null; this.triageNote = ''; this.reproduceRunning = false;
@@ -2171,7 +2237,7 @@ export struct DiagnosticAiAssistantPanel {
         .fontSize(17).fontColor(['#FFFFFF'])
     }
     .width(36).height(36).borderRadius(18)
-    .backgroundColor('#2E3A3A3C')
+    .backgroundColor(this.ink('fillGray'))
     .backdropBlur(10)
     .border({ width: { top: 0.8, left: 0.6, right: 0.6, bottom: 0.6 },
       color: { top: '#4DFFFFFF', left: '#1FFFFFFF', right: '#1FFFFFFF', bottom: '#14FFFFFF' } })
@@ -2187,7 +2253,7 @@ export struct DiagnosticAiAssistantPanel {
     Row({ space: 10 }) {
       AiInputCapsule() {
         TextInput({ placeholder: '继续询问 AI 助手', text: this.draftQuestion })
-          .layoutWeight(1).height(40).fontSize(16).fontColor('#FFFFFF').placeholderColor('#8E8E93')
+          .layoutWeight(1).height(40).fontSize(16).fontColor('#FFFFFF').placeholderColor(this.ink('text2'))
           .caretStyle({ width: 2.5, color: '#FFFFFF' }).backgroundColor(Color.Transparent).padding(0)
           .onChange((value: string): void => { this.draftQuestion = value; this.followTyping(value); })
           .onSubmit((): void => { this.submitDraftQuestion(); })
@@ -2209,21 +2275,40 @@ export struct DiagnosticAiAssistantPanel {
    * The send button, or — nothing typed, AI 语音 on — the voice-mode button (as in 聊天). The field's text is read
    * here from the state (a value handed to a @Builder is a copy that never updates: the button stayed dark).
    */
+  /**
+   * The voice and send buttons trading places: the one arriving springs in, the one leaving shrinks away quickly —
+   * each with its own animation (the change comes from typing, outside any animateTo, where a bare transition would
+   * just cut).
+   */
+  private swapTransition(): TransitionEffect {
+    return TransitionEffect.asymmetric(
+      TransitionEffect.OPACITY.combine(TransitionEffect.scale({ x: 0.55, y: 0.55 }))
+        .animation({ curve: curves.springMotion(0.36, 0.7), delay: 40 }),
+      TransitionEffect.OPACITY.combine(TransitionEffect.scale({ x: 0.55, y: 0.55 }))
+        .animation({ duration: 140, curve: Curve.EaseIn }));
+  }
+
   @Builder private sendOrVoice(field: string, size: number, send: () => void) {
-    if (this.voiceEnabled && !this.fieldHasText(field) && !this.busy && !this.mini) {
-      Stack() {
-        SymbolGlyph($r('sys.symbol.waveform_1')).fontSize(size * 0.45).fontColor(['#000000'])
+    // One spot for both: as typing begins the voice button shrinks away where the send button grows in (and lights
+    // up) — overlapping, not one under the other for a moment.
+    Stack() {
+      if (this.voiceEnabled && !this.fieldHasText(field) && !this.busy && !this.mini) {
+        Stack() {
+          SymbolGlyph($r('sys.symbol.waveform_1')).fontSize(size * 0.45).fontColor(['#000000'])
+        }
+        .width(size).height(size).borderRadius(size / 2).backgroundColor('#FFFFFF')
+        .accessibilityText('语音模式')
+        .onClick((): void => {
+          try { inputMethod.getController().hideTextInput(); } catch (_error) { /* keyboard already down */ }
+          AppStorage.setOrCreate(AI_VOICE_REQUEST, Date.now());
+        })
+        .transition(this.swapTransition())
+      } else {
+        Stack() { AiSendButton({ active: this.fieldHasText(field), buttonSize: size, onTap: send }) }
+          .width(size).height(size)
+          .transition(this.swapTransition())
       }
-      .width(size).height(size).borderRadius(size / 2).backgroundColor('#FFFFFF')
-      .accessibilityText('语音模式')
-      .onClick((): void => {
-        try { inputMethod.getController().hideTextInput(); } catch (_error) { /* keyboard already down */ }
-        AppStorage.setOrCreate(AI_VOICE_REQUEST, Date.now());
-      })
-      .transition(TransitionEffect.scale({ x: 0.6, y: 0.6 }).combine(TransitionEffect.OPACITY))
-    } else {
-      AiSendButton({ active: this.fieldHasText(field), buttonSize: size, onTap: send })
-    }
+    }.width(size).height(size)
   }
 
   private quickQuestion(mode: DiagnosticAiAgentMode, question: string): void {
@@ -2251,19 +2336,19 @@ export struct DiagnosticAiAssistantPanel {
     Column({ space: 14 }) {
       Text('先配置 AI 服务').fontSize(20).fontWeight(FontWeight.Medium).fontColor('#FFFFFF').width('100%')
       Text('AI 助手需要一个模型服务才能回答。选择服务商并保存 API Key 后就可以提问了。')
-        .fontSize(14).lineHeight(20).fontColor('#8E8E93').width('100%')
+        .fontSize(14).lineHeight(20).fontColor(this.ink('text2')).width('100%')
       if (this.revealed) {
         Row({ space: 12 }) {
           Stack() {
             SymbolGlyph($r('sys.symbol.gearshape_fill')).fontSize(20).fontColor(['#FFFFFF'])
-          }.width(40).height(40).borderRadius(20).backgroundColor('#2E3A3A3C')
+          }.width(40).height(40).borderRadius(20).backgroundColor(this.ink('fillGray'))
           Column({ space: 2 }) {
             Text('前往 AI 配置').fontSize(16).fontWeight(FontWeight.Medium).fontColor('#FFFFFF')
-            Text('选择服务商、模型并保存 API Key').fontSize(12).fontColor('#8E8E93')
+            Text('选择服务商、模型并保存 API Key').fontSize(12).fontColor(this.ink('text2'))
           }.layoutWeight(1).alignItems(HorizontalAlign.Start)
-          SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(16).fontColor(['#8E8E93'])
+          SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(16).fontColor([this.ink('text2')])
         }
-        .width('100%').padding(14).borderRadius(24).backgroundColor('#F01C1C1F')
+        .width('100%').padding(14).borderRadius(24).backgroundColor(this.ink('menu'))
         .border({ width: 0.5, color: '#1FFFFFFF' })
         .transition(this.pillTransition(0))
         .onClick((): void => { this.onAppAction('ai.config'); })
@@ -2313,7 +2398,7 @@ export struct DiagnosticAiAssistantPanel {
           Row() {
             AiSegmented({ options: [['assistant', '助理'], ['chat', '聊天']], current: this.chatMode ? 'chat' : 'assistant',
               switchable: this.modeSwitchable(), segmentWidth: 58, segmentHeight: 28, labelSize: 13,
-              trackColor: '#2E3A3A3C', thumbColor: '#F2F2F7', textColor: '#000000', mutedColor: '#C7C7CC',
+              trackColor: this.ink('fillGray'), thumbColor: '#F2F2F7', textColor: '#000000', mutedColor: this.ink('icon'),
               onPick: (mode: string): void => { this.switchMode(mode, ''); } })
           }.height(AI_CHAT_HEADER_HEIGHT).alignItems(VerticalAlign.Center)
         }
@@ -2326,7 +2411,7 @@ export struct DiagnosticAiAssistantPanel {
     Column({ space: 10 }) {
       Text('这个问题更适合聊天模式').fontSize(15).fontWeight(FontWeight.Medium).fontColor('#FFFFFF').width('100%')
       Text('聊天模式可以写作、翻译、总结，还能读你添加的文档、生成 Word 和 Excel；助理只处理 RemoteDesktop 的连接、设置和诊断。')
-        .fontSize(13).lineHeight(19).fontColor('#8E8E93').width('100%')
+        .fontSize(13).lineHeight(19).fontColor(this.ink('text2')).width('100%')
       Row({ space: 8 }) {
         this.plainPill('切到聊天', true, (): void => { this.switchMode('chat', this.routeQuestion); })
         this.plainPill('就在这里问', false, (): void => {
@@ -2337,7 +2422,7 @@ export struct DiagnosticAiAssistantPanel {
           else { this.question = question; this.submitQuestion(); }
         })
       }.width('100%')
-    }.width('100%').padding(14).borderRadius(22).backgroundColor('#F01C1C1F')
+    }.width('100%').padding(14).borderRadius(22).backgroundColor(this.ink('menu'))
     .border({ width: 0.5, color: '#1FFFFFFF' })
     .transition(this.functionCardTransition())
   }
@@ -2350,7 +2435,7 @@ export struct DiagnosticAiAssistantPanel {
         Row({ space: 8 }) {
           Blank()
           if (this.result !== null) {
-            Text(this.turns.length > 0 ? (this.turns.length + 1).toString() + ' 轮' : '').fontSize(12).fontColor('#8E8E93')
+            Text(this.turns.length > 0 ? (this.turns.length + 1).toString() + ' 轮' : '').fontSize(12).fontColor(this.ink('text2'))
             this.expandButton()
           }
         }.width('100%').height(AI_CHAT_HEADER_HEIGHT)
@@ -2360,8 +2445,12 @@ export struct DiagnosticAiAssistantPanel {
         // A hair space keeps the placeholder clear of the caret, which sits before the first character.
         TextArea({ placeholder: '\u200A描述遇到的问题 — 询问 AI', text: this.question })
           .id('aiIslandQuestion')
+          // After 新对话 the empty question rises in where the conversation was.
+          .transition(this.freshStart ? TransitionEffect.OPACITY.combine(TransitionEffect.translate({ y: 16 }))
+            .combine(TransitionEffect.scale({ x: 0.98, y: 0.98 }))
+            .animation({ curve: curves.springMotion(0.48, 0.86), delay: 40 }) : TransitionEffect.IDENTITY)
           .width('100%').fontSize(20).fontWeight(FontWeight.Medium).fontColor('#FFFFFF')
-          .placeholderColor('#8E8E93').placeholderFont({ size: 20, weight: FontWeight.Medium })
+          .placeholderColor(this.ink('text2')).placeholderFont({ size: 20, weight: FontWeight.Medium })
           .caretStyle({ width: 2.5, color: '#FFFFFF' })
           .backgroundColor(Color.Transparent).padding({ left: 3, right: 0, top: 4, bottom: 2 })
           .constraintSize({ minHeight: 56, maxHeight: 180 })
@@ -2393,6 +2482,10 @@ export struct DiagnosticAiAssistantPanel {
             .transition(TransitionEffect.OPACITY.combine(TransitionEffect.scale({ x: 0.4, y: 0.4 }))
               .animation({ curve: curves.springMotion(0.6, 0.55), delay: 260 + 3 * 130 }))
         }.width('100%').alignItems(VerticalAlign.Bottom)
+        // The pills rise in one by one (their own transitions) and leave together.
+        .transition(TransitionEffect.asymmetric(TransitionEffect.IDENTITY,
+            TransitionEffect.OPACITY.combine(TransitionEffect.translate({ y: 10 })).combine(TransitionEffect.scale({ x: 0.96, y: 0.96 }))
+              .animation({ duration: 180, curve: Curve.EaseIn })))
       }
       if (this.triage !== null && !this.captureLive && !this.busy && this.result === null) {
         this.triageView()
@@ -2405,14 +2498,16 @@ export struct DiagnosticAiAssistantPanel {
           Circle().width(7).height(7).fill('#FF453A')
             .opacity(this.pulse ? 1 : 0.35).animation({ duration: 480, curve: Curve.EaseInOut })
           Text('正在抓取 · ' + this.eventCount.toString() + ' 条事件 · ' + this.elapsed.toString() + ' 秒')
-            .fontSize(14).fontColor('#8E8E93').layoutWeight(1)
+            .fontSize(14).fontColor(this.ink('text2')).layoutWeight(1)
         }.width('100%')
-        Text('现在去复现问题，完成后点「结束并分析」').fontSize(13).fontColor('#8E8E93').width('100%')
+        Text('现在去复现问题，完成后点「结束并分析」').fontSize(13).fontColor(this.ink('text2')).width('100%')
       } else if (this.busy) {
         Row({ space: 10 }) {
           AiThinkingIndicator({ indicatorSize: 30 })
-          Text(this.pendingCaptureId !== '' ? '正在分析抓到的日志…' : '正在思考…').fontSize(15).fontColor('#C7C7CC')
+          Text(this.pendingCaptureId !== '' ? '正在分析抓到的日志…' : '正在思考…').fontSize(15).fontColor(this.ink('icon'))
         }.width('100%')
+        // It gives way to the answer softly (the answer rises in where it was).
+        .transition(TransitionEffect.OPACITY.animation({ duration: 180, curve: Curve.EaseOut }))
       } else if (this.status.length > 0 && this.result === null && this.status.indexOf('正在') < 0) {
         Text(this.status).fontSize(13).lineHeight(18).fontColor('#FF9F0A').width('100%')
       }
@@ -2430,31 +2525,33 @@ export struct DiagnosticAiAssistantPanel {
           Column({ space: 12 }) {
             ForEach(this.turns, (turn: AiTurn, index: number): void => {
               Column({ space: 6 }) {
-                Text(turn.question).fontSize(14).lineHeight(20).fontColor('#8E8E93').width('100%')
-                Text(turn.answer).fontSize(15).lineHeight(22).fontColor('#C7C7CC').width('100%')
+                Text(turn.question).fontSize(14).lineHeight(20).fontColor(this.ink('text2')).width('100%')
+                Text(turn.answer).fontSize(15).lineHeight(22).fontColor(this.ink('icon')).width('100%')
                   .copyOption(CopyOptions.InApp)
               }.width('100%').padding({ bottom: 12 })
               .border({ width: { bottom: 0.5 }, color: { bottom: '#26FFFFFF' } })
             }, (turn: AiTurn, index: number): string => 'turn-' + index.toString())
-            Text(this.shownQuestion()).fontSize(14).lineHeight(20).fontColor('#8E8E93').width('100%')
+            Text(this.shownQuestion()).fontSize(14).lineHeight(20).fontColor(this.ink('text2')).width('100%')
               .onAreaChange((_old: Area, area: Area): void => { this.answerAnchorY = Number(area.position.y); })
             // 分析: the model's reading of the problem, one paragraph per point (inline ①②③ / 1. 2. are split up).
             ForEach(aiAnswerParagraphs((this.result as DiagnosticAiResult).summary), (para: string, index: number): void => {
               Text(para).fontSize(17).lineHeight(25).fontColor('#FFFFFF').width('100%').copyOption(CopyOptions.InApp)
+                .transition(this.answerTransition(index))
             }, (para: string, index: number): string => 'para-' + index.toString())
             // 怎么做: the steps, each on its own numbered line.
             if ((this.result as DiagnosticAiResult).recommendedReadOnlySteps.length > 0) {
               Column({ space: 10 }) {
-                Text('怎么做').fontSize(13).fontWeight(FontWeight.Medium).fontColor('#8E8E93').width('100%')
+                Text('怎么做').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.ink('text2')).width('100%')
                 ForEach((this.result as DiagnosticAiResult).recommendedReadOnlySteps, (step: string, index: number): void => {
                   Row({ space: 10 }) {
                     Text((index + 1).toString()).fontSize(12).fontWeight(FontWeight.Bold).fontColor('#000000')
-                      .width(20).height(20).textAlign(TextAlign.Center).borderRadius(10).backgroundColor('#E5E5EA')
-                    Text(step).fontSize(15).lineHeight(21).fontColor('#E5E5EA').layoutWeight(1)
+                      .width(20).height(20).textAlign(TextAlign.Center).borderRadius(10).backgroundColor(this.ink('textSoft'))
+                    Text(step).fontSize(15).lineHeight(21).fontColor(this.ink('textSoft')).layoutWeight(1)
                       .copyOption(CopyOptions.InApp)
                   }.width('100%').alignItems(VerticalAlign.Top)
                 }, (_step: string, index: number): string => 'siri-step' + index.toString())
               }.width('100%').padding(14).borderRadius(20).backgroundColor('#14FFFFFF')
+              .transition(this.answerTransition(aiAnswerParagraphs((this.result as DiagnosticAiResult).summary).length))
             }
             if (this.triage !== null && !this.captureLive && !this.busy) {
               this.triageView()
@@ -2466,20 +2563,20 @@ export struct DiagnosticAiAssistantPanel {
             if (this.technicalStyle()) {
               Text('影响 ' + this.severityText() + ' · 置信度 ' +
                 Math.round((this.result as DiagnosticAiResult).confidence * 100).toString() + '%')
-                .fontSize(12).fontColor('#8E8E93').width('100%')
+                .fontSize(12).fontColor(this.ink('text2')).width('100%')
             }
             if (this.technicalStyle() && (this.result as DiagnosticAiResult).unknowns.length > 0) {
               Text('尚不确定：' + (this.result as DiagnosticAiResult).unknowns.join('；')).fontSize(13).lineHeight(19)
-                .fontColor('#8E8E93').width('100%')
+                .fontColor(this.ink('text2')).width('100%')
             }
             ForEach((this.result as DiagnosticAiResult).settingProposals, (proposal: DiagnosticAiSettingProposal): void => {
               Row({ space: 10 }) {
                 Column({ space: 2 }) {
                   Text(diagnosticAiSettingActionText(proposal.settingId) + ' → ' + aiProposalTargetLabel(proposal))
                     .fontSize(14).fontWeight(FontWeight.Medium).fontColor('#FFFFFF').width('100%')
-                  Text(proposal.reason).fontSize(12).lineHeight(17).fontColor('#8E8E93').width('100%')
+                  Text(proposal.reason).fontSize(12).lineHeight(17).fontColor(this.ink('text2')).width('100%')
                 }.layoutWeight(1)
-              }.width('100%').padding(14).borderRadius(22).backgroundColor('#F01C1C1F')
+              }.width('100%').padding(14).borderRadius(22).backgroundColor(this.ink('menu'))
               .border({ width: 0.5, color: '#1FFFFFFF' })
               .transition(this.functionCardTransition())
             }, (_proposal: DiagnosticAiSettingProposal, index: number): string => index.toString())
@@ -2487,13 +2584,13 @@ export struct DiagnosticAiAssistantPanel {
               Column({ space: 6 }) {
                 Text('邮件预览 · ' + this.mailSubject).fontSize(13).fontColor('#FFFFFF').width('100%')
                 if (this.mailAttachments.length > 0) {
-                  Text('附件：' + this.mailAttachmentNames().join('、')).fontSize(12).fontColor('#8E8E93').width('100%')
+                  Text('附件：' + this.mailAttachmentNames().join('、')).fontSize(12).fontColor(this.ink('text2')).width('100%')
                 }
                 Scroll() {
-                  Text(this.mailBody).fontSize(12).lineHeight(17).fontColor('#C7C7CC').width('100%')
+                  Text(this.mailBody).fontSize(12).lineHeight(17).fontColor(this.ink('icon')).width('100%')
                     .copyOption(CopyOptions.InApp)
                 }.height(120).width('100%')
-              }.width('100%').padding(14).borderRadius(22).backgroundColor('#F01C1C1F')
+              }.width('100%').padding(14).borderRadius(22).backgroundColor(this.ink('menu'))
               .border({ width: 0.5, color: '#1FFFFFFF' })
               .transition(this.functionCardTransition())
             }
@@ -2525,6 +2622,9 @@ export struct DiagnosticAiAssistantPanel {
                 .transition(this.pillTransition(index))
             }, (item: AiSuggestion): string => 'ask-' + item.label)
           }.width('100%')
+          .transition(TransitionEffect.asymmetric(TransitionEffect.IDENTITY,
+            TransitionEffect.OPACITY.combine(TransitionEffect.translate({ y: 10 })).combine(TransitionEffect.scale({ x: 0.96, y: 0.96 }))
+              .animation({ duration: 180, curve: Curve.EaseIn })))
         } else if (this.revealed && this.resultActions().length > 0) {
           Flex({ wrap: FlexWrap.Wrap, justifyContent: FlexAlign.Start }) {
             ForEach(this.resultActions(), (item: AiAction, index: number): void => {
@@ -2533,10 +2633,16 @@ export struct DiagnosticAiAssistantPanel {
                 .transition(this.pillTransition(index))
             }, (item: AiAction): string => item.key)
           }.width('100%')
+          .transition(TransitionEffect.asymmetric(TransitionEffect.IDENTITY,
+            TransitionEffect.OPACITY.combine(TransitionEffect.translate({ y: 10 })).combine(TransitionEffect.scale({ x: 0.96, y: 0.96 }))
+              .animation({ duration: 180, curve: Curve.EaseIn })))
         }
         this.inputBar()
       }
     }.width('100%')
+    .opacity(this.clearing ? 0 : 1)
+    .translate({ y: this.clearing ? -18 : 0 })
+    .scale({ x: this.clearing ? 0.97 : 1, y: this.clearing ? 0.97 : 1 })
     // After a reply the panel turns into Siri's conversation surface with a set height (never more than the island
     // allows, so it ends above the keyboard): the answer scrolls in the middle, the input bar stays at its foot.
     // Expanded, it takes all the room there is.
@@ -2636,20 +2742,20 @@ export struct DiagnosticAiAssistantPanel {
           Circle().width(7).height(7).fill('#FF453A')
             .opacity(this.pulse ? 1 : 0.35).animation({ duration: 480, curve: Curve.EaseInOut })
           Text('正在抓取 · ' + this.eventCount.toString() + ' 条事件 · ' + this.elapsed.toString() + ' 秒')
-            .fontSize(14).fontColor('#C7C7CC').layoutWeight(1)
+            .fontSize(14).fontColor(this.ink('icon')).layoutWeight(1)
         }.width('100%')
         .transition(this.miniTransition())
-        Text('复现完问题后，展开主对话点「结束并分析」。').fontSize(13).lineHeight(19).fontColor('#8E8E93').width('100%')
+        Text('复现完问题后，展开主对话点「结束并分析」。').fontSize(13).lineHeight(19).fontColor(this.ink('text2')).width('100%')
         this.miniExpandPill('展开主对话')
       } else if (this.busy) {
         Row({ space: 10 }) {
           AiThinkingIndicator({ indicatorSize: 26 })
-          Text(this.pendingCaptureId !== '' ? '正在分析日志…' : '正在思考…').fontSize(14).fontColor('#C7C7CC')
+          Text(this.pendingCaptureId !== '' ? '正在分析日志…' : '正在思考…').fontSize(14).fontColor(this.ink('icon'))
         }.width('100%')
         .transition(this.miniTransition())
       } else if (this.awaitingCapture) {
         Text('排查这个问题要先回答几个问题，再抓取日志。展开 AI 助手继续。').fontSize(13).lineHeight(19)
-          .fontColor('#C7C7CC').width('100%')
+          .fontColor(this.ink('icon')).width('100%')
           .transition(this.miniTransition())
         this.miniExpandPill('展开继续排查')
       } else if (this.result !== null) {
@@ -2657,13 +2763,15 @@ export struct DiagnosticAiAssistantPanel {
           Column({ space: 8 }) {
             ForEach(aiAnswerParagraphs((this.result as DiagnosticAiResult).summary), (para: string, index: number): void => {
               Text(para).fontSize(15).lineHeight(22).fontColor('#FFFFFF').width('100%').copyOption(CopyOptions.InApp)
+                .transition(this.answerTransition(index))
             }, (para: string, index: number): string => 'mini-para-' + index.toString())
             ForEach((this.result as DiagnosticAiResult).recommendedReadOnlySteps, (step: string, index: number): void => {
               Row({ space: 8 }) {
                 Text((index + 1).toString()).fontSize(11).fontWeight(FontWeight.Bold).fontColor('#000000')
-                  .width(18).height(18).textAlign(TextAlign.Center).borderRadius(9).backgroundColor('#E5E5EA')
-                Text(step).fontSize(14).lineHeight(20).fontColor('#E5E5EA').layoutWeight(1)
+                  .width(18).height(18).textAlign(TextAlign.Center).borderRadius(9).backgroundColor(this.ink('textSoft'))
+                Text(step).fontSize(14).lineHeight(20).fontColor(this.ink('textSoft')).layoutWeight(1)
               }.width('100%').alignItems(VerticalAlign.Top)
+              .transition(this.answerTransition(aiAnswerParagraphs((this.result as DiagnosticAiResult).summary).length + index))
             }, (_step: string, index: number): string => 'mini-step' + index.toString())
           }.width('100%')
         }.constraintSize({ maxHeight: 200 }).scrollBar(BarState.Off)
@@ -2675,7 +2783,7 @@ export struct DiagnosticAiAssistantPanel {
           Text(this.pendingSettingActions().length > 0 ?
             '有 ' + this.pendingSettingActions().length.toString() + ' 项设置需要你手动确认，展开 AI 助手后一键应用。' :
             '这个操作需要你手动确认，展开 AI 助手后执行。')
-            .fontSize(13).lineHeight(19).fontColor('#C7C7CC').width('100%')
+            .fontSize(13).lineHeight(19).fontColor(this.ink('icon')).width('100%')
             .transition(this.miniTransition())
           this.miniExpandPill('展开确认')
         }
@@ -2685,8 +2793,8 @@ export struct DiagnosticAiAssistantPanel {
       // Siri's input bar in small: the glass capsule with the field, the send button beside it.
       Row({ space: 8 }) {
         AiInputCapsule() {
-          TextInput({ placeholder: '继续问 AI', text: this.draftQuestion })
-            .layoutWeight(1).height(38).fontSize(15).fontColor('#FFFFFF').placeholderColor('#8E8E93')
+          TextInput({ placeholder: this.dictating ? '正在听…' : '继续问 AI', text: this.draftQuestion })
+            .layoutWeight(1).height(38).fontSize(15).fontColor('#FFFFFF').placeholderColor(this.ink('text2'))
             .caretStyle({ width: 2, color: '#FFFFFF' }).backgroundColor(Color.Transparent).padding(0)
             .onChange((value: string): void => { this.draftQuestion = value; })
             .onSubmit((): void => { this.submitDraftQuestion(); })
@@ -2699,10 +2807,13 @@ export struct DiagnosticAiAssistantPanel {
     // even rim and a pale sheen along the bottom.
     .width('100%').padding({ left: 16, right: 12, top: 16, bottom: 12 }).borderRadius(28)
     .backdropBlur(26)
-    .linearGradient({ angle: 180, colors: [['#D9030304', 0], ['#B3070708', 0.5], ['#80101012', 1]] })
+    .linearGradient(aiStyleIsXiaoyi(this.aiStyle) ?
+      { angle: 135, colors: [[aiXiaoyiGlass(this.theme === 'dark').from, 0], [aiXiaoyiGlass(this.theme === 'dark').to, 1]] } :
+      { angle: 180, colors: [['#D9030304', 0], ['#B3070708', 0.5], ['#80101012', 1]] })
     .border({ width: { top: 0.6, left: 0.6, right: 0.6, bottom: 1 },
-      color: { top: '#1FFFFFFF', left: '#17FFFFFF', right: '#17FFFFFF', bottom: '#59FFFFFF' } })
-    .shadow({ radius: 24, color: '#59000000', offsetY: 8 })
+      color: aiStyleIsXiaoyi(this.aiStyle) ? '#52FFFFFF' :
+        { top: '#1FFFFFFF', left: '#17FFFFFF', right: '#17FFFFFF', bottom: '#59FFFFFF' } })
+    .shadow({ radius: 24, color: aiStyleIsXiaoyi(this.aiStyle) ? '#4D2B3A86' : '#59000000', offsetY: 8 })
     .onAreaChange((_old: Area, area: Area): void => { this.reportCardSize(area); })
   }
 

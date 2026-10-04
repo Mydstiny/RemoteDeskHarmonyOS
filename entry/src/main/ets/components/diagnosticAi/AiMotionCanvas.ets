@@ -6,21 +6,25 @@ import { AI_MOTION_REDUCED, AI_MOTION_SPEED, aiMotionSpeedFactor } from '../../s
  * shapes here are placed with explicit coordinates (and ellipse()) instead of translate/rotate/scale around a path.
  */
 
-/** A vsync frame clock (timer fallback) that calls `tick` until stopped. */
+/**
+ * A vsync frame clock (timer fallback) that calls `tick` until stopped, with the frame's own time in seconds (the
+ * display's vsync, evenly spaced — not when the callback happened to run), at up to `maxRate` frames a second.
+ */
 export class AiFrameClock {
   private sync: displaySync.DisplaySync | null = null;
   private timer: number = -1;
 
-  start(tick: () => void): void {
+  start(tick: (time: number) => void, maxRate: number = 60): void {
     if (this.sync !== null || this.timer !== -1) { return; }
     try {
       const sync: displaySync.DisplaySync = displaySync.create();
-      sync.setExpectedFrameRateRange({ min: 30, max: 60, expected: 60 });
-      sync.on('frame', (): void => { tick(); });
+      const rate: number = Math.max(30, Math.min(120, maxRate));
+      sync.setExpectedFrameRateRange({ min: 30, max: rate, expected: rate });
+      sync.on('frame', (info: displaySync.IntervalInfo): void => { tick(info.timestamp / 1e9); });
       sync.start();
       this.sync = sync;
     } catch (_error) {
-      this.timer = setInterval((): void => { tick(); }, 16);
+      this.timer = setInterval((): void => { tick(Date.now() / 1000); }, 16);
     }
   }
 

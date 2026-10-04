@@ -28,6 +28,14 @@ const ASR_SPEECH_LEVEL_CALL: number = 0.1;
 const ASR_TEXT_QUIET_MS: number = 1100;
 /** Talking over an answer: what is kept from before the moment it was detected (1.6 s), the user's first syllables. */
 const ASR_LEAD_BYTES: number = 51200;
+/** Talking over an answer: the recognition microphone is opened this long after (the answer's player writes silence
+ * from the moment it is stopped, so its echo has died away by then). */
+const ASR_CLEAN_DELAY_MS: number = 100;
+/**
+ * The longest anything waits for a microphone or the answer's player to be let go (they are always let go in full,
+ * step by step; this only keeps a device that never reports back from holding voice mode up).
+ */
+const ASR_RELEASE_WAIT_MS: number = 4000;
 /** A microphone that delivers nothing for this long has stalled. */
 const ASR_STALL_MS: number = 700;
 /** After the user finished, the recognizer has this long to give its final result. */
@@ -35,6 +43,14 @@ const ASR_FINISH_WAIT_MS: number = 9000;
 /** A cloud request is cut into pieces of about this many characters at sentence ends, so speaking starts early. */
 const TTS_PIECE_CHARS: number = 220;
 const TTS_TIMEOUT_MS: number = 30000;
+
+/** Waits for `work`, but no longer than `ms` (an audio call that never reports back must not hold everything up). */
+function aiBounded(work: Promise<void>, ms: number): Promise<void> {
+  return Promise.race([
+    work.catch((): void => { /* failed: carry on */ }),
+    new Promise<void>((resolve: () => void): void => { setTimeout(resolve, ms); })
+  ]);
+}
 
 /** Microphone loudness of one PCM buffer as 0…1 (about −55 dBFS → 0, −15 dBFS → 1). */
 export function aiPcmLevel(buffer: ArrayBuffer): number {
@@ -326,7 +342,7 @@ export class AiVoiceInput {
    */
   static async start(context: common.UIAbilityContext, onText: (text: string, final: boolean) => void,
     onEnd: (problem: string) => void, onLevel: (level: number) => void = (_level: number): void => {},
-    adoptMonitor: boolean = false, owner: string = ''): Promise<void> {
+    adoptMonitor: boolean = false, owner: string = '', speaking: boolean = true): Promise<void> {
     const calledAt: number = Date.now();
     const cloud: AiCloudAsrConfig | null = aiCloudAsrConfig(context, owner);
     if (cloud === null && !AiVoiceInput.available()) { onEnd('当前设备不支持语音输入'); return; }
@@ -347,8 +363,8 @@ export class AiVoiceInput {
       // recognizer takes it over below: not a word is lost in between.
       const adopting: boolean = adoptMonitor && AiVoiceInput.monitorCapturer !== null;
       hilog.info(0x0000, 'AiChat',
-        'asr start adopt=%{public}s monitor=%{public}s claimed=%{public}s busy=%{public}s cloud=%{public}s after=%{public}s ms',
-        String(adoptMonitor), String(AiVoiceInput.monitorCapturer !== null), String(AiVoiceInput.claimed), String(busy),
+        'asr start adopt=%{public}s speaking=%{public}s monitor=%{public}s claimed=%{public}s busy=%{public}s cloud=%{public}s after=%{public}s ms',
+        String(adoptMonitor), String(speaking), String(AiVoiceInput.monitorCapturer !== null), String(AiVoiceInput.claimed), String(busy),
         cloud !== null ? cloud.model : '-', (Date.now() - calledAt).toString());
       if (!adopting) { await AiVoiceInput.stopMonitor(); }
       const sessionId: string = 'rd-asr-' + Date.now().toString();
@@ -411,12 +427,11 @@ export class AiVoiceInput {
       let capturer: audio.AudioCapturer | null = null;
       let backlog: Uint8Array = new Uint8Array(0);
       if (adopting && AiVoiceInput.monitorCapturer !== null) {
+        // The monitor keeps on keeping (still claimed) until its buffers are routed to this session below, where what
+        // it kept is taken in the same step: nothing falls between the two.
         capturer = AiVoiceInput.monitorCapturer;
         AiVoiceInput.monitorCapturer = null;
         AiVoiceInput.capturer = capturer;
-        backlog = AiVoiceInput.takeRing();
-        AiVoiceInput.claimed = false;
-        hilog.info(0x0000, 'AiChat', 'asr takes over the mic, kept %{public}s ms', Math.round(backlog.length / 32).toString());
       } else {
         capturer = await AiVoiceInput.openCapturer();
       }
@@ -455,8 +470,9 @@ export class AiVoiceInput {
       AiVoiceInput.sink = sink;
       const startedAt: number = Date.now();
       // Talking over the answer, the user is already speaking: the quiet that ends the sentence counts from now.
-      let heardAt: number = adopting ? startedAt : 0;
-      let lastVoiceAt: number = adopting ? startedAt : 0;
+      // `speaking`: the user is already talking (over the answer); otherwise (the answer just ended) they may begin.
+      let heardAt: number = adopting && speaking ? startedAt : 0;
+      let lastVoiceAt: number = adopting && speaking ? startedAt : 0;
       let lastAudioAt: number = startedAt;
       let buffers: number = 0;
       let peak: number = 0;
@@ -464,6 +480,11 @@ export class AiVoiceInput {
       // The call-mode microphone removes the room's noise (it sits near 0): quieter speech already counts there.
       let speechLevel: number = adopting ? ASR_SPEECH_LEVEL_CALL : ASR_SPEECH_LEVEL;
       let switching: boolean = false;
+      // Talking over the answer: the move to a recognition microphone is under way (no stall switch meanwhile).
+      let cleanTrying: boolean = adopting;
+      // Our own microphone opened again after it came up dead (at most twice), and when.
+      let reopens: number = 0;
+      let reopenedAt: number = 0;
       // Everything for the recognizer goes through one queue, written at a steady pace (the system recognizer takes
       // 40 ms pieces and drops a burst): what the microphone kept while the user talked over the answer first, then
       // the live audio.
@@ -508,6 +529,101 @@ export class AiVoiceInput {
         try { await own.start(); } catch (_error) { end('语音输入中断了'); return; }
         switching = false;
       };
+      // Talking over the answer, the call-mode microphone processes the voice for a call (turned down, noise and echo
+      // removed — the recognizer hears it much worse) and can go quiet once the answer's player is gone. So once the
+      // answer has stopped, a recognition microphone of our own takes over — opened while the call one still runs, and
+      // switched to the moment it has started (each stretch of speech is heard once). Should the system refuse a
+      // second microphone, or the new one stay silent, the call one simply stays.
+      const cleanSwitch = async (): Promise<void> => {
+        const monitor: audio.AudioCapturer | null = capturer;
+        for (let attempt = 0; attempt < 6; attempt++) {
+          await new Promise<void>((resolve: () => void): void => { setTimeout(resolve, attempt === 0 ? ASR_CLEAN_DELAY_MS : 150); });
+          if (ended || AiVoiceInput.finishing || sessionId !== AiVoiceInput.sessionId || AiVoiceInput.capturer !== monitor) {
+            cleanTrying = false;
+            return;
+          }
+          const own: audio.AudioCapturer | null = await AiVoiceInput.createRecognitionCapturer();
+          if (own === null) { continue; }
+          if (ended || AiVoiceInput.finishing || sessionId !== AiVoiceInput.sessionId || AiVoiceInput.capturer !== monitor) {
+            await AiVoiceInput.releaseCapturer(own);
+            cleanTrying = false;
+            return;
+          }
+          // While it comes up, the call microphone's buffers are held back: the moment this one delivers, they are
+          // sent up to then (all but the last two, about what this one has just recorded too) and this one carries
+          // on — nothing heard twice, nothing lost while it was starting. Should it stay silent, they are sent after
+          // all and the call microphone carries on.
+          let delivered: boolean = false;
+          let held: ArrayBuffer[] = [];
+          own.on('readData', (buffer: ArrayBuffer): void => {
+            if (AiVoiceInput.capturer !== own) { return; }
+            if (!delivered) {
+              delivered = true;
+              if (monitor !== null && AiVoiceInput.sinkOwner === monitor) {
+                AiVoiceInput.sinkOwner = null;
+                AiVoiceInput.monitorSink = null;
+              }
+              const sent: number = Math.max(0, held.length - 2);
+              for (let i = 0; i < sent; i++) { take(held[i]); }
+              held = [];
+              speechLevel = ASR_SPEECH_LEVEL;
+              hilog.info(0x0000, 'AiChat', 'asr recognition microphone after %{public}s ms (try %{public}s, held %{public}s)',
+                (Date.now() - startedAt).toString(), (attempt + 1).toString(), sent.toString());
+            }
+            take(buffer);
+          });
+          try {
+            await own.start();
+          } catch (error) {
+            hilog.warn(0x0000, 'AiChat', 'asr recognition microphone refused %{public}s', String((error as BusinessError).code));
+            await AiVoiceInput.releaseCapturer(own);
+            continue;
+          }
+          if (ended || AiVoiceInput.finishing || sessionId !== AiVoiceInput.sessionId || AiVoiceInput.capturer !== monitor) {
+            await AiVoiceInput.releaseCapturer(own);
+            cleanTrying = false;
+            return;
+          }
+          // Started: the session belongs to this microphone now; the call one's buffers wait until it delivers (they
+          // still count as the user's voice meanwhile, so a pause is not misread).
+          AiVoiceInput.capturer = own;
+          if (monitor !== null && AiVoiceInput.sinkOwner === monitor) {
+            AiVoiceInput.monitorSink = (buffer: ArrayBuffer): void => {
+              if (delivered) { return; }
+              held.push(buffer.slice(0));
+              const now: number = Date.now();
+              const level: number = aiPcmLevel(buffer);
+              onLevel(level);
+              lastAudioAt = now;
+              if (level >= speechLevel) {
+                if (heardAt === 0) { heardAt = now; }
+                lastVoiceAt = now;
+              }
+            };
+          }
+          await new Promise<void>((resolve: () => void): void => { setTimeout(resolve, 1200); });
+          if (delivered || AiVoiceInput.capturer !== own) {
+            if (monitor !== null) { await AiVoiceInput.releaseCapturer(monitor); }
+          } else {
+            // Silent: back to the call microphone (still open) with all it heard meanwhile; this one goes.
+            hilog.warn(0x0000, 'AiChat', 'asr recognition microphone silent, back to the call one (held %{public}s)',
+              held.length.toString());
+            AiVoiceInput.capturer = monitor;
+            if (monitor !== null) {
+              AiVoiceInput.sinkOwner = monitor;
+              AiVoiceInput.monitorSink = take;
+            }
+            held.forEach((buffer: ArrayBuffer): void => { take(buffer); });
+            held = [];
+            speechLevel = ASR_SPEECH_LEVEL_CALL;
+            await AiVoiceInput.releaseCapturer(own);
+          }
+          cleanTrying = false;
+          return;
+        }
+        cleanTrying = false;
+        hilog.info(0x0000, 'AiChat', 'asr keeps the call microphone');
+      };
       AiVoiceInput.clearPump();
       AiVoiceInput.pumpTimer = setInterval((): void => {
         if (ended || sessionId !== AiVoiceInput.sessionId) { AiVoiceInput.clearPump(); return; }
@@ -544,7 +660,7 @@ export class AiVoiceInput {
         const spoke: boolean = heardAt > 0 || lastTextAt > 0;
         const quietAfterSpeech: boolean = spoke && now - lastVoiceAt > ASR_TRAILING_QUIET_MS &&
           now - lastTextAt > ASR_TEXT_QUIET_MS;
-        const nothingSaid: boolean = !spoke && now - startedAt > ASR_NO_SPEECH_MS;
+        const nothingSaid: boolean = !spoke && now - Math.max(startedAt, reopenedAt) > ASR_NO_SPEECH_MS;
         if (quietAfterSpeech || nothingSaid || now - startedAt > ASR_MAX_MS) {
           hilog.info(0x0000, 'AiChat', 'asr done (%{public}s) after %{public}s ms, sound %{public}s ms ago, words %{public}s ms ago',
             quietAfterSpeech ? 'quiet' : nothingSaid ? 'nothing said' : 'too long', (now - startedAt).toString(),
@@ -552,10 +668,16 @@ export class AiVoiceInput {
           AiVoiceInput.stop();
           return;
         }
-        if (!switching && now - lastAudioAt > ASR_STALL_MS) {
+        if (!switching && !cleanTrying && now - lastAudioAt > ASR_STALL_MS) {
           if (adopting) {
             // While we switch, the gap must not count as the user's pause.
             lastVoiceAt = now;
+            void switchMicrophone();
+          } else if (reopens < 2 && !spoke) {
+            // A microphone opened just as the system left call mode can come up nearly dead (a buffer a second):
+            // open it again rather than wait out the user's whole turn.
+            reopens++;
+            reopenedAt = now;
             void switchMicrophone();
           } else {
             hilog.warn(0x0000, 'AiChat', 'asr microphone silent for %{public}s ms', (now - lastAudioAt).toString());
@@ -564,9 +686,17 @@ export class AiVoiceInput {
         }
       }, 40);
       if (adopting) {
-        // The monitor's own handler stays subscribed and now hands every buffer to this session (re-subscribing a
-        // running capturer can leave it silent).
+        // What the monitor kept, then every buffer it hears from here on (its own handler stays subscribed and now
+        // hands each buffer to this session: re-subscribing a running capturer can leave it silent).
+        const kept: Uint8Array = AiVoiceInput.takeRing();
+        AiVoiceInput.claimed = false;
+        const joined: Uint8Array = new Uint8Array(kept.length + backlog.length);
+        joined.set(kept, 0);
+        joined.set(backlog, kept.length);
+        backlog = joined;
         AiVoiceInput.monitorSink = take;
+        hilog.info(0x0000, 'AiChat', 'asr takes over the mic, kept %{public}s ms', Math.round(kept.length / 32).toString());
+        void cleanSwitch();
       } else {
         capturer.on('readData', take);
         await capturer.start();
@@ -591,19 +721,38 @@ export class AiVoiceInput {
   }
 
   private static async tryOpenCapturer(): Promise<audio.AudioCapturer | null> {
+    const capturer: audio.AudioCapturer | null = await AiVoiceInput.createRecognitionCapturer();
+    if (capturer !== null) { AiVoiceInput.capturer = capturer; }
+    return capturer;
+  }
+
+  /** A recognition microphone (16 kHz mono), not yet the session's. */
+  private static async createRecognitionCapturer(): Promise<audio.AudioCapturer | null> {
     try {
       const options: audio.AudioCapturerOptions = {
         streamInfo: { samplingRate: audio.AudioSamplingRate.SAMPLE_RATE_16000, channels: audio.AudioChannel.CHANNEL_1,
           sampleFormat: audio.AudioSampleFormat.SAMPLE_FORMAT_S16LE, encodingType: audio.AudioEncodingType.ENCODING_TYPE_RAW },
         capturerInfo: { source: audio.SourceType.SOURCE_TYPE_VOICE_RECOGNITION, capturerFlags: 0 }
       };
-      const capturer: audio.AudioCapturer = await audio.createAudioCapturer(options);
-      AiVoiceInput.capturer = capturer;
-      return capturer;
+      return await audio.createAudioCapturer(options);
     } catch (error) {
       hilog.warn(0x0000, 'AiChat', 'capturer unavailable %{public}s', String((error as BusinessError).code));
       return null;
     }
+  }
+
+  /** Let one microphone go (a microphone opened next waits for it). */
+  private static async releaseCapturer(capturer: audio.AudioCapturer): Promise<void> {
+    const release = async (): Promise<void> => {
+      try { capturer.off('readData'); } catch (_error) { /* not listening */ }
+      // Strictly one after the other (a release while it is still stopping left the audio system half-switched, and
+      // the next microphone delivered next to nothing). Only the waiting is bounded, below.
+      try { await capturer.stop(); } catch (_error) { /* not started */ }
+      try { await capturer.release(); } catch (_error) { /* already released */ }
+    };
+    const done: Promise<void> = aiBounded(release(), ASR_RELEASE_WAIT_MS);
+    AiVoiceInput.releasing = done;
+    await done;
   }
 
   private static async closeCapturer(): Promise<void> {
@@ -614,11 +763,13 @@ export class AiVoiceInput {
     if (capturer === AiVoiceInput.sinkOwner) { AiVoiceInput.monitorSink = null; AiVoiceInput.sinkOwner = null; }
     const release = async (): Promise<void> => {
       try { capturer.off('readData'); } catch (_error) { /* not listening */ }
+      // Strictly one after the other (a release while it is still stopping left the audio system half-switched, and
+      // the next microphone delivered next to nothing). Only the waiting is bounded, below.
       try { await capturer.stop(); } catch (_error) { /* not started */ }
       try { await capturer.release(); } catch (_error) { /* already released */ }
     };
     // A microphone opened next waits for this one to be let go (openCapturer awaits `releasing`).
-    const done: Promise<void> = release();
+    const done: Promise<void> = aiBounded(release(), ASR_RELEASE_WAIT_MS);
     AiVoiceInput.releasing = done;
     await done;
   }
@@ -687,15 +838,17 @@ export class AiVoiceInput {
    * The user is talking over the answer (called the moment it is detected, before anything is stopped): the
    * monitor stops reporting levels and keeps everything from just before they began, for the recognizer.
    */
-  static claimMonitor(): boolean {
+  static claimMonitor(leadMs: number = ASR_LEAD_BYTES / 32): boolean {
     if (AiVoiceInput.monitorCapturer === null) {
       hilog.warn(0x0000, 'AiChat', 'asr claim: no monitor');
       return false;
     }
     AiVoiceInput.claimed = true;
     AiVoiceInput.monitorLevel = null;
-    // Keep only the last moment before the detection (the user's first syllables), not seconds of the answer's echo.
-    while (AiVoiceInput.ringBytes > ASR_LEAD_BYTES && AiVoiceInput.ring.length > 1) {
+    // Keep only from just before the user began (their first syllables), not seconds of the answer's echo, which the
+    // recognizer would try to make words of.
+    const keep: number = Math.max(9600, Math.min(ASR_LEAD_BYTES, Math.round(leadMs * 32)));
+    while (AiVoiceInput.ringBytes > keep && AiVoiceInput.ring.length > 1) {
       const dropped: Uint8Array | undefined = AiVoiceInput.ring.shift();
       AiVoiceInput.ringBytes -= dropped !== undefined ? dropped.length : 0;
     }
@@ -728,10 +881,12 @@ export class AiVoiceInput {
     hilog.info(0x0000, 'AiChat', 'monitor stopped');
     const release = async (): Promise<void> => {
       try { capturer.off('readData'); } catch (_error) { /* not listening */ }
+      // Strictly one after the other (a release while it is still stopping left the audio system half-switched, and
+      // the next microphone delivered next to nothing). Only the waiting is bounded, below.
       try { await capturer.stop(); } catch (_error) { /* not started */ }
       try { await capturer.release(); } catch (_error) { /* already released */ }
     };
-    AiVoiceInput.releasing = release();
+    AiVoiceInput.releasing = aiBounded(release(), ASR_RELEASE_WAIT_MS);
     await AiVoiceInput.releasing;
   }
 
@@ -763,6 +918,9 @@ export class AiVoiceInput {
 
   /** The user is talking over the answer and the monitor keeps it for the recognizer: it must not be let go. */
   static monitorClaimed(): boolean { return AiVoiceInput.claimed && AiVoiceInput.monitorCapturer !== null; }
+
+  /** The echo-cancelled microphone of the answer just read is still open (and nobody's yet). */
+  static monitorLive(): boolean { return AiVoiceInput.monitorCapturer !== null && !AiVoiceInput.claimed; }
 }
 
 function samplingRate(rate: number): audio.AudioSamplingRate {
@@ -785,30 +943,129 @@ class AiPcmPlayer {
   private head: number = 0;
   private ended: boolean = false;
   private stopped: boolean = false;
+  private rate: number = 16000;
+  /**
+   * Push mode (the usual): the app writes the voice into the renderer piece by piece — no data callback, so stopping
+   * never has to take one away (taking it away while the audio thread waited on it held the app up for a second,
+   * just as the user talked over the answer). Callback mode only if this device refuses written audio.
+   */
+  private callbackMode: boolean = false;
+  private wrote: boolean = false;
+  private wake: (() => void) | null = null;
+  private pumped: Promise<void> = Promise.resolve();
+  // Callback mode only.
   private idleCalls: number = 0;
   private drained: (() => void) | null = null;
+  private afterWrite: (() => void) | null = null;
   private readonly onLevel: (level: number) => void;
 
   constructor(onLevel: (level: number) => void) { this.onLevel = onLevel; }
 
-  async start(rate: number): Promise<void> {
+  private async create(rate: number): Promise<audio.AudioRenderer> {
     const options: audio.AudioRendererOptions = {
       streamInfo: { samplingRate: samplingRate(rate), channels: audio.AudioChannel.CHANNEL_1,
         sampleFormat: audio.AudioSampleFormat.SAMPLE_FORMAT_S16LE, encodingType: audio.AudioEncodingType.ENCODING_TYPE_RAW },
       rendererInfo: { usage: audio.StreamUsage.STREAM_USAGE_VOICE_COMMUNICATION, rendererFlags: 0 }
     };
     const renderer: audio.AudioRenderer = await audio.createAudioRenderer(options);
-    this.renderer = renderer;
     try { await renderer.setDefaultOutputDevice(audio.DeviceType.SPEAKER); } catch (_error) { /* headset or default */ }
+    return renderer;
+  }
+
+  async start(rate: number): Promise<void> {
+    this.rate = rate;
+    const renderer: audio.AudioRenderer = await this.create(rate);
+    this.renderer = renderer;
+    await renderer.start();
+    this.pumped = this.pump(renderer);
+  }
+
+  push(chunk: Uint8Array): void {
+    if (this.stopped || chunk.length === 0) { return; }
+    this.queue.push(chunk);
+    const wake: (() => void) | null = this.wake;
+    if (wake !== null) { this.wake = null; wake(); }
+  }
+
+  /** Up to `size` bytes from the queue (whole samples), as a buffer of its own; null when nothing is waiting. */
+  private nextPiece(size: number): ArrayBuffer | null {
+    let available: number = 0;
+    for (let i = 0; i < this.queue.length && available < size; i++) {
+      available += this.queue[i].length - (i === 0 ? this.head : 0);
+    }
+    const count: number = Math.min(size, available) - Math.min(size, available) % 2;
+    if (count <= 0) { return null; }
+    const out: Uint8Array = new Uint8Array(count);
+    let written: number = 0;
+    while (written < count && this.queue.length > 0) {
+      const chunk: Uint8Array = this.queue[0];
+      const take: number = Math.min(count - written, chunk.length - this.head);
+      out.set(chunk.subarray(this.head, this.head + take), written);
+      written += take;
+      this.head += take;
+      if (this.head >= chunk.length) { this.queue.shift(); this.head = 0; }
+    }
+    return out.buffer;
+  }
+
+  /** Push mode: writes the queue out in ~40 ms pieces (each write waits for room: playback paces it). */
+  private async pump(renderer: audio.AudioRenderer): Promise<void> {
+    const size: number = Math.max(640, Math.round(this.rate * 2 * 0.04));
+    while (!this.stopped) {
+      const piece: ArrayBuffer | null = this.nextPiece(size);
+      if (piece === null) {
+        if (this.ended) { break; }
+        await new Promise<void>((resolve: () => void): void => { this.wake = resolve; setTimeout(resolve, 30); });
+        this.wake = null;
+        continue;
+      }
+      this.onLevel(aiPcmLevel(piece));
+      try {
+        await renderer.write(piece);
+        this.wrote = true;
+      } catch (error) {
+        if (!this.wrote && !this.stopped) {
+          hilog.warn(0x0000, 'AiChat', 'tts written audio refused %{public}s, using the callback', String((error as BusinessError).code));
+          await this.toCallbackMode(renderer, piece);
+          return;
+        }
+        break;
+      }
+    }
+    this.onLevel(0);
+    // The last of it is heard before the answer counts as read.
+    if (!this.stopped) { await aiBounded(renderer.drain(), 4000); }
+  }
+
+  /** This device takes no written audio: a renderer fed by its data callback instead (the piece not played first). */
+  private async toCallbackMode(old: audio.AudioRenderer, first: ArrayBuffer): Promise<void> {
+    this.callbackMode = true;
+    this.queue.unshift(new Uint8Array(first));
+    this.head = 0;
+    this.renderer = null;
+    await aiBounded((async (): Promise<void> => {
+      try { await old.stop(); } catch (_error) { /* not started */ }
+      try { await old.release(); } catch (_error) { /* already released */ }
+    })(), ASR_RELEASE_WAIT_MS);
+    if (this.stopped) { return; }
+    const renderer: audio.AudioRenderer = await this.create(this.rate);
+    this.renderer = renderer;
     renderer.on('writeData', (buffer: ArrayBuffer): audio.AudioDataCallbackResult => {
       this.fill(buffer);
+      // Stopping: the callback is taken away once this one has fully returned (a task of its own).
+      const after: (() => void) | null = this.afterWrite;
+      if (after !== null) { this.afterWrite = null; setTimeout(after, 0); }
       return audio.AudioDataCallbackResult.VALID;
     });
     await renderer.start();
+    // Played out (or stopped): finish() waits for this.
+    await new Promise<void>((resolve: () => void): void => {
+      if (this.stopped) { resolve(); return; }
+      this.drained = resolve;
+    });
   }
 
-  push(chunk: Uint8Array): void { if (!this.stopped && chunk.length > 0) { this.queue.push(chunk); } }
-
+  /** Callback mode: one buffer of the voice (silence once it has run out). */
   private fill(buffer: ArrayBuffer): void {
     const out: Uint8Array = new Uint8Array(buffer);
     let written: number = 0;
@@ -834,23 +1091,92 @@ class AiPcmPlayer {
   /** No more audio: resolves once everything queued has been played. */
   finish(): Promise<void> {
     this.ended = true;
-    return new Promise<void>((resolve: () => void): void => {
-      if (this.stopped) { resolve(); return; }
-      this.drained = resolve;
-    });
+    const wake: (() => void) | null = this.wake;
+    if (wake !== null) { this.wake = null; wake(); }
+    return this.pumped;
   }
 
   async stop(): Promise<void> {
     this.stopped = true;
     this.queue = [];
+    const wake: (() => void) | null = this.wake;
+    if (wake !== null) { this.wake = null; wake(); }
     if (this.drained !== null) { const done: () => void = this.drained; this.drained = null; done(); }
     const renderer: audio.AudioRenderer | null = this.renderer;
     this.renderer = null;
     this.onLevel(0);
     if (renderer === null) { return; }
-    try { renderer.off('writeData'); } catch (_error) { /* not listening */ }
-    try { await renderer.stop(); } catch (_error) { /* not started */ }
-    try { await renderer.release(); } catch (_error) { /* already released */ }
+    if (this.callbackMode) {
+      // The callback is taken away right after a buffer was written (or after a moment, should none come); until
+      // then it writes silence. Stopping with it still there could hang for good.
+      await new Promise<void>((resolve: () => void): void => {
+        this.afterWrite = resolve;
+        setTimeout(resolve, 120);
+      });
+      this.afterWrite = null;
+      try { renderer.off('writeData'); } catch (_error) { /* not listening */ }
+    }
+    // Stopped, then released — in order; only the waiting is bounded (a player that never reports back must not hold
+    // voice mode up). Written audio has no callback to take away: nothing here can hold the app up.
+    const sequence = async (): Promise<void> => {
+      try { await renderer.stop(); } catch (_error) { /* not started */ }
+      try { await renderer.release(); } catch (_error) { /* already released */ }
+    };
+    await aiBounded(sequence(), ASR_RELEASE_WAIT_MS);
+  }
+}
+
+/**
+ * Voice mode holds the audio focus for its whole session, as Siri does: other apps' media pauses when it opens and
+ * stays paused between its turns (each answer used to take the focus and give it back — music came and went in bits),
+ * and resumes when voice mode closes.
+ */
+export class AiAudioFocus {
+  private static held: boolean = false;
+
+  static hold(): void {
+    if (AiAudioFocus.held) { return; }
+    AiAudioFocus.held = true;
+    void AiAudioFocus.take();
+  }
+
+  private static async take(): Promise<void> {
+    try {
+      const manager: audio.AudioSessionManager = audio.getAudioManager().getSessionManager();
+      await manager.activateAudioSession({ concurrencyMode: audio.AudioConcurrencyMode.CONCURRENCY_PAUSE_OTHERS });
+    } catch (error) {
+      AiAudioFocus.held = false;
+      hilog.warn(0x0000, 'AiChat', 'audio focus unavailable %{public}s', String((error as BusinessError).code));
+      return;
+    }
+    // The session's rule applies once one of our streams starts: a moment of silence as the assistant makes the
+    // others pause now, not only when the first answer is read. (Written audio: nothing to take away afterwards.)
+    try {
+      const renderer: audio.AudioRenderer = await audio.createAudioRenderer({
+        streamInfo: { samplingRate: audio.AudioSamplingRate.SAMPLE_RATE_16000, channels: audio.AudioChannel.CHANNEL_1,
+          sampleFormat: audio.AudioSampleFormat.SAMPLE_FORMAT_S16LE, encodingType: audio.AudioEncodingType.ENCODING_TYPE_RAW },
+        rendererInfo: { usage: audio.StreamUsage.STREAM_USAGE_VOICE_ASSISTANT, rendererFlags: 0 }
+      });
+      await renderer.start();
+      await aiBounded(renderer.write(new ArrayBuffer(1920)).then((): void => {}), 600);
+      await aiBounded((async (): Promise<void> => {
+        try { await renderer.stop(); } catch (_error) { /* not started */ }
+        try { await renderer.release(); } catch (_error) { /* already released */ }
+      })(), ASR_RELEASE_WAIT_MS);
+    } catch (error) {
+      hilog.warn(0x0000, 'AiChat', 'audio focus ping failed %{public}s', String((error as BusinessError).code));
+    }
+    hilog.info(0x0000, 'AiChat', 'audio focus held, other media paused');
+  }
+
+  static release(): void {
+    if (!AiAudioFocus.held) { return; }
+    AiAudioFocus.held = false;
+    try {
+      audio.getAudioManager().getSessionManager().deactivateAudioSession()
+        .then((): void => { hilog.info(0x0000, 'AiChat', 'audio focus released'); })
+        .catch((_error: BusinessError): void => { /* already inactive */ });
+    } catch (_error) { /* already inactive */ }
   }
 }
 

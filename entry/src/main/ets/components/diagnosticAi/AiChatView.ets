@@ -14,8 +14,9 @@ import { AiChatAction, aiActionErrorText, aiRunAction } from '../../services/dia
 import { AiReadAloud, AiVoiceInput } from '../../services/diagnosticAi/AiSpeech';
 import { AI_VOICE_ENABLED } from '../../services/diagnosticAi/AiVoiceSettings';
 import { AiMdBlock, AiMdSpan, aiMarkdownBlocks } from '../../services/diagnosticAi/AiMarkdownPolicy';
-import { aiAutoRoute, aiModeCommand } from '../../services/diagnosticAi/AiChatRoutePolicy';
-import { AI_MODE_REQUEST } from '../../services/diagnosticAi/AiBridgeKeys';
+import { aiAutoRoute, aiModeCommand, aiPendingCardReply } from '../../services/diagnosticAi/AiChatRoutePolicy';
+import { AI_MODE_REQUEST, AI_ORB_DICTATION, AiOrbDictation, aiOrbDictationDecode } from '../../services/diagnosticAi/AiBridgeKeys';
+import { AI_STYLE, aiInk, aiStyleIsXiaoyi, aiXiaoyiGlass } from '../../services/diagnosticAi/AiStylePolicy';
 import { AI_CHAT_REFRESH_KEY, AiShareInbox, AiSharedItem, aiChatRefresh } from '../../services/diagnosticAi/AiShareInbox';
 import { AiSkill, AiToolSpec, aiSkillsForQuestion, aiThinkingPhrases } from '../../services/diagnosticAi/AiSkillCatalog';
 import { AiSkillStore } from '../../services/diagnosticAi/AiSkillStore';
@@ -364,6 +365,18 @@ export struct AiChatView {
   onOpenSkills: () => void = (): void => {};
   /** The small chat beside the floating orb: the latest exchange and a field; 展开 goes back to the island. */
   @Prop mini: boolean = false;
+  /** Siri's dark glass or 小艺's blue glass: the ink follows (AI 风格). */
+  @StorageProp(AI_STYLE) aiStyle: string = 'siri';
+  @StorageProp('diagnosticAiReducedMotion') reducedMotion: boolean = false;
+  /** Beside the orb: what the orb hears goes into the field as it is recognized, and is sent when the user stops. */
+  @StorageProp(AI_ORB_DICTATION) @Watch('onDictation') dictation: string = '';
+  /** The AI's switch_mode 'new': once its answer is in (and has been seen a moment), a new chat starts here. */
+  @StorageProp(AI_MODE_REQUEST) @Watch('onModeRequest') modeRequest: string = '';
+  @State private dictating: boolean = false;
+  /** 新对话: the conversation lifts away first (clearing), then the empty chat rises in (freshStart). */
+  @State private clearing: boolean = false;
+  @State private freshStart: boolean = false;
+  @StorageProp('currentTheme') theme: string = 'light';
   /** The small chat's 展开 (none in a session: there is no full panel there). */
   @Prop canExpand: boolean = true;
   onExpand: () => void = (): void => {};
@@ -415,6 +428,11 @@ export struct AiChatView {
 
   aboutToAppear(): void {
     this.alive = true;
+    // Shown because the orb began to listen: the field shows what it hears from the start.
+    if (this.mini && aiOrbDictationDecode(this.dictation).state === 'listen') {
+      this.dictating = true;
+      this.draft = aiOrbDictationDecode(this.dictation).text;
+    }
     const context: common.UIAbilityContext = this.context();
     try {
       this.store.init(context, this.owner);
@@ -434,6 +452,33 @@ export struct AiChatView {
     this.alive = false;
     this.stopStatus();
     this.persist();
+  }
+
+  private onModeRequest(): void {
+    if (this.modeRequest.split('@')[0] !== 'new') { return; }
+    const asked: string = this.modeRequest;
+    let waited: number = 0;
+    const attempt = (): void => {
+      if (!this.alive || this.modeRequest !== asked) { return; }
+      if ((this.busy || AiChatMemory.requestId !== '') && waited < 30000) {
+        waited += 300;
+        setTimeout(attempt, 300);
+        return;
+      }
+      this.startNewChat();
+      this.toast('已开始新对话，之前的对话在对话记录里');
+    };
+    // The short reply ("好，重新开始") stays in view for a moment before the chat clears.
+    setTimeout(attempt, 1200);
+  }
+
+  private onDictation(): void {
+    if (!this.mini || !this.alive) { return; }
+    const heard: AiOrbDictation = aiOrbDictationDecode(this.dictation);
+    if (heard.state === 'listen') { this.dictating = true; this.draft = heard.text; return; }
+    this.dictating = false;
+    if (heard.state === 'done') { this.draft = heard.text; this.submit(); return; }
+    if (heard.state === 'cancel') { this.draft = ''; }
   }
 
   /** Pick up what changed outside: a resumed chat, shared documents, a question from 助理, an answer that landed. */
@@ -700,9 +745,13 @@ export struct AiChatView {
     const typed: string = this.draft.trim();
     if (typed === '' && this.pending.length === 0) { return; }
     const question: string = typed !== '' ? typed : '请阅读我添加的文档，简要说说它讲了什么。';
+    // A card waiting under the last answer: "确认" / "好的" / "确认打开 AI 配置" (typed, or the AI's own pill) does it
+    // now, "不用了" cancels it — asking the AI again only got "the card is there, tap it".
+    if (this.pending.length === 0 && this.answerCardReply(typed)) { this.draft = ''; this.hideKeyboard(); return; }
     // 拜拜 / 回到语音 / 切到助理 / 悬浮球: done by the app at once, in any mode (the open panel acts on the request).
     const command: string = this.pending.length === 0 ? aiModeCommand(typed) : '';
     if (command === 'orb') { this.draft = ''; this.float(); return; }
+    if (command === 'new') { this.draft = ''; this.hideKeyboard(); this.startNewChat(); return; }
     if (command !== '') {
       this.draft = '';
       this.hideKeyboard();
@@ -724,6 +773,18 @@ export struct AiChatView {
     this.draft = '';
     this.hideKeyboard();
     void this.ask(question, false);
+  }
+
+  /** The one card waiting under the latest answer, confirmed or cancelled by what was typed (true: handled). */
+  private answerCardReply(typed: string): boolean {
+    const last: AiChatMessage | undefined = this.messages.length > 0 ? this.messages[this.messages.length - 1] : undefined;
+    if (last === undefined || last.role !== 'assistant' || this.runningAction !== '') { return false; }
+    const waiting: AiChatAction[] = last.actions.filter((a: AiChatAction): boolean => a.status === 'pending');
+    if (waiting.length !== 1) { return false; }
+    const reply: string = aiPendingCardReply(typed, waiting[0].title);
+    if (reply === 'confirm') { void this.confirmAction(last, waiting[0]); return true; }
+    if (reply === 'cancel') { this.setAction(last.id, waiting[0], 'cancelled', ''); return true; }
+    return false;
   }
 
   private retry(): void {
@@ -794,6 +855,8 @@ export struct AiChatView {
         this.freshId = answer.id;
         this.messages = this.messages.concat([answer]);
         this.persist();
+        // Once it has risen in, the answer is like any other (redrawn later, it must not rise in again).
+        setTimeout((): void => { if (this.freshId === answer.id) { this.freshId = ''; } }, 1600);
       } else {
         AiChatMemory.messages = AiChatMemory.messages.concat([answer]);
       }
@@ -834,7 +897,21 @@ export struct AiChatView {
   }
 
   private startNewChat(): void {
-    if (this.busy) { return; }
+    if (this.busy || this.clearing) { return; }
+    this.hideKeyboard();
+    if (this.messages.length === 0 || this.reducedMotion) { this.resetChat(); return; }
+    // The conversation lifts away and fades, then the empty chat rises in where it was.
+    this.getUIContext().animateTo({ duration: 180, curve: Curve.EaseIn }, (): void => { this.clearing = true; });
+    setTimeout((): void => {
+      if (!this.alive) { return; }
+      this.freshStart = true;
+      this.resetChat();
+      this.clearing = false;
+      setTimeout((): void => { this.freshStart = false; }, 900);
+    }, 190);
+  }
+
+  private resetChat(): void {
     AiChatMemory.clear(this.owner);
     AiChatMemory.active = true;
     this.messages = []; this.attachments = []; this.pending = []; this.draft = ''; this.error = '';
@@ -930,7 +1007,7 @@ export struct AiChatView {
     Stack() {
       SymbolGlyph(symbol).fontSize(16).fontColor(['#FFFFFF'])
     }
-    .width(34).height(34).borderRadius(17).backgroundColor('#2E3A3A3C')
+    .width(34).height(34).borderRadius(17).backgroundColor(aiInk(this.aiStyle, 'fillGray'))
     .accessibilityText(label)
     .onClick(action)
   }
@@ -953,13 +1030,13 @@ export struct AiChatView {
   @Builder private smallPill(label: string, primary: boolean, action: () => void) {
     Text(label).fontSize(13).fontWeight(FontWeight.Medium).fontColor(primary ? '#000000' : '#FFFFFF')
       .height(32).padding({ left: 14, right: 14 }).borderRadius(16)
-      .backgroundColor(primary ? '#F2F2F7' : '#3A3A3C')
+      .backgroundColor(primary ? '#F2F2F7' : aiInk(this.aiStyle, 'surfaceRaised'))
       .onClick(action)
   }
 
   @Builder private chip(label: string, symbol: Resource, index: number, action: () => void) {
     Row({ space: 6 }) {
-      SymbolGlyph(symbol).fontSize(13).fontColor(['#C7C7CC'])
+      SymbolGlyph(symbol).fontSize(13).fontColor([aiInk(this.aiStyle, 'icon')])
       Text(label).fontSize(13).fontWeight(FontWeight.Medium).fontColor('#FFFFFF')
     }
     .height(32).padding({ left: 12, right: 14 }).borderRadius(16)
@@ -973,14 +1050,14 @@ export struct AiChatView {
     Row({ space: 6 }) {
       SymbolGlyph($r(attachment.kind === 'pdf' ? 'sys.symbol.pdf_doc' : 'sys.symbol.doc_text_fill')).fontSize(14)
         .fontColor([documentColor(attachment.kind)])
-      Text(attachment.name).fontSize(12).fontColor('#E5E5EA').maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+      Text(attachment.name).fontSize(12).fontColor(aiInk(this.aiStyle, 'textSoft')).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
         .constraintSize({ maxWidth: 150 })
       if (removable) {
-        SymbolGlyph($r('sys.symbol.xmark_circle_fill')).fontSize(14).fontColor(['#8E8E93'])
+        SymbolGlyph($r('sys.symbol.xmark_circle_fill')).fontSize(14).fontColor([aiInk(this.aiStyle, 'text2')])
           .onClick((): void => { this.removePending(attachment); })
       }
     }
-    .height(30).padding({ left: 10, right: removable ? 6 : 10 }).borderRadius(15).backgroundColor('#2C2C2E')
+    .height(30).padding({ left: 10, right: removable ? 6 : 10 }).borderRadius(15).backgroundColor(aiInk(this.aiStyle, 'surface'))
     .margin({ right: 6, bottom: 6 })
   }
 
@@ -991,9 +1068,9 @@ export struct AiChatView {
           (item: AiAttachment): string => 'pending-' + item.id)
         if (this.importing) {
           Row({ space: 6 }) {
-            LoadingProgress().width(16).height(16).color('#C7C7CC')
-            Text('正在读取文档…').fontSize(12).fontColor('#C7C7CC')
-          }.height(30).padding({ left: 10, right: 10 }).borderRadius(15).backgroundColor('#2C2C2E').margin({ bottom: 6 })
+            LoadingProgress().width(16).height(16).color(aiInk(this.aiStyle, 'icon'))
+            Text('正在读取文档…').fontSize(12).fontColor(aiInk(this.aiStyle, 'icon'))
+          }.height(30).padding({ left: 10, right: 10 }).borderRadius(15).backgroundColor(aiInk(this.aiStyle, 'surface')).margin({ bottom: 6 })
         }
       }.width('100%')
     }
@@ -1004,8 +1081,8 @@ export struct AiChatView {
     if (this.chosenSkill !== null) {
       Row({ space: 6 }) {
         SymbolGlyph($r('sys.symbol.wand_and_stars')).fontSize(13).fontColor(['#B9A6FF'])
-        Text('技能 · ' + (this.chosenSkill as AiSkill).name).fontSize(12).fontColor('#E5E5EA')
-        SymbolGlyph($r('sys.symbol.xmark_circle_fill')).fontSize(14).fontColor(['#8E8E93'])
+        Text('技能 · ' + (this.chosenSkill as AiSkill).name).fontSize(12).fontColor(aiInk(this.aiStyle, 'textSoft'))
+        SymbolGlyph($r('sys.symbol.xmark_circle_fill')).fontSize(14).fontColor([aiInk(this.aiStyle, 'text2')])
           .onClick((): void => { this.chosenSkill = null; })
       }.height(30).padding({ left: 10, right: 6 }).borderRadius(15).backgroundColor('#2C2346')
       .transition(TransitionEffect.OPACITY.combine(TransitionEffect.scale({ x: 0.9, y: 0.9 })))
@@ -1033,7 +1110,7 @@ export struct AiChatView {
         ForEach(rows, (row: string[], r: number): void => {
           Row() {
             ForEach(row, (cell: string, c: number): void => {
-              Text(cell).fontSize(13).lineHeight(18).fontColor(r === 0 ? '#FFFFFF' : '#E5E5EA')
+              Text(cell).fontSize(13).lineHeight(18).fontColor(r === 0 ? '#FFFFFF' : aiInk(this.aiStyle, 'textSoft'))
                 .fontWeight(r === 0 ? FontWeight.Medium : FontWeight.Normal)
                 .width(tableWidths(rows)[c] ?? 80).padding({ left: 8, right: 8, top: 6, bottom: 6 })
                 .border({ width: { right: 0.5 }, color: { right: '#33FFFFFF' } })
@@ -1050,23 +1127,23 @@ export struct AiChatView {
       this.spansText(block.spans, block.kind === 'h1' ? 20 : block.kind === 'h2' ? 18 : 16, '#FFFFFF', FontWeight.Bold)
     } else if (block.kind === 'bullet' || block.kind === 'number') {
       Row({ space: 6 }) {
-        Text(block.kind === 'bullet' ? '•' : block.marker).fontSize(16).lineHeight(24).fontColor('#C7C7CC')
+        Text(block.kind === 'bullet' ? '•' : block.marker).fontSize(16).lineHeight(24).fontColor(aiInk(this.aiStyle, 'icon'))
           .width(block.kind === 'bullet' ? 12 : 22)
         Column() { this.spansText(block.spans, 16, '#FFFFFF', FontWeight.Normal) }.layoutWeight(1)
       }.width('100%').alignItems(VerticalAlign.Top).padding({ left: block.level * 16 })
     } else if (block.kind === 'quote') {
       Row({ space: 10 }) {
-        Column().width(3).height('100%').borderRadius(2).backgroundColor('#636366')
-        Column() { this.spansText(block.spans, 15, '#C7C7CC', FontWeight.Normal) }.layoutWeight(1)
+        Column().width(3).height('100%').borderRadius(2).backgroundColor(aiInk(this.aiStyle, 'text4'))
+        Column() { this.spansText(block.spans, 15, aiInk(this.aiStyle, 'icon'), FontWeight.Normal) }.layoutWeight(1)
       }.width('100%').alignItems(VerticalAlign.Top)
     } else if (block.kind === 'rule') {
       Divider().color('#33FFFFFF').strokeWidth(0.5)
     } else if (block.kind === 'code') {
       Scroll() {
-        Text(block.text).fontSize(13).lineHeight(19).fontColor('#E5E5EA').fontFamily('monospace')
+        Text(block.text).fontSize(13).lineHeight(19).fontColor(aiInk(this.aiStyle, 'textSoft')).fontFamily('monospace')
           .copyOption(CopyOptions.LocalDevice).padding(12)
       }.scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off).width('100%').align(Alignment.Start)
-      .borderRadius(12).backgroundColor('#1C1C1E')
+      .borderRadius(12).backgroundColor(aiInk(this.aiStyle, 'surfaceDeep'))
     } else if (block.kind === 'table') {
       this.tableView(block.rows)
     } else {
@@ -1087,13 +1164,13 @@ export struct AiChatView {
             action.tool === 'delete_document' || action.tool === 'delete_conversation' ? 'sys.symbol.trash_fill' :
             'sys.symbol.alarm_fill')).fontSize(20)
             .fontColor([action.status === 'done' ? '#34C759' : action.status === 'failed' ? '#FF9F0A' : '#4A8DFF'])
-        }.width(42).height(42).borderRadius(12).backgroundColor('#2C2C2E')
+        }.width(42).height(42).borderRadius(12).backgroundColor(aiInk(this.aiStyle, 'surface'))
         Column({ space: 2 }) {
           Text(action.title).fontSize(15).fontWeight(FontWeight.Medium).fontColor('#FFFFFF').maxLines(2)
             .textOverflow({ overflow: TextOverflow.Ellipsis }).width('100%')
           Text(action.status === 'pending' ? action.detail : action.status === 'done' ? '✓ ' + action.result :
             action.status === 'cancelled' ? '已取消' : '没有完成：' + action.result)
-            .fontSize(12).fontColor(action.status === 'done' ? '#34C759' : '#8E8E93').maxLines(2)
+            .fontSize(12).fontColor(action.status === 'done' ? '#34C759' : aiInk(this.aiStyle, 'text2')).maxLines(2)
             .textOverflow({ overflow: TextOverflow.Ellipsis }).width('100%')
         }.layoutWeight(1).alignItems(HorizontalAlign.Start)
       }.width('100%')
@@ -1104,7 +1181,7 @@ export struct AiChatView {
           this.smallPill('取消', false, (): void => { this.setAction(message.id, action, 'cancelled', ''); })
         }.width('100%')
       }
-    }.width('100%').padding(14).borderRadius(20).backgroundColor('#F01C1C1F')
+    }.width('100%').padding(14).borderRadius(20).backgroundColor(aiInk(this.aiStyle, 'menu'))
     .border({ width: 0.5, color: action.status === 'pending' ? '#664A8DFF' : '#1FFFFFFF' })
   }
 
@@ -1113,12 +1190,12 @@ export struct AiChatView {
       Row({ space: 12 }) {
         Stack() {
           SymbolGlyph($r('sys.symbol.doc_text_fill')).fontSize(22).fontColor([documentColor(document.format)])
-        }.width(42).height(42).borderRadius(12).backgroundColor('#2C2C2E')
+        }.width(42).height(42).borderRadius(12).backgroundColor(aiInk(this.aiStyle, 'surface'))
         Column({ space: 2 }) {
           Text(document.name).fontSize(15).fontWeight(FontWeight.Medium).fontColor('#FFFFFF').maxLines(2)
             .textOverflow({ overflow: TextOverflow.Ellipsis }).width('100%')
           Text(aiDocumentAvailable(document) ? aiDocumentKindLabel(document.format) + ' · ' + sizeLabel(document.bytes) : '已删除')
-            .fontSize(12).fontColor('#8E8E93')
+            .fontSize(12).fontColor(aiInk(this.aiStyle, 'text2'))
         }.layoutWeight(1).alignItems(HorizontalAlign.Start)
       }.width('100%')
       // Deleted (delete_document, or gone from the device): the card stays, without its buttons.
@@ -1131,18 +1208,18 @@ export struct AiChatView {
         }.width('100%')
         // 悬浮球: open the document and keep the chat at hand as the orb.
         Row({ space: 6 }) {
-          SymbolGlyph($r('sys.symbol.smal_window_playback')).fontSize(13).fontColor(['#8E8E93'])
-          Text('打开并缩成悬浮球，边看边问').fontSize(12).fontColor('#8E8E93')
+          SymbolGlyph($r('sys.symbol.smal_window_playback')).fontSize(13).fontColor([aiInk(this.aiStyle, 'text2')])
+          Text('打开并缩成悬浮球，边看边问').fontSize(12).fontColor(aiInk(this.aiStyle, 'text2'))
         }.onClick((): void => { void this.openDocument(document, true); })
       }
-    }.width('100%').padding(14).borderRadius(20).backgroundColor('#F01C1C1F')
+    }.width('100%').padding(14).borderRadius(20).backgroundColor(aiInk(this.aiStyle, 'menu'))
     .border({ width: 0.5, color: '#1FFFFFFF' })
   }
 
   @Builder private actionLink(symbol: Resource, label: string, action: () => void) {
     Row({ space: 4 }) {
-      SymbolGlyph(symbol).fontSize(13).fontColor(['#8E8E93'])
-      Text(label).fontSize(12).fontColor('#8E8E93')
+      SymbolGlyph(symbol).fontSize(13).fontColor([aiInk(this.aiStyle, 'text2')])
+      Text(label).fontSize(12).fontColor(aiInk(this.aiStyle, 'text2'))
     }.height(24).onClick(action)
   }
 
@@ -1153,29 +1230,34 @@ export struct AiChatView {
           Flex({ wrap: FlexWrap.Wrap, justifyContent: FlexAlign.End }) {
             ForEach(message.attachments, (name: string): void => {
               Row({ space: 6 }) {
-                SymbolGlyph($r('sys.symbol.paperclip')).fontSize(12).fontColor(['#C7C7CC'])
-                Text(name).fontSize(12).fontColor('#C7C7CC').maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+                SymbolGlyph($r('sys.symbol.paperclip')).fontSize(12).fontColor([aiInk(this.aiStyle, 'icon')])
+                Text(name).fontSize(12).fontColor(aiInk(this.aiStyle, 'icon')).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
                   .constraintSize({ maxWidth: 180 })
-              }.padding({ left: 8, right: 8, top: 4, bottom: 4 }).borderRadius(10).backgroundColor('#2C2C2E')
+              }.padding({ left: 8, right: 8, top: 4, bottom: 4 }).borderRadius(10).backgroundColor(aiInk(this.aiStyle, 'surface'))
               .margin({ left: 6, bottom: 4 })
             }, (name: string): string => message.id + name)
           }.width('100%')
         }
         Row() {
           Text(message.text).fontSize(15).lineHeight(22).fontColor('#FFFFFF').copyOption(CopyOptions.LocalDevice)
-            .padding({ left: 14, right: 14, top: 9, bottom: 9 }).borderRadius(18).backgroundColor('#3A3A3C')
+            .padding({ left: 14, right: 14, top: 9, bottom: 9 }).borderRadius(18).backgroundColor(aiInk(this.aiStyle, 'surfaceRaised'))
             .constraintSize({ maxWidth: '86%' })
         }.width('100%').justifyContent(FlexAlign.End)
       }.width('100%').alignItems(HorizontalAlign.End)
     } else {
       Column({ space: 10 }) {
-        ForEach(this.blocksOf(message), (block: AiMdBlock): void => {
-          this.blockView(block)
+        ForEach(this.blocksOf(message), (block: AiMdBlock, index: number): void => {
+          Column() { this.blockView(block) }.width('100%').alignItems(HorizontalAlign.Start)
+            .transition(this.answerTransition(message, index))
         }, (_block: AiMdBlock, index: number): string => message.id + '-b' + index.toString())
-        ForEach(message.documents, (document: AiDocument): void => { this.documentCard(document) },
-          (document: AiDocument): string => message.id + '-d' + document.path)
-        ForEach(message.actions, (action: AiChatAction): void => { this.actionCard(message, action) },
-          (action: AiChatAction): string => message.id + '-a' + action.id + action.status)
+        ForEach(message.documents, (document: AiDocument): void => {
+          Column() { this.documentCard(document) }.width('100%')
+            .transition(this.answerTransition(message, this.blocksOf(message).length))
+        }, (document: AiDocument): string => message.id + '-d' + document.path)
+        ForEach(message.actions, (action: AiChatAction): void => {
+          Column() { this.actionCard(message, action) }.width('100%')
+            .transition(this.answerTransition(message, this.blocksOf(message).length + 1))
+        }, (action: AiChatAction): string => message.id + '-a' + action.id + action.status)
         Row({ space: 16 }) {
           this.actionLink($r('sys.symbol.doc_filled_on_doc'), '复制', (): void => { this.copyText(message.text); })
           if (AiReadAloud.available()) {
@@ -1187,21 +1269,38 @@ export struct AiChatView {
           }
 
         }.width('100%')
+        .transition(this.answerTransition(message, this.blocksOf(message).length + 2))
       }.width('100%')
     }
+  }
+
+  /**
+   * A new answer rises in a block at a time where the thinking line was (each a little after the one before, as the
+   * voice card does); an answer already there does not move.
+   */
+  private answerTransition(message: AiChatMessage, index: number): TransitionEffect {
+    if (message.id !== this.freshId || this.reducedMotion) { return TransitionEffect.IDENTITY; }
+    return TransitionEffect.OPACITY.combine(TransitionEffect.translate({ y: 14 }))
+      .combine(TransitionEffect.scale({ x: 0.985, y: 0.985, centerX: 0 }))
+      .animation({ curve: curves.springMotion(0.48, 0.88), delay: 60 + Math.min(index, 8) * 85 });
   }
 
   /** Waiting for the answer, where the answer will appear: the ring (with room for its glow) and what is happening. */
   @Builder private thinkingRow() {
     Row({ space: 10 }) {
-      Stack() { AiThinkingIndicator({ indicatorSize: 24 }) }.width(36).height(36)
+      // Beside the floating orb the orb itself turns (the small chat only says what is happening).
+      if (!this.mini) {
+        Stack() { AiThinkingIndicator({ indicatorSize: 24 }) }.width(36).height(36)
+      }
       Stack({ alignContent: Alignment.Start }) {
         ForEach([this.status], (line: string): void => {
-          Text(line + '…').fontSize(15).fontColor('#C7C7CC').maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+          Text(line + '…').fontSize(15).fontColor(aiInk(this.aiStyle, 'icon')).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+            // One line at a time: the old one leaves first, then the new one comes in (never both at once).
             .transition(TransitionEffect.asymmetric(
-              TransitionEffect.OPACITY.combine(TransitionEffect.translate({ y: 8 })),
-              TransitionEffect.OPACITY.combine(TransitionEffect.translate({ y: -8 })))
-              .animation({ duration: 260, curve: Curve.EaseOut }))
+              TransitionEffect.OPACITY.combine(TransitionEffect.translate({ y: 8 }))
+                .animation({ duration: 220, delay: 120, curve: Curve.EaseOut }),
+              TransitionEffect.OPACITY.combine(TransitionEffect.translate({ y: -6 }))
+                .animation({ duration: 110, curve: Curve.EaseIn })))
         }, (line: string): string => 'status-' + line)
       }.layoutWeight(1).height(36)
     }.width('100%').padding({ left: 4, right: 4 })
@@ -1212,7 +1311,7 @@ export struct AiChatView {
     Column({ space: 10 }) {
       Text('这像是 RemoteDesktop 的问题').fontSize(15).fontWeight(FontWeight.Medium).fontColor('#FFFFFF').width('100%')
       Text('助理可以抓取日志、排查连接问题，并直接帮你改设置。').fontSize(13).lineHeight(19)
-        .fontColor('#8E8E93').width('100%')
+        .fontColor(aiInk(this.aiStyle, 'text2')).width('100%')
       Row({ space: 8 }) {
         this.smallPill('交给助理', true, (): void => {
           const question: string = this.routeQuestion;
@@ -1226,7 +1325,7 @@ export struct AiChatView {
           this.submit();
         })
       }.width('100%')
-    }.width('100%').padding(14).borderRadius(20).backgroundColor('#F01C1C1F')
+    }.width('100%').padding(14).borderRadius(20).backgroundColor(aiInk(this.aiStyle, 'menu'))
     .border({ width: 0.5, color: '#1FFFFFFF' })
     .transition(TransitionEffect.OPACITY.combine(TransitionEffect.translate({ y: 12 }))
       .animation({ curve: curves.springMotion(0.42, 0.86) }))
@@ -1242,19 +1341,38 @@ export struct AiChatView {
    * can send is read here, from the state itself: a value handed to a @Builder is a copy that never updates, which
    * left the button dark while typing. (Dictation is left to the input method's own voice input, which is better.)
    */
+  /**
+   * The voice and send buttons trading places: the one arriving springs in, the one leaving shrinks away quickly —
+   * each with its own animation (the change comes from typing, outside any animateTo, where a bare transition would
+   * just cut).
+   */
+  private swapTransition(): TransitionEffect {
+    return TransitionEffect.asymmetric(
+      TransitionEffect.OPACITY.combine(TransitionEffect.scale({ x: 0.55, y: 0.55 }))
+        .animation({ curve: curves.springMotion(0.36, 0.7), delay: 40 }),
+      TransitionEffect.OPACITY.combine(TransitionEffect.scale({ x: 0.55, y: 0.55 }))
+        .animation({ duration: 140, curve: Curve.EaseIn }));
+  }
+
   @Builder private sendOrVoice() {
-    if (this.voiceEnabled && !this.canSend() && !this.busy && this.draft.trim() === '' && this.pending.length === 0 &&
-      AiVoiceInput.available()) {
-      Stack() {
-        SymbolGlyph($r('sys.symbol.waveform_1')).fontSize(18).fontColor(['#000000'])
+    // One spot for both: as typing begins the voice button shrinks away where the send button grows in (and lights
+    // up) — overlapping, not one under the other for a moment.
+    Stack() {
+      if (this.voiceEnabled && !this.canSend() && !this.busy && this.draft.trim() === '' && this.pending.length === 0 &&
+        AiVoiceInput.available()) {
+        Stack() {
+          SymbolGlyph($r('sys.symbol.waveform_1')).fontSize(18).fontColor(['#000000'])
+        }
+        .width(40).height(40).borderRadius(20).backgroundColor('#FFFFFF')
+        .accessibilityText('语音模式')
+        .onClick((): void => { this.startVoiceMode(); })
+        .transition(this.swapTransition())
+      } else {
+        Stack() { AiSendButton({ active: this.canSend(), buttonSize: 40, onTap: (): void => { this.submit(); } }) }
+          .width(40).height(40)
+          .transition(this.swapTransition())
       }
-      .width(40).height(40).borderRadius(20).backgroundColor('#FFFFFF')
-      .accessibilityText('语音模式')
-      .onClick((): void => { this.startVoiceMode(); })
-      .transition(TransitionEffect.scale({ x: 0.6, y: 0.6 }).combine(TransitionEffect.OPACITY))
-    } else {
-      AiSendButton({ active: this.canSend(), buttonSize: 40, onTap: (): void => { this.submit(); } })
-    }
+    }.width(40).height(40)
   }
 
   private startVoiceMode(): void {
@@ -1268,7 +1386,7 @@ export struct AiChatView {
     Stack() {
       SymbolGlyph($r('sys.symbol.plus')).fontSize(18).fontColor(['#FFFFFF'])
     }
-    .width(40).height(40).borderRadius(20).backgroundColor('#3A3A3C')
+    .width(40).height(40).borderRadius(20).backgroundColor(aiInk(this.aiStyle, 'surfaceRaised'))
     .opacity(this.importing || this.busy ? 0.4 : 1)
     .accessibilityText('添加文档')
     .onClick((): void => { void this.addDocuments(); })
@@ -1279,7 +1397,7 @@ export struct AiChatView {
     TextArea({ placeholder: ' 问点什么，或让我帮你处理文档', text: this.draft })
       .id('aiChatQuestion')
       .width('100%').fontSize(20).fontWeight(FontWeight.Medium).fontColor('#FFFFFF')
-      .placeholderColor('#8E8E93').placeholderFont({ size: 20, weight: FontWeight.Medium })
+      .placeholderColor(aiInk(this.aiStyle, 'text2')).placeholderFont({ size: 20, weight: FontWeight.Medium })
       .caretStyle({ width: 2.5, color: '#FFFFFF' })
       .backgroundColor(Color.Transparent).padding({ left: 3, right: 0, top: 4, bottom: 2 })
       .constraintSize({ minHeight: 56, maxHeight: 180 })
@@ -1311,11 +1429,11 @@ export struct AiChatView {
     Row({ space: 10 }) {
       this.addButton()
       Text(this.pending.length > 0 ? '已添加 ' + this.pending.length.toString() + ' 个文件' : '添加文档或图片')
-        .fontSize(13).fontColor('#8E8E93').layoutWeight(1)
+        .fontSize(13).fontColor(aiInk(this.aiStyle, 'text2')).layoutWeight(1)
         .onClick((): void => { void this.addDocuments(); })
       this.sendOrVoice()
     }.width('100%')
-    Text(this.privacyLine()).fontSize(11).lineHeight(16).fontColor('#8E8E93').width('100%')
+    Text(this.privacyLine()).fontSize(11).lineHeight(16).fontColor(aiInk(this.aiStyle, 'text2')).width('100%')
   }
 
   @Builder private conversation() {
@@ -1324,7 +1442,8 @@ export struct AiChatView {
         ForEach(this.messages, (message: AiChatMessage, index: number): void => {
           Column() { this.messageView(message, index === this.messages.length - 1 && !this.busy) }
             .width('100%')
-            .transition(message.id === this.freshId ?
+            // A new question fades in as a whole; a new answer rises in block by block (messageView).
+            .transition(message.id === this.freshId && message.role === 'user' ?
               TransitionEffect.OPACITY.combine(TransitionEffect.translate({ y: 12 }))
                 .animation({ curve: curves.springMotion(0.42, 0.86) }) : TransitionEffect.IDENTITY)
             .onAreaChange((_old: Area, area: Area): void => { this.positions.set(message.id, Number(area.position.y)); })
@@ -1360,7 +1479,7 @@ export struct AiChatView {
     .fadingEdge(true, { fadingEdgeLength: LengthMetrics.vp(20) })
     if (this.missingAttachments().length > 0 && this.pending.length === 0) {
       Text('之前添加的文档没有随对话保存；要继续读取，请重新添加：' + this.missingAttachments().join('、'))
-        .fontSize(11).lineHeight(16).fontColor('#8E8E93').width('100%')
+        .fontSize(11).lineHeight(16).fontColor(aiInk(this.aiStyle, 'text2')).width('100%')
     }
     this.pendingRow()
     if (this.answerPills().length > 0 && this.chosenSkill === null) {
@@ -1374,6 +1493,10 @@ export struct AiChatView {
         }
       }.scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off).width('100%').align(Alignment.Start)
       .edgeEffect(EdgeEffect.Spring)
+      // The pills rise in one by one (their own transitions); they also leave together, sinking and fading.
+      .transition(TransitionEffect.asymmetric(TransitionEffect.IDENTITY,
+        TransitionEffect.OPACITY.combine(TransitionEffect.translate({ y: 10 })).combine(TransitionEffect.scale({ x: 0.96, y: 0.96 }))
+          .animation({ duration: 180, curve: Curve.EaseIn })))
     } else {
       this.skillRow()
     }
@@ -1384,7 +1507,7 @@ export struct AiChatView {
       AiInputCapsule() {
         TextArea({ placeholder: '继续聊…', text: this.draft })
           .id('aiChatDraft')
-          .layoutWeight(1).fontSize(16).fontColor('#FFFFFF').placeholderColor('#8E8E93')
+          .layoutWeight(1).fontSize(16).fontColor('#FFFFFF').placeholderColor(aiInk(this.aiStyle, 'text2'))
           .caretStyle({ width: 2.5, color: '#FFFFFF' }).backgroundColor(Color.Transparent)
           .padding({ left: 0, right: 0, top: 9, bottom: 9 })
           .constraintSize({ minHeight: 40, maxHeight: 120 })
@@ -1433,7 +1556,7 @@ export struct AiChatView {
       Text(document.name).fontSize(13).fontColor('#FFFFFF').maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
         .layoutWeight(1)
       this.smallPill('打开', true, (): void => { void this.openDocument(document, false); })
-    }.width('100%').padding({ left: 10, right: 6, top: 6, bottom: 6 }).borderRadius(16).backgroundColor('#2C2C2E')
+    }.width('100%').padding({ left: 10, right: 6, top: 6, bottom: 6 }).borderRadius(16).backgroundColor(aiInk(this.aiStyle, 'surface'))
   }
 
   /**
@@ -1443,8 +1566,8 @@ export struct AiChatView {
   @Builder private miniLayout() {
     Column({ space: 10 }) {
       Row({ space: 8 }) {
-        SymbolGlyph($r('sys.symbol.ellipsis_bubble')).fontSize(14).fontColor(['#C7C7CC'])
-        Text('聊天').fontSize(13).fontWeight(FontWeight.Medium).fontColor('#C7C7CC').layoutWeight(1)
+        SymbolGlyph($r('sys.symbol.ellipsis_bubble')).fontSize(14).fontColor([aiInk(this.aiStyle, 'icon')])
+        Text('聊天').fontSize(13).fontWeight(FontWeight.Medium).fontColor(aiInk(this.aiStyle, 'icon')).layoutWeight(1)
         if (this.canExpand) {
           this.glyphButton($r('sys.symbol.arrow_up_left_and_arrow_down_right'), '展开完整对话', (): void => {
             this.hideKeyboard();
@@ -1455,7 +1578,7 @@ export struct AiChatView {
       }.width('100%')
       if (this.busy) {
         if (this.lastQuestion() !== '') {
-          Text(this.lastQuestion()).fontSize(13).lineHeight(18).fontColor('#8E8E93').maxLines(2)
+          Text(this.lastQuestion()).fontSize(13).lineHeight(18).fontColor(aiInk(this.aiStyle, 'text2')).maxLines(2)
             .textOverflow({ overflow: TextOverflow.Ellipsis }).width('100%')
         }
         this.thinkingRow()
@@ -1463,19 +1586,29 @@ export struct AiChatView {
         Scroll() {
           Column({ space: 8 }) {
             if (this.lastQuestion() !== '') {
-              Text(this.lastQuestion()).fontSize(13).lineHeight(18).fontColor('#8E8E93').maxLines(2)
+              Text(this.lastQuestion()).fontSize(13).lineHeight(18).fontColor(aiInk(this.aiStyle, 'text2')).maxLines(2)
                 .textOverflow({ overflow: TextOverflow.Ellipsis }).width('100%')
             }
-            ForEach(this.blocksOf(this.lastAnswer() as AiChatMessage), (block: AiMdBlock): void => {
-              this.blockView(block)
+            // A new answer rises in block by block where the thinking line was, as in the big chat.
+            ForEach(this.blocksOf(this.lastAnswer() as AiChatMessage), (block: AiMdBlock, index: number): void => {
+              Column() { this.blockView(block) }.width('100%').alignItems(HorizontalAlign.Start)
+                .transition(this.answerTransition(this.lastAnswer() as AiChatMessage, index))
             }, (_block: AiMdBlock, index: number): string => 'mini-b' + index.toString() + '-' + (this.lastAnswer() as AiChatMessage).id)
-            ForEach((this.lastAnswer() as AiChatMessage).documents, (document: AiDocument): void => { this.miniDocument(document) },
-              (document: AiDocument): string => 'mini-d' + document.path)
+            ForEach((this.lastAnswer() as AiChatMessage).documents, (document: AiDocument): void => {
+              Column() { this.miniDocument(document) }.width('100%')
+                .transition(this.answerTransition(this.lastAnswer() as AiChatMessage,
+                  this.blocksOf(this.lastAnswer() as AiChatMessage).length))
+            }, (document: AiDocument): string => 'mini-d' + document.path)
           }.width('100%')
         }.constraintSize({ maxHeight: 240 }).scrollBar(BarState.Off).edgeEffect(EdgeEffect.Spring).align(Alignment.Top)
         .fadingEdge(true, { fadingEdgeLength: LengthMetrics.vp(16) })
+        .opacity(this.clearing ? 0 : 1)
+        .translate({ y: this.clearing ? -12 : 0 })
       } else if (this.error === '') {
-        Text('问点什么，我在这儿。').fontSize(14).fontColor('#8E8E93').width('100%')
+        Text('问点什么，我在这儿。').fontSize(14).fontColor(aiInk(this.aiStyle, 'text2')).width('100%')
+          .transition(this.freshStart ? TransitionEffect.OPACITY.combine(TransitionEffect.translate({ y: 16 }))
+            .combine(TransitionEffect.scale({ x: 0.98, y: 0.98 }))
+            .animation({ curve: curves.springMotion(0.48, 0.86), delay: 40 }) : TransitionEffect.IDENTITY)
       }
       if (this.error !== '' && !this.busy) {
         Text(this.error).fontSize(13).lineHeight(18).fontColor('#FF9F0A').width('100%')
@@ -1485,9 +1618,9 @@ export struct AiChatView {
       }
       Row({ space: 8 }) {
         AiInputCapsule() {
-          TextInput({ placeholder: '继续问…', text: this.draft })
+          TextInput({ placeholder: this.dictating ? '正在听…' : '继续问…', text: this.draft })
             .id('aiChatMiniDraft')
-            .layoutWeight(1).height(38).fontSize(15).fontColor('#FFFFFF').placeholderColor('#8E8E93')
+            .layoutWeight(1).height(38).fontSize(15).fontColor('#FFFFFF').placeholderColor(aiInk(this.aiStyle, 'text2'))
             .caretStyle({ width: 2, color: '#FFFFFF' }).backgroundColor(Color.Transparent).padding(0)
             .enterKeyType(EnterKeyType.Send)
             .onChange((value: string): void => { this.draft = value; if (this.routeQuestion !== '') { this.routeQuestion = ''; } })
@@ -1499,10 +1632,13 @@ export struct AiChatView {
     // The island's material in small: black where the text is, smoky towards the foot, a soft rim.
     .width('100%').padding({ left: 16, right: 12, top: 12, bottom: 12 }).borderRadius(28)
     .backdropBlur(26)
-    .linearGradient({ angle: 180, colors: [['#E6030304', 0], ['#D9070708', 0.5], ['#C7101012', 1]] })
+    .linearGradient(aiStyleIsXiaoyi(this.aiStyle) ?
+      { angle: 135, colors: [[aiXiaoyiGlass(this.theme === 'dark').from, 0], [aiXiaoyiGlass(this.theme === 'dark').to, 1]] } :
+      { angle: 180, colors: [['#E6030304', 0], ['#D9070708', 0.5], ['#C7101012', 1]] })
     .border({ width: { top: 0.6, left: 0.6, right: 0.6, bottom: 1 },
-      color: { top: '#1FFFFFFF', left: '#17FFFFFF', right: '#17FFFFFF', bottom: '#59FFFFFF' } })
-    .shadow({ radius: 24, color: '#59000000', offsetY: 8 })
+      color: aiStyleIsXiaoyi(this.aiStyle) ? '#52FFFFFF' :
+        { top: '#1FFFFFFF', left: '#17FFFFFF', right: '#17FFFFFF', bottom: '#59FFFFFF' } })
+    .shadow({ radius: 24, color: aiStyleIsXiaoyi(this.aiStyle) ? '#4D2B3A86' : '#59000000', offsetY: 8 })
     .onAreaChange((_old: Area, area: Area): void => { this.onCardSize(Number(area.height)); })
   }
 
@@ -1518,9 +1654,17 @@ export struct AiChatView {
     Column({ space: 12 }) {
       this.header()
       if (this.messages.length === 0 && !this.busy) {
-        this.emptyState()
+        // After 新对话 the empty chat rises in; on the first question it gives way at once (no in-between layout).
+        Column({ space: 12 }) { this.emptyState() }.width('100%')
+          .transition(TransitionEffect.asymmetric(this.freshStart ? TransitionEffect.OPACITY.combine(TransitionEffect.translate({ y: 16 }))
+            .combine(TransitionEffect.scale({ x: 0.98, y: 0.98 }))
+            .animation({ curve: curves.springMotion(0.48, 0.86), delay: 40 }) :
+            TransitionEffect.IDENTITY, TransitionEffect.IDENTITY))
       } else {
-        this.conversation()
+        Column({ space: 12 }) { this.conversation() }.width('100%')
+          .opacity(this.clearing ? 0 : 1)
+          .translate({ y: this.clearing ? -18 : 0 })
+          .scale({ x: this.clearing ? 0.97 : 1, y: this.clearing ? 0.97 : 1 })
       }
     }
     .width('100%')

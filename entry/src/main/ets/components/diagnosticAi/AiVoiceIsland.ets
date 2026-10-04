@@ -4,6 +4,11 @@ import { curves, display, window } from '@kit.ArkUI';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { AiThinkingIndicator } from './AiMotionViews';
 import { AiSiriBand } from './AiSiriBand';
+import { AiXiaoyiRing } from './AiXiaoyiRing';
+import { XyLiveLevel } from '../../services/diagnosticAi/AiXiaoyiLight';
+import { AiXiaoyiGlass } from './AiIslandChrome';
+import { AI_STYLE, AI_STYLE_WASH, aiInk, aiStyleIsXiaoyi, aiXiaoyiWash } from '../../services/diagnosticAi/AiStylePolicy';
+import { AiSurfaceDevice, aiSurfaceScale, aiTranscriptWidth, aiVoiceCardHeightShare, aiVoiceCardWidth } from '../../services/diagnosticAi/AiSurfaceGeometry';
 import { AiChatMemory, AiChatMessage, aiChatAllowed, aiChatAppData, aiChatErrorText, aiChatOwnerStill, aiChatPreferenceText,
   aiChatRecordUsage, aiChatSaveSession, aiChatSelectedProfile, aiChatTurnText, newMessageId } from './AiChatView';
 import { DiagnosticAiProviderProfile } from '../../services/diagnosticAi/DiagnosticAiModels';
@@ -15,14 +20,14 @@ import { AiChatReply, AiChatService, AiChatTurn } from '../../services/diagnosti
 import { AI_ASSISTANT_HANDOFF, AI_FLOAT_REQUEST, AI_HANDOVER_FADE_DELAY_MS, AI_HANDOVER_FADE_MS, AI_HANDOVER_RECT, AI_MODE_REQUEST } from '../../services/diagnosticAi/AiBridgeKeys';
 import { AiSkillStore } from '../../services/diagnosticAi/AiSkillStore';
 import { aiThinkingPhrases } from '../../services/diagnosticAi/AiSkillCatalog';
-import { aiModeCommand, aiQuestionIsAboutApp, aiQuestionIsFeatureIdea } from '../../services/diagnosticAi/AiChatRoutePolicy';
+import { aiModeCommand, aiPendingCardReply, aiQuestionIsAboutApp, aiQuestionIsFeatureIdea } from '../../services/diagnosticAi/AiChatRoutePolicy';
 import { DiagnosticAiAgentMode, DiagnosticAiAgentService, diagnosticAiAgentModeForQuestion } from '../../services/diagnosticAi/DiagnosticAiAgentService';
 import { DiagnosticAiResult, DiagnosticAiSettingProposal } from '../../services/diagnosticAi/DiagnosticAiModels';
 import { AiSettingChoice, diagnosticAiProposalChoice, diagnosticAiProposalIsSafe, diagnosticAiSettingActionText, diagnosticAiSettingCurrent, diagnosticAiSettingIntents } from '../../services/diagnosticAi/DiagnosticAiSettingsActionPolicy';
 import { diagnosticAiAppActionId, diagnosticAiAppActionLabel } from '../../services/diagnosticAi/DiagnosticAiAppActionPolicy';
 import { AiMdBlock, AiMdSpan, aiMarkdownBlocks } from '../../services/diagnosticAi/AiMarkdownPolicy';
 import { AiChatAction, aiActionErrorText, aiRunAction } from '../../services/diagnosticAi/AiSystemTools';
-import { AiReadAloud, AiVoiceInput } from '../../services/diagnosticAi/AiSpeech';
+import { AiAudioFocus, AiReadAloud, AiVoiceInput } from '../../services/diagnosticAi/AiSpeech';
 import { AiVoiceConfig, AiVoiceSettings } from '../../services/diagnosticAi/AiVoiceSettings';
 import { aiChatRefresh } from '../../services/diagnosticAi/AiShareInbox';
 import { AiDocument } from '../../services/diagnosticAi/AiDocumentService';
@@ -32,7 +37,6 @@ import { aiIsSessionPage } from '../../services/diagnosticAi/AiSessionRouter';
 export const AI_VOICE_HOLD_EVENT: string = 'aiVoice.hold';
 
 /** Same logical canvas as the island (AiIsland): phones scale by width. */
-const AI_REF_WIDTH: number = 375;
 const YES: RegExp = /^(好|好的|好啊|确认|可以|行|是的|是|对|嗯|没问题|执行|去吧)[。！!.]*$/;
 const NO: RegExp = /^(不|不要|取消|算了|不用)[。！!.]*$/;
 
@@ -81,6 +85,8 @@ export struct AiVoiceIsland {
   @Prop keepSystemBars: boolean = false;
   @StorageProp('diagnosticAiReducedMotion') reducedMotion: boolean = false;
   @StorageProp('currentTheme') theme: string = 'light';
+  @StorageProp(AI_STYLE) aiStyle: string = 'siri';
+  @StorageProp(AI_STYLE_WASH) aiWash: string = 'on';
   @StorageProp(AI_VOICE_HOLD_EVENT) @Watch('onHoldEvent') holdEvent: string = '';
   /** The back key reached the voice layer: voice mode closes, as a swipe up does. */
   @StorageProp('aiTop.back') @Watch('onBackKey') backKey: string = '';
@@ -186,6 +192,8 @@ export struct AiVoiceIsland {
     // From the first frame to the last, voice mode sits above the status bar: the system's own island (a live
     // activity) must not draw over the droplet or the card.
     this.setStatusBarHidden(true);
+    // Media playing in other apps pauses for the whole of voice mode (and resumes when it closes).
+    AiAudioFocus.hold();
     this.placeOnCutout();
     this.startClock();
     // Appear where the start shape is, then swell into the droplet (listen()) — or, coming back from the orb, open
@@ -221,6 +229,7 @@ export struct AiVoiceIsland {
     AiVoiceInput.cancel();
     void AiVoiceInput.stopMonitor();
     if (!this.keepSpeech) { AiReadAloud.stop(); }
+    AiAudioFocus.release();
     // Handed over to the island, which keeps the bar hidden and gives it back itself.
     if (!this.handingOver) { this.setStatusBarHidden(false); }
   }
@@ -259,15 +268,26 @@ export struct AiVoiceIsland {
    * as it settles; out of the card, the content leaves first and the surface then gathers into the next shape.
    */
   private go(next: string): void {
-    if (next === this.phase) { return; }
-    const fromCard: boolean = this.isCard(this.phase);
-    const toCard: boolean = this.isCard(next);
-    if (fromCard && !toCard) {
-      this.fadeContent(false, 120, 0);
-      this.later(this.reducedMotion ? 0 : 90, (): void => { this.morph((): void => { this.phase = next; }); });
+    if (next === this.phase) {
+      if (next !== 'answer' && this.panelListening) { this.morph((): void => { this.panelListening = false; }); }
       return;
     }
-    this.morph((): void => { this.phase = next; });
+    const fromCard: boolean = this.isCard(this.phase);
+    const toCard: boolean = this.isCard(next);
+    // The card's listening edge leaves with the change of shape, in the same spring — taken away on its own first,
+    // the card jumped shorter just before it gathered into the next shape.
+    const apply = (): void => {
+      this.phase = next;
+      if (next !== 'answer') { this.panelListening = false; }
+    };
+    if (fromCard && !toCard) {
+      // The content fades as the surface already gathers: an empty card left on its own for a moment (its dark top
+      // glow alone on the glass) flashed like a black layer on the way into thinking.
+      this.fadeContent(false, 100, 0);
+      this.morph(apply);
+      return;
+    }
+    this.morph(apply);
     if (toCard && !fromCard) { this.fadeContent(true, 260, 150); }
   }
 
@@ -300,6 +320,13 @@ export struct AiVoiceIsland {
     if (this.handingOver) { return; }
     const target: number = this.phase === 'speak' ? Math.min(1, this.outLevel * 1.15) :
       this.phase === 'listen' || this.panelListening ? this.targetLevel : 0;
+    // 小艺: its rings read the voice themselves every frame (and smooth it with a spring); nothing of the island has
+    // to be rebuilt sixty times a second for it.
+    XyLiveLevel.value = this.paused ? 0 : target;
+    if (this.xiaoyi()) {
+      if (this.level !== 0) { this.level = 0; }
+      return;
+    }
     const k: number = target > this.level ? 0.34 : 0.1;
     const next: number = this.level + (target - this.level) * k;
     if (Math.abs(next - this.level) > 0.002) { this.level = next; }
@@ -307,16 +334,33 @@ export struct AiVoiceIsland {
 
   // ------------------------------------------------------------------ geometry
 
-  private k(): number { return this.deviceClass === 'phone' ? Math.min(1.15, Math.max(0.85, this.areaWidth / AI_REF_WIDTH)) : 1; }
+  private device(): AiSurfaceDevice { return this.deviceClass === 'pc' ? 'pc' : this.deviceClass === 'pad' ? 'pad' : 'phone'; }
+  /** The phone's scale from its short side (a session turned sideways keeps the upright sizes); 1 elsewhere. */
+  private k(): number { return aiSurfaceScale(this.device(), this.areaWidth, this.areaHeight); }
+  private xiaoyi(): boolean { return aiStyleIsXiaoyi(this.aiStyle); }
+  /** The 小艺 glass carries the droplet, the thinking capsule and the card (the camera's own pill stays black). */
+  /** 小艺: the blue glass for the droplet, the thinking capsule, the card — and the capsule it closes through, as
+   * text mode's own close shows it (only the island's pill at the very end is black). */
+  private xyGlass(): boolean {
+    return this.xiaoyi() && (this.listening() || this.phase === 'think' || this.cardPhase() || this.closingCapsule());
+  }
+  /** The dark cap over the camera, inside the 小艺 glass. */
+  private xyCap(): number { return this.cutoutTop >= 0 ? this.pillHeight + 10 : 0; }
+
+  private cutoutGeneration: number = 0;
 
   private placeOnCutout(): void {
+    // A newer read (after a rotation) wins over one still on its way.
+    const generation: number = ++this.cutoutGeneration;
     this.islandTop = this.topInset + 6;
     this.cutoutTop = -1;
-    if (this.deviceClass !== 'phone') { return; }
+    // Sideways the camera is at a side: voice mode hangs under the status bar (read again after each rotation).
+    if (this.deviceClass !== 'phone' || this.areaWidth > this.areaHeight) { return; }
     try {
       const screen: display.Display = display.getDefaultDisplaySync();
       const ui = this.getUIContext();
       screen.getCutoutInfo().then((info: display.CutoutInfo): void => {
+        if (generation !== this.cutoutGeneration || this.areaWidth > this.areaHeight) { return; }
         const rects: display.Rect[] = info.boundingRects;
         for (let i: number = 0; i < rects.length; i++) {
           const top: number = ui.px2vp(rects[i].top);
@@ -368,13 +412,20 @@ export struct AiVoiceIsland {
   private surfaceWidth(): number {
     if (this.handTop >= 0) { return this.handWidth; }
     if (this.startFromPanel() || this.closingCapsule()) { return this.panelCapsuleWidth(); }
-    if (this.phase === 'listen') { return Math.min(196 * this.k(), Math.max(150 * this.k(), this.pillWidth * 1.32)); }
+    if (this.phase === 'listen') { return this.dropletW(); }
     if (this.phase === 'think' || this.cardPhase()) { return this.cardWidth(); }
     return this.pillW();
   }
 
   private headerHeight(): number { return this.pillHeight + 20; }
-  private listenEdgeHeight(): number { return this.transcript.length > 18 ? 104 : 80; }
+  private listenEdgeHeight(): number { return (this.transcript.length > 18 ? 104 : 80) + (this.xiaoyi() ? 14 : 0); }
+
+  /**
+   * The listening droplet's own size. Its light and ring keep this size while they fade out, whatever shape the
+   * surface springs to meanwhile (sized from the surface, they were laid out again mid-way and twitched).
+   */
+  private dropletW(): number { return Math.min(196 * this.k(), Math.max(150 * this.k(), this.pillWidth * 1.32)); }
+  private dropletH(): number { return this.dropletW() * 0.72; }
 
   private surfaceHeight(): number {
     if (this.handTop >= 0) { return this.handHeight; }
@@ -382,7 +433,7 @@ export struct AiVoiceIsland {
     if (this.phase === 'listen') { return this.surfaceWidth() * 0.72; }
     if (this.phase === 'think') { return this.statusHeight(); }
     if (this.cardPhase()) {
-      const max: number = this.areaHeight * 0.58;
+      const max: number = this.areaHeight * aiVoiceCardHeightShare(this.device(), this.areaWidth, this.areaHeight);
       // Header, the measured content, the scroll's own bottom padding, and the listening edge while it listens.
       return Math.min(max + (this.panelListening ? this.listenEdgeHeight() : 0),
         this.headerHeight() + Math.max(64, this.cardContent) + 26 + (this.panelListening ? this.listenEdgeHeight() : 0));
@@ -409,13 +460,11 @@ export struct AiVoiceIsland {
   private ringSize(): number { return 42 * this.k(); }
 
   /** The card's content keeps the card's final width while the surface grows to it (no reflow on the way). */
-  private cardWidth(): number {
-    return this.deviceClass === 'phone' ? this.areaWidth - 25 * this.k() : Math.min(Math.max(this.areaWidth - 64, 420), 560);
-  }
+  private cardWidth(): number { return aiVoiceCardWidth(this.device(), this.areaWidth, this.areaHeight); }
 
   // ------------------------------------------------------------------ the conversation
 
-  private listen(overAnswer: boolean = false): void {
+  private listen(overAnswer: boolean = false, afterAnswer: boolean = false): void {
     if (this.closing) { return; }
     // A new turn before anything is stopped: the answer's reading, ending below, must find itself outdated (it would
     // otherwise let go of the microphone the user is talking into).
@@ -445,17 +494,22 @@ export struct AiVoiceIsland {
     }
     this.retries = 0;
     this.quietSince = Date.now();
-    // Right after the answer was read, give the speaker a moment to let go of the audio before the microphone opens.
-    // (Talking over the answer, the microphone is already live: no pause, and what was said so far goes first.)
-    this.later(afterSpeech && !overAnswer && !this.reducedMotion ? 320 : 0, (): void => {
-      if (generation === this.turnGeneration && !this.closing) { this.hear(generation, overAnswer); }
+    // The answer has just been read to the end: its echo-cancelled microphone is still live — the recognizer takes it
+    // over at once (from a moment before, nothing of the answer itself), so words said right away are not lost.
+    let adopt: boolean = overAnswer;
+    if (afterAnswer && !overAnswer && AiVoiceInput.monitorLive()) { adopt = AiVoiceInput.claimMonitor(300); }
+    // Otherwise, right after the answer was read, give the speaker a moment to let go of the audio before the
+    // microphone opens. (Talking over the answer, the microphone is already live: what was said so far goes first.)
+    this.later(afterSpeech && !adopt && !this.reducedMotion ? 320 : 0, (): void => {
+      if (generation === this.turnGeneration && !this.closing) { this.hear(generation, adopt, overAnswer); }
     });
   }
 
   /** One recognition session for this turn. */
-  private hear(generation: number, overAnswer: boolean = false): void {
+  private hear(generation: number, adopt: boolean = false, speaking: boolean = false): void {
     const startedAt: number = Date.now();
-    hilog.info(0x0000, 'AiChat', 'voice hear over=%{public}s phase=%{public}s', String(overAnswer), this.phase);
+    hilog.info(0x0000, 'AiChat', 'voice hear adopt=%{public}s over=%{public}s phase=%{public}s', String(adopt),
+      String(speaking), this.phase);
     void AiVoiceInput.start(this.context(), (text: string, _final: boolean): void => {
       if (generation === this.turnGeneration) { this.transcript = text; this.typeIn(); }
     }, (problem: string): void => {
@@ -488,7 +542,7 @@ export struct AiVoiceIsland {
     }, (level: number): void => {
       // Room noise sits under ~0.28: below it the light stays a thin line; speech swells it.
       if (generation === this.turnGeneration) { this.targetLevel = Math.max(0, (level - 0.28) / 0.72); }
-    }, overAnswer, this.owner);
+    }, adopt, this.owner, speaking);
   }
 
   /** Catch the shown characters up with what was heard, one at a time; the rest glide aside to make room. */
@@ -517,7 +571,6 @@ export struct AiVoiceIsland {
     this.answer = '';
     this.answerBlocks = [];
     this.suggestions = [];
-    this.panelListening = false;
     this.note = problem;
     this.actions = [];
     this.documents = [];
@@ -537,8 +590,9 @@ export struct AiVoiceIsland {
     hilog.info(0x0000, 'AiChat', 'voice heard chars=%{public}s', question.length.toString());
     // A card waiting for an answer first ("不用了" cancels it there, rather than ending voice mode).
     const waiting: AiChatAction | undefined = this.pendingAction();
-    if (waiting !== undefined && YES.test(question)) { await this.confirm(waiting, generation); return; }
-    if (waiting !== undefined && NO.test(question)) {
+    const reply: string = waiting !== undefined ? aiPendingCardReply(question, waiting.title) : '';
+    if (waiting !== undefined && (YES.test(question) || reply === 'confirm')) { await this.confirm(waiting, generation); return; }
+    if (waiting !== undefined && (NO.test(question) || reply === 'cancel')) {
       this.cancelAction(waiting);
       await this.say('好的，已取消。', generation);
       this.next(generation);
@@ -563,7 +617,6 @@ export struct AiVoiceIsland {
       await this.askAssistant(question, mode, generation);
       return;
     }
-    this.panelListening = false;
     this.startStatus(aiThinkingPhrases(question, []));
     this.setStatusBarHidden(true);
     this.go('think');
@@ -648,7 +701,6 @@ export struct AiVoiceIsland {
    * proposals as cards to confirm (or "好的"), the screens it points to as cards that open them.
    */
   private async askAssistant(question: string, mode: DiagnosticAiAgentMode, generation: number): Promise<void> {
-    this.panelListening = false;
     this.startStatus(mode === 'configure' ? ['正在查看可以调整的设置', '正在准备设置建议'] : ['正在查找使用说明', '正在整理回答']);
     this.setStatusBarHidden(true);
     this.go('think');
@@ -739,6 +791,15 @@ export struct AiVoiceIsland {
    */
   private async applyMode(mode: string, generation: number, words: string): Promise<void> {
     hilog.info(0x0000, 'AiChat', 'voice mode command %{public}s', mode);
+    // 新对话: the conversation so far stays in 对话记录; the next question starts a new one. Voice mode carries on.
+    if (mode === 'new') {
+      AiChatMemory.clear(this.owner);
+      AiChatMemory.active = true;
+      aiChatRefresh();
+      await this.say(words !== '' ? words : '好的，我们重新开始。', generation);
+      this.next(generation);
+      return;
+    }
     if (mode === 'voice') {
       await this.say(words !== '' ? words : '我在听，请说。', generation);
       this.next(generation);
@@ -758,6 +819,8 @@ export struct AiVoiceIsland {
     this.stopStatus();
     this.answer = text;
     this.answerBlocks = aiMarkdownBlocks(text);
+    // The card grows from its header as the blocks come in — not first to the last answer's height and back.
+    if (!this.cardPhase()) { this.cardContent = 0; }
     this.note = '';
     this.setStatusBarHidden(true);
     this.startReveal();
@@ -767,9 +830,12 @@ export struct AiVoiceIsland {
     const note: string = await AiReadAloud.speak(this.context(), this.owner, 'voice-' + generation.toString(), text,
       (_id: string): void => {}, true, (level: number): void => { this.outLevel = level; });
     this.outLevel = 0;
-    // Read to the end (no barge-in): the microphone that waited for one is not needed any more — unless the user is
-    // talking into it.
-    if (generation === this.turnGeneration && !AiVoiceInput.monitorClaimed()) { void AiVoiceInput.stopMonitor(); }
+    // Read to the end (no barge-in). Listening again next, the echo-cancelled microphone — live all along — carries
+    // straight on into the next turn (opening another only after this one was let go left a second in which the
+    // first words were lost); otherwise it is let go.
+    if (generation === this.turnGeneration && !AiVoiceInput.monitorClaimed() && !this.listensNext()) {
+      void AiVoiceInput.stopMonitor();
+    }
     if (note !== '' && generation === this.turnGeneration) { this.note = note; }
   }
 
@@ -794,7 +860,8 @@ export struct AiVoiceIsland {
       if (now - startedAt < 400) { return; }
       if (level >= AI_BARGE_LEVEL) {
         if (loudSince === 0) { loudSince = now; }
-        else if (now - loudSince >= AI_BARGE_MS) { this.bargeIn(); }
+        // From a moment before the voice rose: the user's first syllables, not the answer's echo before them.
+        else if (now - loudSince >= AI_BARGE_MS) { this.bargeIn(now - loudSince + 350); }
       } else {
         loudSince = 0;
       }
@@ -802,19 +869,23 @@ export struct AiVoiceIsland {
   }
 
   /** The user talked over the answer: the voice stops and recognition takes over the microphone already listening. */
-  private bargeIn(): void {
+  private bargeIn(leadMs: number): void {
     hilog.info(0x0000, 'AiChat', 'voice interrupted by speech');
     // First, before the voice stops: the microphone keeps everything from here on for the recognizer.
-    const claimed: boolean = AiVoiceInput.claimMonitor();
+    const claimed: boolean = AiVoiceInput.claimMonitor(leadMs);
     this.listen(claimed);
   }
 
   /** After an answer (unless the user already talked over it): listen again (hands-free), or wait as the card. */
   private next(generation: number): void {
     if (this.closing || generation !== this.turnGeneration) { return; }
-    const waiting: boolean = this.pendingAction() !== undefined;
-    if (this.mode === 'hands' && (this.config.continuous || waiting)) { this.listen(); return; }
+    if (this.listensNext()) { this.listen(false, true); return; }
     this.go('answer');
+  }
+
+  /** After an answer: hands-free it listens again (连续对话, or a card waiting for a yes); held, it waits. */
+  private listensNext(): boolean {
+    return !this.closing && this.mode === 'hands' && (this.config.continuous || this.pendingAction() !== undefined);
   }
 
   /** Rotates through the thinking lines, as text mode does; a tool's own status wins for a while. */
@@ -951,7 +1022,10 @@ export struct AiVoiceIsland {
   private setStatusBarHidden(hidden: boolean): void {
     if (this.keepSystemBars || this.deviceClass !== 'phone') { return; }
     // A session page came over the host list (voice connected a host): its bars are the session's.
-    if (this.sessionPageOnTop()) { this.statusBarHidden = false; return; }
+    // The flag EntryAbility reads (a 0 status bar inset while the AI hides the bar is not the real inset): always the
+    // latest request, so it can never stay set after the AI is gone.
+    if (this.sessionPageOnTop()) { this.statusBarHidden = false; AppStorage.setOrCreate('ai.statusBarHidden', false); return; }
+    AppStorage.setOrCreate('ai.statusBarHidden', hidden);
     if (hidden === this.statusBarHidden) { return; }
     this.statusBarHidden = hidden;
     const context = this.getUIContext().getHostContext();
@@ -978,13 +1052,12 @@ export struct AiVoiceIsland {
     // card, droplet or thinking capsule — gathers into the island's capsule over the camera; the capsule then sinks
     // into the island. Each step starts while the one before is settling, so it reads as one movement.
     const fromCard: boolean = this.cardPhase();
-    if (fromCard || this.contentIn) { this.fadeContent(false, 140, 0); }
-    this.later(this.reducedMotion ? 0 : (fromCard ? 80 : 0), (): void => {
-      const gather = (): void => { this.panelListening = false; this.transcript = ''; this.phase = 'capsule'; };
-      if (this.reducedMotion) { gather(); } else {
-        this.getUIContext().animateTo({ curve: curves.springMotion(0.42, 0.86) }, gather);
-      }
-    });
+    if (fromCard || this.contentIn) { this.fadeContent(false, 120, 0); }
+    // The surface gathers as the content fades (not after it: an empty card on its own flashed dark).
+    const gather = (): void => { this.panelListening = false; this.transcript = ''; this.phase = 'capsule'; };
+    if (this.reducedMotion) { gather(); } else {
+      this.getUIContext().animateTo({ curve: curves.springMotion(0.42, 0.86) }, gather);
+    }
     this.later(this.reducedMotion ? 0 : 520, (): void => {
       this.getUIContext().animateTo({ duration: this.reducedMotion ? 0 : 220, curve: Curve.EaseIn }, (): void => {
         this.leaving = true;
@@ -1133,12 +1206,12 @@ export struct AiVoiceIsland {
           .textOverflow({ overflow: TextOverflow.Ellipsis })
         Text(action.status === 'done' ? '✓ ' + action.result : action.status === 'failed' ? action.result :
           action.status === 'cancelled' ? '已取消' : action.status === 'running' ? '正在执行…' : '说“好的”或点确认')
-          .fontSize(12).fontColor(action.status === 'done' ? '#34C759' : '#AEAEB2').maxLines(1)
+          .fontSize(12).fontColor(action.status === 'done' ? '#34C759' : aiInk(this.aiStyle, 'text3')).maxLines(1)
           .textOverflow({ overflow: TextOverflow.Ellipsis })
       }.layoutWeight(1).alignItems(HorizontalAlign.Start)
       if (action.status === 'pending') {
         Text('取消').fontSize(13).fontColor('#FFFFFF').height(32).padding({ left: 14, right: 14 }).borderRadius(16)
-          .backgroundColor('#3A3A3C').onClick((): void => { this.tapCancel(action); })
+          .backgroundColor(aiInk(this.aiStyle, 'surfaceRaised')).onClick((): void => { this.tapCancel(action); })
         Text('确认').fontSize(13).fontWeight(FontWeight.Medium).fontColor('#000000').height(32)
           .padding({ left: 14, right: 14 }).borderRadius(16).backgroundColor('#FFFFFF')
           .onClick((): void => { this.tapConfirm(action); })
@@ -1163,7 +1236,7 @@ export struct AiVoiceIsland {
       this.spans(block.spans, block.kind === 'h1' ? 20 : 18, FontWeight.Bold)
     } else if (block.kind === 'bullet' || block.kind === 'number') {
       Row({ space: 8 }) {
-        Text(block.kind === 'number' ? block.marker : '•').fontSize(16).lineHeight(24).fontColor('#AEAEB2')
+        Text(block.kind === 'number' ? block.marker : '•').fontSize(16).lineHeight(24).fontColor(aiInk(this.aiStyle, 'text3'))
           .width(block.kind === 'number' ? 22 : 10)
         Column() { this.spans(block.spans, 16, FontWeight.Normal) }.layoutWeight(1)
       }.width('100%').alignItems(VerticalAlign.Top).padding({ left: block.level * 14 })
@@ -1175,12 +1248,12 @@ export struct AiVoiceIsland {
     } else if (block.kind === 'table') {
       Column({ space: 4 }) {
         ForEach(block.rows, (row: string[], r: number): void => {
-          Text(row.join('  ·  ')).fontSize(14).lineHeight(21).fontColor(r === 0 ? '#AEAEB2' : '#FFFFFF')
+          Text(row.join('  ·  ')).fontSize(14).lineHeight(21).fontColor(r === 0 ? aiInk(this.aiStyle, 'text3') : '#FFFFFF')
             .fontWeight(r === 0 ? FontWeight.Medium : FontWeight.Normal).width('100%')
         }, (row: string[], r: number): string => r.toString() + row.join('|').slice(0, 16))
       }.width('100%').padding(10).borderRadius(14).backgroundColor('#1FFFFFFF')
     } else if (block.kind === 'code') {
-      Text(block.text).fontSize(13).lineHeight(19).fontFamily('monospace').fontColor('#E5E5EA').width('100%')
+      Text(block.text).fontSize(13).lineHeight(19).fontFamily('monospace').fontColor(aiInk(this.aiStyle, 'textSoft')).width('100%')
         .padding(10).borderRadius(12).backgroundColor('#1FFFFFFF')
     } else if (block.kind !== 'rule') {
       this.spans(block.spans, 17, FontWeight.Normal)
@@ -1192,9 +1265,9 @@ export struct AiVoiceIsland {
     Column({ space: 6 }) {
       Flex({ wrap: FlexWrap.Wrap, justifyContent: FlexAlign.Center }) {
         if (this.paused) {
-          Text('点一下继续说').fontSize(15).lineHeight(24).fontColor('#8E8E93').transition(TransitionEffect.OPACITY)
+          Text('点一下继续说').fontSize(15).lineHeight(24).fontColor(aiInk(this.aiStyle, 'text2')).transition(TransitionEffect.OPACITY)
         } else if (this.transcript === '') {
-          Text('请说…').fontSize(15).lineHeight(24).fontColor('#8E8E93').transition(TransitionEffect.OPACITY)
+          Text('请说…').fontSize(15).lineHeight(24).fontColor(aiInk(this.aiStyle, 'text2')).transition(TransitionEffect.OPACITY)
         } else {
           ForEach(this.transcriptChars(), (ch: string): void => {
             Text(ch).fontSize(17).lineHeight(24).fontWeight(FontWeight.Medium).fontColor('#FFFFFF')
@@ -1205,8 +1278,13 @@ export struct AiVoiceIsland {
           }, (_ch: string, index: number): string => 'p' + index.toString())
         }
       }.width('100%').padding({ left: 20, right: 20 })
-      AiSiriBand({ level: this.paused ? 0 : this.level, vivid: true }).width('100%').height(30)
-        .opacity(this.paused ? 0.35 : 1)
+      if (this.xiaoyi()) {
+        AiXiaoyiRing({ ringSize: 44, mode: 'listen', live: true, ripples: false })
+          .opacity(this.paused ? 0.45 : 1)
+      } else {
+        AiSiriBand({ level: this.paused ? 0 : this.level, vivid: true }).width('100%').height(30)
+          .opacity(this.paused ? 0.35 : 1)
+      }
     }
     .width('100%').height(this.listenEdgeHeight()).justifyContent(FlexAlign.End).padding({ bottom: 6 })
     .transition(TransitionEffect.OPACITY.combine(TransitionEffect.translate({ y: 12 })))
@@ -1219,17 +1297,20 @@ export struct AiVoiceIsland {
       // Header (in the black): the speaking light at the left, back to the chat at the right — the camera between.
       Row() {
         Stack() {
-          if (this.phase === 'speak') {
+          if (this.phase === 'speak' && this.xiaoyi()) {
+            AiXiaoyiRing({ ringSize: 40, mode: 'speak', live: true, ripples: false })
+              .transition(TransitionEffect.OPACITY)
+          } else if (this.phase === 'speak') {
             AiSiriBand({ level: this.level, vivid: true }).width(60).height(26)
               .transition(TransitionEffect.OPACITY)
           } else {
             SymbolGlyph($r(this.phase === 'error' ? 'sys.symbol.exclamationmark_circle' : 'sys.symbol.waveform_1'))
-              .fontSize(18).fontColor(['#AEAEB2'])
+              .fontSize(18).fontColor([aiInk(this.aiStyle, 'text3')])
               .transition(TransitionEffect.OPACITY)
           }
         }.width(64).height(this.pillHeight).alignContent(Alignment.Start)
         Blank()
-        SymbolGlyph($r('sys.symbol.xmark')).fontSize(16).fontColor(['#AEAEB2']).padding(8)
+        SymbolGlyph($r('sys.symbol.xmark')).fontSize(16).fontColor([aiInk(this.aiStyle, 'text3')]).padding(8)
           .accessibilityText('回到聊天').onClick((): void => { this.openChat(); })
       }.width('100%').height(this.headerHeight()).padding({ left: 16, right: 10, top: 6 })
       Scroll() {
@@ -1239,7 +1320,7 @@ export struct AiVoiceIsland {
               .transition(TransitionEffect.OPACITY.combine(TransitionEffect.translate({ y: 10 })))
           }, (b: AiMdBlock, index: number): string => this.answerMessageId + '-' + index.toString() + b.kind)
           if (this.note !== '') {
-            Text(this.note).fontSize(13).lineHeight(19).fontColor(this.phase === 'error' ? '#FF9F0A' : '#AEAEB2').width('100%')
+            Text(this.note).fontSize(13).lineHeight(19).fontColor(this.phase === 'error' ? '#FF9F0A' : aiInk(this.aiStyle, 'text3')).width('100%')
               .transition(TransitionEffect.OPACITY)
           }
           if (this.shownBlocks >= this.answerBlocks.length) {
@@ -1259,7 +1340,7 @@ export struct AiVoiceIsland {
               Flex({ wrap: FlexWrap.Wrap }) {
                 ForEach(this.suggestions, (pill: string): void => {
                   Row({ space: 6 }) {
-                    SymbolGlyph($r('sys.symbol.wand_and_stars')).fontSize(12).fontColor(['#C7C7CC'])
+                    SymbolGlyph($r('sys.symbol.wand_and_stars')).fontSize(12).fontColor([aiInk(this.aiStyle, 'icon')])
                     Text(pill).fontSize(13).fontColor('#FFFFFF').maxLines(1)
                   }.height(32).padding({ left: 12, right: 12 }).margin({ right: 8, bottom: 8 }).borderRadius(16)
                   .backgroundColor('#26FFFFFF').onClick((): void => { this.askPill(pill); })
@@ -1283,8 +1364,8 @@ export struct AiVoiceIsland {
       }
     }
     .width(this.cardWidth()).height('100%')
+    // Opacity and a small rise only: blurring the whole card in and out cost frames just as it grows.
     .opacity(this.contentIn ? 1 : 0)
-    .blur(this.contentIn ? 0 : 10)
     .translate({ y: this.contentIn ? 0 : -8 })
   }
 
@@ -1298,30 +1379,49 @@ export struct AiVoiceIsland {
       // The island's black: the droplet and the capsules are solid black throughout, so going from one to the other
       // never passes through a see-through grey.
       Column().width('100%').height('100%').backgroundColor('#FF000000')
-        .opacity(this.cardPhase() ? 0 : 1)
+        .opacity(this.cardPhase() || this.xyGlass() ? 0 : 1)
       // Card: liquid glass below…
       Column().width('100%').height('100%')
         .backdropBlur(28)
         .backgroundColor(this.dark() ? '#B3141416' : '#A6141416')
-        .opacity(this.cardPhase() ? 1 : 0)
+        .opacity(this.cardPhase() && !this.xiaoyi() ? 1 : 0)
       // …and black at the top, where the camera hides.
       Column().width('100%').height('100%')
         .linearGradient({ angle: 180, colors: [['#FF000000', 0],
           ['#FF000000', Math.min(0.6, this.headerHeight() / Math.max(1, this.surfaceHeight()))],
           ['#00000000', Math.min(0.95, (this.headerHeight() + 46) / Math.max(1, this.surfaceHeight()))]] })
-        .opacity(this.cardPhase() ? 1 : 0)
+        .opacity(this.cardPhase() && !this.xiaoyi() ? 1 : 0)
+      // 小艺: one blue → lavender glass for the droplet, the thinking capsule and the card.
+      if (this.xiaoyi()) {
+        AiXiaoyiGlass({ glassWidth: this.surfaceWidth(), glassHeight: this.surfaceHeight(), radius: this.surfaceRadius(),
+          capHeight: this.xyCap(), capWidth: this.pillWidth })
+          .opacity(this.xyGlass() ? 1 : 0)
+      }
       // Droplet: a lens — light gathered low inside the glass.
       Column().width('100%').height('100%')
         .radialGradient({ center: ['50%', '100%'], radius: this.surfaceWidth() * 0.62,
           colors: [['#2EFFFFFF', 0], ['#0DFFFFFF', 0.45], ['#00FFFFFF', 1]] })
-        .opacity(this.listening() ? 1 : 0)
+        .opacity(this.listening() && !this.xiaoyi() ? 1 : 0)
       // The light, swelling with the voice; it gathers into the middle as the droplet leaves.
-      if (this.listening()) {
+      if (this.listening() && this.xiaoyi()) {
+        // 小艺: the ring listening, its ripples moving with the voice, below the camera.
+        Stack() {
+          // A canvas as wide as the droplet: the ring fills the space under the camera and its ripples run out to
+          // the droplet's own edge (which clips them, like water in a glass).
+          AiXiaoyiRing({ ringSize: Math.max(60, this.dropletW()), mode: 'listen', live: true,
+            radius: Math.max(18, (this.dropletH() - this.xyCap()) * 0.32) })
+        }
+        .width(this.dropletW()).height(Math.max(1, this.dropletH() - this.xyCap()))
+        .position({ x: (this.surfaceWidth() - this.dropletW()) / 2, y: this.xyCap() })
+        .opacity(this.paused ? 0.45 : 1)
+        .transition(TransitionEffect.OPACITY.combine(TransitionEffect.scale({ x: 0.55, y: 0.55 })))
+      } else if (this.listening()) {
         Column() {
           AiSiriBand({ level: this.level, vivid: this.dark() }).width('100%').height('100%')
-        }.width('100%').height('100%')
+        }.width(this.dropletW()).height(this.dropletH())
+        .position({ x: (this.surfaceWidth() - this.dropletW()) / 2, y: 0 })
         .opacity(this.paused ? 0.35 : 1)
-        .padding({ left: 8, right: 8, top: this.surfaceHeight() * 0.1, bottom: this.surfaceHeight() * 0.16 })
+        .padding({ left: 8, right: 8, top: this.dropletH() * 0.1, bottom: this.dropletH() * 0.16 })
         .transition(TransitionEffect.OPACITY.combine(TransitionEffect.scale({ x: 0.55, y: 0.25 })))
       }
       // Thinking, as in text mode: the ring (it opens from a dot) and the line beside it.
@@ -1334,9 +1434,12 @@ export struct AiVoiceIsland {
             .transition(TransitionEffect.OPACITY)
             .id('aiVoiceStatus')
         }
-        .width(this.cardWidth()).height(this.surfaceHeight())
+        .width(this.cardWidth()).height(this.statusHeight())
         .padding({ left: 28 * this.k(), right: 20 * this.k() })
-        .transition(TransitionEffect.OPACITY.animation({ duration: 220, delay: 120 }))
+        // In once the capsule has formed; out at once as the card grows (it must not linger over the answer).
+        .transition(TransitionEffect.asymmetric(
+          TransitionEffect.OPACITY.animation({ duration: 220, delay: 120 }),
+          TransitionEffect.OPACITY.animation({ duration: 110, curve: Curve.EaseIn })))
       }
       if (this.cardPhase() || this.contentIn) {
         this.cardBody()
@@ -1368,7 +1471,10 @@ export struct AiVoiceIsland {
     .width(this.surfaceWidth()).height(this.surfaceHeight())
     .borderRadius(this.surfaceRadius()).clip(true)
     .scale({ x: this.listening() ? 1 - 0.02 * this.level : 1, y: this.listening() ? 1 + 0.045 * this.level : 1, centerY: 0 })
-    .shadow({ radius: 26, color: this.cardPhase() ? '#59000000' : '#00000000', offsetY: 10 })
+    // Siri's card casts a dark shadow. 小艺's glass a faint lavender one, the same in every shape: a black shadow
+    // fading out while the card gathered into the thinking capsule showed as a black shape a size larger, under it.
+    .shadow(this.xiaoyi() ? { radius: 24, color: this.xyGlass() ? '#262B3A86' : '#00000000', offsetY: 8 } :
+      { radius: 26, color: this.cardPhase() ? '#59000000' : '#00000000', offsetY: 10 })
     .onClick((): void => { if (this.listening()) { this.tapDroplet(); } })
   }
 
@@ -1394,11 +1500,23 @@ export struct AiVoiceIsland {
         }, (_ch: string, index: number): string => 'c' + index.toString())
       }
     }
-    .width(this.areaWidth - 48)
+    .width(aiTranscriptWidth(this.device(), this.areaWidth, this.areaHeight))
+  }
+
+  /** 小艺: a faint wash over the whole window (fainter while only the droplet listens); none inside a session. */
+  private washLevel(): number {
+    if (!this.xiaoyi() || this.aiWash === 'off' || this.keepSystemBars || !this.shown || this.leaving) { return 0; }
+    if (this.listening()) { return 0.6; }
+    return this.phase === 'think' || this.cardPhase() ? 1 : 0;
   }
 
   build() {
     Stack({ alignContent: Alignment.TopStart }) {
+      Column().width('100%').height('100%')
+        .linearGradient({ angle: 160, colors: [[aiXiaoyiWash(this.dark())[0], 0], [aiXiaoyiWash(this.dark())[1], 1]] })
+        .opacity(this.washLevel())
+        .animation({ duration: 320, curve: Curve.EaseOut })
+        .hitTestBehavior(HitTestMode.None)
       // A tap outside leaves voice mode for the chat (a held press simply ends).
       Column().width('100%').height('100%').backgroundColor(Color.Transparent)
         .onClick((): void => { if (this.mode === 'hold') { this.close(); } else { this.openChat(); } })
@@ -1410,7 +1528,8 @@ export struct AiVoiceIsland {
           .onActionEnd((event: GestureEvent): void => { if (event.offsetY < -40) { this.close(); } }))
       if (this.listening() && (this.transcript !== '' || this.paused)) {
         Stack() { this.transcriptView() }
-          .position({ x: 24, y: this.surfaceTop() + this.surfaceHeight() + 14 })
+          .position({ x: (this.areaWidth - aiTranscriptWidth(this.device(), this.areaWidth, this.areaHeight)) / 2,
+            y: this.surfaceTop() + this.surfaceHeight() + 14 })
           .transition(TransitionEffect.OPACITY.animation({ duration: 200 }))
           .hitTestBehavior(HitTestMode.None)
       }
@@ -1420,7 +1539,9 @@ export struct AiVoiceIsland {
       const w: number = Number(area.width);
       const h: number = Number(area.height);
       if (w > 0 && h > 0 && (Math.abs(w - this.areaWidth) > 1 || Math.abs(h - this.areaHeight) > 1)) {
+        const turned: boolean = (this.areaWidth > this.areaHeight) !== (w > h);
         this.areaWidth = w; this.areaHeight = h;
+        if (turned) { this.placeOnCutout(); }
       }
     })
   }

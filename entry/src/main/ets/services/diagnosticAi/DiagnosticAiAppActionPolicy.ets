@@ -162,6 +162,12 @@ export function diagnosticAiAppActionLabel(id: DiagnosticAiAppActionId): string 
   return rule !== undefined ? rule.label : '执行操作';
 }
 
+/** What a page is called after "打开" (打开 AI 配置 → AI 配置), so a card reads 打开「AI 配置」, not 打开「打开 AI 配置」. */
+export function diagnosticAiAppActionTarget(id: DiagnosticAiAppActionId): string {
+  const label: string = diagnosticAiAppActionLabel(id);
+  return label.startsWith('打开') ? label.slice(2).trim() : label;
+}
+
 export function diagnosticAiAppActionMode(id: DiagnosticAiAppActionId): DiagnosticAiAppActionMode {
   const rule: ActionRule | undefined = RULES.find((r: ActionRule): boolean => r.id === id);
   return rule === undefined ? 'inline' : rule.mode;

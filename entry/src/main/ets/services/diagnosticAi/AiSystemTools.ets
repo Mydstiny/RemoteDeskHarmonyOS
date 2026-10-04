@@ -14,7 +14,7 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 import { AiDocument, aiDeleteDocument, aiRecognizeImageFile } from './AiDocumentService';
 import { DiagnosticAiConversationStore } from './DiagnosticAiConversationStore';
 import { AI_DEVELOPER_EMAIL, AiMailDraft, aiOpenMailEditor } from './AiMailService';
-import { diagnosticAiAppActionId, diagnosticAiAppActionLabel } from './DiagnosticAiAppActionPolicy';
+import { diagnosticAiAppActionId, diagnosticAiAppActionTarget } from './DiagnosticAiAppActionPolicy';
 import { AI_APP_ACTION_REQUEST } from './AiBridgeKeys';
 import { DiagnosticAiHostBridge } from './DiagnosticAiTriagePolicy';
 import { diagnosticAiApplySetting, diagnosticAiSettingActionText, diagnosticAiSettingCurrent, diagnosticAiSettingValueLabel } from './DiagnosticAiSettingsActionPolicy';
@@ -573,7 +573,7 @@ export async function aiRunAction(context: common.UIAbilityContext, action: AiCh
     const id = diagnosticAiAppActionId(screen);
     if (id === null) { throw new Error('没有这个页面'); }
     AppStorage.setOrCreate(AI_APP_ACTION_REQUEST, id + '@' + Date.now().toString());
-    return '已打开「' + diagnosticAiAppActionLabel(id) + '」';
+    return '已打开「' + diagnosticAiAppActionTarget(id) + '」';
   }
   if (action.tool === 'send_email') { return await sendEmail(context, input); }
   if (action.tool === 'navigate') { return await navigate(context, input); }

@@ -1,6 +1,7 @@
 import { displaySync } from '@kit.ArkGraphics2D';
 import { curves, uiMaterial } from '@kit.ArkUI';
 import { deviceInfo } from '@kit.BasicServicesKit';
+import { AI_STYLE, AiGlassColors, aiInk, aiStyleIsXiaoyi, aiXiaoyiGlass } from '../../services/diagnosticAi/AiStylePolicy';
 
 /**
  * The AI island's glass and light, after the iOS 27 Siri island: one dark liquid-glass shape whose size the island
@@ -19,11 +20,40 @@ export struct AiIslandGlass {
   @Prop glassWidth: number = 226;
   @Prop glassHeight: number = 58;
   @Prop radius: number = 29;
+  /** Height over a camera cutout the glass encloses (its top stays dark there in the 小艺 style). */
+  @Prop capHeight: number = 0;
+  /** The width of the island's pill around that camera (the 小艺 glass shades just that much). */
+  @Prop capWidth: number = 0;
+  @StorageProp(AI_STYLE) aiStyle: string = 'siri';
+  @StorageProp('currentTheme') theme: string = 'light';
 
   private tall(): boolean { return this.glassHeight > 90; }
   private dense(): boolean { return this.glassHeight > 320; }
 
   build() {
+    // One shape through every stage: its size and corners follow the island's spring. In the 小艺 style the material
+    // cross-fades from the black capsule to the blue glass as it grows (and back as it shrinks or becomes the orb),
+    // instead of one glass being swapped for another at its final size.
+    Stack({ alignContent: Alignment.Bottom }) {
+      if (aiStyleIsXiaoyi(this.aiStyle)) {
+        Column().width(this.glassWidth).height(this.glassHeight)
+          .linearGradient({ angle: 180, colors: [['#FF000000', 0], ['#FF000000', 0.7], ['#F0050508', 1]] })
+        if (this.tall()) {
+          AiXiaoyiGlass({ glassWidth: this.glassWidth, glassHeight: this.glassHeight, radius: this.radius,
+            capHeight: this.capHeight, capWidth: this.capWidth, framed: false })
+            .transition(TransitionEffect.OPACITY.animation({ duration: 260, curve: Curve.EaseInOut }))
+        }
+      } else {
+        this.siriGlass()
+      }
+    }
+    .width(this.glassWidth).height(this.glassHeight).borderRadius(this.radius).clip(true)
+    .shadow(aiStyleIsXiaoyi(this.aiStyle) && this.tall() ? { radius: 26, color: '#4D2B3A86', offsetY: 8 } :
+      { radius: 24, color: '#40000000', offsetY: 8 })
+    .hitTestBehavior(HitTestMode.None)
+  }
+
+  @Builder private siriGlass() {
     Stack({ alignContent: Alignment.Bottom }) {
       if (this.tall()) {
         // As Siri's: one piece of smoky glass over a strong blur of the page, darkest only where it grows out of the
@@ -57,8 +87,125 @@ export struct AiIslandGlass {
         .border({ width: { top: 0, left: 0.6, right: 0.6, bottom: 1.2 },
           color: { top: '#00FFFFFF', left: '#14FFFFFF', right: '#14FFFFFF', bottom: '#59FFFFFF' } })
     }
+    .width(this.glassWidth).height(this.glassHeight)
+  }
+}
+
+/**
+ * The 小艺 glass, after the HarmonyOS assistant's voice screen: a blue → lavender diagonal (deep navy → dark violet
+ * in dark mode) with a slow light drifting through it, a fine white rim, and — only where it encloses a camera
+ * cutout — a dark cap, so the camera disappears into it as in the Siri glass. The drift is transform-only (render
+ * thread) and stops when motion is reduced.
+ */
+@Component
+export struct AiXiaoyiGlass {
+  @Prop glassWidth: number = 226;
+  @Prop glassHeight: number = 58;
+  @Prop radius: number = 29;
+  @Prop capHeight: number = 0;
+  /** The width of the island's pill around the camera (0: a usual pill). */
+  @Prop capWidth: number = 0;
+  /** Its own shadow (false inside AiIslandGlass, whose shape carries it). */
+  @Prop framed: boolean = true;
+  @StorageProp('currentTheme') theme: string = 'light';
+  @StorageProp('diagnosticAiReducedMotion') reduced: boolean = false;
+  @State private driftX: number = 0;
+  @State private driftY: number = 0;
+
+  aboutToAppear(): void {
+    if (this.reduced) { return; }
+    // A slow drift: a low frame rate is plenty and keeps the render pipeline free.
+    setTimeout((): void => {
+      this.getUIContext().animateTo({ duration: 9000, iterations: -1, playMode: PlayMode.Alternate, curve: Curve.EaseInOut,
+        expectedFrameRateRange: { min: 10, max: 30, expected: 20 } }, (): void => { this.driftX = 1; });
+      this.getUIContext().animateTo({ duration: 7000, iterations: -1, playMode: PlayMode.Alternate, curve: Curve.EaseInOut,
+        expectedFrameRateRange: { min: 10, max: 30, expected: 20 } }, (): void => { this.driftY = 1; });
+    }, 32);
+  }
+
+  private colors(): AiGlassColors { return aiXiaoyiGlass(this.theme === 'dark'); }
+  private glowSize(): number { return Math.max(this.glassWidth, this.glassHeight) * 1.3; }
+
+  /**
+   * The island's glow (方案 B): centred on the camera, wider than half the panel and reaching down about two and a half
+   * caps (never past three quarters of a short shape) — black at the camera, through deep navy and indigo into the
+   * glass's own blue, the hue kept all the way so no grey band shows. A small near-black core keeps the camera hidden.
+   */
+  private pillWidth(): number { return this.capWidth > 0 ? this.capWidth : 110; }
+  private glowRx(): number { return Math.max(this.glassWidth * 0.55, this.pillWidth() / 2 + 100); }
+  private glowRy(): number { return Math.min(this.capHeight * 2.6, this.glassHeight * 0.75); }
+  private coreRx(): number { return this.pillWidth() / 2 + 18; }
+  private coreRy(): number { return this.capHeight * 0.85; }
+  private cameraY(): number { return this.capHeight * 0.48; }
+
+  /** '#AARRGGBB' between two 'RRGGBB' colours (`e` of the way), at `alpha`. */
+  private mixColor(from: string, to: string, e: number, alpha: number): string {
+    const channel = (at: number): string => {
+      const a: number = parseInt(from.slice(at, at + 2), 16);
+      const b: number = parseInt(to.slice(at, at + 2), 16);
+      const v: string = Math.round(a + (b - a) * e).toString(16).toUpperCase();
+      return v.length < 2 ? '0' + v : v;
+    };
+    const al: string = Math.round(Math.max(0, Math.min(1, alpha)) * 255).toString(16).toUpperCase();
+    return '#' + (al.length < 2 ? '0' + al : al) + channel(0) + channel(2) + channel(4);
+  }
+
+  /** The glow's colours, eased (smoothstep) between its anchors: no edge anywhere in it. */
+  private glowStops(): Array<[ResourceColor, number]> {
+    const dark: boolean = this.theme === 'dark';
+    const colors: string[] = dark ? ['020309', '05081C', '0B1238', '141D57', '1C2870', '1D2E70'] :
+      ['03040D', '080D2A', '121B52', '203184', '3150B4', '4E8CE6'];
+    const alphas: number[] = dark ? [1, 0.96, 0.8, 0.52, 0.24, 0] : [1, 0.95, 0.78, 0.5, 0.22, 0];
+    const at: number[] = [0, 0.22, 0.42, 0.62, 0.82, 1];
+    const stops: Array<[ResourceColor, number]> = [];
+    for (let k = 0; k <= 24; k++) {
+      const u: number = k / 24;
+      let i: number = 0;
+      while (i < at.length - 2 && u > at[i + 1]) { i++; }
+      const t: number = Math.max(0, Math.min(1, (u - at[i]) / (at[i + 1] - at[i])));
+      const e: number = t * t * (3 - 2 * t);
+      stops.push([this.mixColor(colors[i], colors[i + 1], e, alphas[i] + (alphas[i + 1] - alphas[i]) * e), u]);
+    }
+    return stops;
+  }
+
+  /** The core round the camera: near-black over its inner half, then eased out to nothing. */
+  private coreStops(): Array<[ResourceColor, number]> {
+    const stops: Array<[ResourceColor, number]> = [];
+    for (let i = 0; i <= 10; i++) {
+      const u: number = i / 10;
+      const f: number = u <= 0.55 ? 0 : (u - 0.55) / 0.45;
+      stops.push([this.mixColor('020309', '020309', 0, 1 - f * f * (3 - 2 * f)), u]);
+    }
+    return stops;
+  }
+
+  build() {
+    Stack({ alignContent: Alignment.TopStart }) {
+      Column().width(this.glassWidth).height(this.glassHeight)
+        .linearGradient({ angle: 135, colors: [[this.colors().from, 0], [this.colors().to, 1]] })
+      // The light drifting slowly through the glass.
+      Column().width(this.glowSize()).height(this.glowSize())
+        .radialGradient({ center: ['50%', '50%'], radius: this.glowSize() / 2,
+          colors: [[this.colors().glow, 0], ['#00000000', 1]] })
+        .position({ x: (this.glassWidth - this.glowSize()) / 2, y: (this.glassHeight - this.glowSize()) / 2 })
+        .translate({ x: (this.driftX - 0.5) * this.glassWidth * 0.7, y: (this.driftY - 0.5) * this.glassHeight * 0.6 })
+      if (this.capHeight > 0) {
+        // The island's glow over the camera, and its near-black core (glowStops / coreStops).
+        Column().width(this.glowRx() * 2).height(this.glowRx() * 2)
+          .radialGradient({ center: ['50%', '50%'], radius: this.glowRx(), colors: this.glowStops() })
+          .position({ x: this.glassWidth / 2 - this.glowRx(), y: this.cameraY() - this.glowRx() })
+          .scale({ x: 1, y: this.glowRy() / this.glowRx(), centerX: '50%', centerY: '50%' })
+        Column().width(this.coreRx() * 2).height(this.coreRx() * 2)
+          .radialGradient({ center: ['50%', '50%'], radius: this.coreRx(), colors: this.coreStops() })
+          .position({ x: this.glassWidth / 2 - this.coreRx(), y: this.cameraY() - this.coreRx() })
+          .scale({ x: 1, y: this.coreRy() / this.coreRx(), centerX: '50%', centerY: '50%' })
+      }
+      Column().width(this.glassWidth).height(this.glassHeight).borderRadius(this.radius)
+        .border({ width: 0.8, color: this.colors().rim })
+    }
     .width(this.glassWidth).height(this.glassHeight).borderRadius(this.radius).clip(true)
-    .shadow({ radius: 24, color: '#40000000', offsetY: 8 })
+    .shadow(this.framed ? { radius: 26, color: '#4D2B3A86', offsetY: 8 } : { radius: 0, color: Color.Transparent })
     .hitTestBehavior(HitTestMode.None)
   }
 }
@@ -269,6 +416,7 @@ export struct AiSendButton {
   @StorageProp('diagnosticAiReducedMotion') reducedMotion: boolean = false;
   /** AI 动效 › 发送按钮光晕: flow (turning), static, off. `glowStyle` overrides it for the settings preview. */
   @StorageProp('aiMotion.sendGlow') savedGlow: string = 'flow';
+  @StorageProp(AI_STYLE) aiStyle: string = 'siri';
   @Prop glowStyle: string = '';
   @Prop @Watch('onActiveChanged') active: boolean = false;
   @Prop buttonSize: number = 34;
@@ -276,9 +424,13 @@ export struct AiSendButton {
   @State private lit: number = 0;
   @State private breath: number = 0;
   @State private flow: number = 0;
+  /** The small bounce as it lights up. */
+  @State private pop: number = 1;
 
   aboutToAppear(): void {
-    this.lit = this.active ? 1 : 0;
+    // Appearing already active (the voice button gave way to it as typing began): it still lights up, from grey.
+    this.lit = this.active && this.reducedMotion ? 1 : 0;
+    if (this.active && !this.reducedMotion) { setTimeout((): void => { this.light(); }, 16); }
     const style: string = this.glow_();
     if (this.reducedMotion || style === 'static' || style === 'off') { return; }
     setTimeout((): void => {
@@ -294,7 +446,16 @@ export struct AiSendButton {
   }
 
   private onActiveChanged(): void {
-    this.getUIContext().animateTo({ curve: curves.springMotion(0.42, 0.82) }, (): void => { this.lit = this.active ? 1 : 0; });
+    if (this.reducedMotion) { this.lit = this.active ? 1 : 0; return; }
+    if (this.active) { this.light(); return; }
+    this.getUIContext().animateTo({ curve: curves.springMotion(0.38, 0.9) }, (): void => { this.lit = 0; this.pop = 1; });
+  }
+
+  /** Lights up: white fills the disc from its middle, the arrow turns black, and the button gives a small bounce. */
+  private light(): void {
+    if (!this.active) { return; }
+    this.pop = 0.84;
+    this.getUIContext().animateTo({ curve: curves.springMotion(0.34, 0.6) }, (): void => { this.lit = 1; this.pop = 1; });
   }
 
   private glow_(): string {
@@ -362,15 +523,25 @@ export struct AiSendButton {
             { x: 0.92 + this.lit * 0.04 + this.breath * 0.1, y: 0.92 + this.lit * 0.04 + this.breath * 0.1 } :
             { x: 0.9 + this.lit * 0.1, y: 0.9 + this.lit * 0.1 })
       }
-      Circle().width(this.buttonSize).height(this.buttonSize)
-        .fill(this.active ? '#FFFFFF' : '#3A3A3C')
-        .animation({ duration: 200, curve: Curve.EaseOut })
+      // The unlit disc, and the white one filling it from the middle as the button lights up.
+      Circle().width(this.buttonSize).height(this.buttonSize).fill(aiInk(this.aiStyle, 'surfaceRaised'))
+      Circle().width(this.buttonSize).height(this.buttonSize).fill('#FFFFFF')
+        .opacity(this.lit).scale({ x: 0.45 + 0.55 * this.lit, y: 0.45 + 0.55 * this.lit })
+      // The arrow turns from grey to black and lifts a little (two glyphs cross-fading: a glyph's colour itself
+      // cannot be animated).
       SymbolGlyph($r('sys.symbol.arrow_up')).fontSize(this.buttonSize * 0.48)
         .fontWeight(FontWeight.Bold)
-        .fontColor([this.active ? '#000000' : '#8E8E93'])
+        .fontColor([aiInk(this.aiStyle, 'text2')])
+        .opacity(1 - this.lit)
+      SymbolGlyph($r('sys.symbol.arrow_up')).fontSize(this.buttonSize * 0.48)
+        .fontWeight(FontWeight.Bold)
+        .fontColor(['#000000'])
+        .opacity(this.lit)
+        .translate({ y: (1 - this.lit) * 3 })
     }
     // The glow spills past the disc; the button keeps the disc's size in layout.
     .width(this.buttonSize).height(this.buttonSize)
+    .scale({ x: this.pop, y: this.pop })
     .accessibilityText('发送给 AI 助手')
     .onClick((): void => { if (this.active) { this.onTap(); } })
   }

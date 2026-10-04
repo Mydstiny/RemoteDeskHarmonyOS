@@ -10,6 +10,8 @@ import { AI_VOICE_ENABLED } from '../../services/diagnosticAi/AiVoiceSettings';
 import { AI_FLOAT_REQUEST, AI_HANDOVER_FADE_DELAY_MS, AI_HANDOVER_FADE_MS, AI_HANDOVER_RECT, AI_MODE_REQUEST } from '../../services/diagnosticAi/AiBridgeKeys';
 import { AI_ORB_HINT_TEXT, aiOrbHintWanted } from '../../services/diagnosticAi/AiOrbHintStore';
 import { aiIsSessionPage } from '../../services/diagnosticAi/AiSessionRouter';
+import { AI_STYLE, AI_STYLE_WASH, aiInk, aiStyleIsXiaoyi, aiXiaoyiWash } from '../../services/diagnosticAi/AiStylePolicy';
+import { aiPanelHeightShare, aiPanelRadius, aiPanelWidth, aiReclampOrb, aiSurfaceScale } from '../../services/diagnosticAi/AiSurfaceGeometry';
 import { AI_MOTION_DONE, AI_MOTION_OPEN, aiMotionStyle } from '../../services/diagnosticAi/DiagnosticAiMotionPolicy';
 
 export type DiagnosticAiDeviceClass = 'phone' | 'pad' | 'pc';
@@ -18,13 +20,10 @@ export type DiagnosticAiDeviceClass = 'phone' | 'pad' | 'pc';
  * Island geometry, from the reference GIF measured on a 375-wide logical canvas (source pixels ÷ 2) and scaled by the
  * window width on phones. These are estimates for reproduction, not platform constants.
  */
-const AI_REF_WIDTH: number = 375;
 const AI_COMPACT_WIDTH: number = 226;   // F000 capsule ≈ 453 × 116 source px
 const AI_COMPACT_HEIGHT: number = 58;
 const AI_STATUS_HEIGHT: number = 97.5;  // F014 wide capsule ≈ 706 × 195 source px
 const AI_TOP: number = 12.5;            // capsule and panels share this top anchor
-const AI_SIDE: number = 12.5;           // F020 panel ≈ 700 wide on 750
-const AI_PANEL_RADIUS: number = 46;     // F020 corners ≈ 100…115 source px
 const AI_RING_COMPACT: number = 34;     // six-core ring, orbit radius ≈ 12.4
 const AI_RING_STATUS: number = 42;      // grows with the wide capsule
 const AI_PHONE_ISLAND_WIDTH: number = 296; // phone capsule: room for a system island with a live activity
@@ -51,6 +50,9 @@ const AI_LIFT_ORDER: number = 99992;
 @Component
 export struct AiIsland {
   @StorageProp('diagnosticAiReducedMotion') reducedMotion: boolean = false;
+  @StorageProp(AI_STYLE) aiStyle: string = 'siri';
+  @StorageProp(AI_STYLE_WASH) aiWash: string = 'on';
+  @StorageProp('currentTheme') theme: string = 'light';
   /** Another surface (voice mode) is taking over: fold away as a close would. */
   @StorageProp('aiIsland.closeRequest') @Watch('onCloseRequest') closeRequest: number = 0;
   /** The chat asked for an app screen ('<id>@<time>'): open it as the assistant's own steps do. */
@@ -194,12 +196,23 @@ export struct AiIsland {
         return;
       }
       if (action === null && this.startFloat) {
-        // From voice: no panel to show — straight into the orb, above whatever is on screen.
+        // From voice: no panel to show — the orb appears at its spot at the edge, above whatever is on screen (no
+        // panel-sized empty glass shrinking into it first). The island waits hidden behind it, already as the orb.
         this.panelMounted = true;
         this.islandBlur = 0;
+        this.contentCompact = true;
+        this.compact = true;
+        this.lifted = true;
         this.stage = 3;
-        this.contentOpacity = 0;
-        this.later(30, (): void => { this.floatChat(); });
+        this.onFloatingChanged(true);
+        this.later(30, (): void => {
+          this.dragX = this.areaWidth / 2 - AI_FLOAT_ORB / 2 - 14;
+          this.dragY = this.areaHeight * 0.3;
+          this.liftUp('', 'none', AiChatMemory.active ? 'chat' : 'assistant', 'chat', false,
+            (this.areaWidth - AI_FLOAT_ORB) / 2 + this.dragX, this.topOffset() + this.dragY);
+          // Should the layer not open, the island's own orb shows instead.
+          this.later(400, (): void => { if (this.liftLayer === null) { this.lifted = false; } });
+        });
         return;
       }
       if (action === null) { this.open(); return; }
@@ -231,7 +244,10 @@ export struct AiIsland {
     // A session keeps its own system bars (most run full screen): the AI never shows or hides them there — neither
     // a session's own AI nor the host list's still floating over a session page.
     if (this.sessionMode || this.deviceClass !== 'phone') { return; }
-    if (this.sessionPageOnTop()) { this.statusBarHidden = false; return; }
+    // The flag EntryAbility reads (a 0 status bar inset while the AI hides the bar is not the real inset): always the
+    // latest request, so it can never stay set after the AI is gone.
+    if (this.sessionPageOnTop()) { this.statusBarHidden = false; AppStorage.setOrCreate('ai.statusBarHidden', false); return; }
+    AppStorage.setOrCreate('ai.statusBarHidden', hidden);
     if (hidden === this.statusBarHidden) { return; }
     this.statusBarHidden = hidden;
     const context = this.getUIContext().getHostContext();
@@ -255,7 +271,8 @@ export struct AiIsland {
   }
 
   /** Phones scale the reference by width; larger windows keep its phone proportions. */
-  private k(): number { return this.deviceClass === 'phone' ? Math.min(1.15, Math.max(0.85, this.areaWidth / AI_REF_WIDTH)) : 1; }
+  /** The phone's scale from its short side (so a session turned sideways keeps the upright sizes); 1 elsewhere. */
+  private k(): number { return aiSurfaceScale(this.deviceClass, this.areaWidth, this.areaHeight); }
 
   /**
    * On a phone with a camera cutout the surface encloses the Dynamic Island from the first frame, but its content
@@ -276,13 +293,21 @@ export struct AiIsland {
     return AI_TOP * this.k();
   }
 
+  private cutoutGeneration: number = 0;
+
   /** Find a top camera cutout so the open panel's top edge encloses it, as the Dynamic Island does. */
   private placeOnCutout(): void {
-    if (this.deviceClass !== 'phone') { return; }
+    // Read again after a rotation: sideways, the camera is at a side and the island hangs under the status bar.
+    // A newer read (after a rotation) wins over one still on its way.
+    const generation: number = ++this.cutoutGeneration;
+    this.anchorTop = -1;
+    this.islandTop = -1;
+    if (this.deviceClass !== 'phone' || this.areaWidth > this.areaHeight) { return; }
     try {
       const screen: display.Display = display.getDefaultDisplaySync();
       const ui = this.getUIContext();
       screen.getCutoutInfo().then((info: display.CutoutInfo): void => {
+        if (generation !== this.cutoutGeneration || this.areaWidth > this.areaHeight) { return; }
         const rects: display.Rect[] = info.boundingRects;
         for (let i: number = 0; i < rects.length; i++) {
           const top: number = ui.px2vp(rects[i].top);
@@ -796,15 +821,12 @@ export struct AiIsland {
     });
   }
 
-  private panelWidth(): number {
-    if (this.deviceClass === 'phone') { return this.areaWidth - AI_SIDE * 2 * this.k(); }
-    if (this.deviceClass === 'pad') { return Math.min(Math.max(this.areaWidth - 48, 460), 640); }
-    return Math.min(Math.max(this.areaWidth - 64, 520), 620);
-  }
+  /** Siri's margins on a phone held upright; centred and capped elsewhere, never wider than the window. */
+  private panelWidth(): number { return aiPanelWidth(this.deviceClass, this.areaWidth, this.areaHeight); }
 
   /** The open panel never runs into the keyboard: it ends a little above it, or at its usual share of the window. */
   private panelMaxHeight(): number {
-    const share: number = this.deviceClass === 'phone' ? 0.72 : this.deviceClass === 'pad' ? 0.76 : 0.82;
+    const share: number = aiPanelHeightShare(this.deviceClass, this.areaWidth, this.areaHeight);
     const aboveKeyboard: number = this.areaHeight - this.topOffset() - this.keyboardHeight - 14;
     return Math.max(160, Math.min(this.areaHeight * share, aboveKeyboard));
   }
@@ -837,7 +859,7 @@ export struct AiIsland {
   }
 
   private glassRadius(): number {
-    const panel: number = (this.deviceClass === 'phone' ? AI_PANEL_RADIUS : 38) * this.k();
+    const panel: number = aiPanelRadius(this.deviceClass, this.areaWidth, this.areaHeight);
     if (this.stage <= 1 || this.statusShape() || this.compact) { return Math.min(this.glassHeight() / 2, panel); }
     return panel;
   }
@@ -881,8 +903,13 @@ export struct AiIsland {
   /** Compact and status capsules: the thinking ring, then the status line beside it. */
   @Builder private capsuleContent() {
     Stack({ alignContent: Alignment.TopStart }) {
-      AiThinkingIndicator({ indicatorSize: this.ringSize() })
-        .position({ x: this.ringX(), y: this.ringY() })
+      // Only while a capsule can show it: under the open panel it is invisible, and a live ring there would still
+      // draw every frame.
+      if (this.stage < 3 || this.executing !== '' || !this.revealed) {
+        // Remounted as the panel folds back (or an action starts): it was there all along, so no opening from a dot.
+        AiThinkingIndicator({ indicatorSize: this.ringSize(), opensFromDot: !this.revealed })
+          .position({ x: this.ringX(), y: this.ringY() })
+      }
       Text(this.executing !== '' ? this.executing : this.working ? '正在处理诊断请求' : '正在准备 AI 助手')
         .fontSize(17).fontWeight(FontWeight.Medium).fontColor('#FFFFFF')
         .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
@@ -896,8 +923,22 @@ export struct AiIsland {
     .hitTestBehavior(HitTestMode.None)
   }
 
+  /** 小艺: the whole window takes a faint blue → lavender wash while the panel is open (any screen ratio). */
+  private washShown(): boolean {
+    return aiStyleIsXiaoyi(this.aiStyle) && this.aiWash !== 'off' && !this.sessionMode && this.stage >= 3 &&
+      !this.compact && !this.lifted && this.executing === '' && !this.handingOver && !this.closing &&
+      // Taking over from voice mode: the voice card's own wash is still fading; this one comes with the glass.
+      !this.handoverOpen && this.glassIn > 0;
+  }
+
   build() {
     Stack({ alignContent: Alignment.Top }) {
+      Column().width('100%').height('100%')
+        .linearGradient({ angle: 160, colors: [[aiXiaoyiWash(this.theme === 'dark')[0], 0],
+          [aiXiaoyiWash(this.theme === 'dark')[1], 1]] })
+        .opacity(this.washShown() ? 1 : 0)
+        .animation({ duration: 320, curve: Curve.EaseOut })
+        .hitTestBehavior(HitTestMode.None)
       // The page behind stays as it is; a tap outside folds the island away (or floats it while working).
       // As a floating capsule there is no catcher at all, so the app underneath takes every touch.
       if (!this.compact && this.executing === '' && !this.lifted && !this.sessionMode) {
@@ -911,7 +952,9 @@ export struct AiIsland {
           AiIslandGlass({
             glassWidth: this.glassWidth(),
             glassHeight: this.glassHeight(),
-            radius: this.glassRadius()
+            radius: this.glassRadius(),
+            capHeight: this.compact ? 0 : this.headroom(),
+            capWidth: this.islandPillWidth
           }).opacity(this.compact ? 0 : this.glassIn)
           this.capsuleContent()
           // The panel content, mounted early and kept hidden until the glass has grown to it.
@@ -973,7 +1016,7 @@ export struct AiIsland {
         Stack() {
           Text(AI_ORB_HINT_TEXT).fontSize(12).fontColor('#FFFFFF').maxLines(1).textAlign(TextAlign.Center).width('100%')
         }
-        .width(212).height(30).borderRadius(15).backgroundColor('#E61C1C1E').border({ width: 0.5, color: '#33FFFFFF' })
+        .width(212).height(30).borderRadius(15).backgroundColor(aiInk(this.aiStyle, 'hint')).border({ width: 0.5, color: '#33FFFFFF' })
         .position({ x: this.dragX > 0 ? (this.areaWidth - AI_FLOAT_ORB) / 2 + this.dragX - 222 :
           (this.areaWidth + AI_FLOAT_ORB) / 2 + this.dragX + 10, y: this.topOffset() + this.dragY + (AI_FLOAT_ORB - 30) / 2 })
         .hitTestBehavior(HitTestMode.None)
@@ -988,7 +1031,17 @@ export struct AiIsland {
       const w: number = Number(area.width);
       const h: number = Number(area.height);
       if (w > 0 && h > 0 && (Math.abs(w - this.areaWidth) > 1 || Math.abs(h - this.areaHeight) > 1)) {
+        const oldW: number = this.areaWidth;
+        const oldH: number = this.areaHeight;
+        const turned: boolean = (oldW > oldH) !== (w > h);
         this.areaWidth = w; this.areaHeight = h;
+        // The floating orb stays on its side, inside the new window (rotation, split screen, a resized PC window).
+        if (this.compact) {
+          const xy: number[] = aiReclampOrb(this.dragX, this.dragY, oldW, oldH, w, h, this.topOffset(), AI_FLOAT_ORB);
+          this.dragX = xy[0];
+          this.dragY = xy[1];
+        }
+        if (turned) { this.placeOnCutout(); }
       }
     })
   }

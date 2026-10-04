@@ -12,7 +12,7 @@ import { aiAppGuide } from './DiagnosticAiKnowledgeBase';
 import { AiSkill, AiToolSpec, aiSkillsForQuestion, aiToolByFunction, aiToolStatus } from './AiSkillCatalog';
 import { AI_CONFIRM_TOOLS, AiChatAction, aiActionFor, aiRunSystemTool } from './AiSystemTools';
 import { AiSettingChoice, AiSettingSpec, diagnosticAiSettingCurrent, diagnosticAiSettingSpec, diagnosticAiSettingValueLabel } from './DiagnosticAiSettingsActionPolicy';
-import { diagnosticAiAppActionId, diagnosticAiAppActionLabel } from './DiagnosticAiAppActionPolicy';
+import { diagnosticAiAppActionId, diagnosticAiAppActionTarget } from './DiagnosticAiAppActionPolicy';
 import { AI_ASSISTANT_HANDOFF, AI_FLOAT_REQUEST, AI_MODE_REQUEST } from './AiBridgeKeys';
 import { aiReadWebpage, aiWebSearch } from './AiWebTools';
 import { AiTriageHost, DiagnosticAiHostBridge } from './DiagnosticAiTriagePolicy';
@@ -259,7 +259,7 @@ function chatSystemPrompt(request: AiChatRequest, active: AiSkill[], tools: bool
       '- 用户提出 App 还没有的功能、改进想法（“要是能……就好了”“希望……”）时，用 manage_feature_requests 记下，不必追问；' +
         '用户想要这些功能或让你发给开发者时，用它 send。\n' : '') +
     (tools && hasTool(on, 'switch_mode') ?
-      '- 用户要回到文字、进入语音模式、切到助理或聊天、缩成悬浮球，或者表示要结束（拜拜、退出、就这样吧）时，调用 switch_mode。\n' : '') +
+      '- 用户要回到文字、进入语音模式、切到助理或聊天、缩成悬浮球、开始新对话（开个新对话、清空对话、换个话题重新聊），或者表示要结束（拜拜、退出、就这样吧）时，调用 switch_mode。\n' : '') +
     (tools ? '- 应用里的数据可以增删改查：记住或忘掉事情用 update_memory；对话记录用 list_conversations / delete_conversation；' +
       '主机用 list_hosts / connect_host / edit_host / delete_host；提醒用 set_reminder / list_reminders / cancel_reminder。' +
       '删除和会改动数据的操作都会先显示确认卡片，回答里说明要做什么并提醒用户点确认，不要说已经完成。\n' : '') +
@@ -552,7 +552,7 @@ export class AiChatService {
       const args: Record<string, string> = {};
       args['screen'] = id;
       const action: AiChatAction = new AiChatAction('act-' + Date.now().toString(36) + actions.length.toString(),
-        'open_app_screen', '打开「' + diagnosticAiAppActionLabel(id) + '」', '在 App 里打开这个页面', JSON.stringify(args));
+        'open_app_screen', '打开「' + diagnosticAiAppActionTarget(id) + '」', '在 App 里打开这个页面', JSON.stringify(args));
       actions.push(action);
       return '还没有打开：已显示卡片「' + action.title + '」，用户确认后才会打开。请用一两句话说明在那里可以做什么，并请用户确认。';
     }
@@ -568,10 +568,11 @@ export class AiChatService {
         AppStorage.setOrCreate(AI_FLOAT_REQUEST, Date.now());
         return '已缩成悬浮球。请只用一句很短的话回应。';
       }
-      if (['text', 'voice', 'assistant', 'chat', 'exit'].indexOf(mode) < 0) {
-        return 'mode 只能是 text、voice、assistant、chat、orb 或 exit。';
+      if (['text', 'voice', 'assistant', 'chat', 'new', 'exit'].indexOf(mode) < 0) {
+        return 'mode 只能是 text、voice、assistant、chat、orb、new 或 exit。';
       }
       AppStorage.setOrCreate(AI_MODE_REQUEST, mode + '@' + Date.now().toString());
+      if (mode === 'new') { return '回答后会开始新对话（当前对话已保存在对话记录里）。请只用一句很短的话回应。'; }
       return mode === 'exit' ? '回答后 AI 会关闭。请只用一句很短的话道别。' :
         '回答后就切换过去。请只用一句很短的话回应，不要再问别的。';
     }
