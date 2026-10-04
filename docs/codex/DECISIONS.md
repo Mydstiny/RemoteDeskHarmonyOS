@@ -176,3 +176,11 @@ API change breaks tests just as well. Strict ArkTS test idioms live in
 `entry/src/test/helpers/RecordTestUtils.ets` (`withoutKey` for delete,
 `withOverrides` for object spread, `jsonRecord` for key assertions on
 serialized models).
+
+The gate is compile-only. By user decision (2026-10-04) ohosTest is never
+executed (`aa test`) on a device or emulator: the test HAP shares the app's
+sandbox, and suites such as DataCrypto, CloudSync, HostSyncService and
+KeyVaultService set a master password on, or wipe hosts/keys/TOTP from, the
+real store and can sync that to the cloud. A first run on 2026-10-04 stopped in
+a root `beforeAll` before any test body ran, so no data changed. Behaviour is
+verified with host runs and focused tests instead.

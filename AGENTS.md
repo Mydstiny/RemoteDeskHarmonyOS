@@ -73,6 +73,8 @@ node scripts/tests/test_unit_test_registration.cjs --self-test
 
 `default@OhosTestCompileArkTS` 只编译主代码，不编译 `entry/src/test`；单元测试只由 `ohosTest@OhosTestCompileArkTS` 按严格 ArkTS 编译（入口 `entry/src/ohosTest/ets/test/List.test.ets`，它调用 `entry/src/test/List.test.ets` 中的全部共享用例）。主代码接口改动同样会让测试失效，所以第三项对所有改动都是必跑项。新增测试文件必须登记到对应的 List，登记检查会拒绝漏登的文件。
 
+**ohosTest 只编译、不运行**：用户 2026-10-04 决定，任何情况下都不在设备或模拟器上执行 `aa test`。测试与应用共用沙箱，`DataCrypto`、`CloudSync`、`HostSyncService`、`KeyVaultService` 等套件会对真实存储设主密码或清空主机/密钥/2FA，并可能同步到云端；行为验证依靠宿主机运行与定向测试。
+
 Windows 使用 DevEco 自带的 `hvigorw.js`/`hvigorw.bat` 执行相同的 module、product 和任务名，并使用非 daemon 方式完成可判定的退出。各项都必须返回成功；否则任务保持未完成，失败原因必须记录在 `docs/codex/CURRENT.md` 的 blocker 中。`default@OhosTestBuildArkTS` 是旧门，不得作为替代验收项。
 
 ## 按风险分级验证

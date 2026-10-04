@@ -25,9 +25,13 @@
 - 阶段 1：17 个套件，HEAD 261/290，修改后 270/287；失败集合除重写的 `RemoteKeyDispatcher`（旧 12 个全失败，新 9 个全通过）外完全一致。
 - 阶段 2：56 个套件，HEAD 565/631（6 个无法加载），修改后 595/657（2 个无法加载，均为宿主机环境限制）；62 个失败前后一致；新出现的失败只在 HEAD 无法加载的 `RustDeskProApiPolicy` 中，已按上文处理，现 10/10。
 
+## 不在设备上运行
+
+2026-10-04 在 SGT-AL10（API 26）上做过一次保留数据安装后的全量 `aa test`：2627 个用例全部 Error，原因是 `DataCrypto.test` 的根级 `beforeAll` 调用真实 `setMasterPassword` 在第一步（等待云同步静默）失败，hypium 因此未执行任何用例体，数据未被改动。审计发现测试与应用共用沙箱，`DataCrypto`（设主密码）、`CloudSync`（增删 `test_` 前缀主机/密钥/2FA）、`HostSyncService`/`KeyVaultService`（`beforeEach` 清空全部主机/密钥/2FA）会改写真实存储并可能同步到云端。用户据此决定：ohosTest 只做编译检查，永不在设备或模拟器上运行。
+
 ## 遗留
 
-- 宿主机上前后一致失败的用例（阶段 1 的 17 个、阶段 2 的 62 个）未逐一定性：可能是宿主机桩的限制，也可能是过期断言；需在设备上运行 ohosTest 后再判断。本轮按用户要求未装机。
+- 宿主机上前后一致失败的用例（阶段 1 的 17 个、阶段 2 的 62 个）未逐一定性：可能是宿主机桩的限制，也可能是过期断言；按上节决定不在设备上运行，如需定性只能用宿主机运行器逐个分析。
 - `entry/src/test` 与 `entry/src/ohosTest/ets/test` 有 18 个同名但内容不同的测试文件，多数 describe 名相同，设备运行时两份都会执行，待合并。
 - 设计待定：当前 `parseRustDeskProLoginResponse` 先识别 `type=email_check` 再检查 `error` 字段；被删除的旧用例期望相反顺序（先处理服务器错误）。是否调整由 RustDesk Pro 二次验证工作决定。
 - `RemoteKeyDispatcher` 的批量发送抛异常时 once 锁存不会被清除（复核 P3，未覆盖）。
