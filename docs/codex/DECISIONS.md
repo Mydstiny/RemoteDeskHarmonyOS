@@ -161,14 +161,18 @@ must reuse the recorded reviewer task rather than dispatching a duplicate after
 context compression. Review status is separate from build, device, endpoint,
 cloud, and release readiness.
 
-## D-025 - The compile gate does not compile unit tests
+## D-025 - Unit tests are compiled only by the ohosTest gate
 
 `default@OhosTestCompileArkTS` compiles only the main `entry` sources; it never
 compiles `entry/src/test`. Test files get a strict ArkTS compile only from
-`ohosTest@OhosTestCompileArkTS` (module `entry@ohosTest`), and only the files
-imported by `entry/src/ohosTest/ets/test/List.test.ets`. On 2026-10-04 that task
-fails with 300 pre-existing errors (299 ArkTS, 1 unresolved module), so hypium tests cannot run on a device and a
-passing compile gate proves nothing about test code. Until it is repaired,
-verify new test files by compiling them through a temporary ohosTest list (no
-new errors) and by running them in a host runner; record both, and never report
-the compile gate as test verification.
+`ohosTest@OhosTestCompileArkTS` (module `entry@ohosTest`), through
+`entry/src/ohosTest/ets/test/List.test.ets`, which runs the shared
+`entry/src/test/List.test.ets`. Until 2026-10-04 that list covered 73 of ~295
+suites and the compile failed with 300 errors, so stale tests (APIs renamed in
+main code, suites for designs that never landed) accumulated unnoticed. The
+ohosTest compile and `node scripts/tests/test_unit_test_registration.cjs --self-test` are
+therefore mandatory gates for every change, not only test changes: a main-code
+API change breaks tests just as well. Strict ArkTS test idioms live in
+`entry/src/test/helpers/RecordTestUtils.ets` (`withoutKey` for delete,
+`withOverrides` for object spread, `jsonRecord` for key assertions on
+serialized models).

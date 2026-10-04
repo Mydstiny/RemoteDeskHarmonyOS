@@ -2213,5 +2213,45 @@
       "compliance": "PASS Light gate and git diff --cached --check for each commit",
       "deviceAcceptance": "NOT RUN; no install by user instruction; two-device, upgrade and Phone/Pad/PC acceptance remain open"
     }
+  },
+  "ohosTestRepair": {
+    "planPath": "docs/codex/plans/2026-10-04-ohostest-compile-repair.md",
+    "status": "compile-gate-closed-device-run-pending",
+    "commits": {
+      "stage1": "91fe77272",
+      "stage2": "c266d8b23"
+    },
+    "receipts": [
+      "ohostest-repair-stage1-91fe77272-20261004",
+      "ohostest-repair-stage2-c266d8b23-20261004"
+    ],
+    "gates": [
+      "ohosTest@OhosTestCompileArkTS (module entry@ohosTest)",
+      "node scripts/tests/test_unit_test_registration.cjs --self-test"
+    ],
+    "removedUnlandedTests": [
+      "RustDeskProAddressBook{,ApiService,SyncService,UiPolicy}",
+      "RustDeskProTwoFactorPolicy",
+      "RustDeskProApiService (+ServerProFixtures)",
+      "RustDeskProSyncService",
+      "RustDeskProApiPolicy 10 cases",
+      "RustDeskProSyncPolicy 1 case",
+      "old RemoteKeyDispatcher cases (rewritten)"
+    ],
+    "open": [
+      "first on-device ohosTest full run (needs install authorization)",
+      "classify host-run failures identical before/after (17 + 62)",
+      "consolidate 18 same-name suites in entry/src/test and entry/src/ohosTest",
+      "design: login response checks email_check before error field",
+      "CloudSyncService rustDeskProHostPortableJSON missing export (spun-off task)"
+    ],
+    "verification": {
+      "default@OhosTestCompileArkTS": "PASS BUILD SUCCESSFUL each stage (12.544 s, 9.425 s)",
+      "assembleHap": "PASS signed BUILD SUCCESSFUL each stage (14.859 s, 14.728 s)",
+      "ohosTest@OhosTestCompileArkTS": "PASS BUILD SUCCESSFUL 0 errors (stage 1 existing list 300 -> 0; stage 2 full coverage 658 -> 0)",
+      "host": "PASS before/after host run: stage 1 17 suites identical failure sets except rewritten RemoteKeyDispatcher (9/9); stage 2 56 suites, 62 identical failures, newly loadable suites pass; data-safety 74/74; focused wrapper fixtures PASS",
+      "compliance": "PASS Light gate and git diff --check",
+      "deviceAcceptance": "NOT RUN; no install by user instruction; on-device ohosTest full run pending"
+    }
   }
 }

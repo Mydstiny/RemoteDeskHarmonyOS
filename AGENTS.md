@@ -43,7 +43,7 @@
   `powershell -File scripts/dev_workflow.ps1 start -Task <task-name>`。
 - 同一时间只允许一个日常活动 `codex/...` 分支。新任务必须等待当前任务已合并或明确归档。
 - 标准闭环：
-  `main` → `pull --ff-only` → `codex/...` → 按计划逐步修改/验证/commit →
+  `main` → `pull --ff-only` → `codex/...` → 按计划逐步修改/验证（含 ohosTest 编译与测试登记）/commit →
   子 agent 独立复核 → 修复复核问题并重新验证/commit → push → PR →
   required `open-source-compliance` → merge → `main` → `pull --ff-only` → 删除已合并分支。
   只有子 agent 明确复核通过后才能合并；复核发现问题时必须留在任务分支修复，不能带着未解决的问题合并。
@@ -59,7 +59,7 @@
 
 ## 每次改动完成后的强制 DevEco 验证
 
-任何代码、ArkTS、native、Rust、测试、配置或流程文件改动，在提交、复核、合并或交付前都必须执行以下两项 Hvigor 门禁；它们是所有风险级别的共同最低要求，不能用旧日志或上一 session 的结果代替：
+任何代码、ArkTS、native、Rust、测试、配置或流程文件改动，在提交、复核、合并或交付前都必须执行以下 Hvigor 门禁与测试登记检查；它们是所有风险级别的共同最低要求，不能用旧日志或上一 session 的结果代替：
 
 用户于 2026-09-07 明确的例外：开发 skill 本体，以及将其迁往独立仓库所必需的安装/跟踪说明，只执行 skill 自身校验和适用的独立使用测试，不执行 App 的 Hvigor/签名门禁。若同时修改应用实现、配置或构建流程，则应用变更仍执行本节门禁。
 
@@ -67,17 +67,21 @@
 source scripts/macos_env.sh
 hvigorw --mode module -p module=entry -p product=default default@OhosTestCompileArkTS --analyze=normal --parallel --incremental --no-daemon
 hvigorw --mode module -p module=entry -p product=default assembleHap --analyze=normal --parallel --incremental --no-daemon
+hvigorw --mode module -p module=entry@ohosTest -p product=default ohosTest@OhosTestCompileArkTS --analyze=normal --parallel --incremental --no-daemon
+node scripts/tests/test_unit_test_registration.cjs --self-test
 ```
 
-Windows 使用 DevEco 自带的 `hvigorw.js`/`hvigorw.bat` 执行相同的 `module=entry`、`product=default` 和任务名，并使用非 daemon 方式完成可判定的退出。两项都必须返回成功；否则任务保持未完成，失败原因必须记录在 `docs/codex/CURRENT.md` 的 blocker 中。`default@OhosTestBuildArkTS` 是旧门，不得作为替代验收项。对 ArkTS 测试模块有影响时，另加 `ohosTest@OhosTestCompileArkTS`。
+`default@OhosTestCompileArkTS` 只编译主代码，不编译 `entry/src/test`；单元测试只由 `ohosTest@OhosTestCompileArkTS` 按严格 ArkTS 编译（入口 `entry/src/ohosTest/ets/test/List.test.ets`，它调用 `entry/src/test/List.test.ets` 中的全部共享用例）。主代码接口改动同样会让测试失效，所以第三项对所有改动都是必跑项。新增测试文件必须登记到对应的 List，登记检查会拒绝漏登的文件。
+
+Windows 使用 DevEco 自带的 `hvigorw.js`/`hvigorw.bat` 执行相同的 module、product 和任务名，并使用非 daemon 方式完成可判定的退出。各项都必须返回成功；否则任务保持未完成，失败原因必须记录在 `docs/codex/CURRENT.md` 的 blocker 中。`default@OhosTestBuildArkTS` 是旧门，不得作为替代验收项。
 
 ## 按风险分级验证
 
 | 变更范围 | 最低验证 |
 |---|---|
-| 文档、流程、纯元数据 | 强制 Hvigor 两项 + `git diff --check` + Light 合规门 |
-| ArkTS/UI/策略 | 定向测试或测试编译 + `default@OhosTestCompileArkTS` + `assembleHap` + Light |
-| C/C++/Rust/FFI | 定向 native/Rust 测试 + 受影响 ABI + `assembleHap` + Light |
+| 文档、流程、纯元数据 | 强制 Hvigor 三项与测试登记检查 + `git diff --check` + Light 合规门 |
+| ArkTS/UI/策略 | 定向测试 + 强制 Hvigor 三项与测试登记检查 + Light |
+| C/C++/Rust/FFI | 定向 native/Rust 测试 + 受影响 ABI + 强制 Hvigor 三项与测试登记检查 + Light |
 | 发布/tag/依赖升级 | clean clone、全测试/设备矩阵、双 ABI、Release gate |
 
 构建命令、准确的成功/失败输出和当前阻塞记录在 `CURRENT.md`；不要用旧的 `default@OhosTestBuildArkTS` 作为验收门。
@@ -93,7 +97,7 @@ Windows 使用 DevEco 自带的 `hvigorw.js`/`hvigorw.bat` 执行相同的 `modu
 
 ## session 结束流程
 
-1. 运行强制的 Hvigor `default@OhosTestCompileArkTS` 和生产 `assembleHap`，再运行与变更范围匹配的附加验证，并记录准确结果。
+1. 运行强制的 Hvigor `default@OhosTestCompileArkTS`、生产 `assembleHap`、`ohosTest@OhosTestCompileArkTS` 和测试登记检查，再运行与变更范围匹配的附加验证，并记录准确结果。
 2. 更新 `STATE.json` 和 `CURRENT.md`：活动分支、commit、阶段、已完成、验证、下一步、blocker、review 状态。
 3. 更新 `QUEUE.md`：完成项移除，只保留 Now / Next / Later；旧事实进入月度 archive。
 4. 只有出现长期有效的架构规则或通用坑位时才更新 `DECISIONS.md`；独立审查写入 `REVIEW_RECEIPTS.jsonl`，不写 raw session transcript。
