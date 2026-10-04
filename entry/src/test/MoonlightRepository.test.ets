@@ -41,14 +41,14 @@ function hostRecord(owner: string, mutationId: string,
     fieldVersions: { 'displayName': syncVersion }
   };
   const payload = moonlightPayloadWithMeta({
-    schemaVersion: 1,
-    serverUuid: 'server-uuid-1',
-    displayName: displayName,
-    addresses: [{ host: '192.0.2.20', family: 'ipv4', port: 47989 }],
-    preferredAddressKey: 'ipv4|192.0.2.20|47989',
-    hostType: 'sunshine',
-    wakeOnLan: { enabled: false, mac: '', broadcast: '' },
-    userOrder: 0
+    'schemaVersion': 1,
+    'serverUuid': 'server-uuid-1',
+    'displayName': displayName,
+    'addresses': [{ 'host': '192.0.2.20', 'family': 'ipv4', 'port': 47989 } as Record<string, Object>],
+    'preferredAddressKey': 'ipv4|192.0.2.20|47989',
+    'hostType': 'sunshine',
+    'wakeOnLan': { 'enabled': false, 'mac': '', 'broadcast': '' } as Record<string, Object>,
+    'userOrder': 0
   }, meta, 'host');
   const record = new MoonlightRecord();
   record.id = 'shared-host-id';

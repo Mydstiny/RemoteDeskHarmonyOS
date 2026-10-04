@@ -17,6 +17,7 @@ import {
   applyRemoteSessionControlBarPreferenceUpdate,
   commitRemoteSessionQuickExitPreference,
   protectRemoteSessionControlBarVisibility,
+  RemoteSessionControlBarVisibility,
   remoteKeyboardSidebarAction,
   remoteKeyboardSurfaceOpen,
   remoteSessionControlBarHidden,
@@ -123,7 +124,7 @@ export default function remoteSessionTopBarPolicyTest(): void {
       expect(shouldShowRemoteSessionTopBar('rdp')).assertFalse();
       expect(shouldShowRemoteSessionTopBar('rustdesk')).assertTrue();
       expect(shouldShowRemoteSessionTopBar('vnc')).assertFalse();
-      const visibility = {
+      const visibility: RemoteSessionControlBarVisibility = {
         rdpHidden: true, rustDeskHidden: false, vncHidden: true, moonlightHidden: false
       };
       expect(remoteSessionControlBarHidden('rdp', visibility)).assertTrue();
@@ -150,7 +151,7 @@ export default function remoteSessionTopBarPolicyTest(): void {
     });
 
     it('session_control_bar_editor_merges_only_touched_protocols', 0, (): void => {
-      const current = {
+      const current: RemoteSessionControlBarVisibility = {
         rdpHidden: false, rustDeskHidden: true, vncHidden: false, moonlightHidden: true
       };
       const merged = applyRemoteSessionControlBarPreferenceUpdate(current, {
@@ -169,7 +170,7 @@ export default function remoteSessionTopBarPolicyTest(): void {
 
     it('quick_exit_protection_forces_all_graphical_controls_visible_without_mutation', 0,
       (): void => {
-        const stored = {
+        const stored: RemoteSessionControlBarVisibility = {
           rdpHidden: true, rustDeskHidden: false, vncHidden: true, moonlightHidden: true
         };
         const unprotected = protectRemoteSessionControlBarVisibility(stored, false);
@@ -258,7 +259,7 @@ export default function remoteSessionTopBarPolicyTest(): void {
 
     it('direct_route_restore_uses_disk_when_readable_and_app_storage_when_not', 0,
       (): void => {
-        const hidden = {
+        const hidden: RemoteSessionControlBarVisibility = {
           rdpHidden: true, rustDeskHidden: true, vncHidden: true, moonlightHidden: true
         };
         const readable = resolveRemoteSessionQuickExitRestore(hidden, true, false, true);

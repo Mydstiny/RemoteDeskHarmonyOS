@@ -103,13 +103,13 @@ function portableVncHostRow(
     '"tls":true,"transport":"direct_tcp","username":"",' +
     '"viewOnly":true}';
   return {
-    id, userid: owner, recordtype: 'host',
-    ownerid: owner, ownertype: 'account', secretkind: '',
-    payload, ciphertext: '', envelopeversion: '0',
-    cryptoversion: '0', keyversion: '0', aadversion: '0',
-    payloadhashsha256: vncPayloadHashSha256(payload),
-    syncversion: '1', schemaversion: '1', resetepoch: '1',
-    createdat: '1', updatedat: '2', deletedat: '0'
+    'id': id, 'userid': owner, 'recordtype': 'host',
+    'ownerid': owner, 'ownertype': 'account', 'secretkind': '',
+    'payload': payload, 'ciphertext': '', 'envelopeversion': '0',
+    'cryptoversion': '0', 'keyversion': '0', 'aadversion': '0',
+    'payloadhashsha256': vncPayloadHashSha256(payload),
+    'syncversion': '1', 'schemaversion': '1', 'resetepoch': '1',
+    'createdat': '1', 'updatedat': '2', 'deletedat': '0'
   };
 }
 
@@ -176,28 +176,28 @@ export default function localBackupPolicyTest(): void {
 
     it('rejects_unknown_columns_inside_a_row', 0, (): void => {
       const document = createLocalBackupDocument(emptyTables(), 100, '1.0.5');
-      document.tables['sshkeys'].push({ id: 'key-1', unexpected: 'no' });
+      document.tables['sshkeys'].push({ 'id': 'key-1', 'unexpected': 'no' });
       expect(validateLocalBackupDocument(signedText(document)) === null).assertTrue();
     });
 
     it('rejects_device_local_relay_control_plane_authorization', 0, (): void => {
       const document = createLocalBackupDocument(emptyTables(), 100, '1.0.5');
       document.tables['rustdeskrelays'].push({
-        id: 'relay-1', controlplaneprofile: 'official_server_pro_token'
+        'id': 'relay-1', 'controlplaneprofile': 'official_server_pro_token'
       });
       expect(validateLocalBackupDocument(signedText(document)) === null).assertTrue();
     });
 
     it('rejects_non_integer_text_for_integer_columns', 0, (): void => {
       const document = createLocalBackupDocument(emptyTables(), 100, '1.0.5');
-      document.tables['remotehosts'].push({ id: 'host-1', port: 'invalid' });
+      document.tables['remotehosts'].push({ 'id': 'host-1', 'port': 'invalid' });
       expect(validateLocalBackupDocument(signedText(document)) === null).assertTrue();
     });
 
     it('accepts_rows_missing_columns_added_by_later_versions', 0, (): void => {
       const tables = emptyTables();
       tables['rdpcredentials'].push({
-        id: 'credential-1', userid: 'owner-test'
+        'id': 'credential-1', 'userid': 'owner-test'
       });
       const document = createLocalBackupDocument(
         tables, 100, '1.0.5', [], {}, 'owner-test');
@@ -209,34 +209,34 @@ export default function localBackupPolicyTest(): void {
       (): void => {
         const tables = emptyTables();
         tables['cryptoparams'].push({
-          id: 'salt', key: 'crypto_salt', value: 'secret'
+          'id': 'salt', 'key': 'crypto_salt', 'value': 'secret'
         });
         tables['remotehosts'].push({
-          id: 'host-1', userid: 'owner-test', label: 'host',
-          passward: 'password',
-          sshhostkeyfingerprintsha256: 'fingerprint',
-          displayconfig: '{"width":1920,"_remoteDeskExtensionV1":{' +
+          'id': 'host-1', 'userid': 'owner-test', 'label': 'host',
+          'passward': 'password',
+          'sshhostkeyfingerprintsha256': 'fingerprint',
+          'displayconfig': '{"width":1920,"_remoteDeskExtensionV1":{' +
             '"sshhostkeyfingerprintsha256":"nested-fingerprint",' +
             '"password":"nested-password","rustdeskdirectport":"21117",' +
             '"rustdeskTotpEntryId":"device-entry",' +
             '"rustdeskTotpAutoSubmit":"1","rustdeskTotpDeviceId":"device-a"}}'
         });
         tables['sshkeys'].push({
-          id: 'key-1', userid: 'owner-test',
-          privatekey: 'private', publickey: 'public'
+          'id': 'key-1', 'userid': 'owner-test',
+          'privatekey': 'private', 'publickey': 'public'
         });
         tables['totpentries'].push({
-          id: 'totp-1', userid: 'owner-test',
-          secret: 'totp-secret'
+          'id': 'totp-1', 'userid': 'owner-test',
+          'secret': 'totp-secret'
         });
         tables['vncrecordv2'].push({
-          id: 'vnc-trust-1', userid: 'owner-test', recordtype: 'trust', deletedat: '0'
+          'id': 'vnc-trust-1', 'userid': 'owner-test', 'recordtype': 'trust', 'deletedat': '0'
         });
         const document = createLocalBackupDocument(
           tables, 100, '1.0.10', [{
-            id: 'remotehosts:host-1', tablename: 'remotehosts',
-            recordid: 'host-1',
-            payload: '{"sshkeypassphrase":"passphrase",' +
+            'id': 'remotehosts:host-1', 'tablename': 'remotehosts',
+            'recordid': 'host-1',
+            'payload': '{"sshkeypassphrase":"passphrase",' +
               '"sshproxypassword":"proxy-password",' +
               '"sshproxykeypassphrase":"proxy-passphrase",' +
               '"sshhostkeyfingerprintsha256":"trust",' +
@@ -244,7 +244,7 @@ export default function localBackupPolicyTest(): void {
               '"rustdeskdirectport":"21117",' +
               '"rustdesktotpentryid":"device-entry",' +
               '"rustdesktotpautosubmit":"1"}',
-            updatedat: '100'
+            'updatedat': '100'
           }], {}, 'owner-test', 3, true, 'full');
         expect(document.manifest?.crypto.mode).assertEqual('full');
         expect(document.manifest?.crypto.verifierIncluded).assertTrue();
@@ -318,7 +318,7 @@ export default function localBackupPolicyTest(): void {
     it('accepts_legacy_distributed_delete_flag_but_strips_it_before_restore', 0, (): void => {
       const tables = legacySevenTables();
       tables['remotehosts'].push({
-        id: 'host-1', port: '3389', '#_deleted_flag': '0'
+        'id': 'host-1', 'port': '3389', '#_deleted_flag': '0'
       });
       const document = legacyDocument(1, tables);
       const parsed = validateLocalBackupDocument(
@@ -330,11 +330,11 @@ export default function localBackupPolicyTest(): void {
     it('round_trips_safe_local_extension_rows_in_v3', 0, (): void => {
       const tables = emptyTables();
       tables['remotehosts'].push({
-        id: 'h1', userid: 'owner-test'
+        'id': 'h1', 'userid': 'owner-test'
       });
       const document = createLocalBackupDocument(tables, 100, '1.0.7', [{
-        id: 'remotehosts:h1', tablename: 'remotehosts', recordid: 'h1',
-        payload: '{"rustdeskdirectport":"21117","rustdesktargetdevice":"phone",' +
+        'id': 'remotehosts:h1', 'tablename': 'remotehosts', 'recordid': 'h1',
+        'payload': '{"rustdeskdirectport":"21117","rustdesktargetdevice":"phone",' +
           '"rustdeskadaptiveorientation":"1","rdpendpointmode":"microsoft_rd_gateway",' +
           '"rdpgatewaytransport":"no-websockets",' +
           '"rdpgatewayservername":"gateway.example.test",' +
@@ -352,18 +352,20 @@ export default function localBackupPolicyTest(): void {
           '"localrustdeskadaptiveorientation":"1",' +
           '"localrustdeskdesktopflipmode":"image_only",' +
           '"localrustdeskprolastseenat":"202",' +
-          '"localrustdeskprosyncerror":"not_seen"}', updatedat: '100'
+          '"localrustdeskprosyncerror":"not_seen"}', 'updatedat': '100'
       }], {}, 'owner-test');
       const parsed = validateLocalBackupDocument(JSON.stringify(document));
       expect(parsed !== null).assertTrue();
       expect(parsed?.extensions?.length).assertEqual(1);
-      expect(parsed?.extensions?.[0]['payload'].indexOf('rdpendpointmode') >= 0).assertTrue();
-      expect(parsed?.extensions?.[0]['payload'].indexOf('rdpclienthostname') >= 0).assertTrue();
-      expect(parsed?.extensions?.[0]['payload'].indexOf('sshproxytype') >= 0).assertTrue();
+      if (parsed === null || parsed.extensions === undefined || parsed.extensions.length === 0) { return; }
+      const payload: string = parsed.extensions[0]['payload'];
+      expect(payload.indexOf('rdpendpointmode') >= 0).assertTrue();
+      expect(payload.indexOf('rdpclienthostname') >= 0).assertTrue();
+      expect(payload.indexOf('sshproxytype') >= 0).assertTrue();
       // Jump-host trust is device trust and is not part of a redacted backup.
-      expect(parsed?.extensions?.[0]['payload'].indexOf('sshjumphostkeyalgorithm') < 0).assertTrue();
-      expect(parsed?.extensions?.[0]['payload'].indexOf('localdisplayconfig') >= 0).assertTrue();
-      expect(parsed?.extensions?.[0]['payload'].indexOf(
+      expect(payload.indexOf('sshjumphostkeyalgorithm') < 0).assertTrue();
+      expect(payload.indexOf('localdisplayconfig') >= 0).assertTrue();
+      expect(payload.indexOf(
         'localrustdeskdesktopflipmode') >= 0).assertTrue();
     });
 
@@ -371,31 +373,31 @@ export default function localBackupPolicyTest(): void {
       (): void => {
         const tables = emptyTables();
         tables['remotehosts'].push({
-          id: 'ssh-global', userid: 'owner-test', protocol: 'ssh',
-          host: '2001:db8::20', port: '22'
+          'id': 'ssh-global', 'userid': 'owner-test', 'protocol': 'ssh',
+          'host': '2001:db8::20', 'port': '22'
         }, {
-          id: 'ssh-scoped-proxy', userid: 'owner-test', protocol: 'ssh',
-          host: '2001:db8::30', port: '22',
-          proxyhost: 'fe80::30%wlan0', proxyport: '22'
+          'id': 'ssh-scoped-proxy', 'userid': 'owner-test', 'protocol': 'ssh',
+          'host': '2001:db8::30', 'port': '22',
+          'proxyhost': 'fe80::30%wlan0', 'proxyport': '22'
         }, {
-          id: 'ssh-scoped', userid: 'owner-test', protocol: 'ssh',
-          host: 'fe80::20%wlan0', port: '22'
+          'id': 'ssh-scoped', 'userid': 'owner-test', 'protocol': 'ssh',
+          'host': 'fe80::20%wlan0', 'port': '22'
         });
         const extensions: Array<Record<string, string>> = [{
-          id: 'remotehosts:ssh-global', tablename: 'remotehosts',
-          recordid: 'ssh-global',
-          payload: '{"sshhostkeyfingerprintsha256":"SHA256:global","sshkeyid":"key-global"}',
-          updatedat: '100'
+          'id': 'remotehosts:ssh-global', 'tablename': 'remotehosts',
+          'recordid': 'ssh-global',
+          'payload': '{"sshhostkeyfingerprintsha256":"SHA256:global","sshkeyid":"key-global"}',
+          'updatedat': '100'
         }, {
-          id: 'remotehosts:ssh-scoped-proxy', tablename: 'remotehosts',
-          recordid: 'ssh-scoped-proxy',
-          payload: '{"sshhostkeyfingerprintsha256":"SHA256:scoped-proxy","sshkeyid":"key-proxy"}',
-          updatedat: '100'
+          'id': 'remotehosts:ssh-scoped-proxy', 'tablename': 'remotehosts',
+          'recordid': 'ssh-scoped-proxy',
+          'payload': '{"sshhostkeyfingerprintsha256":"SHA256:scoped-proxy","sshkeyid":"key-proxy"}',
+          'updatedat': '100'
         }, {
-          id: 'remotehosts:ssh-scoped', tablename: 'remotehosts',
-          recordid: 'ssh-scoped',
-          payload: '{"sshhostkeyfingerprintsha256":"SHA256:scoped","sshkeyid":"key-scoped"}',
-          updatedat: '100'
+          'id': 'remotehosts:ssh-scoped', 'tablename': 'remotehosts',
+          'recordid': 'ssh-scoped',
+          'payload': '{"sshhostkeyfingerprintsha256":"SHA256:scoped","sshkeyid":"key-scoped"}',
+          'updatedat': '100'
         }];
 
         const exported: LocalBackupDocument = createLocalBackupDocument(
@@ -421,24 +423,24 @@ export default function localBackupPolicyTest(): void {
 
     it('rejects_duplicate_primary_keys', 0, (): void => {
       const document = createLocalBackupDocument(emptyTables(), 100, '1.0.7');
-      document.tables['remotehosts'].push({ id: 'host-1' }, { id: 'host-1' });
+      document.tables['remotehosts'].push({ 'id': 'host-1' }, { 'id': 'host-1' });
       expect(validateLocalBackupDocument(signedText(document)) === null).assertTrue();
     });
 
     it('rejects_orphan_extension_rows', 0, (): void => {
       const document = createLocalBackupDocument(emptyTables(), 100, '1.0.7', [{
-        id: 'remotehosts:missing', tablename: 'remotehosts', recordid: 'missing',
-        payload: '{"rustdeskdirectport":"21117"}', updatedat: '100'
+        'id': 'remotehosts:missing', 'tablename': 'remotehosts', 'recordid': 'missing',
+        'payload': '{"rustdeskdirectport":"21117"}', 'updatedat': '100'
       }]);
       expect(validateLocalBackupDocument(JSON.stringify(document)) === null).assertTrue();
     });
 
     it('rejects_unknown_extension_payload_fields', 0, (): void => {
       const tables = emptyTables();
-      tables['remotehosts'].push({ id: 'host-1' });
+      tables['remotehosts'].push({ 'id': 'host-1' });
       const document = createLocalBackupDocument(tables, 100, '1.0.7', [{
-        id: 'remotehosts:host-1', tablename: 'remotehosts', recordid: 'host-1',
-        payload: '{"unknownsecret":"value"}', updatedat: '100'
+        'id': 'remotehosts:host-1', 'tablename': 'remotehosts', 'recordid': 'host-1',
+        'payload': '{"unknownsecret":"value"}', 'updatedat': '100'
       }]);
       expect(validateLocalBackupDocument(JSON.stringify(document)) === null).assertTrue();
     });
@@ -446,8 +448,8 @@ export default function localBackupPolicyTest(): void {
     it('accepts_a_legacy_seven_table_backup_without_clearing_vnc', 0, (): void => {
       const tables = legacySevenTables();
       tables['remotehosts'].push({
-        id: 'host-1', userid: 'legacy-user', label: 'Legacy',
-        passward: 'plaintext-secret'
+        'id': 'host-1', 'userid': 'legacy-user', 'label': 'Legacy',
+        'passward': 'plaintext-secret'
       });
       const document = legacyDocument(1, tables);
       const parsed = validateLocalBackupDocument(
@@ -460,7 +462,8 @@ export default function localBackupPolicyTest(): void {
       const plan = adaptLocalBackupDocumentForRestore(
         parsed as LocalBackupDocument, 'owner-target', true);
       expect(plan !== null).assertTrue();
-      expect(plan?.presentTables.indexOf('vncrecordv2') < 0)
+      if (plan === null) { return; }
+      expect(plan.presentTables.indexOf('vncrecordv2') < 0)
         .assertTrue();
       expect(plan?.tables['remotehosts'][0]['userid'])
         .assertEqual('owner-target');
@@ -471,13 +474,13 @@ export default function localBackupPolicyTest(): void {
     it('redacts_secrets_totp_and_device_trust', 0, (): void => {
       const tables = emptyTables();
       tables['cryptoparams'].push({
-        id: 'salt', key: 'crypto_salt', value: 'secret'
+        'id': 'salt', 'key': 'crypto_salt', 'value': 'secret'
       });
       tables['remotehosts'].push({
-        id: 'host-1', userid: 'owner-test', label: 'host',
-        passward: 'password',
-        sshhostkeyfingerprintsha256: 'fingerprint',
-        displayconfig: '{"width":1920,"height":1080,' +
+        'id': 'host-1', 'userid': 'owner-test', 'label': 'host',
+        'passward': 'password',
+        'sshhostkeyfingerprintsha256': 'fingerprint',
+        'displayconfig': '{"width":1920,"height":1080,' +
           '"_remoteDeskExtensionV1":{' +
           '"sshhostkeyfingerprintsha256":"nested-fingerprint",' +
           '"password":"nested-password",' +
@@ -488,31 +491,31 @@ export default function localBackupPolicyTest(): void {
           '"rdpgatewayservername":"gateway.example.test"}}'
       });
       tables['sshkeys'].push({
-        id: 'key-1', userid: 'owner-test',
-        privatekey: 'private', publickey: 'public'
+        'id': 'key-1', 'userid': 'owner-test',
+        'privatekey': 'private', 'publickey': 'public'
       });
       tables['totpentries'].push({
-        id: 'totp-1', userid: 'owner-test',
-        secret: 'totp-secret'
+        'id': 'totp-1', 'userid': 'owner-test',
+        'secret': 'totp-secret'
       });
       tables['usersettings'].push({
-        id: 'setting:accentColor', userid: 'owner-test',
-        payload: '{"accentColor":"#336699",' +
+        'id': 'setting:accentColor', 'userid': 'owner-test',
+        'payload': '{"accentColor":"#336699",' +
           '"accessToken":"must-not-export"}',
-        schemaversion: '1', updatedat: '100'
+        'schemaversion': '1', 'updatedat': '100'
       }, {
-        id: 'setting:loginToken', userid: 'owner-test',
-        key: 'loginToken', value: '"must-not-export"',
-        schemaversion: '1', updatedat: '100'
+        'id': 'setting:loginToken', 'userid': 'owner-test',
+        'key': 'loginToken', 'value': '"must-not-export"',
+        'schemaversion': '1', 'updatedat': '100'
       });
       const document = createLocalBackupDocument(
         tables, 100, '1.0.8', [{
-          id: 'remotehosts:host-1', tablename: 'remotehosts',
-          recordid: 'host-1',
-          payload: '{"sshkeypassphrase":"passphrase",' +
+          'id': 'remotehosts:host-1', 'tablename': 'remotehosts',
+          'recordid': 'host-1',
+          'payload': '{"sshkeypassphrase":"passphrase",' +
             '"sshhostkeyfingerprintsha256":"trust",' +
             '"rustdeskdirectport":"21117"}',
-          updatedat: '100'
+          'updatedat': '100'
         }], {}, 'owner-test');
       expect(document.tables['cryptoparams'] === undefined)
         .assertTrue();
@@ -630,7 +633,8 @@ export default function localBackupPolicyTest(): void {
       const plan = adaptLocalBackupDocumentForRestore(
         parsed as LocalBackupDocument, 'owner-target', true);
       expect(plan !== null).assertTrue();
-      expect(plan?.presentTables.indexOf('vncrecordv2') < 0)
+      if (plan === null) { return; }
+      expect(plan.presentTables.indexOf('vncrecordv2') < 0)
         .assertTrue();
       expect(plan?.presentLocalTables.length).assertEqual(0);
       expect(plan?.extensionsPresent).assertFalse();
@@ -730,10 +734,10 @@ export default function localBackupPolicyTest(): void {
       const host: Record<string, string> =
         portableVncHostRow(owner, 'vnc-host');
       const secret: Record<string, string> = {
-        id: 'vnc-secret', userid: owner, recordtype: 'secret'
+        'id': 'vnc-secret', 'userid': owner, 'recordtype': 'secret'
       };
       const trust: Record<string, string> = {
-        id: 'vnc-trust', userid: owner, recordtype: 'trust'
+        'id': 'vnc-trust', 'userid': owner, 'recordtype': 'trust'
       };
       const tombstone: Record<string, string> =
         portableVncHostRow(owner, 'vnc-deleted');
@@ -742,7 +746,7 @@ export default function localBackupPolicyTest(): void {
         host, secret, trust, tombstone);
       const document = createLocalBackupDocument(
         tables, 100, '1.0.8', [], {
-          vnclocalrecords: [secret, trust]
+          'vnclocalrecords': [secret, trust]
         }, owner);
       expect(document.manifest?.trust.vncTrustCandidatesIncluded).assertFalse();
       expect(document.manifest?.trust.vncLocalConfirmationMarkerIncluded).assertFalse();

@@ -40,6 +40,7 @@ import {
   localBackupSha256,
   validateLocalBackupDocument
 } from '../main/ets/services/LocalBackupPolicy';
+import { withoutKey } from './helpers/RecordTestUtils';
 
 function portableTables():
   Record<string, Array<Record<string, string>>> {
@@ -91,35 +92,35 @@ function hostRecord(
   mutationId: string = 'host-mutation', syncVersion: number = 1
 ): MoonlightRecord {
   return recordFromBusiness('host', id, 'owner-a', {
-    schemaVersion: 1,
-    serverUuid,
-    displayName: 'Living Room PC',
-    addresses: [{ host: '192.0.2.10', family: 'ipv4', port: 47989 }],
-    preferredAddressKey: 'ipv4|192.0.2.10|47989',
-    hostType: 'sunshine',
-    wakeOnLan: { enabled: false, mac: '', broadcast: '' },
-    userOrder: 0
+    'schemaVersion': 1,
+    'serverUuid': serverUuid,
+    'displayName': 'Living Room PC',
+    'addresses': [{ 'host': '192.0.2.10', 'family': 'ipv4', 'port': 47989 } as Record<string, Object>],
+    'preferredAddressKey': 'ipv4|192.0.2.10|47989',
+    'hostType': 'sunshine',
+    'wakeOnLan': { 'enabled': false, 'mac': '', 'broadcast': '' } as Record<string, Object>,
+    'userOrder': 0
   }, mutationId, syncVersion);
 }
 
 function trustRecord(): MoonlightRecord {
   return recordFromBusiness('trust', 'trust-1', 'host-1', {
-    schemaVersion: 1,
-    hostId: 'host-1',
-    serverUuid: 'server-1',
-    serverCertificateSha256: 'a'.repeat(64),
-    pairingGeneration: 1,
-    candidateObservedAt: 200
+    'schemaVersion': 1,
+    'hostId': 'host-1',
+    'serverUuid': 'server-1',
+    'serverCertificateSha256': 'a'.repeat(64),
+    'pairingGeneration': 1,
+    'candidateObservedAt': 200
   }, 'trust-mutation');
 }
 
 function identityRecord(): MoonlightRecord {
   const record: MoonlightRecord = recordFromBusiness(
     'secret', 'identity-1', 'owner-a', {
-      schemaVersion: 1,
-      identityVersion: 1,
-      certificateSha256: 'b'.repeat(64),
-      storageMode: 'cloudEncryptedPending'
+      'schemaVersion': 1,
+      'identityVersion': 1,
+      'certificateSha256': 'b'.repeat(64),
+      'storageMode': 'cloudEncryptedPending'
     }, 'identity-mutation');
   record.ciphertext = 'AQID';
   record.envelopeVersion = 1;
@@ -195,16 +196,16 @@ export default function moonlightBackupPolicyTest(): void {
     it('requires_explicit_activation_only_for_cloud_eligible_restore_rows',
       0, (): void => {
         expect(moonlightBackupRowsRequireCloudActivation([
-          { recordtype: 'trust' }
+          { 'recordtype': 'trust' }
         ])).assertFalse();
         expect(moonlightBackupRowsRequireCloudActivation([
-          { recordtype: 'secret' }, { recordtype: 'trust' }
+          { 'recordtype': 'secret' }, { 'recordtype': 'trust' }
         ])).assertFalse();
         expect(moonlightBackupRowsRequireCloudActivation([
-          { recordtype: 'host' }
+          { 'recordtype': 'host' }
         ])).assertTrue();
         expect(moonlightBackupRowsRequireCloudActivation([
-          { recordtype: 'profile' }, { recordtype: 'trust' }
+          { 'recordtype': 'profile' }, { 'recordtype': 'trust' }
         ])).assertTrue();
       });
 
@@ -262,9 +263,10 @@ export default function moonlightBackupPolicyTest(): void {
         const plan = adaptLocalBackupDocumentForRestore(
           document, 'owner-a', false);
         expect(plan !== null).assertTrue();
-        expect(plan?.presentTables.indexOf(MOONLIGHT_CLOUD_TABLE) < 0)
+        if (plan === null) { return; }
+        expect(plan.presentTables.indexOf(MOONLIGHT_CLOUD_TABLE) < 0)
           .assertTrue();
-        expect(plan?.presentLocalTables.indexOf(MOONLIGHT_LOCAL_TABLE) >= 0)
+        expect(plan.presentLocalTables.indexOf(MOONLIGHT_LOCAL_TABLE) >= 0)
           .assertTrue();
         expect(plan?.localTables[MOONLIGHT_LOCAL_TABLE][0]['localonly'])
           .assertEqual('1');
@@ -279,7 +281,7 @@ export default function moonlightBackupPolicyTest(): void {
           moonlightRecordPayloadHashSha256(localHost);
         const document = createLocalBackupDocument(
           portableTables(), 300, '1.1.0', [], {
-            moonlightlocalrecords: [localRow(localHost)]
+            'moonlightlocalrecords': [localRow(localHost)]
           }, 'device-local');
         expect(document.localTables?.moonlightlocalrecords.length)
           .assertEqual(1);
@@ -288,7 +290,8 @@ export default function moonlightBackupPolicyTest(): void {
         const plan = adaptLocalBackupDocumentForRestore(
           document, 'device-local', false);
         expect(plan !== null).assertTrue();
-        expect(plan?.presentLocalTables.indexOf(
+        if (plan === null) { return; }
+        expect(plan.presentLocalTables.indexOf(
           MOONLIGHT_LOCAL_TABLE) >= 0).assertTrue();
         expect(plan?.localTables[MOONLIGHT_LOCAL_TABLE][0]['localonly'])
           .assertEqual('1');
@@ -392,12 +395,12 @@ export default function moonlightBackupPolicyTest(): void {
           'moonlight-host|legacy-v0', 'server-1', 'legacy-host', 1);
         const deletedTrust: MoonlightRecord = recordFromBusiness(
           'trust', canonicalTrustId, canonicalHostId, {
-            schemaVersion: 1,
-            hostId: canonicalHostId,
-            serverUuid: 'server-1',
-            serverCertificateSha256: 'a'.repeat(64),
-            pairingGeneration: 2,
-            candidateObservedAt: 200
+            'schemaVersion': 1,
+            'hostId': canonicalHostId,
+            'serverUuid': 'server-1',
+            'serverCertificateSha256': 'a'.repeat(64),
+            'pairingGeneration': 2,
+            'candidateObservedAt': 200
           }, 'canonical-unpair', 2);
         deletedTrust.payload = '{}';
         deletedTrust.updatedAt = 300;
@@ -406,12 +409,12 @@ export default function moonlightBackupPolicyTest(): void {
           moonlightRecordPayloadHashSha256(deletedTrust);
         const legacyTrust: MoonlightRecord = recordFromBusiness(
           'trust', 'moonlight-trust|legacy-v0', legacyHost.id, {
-            schemaVersion: 1,
-            hostId: legacyHost.id,
-            serverUuid: 'server-1',
-            serverCertificateSha256: 'a'.repeat(64),
-            pairingGeneration: 1,
-            candidateObservedAt: 100
+            'schemaVersion': 1,
+            'hostId': legacyHost.id,
+            'serverUuid': 'server-1',
+            'serverCertificateSha256': 'a'.repeat(64),
+            'pairingGeneration': 1,
+            'candidateObservedAt': 100
           }, 'legacy-trust', 1);
         const result = resolveMoonlightBackupForRestore([
           moonlightRecordToCloudRow(legacyHost),
@@ -434,12 +437,12 @@ export default function moonlightBackupPolicyTest(): void {
         const legacyHostId: string = 'moonlight-host|legacy-v0';
         const legacyTrust: MoonlightRecord = recordFromBusiness(
           'trust', 'moonlight-trust|legacy-v0', legacyHostId, {
-            schemaVersion: 1,
-            hostId: legacyHostId,
-            serverUuid: 'server-1',
-            serverCertificateSha256: 'a'.repeat(64),
-            pairingGeneration: 1,
-            candidateObservedAt: 100
+            'schemaVersion': 1,
+            'hostId': legacyHostId,
+            'serverUuid': 'server-1',
+            'serverCertificateSha256': 'a'.repeat(64),
+            'pairingGeneration': 1,
+            'candidateObservedAt': 100
           }, 'legacy-trust', 1);
         const legacyDeleted: MoonlightRecord =
           MoonlightRecord.fromJSON(legacyTrust.toJSON());
@@ -517,13 +520,13 @@ export default function moonlightBackupPolicyTest(): void {
       (): void => {
         const document = createLocalBackupDocument(
           portableTables(), 300, '1.0.10', [], {}, 'owner-a');
-        delete document.tables[MOONLIGHT_CLOUD_TABLE];
+        document.tables = withoutKey(document.tables, MOONLIGHT_CLOUD_TABLE);
         if (document.localTables !== undefined) {
-          delete document.localTables[MOONLIGHT_LOCAL_TABLE];
+          document.localTables = withoutKey(document.localTables, MOONLIGHT_LOCAL_TABLE);
         }
         const manifest: BackupManifestV3 =
           document.manifest as BackupManifestV3;
-        delete manifest.moonlight;
+        manifest.moonlight = undefined;
         const kept: BackupSectionManifestV3[] = [];
         for (let i = 0; i < manifest.sections.length; i++) {
           if (manifest.sections[i].table !== MOONLIGHT_CLOUD_TABLE &&
@@ -568,7 +571,7 @@ export default function moonlightBackupPolicyTest(): void {
     it('never_serializes_the_non_portable_app_cache_table', 0,
       (): void => {
         const tables = portableTables();
-        tables[MOONLIGHT_APP_CACHE_TABLE] = [{ id: 'cache-1' }];
+        tables[MOONLIGHT_APP_CACHE_TABLE] = [{ 'id': 'cache-1' }];
         const document = createLocalBackupDocument(
           tables, 300, '1.1.0', [], {}, 'owner-a');
         expect(JSON.stringify(document)

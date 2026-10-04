@@ -34,6 +34,7 @@ import {
   MoonlightRepositoryCommit,
   MoonlightRepositoryReadResult
 } from '../main/ets/services/MoonlightRepository';
+import { withoutKey } from './helpers/RecordTestUtils';
 
 function lease(owner: string = 'owner-a', generation: number = 1,
   instance: number = 1): AccountSessionLease {
@@ -50,13 +51,13 @@ function hostRecord(id: string, mutationId: string,
     baseSyncVersion: 0, fieldVersions: { 'displayName': 1 }
   };
   const payload = moonlightPayloadWithMeta({
-    schemaVersion: 1, serverUuid: 'server-' + id,
-    displayName: 'PC ' + id,
-    addresses: [{ host: '192.0.2.30', family: 'ipv4', port: 47989 }],
-    preferredAddressKey: 'ipv4|192.0.2.30|47989',
-    hostType: 'sunshine',
-    wakeOnLan: { enabled: false, mac: '', broadcast: '' },
-    userOrder: 0
+    'schemaVersion': 1, 'serverUuid': 'server-' + id,
+    'displayName': 'PC ' + id,
+    'addresses': [{ 'host': '192.0.2.30', 'family': 'ipv4', 'port': 47989 } as Record<string, Object>],
+    'preferredAddressKey': 'ipv4|192.0.2.30|47989',
+    'hostType': 'sunshine',
+    'wakeOnLan': { 'enabled': false, 'mac': '', 'broadcast': '' } as Record<string, Object>,
+    'userOrder': 0
   }, meta, 'host');
   const record = new MoonlightRecord();
   record.id = id;
@@ -78,15 +79,15 @@ function scopedHostRecord(id: string, mutationId: string): MoonlightRecord {
     baseSyncVersion: 0, fieldVersions: { 'addresses': 1 }
   };
   const payload = moonlightPayloadWithMeta({
-    schemaVersion: 1, serverUuid: 'server-' + id,
-    displayName: 'Scoped PC ' + id,
-    addresses: [{
-      host: 'fe80::20', family: 'ipv6', port: 47989, scope: 'wlan0'
-    }],
-    preferredAddressKey: 'ipv6|fe80::20%wlan0|47989',
-    hostType: 'sunshine',
-    wakeOnLan: { enabled: false, mac: '', broadcast: '' },
-    userOrder: 0
+    'schemaVersion': 1, 'serverUuid': 'server-' + id,
+    'displayName': 'Scoped PC ' + id,
+    'addresses': [{
+      'host': 'fe80::20', 'family': 'ipv6', 'port': 47989, 'scope': 'wlan0'
+    } as Record<string, Object>],
+    'preferredAddressKey': 'ipv6|fe80::20%wlan0|47989',
+    'hostType': 'sunshine',
+    'wakeOnLan': { 'enabled': false, 'mac': '', 'broadcast': '' } as Record<string, Object>,
+    'userOrder': 0
   }, meta, 'host');
   const record = new MoonlightRecord();
   record.id = id;
@@ -108,11 +109,10 @@ function embeddedScopedHostRecord(id: string, mutationId: string): MoonlightReco
   const addresses: Array<Record<string, Object>> =
     payload['addresses'] as Array<Record<string, Object>>;
   addresses[0]['host'] = 'fe80::20%wlan0';
-  delete addresses[0]['scope'];
+  addresses[0] = withoutKey(addresses[0], 'scope');
   const meta: MoonlightRecordMeta = payload['_meta'] as MoonlightRecordMeta;
-  delete payload['_meta'];
   record.payload = moonlightPayloadWithMeta(
-    payload, meta, 'host').canonical;
+    withoutKey(payload, '_meta'), meta, 'host').canonical;
   record.payloadHashSha256 = moonlightRecordPayloadHashSha256(record);
   return record;
 }
@@ -123,9 +123,9 @@ function identityRecord(): MoonlightRecord {
     baseSyncVersion: 0, fieldVersions: {}
   };
   const payload = moonlightPayloadWithMeta({
-    schemaVersion: 1, identityVersion: 1,
-    certificateSha256: 'c'.repeat(64),
-    storageMode: 'cloudEncryptedPending'
+    'schemaVersion': 1, 'identityVersion': 1,
+    'certificateSha256': 'c'.repeat(64),
+    'storageMode': 'cloudEncryptedPending'
   }, meta, 'secret');
   const record = new MoonlightRecord();
   record.id = 'identity-1';
@@ -160,7 +160,7 @@ function settingsRecord(mutationId: string, baseSyncVersion: number,
     fieldVersions: fieldVersions
   };
   const payload = moonlightPayloadWithMeta(
-    settings as Record<string, Object>, meta, 'settings');
+    JSON.parse(JSON.stringify(settings)) as Record<string, Object>, meta, 'settings');
   const record = new MoonlightRecord();
   record.id = 'settings-owner-a';
   record.userId = 'owner-a';
@@ -495,8 +495,7 @@ export default function moonlightCloudSyncServiceTest(): void {
         port.rows.set('h1', hostRecord('h1', 'local'));
         port.localOnly.set('h1', 1);
         const malformed: Record<string, string> =
-          moonlightRecordToCloudRow(hostRecord('bad', 'bad'));
-        delete malformed['ownerid'];
+          withoutKey(moonlightRecordToCloudRow(hostRecord('bad', 'bad')), 'ownerid');
         const valid: Record<string, string> =
           moonlightRecordToCloudRow(hostRecord('good', 'cloud'));
         const service = new MoonlightCloudSyncService(
@@ -600,8 +599,7 @@ export default function moonlightCloudSyncServiceTest(): void {
         const port = new MemoryCloudSyncPort();
         const service = new MoonlightCloudSyncService(port, encryptedIdentity);
         const malformed: Record<string, string> =
-          moonlightRecordToCloudRow(hostRecord('bad', 'bad'));
-        delete malformed['ownerid'];
+          withoutKey(moonlightRecordToCloudRow(hostRecord('bad', 'bad')), 'ownerid');
         const result = service.materializeDownloadedRows(lease(), [
           malformed,
           moonlightRecordToCloudRow(hostRecord('good', 'good'))

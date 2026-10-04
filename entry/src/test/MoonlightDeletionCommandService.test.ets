@@ -62,45 +62,45 @@ function recordBusiness(type: MoonlightRecordType,
   }
   if (type === 'host') {
     return {
-      schemaVersion: 1,
-      serverUuid: 'server-' + hostId,
-      displayName: 'PC ' + hostId,
-      addresses: [{ host: '192.0.2.20', family: 'ipv4', port: 47989 }],
-      preferredAddressKey: 'ipv4|192.0.2.20|47989',
-      hostType: 'sunshine',
-      wakeOnLan: { enabled: false, mac: '', broadcast: '' },
-      userOrder: 0
+      'schemaVersion': 1,
+      'serverUuid': 'server-' + hostId,
+      'displayName': 'PC ' + hostId,
+      'addresses': [{ 'host': '192.0.2.20', 'family': 'ipv4', 'port': 47989 } as Record<string, Object>],
+      'preferredAddressKey': 'ipv4|192.0.2.20|47989',
+      'hostType': 'sunshine',
+      'wakeOnLan': { 'enabled': false, 'mac': '', 'broadcast': '' } as Record<string, Object>,
+      'userOrder': 0
     };
   }
   if (type === 'profile') {
     return {
-      schemaVersion: 1,
-      hostId,
-      appId: 'app-' + hostId,
-      titleSnapshot: 'Desktop',
-      streamOverrides: {
-        codecPreference: 'h264', fps: 60, bitrateKbps: 20000
-      },
-      inputOverrides: { touchMode: 'touch', controllerSlot: -1 },
-      favorite: false,
-      userOrder: 0
+      'schemaVersion': 1,
+      'hostId': hostId,
+      'appId': 'app-' + hostId,
+      'titleSnapshot': 'Desktop',
+      'streamOverrides': {
+        'codecPreference': 'h264', 'fps': 60, 'bitrateKbps': 20000
+      } as Record<string, Object>,
+      'inputOverrides': { 'touchMode': 'touch', 'controllerSlot': -1 } as Record<string, Object>,
+      'favorite': false,
+      'userOrder': 0
     };
   }
   if (type === 'trust') {
     return {
-      schemaVersion: 1,
-      hostId,
-      serverUuid: 'server-' + hostId,
-      serverCertificateSha256: 'a'.repeat(64),
-      pairingGeneration: 1,
-      candidateObservedAt: 200
+      'schemaVersion': 1,
+      'hostId': hostId,
+      'serverUuid': 'server-' + hostId,
+      'serverCertificateSha256': 'a'.repeat(64),
+      'pairingGeneration': 1,
+      'candidateObservedAt': 200
     };
   }
   return {
-    schemaVersion: 1,
-    identityVersion: 1,
-    certificateSha256: 'b'.repeat(64),
-    storageMode: 'cloudEncryptedPending'
+    'schemaVersion': 1,
+    'identityVersion': 1,
+    'certificateSha256': 'b'.repeat(64),
+    'storageMode': 'cloudEncryptedPending'
   };
 }
 

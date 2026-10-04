@@ -28,14 +28,14 @@ function baseMeta(): MoonlightRecordMeta {
 
 function validHostRecord(): MoonlightRecord {
   const payload = moonlightPayloadWithMeta({
-    schemaVersion: 1,
-    serverUuid: 'server-uuid-1',
-    displayName: 'Living Room PC',
-    addresses: [{ host: '192.0.2.10', family: 'ipv4', port: 47989 }],
-    preferredAddressKey: 'ipv4|192.0.2.10|47989',
-    hostType: 'sunshine',
-    wakeOnLan: { enabled: false, mac: '', broadcast: '' },
-    userOrder: 0
+    'schemaVersion': 1,
+    'serverUuid': 'server-uuid-1',
+    'displayName': 'Living Room PC',
+    'addresses': [{ 'host': '192.0.2.10', 'family': 'ipv4', 'port': 47989 } as Record<string, Object>],
+    'preferredAddressKey': 'ipv4|192.0.2.10|47989',
+    'hostType': 'sunshine',
+    'wakeOnLan': { 'enabled': false, 'mac': '', 'broadcast': '' } as Record<string, Object>,
+    'userOrder': 0
   }, baseMeta(), 'host');
   const record = new MoonlightRecord();
   record.id = 'moonlight-host-1';
@@ -69,14 +69,14 @@ export default function moonlightRecordPolicyTest(): void {
     });
 
     it('injects_only_policy_owned_meta_with_stable_field_paths', 0, (): void => {
-      const result = moonlightPayloadWithMeta({ schemaVersion: 1 }, baseMeta(), 'host');
+      const result = moonlightPayloadWithMeta({ 'schemaVersion': 1 }, baseMeta(), 'host');
       expect(result.ok).assertTrue();
       expect(result.canonical.indexOf('"mutationId":"mutation-1"') >= 0).assertTrue();
       const invalid = baseMeta();
       invalid.fieldVersions = { 'serverUuid': 1 };
-      expect(moonlightPayloadWithMeta({ schemaVersion: 1 }, invalid, 'host').reason)
+      expect(moonlightPayloadWithMeta({ 'schemaVersion': 1 }, invalid, 'host').reason)
         .assertEqual('invalid_meta');
-      expect(moonlightPayloadWithMeta({ _meta: {}, schemaVersion: 1 }, baseMeta(), 'host').reason)
+      expect(moonlightPayloadWithMeta({ '_meta': {} as Record<string, Object>, 'schemaVersion': 1 }, baseMeta(), 'host').reason)
         .assertEqual('invalid_meta');
     });
 
@@ -120,7 +120,7 @@ export default function moonlightRecordPolicyTest(): void {
       const normalized = normalizeMoonlightSettingsForLocalStorage(settings);
       expect(normalized.video.scalingMode === undefined).assertTrue();
       expect(normalized.background.allowPip === undefined).assertTrue();
-      expect(moonlightPayloadWithMeta({ schemaVersion: 1 }, legacyMeta, 'settings').reason)
+      expect(moonlightPayloadWithMeta({ 'schemaVersion': 1 }, legacyMeta, 'settings').reason)
         .assertEqual('invalid_meta');
     });
 
@@ -136,30 +136,30 @@ export default function moonlightRecordPolicyTest(): void {
     it('accepts_a_custom_https_port_and_rejects_invalid_port_semantics', 0, (): void => {
       const record = validHostRecord();
       const customPort = moonlightPayloadWithMeta({
-        schemaVersion: 1,
-        serverUuid: 'server-uuid-1',
-        displayName: 'Living Room PC',
-        addresses: [{ host: '192.0.2.10', family: 'ipv4', port: 47989 }],
-        preferredAddressKey: 'ipv4|192.0.2.10|47989',
-        httpsPort: 48084,
-        hostType: 'sunshine',
-        wakeOnLan: { enabled: false, mac: '', broadcast: '' },
-        userOrder: 0
+        'schemaVersion': 1,
+        'serverUuid': 'server-uuid-1',
+        'displayName': 'Living Room PC',
+        'addresses': [{ 'host': '192.0.2.10', 'family': 'ipv4', 'port': 47989 } as Record<string, Object>],
+        'preferredAddressKey': 'ipv4|192.0.2.10|47989',
+        'httpsPort': 48084,
+        'hostType': 'sunshine',
+        'wakeOnLan': { 'enabled': false, 'mac': '', 'broadcast': '' } as Record<string, Object>,
+        'userOrder': 0
       }, baseMeta(), 'host');
       record.payload = customPort.canonical;
       record.payloadHashSha256 = moonlightRecordPayloadHashSha256(record);
       expect(moonlightValidateRecord(record).valid).assertTrue();
 
       const invalidPort = moonlightPayloadWithMeta({
-        schemaVersion: 1,
-        serverUuid: 'server-uuid-1',
-        displayName: 'Living Room PC',
-        addresses: [{ host: '192.0.2.10', family: 'ipv4', port: 47989 }],
-        preferredAddressKey: 'ipv4|192.0.2.10|47989',
-        httpsPort: 0,
-        hostType: 'sunshine',
-        wakeOnLan: { enabled: false, mac: '', broadcast: '' },
-        userOrder: 0
+        'schemaVersion': 1,
+        'serverUuid': 'server-uuid-1',
+        'displayName': 'Living Room PC',
+        'addresses': [{ 'host': '192.0.2.10', 'family': 'ipv4', 'port': 47989 } as Record<string, Object>],
+        'preferredAddressKey': 'ipv4|192.0.2.10|47989',
+        'httpsPort': 0,
+        'hostType': 'sunshine',
+        'wakeOnLan': { 'enabled': false, 'mac': '', 'broadcast': '' } as Record<string, Object>,
+        'userOrder': 0
       }, baseMeta(), 'host');
       record.payload = invalidPort.canonical;
       record.payloadHashSha256 = moonlightRecordPayloadHashSha256(record);
@@ -193,8 +193,8 @@ export default function moonlightRecordPolicyTest(): void {
         baseSyncVersion: 0, fieldVersions: {}
       };
       const payload = moonlightPayloadWithMeta({
-        schemaVersion: 1, identityVersion: 1,
-        certificateSha256: 'a'.repeat(64), storageMode: 'cloudEncryptedPending'
+        'schemaVersion': 1, 'identityVersion': 1,
+        'certificateSha256': 'a'.repeat(64), 'storageMode': 'cloudEncryptedPending'
       }, meta, 'secret');
       const record = new MoonlightRecord();
       record.id = 'identity-1';
@@ -216,7 +216,7 @@ export default function moonlightRecordPolicyTest(): void {
       expect(moonlightValidateRecord(record).valid).assertTrue();
 
       const unsafe = moonlightPayloadWithMeta({
-        schemaVersion: 1, identityVersion: 1, privateKey: 'plaintext'
+        'schemaVersion': 1, 'identityVersion': 1, 'privateKey': 'plaintext'
       }, meta, 'secret');
       record.payload = unsafe.canonical;
       record.payloadHashSha256 = moonlightRecordPayloadHashSha256(record);
@@ -244,8 +244,8 @@ export default function moonlightRecordPolicyTest(): void {
       record.ownerType = 'account';
       record.secretKind = 'client_identity';
       record.payload = moonlightPayloadWithMeta({
-        schemaVersion: 1, identityVersion: 1, certificateSha256: 'b'.repeat(64),
-        storageMode: 'cloudEncryptedPending', recoveryState: { privateKey: 'nested-plaintext' }
+        'schemaVersion': 1, 'identityVersion': 1, 'certificateSha256': 'b'.repeat(64),
+        'storageMode': 'cloudEncryptedPending', 'recoveryState': { 'privateKey': 'nested-plaintext' } as Record<string, Object>
       }, meta, 'secret').canonical;
       record.ciphertext = 'AQID';
       record.envelopeVersion = 1;
@@ -260,18 +260,18 @@ export default function moonlightRecordPolicyTest(): void {
 
       const host = validHostRecord();
       const invalidHost = moonlightPayloadWithMeta({
-        schemaVersion: 1, serverUuid: 'server-uuid-1', displayName: 'Living Room PC',
-        addresses: [], preferredAddressKey: '', hostType: 'sunshine',
-        wakeOnLan: { enabled: false, mac: '', broadcast: '' }, userOrder: 0
+        'schemaVersion': 1, 'serverUuid': 'server-uuid-1', 'displayName': 'Living Room PC',
+        'addresses': [], 'preferredAddressKey': '', 'hostType': 'sunshine',
+        'wakeOnLan': { 'enabled': false, 'mac': '', 'broadcast': '' } as Record<string, Object>, 'userOrder': 0
       }, baseMeta(), 'host');
       host.payload = invalidHost.canonical;
       host.payloadHashSha256 = moonlightRecordPayloadHashSha256(host);
       expect(moonlightValidateRecord(host).reason).assertEqual('invalid_payload_semantics');
 
       const malformedAddress = moonlightPayloadWithMeta({
-        schemaVersion: 1, serverUuid: 'server-uuid-1', displayName: 'Living Room PC',
-        addresses: [{ host: 7, family: 'ipv4', port: 47989 }], preferredAddressKey: '',
-        hostType: 'sunshine', wakeOnLan: { enabled: false, mac: '', broadcast: '' }, userOrder: 0
+        'schemaVersion': 1, 'serverUuid': 'server-uuid-1', 'displayName': 'Living Room PC',
+        'addresses': [{ 'host': 7, 'family': 'ipv4', 'port': 47989 } as Record<string, Object>], 'preferredAddressKey': '',
+        'hostType': 'sunshine', 'wakeOnLan': { 'enabled': false, 'mac': '', 'broadcast': '' } as Record<string, Object>, 'userOrder': 0
       }, baseMeta(), 'host');
       host.payload = malformedAddress.canonical;
       host.payloadHashSha256 = moonlightRecordPayloadHashSha256(host);

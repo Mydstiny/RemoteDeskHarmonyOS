@@ -182,7 +182,7 @@ export default function moonlightLanDiscoveryServiceTest(): void {
         const port: FakeMoonlightMdnsPort = new FakeMoonlightMdnsPort();
         const results: Array<MoonlightLanDiscoveryCandidate> = [];
         const service: MoonlightLanDiscoveryService = new MoonlightLanDiscoveryService(
-          undefined as common.Context, port);
+          {} as common.Context, port);
 
         expect(service.start('owner-a', 4, (candidate: MoonlightLanDiscoveryCandidate): void => {
           results.push(candidate);
@@ -213,7 +213,7 @@ export default function moonlightLanDiscoveryServiceTest(): void {
         const port: FakeMoonlightMdnsPort = new FakeMoonlightMdnsPort();
         const results: Array<MoonlightLanDiscoveryCandidate> = [];
         const service: MoonlightLanDiscoveryService = new MoonlightLanDiscoveryService(
-          undefined as common.Context, port);
+          {} as common.Context, port);
         service.start('owner-a', 5, (candidate: MoonlightLanDiscoveryCandidate): void => {
           results.push(candidate);
         });
@@ -234,7 +234,7 @@ export default function moonlightLanDiscoveryServiceTest(): void {
       async (): Promise<void> => {
         const port: FakeMoonlightMdnsPort = new FakeMoonlightMdnsPort();
         const service: MoonlightLanDiscoveryService = new MoonlightLanDiscoveryService(
-          undefined as common.Context, port, { maxResults: 2 });
+          {} as common.Context, port, { maxResults: 2 });
         service.start('owner-a', 6, (_candidate: MoonlightLanDiscoveryCandidate): void => {});
         const discovery: FakeMoonlightMdnsDiscovery = port.discoveries[0];
 
@@ -254,7 +254,7 @@ export default function moonlightLanDiscoveryServiceTest(): void {
         const port: FakeMoonlightMdnsPort = new FakeMoonlightMdnsPort();
         const results: Array<MoonlightLanDiscoveryCandidate> = [];
         const service: MoonlightLanDiscoveryService = new MoonlightLanDiscoveryService(
-          undefined as common.Context, port, { maxResults: 2 });
+          {} as common.Context, port, { maxResults: 2 });
         service.start('owner-a', 1, (candidate: MoonlightLanDiscoveryCandidate): void => {
           results.push(candidate);
         });
@@ -282,7 +282,7 @@ export default function moonlightLanDiscoveryServiceTest(): void {
         const port: FakeMoonlightMdnsPort = new FakeMoonlightMdnsPort();
         const results: Array<MoonlightLanDiscoveryCandidate> = [];
         const service: MoonlightLanDiscoveryService = new MoonlightLanDiscoveryService(
-          undefined as common.Context, port, { maxResults: 2 });
+          {} as common.Context, port, { maxResults: 2 });
         service.start('owner-a', 9, (candidate: MoonlightLanDiscoveryCandidate): void => {
           results.push(candidate);
         });
@@ -322,7 +322,7 @@ export default function moonlightLanDiscoveryServiceTest(): void {
         const port: FakeMoonlightMdnsPort = new FakeMoonlightMdnsPort();
         const results: Array<MoonlightLanDiscoveryCandidate> = [];
         const service: MoonlightLanDiscoveryService = new MoonlightLanDiscoveryService(
-          undefined as common.Context, port);
+          {} as common.Context, port);
         service.start('owner-a', 7, (candidate: MoonlightLanDiscoveryCandidate): void => {
           results.push(candidate);
         });
@@ -354,7 +354,7 @@ export default function moonlightLanDiscoveryServiceTest(): void {
       (): void => {
         const port: FakeMoonlightMdnsPort = new FakeMoonlightMdnsPort();
         const service: MoonlightLanDiscoveryService = new MoonlightLanDiscoveryService(
-          undefined as common.Context, port);
+          {} as common.Context, port);
         service.start('owner-a', 2, (_candidate: MoonlightLanDiscoveryCandidate): void => {});
         const discovery: FakeMoonlightMdnsDiscovery = port.discoveries[0];
         discovery.emitFound(serviceInfo('host'));

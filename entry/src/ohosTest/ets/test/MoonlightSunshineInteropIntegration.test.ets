@@ -162,7 +162,7 @@ export default function moonlightSunshineInteropIntegrationTest(): void {
         state.generation = generation;
         state.step = 4;
         state.mode = 'manual';
-        state.manualAddress = host;
+        state.manualAddressText = host;
         state.displayName = displayName;
         state.activeOperation = 'save';
         state.paired = true;

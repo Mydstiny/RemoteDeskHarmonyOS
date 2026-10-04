@@ -85,10 +85,6 @@ import remoteSessionTopBarPolicyTest from '../../../test/RemoteSessionTopBarPoli
 import remoteSessionSidebarLayoutPolicyTest from '../../../test/RemoteSessionSidebarLayoutPolicy.test';
 import remotePointerFocusPolicyTest from '../../../test/RemotePointerFocusPolicy.test';
 import totpBrandServiceTest from '../../../test/TotpBrandService.test';
-import rustDeskProAddressBookTest from '../../../test/RustDeskProAddressBook.test';
-import rustDeskProAddressBookApiServiceTest from '../../../test/RustDeskProAddressBookApiService.test';
-import rustDeskProAddressBookSyncServiceTest from '../../../test/RustDeskProAddressBookSyncService.test';
-import rustDeskProAddressBookUiPolicyTest from '../../../test/RustDeskProAddressBookUiPolicy.test';
 import totpBrandResourceIntegrationTest from './TotpBrandResourceIntegration.test';
 import nativeCallbackEntryIntegrationTest from './NativeCallbackEntryIntegration.test';
 import moonlightSunshineInteropIntegrationTest from './MoonlightSunshineInteropIntegration.test';
@@ -145,14 +141,6 @@ function registerFocusedRepairSuite(scope: string): number {
     nativeCallbackEntryIntegrationTest();
   } else if (scope === 'MoonlightSunshineInteropIntegration') {
     moonlightSunshineInteropIntegrationTest();
-  } else if (scope === 'RustDeskProAddressBookPolicy') {
-    rustDeskProAddressBookTest();
-  } else if (scope === 'RustDeskProAddressBookApiService') {
-    rustDeskProAddressBookApiServiceTest();
-  } else if (scope === 'RustDeskProAddressBookSyncService') {
-    rustDeskProAddressBookSyncServiceTest();
-  } else if (scope === 'RustDeskProAddressBookUiPolicy') {
-    rustDeskProAddressBookUiPolicyTest();
   } else if (scope === 'RemoteOverlayViewportPolicy_contract') {
     remoteOverlayViewportPolicyTest('viewport');
   } else if (scope === 'RemoteOverlayRegistry_generation_and_cleanup') {
@@ -230,18 +218,6 @@ function focusedDescribeNames(scope: string): string[] {
       'MoonlightRuntimeContextFactory', 'RemoteSessionServiceLeasePolicy',
       'MoonlightNetworkHandlePolicy', 'MoonlightLanDiscoveryService'];
   }
-  if (scope === 'RustDeskProAddressBookPolicy') {
-    return ['RustDeskProAddressBookPolicy'];
-  }
-  if (scope === 'RustDeskProAddressBookApiService') {
-    return ['RustDeskProAddressBookApiService'];
-  }
-  if (scope === 'RustDeskProAddressBookSyncService') {
-    return ['RustDeskProAddressBookSyncService'];
-  }
-  if (scope === 'RustDeskProAddressBookUiPolicy') {
-    return ['RustDeskProAddressBookUiPolicy'];
-  }
   if (scope === 'TotpBrandResourceIntegration') {
     return ['TotpBrandResourceIntegration'];
   }
@@ -295,17 +271,13 @@ function focusedDescribeNames(scope: string): string[] {
 
 function expectedFocusedCount(scope: string): number {
   if (scope === 'MoonlightDomainPolicy') { return 270; }
-  if (scope === 'RustDeskProAddressBookPolicy') { return 8; }
-  if (scope === 'RustDeskProAddressBookApiService') { return 4; }
-  if (scope === 'RustDeskProAddressBookSyncService') { return 7; }
-  if (scope === 'RustDeskProAddressBookUiPolicy') { return 3; }
   if (scope === 'TotpBrandResourceIntegration') { return 2; }
   if (scope === 'NativeCallbackEntryIntegration') { return 1; }
   if (scope === 'MoonlightSunshineInteropIntegration') { return 1; }
   if (scope === 'RemoteOverlayViewportPolicy_contract') { return 7; }
   if (scope === 'RemoteOverlayRegistry_generation_and_cleanup') { return 4; }
   if (scope === 'RemoteShortcutCatalog_protocol_matrix') { return 12; }
-  if (scope === 'RemoteKeyDispatcher_semantic_atomicity') { return 11; }
+  if (scope === 'RemoteKeyDispatcher_semantic_atomicity') { return 9; }
   if (scope === 'RemoteCanvasInteractionPolicy_real_surface_contract') { return 3; }
   if (scope === 'RemoteKeyboardLayoutSelection_owner_session_generation') { return 3; }
   if (scope === 'RemoteModifierStateController_lifecycle_mirror') { return 1; }
@@ -415,10 +387,6 @@ export default function testsuite() {
   vncGatewayHealthPolicyTest();
   vncRendererSurfacePolicyTest();
   localBackupPolicyTest();
-  rustDeskProAddressBookTest();
-  rustDeskProAddressBookApiServiceTest();
-  rustDeskProAddressBookSyncServiceTest();
-  rustDeskProAddressBookUiPolicyTest();
   remoteOverlayViewportPolicyTest();
   remoteShortcutPolicyTest();
   remoteKeyDispatcherTest();

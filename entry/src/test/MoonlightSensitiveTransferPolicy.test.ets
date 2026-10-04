@@ -22,6 +22,7 @@ import {
   moonlightPayloadWithMeta,
   moonlightRecordPayloadHashSha256
 } from '../main/ets/services/MoonlightRecordPolicy';
+import { withoutKey } from './helpers/RecordTestUtils';
 
 function identityRecord(): MoonlightRecord {
   const meta: MoonlightRecordMeta = {
@@ -29,9 +30,9 @@ function identityRecord(): MoonlightRecord {
     baseSyncVersion: 0, fieldVersions: {}
   };
   const payload = moonlightPayloadWithMeta({
-    schemaVersion: 1, identityVersion: 1,
-    certificateSha256: 'a'.repeat(64),
-    storageMode: 'cloudEncryptedPending'
+    'schemaVersion': 1, 'identityVersion': 1,
+    'certificateSha256': 'a'.repeat(64),
+    'storageMode': 'cloudEncryptedPending'
   }, meta, 'secret');
   const record = new MoonlightRecord();
   record.id = 'identity-1';
@@ -59,14 +60,14 @@ function hostRecord(owner: string = 'owner-a'): MoonlightRecord {
     baseSyncVersion: 0, fieldVersions: { 'displayName': 1 }
   };
   const payload = moonlightPayloadWithMeta({
-    schemaVersion: 1,
-    serverUuid: 'server-host-1',
-    displayName: 'Host 1',
-    addresses: [{ host: '192.0.2.10', family: 'ipv4', port: 47989 }],
-    preferredAddressKey: 'ipv4|192.0.2.10|47989',
-    hostType: 'sunshine',
-    wakeOnLan: { enabled: false, mac: '', broadcast: '' },
-    userOrder: 0
+    'schemaVersion': 1,
+    'serverUuid': 'server-host-1',
+    'displayName': 'Host 1',
+    'addresses': [{ 'host': '192.0.2.10', 'family': 'ipv4', 'port': 47989 } as Record<string, Object>],
+    'preferredAddressKey': 'ipv4|192.0.2.10|47989',
+    'hostType': 'sunshine',
+    'wakeOnLan': { 'enabled': false, 'mac': '', 'broadcast': '' } as Record<string, Object>,
+    'userOrder': 0
   }, meta, 'host');
   const record = new MoonlightRecord();
   record.id = 'host-1';
@@ -88,12 +89,12 @@ function trustRecord(): MoonlightRecord {
     baseSyncVersion: 0, fieldVersions: {}
   };
   const payload = moonlightPayloadWithMeta({
-    schemaVersion: 1,
-    hostId: 'host-1',
-    serverUuid: 'server-host-1',
-    serverCertificateSha256: 'b'.repeat(64),
-    pairingGeneration: 1,
-    candidateObservedAt: 1
+    'schemaVersion': 1,
+    'hostId': 'host-1',
+    'serverUuid': 'server-host-1',
+    'serverCertificateSha256': 'b'.repeat(64),
+    'pairingGeneration': 1,
+    'candidateObservedAt': 1
   }, meta, 'trust');
   const record = new MoonlightRecord();
   record.id = 'trust-1';
@@ -163,8 +164,7 @@ export default function moonlightSensitiveTransferPolicyTest(): void {
     it('rejects_missing_unknown_and_semantically_tampered_envelopes', 0,
       (): void => {
         const missing: Record<string, string> =
-          moonlightRecordToCloudRow(identityRecord());
-        delete missing['aadversion'];
+          withoutKey(moonlightRecordToCloudRow(identityRecord()), 'aadversion');
         expect(cloudTableRowsAreUploadSafe(
           MOONLIGHT_CLOUD_TABLE, [missing], true, identityCiphertext)).assertFalse();
         const extra: Record<string, string> =
