@@ -1694,6 +1694,11 @@ function validateLocalExtensions(rows: Array<Record<string, string>>,
   return true;
 }
 
+/** Remote-host local-extension keys a backup may carry (registry closure tests). */
+export function localBackupRemoteHostExtensionPayloadKeys(): string[] {
+  return REMOTE_HOST_EXTENSION_PAYLOAD_COLUMNS.slice();
+}
+
 function localExtensionPayloadColumns(table: string): string[] {
   if (table === 'remotehosts') { return REMOTE_HOST_EXTENSION_PAYLOAD_COLUMNS; }
   if (table === 'rdpcredentials') { return ['username']; }

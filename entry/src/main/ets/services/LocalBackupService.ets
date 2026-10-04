@@ -73,6 +73,13 @@ export class LocalBackupService {
           '），包含当前版本无法识别的内容（阶段 ' + this.lastErrorStage + '），未写入任何数据';
       }
       if (this.lastErrorStage === 'hash') { return '备份文件内容已被修改或损坏，完整性校验失败'; }
+      if (this.lastErrorVersion === 3 && (this.lastErrorStage === 'inventory' ||
+        this.lastErrorStage === 'columns' || this.lastErrorStage === 'extensions' ||
+        this.lastErrorStage === 'manifest')) {
+        // Unknown tables, columns or extension keys are what a newer app writes.
+        return '备份包含当前版本无法识别的数据（阶段 ' + this.lastErrorStage +
+          '），可能由更新版本的应用生成，请升级后再恢复；未写入任何数据';
+      }
       return '备份文件未通过校验（阶段 ' + this.lastErrorStage + '），未写入任何数据';
     }
     if (this.lastErrorCode === 'backup_newer_version') {

@@ -42,13 +42,6 @@ function load(file) {
     if (id === '@kit.BasicServicesKit') return { deviceInfo: { deviceType: 'phone' } };
     if (id === '@kit.CoreFileKit' || id === '@kit.AbilityKit' || id === '@kit.ArkUI') return {};
     if (id === '@ohos.systemDateTime') return { getUptime: () => 100, getTime: () => Date.now() };
-    // The sync coordinator reaches platform kits only through paths these
-    // tests do not exercise; any other kit resolves to an inert stub.
-    if (id.startsWith('@ohos.') || id.startsWith('@kit.') || id.endsWith('.so')) {
-      const inert = new Proxy(function () {}, { get: (_t, key) => key === '__esModule' ? false : inert,
-        apply: () => inert, construct: () => inert });
-      return new Proxy({}, { get: () => inert });
-    }
     if (!id.startsWith('.')) throw new Error('Unexpected import ' + id + ' from ' + file);
     const resolved = path.resolve(path.dirname(file), id + '.ets');
     if (!fs.existsSync(resolved) && fs.existsSync(path.resolve(path.dirname(file), id + '.d.ts'))) return {};
@@ -67,6 +60,7 @@ load('entry/src/test/MasterPasswordPolicy.test.ets').default();
 load('entry/src/test/AppCloneContext.test.ets').default();
 load('entry/src/test/BackupCryptoContractPolicy.test.ets').default();
 load('entry/src/test/RemoteHostDeviceTrustRestorePolicy.test.ets').default();
+load('entry/src/test/RemoteHostFieldRegistry.test.ets').default();
 load('entry/src/test/CryptoResetDataPolicy.test.ets').default();
 load('entry/src/test/CloudSyncResetPause.test.ets').default();
 

@@ -210,6 +210,7 @@ import {
   decodeRemoteHostDisplayPayload,
   RemoteHostDisplayPayload
 } from './CloudTableAdapter';
+import { remoteHostDisplayConfigWithForwardFields } from './RemoteHostFieldRegistry';
 import {
   extractLegacyRemoteHostDeviceTrust,
   mergeRemoteHostDeviceTrust,
@@ -8801,11 +8802,23 @@ try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
    * may replace the cloud copy (and other devices' data) with this device's.
    */
   releaseCryptoResetUploadBlock(): boolean {
+    if (!this.store) { return false; }
     const tables: string[] = cryptoResetUploadBlockTables(VNC_CLOUD_TABLE);
-    for (let i = 0; i < tables.length; i++) {
-      if (!this.deleteLocalMetadata(CRYPTO_RESET_UPLOAD_BLOCK_PREFIX + tables[i])) {
-        return false;
+    // All markers go together: a half-released set would let a sensitive
+    // table upload while its cryptoparams stays paused.
+    try {
+      this.store.beginTransaction();
+      for (let i = 0; i < tables.length; i++) {
+        const predicates = new relationalStore.RdbPredicates(LOCAL_METADATA_TABLE);
+        predicates.equalTo('key', CRYPTO_RESET_UPLOAD_BLOCK_PREFIX + tables[i]);
+        this.store.deleteSync(predicates);
       }
+      this.commitTrackedTransaction();
+    } catch (err) {
+      try { this.rollbackTrackedTransaction(); } catch (_rollbackError) {}
+      hilog.error(0x0001, 'CloudSync',
+        '[resetCryptoV3] upload block release failed: ' + safeError(err));
+      return false;
     }
     hilog.warn(0x0001, 'CloudSync', '[resetCryptoV3] upload block released by the user');
     return true;
@@ -13113,6 +13126,28 @@ try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
     }
   }
 
+  /**
+   * Stored displayconfig of an existing host row ('' for a new host), so a
+   * save can keep fields a newer version wrote (F6).
+   */
+  private storedRemoteHostDisplayConfig(hostId: string): string {
+    if (!this.store || hostId === '') { return ''; }
+    let rows: relationalStore.ResultSet | null = null;
+    try {
+      const predicates = new relationalStore.RdbPredicates('remotehosts');
+      predicates.equalTo('id', hostId);
+      this.addCurrentOwnerPredicate(predicates);
+      rows = this.store.querySync(predicates, ['displayconfig']);
+      if (!rows.goToFirstRow()) { return ''; }
+      const index: number = rows.getColumnIndex('displayconfig');
+      return index >= 0 && !rows.isColumnNull(index) ? rows.getString(index) : '';
+    } catch (_e) {
+      return '';
+    } finally {
+      if (rows !== null) { rows.close(); }
+    }
+  }
+
   private hostToBucket(
     h: RemoteHost,
     legacyPersonalization: RemoteHostLegacyPersonalization | null = null
@@ -13159,11 +13194,13 @@ try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
       cloudExtensionValues['rustdeskprosyncerror'] =
         legacyPersonalization.rustdeskProSyncError;
     }
-    vb['displayconfig'] = encodeRemoteHostDisplayPayload(
-      legacyPersonalization === null ? JSON.stringify(h.displayConfig.toJSON()) :
-        legacyPersonalization.displayConfigJson,
-      projectRemoteHostCloudExtension(cloudExtensionValues)
-    );
+    vb['displayconfig'] = remoteHostDisplayConfigWithForwardFields(
+      this.storedRemoteHostDisplayConfig(h.id),
+      encodeRemoteHostDisplayPayload(
+        legacyPersonalization === null ? JSON.stringify(h.displayConfig.toJSON()) :
+          legacyPersonalization.displayConfigJson,
+        projectRemoteHostCloudExtension(cloudExtensionValues)
+      ));
     vb['locked'] = h.locked ? 1 : 0;
     vb['locktype'] = h.lockType;
     vb['groupid'] = h.groupId;
@@ -13982,10 +14019,12 @@ try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
     vb['proxyhost'] = h.proxyHost; vb['proxyport'] = h.proxyPort;
     vb['proxyusername'] = h.proxyUsername;
     vb['gatewayhost'] = h.gatewayHost; vb['gatewayport'] = h.gatewayPort;
-    vb['displayconfig'] = encodeRemoteHostDisplayPayload(
-      JSON.stringify(h.displayConfig.toJSON()),
-      projectRemoteHostCloudExtension(this.hostCloudExtensionValues(h))
-    );
+    vb['displayconfig'] = remoteHostDisplayConfigWithForwardFields(
+      this.storedRemoteHostDisplayConfig(h.id),
+      encodeRemoteHostDisplayPayload(
+        JSON.stringify(h.displayConfig.toJSON()),
+        projectRemoteHostCloudExtension(this.hostCloudExtensionValues(h))
+      ));
     vb['locked'] = h.locked ? 1 : 0; vb['locktype'] = h.lockType;
     vb['groupid'] = h.groupId;
     vb['sortorder'] = h.sortOrder; vb['icon'] = h.icon;
