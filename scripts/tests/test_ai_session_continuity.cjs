@@ -281,7 +281,31 @@ test('the AI settings catalog has the 远程 AI settings, and plain words pick t
     ['跟RDP音频相关的设置', []],
     // A change of mind in its own sentence; a protocol named after the change narrows it.
     ['打开RDP音频。不对，关掉。', ['rdp.audioEnabled=false']],
-    ['把诊断信息显示出来，RDP 的', ['rdp.showDiagnostics=true']]);
+    ['把诊断信息显示出来，RDP 的', ['rdp.showDiagnostics=true']],
+    // A problem described, then something unrelated: no card; only a plain request follows a question.
+    ['剪贴板复制失败，不要紧', []],
+    ['RDP声音就没了，不知道是不是被关了', []],
+    ['声音没反应，不要重连', []],
+    ['RDP 音频是什么？不想让同事看到', []],
+    ['RDP 音频是什么？不想要了吗', []],
+    ['RustDesk隐私模式，我没打开过', []],
+    ['RDP驱动器映射，同事说要关掉', []],
+    ['声音没反应，先在远程电脑上关掉防火墙，再把RDP剪贴板打开', ['rdp.clipboardEnabled=true']],
+    ['RDP音频开着但是声音很小', []],
+    ['RustDesk剪贴板开着但是复制不了', []],
+    // Casual endings, polite endings and 的 at the end.
+    ['RustDesk显示本地光标关掉啦', ['rustdesk.showLocalCursor=false']],
+    ['远程AI显示工具执行过程关掉啦', ['remoteAi.showExecution=false']],
+    ['RDP音频打开并且剪贴板也关掉啦', ['rdp.audioEnabled=true', 'rdp.clipboardEnabled=false']],
+    ['关掉RDP音频好吗', ['rdp.audioEnabled=false']],
+    ['把RDP色深改成16位行吗', ['rdp.colorDepth=16']],
+    ['把外观改成深色的谢谢', ['ui.theme=dark']],
+    ['把RDP色深改成16位的吧谢谢', ['rdp.colorDepth=16']],
+    // Numbered lists.
+    ['1.RustDesk隐私模式打开 2.RustDesk局域网发现关闭', ['rustdesk.lanDiscovery=false', 'rustdesk.privacyMode=true']],
+    ['①RDP音频打开②RDP剪贴板关闭', ['rdp.audioEnabled=true', 'rdp.clipboardEnabled=false']],
+    ['RDP 音频、剪贴板、驱动器映射全部关闭', ['rdp.audioEnabled=false', 'rdp.clipboardEnabled=false', 'rdp.driveEnabled=false']],
+    ['RDP音频和剪贴板打开但是驱动器映射关闭', ['rdp.audioEnabled=true', 'rdp.clipboardEnabled=true', 'rdp.driveEnabled=false']]);
   for (const [question, expected] of cases) {
     assert.deepEqual(pick(question).sort(), expected.slice().sort(), question);
   }
