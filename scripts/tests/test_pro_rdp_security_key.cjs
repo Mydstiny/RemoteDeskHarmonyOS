@@ -108,8 +108,9 @@ function fixture() {
     require(id) { if (mocks[id]) return mocks[id]; throw new Error('unexpected module ' + id); } }, { filename: file });
   const prompts = [];
   const service = new module.exports.ProRdpSecurityKey((prompt) => { prompts.push(prompt); });
-  const request = (fields) => Object.assign({ id: 0, kind: 0, text: '', operation: 0, retries: -1, timeoutMs: 0,
-    report: new Uint8Array(64), payload: new Uint8Array(0) }, fields);
+  // Native gives a passkey request the time left in the remote request (at most 120 s).
+  const request = (fields) => Object.assign({ id: 0, kind: 0, text: '', operation: 0, retries: -1,
+    timeoutMs: fields.kind === 9 ? 60000 : 0, report: new Uint8Array(64), payload: new Uint8Array(0) }, fields);
   const deliver = (...items) => { state.queue.push(...items); state.wake(); };
   return { state, service, prompts, request, deliver, exports: module.exports, Session: ProUsbFidoKeySession,
     last: () => prompts[prompts.length - 1] };
@@ -289,7 +290,8 @@ test('a remote sign-in is signed, sent to the phone and its answer goes back as 
   await settle();
   assert.deepEqual([f.last().kind, f.last().rpId, f.last().register], ['phone', 'github.com', false]);
   const sent = f.state.phoneRequests.pop();
-  assert.deepEqual([sent.op, sent.rpId, sent.ttlMs, sent.from, sent.device.length], ['signin', 'github.com', 45000, 'MateBook', 22]);
+  assert.deepEqual([sent.op, sent.rpId, sent.from, sent.device.length], ['signin', 'github.com', 'MateBook', 22]);
+  assert.ok(sent.ttlMs > 44000 && sent.ttlMs <= 45000, 'the phone gets the time left: ' + sent.ttlMs);
   assert.deepEqual(Array.from(sent.credentialIds), [Buffer.from(credential).toString('base64url')]);
   const b64 = bytes => Buffer.from(bytes).toString('base64url');
   const authData = new Uint8Array(37); authData[32] = 0x05;
@@ -415,6 +417,33 @@ test('when the request cannot go back to selection, there is no switch and no re
   assert.equal(f.state.released, 1);
   f.deliver(f.request({ id: 141, kind: 2 }));
   assert.equal(f.last().error, '');
+});
+
+test('too little time left: the CTAP timeout at once, nothing sent to the phone', async () => {
+  const f = fixture(); f.state.watchId = 1; f.service.attachContext({}); f.service.start(7);
+  f.deliver(f.request({ id: 150, kind: 9, text: 'github.com', operation: 1, timeoutMs: 5000, payload: ctapGetAssertion(null) }));
+  await settle();
+  assert.equal(f.state.phoneRequests.length, 0);
+  assert.deepEqual(f.state.exResponses.pop(), { id: 150, ok: true, payload: [0x2f], authenticator: 1 });
+  assert.equal(f.last(), null);
+});
+
+test('when no selection follows, the reason stays on screen and closing it cancels nothing', async () => {
+  const f = fixture(); f.state.watchId = 1; f.service.attachContext({}); f.service.start(7);
+  f.deliver(f.request({ id: 160, kind: 9, text: 'github.com', operation: 0, payload: ctapGetAssertion(null) }));
+  await settle();
+  const sent = f.state.phoneRequests.pop();
+  f.state.phoneSend({ v: 2, id: sent.id, ok: false, error: 'PASSKEY_BUSY', credentialId: '', authData: '', signature: '',
+    userHandle: '', publicKey: '' });
+  await settle();
+  assert.deepEqual(f.state.exResponses.pop(), { id: 160, ok: false, payload: null, authenticator: 1 });
+  assert.deepEqual([f.last().kind, f.last().phone], ['phone', false]);
+  assert.match(f.last().error, /另一个请求/);
+  const cancels = f.state.cancels;
+  f.service.cancel();
+  assert.equal(f.last(), null);
+  assert.equal(f.state.cancels, cancels);
+  assert.equal(f.state.responses.length, 0);
 });
 
 test('a request that ends while the channel is joined or the request is signed never reaches the phone', async () => {

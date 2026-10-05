@@ -18,7 +18,8 @@ const REQUEST_TTL_MS: number = 90000;
 
 const ERROR_TEXT: Record<string, string> = {
   'PASSKEY_USER_DENIED': '对方拒绝了请求',
-  'PASSKEY_USER_CANCELLED': '验证已取消',
+  'PASSKEY_USER_CANCELLED': '验证已取消（那台设备切到了后台或取消了验证）',
+  'PASSKEY_EXPIRED': '请求已超时，请重新发起',
   'PASSKEY_USER_AUTH_FAILED': '人脸、指纹或锁屏密码验证未通过',
   'PASSKEY_USER_AUTH_UNAVAILABLE': '那台设备不能进行人脸、指纹或锁屏密码验证',
   'PASSKEY_NO_LOCK_SCREEN': '那台设备没有设置锁屏密码，不能保存通行密钥',

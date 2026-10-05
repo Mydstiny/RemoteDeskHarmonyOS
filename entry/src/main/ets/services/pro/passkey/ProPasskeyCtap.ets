@@ -347,6 +347,8 @@ export function ctapStatusForPasskeyError(error: string): number {
       return CTAP2_ERR_NO_CREDENTIALS;
     case 'PASSKEY_CREDENTIAL_EXCLUDED':
       return CTAP2_ERR_CREDENTIAL_EXCLUDED;
+    case 'PASSKEY_EXPIRED':
+      return CTAP2_ERR_USER_ACTION_TIMEOUT;
     default:
       return CTAP1_ERR_OTHER;
   }

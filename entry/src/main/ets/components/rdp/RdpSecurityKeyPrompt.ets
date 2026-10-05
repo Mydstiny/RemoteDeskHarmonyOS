@@ -32,7 +32,7 @@ export struct RdpSecurityKeyPromptView {
       case 'confirm': return '安全密钥请求';
       case 'select': return '选择安全密钥';
       case 'pin': return this.prompt.retries === 0 ? '安全密钥 PIN 已锁定' : '输入安全密钥 PIN';
-      case 'phone': return '请在手机上确认';
+      case 'phone': return this.prompt.error !== '' ? '手机通行密钥未完成' : '请在手机上确认';
       default: return '请触摸安全密钥';
     }
   }
@@ -148,6 +148,13 @@ export struct RdpSecurityKeyPromptView {
       Row({ space: 10 }) {
         this.button('取消', false, true, (): void => { this.pinDraft = ''; this.onCancel(); })
         this.button('确定', true, rdpSecurityKeyPinProblem(this.pinDraft) === '', (): void => { this.submitPin(); })
+      }.width('100%').margin({ top: 6 })
+    } else if (this.prompt.kind === 'phone' && this.prompt.error !== '') {
+      Text(this.prompt.error).fontSize(14).fontColor(this.pal().text).lineHeight(21).width('100%')
+      Text('远程电脑上的这次' + (this.prompt.register ? '注册' : '登录') + '已取消，可以在网页上重试。')
+        .fontSize(12).fontColor(this.pal().text3).width('100%')
+      Row() {
+        this.button('知道了', false, true, (): void => { this.onCancel(); })
       }.width('100%').margin({ top: 6 })
     } else if (this.prompt.kind === 'phone') {
       Text('已把「' + this.prompt.rpId + '」的' + (this.prompt.register ? '注册' : '登录') +

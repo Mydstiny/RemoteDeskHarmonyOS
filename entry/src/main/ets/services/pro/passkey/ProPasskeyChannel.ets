@@ -110,14 +110,15 @@ export class ProPasskeyChannel {
   leave(): void {
     this.leaveWhenIdle = false;
     this.generation++;
+    // Requests still out settle first, while the object can still tell the other devices.
+    const waiting = Array.from(this.pending.values());
+    this.pending.clear();
+    waiting.forEach((finish: (response: PasskeyResponse | null) => void): void => { finish(null); });
     const object = this.object;
     const change = this.change;
     this.object = null;
     this.change = null;
     this.session = '';
-    const waiting = Array.from(this.pending.values());
-    this.pending.clear();
-    waiting.forEach((resolve: (response: PasskeyResponse | null) => void): void => { resolve(null); });
     if (object === null) { return; }
     try { if (change !== null) { object.off('change', change); } } catch (_error) {}
     try { void object.setSessionId('').catch((): void => {}); } catch (_error) {}
@@ -142,27 +143,21 @@ export class ProPasskeyChannel {
     if (object === null) { return Promise.resolve(null); }
     this.remember(this.sent, request.id);
     return new Promise<PasskeyResponse | null>((resolve: (response: PasskeyResponse | null) => void): void => {
-      const timer = setTimeout((): void => {
-        if (this.pending.delete(request.id)) {
-          // Told like a withdrawal, so a dialog still open on another device comes down.
-          this.markCancelled(request.id);
-          this.clearRequest(request.id);
-          resolve(null);
-          this.settled();
-        }
-      }, request.ttlMs);
-      this.pending.set(request.id, (response: PasskeyResponse | null): void => {
-        clearTimeout(timer);
+      let timer: number = -1;
+      // However the request settles (an answer, a timeout, a withdrawal, leaving), the other devices are told, so a
+      // dialog for it still open elsewhere comes down.
+      const finish = (response: PasskeyResponse | null): void => {
+        if (timer >= 0) { clearTimeout(timer); timer = -1; }
+        this.markCancelled(request.id);
         this.clearRequest(request.id);
         resolve(response);
         this.settled();
-      });
+      };
+      timer = setTimeout((): void => { if (this.pending.delete(request.id)) { finish(null); } }, request.ttlMs);
+      this.pending.set(request.id, finish);
       try { object.request = JSON.stringify(request); }
       catch (_error) {
-        clearTimeout(timer);
-        this.pending.delete(request.id);
-        resolve(null);
-        this.settled();
+        if (this.pending.delete(request.id)) { finish(null); }
       }
     });
   }
@@ -172,11 +167,10 @@ export class ProPasskeyChannel {
    * null at once and the other devices are told, so a dialog for it comes down.
    */
   withdraw(id: string): void {
-    const resolve = this.pending.get(id);
-    if (resolve === undefined) { return; }
+    const finish = this.pending.get(id);
+    if (finish === undefined) { return; }
     this.pending.delete(id);
-    this.markCancelled(id);
-    resolve(null);
+    finish(null);
   }
 
   private markCancelled(id: string): void {

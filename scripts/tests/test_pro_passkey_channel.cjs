@@ -124,6 +124,8 @@ test('an answer for the request settles it and clears the request field', async 
   const response = await pending;
   assert.deepEqual([response.id, response.error], [sent.id, 'PASSKEY_USER_DENIED']);
   assert.equal(f.object().request, '');
+  // Settled by one device's answer: the others are told, so their dialogs come down.
+  assert.equal(f.object().cancel, sent.id);
 });
 
 test('a timeout and a withdrawal both settle with null and tell the other devices', async () => {
@@ -172,9 +174,13 @@ test('releasing waits until nothing is out and the last withdrawal had time to s
 test('leaving or switching accounts settles what was waiting', async () => {
   const f = fixture();
   await f.channel.join({}, 'owner-a');
-  const waiting = f.channel.send(f.request());
+  const out = f.request();
+  const waiting = f.channel.send(out);
+  const first = f.object();
   await f.channel.join({}, 'owner-b');
   assert.equal(await waiting, null);
+  // The old account's devices are told before this device leaves them.
+  assert.equal(first.cancel, out.id);
   assert.deepEqual(f.state.objects.map(item => item.sessions[0]),
     [f.module.passkeySessionId('owner-a'), f.module.passkeySessionId('owner-b')]);
 });

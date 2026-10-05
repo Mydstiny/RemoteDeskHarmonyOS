@@ -4,8 +4,8 @@ import rdpnapi, { RdpSecurityKeyRequest } from 'librdpnapi.so';
 import { ProAccessContext } from './ProAccessPolicy';
 import { ProAppRuntime } from './ProAppRuntime';
 import { ProUsbFidoKeyCandidate, ProUsbFidoKeys, ProUsbFidoKeySession } from './ProUsbFidoKey';
-import { CTAP1_ERR_INVALID_PARAMETER, CTAP2_ERR_NO_CREDENTIALS, ctapResponseFromPasskey, ctapStatus, parseCtapCommand,
-  passkeyRequestFromCtap } from './passkey/ProPasskeyCtap';
+import { CTAP1_ERR_INVALID_PARAMETER, CTAP2_ERR_NO_CREDENTIALS, CTAP2_ERR_USER_ACTION_TIMEOUT, ctapResponseFromPasskey,
+  ctapStatus, parseCtapCommand, passkeyRequestFromCtap } from './passkey/ProPasskeyCtap';
 import { ProPasskeyChannel } from './passkey/ProPasskeyChannel';
 import { passkeyDeviceLabel, ProPasskeyDevice } from './passkey/ProPasskeyDevice';
 import { randomBytes } from './passkey/ProPasskeyKeys';
@@ -25,6 +25,9 @@ const KIND_DISMISS: number = 8;
 const KIND_PASSKEY: number = 9;
 const AUTHENTICATOR_PHONE: number = 2;
 const PASSKEY_RESPONSE: number = 1;
+
+// Below this much time left a request is not worth sending to the phone (read, decide, unlock).
+const PHONE_MIN_REQUEST_MS: number = 8000;
 
 // CTAP2 client PIN: at least 4 characters (code points), at most 63 bytes of UTF-8.
 const PIN_MIN_CHARACTERS: number = 4;
@@ -157,6 +160,11 @@ export class ProRdpSecurityKey {
   /** The user dismissed the prompt or cancelled while the key was waiting for a touch. */
   cancel(): void {
     const current = this.prompt;
+    if (current !== null && current.kind === 'phone' && current.error !== '') {
+      // Only a note about a request that already ended: closing it must not cancel a newer one.
+      this.show(null);
+      return;
+    }
     if (current !== null && current.kind === 'phone') { this.withdrawPhone(); }
     if (current !== null && current.kind !== 'touch') { this.respond(current.requestId, false, null, null); }
     if (!this.stopped && this.sessionId > 0) {
@@ -311,6 +319,7 @@ export class ProRdpSecurityKey {
   private async passkey(request: RdpSecurityKeyRequest): Promise<void> {
     const sessionId = this.sessionId;
     const id = request.id;
+    const handledAt = Date.now();
     const command = parseCtapCommand(request.payload);
     if (command.status !== 0) { this.respondPasskey(sessionId, id, ctapStatus(command.status)); return; }
     // The phone signs only for the relying party the user confirmed here (the native reading of the same command).
@@ -325,7 +334,14 @@ export class ProRdpSecurityKey {
     }
     // Whether this request can still go back to key selection (native allows it once per request).
     const switchable = request.operation === 1;
-    const drop = (notice: string): void => { this.dropPhone(sessionId, id, switchable ? notice : ''); };
+    const drop = (notice: string): void => {
+      this.dropPhone(sessionId, id, switchable ? notice : '');
+      // No selection follows: the reason stays on screen until the user closes it.
+      if (!switchable && notice !== '' && !this.stopped && this.sessionId === sessionId) {
+        this.show({ kind: 'phone', requestId: id, rpId: command.rpId, register: command.op === 'register', retries: -1,
+          candidates: [], busy: false, error: notice, phone: false });
+      }
+    };
     const context = this.context;
     if (context === null || !ProPasskeyReceiver.available()) {
       drop('手机通行密钥当前不可用，请改用 USB 安全密钥');
@@ -342,8 +358,15 @@ export class ProRdpSecurityKey {
         return;
       }
       if (!current()) { return; }
+      // The phone gets the time actually left (joining may have waited for a permission dialog).
+      const remaining = request.timeoutMs - (Date.now() - handledAt);
+      if (remaining < PHONE_MIN_REQUEST_MS) {
+        this.respondPasskey(sessionId, id, ctapStatus(CTAP2_ERR_USER_ACTION_TIMEOUT));
+        this.show(null);
+        return;
+      }
       const phoneRequest = await ProPasskeyDevice.signRequest(passkeyRequestFromCtap(command, randomBytes(16),
-        passkeyDeviceLabel(), Date.now(), request.timeoutMs));
+        passkeyDeviceLabel(), Date.now(), remaining));
       if (!current()) { return; }
       this.phoneRequestId = phoneRequest.id;
       const response = await ProPasskeyChannel.getInstance().send(phoneRequest);

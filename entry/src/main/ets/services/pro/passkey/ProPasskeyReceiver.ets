@@ -32,6 +32,8 @@ class ActiveRequest {
   ended: boolean = false;
   /** The user answered the dialog (the unlock that follows may move the app to the background). */
   answered: boolean = false;
+  /** This device already answered the requester; nothing more goes out for this request. */
+  responded: boolean = false;
   confirmation: PasskeyConfirmation | null = null;
 
   constructor(id: string, deadline: number) { this.id = id; this.deadline = deadline; }
@@ -95,9 +97,10 @@ export class ProPasskeyReceiver {
   }
 
   /**
-   * EntryAbility: the app went to the background; nothing is answered until it returns. A request still waiting
-   * for the user is cancelled: while away this device stops hearing withdrawals, so an answer given on return could
-   * create a passkey nobody waits for. A request already being unlocked carries on.
+   * EntryAbility: the app went to the background; new requests are not shown until it returns. A request still
+   * waiting for the user is cancelled (an answer given on return could create a passkey nobody waits for). A request
+   * the user already allowed carries on (the face, fingerprint or PIN check may itself move the app to the
+   * background); the channel stays until it is answered.
    */
   background(): void {
     this.inForeground = false;
@@ -106,14 +109,18 @@ export class ProPasskeyReceiver {
       const request = this.activeRequest;
       active.end();
       if (request !== null && request.id === active.id) {
-        this.respond(ProPasskeyAuthenticator.failed(request, 'PASSKEY_USER_CANCELLED'));
+        this.answer(active, ProPasskeyAuthenticator.failed(request, 'PASSKEY_USER_CANCELLED'));
         this.note('应用切到后台，未确认的请求已取消');
-        // The answer needs a moment to sync before this device leaves the channel.
-        setTimeout((): void => { if (!this.inForeground) { void this.evaluate(); } }, 500);
+        this.evaluateLater();
         return;
       }
     }
     void this.evaluate();
+  }
+
+  /** Re-evaluates after a moment, so an answer written just now can sync before this device leaves the channel. */
+  private evaluateLater(): void {
+    setTimeout((): void => { if (!this.inForeground) { void this.evaluate(); } }, 500);
   }
 
   enabled(): boolean {
@@ -158,7 +165,8 @@ export class ProPasskeyReceiver {
     const owner = this.owner();
     if (owner === '' || !ProPasskeyReceiver.available() || !ProPasskeyChannel.supported()) { return false; }
     const channel = ProPasskeyChannel.getInstance();
-    if (channel.joined()) { return true; }
+    // Joining again keeps a channel another sender just released (and follows an account change).
+    if (channel.joined()) { return channel.join(context, owner); }
     if (!(await channel.requestPermission(context))) { return false; }
     return channel.join(context, owner);
   }
@@ -198,7 +206,9 @@ export class ProPasskeyReceiver {
       this.active.end();
     }
     if (!wanted || context === null) {
-      if (this.listening) {
+      // In the background with an allowed request still running: stay until it has been answered.
+      const finishing = receiving && this.active !== null && !this.active.ended;
+      if (this.listening && !finishing) {
         channel.listen(null);
         channel.release();
         this.listening = false;
@@ -221,12 +231,22 @@ export class ProPasskeyReceiver {
 
   private respond(response: PasskeyResponse): void { ProPasskeyChannel.getInstance().respond(response); }
 
-  /** The requester gave up on `id` (its user cancelled, its remote request ended): the dialog comes down. */
+  /** Answers the requester of `active` once; later answers for the same request are dropped. */
+  private answer(active: ActiveRequest, response: PasskeyResponse): void {
+    if (active.responded) { return; }
+    active.responded = true;
+    this.respond(response);
+  }
+
+  /**
+   * The requester settled `id` (its user cancelled, it timed out, or another device answered): the dialog comes
+   * down. Its echo for a request this device answered itself changes nothing.
+   */
   private onWithdraw(id: string): void {
     const active = this.active;
-    if (active !== null && active.id === id) {
+    if (active !== null && active.id === id && !active.responded) {
       active.end();
-      this.note('请求已取消');
+      this.note('请求已结束');
     }
   }
 
@@ -239,13 +259,21 @@ export class ProPasskeyReceiver {
       this.respond(ProPasskeyAuthenticator.failed(request, 'PASSKEY_BUSY'));
       return;
     }
-    this.busy = true;
     // The requester's own wait began before the request reached this device; ending 3 s earlier than its time to
     // live leaves room for the transfer, so this device never answers after the requester stopped waiting.
-    const active = new ActiveRequest(request.id, Date.now() + Math.max(1000, request.ttlMs - 3000));
+    const usable = request.ttlMs - 3000;
+    if (usable < 3000) {
+      // Too little time left to read a dialog and unlock: refused at once instead.
+      this.respond(ProPasskeyAuthenticator.failed(request, 'PASSKEY_EXPIRED'));
+      return;
+    }
+    this.busy = true;
+    const active = new ActiveRequest(request.id, Date.now() + usable);
     this.active = active;
     this.activeRequest = request;
-    const current = (): boolean => !active.ended && Date.now() < active.deadline && this.owner() === owner;
+    // The answer must still be able to reach the requester: a passkey is never made for a channel this device left.
+    const current = (): boolean => !active.ended && Date.now() < active.deadline && this.owner() === owner &&
+      ProPasskeyChannel.getInstance().joined();
     try {
       if (request.op === 'pair') {
         await this.pair(context, owner, request, active, current);
@@ -254,14 +282,14 @@ export class ProPasskeyReceiver {
       const from = passkeyCleanText(request.from, 40);
       const peer: PasskeyPeer | null = ProPasskeyPeers.find(context, owner, request.device);
       if (peer === null) {
-        this.respond(ProPasskeyAuthenticator.failed(request, 'PASSKEY_DEVICE_NOT_PAIRED'));
+        this.answer(active, ProPasskeyAuthenticator.failed(request, 'PASSKEY_DEVICE_NOT_PAIRED'));
         this.note('已拒绝未配对设备「' + from + '」的请求');
         return;
       }
       const name = passkeyCleanText(peer.name, 40);
       const key = base64UrlDecode(peer.publicKey);
       if (key === null || !(await passkeyRequestSignedBy(request, key))) {
-        this.respond(ProPasskeyAuthenticator.failed(request, 'PASSKEY_SIGNATURE_INVALID'));
+        this.answer(active, ProPasskeyAuthenticator.failed(request, 'PASSKEY_SIGNATURE_INVALID'));
         this.note('已拒绝签名无效的请求（' + name + '）');
         return;
       }
@@ -276,7 +304,7 @@ export class ProPasskeyReceiver {
         return;
       }
       if (!allowed) {
-        this.respond(ProPasskeyAuthenticator.declined(request));
+        this.answer(active, ProPasskeyAuthenticator.declined(request));
         this.note('已拒绝：' + request.rpId + (register ? ' 注册' : ' 登录') + '（' + name + '）');
         return;
       }
@@ -287,19 +315,21 @@ export class ProPasskeyReceiver {
         this.note('请求已结束：' + request.rpId + (register ? ' 注册' : ' 登录') + '（' + name + '）');
         return;
       }
-      this.respond(response);
+      this.answer(active, response);
       peer.lastUsedAt = Date.now();
       try { ProPasskeyPeers.save(context, peer); } catch (_error) { /* the answer already went out */ }
       this.note((response.ok ? '已完成：' : '未完成：') + request.rpId + (register ? ' 注册' : ' 登录') + '（' + name +
         (response.ok ? '）' : '，' + response.error + '）'));
     } catch (_error) {
       // Never leave a requester that still waits running into its timeout.
-      if (current()) { this.respond(ProPasskeyAuthenticator.declined(request)); }
+      if (current()) { this.answer(active, ProPasskeyAuthenticator.declined(request)); }
       this.note('未完成：处理请求时出错');
     } finally {
       active.end();
       if (this.active === active) { this.active = null; this.activeRequest = null; }
       this.busy = false;
+      // Finished while in the background: let go of the channel once the answer had a moment to sync.
+      if (!this.inForeground) { this.evaluateLater(); }
     }
   }
 
@@ -307,7 +337,7 @@ export class ProPasskeyReceiver {
     current: () => boolean): Promise<void> {
     const key = base64UrlDecode(request.devicePub);
     if (key === null || !(await passkeyRequestSignedBy(request, key))) {
-      this.respond(ProPasskeyAuthenticator.failed(request, 'PASSKEY_SIGNATURE_INVALID'));
+      this.answer(active, ProPasskeyAuthenticator.failed(request, 'PASSKEY_SIGNATURE_INVALID'));
       return;
     }
     const from = passkeyCleanText(request.from, 40);
@@ -316,7 +346,7 @@ export class ProPasskeyReceiver {
       '\n\n请确认两台设备显示的配对码一致：', passkeyPairingCodeOf(request), '不一致', '一致，配对');
     if (!current()) { this.note('配对请求已结束：' + from); return; }
     if (!confirmed) {
-      this.respond(ProPasskeyAuthenticator.failed(request, 'PASSKEY_PAIRING_DECLINED'));
+      this.answer(active, ProPasskeyAuthenticator.failed(request, 'PASSKEY_PAIRING_DECLINED'));
       this.note('已拒绝配对：' + from);
       return;
     }
@@ -325,10 +355,10 @@ export class ProPasskeyReceiver {
       ProPasskeyPeers.save(context, { owner, id: request.device, name: from, publicKey: request.devicePub,
         pairedAt: now, lastUsedAt: now });
     } catch (_error) {
-      this.respond(ProPasskeyAuthenticator.failed(request, 'PASSKEY_STORE_UNAVAILABLE'));
+      this.answer(active, ProPasskeyAuthenticator.failed(request, 'PASSKEY_STORE_UNAVAILABLE'));
       return;
     }
-    this.respond(ProPasskeyAuthenticator.done(request));
+    this.answer(active, ProPasskeyAuthenticator.done(request));
     this.note('已配对：' + from);
   }
 

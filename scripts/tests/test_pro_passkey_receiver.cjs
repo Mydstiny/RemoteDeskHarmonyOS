@@ -164,7 +164,7 @@ test('a withdrawn request takes its dialog down and is never answered', async ()
 
 test('an approval after the request expired neither creates a passkey nor answers', async () => {
   const f = await started();
-  f.state.listener(f.register({ ttlMs: 5000 }));
+  f.state.listener(f.register({ ttlMs: 10000 }));
   await settle();
   f.state.now += 600000;
   f.state.dialogs[0].resolve(true);
@@ -273,7 +273,8 @@ test('going to the background cancels an unanswered request, but not one being u
   late(f.request());
   await settle();
   assert.equal(f.state.dialogs.length, 1);
-  // Back in front: a request being unlocked when the app leaves again carries on.
+  // Back in front: a request being unlocked when the app leaves again carries on, and the channel stays until the
+  // answer went out (the face or fingerprint check itself may move the app to the background).
   f.receiver.foreground({}, () => ({}));
   await settle();
   const unlocking = f.register();
@@ -283,11 +284,42 @@ test('going to the background cancels an unanswered request, but not one being u
   await settle();
   f.state.dialogs[1].resolve(true);
   await settle();
+  const before = f.state.released;
   f.receiver.background();
+  await settle();
+  assert.equal(f.state.released, before);
+  assert.equal(typeof f.state.listener, 'function');
   finishUnlock();
   await settle();
   const answer = f.state.responses.pop();
   assert.deepEqual([answer.id, answer.ok], [unlocking.id, true]);
+  assert.equal(f.state.records.length, 1);
+  f.state.runTimers();
+  await settle();
+  assert.ok(f.state.released > before);
+  assert.equal(f.state.listener, null);
+});
+
+test('a request with too little time left is refused without a dialog', async () => {
+  const f = await started();
+  f.state.listener(f.request({ ttlMs: 5000 }));
+  await settle();
+  assert.equal(f.state.dialogs.length, 0);
+  assert.equal(f.state.responses.pop().error, 'PASSKEY_EXPIRED');
+});
+
+test('each request is answered once, and the echo of its own answer changes nothing', async () => {
+  const f = await started();
+  const asked = f.request();
+  f.state.listener(asked);
+  await settle();
+  f.state.dialogs[0].resolve(false);
+  await settle();
+  assert.equal(f.state.responses.length, 1);
+  // The requester settles and tells every device; the answering device ignores it.
+  f.state.withdraw(asked.id);
+  await settle();
+  assert.equal(f.state.responses.length, 1);
 });
 
 (async () => {
