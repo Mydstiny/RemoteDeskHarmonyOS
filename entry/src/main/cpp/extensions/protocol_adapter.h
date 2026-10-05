@@ -110,6 +110,8 @@ struct ConnectionConfig {
     int         monitorCount;    // 🆕 显示器数量
     int         colorDepth;      // 🆕 色深 (BPP)
     int         rdpDesktopScaleFactor = 100;
+    // Debug + Pro only: load the MS-RDPEWA channel backed by the session security-key broker.
+    bool        rdpSecurityKeyRedirect = false;
     int         rdpDeviceScaleFactor = 100;
     int         rdpDesktopPhysicalWidthMm = 0;
     int         rdpDesktopPhysicalHeightMm = 0;

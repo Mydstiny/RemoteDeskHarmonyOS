@@ -13,6 +13,28 @@ export function proFidoProbeStart(): number;
 export function proFidoProbePoll(operationId: number): ProFidoNativePoll;
 export function proFidoProbeReply(operationId: number, requestId: number, data: Uint8Array, success: boolean): boolean;
 export function proFidoProbeCancel(operationId: number): void;
+/** RDP security-key redirection (MS-RDPEWA); false in Release, which links no FIDO code. */
+export function rdpSecurityKeyAvailable(): boolean;
+export function rdpSecurityKeyWatch(sessionId: number, onRequest: () => void): boolean;
+export function rdpSecurityKeyUnwatch(sessionId: number): void;
+export interface RdpSecurityKeyRequest {
+  id: number;
+  /** 1 confirm, 2 select key, 3 PIN, 4 touch prompt, 5 write report, 6 read report, 7 release key */
+  kind: number;
+  /** Confirm: relying party ID. */
+  text: string;
+  /** Confirm: 1 register, 2 sign in. Touch: 1 show, 0 hide. */
+  operation: number;
+  /** PIN: remaining attempts, or -1 when unknown. */
+  retries: number;
+  timeoutMs: number;
+  /** Write: the 64-byte output report. */
+  report: Uint8Array;
+}
+export function rdpSecurityKeyPoll(sessionId: number): RdpSecurityKeyRequest | null;
+export function rdpSecurityKeyRespond(sessionId: number, id: number, ok: boolean,
+  report: Uint8Array | null, text: string | null): boolean;
+export function rdpSecurityKeyCancel(sessionId: number): void;
 export type MoonlightNativeOperation =
   'pair' | 'catalog' | 'asset' | 'launch' | 'resume' | 'quit' | 'unpair' |
   'delete_identity';
@@ -1373,6 +1395,8 @@ export interface SessionConfig {
   rdpDesktopPhysicalWidthMm?: number;
   rdpDesktopPhysicalHeightMm?: number;
   rdpDesktopOrientation?: number;
+  /** Debug + Pro only: load the MS-RDPEWA channel so the remote session can use a local USB security key. */
+  rdpSecurityKeyRedirect?: boolean;
   rdpAuthIdentityMode?: number; // 0=MicrosoftAccount\email, 1=domain MicrosoftAccount, 2=bare email, 3=.\AzureAD\email, 4=domain AzureAD
   rdpAuthMode?: 'password' | 'blank_password' | 'restricted_admin';
   rdpRestrictedAdminSecretSource?: 'ntlm_hash';

@@ -132,6 +132,7 @@ set(SECURITY_SOURCES
     security/host_locker.cpp
     security/security_napi.cpp
     pro/fido_probe_napi.cpp
+    rdp/rdp_security_key_napi.cpp
 )
 
 # -- Moonlight native ownership and bounded Host API protocol core --
@@ -1256,6 +1257,17 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     target_include_directories(rdpnapi PRIVATE "${PRO_FIDO_DIR}/include")
     target_compile_definitions(rdpnapi PRIVATE REMOTEDESK_DEBUG_FIDO_PROBE=1)
     target_link_libraries(rdpnapi PRIVATE pro_fido2 pro_cbor crypto libz.so)
+    # MS-RDPEWA security-key redirection: the vendored FreeRDP client channel and its session broker.
+    # Debug only, like the probe: Release keeps inert NAPI stubs and links no FIDO code.
+    if(USE_REAL_FREERDP)
+        target_sources(rdpnapi PRIVATE
+            rdp/rdp_security_key_broker.cpp
+            rdp/rdp_security_key_provider.cpp
+            rdp/rdpewa/rdpewa_main.c
+            rdp/rdpewa/rdpewa_cbor.c
+            rdp/rdpewa/rdpewa_fido.c)
+        target_compile_definitions(rdpnapi PRIVATE REMOTEDESK_RDP_SECURITY_KEY=1)
+    endif()
 endif()
 
 # N1-02 build-only Moonlight boundary. The pinned common-c/ENet archives are

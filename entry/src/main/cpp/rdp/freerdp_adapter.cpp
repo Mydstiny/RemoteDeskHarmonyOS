@@ -1302,6 +1302,12 @@ RdpCertificateInfo probeRdpCertificateOverTls(const std::string& host, int port,
 #include <freerdp/client/rdpdr.h>
 #include <freerdp/addin.h>
 #include <freerdp/codec/color.h>
+#if defined(REMOTEDESK_RDP_SECURITY_KEY)
+#include <freerdp/dvc.h>
+#include "rdp_security_key_provider.h"
+// Vendored MS-RDPEWA client channel (cpp/rdp/rdpewa); Debug builds only.
+extern "C" UINT VCAPITYPE rdpewa_DVCPluginEntry(IDRDYNVC_ENTRY_POINTS* pEntryPoints);
+#endif
 #include <freerdp/gdi/gdi.h>
 #include <freerdp/event.h>
 #include <freerdp/input.h>
@@ -3343,10 +3349,27 @@ static void markRdpGfxFallback(const std::string& scope, const char* reason) {
                 reason != nullptr ? reason : "unknown");
 }
 
+#if defined(REMOTEDESK_RDP_SECURITY_KEY)
+// The prebuilt FreeRDP channel table has no rdpewa entry; this provider adds the vendored one and
+// delegates every other channel unchanged.
+static PVIRTUALCHANNELENTRY loadRemoteDeskStaticAddinEntry(LPCSTR name, LPCSTR subsystem, LPCSTR type,
+                                                          DWORD flags) {
+    if (name != nullptr && std::strcmp(name, "rdpewa") == 0 && subsystem == nullptr &&
+        (flags & FREERDP_ADDIN_CHANNEL_DYNAMIC) != 0) {
+        return reinterpret_cast<PVIRTUALCHANNELENTRY>(rdpewa_DVCPluginEntry);
+    }
+    return freerdp_channels_load_static_addin_entry(name, subsystem, type, flags);
+}
+#endif
+
 static void ensureFreeRdpStaticAddinProvider() {
     std::call_once(g_rdpAddinProviderOnce, []() {
+#if defined(REMOTEDESK_RDP_SECURITY_KEY)
+        const int rc = freerdp_register_addin_provider(loadRemoteDeskStaticAddinEntry, FREERDP_ADDIN_STATIC);
+#else
         const int rc = freerdp_register_addin_provider(freerdp_channels_load_static_addin_entry,
                                                        FREERDP_ADDIN_STATIC);
+#endif
         OH_LOG_INFO(LOG_APP, "[RDP] static addin provider registered rc=%{public}d provider=%{public}p",
                     rc, reinterpret_cast<void*>(freerdp_get_current_addin_provider()));
     });
@@ -6779,6 +6802,10 @@ bool FreeRdpAdapter::disconnectActiveInstance(
                 });
             }
             if (activeInstance->context) {
+#if defined(REMOTEDESK_RDP_SECURITY_KEY)
+                // End every security-key wait first so the RDPEWA worker can be joined.
+                RdpSecurityKey::CloseContext(activeInstance->context);
+#endif
                 freerdp_abort_connect_context(activeInstance->context);
             }
             freerdp_disconnect(activeInstance);
@@ -7066,6 +7093,9 @@ void FreeRdpAdapter::cleanupInstance(
             gdi_free(doomedInstance);
         }
         if (doomedContext) {
+#if defined(REMOTEDESK_RDP_SECURITY_KEY)
+            RdpSecurityKey::DetachContext(doomedContext);
+#endif
             freerdp_context_free(doomedInstance);
         }
         freerdp_free(doomedInstance);
@@ -8097,6 +8127,21 @@ void FreeRdpAdapter::connectThreadFunc(
     freerdp_settings_set_bool(s, FreeRDP_RedirectClipboard, cfg.rdClipboardEnabled ? TRUE : FALSE);
     const UINT32 clipboardFeatureMask = rdpClipboardFeatureMask(cfg.rdClipboardEnabled);
     freerdp_settings_set_uint32(s, FreeRDP_ClipboardFeatureMask, clipboardFeatureMask);
+#if defined(REMOTEDESK_RDP_SECURITY_KEY)
+    // MS-RDPEWA: the remote session may use a local USB security key through the session broker. ArkTS only
+    // requests it for an experimental Pro entitlement on PC/2in1; the broker never opens a device by itself.
+    if (cfg.rdpSecurityKeyRedirect && ctx->owner.sessionId != 0) {
+        const char* const rdpewaParams[] = {"rdpewa"};
+        if (RdpSecurityKey::AttachContext(instance_->context, ctx->owner.sessionId) &&
+            freerdp_settings_set_bool(s, FreeRDP_SupportDynamicChannels, TRUE) &&
+            freerdp_client_add_dynamic_channel(s, 1, rdpewaParams)) {
+            OH_LOG_INFO(LOG_APP, "[RDP] security key redirection channel requested");
+        } else {
+            RdpSecurityKey::DetachContext(instance_->context);
+            OH_LOG_WARN(LOG_APP, "[RDP] security key redirection unavailable for this connection");
+        }
+    }
+#endif
     const std::string driveName = sanitizeRdpDriveName(cfg.rdDriveName);
     // 不在连接握手前注册自定义 drive。rdpdr 通道加载后由异步线程 post-connected 挂载。
     freerdp_settings_set_bool(s, FreeRDP_RedirectDrives, FALSE);

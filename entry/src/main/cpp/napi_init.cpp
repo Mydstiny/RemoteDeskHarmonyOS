@@ -70,6 +70,9 @@ namespace SecurityNapi {
 namespace ProFidoNapi {
     napi_value Init(napi_env env, napi_value exports);
 }
+namespace RdpSecurityKeyNapi {
+    napi_value Init(napi_env env, napi_value exports);
+}
 
 // ============================================================
 // Helper: 导出常量
@@ -169,6 +172,7 @@ static napi_value Init(napi_env env, napi_value exports) {
     // 安全管理
     SecurityNapi::Init(env, exports);
     if (ProFidoNapi::Init(env, exports) == nullptr) { return nullptr; }
+    if (RdpSecurityKeyNapi::Init(env, exports) == nullptr) { return nullptr; }
     RemoteAiNapi::Init(env, exports);
     OH_LOG_INFO(LOG_APP, "[NAPI] Security 已注册");
 

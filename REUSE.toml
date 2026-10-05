@@ -19,6 +19,12 @@ SPDX-FileCopyrightText = "Upstream authors; see THIRD_PARTY_NOTICES.md"
 SPDX-License-Identifier = "LicenseRef-ThirdParty"
 
 [[annotations]]
+path = "entry/src/main/cpp/rdp/rdpewa/rdpewa*"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "FreeRDP contributors; RemoteDesk modifications; see THIRD_PARTY_NOTICES.md"
+SPDX-License-Identifier = "Apache-2.0"
+
+[[annotations]]
 path = "server/pro-entitlement/agc/pkix/licenses/**"
 precedence = "aggregate"
 SPDX-FileCopyrightText = "Upstream authors; see included copyright notices and the separate PKIX SBOM"

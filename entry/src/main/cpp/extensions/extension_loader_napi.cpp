@@ -5062,6 +5062,7 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
         getBool("multiMonitor", cfg.multiMonitor);
         getInt("colorDepth", cfg.colorDepth);
         getInt("rdpDesktopScaleFactor", cfg.rdpDesktopScaleFactor);
+        if (protocolName == "rdp") getBool("rdpSecurityKeyRedirect", cfg.rdpSecurityKeyRedirect);
         getInt("rdpDeviceScaleFactor", cfg.rdpDeviceScaleFactor);
         getInt("rdpDesktopPhysicalWidthMm", cfg.rdpDesktopPhysicalWidthMm);
         getInt("rdpDesktopPhysicalHeightMm", cfg.rdpDesktopPhysicalHeightMm);
