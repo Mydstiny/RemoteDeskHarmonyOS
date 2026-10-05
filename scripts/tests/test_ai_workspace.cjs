@@ -102,4 +102,31 @@ function environment(){
     assert.equal(e.c.lease,'sameToken');assert.equal(remoteLease,'sameToken');assert.equal(e.load('AiLifecycle').AiLifecycle.claim('fixtureHost:A','otherClient'),false);e.c.close();
     console.log('PASS A-B-A reacquire stays blocked until stale ownership settles; new lease survives');
   }
+  {
+    // Claude pages slice the live history: the stream resumes after the last page. DSH resumes after the first.
+    for(const[backend,expected]of[['claudecode',15],['dsh',10]]){
+      const e=environment();e.client.host.backend=backend;
+      e.onRead(async(method,params)=>method==='session.read'?(params.cursor?
+        {session:{id:'A'},snapshot:{events:[{seq:1,type:'assistant/message',data:{message:'second',kind:'text',turn:1}}],nextCursor:'',status:'idle'},cursor:15}:
+        {session:{id:'A'},snapshot:{events:[{seq:0,type:'user/message',data:{message:'first',turn:1}}],nextCursor:'100',status:'idle'},cursor:10}):[]);
+      await e.c.snapshot(false);
+      assert.equal(e.c.eventCursor,expected,backend);e.c.close();
+    }
+    console.log('PASS the event stream resumes after the last Claude page and after the first DSH page');
+  }
+  {
+    // A turn that ends before its acknowledgement arrives stays ended.
+    const run=async(emit)=>{
+      const e=environment();let deliver=null;
+      e.client.events=async(_cursor,callback)=>{deliver=callback;return new Promise(()=>{});};
+      e.c.lease='leaseA';e.c.leaseExpires=Date.now()+90000;e.c.status='idle';
+      void e.c.stream(e.c.streamToken);await Promise.resolve();
+      e.onWrite(async method=>{if(method==='turn.start'&&emit){deliver({cursor:11,session:'A',event:{type:'execution.failed',data:{}}});}return{turnId:'t1'};});
+      await e.c.action('turn.start',{text:'hi'});
+      const status=e.c.status;e.c.close();return status;
+    };
+    assert.equal(await run(true),'failed');
+    assert.equal(await run(false),'请求已接受，等待执行结果');
+    console.log('PASS an acknowledgement never undoes a turn end reported before it');
+  }
 })().catch(error=>{console.error(error);process.exitCode=1;});

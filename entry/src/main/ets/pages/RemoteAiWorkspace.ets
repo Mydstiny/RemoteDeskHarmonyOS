@@ -17,7 +17,7 @@ import { AiWorkspaceController } from '../services/ai/AiWorkspaceController';
 import { AiLocalStore } from '../services/ai/AiLocalStore';
 import { aiArray, aiRecord, aiString, aiErrorText } from '../services/ai/AiWirePolicy';
 import { AiStylePalette, aiStylePalette } from '../services/ai/AiStylePalette';
-import { AiDiffFile, AiToolView, aiConversationItem, aiDiffFiles, aiDiffStats, aiItemDiff, aiStepState, aiToolView } from '../services/ai/AiTimeline';
+import { AiDiffFile, AiToolView, aiConversationItem, aiDiffFiles, aiDiffSignature, aiDiffStats, aiItemDiff, aiStepState, aiToolView } from '../services/ai/AiTimeline';
 import { AiRemoteMarkdown } from '../components/ai/AiRemoteMarkdown';
 import { AiDiffView } from '../components/ai/AiDiffView';
 import { ProBadge } from '../components/ProBadge';
@@ -200,13 +200,12 @@ export struct RemoteAiWorkspace {
     const host = this.host;
     // Gated on access, not on `allowed`: that reflects the connection, which the first open has yet to make.
     if (host === null || !this.accessible()) { return; }
-    this.resetView();
     const resumeValid = this.resumeAccount !== null && AiAccess.getInstance().current(this.resumeAccount);
     const session = this.controller.sessionId || (resumeValid ? this.resumeSession : '');
     const project = this.controller.projectId || (resumeValid ? this.resumeProject : '');
     this.resumeSession = ''; this.resumeProject = ''; this.resumeAccount = null;
     await this.run(async (): Promise<void> => {
-      this.resetDrafts(); await this.controller.connect(host);
+      this.resetView(); this.resetDrafts(); await this.controller.connect(host);
       if (project !== '' && this.controller.projects.some((item: AiProject): boolean => item.id === project)) {
         await this.controller.selectProject(project);
         if (session !== '' && this.controller.sessions.some((item: AiSession): boolean => item.id === session)) {
@@ -254,9 +253,11 @@ export struct RemoteAiWorkspace {
         params['settings'] = this.settings();
         if (this.attachments.length > 0) { params['attachments'] = this.attachments.slice(); }
       }
+      // Taken before sending: the engine's own copy of the prompt may arrive before the acknowledgement.
+      const sentAt = this.controller.transcript.mark();
       const result = await this.controller.action(steer ? 'turn.steer' : 'turn.start', params);
       // Claude does not echo the prompt while the turn runs; show it until its own event arrives.
-      if (this.host?.backend === 'claudecode') { this.controller.transcript.echo(text, aiString(result['turnId'])); }
+      if (this.host?.backend === 'claudecode') { this.controller.transcript.echo(text, aiString(result['turnId']), sentAt); }
       this.draft = ''; this.attachments = [];
     });
   }
@@ -370,9 +371,12 @@ export struct RemoteAiWorkspace {
   // Diffs are parsed once per transcript (or native diff) update, not on every render.
   private stepDiffItems: AiTranscriptItem[] | null = null;
   private stepDiffFiles: AiDiffFile[] = [];
+  private nativeDiffSource: string | null = null;
+  private nativeDiffFiles: AiDiffFile[] = [];
   private sessionDiffSource: string = '';
   private sessionDiffItems: AiTranscriptItem[] | null = null;
   private sessionDiffFiles: AiDiffFile[] = [];
+  private sessionDiffSig: string = '';
   /** Every change the steps of this session carry, newest last (used when the engine has no native diff). */
   private stepDiffs(): AiDiffFile[] {
     if (this.stepDiffItems !== this.items) {
@@ -383,19 +387,32 @@ export struct RemoteAiWorkspace {
     }
     return this.stepDiffFiles;
   }
+  /** The engine's own diff (diff.read), parsed and bounded; empty when it is not a diff. */
+  private nativeDiffs(): AiDiffFile[] {
+    if (this.nativeDiffSource !== this.diff) {
+      this.nativeDiffFiles = this.diff.includes('@@') || this.diff.startsWith('diff ') ? aiDiffFiles(this.diff) : [];
+      this.nativeDiffSource = this.diff;
+    }
+    return this.nativeDiffFiles;
+  }
   private sessionDiffs(): AiDiffFile[] {
     if (this.sessionDiffItems !== this.items || this.sessionDiffSource !== this.diff) {
-      const native = this.diff.includes('@@') || this.diff.startsWith('diff ') ? aiDiffFiles(this.diff) : [];
+      const native = this.nativeDiffs();
       this.sessionDiffFiles = native.length > 0 ? native : this.stepDiffs();
+      this.sessionDiffSig = aiDiffSignature(this.sessionDiffFiles);
       this.sessionDiffItems = this.items; this.sessionDiffSource = this.diff;
     }
     return this.sessionDiffFiles;
   }
-  /** Identifies the diff pane's content, so the pane is rebuilt only when the diff changes. */
+  /** Identifies the diff pane's content, so the pane is rebuilt exactly when the diff changes. */
   private sessionDiffKey(): string {
-    let lines = 0;
-    this.sessionDiffs().forEach((file: AiDiffFile): void => { lines += file.lines.length + file.added * 3 + file.removed * 7; });
-    return this.sessionDiffs().length.toString() + ':' + lines.toString() + ':' + this.diff.length.toString();
+    this.sessionDiffs();
+    return this.sessionDiffSig;
+  }
+  /** What diff.read said when it is not a diff (unavailable, an error), bounded for display. */
+  private diffNotice(empty: string): string {
+    if (this.diff === '' || this.nativeDiffs().length > 0) { return empty; }
+    return this.diff.length > 2000 ? this.diff.slice(0, 2000) + '\n…（其余内容在电脑端）' : this.diff;
   }
   private changeSummary(): string {
     const files = this.stepDiffs();
@@ -569,7 +586,8 @@ export struct RemoteAiWorkspace {
             Button('从已完成历史分叉').constraintSize({ minHeight: AppUiMetrics.minTouchTarget }).padding({ left: 12, right: 12, top: 10, bottom: 10 }).borderRadius(12).fontSize(14).fontFamily(AppConfig.fontFamily).backgroundColor(this.pal().surface).fontColor(this.pal().text).focusable(true).enabled(this.capability('fork') && this.allowed && this.control && !this.busy).onClick((): void => {
               void this.run(async (): Promise<void> => {
                 const result = await this.controller.action('session.fork');
-                this.resetDrafts(); await this.controller.selectProject(this.projectId); await this.controller.selectSession(aiString(result['sessionId']));
+                this.resetView(); this.resetDrafts();
+                await this.controller.selectProject(this.projectId); await this.controller.selectSession(aiString(result['sessionId']));
               });
             })
             Button('压缩上下文').constraintSize({ minHeight: AppUiMetrics.minTouchTarget }).padding({ left: 12, right: 12, top: 10, bottom: 10 }).borderRadius(12).fontSize(14).fontFamily(AppConfig.fontFamily).backgroundColor(this.pal().surface).fontColor(this.pal().text).focusable(true).enabled(this.capability('compact') && this.allowed && this.control && !this.busy).onClick((): void => {
@@ -580,7 +598,15 @@ export struct RemoteAiWorkspace {
             })
           } else if (this.detailTab === 1) {
             Text('仅显示原生引擎已报告的差异').fontSize(12).fontFamily(AppConfig.fontFamily).fontColor(this.pal().text3).width('100%')
-            Text(this.diff).fontSize(13).fontFamily(AppConfig.fontFamily).fontColor(this.pal().text).copyOption(CopyOptions.InApp).width('100%')
+            if (this.nativeDiffs().length > 0) {
+              ForEach([aiDiffSignature(this.nativeDiffs())], (_key: string): void => {
+                AiDiffView({ files: this.nativeDiffs(), textSize: 12, palette: this.palette(),
+                  startOpen: this.nativeDiffs().length <= 3 })
+              }, (key: string): string => key)
+            } else {
+              Text(this.diffNotice('还没有读取到差异')).fontSize(13).fontFamily(AppConfig.fontFamily).fontColor(this.pal().text)
+                .copyOption(CopyOptions.InApp).width('100%')
+            }
           } else if (this.detailTab === 2) {
             ForEach(this.terminals, (terminal: Record<string, Object>): void => {
               Column({ space: 8 }) {
@@ -944,7 +970,7 @@ export struct RemoteAiWorkspace {
   @Builder private codexDiffPane() {
     Column({ space: 10 }) {
       if (this.sessionDiffs().length === 0) {
-        Text(this.diff !== '' && !this.diff.includes('@@') ? this.diff : '这个任务还没有可显示的差异')
+        Text(this.diffNotice('这个任务还没有可显示的差异'))
           .fontSize(13).fontFamily(AppConfig.fontFamily).fontColor(this.palette().text3).width('100%')
           .padding({ top: 24, bottom: 24 }).textAlign(TextAlign.Center)
       } else {

@@ -36,6 +36,12 @@ export function aiFileChanges(value: Object | undefined): string {
 }
 const MAX_EDIT_PREVIEW: number = 20000;
 
+/** The value as a record, or an empty one: an approval with a malformed field still renders. */
+function aiFields(value: Object | undefined | null): Record<string, Object> {
+  return value !== undefined && value !== null && typeof value === 'object' && !Array.isArray(value) ?
+    value as Record<string, Object> : {};
+}
+
 function aiMarkedLines(text: string, mark: string): string {
   if (text === '') { return ''; }
   return text.split('\n').map((line: string): string => mark + line).join('\n');
@@ -44,7 +50,7 @@ function aiMarkedLines(text: string, mark: string): string {
 /** A Claude Edit/MultiEdit/Write/NotebookEdit approval: the request carries the whole edit in its tool input. */
 function aiClaudeFileChange(request: Record<string, Object>, reason: string): string {
   const tool = aiString(request['tool']);
-  const input = aiRecord(request['input']);
+  const input = aiFields(request['input']);
   const path = aiString(input['file_path'], aiString(input['notebook_path']));
   const head = [reason, aiString(request['description'])].filter((value: string): boolean => value !== '').join('\n');
   let body = '';
@@ -53,7 +59,7 @@ function aiClaudeFileChange(request: Record<string, Object>, reason: string): st
       aiMarkedLines(aiString(input['new_string']), '+ ')].filter((value: string): boolean => value !== '').join('\n');
   } else if (tool === 'MultiEdit') {
     body = '修改 ' + path + aiArray(input['edits']).map((value: Object): string => {
-      const edit = aiRecord(value);
+      const edit = aiFields(value);
       return '\n@@\n' + [aiMarkedLines(aiString(edit['old_string']), '- '),
         aiMarkedLines(aiString(edit['new_string']), '+ ')].filter((part: string): boolean => part !== '').join('\n');
     }).join('');

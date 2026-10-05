@@ -164,6 +164,50 @@ repeated.claudeEvent({ seq: 3, type: 'user/message', data: { message: [{ type: '
 assert.ok(!plain(repeated.items).some(item => item.id.startsWith('echo:') && item.text === '改用 TypeScript'));
 console.log('PASS a prompt echo is replaced only by a later engine event, one for one, in sending order');
 
+// The engine's copy may arrive before the acknowledgement: marked before sending, it still stands for the prompt.
+{
+  const early = new AiTranscript();
+  early.claudeEvent({ seq: 0, type: 'assistant/message', data: { message: 'earlier', kind: 'text' }, turn: 'old' });
+  const sentAt = early.mark();
+  early.claudeEvent({ seq: 0, type: 'user/message', data: { message: [{ type: 'text', text: '修复登录' }] }, turn: 'run-2' });
+  early.echo('修复登录', 'run-2', sentAt);
+  assert.deepEqual(plain(early.items).map(item => item.role + ':' + item.text), ['assistant:earlier', 'user:修复登录']);
+  assert.ok(!plain(early.items).some(item => item.id.startsWith('echo:')));
+  // That copy is used up: the same words sent again show their own echo.
+  early.echo('修复登录', 'run-3', early.mark());
+  assert.equal(plain(early.items).filter(item => item.id.startsWith('echo:')).length, 1);
+}
+// A steered prompt (no turn id) sits where it was sent, not after everything that followed.
+{
+  const steered = new AiTranscript();
+  steered.claudeEvent({ seq: 0, type: 'assistant/chunk', data: { chunk: { text: '处理中' } }, turn: 'run' });
+  const sentAt = steered.mark();
+  steered.echo('改用 TypeScript', '', sentAt);
+  steered.claudeEvent({ seq: 1, type: 'tool/call', data: { id: 't1', name: 'Read', input: { file_path: '/a.ts' } }, turn: 'run' });
+  steered.claudeEvent({ seq: 2, type: 'assistant/message', data: { message: '好的，改用 TypeScript', kind: 'text' }, turn: 'run' });
+  assert.deepEqual(plain(steered.items).map(item => item.kind + ':' + (item.text || item.title)),
+    ['user:改用 TypeScript', 'tool:Read', 'assistant:好的，改用 TypeScript']);
+}
+// Context the engine injects into the same turn (a hook, a skill) never stands for the prompt.
+{
+  const injected = new AiTranscript();
+  injected.echo('部署到预发环境', 'run-7', injected.mark());
+  injected.claudeEvent({ seq: 0, type: 'user/message', data: { message: [{ type: 'text', text: '<system-reminder>hook output</system-reminder>' }] }, turn: 'run-7' });
+  assert.equal(plain(injected.items).filter(item => item.id.startsWith('echo:')).length, 1);
+  // The engine's own copy with attachments added still does.
+  injected.claudeEvent({ seq: 1, type: 'user/message', data: { message: [{ type: 'text', text: '部署到预发环境\n[附件 1]' }] }, turn: 'run-7' });
+  assert.equal(plain(injected.items).filter(item => item.id.startsWith('echo:')).length, 0);
+}
+// Malformed events are skipped, not thrown.
+{
+  const odd = new AiTranscript();
+  odd.echo('hello', 't', odd.mark());
+  assert.doesNotThrow(() => odd.claudeEvent({ seq: 0, type: 'user/message', data: 'oops', turn: 't' }));
+  assert.doesNotThrow(() => odd.claudeEvent({ seq: 1, type: 'user/message', turn: 't' }));
+  assert.equal(plain(odd.items).filter(item => item.id.startsWith('echo:')).length, 1);
+}
+console.log('PASS early engine copies, steered prompts, injected context and malformed events');
+
 // The backend table: Claude Agent is a third backend with its own port, name and validation.
 assert.deepEqual(Array.from(models.AI_BACKENDS), ['codex', 'dsh', 'claudecode']);
 assert.equal(models.aiBackendDefaultPort('claudecode'), 9445);

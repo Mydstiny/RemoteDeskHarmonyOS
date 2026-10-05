@@ -42,6 +42,8 @@ export class AiWorkspaceController {
   private liveDirty: Set<number> = new Set();
   private streamToken: number = 0;
   private changeTimer: number = -1;
+  /** execution.* events seen so far; an acknowledgement must not undo a turn end that came before it. */
+  private executionEvents: number = 0;
   private stopAccess: () => void = (): void => {};
   private key(): string { return (this.client?.host.id ?? '') + ':' + this.sessionId; }
   /** Maps the events recorded since the last change, then tells the page. */
@@ -141,7 +143,9 @@ export class AiWorkspaceController {
       this.assertGeneration(generation);
       const session = aiRecord(result['session']); const snapshot = aiRecord(result['snapshot']);
       this.title = aiString(session['title']); this.archived = session['archived'] === true;
-      if (!older && cursor === '') { this.eventCursor = aiNumber(result['cursor']); }
+      // The event stream resumes after what the pages hold. Claude pages slice the live history, so the last page's
+      // cursor covers everything read; DSH pages end at the first page's `through`, later events come by the stream.
+      if (!older && (cursor === '' || client.host.backend === 'claudecode')) { this.eventCursor = aiNumber(result['cursor']); }
       this.status = aiString(snapshot['status'], '状态未知');
       this.inputModalities = aiArray(snapshot['inputModalities']).map((value: Object): string => aiString(value));
       if (client.host.backend === 'codex') {
@@ -190,7 +194,7 @@ export class AiWorkspaceController {
         if (client.host.backend === 'codex') { this.scheduleLiveSnapshot(token); }
         else if (client.host.backend === 'claudecode') { this.transcript.claudeEvent(event.event, true); }
         else { this.transcript.dshEvent(event.event, true); }
-        if (type.startsWith('execution.')) { this.status = type.slice(10); }
+        if (type.startsWith('execution.')) { this.status = type.slice(10); this.executionEvents++; }
         if (type.startsWith('approval.')) { void this.refreshApprovals().catch((): void => {}); }
         if (type === 'snapshot.required') { this.status = '需重新连接以恢复快照'; client.stopEvents(); this.changed(); }
         else { this.changeSoon(); }
@@ -286,14 +290,14 @@ export class AiWorkspaceController {
     const generation = this.generation, session = this.sessionId;
     const params: Record<string, Object> = aiParams(["sessionId", "lease"], [session, this.lease]);
     Object.keys(extra).forEach((key: string): void => { params[key] = extra[key]; });
-    const statusBefore = this.status;
+    const executionBefore = this.executionEvents;
     try {
       const result = await client.write(method, params, session);
       this.assertGeneration(generation);
       if (method === 'session.archive') { this.archived = true; }
       if (method === 'session.resume') { this.archived = false; }
-      // The stream may already have reported the turn (even its end) before the acknowledgement arrived.
-      if ((method === 'turn.start' || method === 'session.compact') && this.status === statusBefore) {
+      // The stream may already have reported the turn (even its end, a fast failure) before the acknowledgement.
+      if ((method === 'turn.start' || method === 'session.compact') && this.executionEvents === executionBefore) {
         this.status = '请求已接受，等待执行结果';
       }
       return result;

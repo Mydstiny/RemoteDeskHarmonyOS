@@ -61,6 +61,17 @@ assert.equal(blocks[5].marker, '2.');
 assert.deepEqual(Array.from(blocks[6].rows, r => Array.from(r)), [['项目', '进度'], ['远程桌面', '80%']]);
 assert.equal(blocks[9].text, 'code line');
 console.log('PASS Markdown blocks: headings, lists, tables, quotes, rules, code and inline marks');
+{
+  // Closing hashes go; remote text with long runs of spaces parses in linear time.
+  assert.deepEqual(Array.from(md.aiMarkdownBlocks('## Title ##'), block => block.spans.map(span => span.text).join('')), ['Title']);
+  assert.deepEqual(Array.from(md.aiMarkdownBlocks('# C# #'), block => block.spans.map(span => span.text).join('')), ['C#']);
+  const started = Date.now();
+  md.aiMarkdownBlocks('# a' + ' '.repeat(40000) + 'b');
+  md.aiMarkdownBlocks('a | b\n' + ' '.repeat(40000) + 'x');
+  md.aiMarkdownBlocks('a | b\n|' + ' -'.repeat(20000) + 'x');
+  assert.ok(Date.now() - started < 200, 'long lines parse in ' + (Date.now() - started) + ' ms');
+  console.log('PASS Markdown headings and table separators stay linear on long lines');
+}
 
 // Reading aloud never says a Markdown mark: a line that starts with bold used to lose one * and read the rest.
 const spoken = md.aiSpeechText([

@@ -137,3 +137,29 @@ const added = plain(transcript.aiCodexItem({ id: 'f', type: 'fileChange', status
 assert.deepEqual(plain(timeline.aiDiffFiles(added.output)).map(file => [file.path, file.added, file.removed]),
   [['notes.md', 3, 0], ['old.txt', 0, 1]]);
 console.log('PASS Codex added and deleted files count every line');
+
+// Hunk counts tell content from headers: content lines that start with '++ ' or '-- ' keep counting.
+{
+  const sql = plain(timeline.aiDiffFiles(['diff --git a/a.sql b/a.sql', '--- a/a.sql', '+++ b/a.sql', '@@ -1,3 +1,3 @@',
+    '--- old comment', ' select 1;', '-select 2;', '+++ new comment', '+select 3;', ' end;'].join('\n')));
+  assert.deepEqual(sql.map(file => [file.path, file.added, file.removed]), [['a.sql', 2, 2]]);
+  const added = plain(transcript.aiCodexItem({ id: 'g', type: 'fileChange', status: 'completed', changes: [
+    { path: 'lua.lua', kind: { type: 'add' }, diff: '-- comment\n++ counter\n@@ not a hunk\nprint(1)\n' }] }, 't'));
+  assert.deepEqual(plain(timeline.aiDiffFiles(added.output)).map(file => [file.path, file.added, file.removed]), [['lua.lua', 4, 0]]);
+  // A header line that is content of a hunk does not open a new file; the next git header does.
+  const two = plain(timeline.aiDiffFiles(['diff --git a/x b/x', '@@ -1 +1 @@', '-a', '+b', 'diff --git a/y b/y', '@@ -0,0 +1 @@', '+c'].join('\n')));
+  assert.deepEqual(two.map(file => [file.path, file.added, file.removed]), [['x', 1, 1], ['y', 1, 0]]);
+  console.log('PASS diffs follow hunk counts, so content that looks like a header stays content');
+}
+
+// The diff signature changes with the content even when the counts stay the same.
+{
+  const a = timeline.aiDiffFiles('diff --git a/c b/c\n@@ -1 +1 @@\n-RETRY = 5\n+RETRY = 6');
+  const b = timeline.aiDiffFiles('diff --git a/c b/c\n@@ -1 +1 @@\n-RETRY = 5\n+RETRY = 7');
+  assert.notEqual(timeline.aiDiffSignature(a), timeline.aiDiffSignature(b));
+  assert.equal(timeline.aiDiffSignature(a), timeline.aiDiffSignature(timeline.aiDiffFiles('diff --git a/c b/c\n@@ -1 +1 @@\n-RETRY = 5\n+RETRY = 6')));
+  assert.equal(timeline.aiToolView(tool('job_output', { job_id: 'job-7' })).target, 'job-7');
+  assert.deepEqual([timeline.aiToolView(tool('pwsh', { command: 'Get-ChildItem' })).verb, timeline.aiToolView(tool('pwsh', { command: 'Get-ChildItem' })).target],
+    ['运行', 'Get-ChildItem']);
+  console.log('PASS diff signatures follow content; job_output and pwsh read like their Claude tools');
+}

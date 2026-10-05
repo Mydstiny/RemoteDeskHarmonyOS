@@ -11,6 +11,12 @@ export function aiContentText(value: Object | undefined | null, depth: number = 
   if (record['content'] !== undefined) { return aiContentText(record['content'], depth + 1); }
   return '';
 }
+/** The value as a record, or an empty one: remote events with a malformed field are skipped, never thrown. */
+function aiObject(value: Object | undefined | null): Record<string, Object> {
+  return value !== undefined && value !== null && typeof value === 'object' && !Array.isArray(value) ?
+    value as Record<string, Object> : {};
+}
+
 function aiBlocks(value: Object | undefined): Record<string, Object>[] {
   if (value === undefined || value === null) { return []; }
   if (typeof value === 'string') {
@@ -36,10 +42,10 @@ function aiJson(value: Object | undefined): string {
   try { return JSON.stringify(value, null, 2); } catch (_error) { return ''; }
 }
 
-function aiClaudeItem(id: string, kind: string, title: string, text: string, state: string, turnId: string):
-  AiTranscriptItem {
+function aiClaudeItem(id: string, kind: string, title: string, text: string, state: string, turnId: string,
+  order: number): AiTranscriptItem {
   const role = kind === 'user' ? 'user' : kind === 'assistant' ? 'assistant' : 'execution';
-  return { id, role, title, text, state, turnId, kind, detail: '', output: '' };
+  return { id, role, title, text, state, turnId, kind, detail: '', output: '', order };
 }
 
 /**
@@ -54,10 +60,11 @@ export function aiClaudeItems(events: Record<string, Object>[]): AiTranscriptIte
   const streamItems: Map<string, AiTranscriptItem> = new Map();
   const dropped: Set<AiTranscriptItem> = new Set();
   const turnStates: Map<string, string> = new Map();
-  const addTool = (id: string, name: string, input: Object | undefined, turnId: string, state: string): void => {
+  const addTool = (id: string, name: string, input: Object | undefined, turnId: string, state: string,
+    order: number): void => {
     const existing = tools.get(id);
     if (existing !== undefined) { return; }
-    const item = aiClaudeItem('claude:tool:' + id, 'tool', name === '' ? '工具' : name, '', state, turnId);
+    const item = aiClaudeItem('claude:tool:' + id, 'tool', name === '' ? '工具' : name, '', state, turnId, order);
     item.detail = aiJson(input);
     tools.set(id, item);
     items.push(item);
@@ -85,7 +92,7 @@ export function aiClaudeItems(events: Record<string, Object>[]): AiTranscriptIte
       const current = streamItems.get(streamId);
       if (current !== undefined) { current.text = current.text + text; }
       else {
-        const item = aiClaudeItem(streamId, 'assistant', 'assistant', text, 'running', turnId);
+        const item = aiClaudeItem(streamId, 'assistant', 'assistant', text, 'running', turnId, seq);
         streamItems.set(streamId, item);
         items.push(item);
       }
@@ -94,10 +101,10 @@ export function aiClaudeItems(events: Record<string, Object>[]): AiTranscriptIte
         const kind = aiString(data['kind'], 'text');
         if (aiString(data['message']) === '') { continue; }
         if (kind === 'thinking') {
-          items.push(aiClaudeItem(id, 'thinking', '思考', aiString(data['message']), 'completed', turnId));
+          items.push(aiClaudeItem(id, 'thinking', '思考', aiString(data['message']), 'completed', turnId, seq));
         } else {
           dropStream(turnId);
-          items.push(aiClaudeItem(id, 'assistant', 'assistant', aiString(data['message']), 'completed', turnId));
+          items.push(aiClaudeItem(id, 'assistant', 'assistant', aiString(data['message']), 'completed', turnId, seq));
         }
         continue;
       }
@@ -107,13 +114,13 @@ export function aiClaudeItems(events: Record<string, Object>[]): AiTranscriptIte
         const blockType = aiString(block['type']);
         if (blockType === 'text' && aiString(block['text']) !== '') {
           items.push(aiClaudeItem(id + ':' + index.toString(), 'assistant', 'assistant', aiString(block['text']),
-            'completed', turnId));
+            'completed', turnId, seq));
         } else if (blockType === 'thinking' && aiString(block['thinking']) !== '') {
           items.push(aiClaudeItem(id + ':' + index.toString(), 'thinking', '思考', aiString(block['thinking']),
-            'completed', turnId));
+            'completed', turnId, seq));
         } else if (blockType === 'tool_use') {
           // Stored history does not say whether the tool finished; its tool_result, if any, will.
-          addTool(aiString(block['id']), aiString(block['name']), block['input'], turnId, '');
+          addTool(aiString(block['id']), aiString(block['name']), block['input'], turnId, '', seq);
         }
       });
     } else if (type === 'user/message') {
@@ -133,25 +140,25 @@ export function aiClaudeItems(events: Record<string, Object>[]): AiTranscriptIte
           texts.push('［图片］');
         }
       });
-      if (texts.length > 0) { items.push(aiClaudeItem(id, 'user', 'user', texts.join('\n'), 'completed', turnId)); }
+      if (texts.length > 0) { items.push(aiClaudeItem(id, 'user', 'user', texts.join('\n'), 'completed', turnId, seq)); }
     } else if (type === 'tool/call') {
-      addTool(aiString(data['id']), aiString(data['name']), data['input'], turnId, 'running');
+      addTool(aiString(data['id']), aiString(data['name']), data['input'], turnId, 'running', seq);
     } else if (type === 'tool/result') {
       // A tool the local user or policy refused; it never ran.
-      const item = aiClaudeItem(id, 'tool', aiString(data['name'], '工具'), '', 'declined', turnId);
+      const item = aiClaudeItem(id, 'tool', aiString(data['name'], '工具'), '', 'declined', turnId, seq);
       item.output = aiString(data['message']);
       items.push(item);
     } else if (type === 'turn/end') {
       const status = aiString(data['status'], 'completed');
       turnStates.set(turnId, status);
       if (status === 'failed' && aiString(data['result']) !== '') {
-        const notice = aiClaudeItem(id, 'notice', '执行失败', aiString(data['result']), 'failed', turnId);
+        const notice = aiClaudeItem(id, 'notice', '执行失败', aiString(data['result']), 'failed', turnId, seq);
         items.push(notice);
       }
     } else if (type === 'error') {
-      items.push(aiClaudeItem(id, 'notice', '错误', aiErrorText(aiString(data['code'])), 'failed', turnId));
+      items.push(aiClaudeItem(id, 'notice', '错误', aiErrorText(aiString(data['code'])), 'failed', turnId, seq));
     } else if (type === 'session/compacted') {
-      items.push(aiClaudeItem(id, 'notice', '上下文已压缩', '', 'completed', turnId));
+      items.push(aiClaudeItem(id, 'notice', '上下文已压缩', '', 'completed', turnId, seq));
     }
   }
   // A finished turn leaves nothing running: its stream and unanswered tools end with the turn.
@@ -172,13 +179,15 @@ function aiCodexChangeBody(change: Record<string, Object>): string {
   const kind = change['kind'];
   const type = typeof kind === 'string' ? kind as string : kind !== undefined && kind !== null && typeof kind === 'object' &&
     !Array.isArray(kind) ? aiString((kind as Record<string, Object>)['type']) : '';
-  if ((type !== 'add' && type !== 'delete') || body.startsWith('@@') || body.includes('\n@@') ||
+  if ((type !== 'add' && type !== 'delete') || body.startsWith('@@ -') || body.startsWith('--- ') ||
     body.startsWith('diff --git')) {
     return body;
   }
   const sign = type === 'add' ? '+' : '-';
-  const lines = (body.endsWith('\n') ? body.slice(0, body.length - 1) : body).split('\n');
-  return '@@ ' + (type === 'add' ? '新文件' : '已删除') + ' @@\n' +
+  const lines = body === '' ? [] : (body.endsWith('\n') ? body.slice(0, body.length - 1) : body).split('\n');
+  // The hunk counts tell the parser where content ends, so content lines that look like headers stay content.
+  const count = lines.length.toString();
+  return (type === 'add' ? '@@ -0,0 +1,' + count + ' @@' : '@@ -1,' + count + ' +0,0 @@') + '\n' +
     lines.map((line: string): string => sign + line).join('\n');
 }
 
@@ -255,96 +264,195 @@ function aiDshArguments(value: Object | undefined): string {
 }
 
 function aiDshTurnState(reason: Object | undefined): string {
-  const kind = aiString(aiRecord(reason)['kind'], 'completed');
+  const kind = aiString(aiObject(reason)['kind'], 'completed');
   if (kind === 'completed' || kind === 'max-tokens') { return 'completed'; }
   return kind === 'aborted' || kind === 'interrupted' ? 'interrupted' : 'failed';
 }
 
+/** The text of the given block type ('text' or 'reasoning') in DSH message content. */
+function aiDshText(content: Object | undefined, type: string): string {
+  if (typeof content === 'string') { return type === 'text' ? content as string : ''; }
+  return aiArray(content).map((value: Object): Record<string, Object> => aiObject(value))
+    .filter((block: Record<string, Object>): boolean => aiString(block['type']) === type)
+    .map((block: Record<string, Object>): string => aiString(block['text']))
+    .filter((text: string): boolean => text !== '').join('\n');
+}
+
+/** A row that grows while DSH streams one step's answer or reasoning. */
+interface AiDshStream {
+  item: AiTranscriptItem;
+  seqs: number[];
+}
+
 /**
- * DSH session events (ordered by seq) to transcript items. Surface replacements (compaction) cut the item range
- * they name; a tool result is folded into its call through `toolCallId`, and its own event stays as a hidden
- * placeholder so later replacements can still name it. A finished turn leaves nothing running.
+ * DSH session events to transcript items, one event at a time in seq order (history pages, then live events), so a
+ * long session is not mapped again for every event. Surface replacements (compaction) cut the item range they name;
+ * a tool result joins its call through toolCallId and leaves a hidden placeholder that later replacements can still
+ * name; streamed answer text and reasoning each grow one row until the assembled message replaces them; context a
+ * plugin injected reads as a step, not as the user's words; a finished turn leaves nothing running.
  */
-export function aiDshItems(events: Record<string, Object>[]): AiTranscriptItem[] {
-  const items: AiTranscriptItem[] = [];
-  const calls: Map<string, AiTranscriptItem> = new Map();
-  const turnStates: Map<string, string> = new Map();
-  for (const row of events) {
-    const current = aiNumber(row['seq'], -1);
-    if (row['data'] === undefined || row['data'] === null) { continue; }
+export class AiDshMapper {
+  /** Every item, hidden placeholders included. */
+  private list: AiTranscriptItem[] = [];
+  private calls: Map<string, AiTranscriptItem> = new Map();
+  private streams: Map<string, AiDshStream> = new Map();
+  private running: Map<string, AiTranscriptItem[]> = new Map();
+  /** Items named exactly 'dsh:<seq>', by seq (a message's source events are looked up, not searched for). */
+  private bySeq: Map<number, AiTranscriptItem> = new Map();
+  /** seq of the last event added; later events must come after it (see AiTranscript.flush). */
+  last: number = -1;
+
+  items(): AiTranscriptItem[] { return this.list.filter((item: AiTranscriptItem): boolean => item.kind !== 'merged'); }
+
+  /** Where the items of event `seq` begin (first) or end (!first) in the list, or -1. */
+  private position(seq: number, first: boolean): number {
+    const id = 'dsh:' + seq.toString();
+    const prefix = id + ':';
+    const matches = (item: AiTranscriptItem): boolean => item.id === id || item.id.startsWith(prefix);
+    if (first) { return this.list.findIndex(matches); }
+    for (let i = this.list.length - 1; i >= 0; i--) { if (matches(this.list[i])) { return i; } }
+    return -1;
+  }
+
+  private remove(item: AiTranscriptItem): void {
+    const index = this.list.indexOf(item);
+    if (index >= 0) { this.list.splice(index, 1); }
+  }
+
+  private track(item: AiTranscriptItem): void {
+    const items = this.running.get(item.turnId);
+    if (items === undefined) { this.running.set(item.turnId, [item]); } else { items.push(item); }
+  }
+
+  add(row: Record<string, Object>): void {
+    const seq = aiNumber(row['seq'], -1);
+    if (seq > this.last) { this.last = seq; }
+    const raw = row['data'];
+    if (raw === undefined || raw === null || typeof raw !== 'object' || Array.isArray(raw)) { return; }
+    const data = raw as Record<string, Object>;
     const type = aiString(row['type']);
-    const data = aiRecord(row['data']);
-    let replacementStart = -1;
-    const surface = row['surfaceOp'];
-    if (surface !== undefined && surface !== null && typeof surface === 'object') {
-      const replace = aiRecord(surface);
-      if (replace['op'] === 'replace') {
-        const start = 'dsh:' + aiNumber(replace['start'], -1), end = 'dsh:' + aiNumber(replace['end'], -1);
-        const first = items.findIndex((item: AiTranscriptItem): boolean => item.id === start);
-        const last = items.findIndex((item: AiTranscriptItem): boolean => item.id === end);
-        if (first < 0 || last < first) { throw new Error('AI_SURFACE_RANGE_INVALID'); }
-        replacementStart = first; items.splice(first, last - first + 1);
-      }
+    let at = -1;
+    const surface = aiObject(row['surfaceOp']);
+    if (surface['op'] === 'replace') {
+      const first = this.position(aiNumber(surface['start'], -1), true);
+      const last = this.position(aiNumber(surface['end'], -1), false);
+      if (first < 0 || last < first) { throw new Error('AI_SURFACE_RANGE_INVALID'); }
+      at = first;
+      this.list.splice(first, last - first + 1);
     }
-    const turnId = aiNumber(data['turn']).toString();
-    const add = (item: AiTranscriptItem): void => {
-      if (replacementStart >= 0) { items.splice(replacementStart, 0, item); } else { items.push(item); }
+    const put = (item: AiTranscriptItem): void => {
+      if (at >= 0) { this.list.splice(at, 0, item); at++; } else { this.list.push(item); }
+      if (item.id === 'dsh:' + seq.toString()) { this.bySeq.set(seq, item); }
     };
+    const turnId = aiNumber(data['turn']).toString();
+    const step = aiNumber(data['step']).toString();
+    const id = 'dsh:' + seq.toString();
     if (type === 'assistant/chunk') {
-      const chunk = aiRecord(data['chunk']);
-      const text = aiString(chunk['text'] ?? chunk['delta']);
-      if (text !== '') { items.push({ id: 'dsh:' + current, role: 'assistant', title: 'assistant', text,
-        state: 'running', turnId, kind: 'assistant', detail: '', output: '' }); }
-    } else if (type === 'user/message' || type === 'assistant/message') {
-      if (type === 'assistant/message') {
-        const sources = aiArray(row['sourceEventSeqs']).map((value: Object): number => aiNumber(value));
-        for (let i = items.length - 1; i >= 0; i--) {
-          if (sources.includes(Number(items[i].id.slice(4)))) { items.splice(i, 1); }
-        }
+      const chunk = aiObject(data['chunk']);
+      const chunkType = aiString(chunk['type']);
+      const kind = chunkType === 'reasoning-delta' ? 'thinking' : chunkType === 'text-delta' || chunkType === '' ?
+        'assistant' : '';
+      const text = aiString(chunk['text'], aiString(chunk['delta']));
+      if (kind === '' || text === '') { return; }
+      const key = turnId + ':' + step + ':' + kind;
+      const stream = this.streams.get(key);
+      if (stream !== undefined) {
+        stream.item.text = stream.item.text + text;
+        stream.seqs.push(seq);
+        return;
       }
-      const role = type === 'user/message' ? 'user' : 'assistant';
-      add({ id: 'dsh:' + current, role, title: role, text: aiContentText(data['message'] ?? data),
-        state: data['interrupted'] === true ? 'interrupted' : 'completed', turnId, kind: role, detail: '', output: '' });
+      const item: AiTranscriptItem = { id, role: kind === 'thinking' ? 'execution' : 'assistant',
+        title: kind === 'thinking' ? '思考' : 'assistant', text, state: 'running', turnId, kind, detail: '', output: '' };
+      this.streams.set(key, { item, seqs: [seq] });
+      this.list.push(item);
+      this.bySeq.set(seq, item);
+      this.track(item);
+    } else if (type === 'assistant/message') {
+      // The assembled message replaces the rows streamed for it.
+      const sources = new Set<number>(aiArray(row['sourceEventSeqs']).map((value: Object): number => aiNumber(value, -1)));
+      const prefix = turnId + ':' + step + ':';
+      Array.from(this.streams.keys()).forEach((key: string): void => {
+        const stream = this.streams.get(key);
+        if (stream !== undefined && (key.startsWith(prefix) || stream.seqs.some((value: number): boolean => sources.has(value)))) {
+          this.remove(stream.item);
+          this.streams.delete(key);
+        }
+      });
+      sources.forEach((source: number): void => {
+        const item = this.bySeq.get(source);
+        if (item !== undefined) { this.remove(item); this.bySeq.delete(source); }
+      });
+      const message = data['message'];
+      const content = typeof message === 'string' ? message : aiObject(message)['content'];
+      const state = data['interrupted'] === true ? 'interrupted' : 'completed';
+      const reasoning = aiDshText(content, 'reasoning');
+      const text = aiDshText(content, 'text');
+      if (reasoning !== '') {
+        put({ id: id + ':r', role: 'execution', title: '思考', text: reasoning, state, turnId, kind: 'thinking',
+          detail: '', output: '' });
+      }
+      put(text !== '' ? { id, role: 'assistant', title: 'assistant', text, state, turnId, kind: 'assistant', detail: '',
+        output: '' } : { id, role: 'execution', title: '', text: '', state, turnId, kind: 'merged', detail: '', output: '' });
+    } else if (type === 'user/message') {
+      const message = data['message'];
+      const record = aiObject(message);
+      const text = typeof message === 'string' ? message as string : aiContentText(record['content'] ?? data);
+      const source = aiObject(record['source']);
+      if (aiString(source['kind']) === 'plugin') {
+        // Instructions, skills or notices a plugin added: part of the work, not something the user typed.
+        const summary = aiString(source['summary']);
+        put({ id, role: 'execution', title: '上下文', text: summary !== '' ? summary : text.split('\n')[0].slice(0, 120),
+          state: 'completed', turnId, kind: 'tool', detail: '', output: text.length > 20000 ? text.slice(0, 20000) : text });
+      } else {
+        put({ id, role: 'user', title: 'user', text, state: data['interrupted'] === true ? 'interrupted' : 'completed',
+          turnId, kind: 'user', detail: '', output: '' });
+      }
     } else if (type === 'tool/call') {
-      const item: AiTranscriptItem = { id: 'dsh:' + current, role: 'execution', title: aiString(data['name'], '工具'),
-        text: '', state: 'running', turnId, kind: 'tool',
-        detail: aiDshArguments(data['arguments'] ?? data['input'] ?? data['args']), output: '' };
+      const item: AiTranscriptItem = { id, role: 'execution', title: aiString(data['name'], '工具'), text: '',
+        state: 'running', turnId, kind: 'tool', detail: aiDshArguments(data['arguments'] ?? data['input'] ?? data['args']),
+        output: '' };
       const callId = aiString(data['callId']);
-      if (callId !== '') { calls.set(callId, item); }
-      add(item);
+      if (callId !== '') { this.calls.set(callId, item); }
+      put(item);
+      this.track(item);
     } else if (type === 'tool/result') {
-      const message = aiRecord(data['message']);
-      const block = aiArray(message['content']).map((value: Object): Record<string, Object> => aiRecord(value))
+      const message = aiObject(data['message']);
+      const block = aiArray(message['content']).map((value: Object): Record<string, Object> => aiObject(value))
         .find((value: Record<string, Object>): boolean => aiString(value['type']) === 'tool-result');
-      const callId = block !== undefined ? aiString(block['toolCallId']) : aiString(aiRecord(message['source'])['callId']);
+      const callId = block !== undefined ? aiString(block['toolCallId']) : aiString(aiObject(message['source'])['callId']);
       const output = block !== undefined ? aiContentText(block['content']) : aiContentText(message['content']);
       const state = (block !== undefined && block['isError'] === true) || data['error'] !== undefined ? 'failed' : 'completed';
-      const call = calls.get(callId);
+      const call = this.calls.get(callId);
       if (call !== undefined) {
         call.output = output;
         call.state = state;
-        add({ id: 'dsh:' + current, role: 'execution', title: '', text: '', state, turnId, kind: 'merged', detail: '',
-          output: '' });
+        put({ id, role: 'execution', title: '', text: '', state, turnId, kind: 'merged', detail: '', output: '' });
       } else {
-        add({ id: 'dsh:' + current, role: 'execution', title: '工具结果', text: '', state, turnId, kind: 'tool',
-          detail: '', output });
+        put({ id, role: 'execution', title: '工具结果', text: '', state, turnId, kind: 'tool', detail: '', output });
       }
     } else if (type === 'turn/end') {
-      turnStates.set(turnId, aiDshTurnState(data['reason']));
+      const status = aiDshTurnState(data['reason']);
+      (this.running.get(turnId) ?? []).forEach((item: AiTranscriptItem): void => {
+        if (item.state === 'running') { item.state = status; }
+      });
+      this.running.delete(turnId);
+      Array.from(this.streams.keys()).filter((key: string): boolean => key.startsWith(turnId + ':'))
+        .forEach((key: string): void => { this.streams.delete(key); });
     }
   }
-  const result = items.filter((item: AiTranscriptItem): boolean => item.kind !== 'merged');
-  result.forEach((item: AiTranscriptItem): void => {
-    const status = turnStates.get(item.turnId);
-    if (status !== undefined && item.state === 'running') { item.state = status; }
-  });
-  return result;
+}
+
+/** DSH session events (ordered by seq) to transcript items; see AiDshMapper. */
+export function aiDshItems(events: Record<string, Object>[]): AiTranscriptItem[] {
+  const mapper = new AiDshMapper();
+  events.forEach((event: Record<string, Object>): void => { mapper.add(event); });
+  return mapper.items();
 }
 
 /** The text a user/message event typed (tool results and images do not count). */
 function aiUserText(event: Record<string, Object>): string {
   const texts: string[] = [];
-  aiBlocks(aiContentOf(aiRecord(event['data'])['message'])).forEach((block: Record<string, Object>): void => {
+  aiBlocks(aiContentOf(aiObject(event['data'])['message'])).forEach((block: Record<string, Object>): void => {
     if (aiString(block['type']) === 'text' && aiString(block['text']).trim() !== '') { texts.push(aiString(block['text'])); }
   });
   return texts.join('\n').trim();
@@ -361,6 +469,13 @@ interface AiEcho {
 export class AiTranscript {
   items: AiTranscriptItem[] = [];
   private dshEvents: Map<number, Record<string, Object>> = new Map();
+  private dsh: AiDshMapper = new AiDshMapper();
+  /** DSH seqs recorded since the last flush. */
+  private dshFresh: number[] = [];
+  /** An event came again with other content, out of order, or the mapper failed: map everything again. */
+  private dshRestart: boolean = false;
+  /** Arrival positions of engine prompts that already stood for an echo. */
+  private claimed: Set<number> = new Set();
   /**
    * Claude events in arrival order (history pages, then live events). The plugin numbers live events apart from
    * the history it read, so `seq` is not a usable order; each event is renumbered by arrival instead.
@@ -374,16 +489,51 @@ export class AiTranscript {
 
   clear(): void {
     this.items = []; this.dshEvents.clear(); this.claudeLog = []; this.claudeArrived = 0; this.echoes = [];
-    this.pending = '';
+    this.pending = ''; this.dsh = new AiDshMapper(); this.dshFresh = []; this.dshRestart = false; this.claimed.clear();
   }
 
-  /** Shows a sent prompt until a later engine event for the same turn (or with the same text) stands for it. */
-  echo(text: string, turnId: string): void {
+  /** Where the event log stands; taken before a prompt is sent, so an engine copy arriving early still counts. */
+  mark(): number { return this.claudeArrived; }
+
+  /** Whether an engine prompt (text, turn) can stand for `echo`: the same words, or the turn it opened. */
+  private stands(echo: AiEcho, text: string, turn: string, exact: boolean): boolean {
+    if (exact) { return echo.text === text; }
+    // The engine may add to the prompt (attachments); context it injects on its own never contains the prompt.
+    return echo.item.turnId !== '' && echo.item.turnId === turn && text.includes(echo.text);
+  }
+
+  /** The oldest echo the engine prompt at `index` stands for, or -1. */
+  private echoFor(index: number, text: string, turn: string): number {
+    let at = this.echoes.findIndex((echo: AiEcho): boolean => echo.after <= index && this.stands(echo, text, turn, true));
+    if (at < 0) {
+      at = this.echoes.findIndex((echo: AiEcho): boolean => echo.after <= index && this.stands(echo, text, turn, false));
+    }
+    return at;
+  }
+
+  /**
+   * Shows a sent prompt until an engine event from `after` on (see mark()) stands for it: the same words, or the
+   * prompt that opened its turn. Each engine prompt stands for one echo at most.
+   */
+  echo(text: string, turnId: string, after: number = -1): void {
     const trimmed = text.trim();
     if (trimmed === '') { return; }
+    const from = after >= 0 ? Math.min(after, this.claudeArrived) : this.claudeArrived;
     this.echoCount++;
-    this.echoes.push({ item: { id: 'echo:' + this.echoCount.toString(), role: 'user', title: 'user', text, state: 'completed',
-      turnId, kind: 'user', detail: '', output: '' }, text: trimmed, after: this.claudeArrived });
+    const echo: AiEcho = { item: { id: 'echo:' + this.echoCount.toString(), role: 'user', title: 'user', text,
+      state: 'completed', turnId, kind: 'user', detail: '', output: '', order: from }, text: trimmed, after: from };
+    // The engine's copy may already be here (it can arrive before the acknowledgement).
+    for (const entry of this.claudeLog) {
+      const index = aiNumber(entry['seq'], -1);
+      if (index < from || this.claimed.has(index) || entry['type'] !== 'user/message') { continue; }
+      const engine = aiUserText(entry);
+      if (engine !== '' && (this.stands(echo, engine, aiString(entry['turn']), true) ||
+        this.stands(echo, engine, aiString(entry['turn']), false))) {
+        this.claimed.add(index);
+        return;
+      }
+    }
+    this.echoes.push(echo);
     this.flush();
     this.items = this.withEchoes(this.items);
   }
@@ -391,10 +541,13 @@ export class AiTranscript {
   private withEchoes(items: AiTranscriptItem[]): AiTranscriptItem[] {
     const result = items.filter((item: AiTranscriptItem): boolean => !item.id.startsWith('echo:'));
     for (const echo of this.echoes) {
-      // Before the first item of its turn; a turn the engine has not reported yet ends the list, in sending order.
-      const at = echo.item.turnId === '' ? -1 :
-        result.findIndex((item: AiTranscriptItem): boolean => item.turnId === echo.item.turnId && item !== echo.item &&
-          !item.id.startsWith('echo:'));
+      // Before the first item of its turn; otherwise where it was sent (a steered prompt has no turn of its own).
+      let at = echo.item.turnId === '' ? -1 :
+        result.findIndex((item: AiTranscriptItem): boolean => item.turnId === echo.item.turnId && !item.id.startsWith('echo:'));
+      if (at < 0) {
+        at = result.findIndex((item: AiTranscriptItem): boolean => !item.id.startsWith('echo:') &&
+          (item.order ?? -1) >= echo.after);
+      }
       if (at >= 0) { result.splice(at, 0, echo.item); } else { result.push(echo.item); }
     }
     return result;
@@ -421,13 +574,11 @@ export class AiTranscript {
     if (type === 'user/message') {
       const text = aiUserText(event);
       if (text !== '') {
-        // The same words first; otherwise the prompt that opened this turn (the engine may add to its text).
-        let at = this.echoes.findIndex((echo: AiEcho): boolean => echo.after <= index && echo.text === text);
-        if (at < 0) {
-          at = this.echoes.findIndex((echo: AiEcho): boolean => echo.after <= index && echo.item.turnId !== '' &&
-            echo.item.turnId === turn);
+        const at = this.echoFor(index, text, turn);
+        if (at >= 0) {
+          this.echoes.splice(at, 1);
+          this.claimed.add(index);
         }
-        if (at >= 0) { this.echoes.splice(at, 1); }
       }
     }
     this.pending = 'claude';
@@ -438,6 +589,14 @@ export class AiTranscript {
   dshEvent(event: Record<string, Object>, defer: boolean = false): void {
     const seq = aiNumber(event['seq'], -1);
     if (!Number.isSafeInteger(seq) || seq < 0) { return; }
+    const known = this.dshEvents.get(seq);
+    if (known !== undefined) {
+      // A page and the event stream may both carry an event; the same event twice changes nothing.
+      if (JSON.stringify(known) === JSON.stringify(event)) { return; }
+      this.dshRestart = true;
+    } else {
+      this.dshFresh.push(seq);
+    }
     this.dshEvents.set(seq, event);
     this.pending = 'dsh';
     if (!defer) {
@@ -453,13 +612,29 @@ export class AiTranscript {
     if (pending === 'claude') {
       this.items = this.withEchoes(aiClaudeItems(this.claudeLog));
     } else if (pending === 'dsh') {
-      const ordered: Record<string, Object>[] = [];
-      Array.from(this.dshEvents.keys()).sort((a: number, b: number): number => a - b).forEach((key: number): void => {
-        const value = this.dshEvents.get(key);
-        if (value !== undefined) { ordered.push(value); }
-      });
-      try { this.items = aiDshItems(ordered); }
-      catch (error) { return error instanceof Error ? error.message : 'AI_SURFACE_RANGE_INVALID'; }
+      const fresh = this.dshFresh.sort((a: number, b: number): number => a - b);
+      this.dshFresh = [];
+      try {
+        if (this.dshRestart || (fresh.length > 0 && fresh[0] <= this.dsh.last)) {
+          // Something arrived out of order: map the whole log again (rare; pages and live events come in order).
+          this.dshRestart = false;
+          this.dsh = new AiDshMapper();
+          Array.from(this.dshEvents.keys()).sort((a: number, b: number): number => a - b).forEach((key: number): void => {
+            const value = this.dshEvents.get(key);
+            if (value !== undefined) { this.dsh.add(value); }
+          });
+        } else {
+          fresh.forEach((key: number): void => {
+            const value = this.dshEvents.get(key);
+            if (value !== undefined) { this.dsh.add(value); }
+          });
+        }
+        this.items = this.dsh.items();
+      } catch (error) {
+        // The mapper stopped part way: the next flush starts over (and reports the same problem if it persists).
+        this.dshRestart = true;
+        return error instanceof Error ? error.message : 'AI_SURFACE_RANGE_INVALID';
+      }
     }
     return '';
   }

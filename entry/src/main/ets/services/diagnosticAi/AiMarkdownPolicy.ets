@@ -68,6 +68,19 @@ function tableCells(line: string): string[] {
   return value.split('|').map((cell: string): string => cell.trim());
 }
 
+/** A heading's text without its closing hashes ('## Title ##'), scanned from the end in linear time. */
+function headingText(text: string): string {
+  let end: number = text.length;
+  while (end > 0 && text.charAt(end - 1).trim() === '') { end--; }
+  let start: number = end;
+  while (start > 0 && text.charAt(start - 1) === '#') { start--; }
+  if (start < end) {
+    end = start;
+    while (end > 0 && text.charAt(end - 1).trim() === '') { end--; }
+  }
+  return text.slice(0, end);
+}
+
 function isTableSeparator(line: string): boolean {
   // Trimmed first: surrounding runs of white space would make the pattern backtrack heavily on long lines.
   const value: string = line.trim();
@@ -116,7 +129,7 @@ export function aiMarkdownBlocks(text: string): AiMdBlock[] {
     if (heading !== null) {
       flush();
       const level: number = heading[1].length;
-      blocks.push(new AiMdBlock(level === 1 ? 'h1' : level === 2 ? 'h2' : 'h3', aiMarkdownSpans(heading[2].replace(/\s*#+\s*$/, ''))));
+      blocks.push(new AiMdBlock(level === 1 ? 'h1' : level === 2 ? 'h2' : 'h3', aiMarkdownSpans(headingText(heading[2]))));
       i++;
       continue;
     }

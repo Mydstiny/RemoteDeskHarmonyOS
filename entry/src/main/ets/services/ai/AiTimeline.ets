@@ -43,7 +43,8 @@ function str(value: Object | undefined): string { return typeof value === 'strin
 /** DSH names its tools in lower case (bash, read, edit, …); they read like the Claude Code tools they mirror. */
 function canonicalTool(name: string): string {
   switch (name) {
-    case 'bash': return 'Bash';
+    case 'bash':
+    case 'pwsh': return 'Bash';
     case 'read':
     case 'read_image': return 'Read';
     case 'write': return 'Write';
@@ -95,11 +96,23 @@ function gitHeaderPath(line: string): string {
   return at > 11 ? line.slice(at + 3) : line.slice(11);
 }
 
-/** Parses a unified diff (git or plain) into files with counted, classified lines. */
+/** The old and new line counts of a hunk header ('@@ -1,3 +1,4 @@'), or null when it has none. */
+function hunkCounts(line: string): number[] | null {
+  const match = /^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@/.exec(line);
+  if (match === null) { return null; }
+  return [match[1] === undefined ? 1 : Number(match[1]), match[2] === undefined ? 1 : Number(match[2])];
+}
+
+/**
+ * Parses a unified diff (git or plain) into files with counted, classified lines. Inside a hunk its line counts
+ * decide where the content ends, so content lines that look like headers ('--- x', '+++ y') stay content.
+ */
 export function aiDiffFiles(diff: string): AiDiffFile[] {
   const files: AiDiffFile[] = [];
   let current: AiDiffFile | null = null;
   let total = 0;
+  let oldLeft = 0;
+  let newLeft = 0;
   const open = (path: string): AiDiffFile => {
     const file: AiDiffFile = { path, added: 0, removed: 0, lines: [] };
     files.push(file);
@@ -111,31 +124,70 @@ export function aiDiffFiles(diff: string): AiDiffFile[] {
       break;
     }
     const raw = line.endsWith('\r') ? line.slice(0, line.length - 1) : line;
+    // Hunk content always starts with ' ', '+', '-' or '\\': only '+++ ' and '--- ' can be either.
+    const inHunk = oldLeft > 0 || newLeft > 0;
     if (raw.startsWith('diff --git ')) {
       current = open(gitHeaderPath(raw));
+      oldLeft = 0; newLeft = 0;
       continue;
     }
-    if (raw.startsWith('+++ ')) {
+    if (!inHunk && raw.startsWith('+++ ')) {
       const path = raw.slice(4).replace(/^b\//, '');
       if (current === null) { current = open(path); }
       else if (path !== '/dev/null' && current.lines.length === 0) { current.path = path; }
       continue;
     }
-    if (raw.startsWith('--- ') || raw.startsWith('index ') || raw.startsWith('new file mode') ||
+    if ((!inHunk && raw.startsWith('--- ')) || raw.startsWith('index ') || raw.startsWith('new file mode') ||
       raw.startsWith('deleted file mode') || raw.startsWith('similarity index') || raw.startsWith('rename ') ||
       raw.startsWith('Binary files')) {
       continue;
     }
     if (current === null) { current = open(''); }
-    if (raw.startsWith('@@')) { current.lines.push({ kind: 'hunk', text: raw }); }
-    else if (raw.startsWith('+')) { current.added++; current.lines.push({ kind: 'add', text: raw.slice(1) }); }
-    else if (raw.startsWith('-')) { current.removed++; current.lines.push({ kind: 'del', text: raw.slice(1) }); }
-    else if (raw.startsWith(' ')) { current.lines.push({ kind: 'context', text: raw.slice(1) }); }
-    else if (raw !== '' && !raw.startsWith('\\')) { current.lines.push({ kind: 'context', text: raw }); }
-    else { continue; }
+    if (raw.startsWith('@@')) {
+      const counts = hunkCounts(raw);
+      oldLeft = counts !== null ? counts[0] : 0;
+      newLeft = counts !== null ? counts[1] : 0;
+      current.lines.push({ kind: 'hunk', text: raw });
+    } else if (raw.startsWith('+')) {
+      current.added++; current.lines.push({ kind: 'add', text: raw.slice(1) }); newLeft--;
+    } else if (raw.startsWith('-')) {
+      current.removed++; current.lines.push({ kind: 'del', text: raw.slice(1) }); oldLeft--;
+    } else if (raw.startsWith(' ')) {
+      current.lines.push({ kind: 'context', text: raw.slice(1) }); oldLeft--; newLeft--;
+    } else if (raw.startsWith('\\')) {
+      continue;
+    } else if (raw !== '') {
+      current.lines.push({ kind: 'context', text: raw }); oldLeft--; newLeft--;
+    } else if (oldLeft > 0 && newLeft > 0) {
+      // A context line whose leading space was trimmed away.
+      current.lines.push({ kind: 'context', text: '' }); oldLeft--; newLeft--;
+    } else {
+      continue;
+    }
     total++;
   }
   return files.filter((file: AiDiffFile): boolean => file.lines.length > 0 || file.path !== '');
+}
+
+/**
+ * Identifies the content of a set of diffs (paths, lines, counts), so a view of them is rebuilt exactly when it
+ * changes. Each line is hashed by its length and first 256 characters.
+ */
+export function aiDiffSignature(files: AiDiffFile[]): string {
+  let hash = 0x811c9dc5;
+  let lines = 0;
+  const mix = (text: string): void => {
+    for (let i = 0; i < text.length && i < 256; i++) {
+      hash = Math.imul(hash ^ text.charCodeAt(i), 0x01000193) >>> 0;
+    }
+    hash = Math.imul(hash ^ (text.length & 0xffff), 0x01000193) >>> 0;
+  };
+  files.forEach((file: AiDiffFile): void => {
+    mix(file.path);
+    mix(file.added.toString() + '/' + file.removed.toString());
+    file.lines.forEach((line: AiDiffLine): void => { mix(line.kind); mix(line.text); lines++; });
+  });
+  return files.length.toString() + ':' + lines.toString() + ':' + hash.toString(16);
 }
 
 /**
@@ -209,7 +261,8 @@ export function aiToolView(item: AiTranscriptItem): AiToolView {
     case 'commandExecution':
       return { icon: 'terminal', verb: '运行', target: firstLine(str(input['command']) || item.text), stats: '' };
     case 'BashOutput':
-      return { icon: 'terminal', verb: '查看输出', target: str(input['bash_id']) || str(input['id']), stats: '' };
+      return { icon: 'terminal', verb: '查看输出', target: str(input['bash_id']) || str(input['job_id']) || str(input['id']),
+        stats: '' };
     case 'Read':
       return { icon: 'doc', verb: '读取', target: aiShortPath(path), stats: '' };
     case 'Write': {

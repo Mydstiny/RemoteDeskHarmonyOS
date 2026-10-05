@@ -70,3 +70,102 @@ live.dshEvent({ seq: 20, type: 'user/message', data: { turn: 3, message: 'x' }, 
 assert.equal(live.flush(), 'AI_SURFACE_RANGE_INVALID');
 assert.equal(live.items.length, 5);
 console.log('PASS DSH live events are mapped on flush and a bad replacement is reported');
+
+// Streaming: text and reasoning deltas each grow one row; the assembled message (reasoning block, text block)
+// replaces them; block markers and usage carry no text.
+{
+  const chunk = (seq, type, text, step = 0) => ({ seq, type: 'assistant/chunk', data: { turn: 4, step, chunk: { type, index: 0, text } } });
+  const stream = [
+    { seq: 1, type: 'user/message', data: { turn: 4, message: { content: [{ type: 'text', text: '解释一下' }], source: { kind: 'user' } } } },
+    { seq: 2, type: 'assistant/chunk', data: { turn: 4, step: 0, chunk: { type: 'block-start', index: 0, blockType: 'reasoning' } } },
+    chunk(3, 'reasoning-delta', '先看'), chunk(4, 'reasoning-delta', '代码'),
+    chunk(5, 'text-delta', '这是'), chunk(6, 'text-delta', '答案'),
+    { seq: 7, type: 'assistant/chunk', data: { turn: 4, step: 0, chunk: { type: 'usage', usage: {} } } },
+  ];
+  let mapped = plain(aiDshItems(stream));
+  assert.deepEqual(mapped.map(item => [item.kind, item.text, item.state]), [
+    ['user', '解释一下', 'completed'], ['thinking', '先看代码', 'running'], ['assistant', '这是答案', 'running']]);
+  stream.push({ seq: 8, type: 'assistant/message', data: { turn: 4, step: 0, message: { content: [
+    { type: 'reasoning', text: '先看代码' }, { type: 'text', text: '这是答案' },
+    { type: 'tool-call', id: 'c9', name: 'bash', arguments: '{}' }] } }, sourceEventSeqs: [2, 3, 4, 5, 6, 7] });
+  mapped = plain(aiDshItems(stream));
+  assert.deepEqual(mapped.map(item => [item.id, item.kind, item.text, item.state]), [
+    ['dsh:1', 'user', '解释一下', 'completed'], ['dsh:8:r', 'thinking', '先看代码', 'completed'],
+    ['dsh:8', 'assistant', '这是答案', 'completed']]);
+  // A compaction naming the message removes its reasoning row too.
+  stream.push({ seq: 9, type: 'user/message', data: { turn: 4, message: { content: [{ type: 'text', text: '摘要' }] } },
+    surfaceOp: { op: 'replace', start: 1, end: 8 } });
+  assert.deepEqual(plain(aiDshItems(stream)).map(item => item.text), ['摘要']);
+  console.log('PASS DSH streams one row per answer and reasoning, replaced by the assembled message');
+}
+
+// Context a plugin injected is part of the work, not the user's words; malformed fields are skipped.
+{
+  const injected = plain(aiDshItems([{ seq: 1, type: 'user/message', data: { turn: 1, message: {
+    content: [{ type: 'text', text: '# AGENTS.md\nrules…' }], source: { kind: 'plugin', plugin: 'dsh-agent-instructions' } } } },
+    { seq: 2, type: 'user/message', data: { turn: 1, message: { content: [{ type: 'text', text: 'x' }],
+      source: { kind: 'plugin', plugin: 'notice', form: 'notice', summary: '文件已变化' } } } }]));
+  assert.deepEqual(injected.map(item => [item.role, item.kind, item.title, item.text]), [
+    ['execution', 'tool', '上下文', '# AGENTS.md'], ['execution', 'tool', '上下文', '文件已变化']]);
+  assert.equal(injected[0].output, '# AGENTS.md\nrules…');
+  const odd = [{ seq: 1, type: 'turn/end', data: { turn: 1 } }, { seq: 2, type: 'tool/result', data: { turn: 1 } },
+    { seq: 3, type: 'tool/call', data: { turn: 1, callId: 5, name: 7, arguments: 9 } }, { seq: 4, type: 'assistant/message', data: { turn: 1, message: 'plain' } },
+    { seq: 5, type: 'user/message', data: { turn: 1, message: 12 } }, { seq: 6, type: 'assistant/chunk', data: { turn: 1, chunk: 'x' } },
+    { seq: 7, type: 'user/message', data: 'oops' }, { seq: 8, type: 'assistant/message', data: { turn: 1 }, surfaceOp: 'append' }];
+  assert.doesNotThrow(() => aiDshItems(odd));
+  assert.deepEqual(plain(aiDshItems(odd)).map(item => item.title), ['工具结果', '工具', 'assistant', 'user']);
+  console.log('PASS DSH injected context reads as a step and malformed fields are skipped');
+}
+
+// Mapping event by event, in any batch sizes, equals mapping the whole log; a long session stays fast.
+{
+  const random = (n) => Math.floor(Math.random() * n);
+  const session = (count) => {
+    const events = []; let seq = 0; let turn = 0;
+    while (events.length < count) {
+      turn++;
+      events.push({ seq: seq++, type: 'user/message', data: { turn, message: { content: [{ type: 'text', text: 'q' + turn }] } } });
+      for (let step = 0; step < 1 + random(3); step++) {
+        const chunks = [];
+        for (let k = 0; k < 5 + random(30); k++) {
+          chunks.push(seq);
+          events.push({ seq: seq++, type: 'assistant/chunk', data: { turn, step, chunk: { type: random(4) ? 'text-delta' : 'reasoning-delta', text: 't' + k } } });
+        }
+        events.push({ seq: seq++, type: 'assistant/message', data: { turn, step, message: { content: [{ type: 'reasoning', text: 'r' }, { type: 'text', text: 'a' + step }] } }, sourceEventSeqs: chunks });
+        const callId = 'c' + seq;
+        events.push({ seq: seq++, type: 'tool/call', data: { turn, step, callId, name: 'bash', arguments: '{"command":"ls"}' } });
+        events.push({ seq: seq++, type: 'tool/result', data: { turn, step, message: { content: [{ type: 'tool-result', toolCallId: callId, content: [{ type: 'text', text: 'ok' }] }] } } });
+      }
+      events.push({ seq: seq++, type: 'turn/end', data: { turn, reason: { kind: random(5) ? 'completed' : 'aborted' } } });
+    }
+    return events;
+  };
+  for (let round = 0; round < 20; round++) {
+    const events = session(400);
+    const live = new AiTranscript();
+    let at = 0;
+    while (at < events.length) {
+      const size = 1 + random(40);
+      events.slice(at, at + size).forEach(event => live.dshEvent(event, true));
+      assert.equal(live.flush(), '');
+      at += size;
+    }
+    assert.deepEqual(plain(live.items), plain(aiDshItems(events)), 'round ' + round);
+  }
+  // An event that arrives out of order (or again with other content) still yields the full mapping.
+  const events = session(200);
+  const shuffled = new AiTranscript();
+  events.slice(100).forEach(event => shuffled.dshEvent(event, true)); shuffled.flush();
+  events.slice(0, 100).forEach(event => shuffled.dshEvent(event, true)); shuffled.flush();
+  assert.deepEqual(plain(shuffled.items), plain(aiDshItems(events)));
+  const big = session(30000);
+  const started = Date.now();
+  const paged = new AiTranscript();
+  for (let page = 0; page < big.length; page += 200) {
+    big.slice(page, page + 200).forEach(event => paged.dshEvent(event, true));
+    assert.equal(paged.flush(), '');
+  }
+  const elapsed = Date.now() - started;
+  assert.ok(elapsed < 3000, '30k events mapped page by page in ' + elapsed + ' ms');
+  console.log('PASS DSH maps incrementally like the whole log; 30k events in ' + elapsed + ' ms');
+}

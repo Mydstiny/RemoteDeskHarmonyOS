@@ -107,6 +107,8 @@ export interface AiTranscriptItem {
   detail?: string;
   /** tool: its result */
   output?: string;
+  /** Claude: arrival position of the event the item came from (places locally echoed prompts). */
+  order?: number;
 }
 export function defaultAiSettings(): AiSettings {
   return { showExecution: true, textSize: 15, reconnectOnForeground: true, defaultBackend: 'codex', uiStyle: 'claude' };
