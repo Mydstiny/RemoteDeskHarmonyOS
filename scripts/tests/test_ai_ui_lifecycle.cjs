@@ -109,7 +109,7 @@ function workspaceFixture(reconnect, {
   deferredRelease = false, manualTimers = false, firstOpen = false
 } = {}) {
   const state = { background, connects: 0, reads: 0, registered: 0, removed: 0,
-    closes: 0, releases: 0, navigations: 0, timers: new Map(), timerSequence: 0 };
+    closes: 0, releases: 0, navigations: 0, timers: new Map(), timerSequence: 0, itemDiffs: 0, signatures: 0 };
   const account = { owner: 'fixture', generation: 1, lifecycle: 1 };
   state.entered = new Promise(resolve => { state.connectEntered = resolve; });
   state.refresh = deferredRefresh ? new Promise(resolve => { state.finishRefresh = resolve; }) : Promise.resolve();
@@ -153,7 +153,9 @@ function workspaceFixture(reconnect, {
     AppStorage: { get: () => state.background },
     router: { getParams: () => ({ hostId: 'host-fixture' }), back: () => { state.navigations++; } },
     aiErrorText: value => value, aiStatusLabel: value => value, aiConversationItem: timeline.aiConversationItem,
-    aiItemDiff: timeline.aiItemDiff, aiDiffFiles: timeline.aiDiffFiles, aiDiffStats: timeline.aiDiffStats, ...timers
+    aiItemDiff: (item) => { state.itemDiffs++; return timeline.aiItemDiff(item); }, aiDiffFiles: timeline.aiDiffFiles,
+    aiDiffStats: timeline.aiDiffStats, aiDiffSignature: (files) => { state.signatures++; return timeline.aiDiffSignature(files); },
+    ...timers
   });
   state.page.sync = () => {};
   if (!firstOpen) { state.page.allowed = true; }
@@ -304,6 +306,31 @@ const cases = [
     assert.equal(state.page.approvalAcceptable(approval({ kind: 'fileChange', engine: 'codex' })), false);
     assert.equal(state.page.approvalAcceptable(approval({ kind: 'fileChange', engine: 'codex', nativeItemComplete: true })), true);
     assert.equal(state.page.approvalAcceptable(approval({ kind: 'command' })), true);
+  }],
+  ['streamed answer text does not parse or sign the diffs again; a changed step does', async () => {
+    const state = workspaceFixture(false);
+    const edit = item('e1', 'execution', 'tool', { title: 'Edit',
+      detail: JSON.stringify({ file_path: '/r/a.ts', old_string: 'a', new_string: 'b' }) });
+    state.page.items = [item('u', 'user', 'user'), edit, item('s', 'assistant', 'assistant', { text: '正在' })];
+    state.page.diff = '';
+    const first = state.page.sessionDiffKey();
+    const parses = state.itemDiffs, signs = state.signatures;
+    for (let chunk = 0; chunk < 20; chunk++) {
+      state.page.items = [item('u', 'user', 'user'), edit, item('s', 'assistant', 'assistant', { text: '正在' + 'x'.repeat(chunk) })];
+      assert.equal(state.page.sessionDiffKey(), first);
+    }
+    assert.equal(state.itemDiffs, parses);
+    assert.equal(state.signatures, signs);
+    state.page.items = state.page.items.concat([item('e2', 'execution', 'tool', { title: 'Write',
+      detail: JSON.stringify({ file_path: '/r/b.ts', content: 'new' }) })]);
+    assert.notEqual(state.page.sessionDiffKey(), first);
+    // The engine's own diff takes over and is signed once per text.
+    state.page.diff = 'diff --git a/c b/c\n@@ -1 +1 @@\n-1\n+2';
+    const native = state.page.sessionDiffKey();
+    const nativeSigns = state.signatures;
+    assert.equal(state.page.sessionDiffKey(), native);
+    assert.equal(state.page.nativeDiffKey(), native);
+    assert.equal(state.signatures, nativeSigns);
   }],
   ['a collapsed log output is bounded in lines and characters', async () => {
     const state = workspaceFixture(false);

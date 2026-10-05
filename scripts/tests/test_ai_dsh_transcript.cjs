@@ -107,10 +107,19 @@ console.log('PASS DSH live events are mapped on flush and a bad replacement is r
     { seq: 2, type: 'user/message', data: said('x', { kind: 'plugin', plugin: 'notice', form: 'notice', summary: '文件已变化' }) },
     { seq: 3, type: 'user/message', data: said('你好') },
     // Older logs wrapped the message; it still reads the same.
-    { seq: 4, type: 'user/message', data: { turn: 1, message: said('[fixture] 上下文注入', { kind: 'plugin', plugin: 'fixture' }) } }]));
+    { seq: 4, type: 'user/message', data: { turn: 1, message: said('[fixture] 上下文注入', { kind: 'plugin', plugin: 'fixture' }) } },
+    // DSH's own injections each have their source kind (dsh-agent-instructions, dsh-subagent, dsh-goal, …).
+    { seq: 5, type: 'user/message', data: said('<system-reminder>\n# AGENTS.md\n规则…</system-reminder>', { kind: 'agent-instructions', path: '/r/AGENTS.md' }) },
+    { seq: 6, type: 'user/message', data: said('结果……', { kind: 'subagent-settled', summary: '子代理 review 已完成' }) },
+    { seq: 7, type: 'user/message', data: said('继续推进目标', { kind: 'goal' }) },
+    { seq: 8, type: 'user/message', data: said('<skill>\n部署步骤</skill>', { kind: 'some-new-kind' }) },
+    // Without a source (older logs): the user's words.
+    { seq: 9, type: 'user/message', data: { id: 'x', role: 'user', content: [{ type: 'text', text: '旧日志' }] } }]));
   assert.deepEqual(injected.map(item => [item.role, item.kind, item.title, item.text]), [
     ['execution', 'tool', '上下文', '# AGENTS.md'], ['execution', 'tool', '上下文', '文件已变化'], ['user', 'user', 'user', '你好'],
-    ['execution', 'tool', '上下文', '[fixture] 上下文注入']]);
+    ['execution', 'tool', '上下文', '[fixture] 上下文注入'], ['execution', 'tool', '上下文', '项目说明（AGENTS.md）'],
+    ['execution', 'tool', '上下文', '子代理 review 已完成'], ['execution', 'tool', '上下文', '目标继续'],
+    ['execution', 'tool', '上下文', '部署步骤'], ['user', 'user', 'user', '旧日志']]);
   assert.equal(injected[0].output, '# AGENTS.md\nrules…');
   const odd = [{ seq: 1, type: 'turn/end', data: { turn: 1 } }, { seq: 2, type: 'tool/result', data: { turn: 1 } },
     { seq: 3, type: 'tool/call', data: { turn: 1, callId: 5, name: 7, arguments: 9 } }, { seq: 4, type: 'assistant/message', data: { turn: 1, message: 'plain' } },

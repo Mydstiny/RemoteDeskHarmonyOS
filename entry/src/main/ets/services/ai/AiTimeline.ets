@@ -120,11 +120,16 @@ export function aiDiffFiles(diff: string): AiDiffFile[] {
     files.push(file);
     return file;
   };
+  let full = false;
+  // Only a line that would be shown counts toward the limit; headers and skipped binary data do not.
+  const room = (file: AiDiffFile): boolean => {
+    if (total < MAX_DIFF_LINES) { return true; }
+    file.truncated = true;
+    full = true;
+    return false;
+  };
   for (const line of diff.split('\n')) {
-    if (total >= MAX_DIFF_LINES) {
-      if (current !== null) { current.truncated = true; }
-      break;
-    }
+    if (full) { break; }
     const raw = line.endsWith('\r') ? line.slice(0, line.length - 1) : line;
     // Hunk content always starts with ' ', '+', '-' or '\\': only '+++ ' and '--- ' can be either.
     const inHunk = oldLeft > 0 || newLeft > 0;
@@ -137,6 +142,7 @@ export function aiDiffFiles(diff: string): AiDiffFile[] {
     if (!inHunk && raw === 'GIT binary patch') {
       binary = true;
       if (current === null) { current = open(''); }
+      if (!room(current)) { break; }
       current.lines.push({ kind: 'context', text: '（二进制文件）' });
       total++;
       continue;
@@ -153,6 +159,9 @@ export function aiDiffFiles(diff: string): AiDiffFile[] {
       continue;
     }
     if (current === null) { current = open(''); }
+    const shown = raw.startsWith('@@') || raw.startsWith('+') || raw.startsWith('-') || raw.startsWith(' ') ||
+      (raw !== '' && !raw.startsWith('\\')) || (raw === '' && oldLeft > 0 && newLeft > 0);
+    if (shown && !room(current)) { break; }
     if (raw.startsWith('@@')) {
       const counts = hunkCounts(raw);
       oldLeft = counts !== null ? counts[0] : 0;

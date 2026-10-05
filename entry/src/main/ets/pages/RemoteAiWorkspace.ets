@@ -368,22 +368,31 @@ export struct RemoteAiWorkspace {
     });
   }
   private toolView(item: AiTranscriptItem): AiToolView { return aiToolView(item); }
-  // Diffs are parsed once per transcript (or native diff) update, not on every render.
+  // Diffs are parsed and signed once per change of the steps (or of the native diff), not on every render: streamed
+  // answer text changes the transcript many times a second without changing any step.
   private stepDiffItems: AiTranscriptItem[] | null = null;
+  private stepDiffKey: string = '';
   private stepDiffFiles: AiDiffFile[] = [];
   private nativeDiffSource: string | null = null;
   private nativeDiffFiles: AiDiffFile[] = [];
-  private sessionDiffSource: string = '';
-  private sessionDiffItems: AiTranscriptItem[] | null = null;
+  private nativeDiffSig: string = '';
+  private sessionDiffBase: AiDiffFile[] | null = null;
   private sessionDiffFiles: AiDiffFile[] = [];
   private sessionDiffSig: string = '';
   /** Every change the steps of this session carry, newest last (used when the engine has no native diff). */
   private stepDiffs(): AiDiffFile[] {
     if (this.stepDiffItems !== this.items) {
-      let files: AiDiffFile[] = [];
-      this.items.forEach((item: AiTranscriptItem): void => { files = files.concat(aiItemDiff(item)); });
-      this.stepDiffFiles = files.filter((file: AiDiffFile): boolean => file.lines.length > 0);
       this.stepDiffItems = this.items;
+      // Diffs come from tool steps only; their inputs and outputs grow or settle, they are not rewritten in place.
+      const key = this.items.filter((item: AiTranscriptItem): boolean => item.role === 'execution')
+        .map((item: AiTranscriptItem): string => item.id + '\u0001' + item.title + '\u0001' +
+          (item.detail ?? '').length.toString() + '\u0001' + (item.output ?? '').length.toString()).join('\u0002');
+      if (key !== this.stepDiffKey) {
+        let files: AiDiffFile[] = [];
+        this.items.forEach((item: AiTranscriptItem): void => { files = files.concat(aiItemDiff(item)); });
+        this.stepDiffFiles = files.filter((file: AiDiffFile): boolean => file.lines.length > 0);
+        this.stepDiffKey = key;
+      }
     }
     return this.stepDiffFiles;
   }
@@ -391,16 +400,23 @@ export struct RemoteAiWorkspace {
   private nativeDiffs(): AiDiffFile[] {
     if (this.nativeDiffSource !== this.diff) {
       this.nativeDiffFiles = this.diff.includes('@@') || this.diff.startsWith('diff ') ? aiDiffFiles(this.diff) : [];
+      this.nativeDiffSig = aiDiffSignature(this.nativeDiffFiles);
       this.nativeDiffSource = this.diff;
     }
     return this.nativeDiffFiles;
   }
+  /** Identifies the native diff's content (the details sheet rebuilds its view when it changes). */
+  private nativeDiffKey(): string {
+    this.nativeDiffs();
+    return this.nativeDiffSig;
+  }
   private sessionDiffs(): AiDiffFile[] {
-    if (this.sessionDiffItems !== this.items || this.sessionDiffSource !== this.diff) {
-      const native = this.nativeDiffs();
-      this.sessionDiffFiles = native.length > 0 ? native : this.stepDiffs();
-      this.sessionDiffSig = aiDiffSignature(this.sessionDiffFiles);
-      this.sessionDiffItems = this.items; this.sessionDiffSource = this.diff;
+    const native = this.nativeDiffs();
+    const base = native.length > 0 ? native : this.stepDiffs();
+    if (this.sessionDiffBase !== base) {
+      this.sessionDiffFiles = base;
+      this.sessionDiffSig = base === native ? this.nativeDiffSig : aiDiffSignature(base);
+      this.sessionDiffBase = base;
     }
     return this.sessionDiffFiles;
   }
@@ -599,7 +615,7 @@ export struct RemoteAiWorkspace {
           } else if (this.detailTab === 1) {
             Text('仅显示原生引擎已报告的差异').fontSize(12).fontFamily(AppConfig.fontFamily).fontColor(this.pal().text3).width('100%')
             if (this.nativeDiffs().length > 0) {
-              ForEach([aiDiffSignature(this.nativeDiffs())], (_key: string): void => {
+              ForEach([this.nativeDiffKey()], (_key: string): void => {
                 AiDiffView({ files: this.nativeDiffs(), textSize: 12, palette: this.palette(),
                   startOpen: this.nativeDiffs().length <= 3 })
               }, (key: string): string => key)

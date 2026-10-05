@@ -179,12 +179,8 @@ function aiCodexChangeBody(change: Record<string, Object>): string {
   const kind = change['kind'];
   const type = typeof kind === 'string' ? kind as string : kind !== undefined && kind !== null && typeof kind === 'object' &&
     !Array.isArray(kind) ? aiString((kind as Record<string, Object>)['type']) : '';
-  // Passed through only when it is a diff for sure; a file whose first line looks like a header is still content.
+  // Added and deleted files always carry their content, which may itself be a patch: never read as a diff.
   if (type !== 'add' && type !== 'delete') { return body; }
-  if (body.startsWith('diff --git ') ||
-    /^(?:--- [^\n]*\n\+\+\+ [^\n]*\n)?@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@/.test(body)) {
-    return body;
-  }
   const sign = type === 'add' ? '+' : '-';
   const lines = body === '' ? [] : (body.endsWith('\n') ? body.slice(0, body.length - 1) : body).split('\n');
   // The hunk counts tell the parser where content ends, so content lines that look like headers stay content.
@@ -278,6 +274,37 @@ function aiDshText(content: Object | undefined, type: string): string {
     .filter((block: Record<string, Object>): boolean => aiString(block['type']) === type)
     .map((block: Record<string, Object>): string => aiString(block['text']))
     .filter((text: string): boolean => text !== '').join('\n');
+}
+
+/** What DSH context a user/message carries, by its source kind, when the source names no summary. */
+const DSH_CONTEXT_LABELS: Record<string, string> = {
+  'agent-instructions': '项目说明（AGENTS.md）',
+  'skill-invocation': '技能',
+  'skill-catalog': '技能目录',
+  'agent-message': '子代理消息',
+  'subagent-settled': '子代理已完成',
+  'goal': '目标继续',
+  'session-reference': '引用的会话',
+  'webhook': 'Webhook 通知'
+};
+
+/** The first line that says something, without surrounding markup tags. */
+function aiFirstLine(text: string): string {
+  for (const raw of text.split('\n')) {
+    const line = raw.replace(/<\/?[A-Za-z][^<>\n]{0,80}>/g, '').trim();
+    if (line !== '') { return line.length > 120 ? line.slice(0, 119) + '…' : line; }
+  }
+  return '';
+}
+
+function aiDshContextLabel(kind: string, source: Record<string, Object>, text: string): string {
+  const summary = aiString(source['summary']);
+  if (summary !== '') { return summary; }
+  const named = DSH_CONTEXT_LABELS[kind];
+  if (named !== undefined) { return named; }
+  const line = aiFirstLine(text);
+  if (line !== '') { return line; }
+  return kind === 'plugin' && aiString(source['plugin']) !== '' ? '插件 ' + aiString(source['plugin']) : kind;
 }
 
 /** A row that grows while DSH streams one step's answer or reasoning. */
@@ -404,11 +431,12 @@ export class AiDshMapper {
         message as Record<string, Object> : data;
       const text = typeof message === 'string' ? message as string : aiContentText(record['content'] ?? record);
       const source = aiObject(record['source']);
-      if (aiString(source['kind']) === 'plugin') {
-        // Instructions, skills or notices a plugin added: part of the work, not something the user typed.
-        const summary = aiString(source['summary']);
-        put({ id, role: 'execution', title: '上下文', text: summary !== '' ? summary : text.split('\n')[0].slice(0, 120),
-          state: 'completed', turnId, kind: 'tool', detail: '', output: text.length > 20000 ? text.slice(0, 20000) : text });
+      const kind = aiString(source['kind']);
+      if (kind !== '' && kind !== 'user') {
+        // Anything a person did not type (AGENTS.md, skills, sub-agent results, goals, notices) is context, as DSH's
+        // own client reads it: every source but 'user'. Older logs without a source are the user's words.
+        put({ id, role: 'execution', title: '上下文', text: aiDshContextLabel(kind, source, text), state: 'completed',
+          turnId, kind: 'tool', detail: '', output: text.length > 20000 ? text.slice(0, 20000) : text });
       } else {
         put({ id, role: 'user', title: 'user', text, state: data['interrupted'] === true ? 'interrupted' : 'completed',
           turnId, kind: 'user', detail: '', output: '' });

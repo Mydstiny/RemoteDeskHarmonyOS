@@ -114,3 +114,14 @@ Codex 条目与 DSH/Claude 事件都映射为同一组时间线项：用户消�
 | P3 AiDshMapper 移除流式行时重复全表扫描 | 移除时同步删除 `bySeq` 项，`lastIndexOf` 从尾部查找 |
 | P3 工作区干净时显示「还没有读取到差异」 | 显示「工作区没有未提交的改动」 |
 | P3 Codex 审批的 `kind: null`、非对象 `nativeItem` 会在渲染时抛错 | 改用安全访问 |
+
+### 第四轮复核（2026-10-05，Opus 5.5 high）：FAIL（1 个 P2）→ 第五轮修复
+
+第三轮 6 个 P3 核实已修复，前几轮无回归（DSH 增量与全量 300 轮随机对比 0 差异）。新发现与处理：
+
+| 发现 | 修复 |
+|---|---|
+| P2 只认 `source.kind === 'plugin'` 为上下文；DSH 自己注入 AGENTS.md 用 `agent-instructions`，另有 `skill-invocation`、`skill-catalog`、`agent-message`、`subagent-settled`、`goal`、`session-reference`、`webhook` | 与 DSH 客户端一致：有 `source` 且 `kind` 不是 `user` 即为上下文；标题优先用 `summary`，否则用已知类型的中文名，再否则取第一行有内容的文字（去掉标签） |
+| P3 截断检查在循环开头，正好到 4000 行时跳过的二进制数据也会误标「截断」 | 只有真正要显示的行才计入上限 |
+| P3 签名逐字哈希变慢且每次渲染重算 | 工具步骤按 id/标题/输入输出长度做指纹，流式回答不再重新解析和签名；原生差异的签名随文本缓存 |
+| P3 新增的 `.patch` 文件仍被当 diff 透传 | 新增/删除文件一律按内容显示（Codex app-server 的 add/delete 携带文件原文） |

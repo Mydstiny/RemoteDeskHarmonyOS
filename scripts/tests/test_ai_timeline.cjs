@@ -55,7 +55,8 @@ assert.deepEqual([command.kind, command.text, command.output], ['tool', 'git sta
 assert.deepEqual(view(command), { icon: 'terminal', verb: '运行', target: 'git status', stats: '' });
 const change = codex({ id: 'f1', type: 'fileChange', status: 'completed', changes: [
   { path: 'a.ts', kind: { type: 'update' }, diff: '@@ -1 +1 @@\n-a\n+b' },
-  { path: 'b.ts', kind: { type: 'add' }, diff: '@@ -0,0 +1 @@\n+new' }] });
+  // An added file carries its content (Codex app-server FileChange.diff for add/delete), not a diff.
+  { path: 'b.ts', kind: { type: 'add' }, diff: 'new' }] });
 assert.equal(change.kind, 'tool');
 assert.deepEqual(view(change), { icon: 'edit', verb: '修改', target: '2 个文件', stats: '+2 −1' });
 assert.deepEqual(plain(timeline.aiItemDiff(change)).map(file => file.path), ['a.ts', 'b.ts']);
@@ -177,8 +178,16 @@ console.log('PASS Codex added and deleted files count every line');
   const titled = plain(transcript.aiCodexItem({ id: 'h', type: 'fileChange', status: 'completed', changes: [
     { path: 'notes.md', kind: { type: 'add' }, diff: '--- title\nbody\n' }] }, 't'));
   assert.deepEqual(plain(timeline.aiDiffFiles(titled.output)).map(file => [file.path, file.added, file.removed]), [['notes.md', 2, 0]]);
-  const unified = plain(transcript.aiCodexItem({ id: 'i', type: 'fileChange', status: 'completed', changes: [
-    { path: 'n.md', kind: { type: 'add' }, diff: '--- /dev/null\n+++ b/n.md\n@@ -0,0 +1,2 @@\n+a\n+b\n' }] }, 't'));
-  assert.deepEqual(plain(timeline.aiDiffFiles(unified.output)).map(file => [file.path, file.added, file.removed]), [['n.md', 2, 0]]);
-  console.log('PASS binary patches, long-line signatures and header-like file content');
+  // An added .patch file is content too: every line counts as added, nothing is read as a diff of another file.
+  const patch = plain(transcript.aiCodexItem({ id: 'i', type: 'fileChange', status: 'completed', changes: [
+    { path: 'fix.patch', kind: { type: 'add' }, diff: 'diff --git a/src/x.ts b/src/x.ts\n--- a/src/x.ts\n+++ b/src/x.ts\n@@ -1 +1 @@\n-a\n+b\n' }] }, 't'));
+  assert.deepEqual(plain(timeline.aiDiffFiles(patch.output)).map(file => [file.path, file.added, file.removed]), [['fix.patch', 6, 0]]);
+  // A binary file right at the line limit is not marked as cut short; real excess still is.
+  const filler = Array.from({ length: 3998 }, () => '+x').join('\n');
+  const atLimit = plain(timeline.aiDiffFiles('diff --git a/a b/a\n@@ -0,0 +1,3998 @@\n' + filler +
+    '\ndiff --git a/i.png b/i.png\nGIT binary patch\nliteral 3\nabc\n'));
+  assert.deepEqual(atLimit.map(file => [file.path, file.lines.length, file.truncated === true]), [['a', 3999, false], ['i.png', 1, false]]);
+  const over = plain(timeline.aiDiffFiles('diff --git a/a b/a\n@@ -0,0 +1,4001 @@\n' + filler + '\n+y\n+z\n+w\n'));
+  assert.deepEqual(over.map(file => [file.lines.length, file.truncated === true]), [[4000, true]]);
+  console.log('PASS binary patches, long-line signatures and file content that looks like a diff');
 }
