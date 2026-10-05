@@ -97,4 +97,12 @@ export class ProPasskeyAuthenticator {
   }
 
   static declined(request: PasskeyRequest): PasskeyResponse { return failure(request, 'PASSKEY_USER_DENIED'); }
+
+  static failed(request: PasskeyRequest, code: string): PasskeyResponse { return failure(request, code); }
+
+  /** A bare success, for requests that return nothing but the outcome (pairing). */
+  static done(request: PasskeyRequest): PasskeyResponse {
+    return { v: PASSKEY_PROTOCOL_VERSION, id: request.id, ok: true, error: '', credentialId: '', authData: '',
+      signature: '', userHandle: '', publicKey: '' };
+  }
 }

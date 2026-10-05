@@ -61,14 +61,21 @@ assert.throws(() => c.authenticatorData(rpIdHash, 0, -1, null, null), /PASSKEY_A
 
 // requests
 const b64 = n => Buffer.from(crypto.randomBytes(n)).toString('base64url');
-const register = { v: 1, id: b64(16), op: 'register', rpId: 'github.com', clientDataHash: b64(32),
-  user: { id: b64(32), name: 'octocat', displayName: 'The Octocat' }, credentialIds: [b64(16)], from: 'MatePad', sentAt: 1800000000000, ttlMs: 60000 };
+const register = { v: 2, id: b64(16), op: 'register', rpId: 'github.com', clientDataHash: b64(32),
+  user: { id: b64(32), name: 'octocat', displayName: 'The Octocat' }, credentialIds: [b64(16)], from: 'MatePad', sentAt: 1800000000000, ttlMs: 60000,
+  device: b64(16), devicePub: '', sig: b64(70) };
 assert.deepEqual(plain(c.parsePasskeyRequest(JSON.stringify(register))), register);
-const signin = { v: 1, id: b64(16), op: 'signin', rpId: 'login.example.co.uk', clientDataHash: b64(32), user: null,
-  credentialIds: [], from: 'MateBook', sentAt: 1800000000000, ttlMs: 120000 };
+const signin = { v: 2, id: b64(16), op: 'signin', rpId: 'login.example.co.uk', clientDataHash: b64(32), user: null,
+  credentialIds: [], from: 'MateBook', sentAt: 1800000000000, ttlMs: 120000, device: b64(16), devicePub: '', sig: b64(71) };
+const pair = { v: 2, id: b64(16), op: 'pair', rpId: '', clientDataHash: '', user: null, credentialIds: [], from: 'MatePad',
+  sentAt: 1800000000000, ttlMs: 90000, device: b64(16), devicePub: Buffer.from(spki).toString('base64url'), sig: b64(70) };
+assert.deepEqual(plain(c.parsePasskeyRequest(JSON.stringify(pair))), pair);
 assert.deepEqual(plain(c.parsePasskeyRequest(JSON.stringify(signin))), signin);
 const bad = [
-  { ...register, v: 2 }, { ...register, id: b64(15) }, { ...register, op: 'delete' }, { ...register, rpId: 'GitHub.com' },
+  { ...register, v: 1 }, { ...register, v: 3 }, { ...register, device: undefined }, { ...register, device: b64(15) },
+  { ...register, sig: '' }, { ...register, sig: b64(73) }, { ...signin, devicePub: Buffer.from(spki).toString('base64url') },
+  { ...pair, rpId: 'github.com' }, { ...pair, clientDataHash: b64(32) }, { ...pair, devicePub: '' }, { ...pair, devicePub: b64(90) },
+  { ...pair, credentialIds: [b64(16)] }, { ...pair, user: register.user }, { ...register, id: b64(15) }, { ...register, op: 'delete' }, { ...register, rpId: 'GitHub.com' },
   { ...register, rpId: 'a..b' }, { ...register, rpId: 'evil.com\u0000.good.com' }, { ...register, rpId: 'x'.repeat(254) },
   { ...register, clientDataHash: b64(31) }, { ...register, ttlMs: 999 }, { ...register, ttlMs: 120001 },
   { ...register, ttlMs: 1.5 }, { ...register, from: 'x'.repeat(41) }, { ...register, user: null },
@@ -86,15 +93,39 @@ assert.ok(!c.passkeyRequestCurrent(register, register.sentAt + 121000));
 assert.ok(c.validRpId('localhost'));
 assert.ok(!c.validRpId('-bad.com'));
 
+// what a device signs: every field but the signature, in a fixed order; a device key signature verifies over it
+const signed = c.passkeyRequestSigningBytes(register);
+assert.ok(Buffer.from(signed).toString('utf8').startsWith('RemoteDesk:passkey-request:v2\n'));
+assert.deepEqual(Array.from(c.passkeyRequestSigningBytes({ ...register, sig: b64(70) })), Array.from(signed));
+for (const change of [{ rpId: 'gitlab.com' }, { clientDataHash: b64(32) }, { from: 'Other' }, { sentAt: 1800000000001 },
+  { device: b64(16) }, { credentialIds: [] }, { user: { ...register.user, name: 'mallory' } }, { op: 'signin', user: null }]) {
+  assert.notDeepEqual(Array.from(c.passkeyRequestSigningBytes({ ...register, ...change })), Array.from(signed), JSON.stringify(change));
+}
+const deviceSignature = crypto.sign('sha256', Buffer.from(signed), privateKey);
+assert.ok(crypto.verify('sha256', Buffer.from(c.passkeyRequestSigningBytes(register)), publicKey, deviceSignature));
+assert.equal(Buffer.from(c.utf8Bytes('通行密钥 ✓ 😀')).toString('utf8'), '通行密钥 ✓ 😀');
+// both devices derive the same six-digit pairing code from the device key and request ID
+const digest = crypto.createHash('sha256').update(Buffer.from(c.passkeyPairingCodeInput(pair))).digest();
+assert.equal(Buffer.from(c.passkeyPairingCodeInput(pair)).toString('utf8'), 'RemoteDesk:pair:v1:' + pair.devicePub + ':' + pair.id);
+const expected = (digest.readUInt32BE(0) % 1000000).toString().padStart(6, '0');
+assert.equal(c.passkeyPairingCode(new Uint8Array(digest)), expected.slice(0, 3) + ' ' + expected.slice(3));
+assert.equal(c.passkeyPairingCode(new Uint8Array([0, 0, 0, 7])), '000 007');
+assert.throws(() => c.passkeyPairingCode(new Uint8Array(3)), /PASSKEY_DIGEST_INVALID/);
+
 // responses
-const response = { v: 1, id: register.id, ok: true, error: '', credentialId: b64(16), authData: Buffer.from(attested).toString('base64url'),
+const response = { v: 2, id: register.id, ok: true, error: '', credentialId: b64(16), authData: Buffer.from(attested).toString('base64url'),
   signature: '', userHandle: '', publicKey: Buffer.from(spki).toString('base64url') };
 assert.deepEqual(plain(c.parsePasskeyResponse(JSON.stringify(response), register.id)), response);
 assert.equal(c.parsePasskeyResponse(JSON.stringify(response), signin.id), null);
-assert.deepEqual(plain(c.parsePasskeyResponse(JSON.stringify({ v: 1, id: register.id, ok: false, error: 'USER_DENIED' }), register.id)),
-  { v: 1, id: register.id, ok: false, error: 'USER_DENIED', credentialId: '', authData: '', signature: '', userHandle: '', publicKey: '' });
+assert.deepEqual(plain(c.parsePasskeyResponse(JSON.stringify({ v: 2, id: register.id, ok: false, error: 'USER_DENIED' }), register.id)),
+  { v: 2, id: register.id, ok: false, error: 'USER_DENIED', credentialId: '', authData: '', signature: '', userHandle: '', publicKey: '' });
+// a bare success (pairing) carries nothing else; a half-filled success is refused
+const bare = { v: 2, id: pair.id, ok: true, error: '', credentialId: '', authData: '', signature: '', userHandle: '', publicKey: '' };
+assert.deepEqual(plain(c.parsePasskeyResponse(JSON.stringify(bare), pair.id)), bare);
+assert.equal(c.parsePasskeyResponse(JSON.stringify({ ...bare, credentialId: b64(16) }), pair.id), null);
+assert.equal(c.parsePasskeyResponse(JSON.stringify({ ...response, v: 1 }), register.id), null);
 assert.equal(c.parsePasskeyResponse(JSON.stringify({ ...response, authData: b64(36) }), register.id), null);
 assert.equal(c.parsePasskeyResponse(JSON.stringify({ ...response, signature: b64(73) }), register.id), null);
 assert.equal(c.parsePasskeyResponse(JSON.stringify({ ...response, publicKey: b64(90) }), register.id), null);
 
-console.log('PASS phone passkey codec: base64url, COSE/SPKI, authenticator data and signatures, request/response validation');
+console.log('PASS phone passkey codec v2: base64url, COSE/SPKI, authenticator data, signed requests, pairing codes, request/response validation');

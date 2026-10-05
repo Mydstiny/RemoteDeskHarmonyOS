@@ -6,6 +6,7 @@ import { ConnectionJournal } from '../services/ConnectionJournal';
 import { ProConnectionShareSender } from '../services/pro/ProConnectionShareSender';
 import { ProAppRuntime } from '../services/pro/ProAppRuntime';
 import { ProFeatureVisibility } from '../services/pro/ProFeatureVisibility';
+import { ProPasskeyReceiver } from '../services/pro/passkey/ProPasskeyReceiver';
 /**
  * EntryAbility.ets — 应用入口 UIAbility
  *
@@ -23,7 +24,7 @@ import {
   Configuration
 } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { window } from '@kit.ArkUI';
+import { UIContext, window } from '@kit.ArkUI';
 import { buffer } from '@kit.ArkTS';
 import { preferences } from '@kit.ArkData';
 import { KeyVaultService } from '../services/KeyVaultService';
@@ -561,6 +562,11 @@ export default class EntryAbility extends UIAbility {
         'SSH background task stop skipped: independent SSH window remains owned');
     }
     this.resumeCloudAfterForeground();
+    // 手机通行密钥: paired devices' requests are confirmed on whatever page is open while the app is in front.
+    ProPasskeyReceiver.getInstance().foreground(this.context, (): UIContext | null => {
+      try { return this.windowStage === null ? null : this.windowStage.getMainWindowSync().getUIContext(); }
+      catch (_error) { return null; }
+    });
     hilog.info(DOMAIN, TAG, 'Ability onForeground');
   }
 
@@ -584,6 +590,7 @@ export default class EntryAbility extends UIAbility {
     try {
       DataCrypto.getInstance().lock();
     } catch (_e) { /* ignore */ }
+    ProPasskeyReceiver.getInstance().background();
 
     // 注意: 不在这里调用 disconnectRemoteSessions.
     // 后台保活决策由 RemoteDesktop 的 aboutToDisappear 配合 BackgroundTaskService 处理.

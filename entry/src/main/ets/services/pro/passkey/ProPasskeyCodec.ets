@@ -4,7 +4,8 @@
 export const PASSKEY_FLAG_UP: number = 0x01;
 export const PASSKEY_FLAG_UV: number = 0x04;
 export const PASSKEY_FLAG_AT: number = 0x40;
-export const PASSKEY_PROTOCOL_VERSION: number = 1;
+/** v2: requests name the sending device and are signed by its device key; 'pair' introduces a device. */
+export const PASSKEY_PROTOCOL_VERSION: number = 2;
 export const PASSKEY_MAX_TTL_MS: number = 120000;
 /** Device-bound software authenticator without attestation: the all-zero AAGUID. */
 export const PASSKEY_AAGUID: Uint8Array = new Uint8Array(16);
@@ -110,15 +111,21 @@ export interface PasskeyUser { id: string; name: string; displayName: string; }
 export interface PasskeyRequest {
   v: number;
   id: string;
-  op: string;            // 'register' | 'signin'
-  rpId: string;
-  clientDataHash: string;
+  op: string;            // 'register' | 'signin' | 'pair'
+  rpId: string;          // '' for pair
+  clientDataHash: string;  // '' for pair
   user: PasskeyUser | null;
   credentialIds: string[];  // register: exclude list; signin: allow list (empty = any for this rpId)
   from: string;
   /** Requester clock (ms). A late joiner of the shared object can tell a stale request from a new one. */
   sentAt: number;
   ttlMs: number;
+  /** ID of the sending device's key: the first 16 bytes of SHA-256 over its public key (SPKI). */
+  device: string;
+  /** pair only: the sending device's public key (SPKI); '' otherwise (the phone already knows paired keys). */
+  devicePub: string;
+  /** ECDSA P-256 signature by the device key over passkeyRequestSigningBytes(request). */
+  sig: string;
 }
 
 export interface PasskeyResponse {
@@ -149,6 +156,44 @@ export function validRpId(rpId: string): boolean {
     /^(localhost|([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)$/.test(rpId);
 }
 
+/** UTF-8 bytes of a string (the codec stays free of platform imports). */
+export function utf8Bytes(text: string): Uint8Array {
+  const bytes: number[] = [];
+  for (const character of text) {
+    const code: number = character.codePointAt(0) ?? 0;
+    if (code < 0x80) { bytes.push(code); }
+    else if (code < 0x800) { bytes.push(0xc0 | (code >> 6), 0x80 | (code & 0x3f)); }
+    else if (code < 0x10000) { bytes.push(0xe0 | (code >> 12), 0x80 | ((code >> 6) & 0x3f), 0x80 | (code & 0x3f)); }
+    else {
+      bytes.push(0xf0 | (code >> 18), 0x80 | ((code >> 12) & 0x3f), 0x80 | ((code >> 6) & 0x3f), 0x80 | (code & 0x3f));
+    }
+  }
+  return new Uint8Array(bytes);
+}
+
+/** The bytes a device signs: every request field except the signature, in a fixed order. */
+export function passkeyRequestSigningBytes(request: PasskeyRequest): Uint8Array {
+  const user: string[] | null = request.user === null ? null :
+    [request.user.id, request.user.name, request.user.displayName];
+  const fields: Object[] = [request.v, request.id, request.op, request.rpId, request.clientDataHash,
+    user === null ? 'null' : JSON.stringify(user), JSON.stringify(request.credentialIds), request.from, request.sentAt,
+    request.ttlMs, request.device, request.devicePub];
+  return utf8Bytes('RemoteDesk:passkey-request:v2\n' + JSON.stringify(fields));
+}
+
+/** What a pairing code is hashed from; both devices hash the same text and show the same six digits. */
+export function passkeyPairingCodeInput(request: PasskeyRequest): Uint8Array {
+  return utf8Bytes('RemoteDesk:pair:v1:' + request.devicePub + ':' + request.id);
+}
+
+/** Six digits from the first four bytes of the pairing digest, grouped for reading ('123 456'). */
+export function passkeyPairingCode(digest: Uint8Array): string {
+  if (digest.length < 4) { throw new Error('PASSKEY_DIGEST_INVALID'); }
+  const value: number = ((digest[0] << 24) | (digest[1] << 16) | (digest[2] << 8) | digest[3]) >>> 0;
+  const digits: string = (value % 1000000).toString().padStart(6, '0');
+  return digits.slice(0, 3) + ' ' + digits.slice(3);
+}
+
 export function parsePasskeyRequest(text: string): PasskeyRequest | null {
   if (text.length === 0 || text.length > 8192) { return null; }
   let raw: Record<string, Object>;
@@ -160,13 +205,18 @@ export function parsePasskeyRequest(text: string): PasskeyRequest | null {
     return null;
   }
   const op: Object | null | undefined = raw['op'];
-  if (raw['v'] !== PASSKEY_PROTOCOL_VERSION || !isB64(raw['id'], 16, 16) || (op !== 'register' && op !== 'signin') ||
-      !isText(raw['rpId'], 253) || !validRpId(raw['rpId'] as string) || !isB64(raw['clientDataHash'], 32, 32) ||
+  const pair: boolean = op === 'pair';
+  if (raw['v'] !== PASSKEY_PROTOCOL_VERSION || !isB64(raw['id'], 16, 16) ||
+      (op !== 'register' && op !== 'signin' && !pair) || !isB64(raw['device'], 16, 16) || !isB64(raw['sig'], 8, 72) ||
+      (pair ? (raw['rpId'] !== '' || raw['clientDataHash'] !== '' || !isB64(raw['devicePub'], 91, 91)) :
+        (!isText(raw['rpId'], 253) || !validRpId(raw['rpId'] as string) || !isB64(raw['clientDataHash'], 32, 32) ||
+          raw['devicePub'] !== '')) ||
       !isText(raw['from'], 40) || typeof raw['sentAt'] !== 'number' || !Number.isInteger(raw['sentAt'] as number) ||
       (raw['sentAt'] as number) <= 0 || typeof raw['ttlMs'] !== 'number' || !Number.isInteger(raw['ttlMs'] as number) ||
       (raw['ttlMs'] as number) < 1000 || (raw['ttlMs'] as number) > PASSKEY_MAX_TTL_MS) { return null; }
   const ids: Object | null | undefined = raw['credentialIds'];
   if (ids === null || ids === undefined || !Array.isArray(ids) || (ids as Object[]).length > 16 ||
+      (pair && (ids as Object[]).length > 0) ||
       (ids as Object[]).some((item: Object): boolean => !isB64(item, 16, 1023))) { return null; }
   let user: PasskeyUser | null = null;
   if (op === 'register') {
@@ -180,7 +230,8 @@ export function parsePasskeyRequest(text: string): PasskeyRequest | null {
   }
   return { v: PASSKEY_PROTOCOL_VERSION, id: raw['id'] as string, op: op as string, rpId: raw['rpId'] as string,
     clientDataHash: raw['clientDataHash'] as string, user, credentialIds: (ids as Object[]).map((item: Object): string =>
-      item as string), from: raw['from'] as string, sentAt: raw['sentAt'] as number, ttlMs: raw['ttlMs'] as number };
+      item as string), from: raw['from'] as string, sentAt: raw['sentAt'] as number, ttlMs: raw['ttlMs'] as number,
+    device: raw['device'] as string, devicePub: raw['devicePub'] as string, sig: raw['sig'] as string };
 }
 
 export function parsePasskeyResponse(text: string, requestId: string): PasskeyResponse | null {
@@ -198,6 +249,9 @@ export function parsePasskeyResponse(text: string, requestId: string): PasskeyRe
   const response: PasskeyResponse = { v: PASSKEY_PROTOCOL_VERSION, id: requestId, ok: raw['ok'] as boolean,
     error: raw['error'] as string, credentialId: '', authData: '', signature: '', userHandle: '', publicKey: '' };
   if (!response.ok) { return response; }
+  // A bare success (pairing) carries no credential at all.
+  if (raw['credentialId'] === '' && raw['authData'] === '' && raw['signature'] === '' && raw['userHandle'] === '' &&
+      raw['publicKey'] === '') { return response; }
   if (!isB64(raw['credentialId'], 16, 1023) || !isB64(raw['authData'], 37, 2048) ||
       !(raw['signature'] === '' || isB64(raw['signature'], 8, 72)) ||
       !(raw['userHandle'] === '' || isB64(raw['userHandle'], 1, 64)) ||
