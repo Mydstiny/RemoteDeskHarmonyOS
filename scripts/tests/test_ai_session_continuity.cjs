@@ -192,9 +192,73 @@ test('the AI settings catalog has the 远程 AI settings, and plain words pick t
     ['不得不打开 RDP 剪贴板', ['rdp.clipboardEnabled=true']],
     ['关闭会话快速退出', ['remote.quickExitDisabled=true']],
     ['语气温和一点', ['ai.personality=warm']],
-    ['AI 回答简短一点', ['ai.verbosity=concise']]);
+    ['AI 回答简短一点', ['ai.verbosity=concise']],
+    // Connectors after a setting's own verb (再把, 但是); 关闭后再打开 ends on.
+    ['帮我把RDP声音打开再把剪贴板关掉', ['rdp.audioEnabled=true', 'rdp.clipboardEnabled=false']],
+    ['RDP音频开启但是剪贴板关闭', ['rdp.audioEnabled=true', 'rdp.clipboardEnabled=false']],
+    ['把RDP音频关闭后再打开', ['rdp.audioEnabled=true']],
+    // A list head takes the next switch's verb; after 和 a switch with no verb of its own follows the clause before.
+    ['RDP的音频和剪贴板打开驱动器映射关掉', ['rdp.audioEnabled=true', 'rdp.clipboardEnabled=true', 'rdp.driveEnabled=false']],
+    ['RDP音频剪贴板打开驱动器映射关闭', ['rdp.audioEnabled=true', 'rdp.clipboardEnabled=true', 'rdp.driveEnabled=false']],
+    ['打开RDP音频和剪贴板关闭驱动器映射', ['rdp.audioEnabled=true', 'rdp.clipboardEnabled=true', 'rdp.driveEnabled=false']],
+    // Negations across 让 / 再 / 把, refusals, negated off words, keeping things on.
+    ['不要让RDP显示诊断信息', ['rdp.showDiagnostics=false']],
+    ['不要再显示RustDesk本地光标', ['rustdesk.showLocalCursor=false']],
+    ['别让RustDesk显示本地光标', ['rustdesk.showLocalCursor=false']],
+    ['别隐藏RDP诊断信息', ['rdp.showDiagnostics=true']],
+    ['取消隐藏远程AI工具执行过程', ['remoteAi.showExecution=true']],
+    ['不要再打开RDP音频', ['rdp.audioEnabled=false']],
+    ['不准打开RDP音频', ['rdp.audioEnabled=false']],
+    ['不要让RDP音频打开', ['rdp.audioEnabled=false']],
+    ['别把RDP音频打开', ['rdp.audioEnabled=false']],
+    ['别让RDP音频开着', ['rdp.audioEnabled=false']],
+    ['不要再关掉RDP音频', ['rdp.audioEnabled=true']],
+    ['RDP音频别再关了', ['rdp.audioEnabled=true']],
+    ['让RDP音频一直开着', ['rdp.audioEnabled=true']],
+    ['保持RustDesk局域网发现关闭', ['rustdesk.lanDiscovery=false']],
+    ['RDP声音开一下剪贴板关一下', ['rdp.audioEnabled=true', 'rdp.clipboardEnabled=false']],
+    ['不需要RDP音频了', ['rdp.audioEnabled=false']],
+    ['我不想要RustDesk的声音', ['rustdesk.audioEnabled=false']],
+    // A refused value is not proposed; a two-valued setting gets the other one; a later change of mind wins.
+    ['关掉深色模式', []],
+    ['RustDesk 不要用H265', []],
+    ['关闭小艺风格', ['ai.style=siri']],
+    ['取消Claude风格', ['remoteAi.uiStyle=codex']],
+    ['不要速度优先，RustDesk改成画质优先', ['rustdesk.imageQuality=2']],
+    ['打开RDP音频，算了还是关掉吧', ['rdp.audioEnabled=false']],
+    ['开启夜间模式', ['ui.theme=dark']],
+    ['AI风格改成小艺，晕染关掉', ['ai.style=xiaoyi', 'ai.style.wash=off']],
+    ['发送按钮光晕关掉', ['ai.motion.sendGlow=off']],
+    ['小艺风格的思考动画换成彩丝声波', ['ai.motion.thinking=strands']],
+    ['虚拟鼠标改成圆形的', ['ui.virtualMouseStyle=circle']],
+    // Questions and problems are for the assistant to answer: no card.
+    ['音频打开了吗', []],
+    ['RustDesk隐私模式打开了没有', []],
+    ['我打开了RDP音频但是没声音', []],
+    ['RDP音频为什么自己打开了', []],
+    ['关闭隐私模式后黑屏了', []],
+    ['RDP音频关掉之后还是有声音', []],
+    ['RustDesk 局域网发现开启失败', []],
+    ['H265和H264哪个好', []],
+    ['编码选H265还是H264好', []],
+    ['深色模式好看吗', []],
+    ['小艺风格是什么样子', []],
+    ['RDP剪贴板关了以后就不能复制了', []],
+    ['可以帮我打开RDP音频吗', ['rdp.audioEnabled=true']]);
   for (const [question, expected] of cases) {
     assert.deepEqual(pick(question).sort(), expected.slice().sort(), question);
+  }
+  // Two switches joined by a connector, each verb before or after its own.
+  const joins = ['', '再', '再把', '但是', '顺便把', '把', '另外'];
+  for (const join of joins) {
+    for (const [first, second] of [[true, false], [false, true]]) {
+      for (const [firstAfter, secondAfter] of [[true, true], [false, false], [true, false], [false, true]]) {
+        const one = firstAfter ? '音频' + (first ? '打开' : '关掉') : (first ? '打开' : '关掉') + '音频';
+        const two = secondAfter ? '剪贴板' + (second ? '开启' : '关闭') : (second ? '开启' : '关闭') + '剪贴板';
+        const said = 'RDP' + one + join + two;
+        assert.deepEqual(pick(said).sort(), ['rdp.audioEnabled=' + first, 'rdp.clipboardEnabled=' + second].sort(), said);
+      }
+    }
   }
   // Run-on speech: two or three RDP switches, each verb before or after its own.
   const parts = [['音频', 'rdp.audioEnabled'], ['剪贴板', 'rdp.clipboardEnabled'], ['驱动器映射', 'rdp.driveEnabled']];

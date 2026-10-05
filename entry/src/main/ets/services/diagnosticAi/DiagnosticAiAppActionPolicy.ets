@@ -50,14 +50,17 @@ class ActionRule {
   except: string[];
   /** …unless it also names one of these (配对 is the host page's, whatever else the step mentions). */
   keep: string[];
+  /** A step naming one of these is never about it, whatever else it names (pip 安装 DSH 依赖). */
+  never: string[];
 
   constructor(id: DiagnosticAiAppActionId, label: string, groups: string[][],
     mode: DiagnosticAiAppActionMode = 'execute', requiresConfirmation: boolean = false, except: string[] = [],
-    keep: string[] = []) {
+    keep: string[] = [], never: string[] = []) {
     this.id = id; this.label = label; this.groups = groups; this.mode = mode;
     this.requiresConfirmation = requiresConfirmation;
     this.except = except;
     this.keep = keep;
+    this.never = never;
   }
 }
 
@@ -118,9 +121,9 @@ const RULES: ActionRule[] = [
   // The computer side of 远程 AI only: installing RustDesk, a VNC server, Sunshine or a driver is not it.
   new ActionRule('settings.aiInstall', '打开远程 AI 安装设置',
     [['远程 AI', '电脑端 AI', '电脑端安装', '电脑端插件', 'Claude Agent', 'Claude Code', 'Codex 插件', 'DSH 插件', 'AI 插件',
-      'Codex 主机', 'DSH 主机', '安装 Codex', '安装 DSH', 'Codex 安装', 'DSH 安装', 'Codex 与 DSH'], ['安装', '插件']], 'execute', false,
-    ['配对', '刷新主机', '离线', '依赖', 'RustDesk', 'VNC', 'Sunshine', 'Moonlight', 'OpenSSH', '驱动'],
-    ['电脑端安装页', '电脑端安装里', '安装 Codex', '安装 DSH', '安装 Claude']),
+      'Codex 主机', 'DSH 主机', '安装 Codex', '安装 DSH', 'Codex 安装', 'DSH 安装', 'Codex 与 DSH'], ['安装', '插件', '装到', '装好']],
+    'execute', false, ['配对', '刷新主机', '离线'], ['电脑端安装页', '电脑端安装里', '安装 Codex', '安装 DSH', '安装 Claude'],
+    ['依赖', 'RustDesk', 'VNC', 'Sunshine', 'Moonlight', 'OpenSSH', '驱动']),
   new ActionRule('pro.phonePasskey', '打开手机通行密钥', [['通行密钥', 'passkey', '手机当密钥', '手机作为密钥']]),
   new ActionRule('pro.securityKey', '打开安全密钥重定向', [['安全密钥', 'USB 密钥', 'FIDO', 'YubiKey', 'U2F']], 'execute', false,
     SSH_KEYS),
@@ -186,7 +189,7 @@ export function diagnosticAiAppActionsForSteps(steps: string[]): DiagnosticAiApp
       if (found.some((a: DiagnosticAiAppAction): boolean => a.id === rule.id)) { return; }
       const has = (word: string): boolean => text.indexOf(actionText(word)) >= 0;
       const matches: boolean = rule.groups.every((words: string[]): boolean => words.some(has)) &&
-        (!rule.except.some(has) || rule.keep.some(has));
+        (!rule.except.some(has) || rule.keep.some(has)) && !rule.never.some(has);
       if (matches) { found.push(new DiagnosticAiAppAction(rule.id, rule.label, rule.mode, rule.requiresConfirmation)); }
     });
   });
