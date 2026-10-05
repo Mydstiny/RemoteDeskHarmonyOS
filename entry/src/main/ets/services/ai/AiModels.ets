@@ -40,12 +40,17 @@ export interface AiIdentity {
   instance: string;
 }
 export interface AiInvite { code: string; expires: number; ca: string; serverInstance: string; }
+/** Look of the remote AI session page: Claude Code (conversation timeline) or Codex (task with tabs). */
+export type AiUiStyle = 'claude' | 'codex';
 export interface AiSettings {
   showExecution: boolean;
   textSize: number;
   reconnectOnForeground: boolean;
   defaultBackend: AiBackend;
+  /** Absent in settings saved before the style choice existed; read as 'claude'. */
+  uiStyle?: AiUiStyle;
 }
+export function aiUiStyle(settings: AiSettings): AiUiStyle { return settings.uiStyle === 'codex' ? 'codex' : 'claude'; }
 export interface AiPendingOperation {
   id: string;
   hostId: string;
@@ -104,7 +109,7 @@ export interface AiTranscriptItem {
   output?: string;
 }
 export function defaultAiSettings(): AiSettings {
-  return { showExecution: true, textSize: 15, reconnectOnForeground: true, defaultBackend: 'codex' };
+  return { showExecution: true, textSize: 15, reconnectOnForeground: true, defaultBackend: 'codex', uiStyle: 'claude' };
 }
 export function emptyAiHost(owner: string, id: string, backend: AiBackend = 'codex'): AiHost {
   return { id, owner, revision: 0, label: '', backend, address: '', port: aiBackendDefaultPort(backend),
@@ -140,5 +145,6 @@ export function aiSameEndpoint(a: AiHost, b: AiHost): boolean {
 export function aiSettingsValid(settings: AiSettings): boolean {
   return typeof settings.showExecution === 'boolean' && typeof settings.reconnectOnForeground === 'boolean' &&
     Number.isInteger(settings.textSize) && settings.textSize >= 12 && settings.textSize <= 22 &&
-    aiBackendValid(settings.defaultBackend);
+    aiBackendValid(settings.defaultBackend) &&
+    (settings.uiStyle === undefined || settings.uiStyle === 'claude' || settings.uiStyle === 'codex');
 }

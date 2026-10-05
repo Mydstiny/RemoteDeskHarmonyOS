@@ -1,6 +1,6 @@
 # 远程 AI：Claude Agent 入口与两种远控界面风格
 
-状态：IMPLEMENTING（2026-10-05 用户确认）。R1 Claude Agent 入口已实现（见第 5 节）；R2 两种界面风格进行中。
+状态：IMPLEMENTING（2026-10-05 用户确认）。R1 Claude Agent 入口、R2 两种界面风格已实现（见第 5 节），待独立复核与实机验收。
 范围：手机/平板/PC 上的「远程 AI」（Codex、DSH、新增 Claude Agent）。手机通行密钥另见 [通行密钥计划](2026-10-05-pro-phone-passkey-prototype-plan.md)。
 
 ## 0. 用户决定（2026-10-05）
@@ -53,6 +53,7 @@ Codex 条目与 DSH/Claude 事件都映射为同一组时间线项：用户消�
 
 | 阶段 | 内容 |
 |---|---|
+| R2 | `AiTimeline`（工具步骤摘要、统一差异解析、Claude Edit/Write/MultiEdit 与 Codex fileChange 差异、对话/日志划分）、`AiStylePalette`（Claude 经典色与 Codex 中性色，深浅各一套）、`aiCodexItem`（命令含输出、文件修改转差异、思考、MCP、网页搜索）、DSH 工具步骤带输入/输出；会话页重写为两种风格：Claude 风格（右侧气泡、Markdown 正文、可展开的工具行与差异、折叠思考、运行中提示、内联审批卡、圆角输入框带附件/模型/权限模式与发送/停止）与 Codex 风格（任务列表、对话/日志/差异三个标签、修改汇总）；新组件 `AiRemoteMarkdown`、`AiDiffView`；远程 AI 设置新增「界面风格」（旧设置缺字段时按 Claude）；Claude 发送后本地先显示提问直到引擎回显；会话列表改为可点选的行；新内容自动跟随到底部，上滑后停止跟随。测试：`test_ai_timeline.cjs`，`test_ai_ui_parity.cjs` 按新结构更新（三个弹层表头、两种页头的 Pro 标识、不同高度/风格/审批组合下列表高度） |
 | R1 | 后端表 `AI_BACKENDS`（`codex`/`dsh`/`claudecode`）与名称、端口、校验；添加/编辑、安装说明、远程 AI 设置三处的 Claude Agent 卡片；目录 `pro.ai.claudecode`（available）；`aiClaudeItems`（Claude 事件 → 会话记录，含历史）；Claude 错误码中文提示；`test_ai_claude_transcript.cjs`、安装说明与入口测试补齐。电脑端 Claude 服务已重新初始化到 `192.168.31.142:9445`（旧状态备份于 `~/.remotedesk/claudecode.bak-20261005-lan`），验收项目 `acceptance` 指向 `~/Library/Application Support/RemoteDesk/workspaces/acceptance-claudecode` |
 
 插件侧待办（需另开插件 PR）：实时 `assistant/message` 的思考块用 `textOf(block)` 取文本，思考内容为空（应取 `block.thinking`）；用户自己的提问在实时流中不回显，App 发送后需本地先显示。

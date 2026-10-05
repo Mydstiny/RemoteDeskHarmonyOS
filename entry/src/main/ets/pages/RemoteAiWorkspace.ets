@@ -12,10 +12,15 @@ import { AppConfig, Palette, buildDark, buildLight } from '../common/Theme';
 import { AppSheetHeader } from '../components/AppSheetHeader';
 import { AiAccess, AiAccountLease } from '../services/ai/AiAccess';
 import { AiHostService } from '../services/ai/AiHostService';
-import { AiHost, AiProject, AiSession, AiTranscriptItem, AiApproval, AiPendingOperation } from '../services/ai/AiModels';
+import { AiHost, AiProject, AiSession, AiTranscriptItem, AiApproval, AiPendingOperation, aiBackendName } from '../services/ai/AiModels';
 import { AiWorkspaceController } from '../services/ai/AiWorkspaceController';
 import { AiLocalStore } from '../services/ai/AiLocalStore';
 import { aiArray, aiRecord, aiString, aiErrorText } from '../services/ai/AiWirePolicy';
+import { AiStylePalette, aiStylePalette } from '../services/ai/AiStylePalette';
+import { AiDiffFile, AiToolView, aiConversationItem, aiDiffFiles, aiDiffStats, aiItemDiff, aiStepState, aiToolView } from '../services/ai/AiTimeline';
+import { AiRemoteMarkdown } from '../components/ai/AiRemoteMarkdown';
+import { AiDiffView } from '../components/ai/AiDiffView';
+import { ProBadge } from '../components/ProBadge';
 
 interface AiQuestionValue { id: string; title: string; options: string[]; descriptions: string[]; multiple: boolean; selected: string[]; text: string; }
 @Entry
@@ -63,6 +68,13 @@ export struct RemoteAiWorkspace {
   @State attachments: string[] = [];
   @State textSize: number = 15;
   @State showExecution: boolean = true;
+  /** 'claude' | 'codex': the look chosen in 远程 AI 设置 → 界面风格. */
+  @State uiStyle: string = 'claude';
+  /** The controller's raw status ('running', 'idle', …); `status` holds its label. */
+  @State rawStatus: string = '';
+  @State expandedIds: string[] = [];
+  /** Codex style: 0 对话 · 1 日志 · 2 差异 */
+  @State codexTab: number = 0;
   private controller: AiWorkspaceController = new AiWorkspaceController();
   private host: AiHost | null = null;
   private pageAccount: AiAccountLease | null = null;
@@ -90,6 +102,8 @@ export struct RemoteAiWorkspace {
       this.resetDrafts(); this.showDetails = false; this.showSessionPicker = false;
     }
     this.title = c.title || this.host?.label || '远程 AI'; this.status = aiStatusLabel(c.status); this.error = c.error;
+    this.rawStatus = c.status;
+    this.followTranscript();
     this.projects = c.projects.slice(); this.sessions = c.sessions.slice(); this.items = c.transcript.items.slice();
     this.approvals = c.approvals.slice(); this.operations = c.operations.slice(); this.terminals = c.terminals.slice();
     this.models = c.models.slice(); this.allowed = c.allowed; this.archived = c.archived;
@@ -141,6 +155,7 @@ export struct RemoteAiWorkspace {
       if (!this.alive || mount !== this.mountGeneration) { return; }
       AiAccess.getInstance().assertCurrent(account);
       this.textSize = settings.textSize; this.showExecution = settings.showExecution;
+      this.uiStyle = settings.uiStyle === 'codex' ? 'codex' : 'claude';
       this.reconnectForeground = settings.reconnectOnForeground; this.preferencesReady = true;
     } catch (error) { if (this.alive) { this.error = aiErrorText((error as Error).message); } return; }
     this.inBackground = AppStorage.get<boolean>('remoteDesktopBgFlag') === true;
@@ -223,7 +238,9 @@ export struct RemoteAiWorkspace {
         params['settings'] = this.settings();
         if (this.attachments.length > 0) { params['attachments'] = this.attachments.slice(); }
       }
-      await this.controller.action(steer ? 'turn.steer' : 'turn.start', params);
+      const result = await this.controller.action(steer ? 'turn.steer' : 'turn.start', params);
+      // Claude does not echo the prompt while the turn runs; show it until its own event arrives.
+      if (this.host?.backend === 'claudecode') { this.controller.transcript.echo(text, aiString(result['turnId'])); }
       this.draft = ''; this.attachments = [];
     });
   }
@@ -263,6 +280,12 @@ export struct RemoteAiWorkspace {
     });
   }
   private inspect(approval: AiApproval): void {
+    this.prepareApproval(approval);
+    this.showApproval = true;
+  }
+  /** Makes `approval` the one the answer buttons act on, without opening the full request sheet. */
+  private prepareApproval(approval: AiApproval): void {
+    if (this.approval?.id === approval.id) { return; }
     this.approval = approval; this.showApprovalDetails = false;
     this.questions = aiArray(approval.request['questions']).map((value: Object): AiQuestionValue => {
       const row = aiRecord(value);
@@ -271,7 +294,81 @@ export struct RemoteAiWorkspace {
         descriptions: aiArray(row['options']).map((option: Object): string => typeof option === 'string' ? '' : aiString(aiRecord(option)['description'])),
         multiple: row['multiSelect'] === true, selected: [], text: '' };
     });
-    this.showApproval = true;
+  }
+  private palette(): AiStylePalette { return aiStylePalette(this.uiStyle === 'codex' ? 'codex' : 'claude', this.theme !== 'light'); }
+  private backendName(): string { return this.host === null ? '远程 AI' : aiBackendName(this.host.backend); }
+  /** A turn is under way (or was just accepted and has not reported back yet). */
+  private working(): boolean {
+    return ['running', 'inProgress', 'background'].includes(this.rawStatus) || this.rawStatus.startsWith('请求已接受');
+  }
+  /** Follows new output while the reader is at the bottom; scrolling up stops following until they return. */
+  private listScroller: Scroller | null = null;
+  private followBottom: boolean = true;
+  private scroller(): Scroller {
+    if (this.listScroller === null) { this.listScroller = new Scroller(); }
+    return this.listScroller;
+  }
+  private listLength(): number {
+    return this.visibleItems().length + (this.historyCursor !== '' ? 1 : 0) + (this.working() ? 1 : 0);
+  }
+  private followTranscript(): void {
+    const scroller = this.listScroller;
+    if (scroller === null || !this.followBottom) { return; }
+    setTimeout((): void => { try { scroller.scrollEdge(Edge.Bottom); } catch (_error) { /* list not laid out yet */ } }, 0);
+  }
+  private canAttach(): boolean {
+    return this.allowed && !this.busy && (this.controller.client?.choices('attachments').length ?? 0) > 0 &&
+      this.attachments.length < 4;
+  }
+  private composerMaxHeight(): number { return this.pageHeight < 500 ? 72 : 140; }
+  private expanded(id: string): boolean { return this.expandedIds.includes(id); }
+  private toggleExpanded(id: string): void {
+    this.expandedIds = this.expanded(id) ? this.expandedIds.filter((value: string): boolean => value !== id) :
+      this.expandedIds.concat([id]);
+  }
+  private visibleItems(): AiTranscriptItem[] {
+    return this.items.filter((item: AiTranscriptItem): boolean => this.showExecution || item.role !== 'execution');
+  }
+  private toolView(item: AiTranscriptItem): AiToolView { return aiToolView(item); }
+  /** Every change the steps of this session carry, newest last (used when the engine has no native diff). */
+  private stepDiffs(): AiDiffFile[] {
+    let files: AiDiffFile[] = [];
+    this.items.forEach((item: AiTranscriptItem): void => { files = files.concat(aiItemDiff(item)); });
+    return files.filter((file: AiDiffFile): boolean => file.lines.length > 0);
+  }
+  private sessionDiffs(): AiDiffFile[] {
+    const native = this.diff.includes('@@') || this.diff.startsWith('diff ') ? aiDiffFiles(this.diff) : [];
+    return native.length > 0 ? native : this.stepDiffs();
+  }
+  private changeSummary(): string {
+    const files = this.stepDiffs();
+    if (files.length === 0) { return ''; }
+    let added = 0, removed = 0;
+    files.forEach((file: AiDiffFile): void => { added += file.added; removed += file.removed; });
+    return '修改了 ' + files.length.toString() + ' 个文件 · ' + aiDiffStats(added, removed);
+  }
+  private toolSymbol(icon: string): Resource {
+    switch (icon) {
+      case 'terminal': return $r('sys.symbol.code_square');
+      case 'doc': return $r('sys.symbol.doc_text');
+      case 'edit': return $r('sys.symbol.square_and_pencil');
+      case 'search': return $r('sys.symbol.magnifyingglass');
+      case 'globe': return $r('sys.symbol.link');
+      case 'list': return $r('sys.symbol.list_bullet');
+      case 'agent': return $r('sys.symbol.person_2_fill');
+      default: return $r('sys.symbol.puzzle_fill');
+    }
+  }
+  private approvalSummary(approval: AiApproval): string {
+    const kind = aiString(approval.request['kind']);
+    if (kind === 'questions') { return aiArray(approval.request['questions']).length.toString() + ' 个问题待回答'; }
+    const text = aiApprovalDetails(approval.request);
+    const lines = text.split('\n').filter((line: string): boolean => line.trim() !== '');
+    return lines.slice(0, 6).join('\n') + (lines.length > 6 ? '\n…' : '');
+  }
+  private async answerInline(approval: AiApproval, decision: string): Promise<void> {
+    this.prepareApproval(approval);
+    await this.answer(decision);
   }
   private async answer(decision: string): Promise<void> {
     const approval = this.approval;
@@ -450,99 +547,519 @@ export struct RemoteAiWorkspace {
   }
   private async chooseSession(id: string): Promise<void> {
     if (!this.allowed || !AiAccess.getInstance().proVisible() || !this.sessions.some((session: AiSession): boolean => session.id === id)) { return; }
+    this.followBottom = true; this.expandedIds = []; this.codexTab = 0;
     await this.run(async (): Promise<void> => { this.resetDrafts(); await this.controller.selectSession(id); this.showSessionPicker = false; });
   }
   private async newSession(): Promise<void> {
     if (!this.allowed || !AiAccess.getInstance().proVisible()) { return; }
     await this.run(async (): Promise<void> => { this.resetDrafts(); await this.controller.create('新会话'); this.showSessionPicker = false; });
   }
+  @Builder private pillButton(label: string, primary: boolean, enabled: boolean, action: () => void) {
+    Text(label).fontSize(14).fontWeight(FontWeight.Medium).fontFamily(AppConfig.fontFamily)
+      .fontColor(primary ? this.palette().onAccent : this.palette().text).textAlign(TextAlign.Center)
+      .padding({ left: 16, right: 16 }).constraintSize({ minHeight: AppUiMetrics.minTouchTarget }).borderRadius(20)
+      .backgroundColor(primary ? this.palette().accent : this.palette().surface)
+      .border({ width: primary ? 0 : 0.5, color: this.palette().border })
+      .opacity(enabled ? 1 : 0.45).enabled(enabled).focusable(true).accessibilityText(label)
+      .onClick((): void => { if (enabled) { action(); } })
+  }
+  @Builder private iconButton(symbol: Resource, label: string, enabled: boolean, action: () => void) {
+    Stack() {
+      SymbolGlyph(symbol).fontSize(20).fontColor([this.palette().text2])
+    }.width(40).height(40).borderRadius(20).enabled(enabled).opacity(enabled ? 1 : 0.4)
+    .accessibilityText(label).focusable(true).onClick((): void => { if (enabled) { action(); } })
+  }
+  @Builder private sessionRow(session: AiSession) {
+    Row({ space: 10 }) {
+      SymbolGlyph(session.id === this.sessionId ? $r('sys.symbol.checkmark_circle_fill') : $r('sys.symbol.ellipsis_bubble'))
+        .fontSize(18).fontColor([session.id === this.sessionId ? this.palette().accent : this.palette().text3])
+      Column({ space: 2 }) {
+        Text(session.title).fontSize(15).fontFamily(AppConfig.fontFamily).fontColor(this.palette().text)
+          .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
+        if (session.archived) {
+          Text('已归档').fontSize(11).fontFamily(AppConfig.fontFamily).fontColor(this.palette().text3)
+        }
+      }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+      SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(14).fontColor([this.palette().text3])
+    }
+    .width('100%').padding({ left: 12, right: 12, top: 12, bottom: 12 }).borderRadius(12)
+    .backgroundColor(session.id === this.sessionId ? this.palette().surface : Color.Transparent)
+    .enabled(!this.busy && this.allowed).focusable(true)
+    .accessibilityText((session.archived ? '已归档会话 ' : '会话 ') + session.title)
+    .onClick((): void => { void this.chooseSession(session.id); })
+  }
   @Builder private sessionSelectors() {
     Column({ space: 12 }) {
-      Text('项目').fontSize(13).fontFamily(AppConfig.fontFamily).fontColor(this.pal().text2).width('100%')
-      Select(this.projects.map((project: AiProject): SelectOption => ({ value: project.title })))
-        .value(this.projects.find((project: AiProject): boolean => project.id === this.projectId)?.title ?? '选择项目')
-        .enabled(!this.busy && this.allowed).width('100%').accessibilityText('选择项目').onSelect((index: number): void => {
-          if (index >= 0 && index < this.projects.length) { void this.chooseProject(this.projects[index].id); }
-        })
-      Text('会话').fontSize(13).fontFamily(AppConfig.fontFamily).fontColor(this.pal().text2).width('100%')
-      Select(this.sessions.map((session: AiSession): SelectOption => ({ value: (session.archived ? '已归档 · ' : '') + session.title })))
-        .value(this.sessionId === '' ? '选择会话' : this.title).enabled(!this.busy && this.allowed).width('100%').accessibilityText('选择会话')
-        .onSelect((index: number): void => { if (index >= 0 && index < this.sessions.length) { void this.chooseSession(this.sessions[index].id); } })
-      AiActionButton({ label: '新建会话', primary: true, isEnabled: this.allowed && this.projectId !== '' && !this.busy,
-        onAction: (): void => { void this.newSession(); } })
+      if (this.projects.length > 1) {
+        Text('项目').fontSize(13).fontFamily(AppConfig.fontFamily).fontColor(this.palette().text3).width('100%')
+        Scroll() {
+          Row({ space: 8 }) {
+            ForEach(this.projects, (project: AiProject): void => {
+              Text(project.title).fontSize(14).fontFamily(AppConfig.fontFamily)
+                .fontColor(project.id === this.projectId ? this.palette().onAccent : this.palette().text)
+                .padding({ left: 14, right: 14, top: 8, bottom: 8 }).borderRadius(18)
+                .backgroundColor(project.id === this.projectId ? this.palette().accent : this.palette().surface)
+                .enabled(!this.busy && this.allowed).accessibilityText('项目 ' + project.title)
+                .onClick((): void => { void this.chooseProject(project.id); })
+            }, (project: AiProject): string => project.id)
+          }
+        }.scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off).width('100%').align(Alignment.Start)
+      } else if (this.projects.length === 1) {
+        Text('项目：' + this.projects[0].title).fontSize(13).fontFamily(AppConfig.fontFamily)
+          .fontColor(this.palette().text3).width('100%')
+      }
+      Row() {
+        Text(this.uiStyle === 'codex' ? '任务' : '会话').fontSize(13).fontFamily(AppConfig.fontFamily)
+          .fontColor(this.palette().text3).layoutWeight(1)
+        this.pillButton(this.uiStyle === 'codex' ? '新建任务' : '新建会话', true,
+          this.allowed && this.projectId !== '' && !this.busy, (): void => { void this.newSession(); })
+      }.width('100%')
+      if (this.sessions.length === 0) {
+        Text(this.projectId === '' ? '请先选择项目' : '这个项目还没有会话').fontSize(13).fontFamily(AppConfig.fontFamily)
+          .fontColor(this.palette().text3).width('100%').padding({ top: 12 })
+      }
+      ForEach(this.sessions, (session: AiSession): void => {
+        this.sessionRow(session)
+      }, (session: AiSession): string => session.id + ':' + (session.archived ? 'a' : '') + session.title)
     }.width('100%')
   }
   @Builder private sessionPickerSheet() {
     Column() {
-      AppSheetHeader({ title: '项目与会话', showProBadge: true, onClose: (): void => { this.showSessionPicker = false; } })
+      AppSheetHeader({ title: this.uiStyle === 'codex' ? '任务' : '项目与会话', showProBadge: true,
+        onClose: (): void => { this.showSessionPicker = false; } })
       Scroll() { this.sessionSelectors() }.width('100%').layoutWeight(1).padding(AppUiMetrics.sheetPadding)
-      if (this.error !== '') { Text(this.error).fontSize(13).fontFamily(AppConfig.fontFamily).fontColor(this.pal().danger).padding(AppUiMetrics.sheetPadding) }
-    }.height('100%').width('100%').safeAreaPadding({ bottom: 16 }).backgroundColor(this.pal().sheetBg)
+      if (this.error !== '') { Text(this.error).fontSize(13).fontFamily(AppConfig.fontFamily).fontColor(this.palette().danger).padding(AppUiMetrics.sheetPadding) }
+    }.height('100%').width('100%').safeAreaPadding({ bottom: 16 }).backgroundColor(this.palette().bg)
   }
-  @Builder private sendActions() {
-    Flex({ direction: FlexDirection.Row, wrap: FlexWrap.Wrap, justifyContent: FlexAlign.SpaceBetween }) {
-      AiActionButton({ label: '附件' + (this.attachments.length > 0 ? ' ' + this.attachments.length : ''),
-        isEnabled: this.allowed && !this.busy && (this.controller.client?.choices('attachments').length ?? 0) > 0,
-        onAction: (): void => { void this.attach(); } }).width(this.pageWidth < 600 && this.pageHeight >= 400 ? '48%' : '23%').margin({ bottom: 8 })
-      AiActionButton({ label: '停止', isEnabled: this.capability('cancel') && this.control && !this.busy,
-        onAction: (): void => { void this.run(async (): Promise<void> => { await this.controller.action('turn.cancel'); }); }
-      }).width(this.pageWidth < 600 && this.pageHeight >= 400 ? '48%' : '23%').margin({ bottom: 8 })
-      AiActionButton({ label: '补充指令', isEnabled: this.capability('steer') && this.control && this.allowed && !this.busy && !this.archived,
-        onAction: (): void => { void this.send(true); } }).width(this.pageWidth < 600 && this.pageHeight >= 400 ? '48%' : '23%').margin({ bottom: 8 })
-      AiActionButton({ label: '发送', primary: true, isEnabled: this.control && this.allowed && !this.busy && !this.archived,
-        onAction: (): void => { void this.send(false); } }).width(this.pageWidth < 600 && this.pageHeight >= 400 ? '48%' : '23%').margin({ bottom: 8 })
+  @Builder private moreMenuButton() {
+    Stack() {
+      SymbolGlyph($r('sys.symbol.line_3_horizontal')).fontSize(20).fontColor([this.palette().text2])
+    }.width(40).height(40).borderRadius(20).accessibilityText('更多').focusable(true).enabled(this.allowed)
+    .bindMenu([
+      { value: '模型与会话设置', action: (): void => { if (this.allowed) { this.detailTab = 0; this.showDetails = true; } } },
+      { value: '差异', action: (): void => {
+        if (!this.capability('diffs')) { return; }
+        if (this.uiStyle === 'codex') { this.codexTab = 2; } else { this.detailTab = 1; this.showDetails = true; }
+        void this.run(async (): Promise<void> => { await this.controller.loadDiff(); });
+      } },
+      { value: '终端任务', action: (): void => {
+        if (!this.capability('terminalManagement')) { return; }
+        this.detailTab = 2; this.showDetails = true;
+        void this.run(async (): Promise<void> => { await this.controller.loadTerminals(); });
+      } },
+      { value: '待确认操作', action: (): void => {
+        this.detailTab = 3; this.showDetails = true;
+        void this.run(async (): Promise<void> => { await this.controller.refreshOperations(); });
+      } },
+      { value: '重新连接', action: (): void => { void this.reconnect(); } }
+    ])
+  }
+  @Builder private claudeHeader() {
+    Row({ space: 2 }) {
+      this.iconButton($r('sys.symbol.chevron_left'), '返回', true, (): void => { void this.leave(); })
+      Column({ space: 3 }) {
+        Text(this.title).fontSize(17).fontWeight(FontWeight.Medium).fontFamily(AppConfig.fontFamily)
+          .fontColor(this.palette().text).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+        Row({ space: 6 }) {
+          Column().width(7).height(7).borderRadius(4)
+            .backgroundColor(this.working() ? this.palette().accent : this.control ? this.palette().ok : this.palette().text3)
+          Text(this.backendName() + ' · ' + this.status).fontSize(12).fontFamily(AppConfig.fontFamily)
+            .fontColor(this.palette().text3).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+        }
+      }.layoutWeight(1).alignItems(HorizontalAlign.Start).padding({ left: 4 })
+      ProBadge().alignSelf(ItemAlign.Center).margin({ right: 4 })
+      this.iconButton($r('sys.symbol.list_bullet'), '项目与会话', this.allowed && !this.busy,
+        (): void => { this.showSessionPicker = true; })
+      this.moreMenuButton()
+    }.width('100%').padding({ left: 6, right: 6, top: 4, bottom: 4 })
+  }
+  @Builder private codexHeader() {
+    Row({ space: 2 }) {
+      this.iconButton($r('sys.symbol.chevron_left'), '返回', true, (): void => { void this.leave(); })
+      Column({ space: 3 }) {
+        Text(this.title).fontSize(16).fontWeight(FontWeight.Medium).fontFamily(AppConfig.fontFamily)
+          .fontColor(this.palette().text).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+        Text(this.backendName() + ' · ' + (this.projects.find((project: AiProject): boolean =>
+          project.id === this.projectId)?.title ?? '未选择项目') + ' · ' + this.status)
+          .fontSize(12).fontFamily(AppConfig.fontFamily).fontColor(this.palette().text3)
+          .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+      }.layoutWeight(1).alignItems(HorizontalAlign.Start).padding({ left: 4 })
+      ProBadge().alignSelf(ItemAlign.Center).margin({ right: 6 })
+      Text('任务').fontSize(13).fontWeight(FontWeight.Medium).fontFamily(AppConfig.fontFamily)
+        .fontColor(this.palette().text).padding({ left: 12, right: 12, top: 6, bottom: 6 }).borderRadius(14)
+        .border({ width: 0.5, color: this.palette().border }).enabled(this.allowed && !this.busy)
+        .accessibilityText('任务列表').onClick((): void => { this.showSessionPicker = true; })
+      this.moreMenuButton()
+    }.width('100%').padding({ left: 6, right: 6, top: 4, bottom: 4 })
+  }
+  @Builder private codexTabs() {
+    Row({ space: 6 }) {
+      ForEach(['对话', '日志', '差异'], (label: string, index: number): void => {
+        Text(label).fontSize(14).fontFamily(AppConfig.fontFamily)
+          .fontWeight(this.codexTab === index ? FontWeight.Medium : FontWeight.Normal)
+          .fontColor(this.codexTab === index ? this.palette().text : this.palette().text3)
+          .padding({ left: 14, right: 14, top: 7, bottom: 7 }).borderRadius(16)
+          .backgroundColor(this.codexTab === index ? this.palette().surface : Color.Transparent)
+          .accessibilityText(label).accessibilitySelected(this.codexTab === index)
+          .onClick((): void => {
+            this.codexTab = index;
+            if (index === 2 && this.capability('diffs') && this.allowed) {
+              void this.run(async (): Promise<void> => { await this.controller.loadDiff(); });
+            }
+          })
+      }, (label: string): string => label)
+    }.width('100%').padding({ left: 12, right: 12, bottom: 6 })
+  }
+  @Builder private stepIndicator(state: string) {
+    Stack() {
+      if (aiStepState(state) === 'running') {
+        LoadingProgress().width(16).height(16).color(this.palette().accent)
+      } else if (aiStepState(state) === 'ok') {
+        SymbolGlyph($r('sys.symbol.checkmark')).fontSize(13).fontColor([this.palette().ok])
+      } else if (aiStepState(state) === 'failed') {
+        SymbolGlyph($r('sys.symbol.xmark')).fontSize(13).fontColor([this.palette().danger])
+      } else {
+        Column().width(5).height(5).borderRadius(3).backgroundColor(this.palette().text3)
+      }
+    }.width(18).height(18)
+  }
+  @Builder private stats(text: string) {
+    Row({ space: 4 }) {
+      ForEach(text.split(' ').filter((part: string): boolean => part !== ''), (part: string): void => {
+        Text(part).fontSize(12).fontFamily(AppConfig.fontFamily)
+          .fontColor(part.startsWith('+') ? this.palette().addText : this.palette().delText)
+      }, (part: string, index: number): string => index.toString() + part)
+    }
+  }
+  @Builder private codeBlock(text: string, label: string) {
+    Column({ space: 4 }) {
+      if (label !== '') {
+        Text(label).fontSize(11).fontFamily(AppConfig.fontFamily).fontColor(this.palette().text3)
+      }
+      Scroll() {
+        Text(text.length > 6000 ? text.slice(0, 6000) + '\n…（已截断，完整内容在电脑端）' : text)
+          .fontSize(12).lineHeight(18).fontFamily('monospace').fontColor(this.palette().codeText)
+          .copyOption(CopyOptions.InApp).padding(10)
+      }.scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off).width('100%').align(Alignment.Start)
+      .borderRadius(8).backgroundColor(this.palette().codeBg).border({ width: 0.5, color: this.palette().border })
+    }.width('100%').alignItems(HorizontalAlign.Start)
+  }
+  @Builder private toolDetail(item: AiTranscriptItem) {
+    Column({ space: 8 }) {
+      if (aiItemDiff(item).length > 0) {
+        AiDiffView({ files: aiItemDiff(item), textSize: 12, palette: this.palette(), startOpen: true })
+      } else if ((item.detail ?? '') !== '') {
+        this.codeBlock(item.detail ?? '', '输入')
+      } else if (item.text !== '') {
+        this.codeBlock(item.text, '')
+      }
+      if ((item.output ?? '') !== '' && item.title !== 'fileChange') {
+        this.codeBlock(item.output ?? '', '输出')
+      }
+    }.width('100%').padding({ left: 26 })
+  }
+  @Builder private toolRow(item: AiTranscriptItem) {
+    Column({ space: 8 }) {
+      Row({ space: 8 }) {
+        this.stepIndicator(item.state)
+        SymbolGlyph(this.toolSymbol(this.toolView(item).icon)).fontSize(15).fontColor([this.palette().text3])
+        Text() {
+          Span(this.toolView(item).verb + ' ').fontWeight(FontWeight.Medium).fontColor(this.palette().text)
+          Span(this.toolView(item).target).fontColor(this.palette().text2)
+        }.fontSize(this.textSize - 1).fontFamily(AppConfig.fontFamily).layoutWeight(1)
+        .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+        if (this.toolView(item).stats !== '') { this.stats(this.toolView(item).stats) }
+        SymbolGlyph(this.expanded(item.id) ? $r('sys.symbol.chevron_up') : $r('sys.symbol.chevron_down'))
+          .fontSize(12).fontColor([this.palette().text3])
+      }.width('100%').focusable(true)
+      .accessibilityText(this.toolView(item).verb + ' ' + this.toolView(item).target)
+      .onClick((): void => { this.toggleExpanded(item.id); })
+      if (this.expanded(item.id)) { this.toolDetail(item) }
     }.width('100%')
+  }
+  @Builder private thinkingRow(item: AiTranscriptItem) {
+    Column({ space: 6 }) {
+      Row({ space: 8 }) {
+        SymbolGlyph($r('sys.symbol.wand_and_stars')).fontSize(14).fontColor([this.palette().text3])
+        Text(aiStepState(item.state) === 'running' ? '思考中…' : '已思考').fontSize(13)
+          .fontFamily(AppConfig.fontFamily).fontColor(this.palette().text3)
+        SymbolGlyph(this.expanded(item.id) ? $r('sys.symbol.chevron_up') : $r('sys.symbol.chevron_down'))
+          .fontSize(11).fontColor([this.palette().text3])
+      }.focusable(true).accessibilityText('思考过程').onClick((): void => { this.toggleExpanded(item.id); })
+      if (this.expanded(item.id)) {
+        Text(item.text).fontSize(this.textSize - 1).lineHeight(Math.round((this.textSize - 1) * 1.5))
+          .fontFamily(AppConfig.fontFamily).fontColor(this.palette().text2).fontStyle(FontStyle.Italic)
+          .copyOption(CopyOptions.InApp).padding({ left: 22 }).width('100%')
+      }
+    }.width('100%').alignItems(HorizontalAlign.Start)
+  }
+  @Builder private noticeRow(item: AiTranscriptItem) {
+    Row({ space: 8 }) {
+      SymbolGlyph(aiStepState(item.state) === 'failed' ? $r('sys.symbol.exclamationmark_triangle') :
+        $r('sys.symbol.info_circle')).fontSize(14)
+        .fontColor([aiStepState(item.state) === 'failed' ? this.palette().danger : this.palette().text3])
+      Text(item.title + (item.text !== '' ? '：' + item.text : '')).fontSize(13).fontFamily(AppConfig.fontFamily)
+        .fontColor(aiStepState(item.state) === 'failed' ? this.palette().danger : this.palette().text2)
+        .layoutWeight(1).copyOption(CopyOptions.InApp)
+    }.width('100%').padding({ left: 12, right: 12, top: 8, bottom: 8 }).borderRadius(10)
+    .backgroundColor(this.palette().surface).alignItems(VerticalAlign.Top)
+  }
+  @Builder private userBubble(item: AiTranscriptItem) {
+    Row() {
+      Blank()
+      Text(item.text).fontSize(this.textSize).lineHeight(Math.round(this.textSize * 1.5)).fontFamily(AppConfig.fontFamily)
+        .fontColor(this.palette().text).copyOption(CopyOptions.InApp)
+        .padding({ left: 14, right: 14, top: 10, bottom: 10 }).borderRadius(18)
+        .backgroundColor(this.palette().userBubble).constraintSize({ maxWidth: '86%' })
+    }.width('100%')
+  }
+  @Builder private claudeItem(item: AiTranscriptItem) {
+    if (item.role === 'user') {
+      this.userBubble(item)
+    } else if (item.role === 'assistant') {
+      AiRemoteMarkdown({ text: item.text, textSize: this.textSize, palette: this.palette() })
+    } else if (item.kind === 'thinking') {
+      this.thinkingRow(item)
+    } else if (item.kind === 'notice') {
+      this.noticeRow(item)
+    } else {
+      this.toolRow(item)
+    }
+  }
+  @Builder private codexConversationItem(item: AiTranscriptItem) {
+    if (item.role === 'user') {
+      Column({ space: 4 }) {
+        Text('你').fontSize(12).fontFamily(AppConfig.fontFamily).fontColor(this.palette().text3)
+        Text(item.text).fontSize(this.textSize).lineHeight(Math.round(this.textSize * 1.5)).fontFamily(AppConfig.fontFamily)
+          .fontColor(this.palette().text).copyOption(CopyOptions.InApp).width('100%')
+      }.width('100%').padding(14).borderRadius(14).backgroundColor(this.palette().userBubble)
+      .alignItems(HorizontalAlign.Start)
+    } else if (item.role === 'assistant') {
+      AiRemoteMarkdown({ text: item.text, textSize: this.textSize, palette: this.palette() })
+    } else {
+      this.noticeRow(item)
+    }
+  }
+  @Builder private codexLogItem(item: AiTranscriptItem) {
+    Column({ space: 8 }) {
+      Row({ space: 8 }) {
+        this.stepIndicator(item.state)
+        Text(item.kind === 'thinking' ? '思考' : (this.toolView(item).icon === 'terminal' ? '$ ' + this.toolView(item).target :
+          this.toolView(item).verb + ' ' + this.toolView(item).target))
+          .fontSize(13).fontFamily('monospace').fontColor(this.palette().text).layoutWeight(1)
+          .maxLines(this.expanded(item.id) ? 12 : 1).textOverflow({ overflow: TextOverflow.Ellipsis })
+        if (this.toolView(item).stats !== '') { this.stats(this.toolView(item).stats) }
+      }.width('100%').focusable(true).accessibilityText(this.toolView(item).verb + ' ' + this.toolView(item).target)
+      .onClick((): void => { this.toggleExpanded(item.id); })
+      if (item.kind === 'thinking' && this.expanded(item.id)) {
+        Text(item.text).fontSize(13).fontFamily(AppConfig.fontFamily).fontColor(this.palette().text2).width('100%')
+      }
+      if (item.kind !== 'thinking' && (item.output ?? '') !== '' && item.title !== 'fileChange') {
+        Text(this.expanded(item.id) ? (item.output ?? '').slice(0, 6000) :
+          (item.output ?? '').split('\n').slice(0, 6).join('\n'))
+          .fontSize(12).lineHeight(17).fontFamily('monospace').fontColor(this.palette().codeText)
+          .copyOption(CopyOptions.InApp).width('100%').padding(10).borderRadius(8).backgroundColor(this.palette().codeBg)
+      }
+      if (this.expanded(item.id) && item.kind !== 'thinking') {
+        if (aiItemDiff(item).length > 0) {
+          AiDiffView({ files: aiItemDiff(item), textSize: 12, palette: this.palette(), startOpen: true })
+        } else if ((item.detail ?? '') !== '' && this.toolView(item).icon !== 'terminal') {
+          this.codeBlock(item.detail ?? '', '输入')
+        }
+      }
+    }.width('100%').padding(12).borderRadius(12).backgroundColor(this.palette().raised)
+    .border({ width: 0.5, color: this.palette().border })
+  }
+  @Builder private codexDiffPane() {
+    Column({ space: 10 }) {
+      if (this.sessionDiffs().length === 0) {
+        Text(this.diff !== '' && !this.diff.includes('@@') ? this.diff : '这个任务还没有可显示的差异')
+          .fontSize(13).fontFamily(AppConfig.fontFamily).fontColor(this.palette().text3).width('100%')
+          .padding({ top: 24, bottom: 24 }).textAlign(TextAlign.Center)
+      } else {
+        Text(this.sessionDiffs().length.toString() + ' 个文件').fontSize(12).fontFamily(AppConfig.fontFamily)
+          .fontColor(this.palette().text3).width('100%')
+        AiDiffView({ files: this.sessionDiffs(), textSize: 12, palette: this.palette(),
+          startOpen: this.sessionDiffs().length <= 3 })
+      }
+    }.width('100%')
+  }
+  @Builder private workingRow() {
+    Row({ space: 8 }) {
+      LoadingProgress().width(18).height(18).color(this.palette().accent)
+      Text(this.uiStyle === 'codex' ? '正在处理…' : this.backendName() + ' 正在工作…').fontSize(13)
+        .fontFamily(AppConfig.fontFamily).fontColor(this.palette().text3)
+    }.padding({ top: 2, bottom: 2 })
+  }
+  @Builder private emptyState() {
+    Column({ space: 12 }) {
+      SymbolGlyph($r('sys.symbol.ellipsis_bubble')).fontSize(36).fontColor([this.palette().text3])
+      Text(this.sessionId === '' ? '选择项目和会话，或新建会话开始使用。' : '会话准备就绪，取得控制权后即可发送任务。')
+        .fontSize(14).fontFamily(AppConfig.fontFamily).fontColor(this.palette().text2).textAlign(TextAlign.Center)
+      if (this.sessionId === '') {
+        this.pillButton(this.uiStyle === 'codex' ? '打开任务列表' : '项目与会话', true, this.allowed && !this.busy,
+          (): void => { this.showSessionPicker = true; })
+      }
+    }.width('100%').padding({ top: 48, bottom: 48 })
+  }
+  @Builder private approvalCard(approval: AiApproval) {
+    Column({ space: 10 }) {
+      Row({ space: 8 }) {
+        SymbolGlyph($r('sys.symbol.lock_shield')).fontSize(18).fontColor([this.palette().accent])
+        Text(aiRequestTitle(aiString(approval.request['kind']))).fontSize(15).fontWeight(FontWeight.Medium)
+          .fontFamily(AppConfig.fontFamily).fontColor(this.palette().text).layoutWeight(1)
+        if (this.approvals.length > 1) {
+          Text('还有 ' + (this.approvals.length - 1).toString() + ' 项').fontSize(12).fontFamily(AppConfig.fontFamily)
+            .fontColor(this.palette().text3)
+        }
+      }.width('100%')
+      Text(this.approvalSummary(approval)).fontSize(12).lineHeight(17).fontFamily('monospace')
+        .fontColor(this.palette().codeText).maxLines(6).textOverflow({ overflow: TextOverflow.Ellipsis })
+        .padding(10).borderRadius(8).backgroundColor(this.palette().codeBg).width('100%')
+      if (!this.control) {
+        Text('取得控制权后才能处理这个请求').fontSize(12).fontFamily(AppConfig.fontFamily).fontColor(this.palette().text3)
+      }
+      Row({ space: 10 }) {
+        if (aiString(approval.request['kind']) === 'questions') {
+          this.pillButton('回答问题', true, this.control && this.allowed && !this.busy, (): void => { this.inspect(approval); })
+        } else {
+          this.pillButton('拒绝', false, this.control && this.allowed && !this.busy,
+            (): void => { void this.answerInline(approval, 'decline'); })
+          this.pillButton('允许此次', true, this.control && this.allowed && !this.busy && approval.expires > Date.now() &&
+            (approval.request['kind'] !== 'fileChange' || approval.request['nativeItemComplete'] === true),
+            (): void => { void this.answerInline(approval, 'accept'); })
+        }
+        Blank()
+        Text('完整请求').fontSize(13).fontFamily(AppConfig.fontFamily).fontColor(this.palette().accent)
+          .focusable(true).accessibilityText('查看完整请求与授权范围').onClick((): void => { this.inspect(approval); })
+      }.width('100%')
+    }.width('100%').padding(14).borderRadius(16).backgroundColor(this.palette().raised)
+    .border({ width: 1, color: this.palette().accent })
+  }
+  @Builder private chip(label: string, enabled: boolean, action: () => void) {
+    Text(label).fontSize(12).fontFamily(AppConfig.fontFamily).fontColor(this.palette().text2)
+      .padding({ left: 10, right: 10, top: 6, bottom: 6 }).borderRadius(14)
+      .border({ width: 0.5, color: this.palette().border }).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+      .constraintSize({ maxWidth: 150 }).enabled(enabled).opacity(enabled ? 1 : 0.45).focusable(true)
+      .accessibilityText(label).onClick((): void => { if (enabled) { action(); } })
+  }
+  @Builder private roundAction(symbol: Resource, label: string, primary: boolean, enabled: boolean, action: () => void) {
+    Stack() {
+      SymbolGlyph(symbol).fontSize(18).fontColor([primary ? this.palette().onAccent : this.palette().text2])
+    }.width(36).height(36).borderRadius(18).backgroundColor(primary ? this.palette().accent : Color.Transparent)
+    .opacity(enabled ? 1 : 0.35).enabled(enabled).focusable(true).accessibilityText(label)
+    .onClick((): void => { if (enabled) { action(); } })
+  }
+  @Builder private composer() {
+    Column({ space: 8 }) {
+      if (!this.control) {
+        Row({ space: 10 }) {
+          Text(this.controller.client?.handshake?.role === 'operator' ? '正在查看 · 取得控制权后才能发送和批准' : '这台设备只有查看权限')
+            .fontSize(12).fontFamily(AppConfig.fontFamily).fontColor(this.palette().text3).layoutWeight(1)
+          if (this.controller.client?.handshake?.role === 'operator') {
+            this.pillButton('取得控制权', true, this.allowed && !this.busy,
+              (): void => { void this.run(async (): Promise<void> => { await this.controller.acquire(); }); })
+          }
+        }.width('100%')
+      }
+      if (this.attachments.length > 0) {
+        Row({ space: 6 }) {
+          SymbolGlyph($r('sys.symbol.paperclip')).fontSize(13).fontColor([this.palette().text3])
+          Text('已添加 ' + this.attachments.length.toString() + ' 个附件，随下一条消息发送').fontSize(12)
+            .fontFamily(AppConfig.fontFamily).fontColor(this.palette().text2).layoutWeight(1)
+          Text('移除').fontSize(12).fontFamily(AppConfig.fontFamily).fontColor(this.palette().accent)
+            .enabled(!this.busy).onClick((): void => { if (!this.busy) { this.attachments = []; } })
+        }.width('100%')
+      }
+      Column({ space: 4 }) {
+        TextArea({ text: this.draft, placeholder: this.archived ? '先恢复归档会话' :
+          this.uiStyle === 'codex' ? '描述要做的修改，或提一个问题…' : '回复 ' + this.backendName() + '…' })
+          .constraintSize({ minHeight: 44, maxHeight: this.composerMaxHeight() })
+          .fontSize(this.textSize).fontFamily(AppConfig.fontFamily).fontColor(this.palette().text)
+          .placeholderColor(this.palette().text3).backgroundColor(Color.Transparent).padding({ left: 4, right: 4 })
+          .enabled(this.allowed && !this.busy && !this.archived).accessibilityText('任务内容')
+          .onChange((value: string): void => { if (this.allowed && !this.busy) { this.draft = value; } }).maxLength(128000)
+        Row({ space: 6 }) {
+          this.roundAction($r('sys.symbol.paperclip'), '附件', false, this.canAttach(), (): void => { void this.attach(); })
+          this.chip(this.model !== '' ? this.model : '模型', this.allowed && !this.busy,
+            (): void => { this.detailTab = 0; this.showDetails = true; })
+          if ((this.controller.client?.choices('permissionModes').length ?? 0) > 0) {
+            this.chip(this.permission !== '' ? this.permission : '权限模式', this.allowed && !this.busy,
+              (): void => { this.detailTab = 0; this.showDetails = true; })
+          }
+          Blank()
+          if (this.working() && this.control) {
+            if (this.draft.trim() !== '' && this.capability('steer')) {
+              this.roundAction($r('sys.symbol.arrow_up'), '补充指令', false, this.allowed && !this.busy && !this.archived,
+                (): void => { void this.send(true); })
+            }
+            this.roundAction($r('sys.symbol.stop_circle_fill'), '停止', true, this.capability('cancel') && !this.busy,
+              (): void => { void this.run(async (): Promise<void> => { await this.controller.action('turn.cancel'); }); })
+          } else {
+            this.roundAction($r('sys.symbol.arrow_up'), '发送', true,
+              this.control && this.allowed && !this.busy && !this.archived && this.draft.trim() !== '',
+              (): void => { void this.send(false); })
+          }
+        }.width('100%')
+      }
+      .width('100%').padding({ left: 10, right: 8, top: 8, bottom: 6 })
+      .borderRadius(this.uiStyle === 'codex' ? 16 : 22).backgroundColor(this.palette().surface)
+      .border({ width: 0.5, color: this.palette().border })
+    }.width('100%').padding({ left: 12, right: 12, top: 8, bottom: 8 })
   }
   @Builder private workspace() {
     Column() {
-      AppSheetHeader({ title: this.title, subtitle: this.status, showProBadge: true, onClose: (): void => { void this.leave(); } })
-      Row({ space: 8 }) {
-        AiActionButton({ label: '项目与会话', isEnabled: this.allowed && !this.busy, onAction: (): void => { this.showSessionPicker = true; } }).layoutWeight(1)
-        AiActionButton({ label: '重连', isEnabled: this.allowed && !this.busy, onAction: (): void => { void this.reconnect(); } }).layoutWeight(1)
-        AiActionButton({ label: '详情', isEnabled: this.allowed, onAction: (): void => { this.showDetails = true; } }).layoutWeight(1)
-      }.width('100%').padding({ left: AppUiMetrics.sheetPadding, right: AppUiMetrics.sheetPadding, bottom: 8 })
-      if (this.error !== '') { Text(this.error).fontSize(13).fontFamily(AppConfig.fontFamily).fontColor(this.pal().danger).width('100%').padding(12) }
-      List({ space: 12 }) {
-        if (this.historyCursor !== '') {
-          ListItem() { AiActionButton({ label: '加载更早记录', isEnabled: this.allowed && !this.busy,
-            onAction: (): void => { void this.run(async (): Promise<void> => { await this.controller.snapshot(true); }); } }) }
+      if (this.uiStyle === 'codex') { this.codexHeader() } else { this.claudeHeader() }
+      if (this.error !== '') {
+        Text(this.error).fontSize(13).fontFamily(AppConfig.fontFamily).fontColor(this.palette().danger)
+          .width('100%').padding({ left: 16, right: 16, top: 4, bottom: 4 })
+      }
+      if (this.uiStyle === 'codex' && this.sessionId !== '') { this.codexTabs() }
+      List({ space: this.uiStyle === 'codex' ? 10 : 14, scroller: this.scroller() }) {
+        if (this.historyCursor !== '' && !(this.uiStyle === 'codex' && this.codexTab === 2)) {
+          ListItem() {
+            Text('加载更早的记录').fontSize(13).fontFamily(AppConfig.fontFamily).fontColor(this.palette().accent)
+              .width('100%').textAlign(TextAlign.Center).padding(10).enabled(this.allowed && !this.busy)
+              .onClick((): void => { void this.run(async (): Promise<void> => { await this.controller.snapshot(true); }); })
+          }
         }
-        if (this.items.length === 0) {
-          ListItem() { Text(this.sessionId === '' ? '选择项目和会话，或新建会话开始使用。' : '会话准备就绪，取得控制权后即可发送任务。')
-            .fontSize(14).fontFamily(AppConfig.fontFamily).fontColor(this.pal().text2).width('100%').padding(16) }
+        if (this.items.length === 0 && !(this.uiStyle === 'codex' && this.codexTab === 2)) {
+          ListItem() { this.emptyState() }
         }
-        ForEach(this.items, (item: AiTranscriptItem): void => {
-          if (this.showExecution || item.role !== 'execution') {
+        if (this.uiStyle === 'codex' && this.codexTab === 2) {
+          ListItem() { this.codexDiffPane() }
+        } else {
+          ForEach(this.uiStyle === 'codex' ? this.items : this.visibleItems(), (item: AiTranscriptItem): void => {
+            if (this.uiStyle !== 'codex') {
+              ListItem() { this.claudeItem(item) }
+            } else if ((this.codexTab === 0) === aiConversationItem(item)) {
+              ListItem() {
+                if (this.codexTab === 0) { this.codexConversationItem(item) } else { this.codexLogItem(item) }
+              }
+            }
+          }, (item: AiTranscriptItem): string => item.id + ':' + item.state + ':' + item.text.length.toString() + ':' +
+            (item.output ?? '').length.toString() + ':' + this.codexTab.toString() + (this.expanded(item.id) ? ':open' : ''))
+          if (this.uiStyle === 'codex' && this.codexTab === 0 && this.changeSummary() !== '') {
             ListItem() {
-              Column({ space: 6 }) {
-                Text(item.role === 'user' ? '你' : item.role === 'assistant' ? 'AI' : item.title)
-                  .fontSize(12).fontFamily(AppConfig.fontFamily).fontWeight(FontWeight.Medium).fontColor(this.pal().text2).width('100%')
-                Text(item.text).fontSize(this.textSize).fontFamily(AppConfig.fontFamily).fontColor(this.pal().text).copyOption(CopyOptions.InApp).width('100%')
-                if (item.state !== '') { Text(aiStatusLabel(item.state)).fontSize(12).fontFamily(AppConfig.fontFamily).fontColor(this.pal().text2).width('100%') }
-              }.padding(16).width('100%').borderRadius(16)
-                .backgroundColor(item.role === 'user' ? this.pal().surface : this.pal().card)
+              Row({ space: 8 }) {
+                SymbolGlyph($r('sys.symbol.square_and_pencil')).fontSize(14).fontColor([this.palette().text2])
+                Text(this.changeSummary()).fontSize(13).fontFamily(AppConfig.fontFamily).fontColor(this.palette().text)
+                  .layoutWeight(1)
+                Text('查看差异').fontSize(13).fontFamily(AppConfig.fontFamily).fontColor(this.palette().accent)
+              }.width('100%').padding(12).borderRadius(12).border({ width: 0.5, color: this.palette().border })
+              .onClick((): void => { this.codexTab = 2; })
             }
           }
-        }, (item: AiTranscriptItem): string => item.id)
-        ForEach(this.approvals, (approval: AiApproval): void => {
-          ListItem() { AiActionButton({ label: aiRequestTitle(aiString(approval.request['kind'])) + ' · 查看详情',
-            onAction: (): void => { this.inspect(approval); } }) }
-        }, (approval: AiApproval): string => approval.id)
-      }.height(Math.max(180, this.pageHeight - this.topInset - (this.sessionId !== '' ? 400 : 200))).width('100%')
-        .padding({ left: AppUiMetrics.sheetPadding, right: AppUiMetrics.sheetPadding }).scrollBar(BarState.Auto)
-      if (this.sessionId !== '') {
-        Column({ space: 8 }) {
-          if (!this.control) {
-            AiActionButton({ label: '取得控制权', isEnabled: this.controller.client?.handshake?.role === 'operator' && this.allowed && !this.busy,
-              onAction: (): void => { void this.run(async (): Promise<void> => { await this.controller.acquire(); }); } })
-          }
-          TextArea({ text: this.draft, placeholder: this.archived ? '先恢复归档会话' : '给 AI 发送任务…' })
-            .height(this.pageHeight < 500 ? 56 : 88).fontSize(this.textSize).fontFamily(AppConfig.fontFamily).fontColor(this.pal().text).backgroundColor(this.pal().surface)
-            .borderRadius(12).enabled(this.allowed && !this.busy && !this.archived).accessibilityText('任务内容')
-            .onChange((value: string): void => { if (this.allowed && !this.busy) { this.draft = value; } }).maxLength(128000)
-          this.sendActions()
-        }.padding({ left: AppUiMetrics.sheetPadding, right: AppUiMetrics.sheetPadding, top: 12 }).width('100%')
+          if (this.working()) { ListItem() { this.workingRow() } }
+        }
+      }.height(Math.max(180, this.pageHeight - this.topInset - (this.sessionId !== '' ? (this.uiStyle === 'codex' ? 250 : 206) : 90) -
+        (this.approvals.length > 0 ? 170 : 0)))
+        .width('100%').padding({ left: 16, right: 16 }).scrollBar(BarState.Auto).edgeEffect(EdgeEffect.Spring)
+        .onScrollIndex((_start: number, end: number): void => { this.followBottom = end >= this.listLength() - 2; })
+      if (this.approvals.length > 0 && this.sessionId !== '') {
+        Column() { this.approvalCard(this.approvals[0]) }.width('100%').padding({ left: 12, right: 12, top: 6 })
       }
+      if (this.sessionId !== '') { this.composer() }
     }.width('100%').constraintSize({ minHeight: Math.max(1, this.pageHeight - this.topInset - 12), maxWidth: 1100 })
   }
   build() {
@@ -550,7 +1067,7 @@ export struct RemoteAiWorkspace {
       Scroll() { this.workspace() }.width('100%').height('100%')
         .scrollable(ScrollDirection.Vertical).scrollBar(BarState.Auto)
     }.justifyContent(FlexAlign.Center).width('100%').height('100%')
-      .padding({ top: this.topInset }).safeAreaPadding({ bottom: 12 }).backgroundColor(this.pal().sheetBg)
+      .padding({ top: this.topInset }).safeAreaPadding({ bottom: 12 }).backgroundColor(this.palette().bg)
       .onAreaChange((_old: Area, next: Area): void => {
         const width = Number(next.width), height = Number(next.height);
         if (Number.isFinite(width) && width > 0 && Math.abs(width - this.pageWidth) > 0.5) { this.pageWidth = width; }
@@ -558,7 +1075,7 @@ export struct RemoteAiWorkspace {
       })
       .bindSheet($$this.showSessionPicker, this.sessionPickerSheet(), { height: SheetSize.LARGE, showClose: false, dragBar: false,
         preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
-        keyboardAvoidMode: SheetKeyboardAvoidMode.RESIZE_ONLY, backgroundColor: this.pal().sheetBg, blurStyle: BlurStyle.NONE })
+        keyboardAvoidMode: SheetKeyboardAvoidMode.RESIZE_ONLY, backgroundColor: this.palette().bg, blurStyle: BlurStyle.NONE })
       .bindSheet($$this.showDetails, this.detailsSheet(), { height: SheetSize.LARGE, showClose: false, dragBar: false,
         preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
         keyboardAvoidMode: SheetKeyboardAvoidMode.RESIZE_ONLY, backgroundColor: this.pal().sheetBg, blurStyle: BlurStyle.NONE })

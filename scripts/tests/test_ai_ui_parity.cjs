@@ -299,9 +299,11 @@ const cases = [
     assert.equal((source.match(/Scroll\(\) \{ this\.workspace\(\) \}/g) || []).length, 1);
     const suffix = body.slice(body.lastIndexOf("}.width('100%')")); assert.ok(suffix.includes('minHeight:')); assert.ok(!suffix.includes('.height('));
     const height = argument(body, '}.height('); // The transcript List's production expression.
-    for (const pageHeight of [160, 320, 399, 400, 480, 800]) for (const topInset of [0, 32, 80]) for (const sessionId of ['', 'fixture']) {
-      const value = evaluate(height, { pageHeight, topInset, sessionId }); assert.ok(Number.isFinite(value) && value >= 180);
-    }
+    for (const pageHeight of [160, 320, 399, 400, 480, 800]) for (const topInset of [0, 32, 80]) for (const sessionId of ['', 'fixture'])
+      for (const uiStyle of ['claude', 'codex']) for (const approvals of [[], [{}]]) {
+        const value = evaluate(height, { pageHeight, topInset, sessionId, uiStyle, approvals });
+        assert.ok(Number.isFinite(value) && value >= 180);
+      }
   }],
   ['settings editor honors saved style and the shared sheet keyboard policy', async () => {
     const source = read('entry/src/main/ets/pages/AiSettingsPage.ets');
@@ -321,9 +323,14 @@ const cases = [
     const header = read('entry/src/main/ets/components/AppSheetHeader.ets');
     assert.ok(header.includes('@Prop showProBadge: boolean = false;'));
     const workspace = read(workspaceFile);
+    // Three sheets keep the shared header with its Pro marker; both page styles carry the marker in their own header.
     const headers = workspace.split('\n').filter(line => line.includes('AppSheetHeader({'));
-    assert.equal(headers.length, 4);
-    assert.equal(headers.filter(line => line.includes('showProBadge: true')).length, 4);
+    assert.equal(headers.length, 3);
+    assert.equal(headers.filter(line => line.includes('showProBadge: true')).length, 3);
+    for (const builder of ['  @Builder private claudeHeader()', '  @Builder private codexHeader()']) {
+      const start = workspace.indexOf(builder), end = workspace.indexOf('\n  @Builder', start + builder.length);
+      assert.ok(start >= 0 && end > start && workspace.slice(start, end).includes('ProBadge()'), builder + ' shows the Pro marker');
+    }
     assert.ok(workspace.includes("enabled(!this.busy && this.allowed).accessibilityText(question.title)"));
     const settings = read('entry/src/main/ets/pages/AiSettingsPage.ets');
     assert.ok(settings.includes("this.accessText === '' ? 'Pro 远程 AI' : this.accessText"));

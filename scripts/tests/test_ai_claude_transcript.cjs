@@ -93,6 +93,19 @@ transcript.clear();
 assert.equal(transcript.items.length, 0);
 console.log('PASS malformed Claude events are skipped and events are ordered by sequence');
 
+// A sent prompt shows at once and sits before its turn's output; the engine's own copy replaces it.
+const echoed = new AiTranscript();
+echoed.claudeEvent({ seq: 0, type: 'turn/start', data: { id: 'run-1' }, turn: 'run-1' });
+echoed.echo('Fix the login timeout', 'run-1');
+assert.deepEqual(plain(echoed.items).map(item => item.role + ':' + item.text), ['user:Fix the login timeout']);
+echoed.claudeEvent({ seq: 1, type: 'assistant/chunk', data: { chunk: { text: 'On it' } }, turn: 'run-1' });
+assert.deepEqual(plain(echoed.items).map(item => item.role + ':' + item.text), ['user:Fix the login timeout', 'assistant:On it']);
+echoed.claudeEvent({ seq: 2, type: 'user/message', data: { message: 'Fix the login timeout' }, turn: 'run-1' });
+assert.deepEqual(plain(echoed.items).filter(item => item.role === 'user').map(item => item.id), ['claude:2']);
+echoed.echo('   ', 'run-2');
+assert.equal(plain(echoed.items).length, 2);
+console.log('PASS sent prompts show at once and give way to the engine copy');
+
 // The backend table: Claude Agent is a third backend with its own port, name and validation.
 assert.deepEqual(Array.from(models.AI_BACKENDS), ['codex', 'dsh', 'claudecode']);
 assert.equal(models.aiBackendDefaultPort('claudecode'), 9445);

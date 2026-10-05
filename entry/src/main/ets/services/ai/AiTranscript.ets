@@ -156,11 +156,90 @@ export function aiClaudeItems(events: Record<string, Object>[]): AiTranscriptIte
   return items;
 }
 
+/** One Codex app-server thread item to a transcript item (user/agent text, reasoning, commands, file changes, tools). */
+export function aiCodexItem(raw: Record<string, Object>, turnId: string, state: string = ''): AiTranscriptItem {
+  const type = aiString(raw['type']);
+  const id = aiString(raw['id']);
+  const status = aiString(raw['status'], state);
+  if (type === 'userMessage' || type === 'agentMessage') {
+    const role = type === 'userMessage' ? 'user' : 'assistant';
+    return { id, role, title: type, text: aiContentText(raw['text'] ?? raw['content']), state: status, turnId,
+      kind: role, detail: '', output: '' };
+  }
+  if (type === 'reasoning') {
+    const summary = aiContentText(raw['summary']);
+    return { id, role: 'execution', title: '思考', text: summary !== '' ? summary : aiContentText(raw['content']),
+      state: status, turnId, kind: 'thinking', detail: '', output: '' };
+  }
+  if (type === 'commandExecution') {
+    const command = aiContentText(raw['command']);
+    const detail: Record<string, Object> = { 'command': command, 'cwd': aiString(raw['cwd']) };
+    if (typeof raw['exitCode'] === 'number') { detail['exitCode'] = raw['exitCode']; }
+    return { id, role: 'execution', title: type, text: command, state: status, turnId, kind: 'tool',
+      detail: JSON.stringify(detail), output: aiString(raw['aggregatedOutput']) };
+  }
+  if (type === 'fileChange') {
+    const paths: string[] = [];
+    const diff: string[] = [];
+    aiArray(raw['changes']).forEach((value: Object): void => {
+      if (value === null || typeof value !== 'object' || Array.isArray(value)) { return; }
+      const change = value as Record<string, Object>;
+      const path = aiString(change['path']);
+      paths.push(path);
+      const body = aiString(change['diff']);
+      diff.push(body.startsWith('diff --git') ? body : 'diff --git a/' + path + ' b/' + path + '\n' + body);
+    });
+    return { id, role: 'execution', title: type, text: paths.join('\n'), state: status, turnId, kind: 'tool',
+      detail: '', output: diff.join('\n') };
+  }
+  if (type === 'mcpToolCall') {
+    const server = aiString(raw['server']);
+    const tool = aiString(raw['tool']);
+    let detail = '';
+    try { detail = JSON.stringify(raw['arguments'] ?? {}, null, 2); } catch (_error) { detail = ''; }
+    const error = raw['error'];
+    let errorText = '';
+    if (error !== undefined && error !== null) {
+      errorText = typeof error === 'object' && !Array.isArray(error) ?
+        aiString((error as Record<string, Object>)['message']) : '';
+      if (errorText === '') { errorText = aiContentText(error) || JSON.stringify(error); }
+    }
+    return { id, role: 'execution', title: type, text: server !== '' ? server + ' · ' + tool : tool, state: status,
+      turnId, kind: 'tool', detail, output: errorText !== '' ? errorText : aiContentText(raw['result']) };
+  }
+  if (type === 'webSearch') {
+    return { id, role: 'execution', title: type, text: aiString(raw['query']), state: status, turnId, kind: 'tool',
+      detail: '', output: '' };
+  }
+  let detail = '';
+  try { detail = JSON.stringify(raw, null, 2); } catch (_error) { detail = ''; }
+  return { id, role: 'execution', title: type, text: aiContentText(raw['text'] ?? raw['content']), state: status,
+    turnId, kind: 'tool', detail, output: '' };
+}
+
 export class AiTranscript {
   items: AiTranscriptItem[] = [];
   private dshEvents: Map<number, Record<string, Object>> = new Map();
   private claudeEvents: Map<number, Record<string, Object>> = new Map();
-  clear(): void { this.items = []; this.dshEvents.clear(); this.claudeEvents.clear(); }
+  /** Prompts shown locally until the engine's own event for them arrives (Claude does not echo them live). */
+  private echoes: AiTranscriptItem[] = [];
+  clear(): void { this.items = []; this.dshEvents.clear(); this.claudeEvents.clear(); this.echoes = []; }
+  echo(text: string, turnId: string): void {
+    if (text.trim() === '') { return; }
+    this.echoes.push({ id: 'echo:' + turnId + ':' + this.echoes.length.toString(), role: 'user', title: 'user', text,
+      state: 'completed', turnId, kind: 'user', detail: '', output: '' });
+    this.items = this.withEchoes(this.items);
+  }
+  private withEchoes(items: AiTranscriptItem[]): AiTranscriptItem[] {
+    this.echoes = this.echoes.filter((echo: AiTranscriptItem): boolean => !items.some((item: AiTranscriptItem): boolean =>
+      item.role === 'user' && !item.id.startsWith('echo:') && item.text.trim() === echo.text.trim()));
+    const result = items.filter((item: AiTranscriptItem): boolean => !item.id.startsWith('echo:'));
+    for (const echo of this.echoes) {
+      const at = echo.turnId === '' ? -1 : result.findIndex((item: AiTranscriptItem): boolean => item.turnId === echo.turnId);
+      if (at >= 0) { result.splice(at, 0, echo); } else { result.push(echo); }
+    }
+    return result;
+  }
   claudeEvent(event: Record<string, Object>): void {
     const seq = aiNumber(event['seq'], -1);
     if (!Number.isSafeInteger(seq) || seq < 0) { return; }
@@ -170,7 +249,7 @@ export class AiTranscript {
       const value = this.claudeEvents.get(key);
       if (value !== undefined) { ordered.push(value); }
     });
-    this.items = aiClaudeItems(ordered);
+    this.items = this.withEchoes(aiClaudeItems(ordered));
   }
   private put(item: AiTranscriptItem, append: boolean = false): void {
     const index = this.items.findIndex((value: AiTranscriptItem): boolean => value.id === item.id);
@@ -189,15 +268,10 @@ export class AiTranscript {
     this.items = ordered.concat(this.items.filter((item: AiTranscriptItem): boolean => !ids.includes(item.id)));
   }
   codexItem(raw: Record<string, Object>, turnId: string, state: string = ''): void {
-    const type = aiString(raw['type']);
     const id = aiString(raw['id']);
     if (id === '') { return; }
-    const role = type === 'userMessage' ? 'user' : type === 'agentMessage' ? 'assistant' : 'execution';
-    let text = aiContentText(raw['text'] ?? raw['content']);
-    if (role === 'execution') {
-      text = type === 'reasoning' ? aiContentText(raw['summary']) : JSON.stringify(raw, null, 2);
-    }
-    this.put({ id, role, title: type, text, state: aiString(raw['status'], state), turnId });
+    const item = aiCodexItem(raw, turnId, state);
+    this.put(item);
   }
   dshEvent(event: Record<string, Object>): void {
     const seq = aiNumber(event['seq'], -1);
@@ -226,7 +300,7 @@ export class AiTranscript {
         const chunk = aiRecord(data['chunk']);
         const text = aiString(chunk['text'] ?? chunk['delta']);
         if (text !== '') { items.push({ id: 'dsh:' + current, role: 'assistant', title: 'assistant', text,
-          state: 'running', turnId: aiNumber(data['turn']).toString() }); }
+          state: 'running', turnId: aiNumber(data['turn']).toString(), kind: 'assistant', detail: '', output: '' }); }
       } else if (type === 'user/message' || type === 'assistant/message' || type === 'tool/call' || type === 'tool/result') {
         const turnId = aiNumber(data['turn']).toString();
         if (type === 'assistant/message') {
@@ -236,9 +310,13 @@ export class AiTranscript {
           }
         }
         const role = type === 'user/message' ? 'user' : type === 'assistant/message' ? 'assistant' : 'execution';
+        const toolInput = data['arguments'] ?? data['input'] ?? data['args'];
         const item: AiTranscriptItem = { id: 'dsh:' + current, role, title: role === 'execution' ? aiString(data['name'], type) : role,
-          text: role === 'execution' ? JSON.stringify(data, null, 2) : aiContentText(data['message'] ?? data),
-          state: data['interrupted'] === true ? 'interrupted' : 'completed', turnId };
+          text: role === 'execution' ? '' : aiContentText(data['message'] ?? data),
+          state: data['interrupted'] === true ? 'interrupted' : type === 'tool/call' ? 'running' : 'completed', turnId,
+          kind: role === 'execution' ? 'tool' : role,
+          detail: role === 'execution' ? (toolInput !== undefined ? JSON.stringify(toolInput, null, 2) : JSON.stringify(data, null, 2)) : '',
+          output: type === 'tool/result' ? aiContentText(data['result'] ?? data['output'] ?? data['content']) : '' };
         if (replacementStart >= 0) { items.splice(replacementStart, 0, item); } else { items.push(item); }
       }
     }

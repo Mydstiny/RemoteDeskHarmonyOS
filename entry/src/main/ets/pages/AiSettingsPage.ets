@@ -12,7 +12,7 @@ import { AiBackendChoiceCard } from '../components/ai/AiBackendChoiceCard';
 import { AiHostEditor } from '../components/ai/AiHostEditor';
 import { AiHostInstallPanel } from '../components/ai/AiHostInstallPanel';
 import { AiHostService } from '../services/ai/AiHostService';
-import { AiBackend, AiHost, AiSettings, aiBackendName, defaultAiSettings } from '../services/ai/AiModels';
+import { AiBackend, AiHost, AiSettings, AiUiStyle, aiBackendName, aiUiStyle, defaultAiSettings } from '../services/ai/AiModels';
 import { AiAccess, AiAccountLease } from '../services/ai/AiAccess';
 import { AiLocalStore } from '../services/ai/AiLocalStore';
 import { AiDataTransfer } from '../services/ai/AiDataTransfer';
@@ -182,6 +182,29 @@ export struct AiSettingsSurface {
       onSelect: (): void => { if (!this.busy && this.settingsReady) { this.settings.defaultBackend = backend; this.save(); } } })
       .width('100%').enabled(!this.busy && this.settingsReady)
   }
+  @Builder private styleCard(style: AiUiStyle, title: string, detail: string, swatches: string[]) {
+    Column({ space: 8 }) {
+      Row({ space: 4 }) {
+        ForEach(swatches, (color: string): void => {
+          Column().width(14).height(14).borderRadius(7).backgroundColor(color)
+            .border({ width: 0.5, color: this.pal().cardBorder })
+        }, (color: string): string => color)
+      }
+      Text(title).fontSize(15).fontWeight(FontWeight.Medium).fontFamily(AppConfig.fontFamily).fontColor(this.pal().text)
+      Text(detail).fontSize(12).fontFamily(AppConfig.fontFamily).fontColor(this.pal().text3).maxLines(2)
+        .textOverflow({ overflow: TextOverflow.Ellipsis })
+    }
+    .alignItems(HorizontalAlign.Start).layoutWeight(1).padding(14).borderRadius(16)
+    .backgroundColor(this.pal().surface)
+    .border({ width: aiUiStyle(this.settings) === style ? 1.5 : 0.5,
+      color: aiUiStyle(this.settings) === style ? this.accent : this.pal().cardBorder })
+    .enabled(!this.busy && this.settingsReady).focusable(true)
+    .accessibilityText(title).accessibilitySelected(aiUiStyle(this.settings) === style)
+    .onClick((): void => {
+      if (this.busy || !this.settingsReady || aiUiStyle(this.settings) === style) { return; }
+      this.settings.uiStyle = style; this.save();
+    })
+  }
   @Builder private hostActionRow(host: AiHost) {
     AppSettingsActionRow({ icon: protocolIcon('ai'), title: host.label,
       detail: aiBackendName(host.backend) + ' · ' + host.address + ':' + host.port + ' · 编辑与配对',
@@ -255,6 +278,11 @@ export struct AiSettingsSurface {
             isEnabled: !this.busy, onAction: (): void => { this.openEditor(null); } })
           }
           if (this.sectionVisible('display')) {
+          this.sectionTitle('界面风格', '远程 AI 会话页的外观；切换后下次打开会话生效。')
+          Row({ space: 10 }) {
+            this.styleCard('claude', 'Claude 风格', '对话式时间线 · 米白与陶土橙', ['#F5F4EE', '#C96442', '#262624'])
+            this.styleCard('codex', 'Codex 风格', '对话 / 日志 / 差异分页 · 黑白中性色', ['#FFFFFF', '#0D0D0D', '#2F2F2F'])
+          }.width('100%')
           this.sectionTitle('显示与恢复')
           Column() {
             AppSettingsSwitchRow({ title: '显示工具执行过程', detail: '在会话中查看工具调用与执行记录',
