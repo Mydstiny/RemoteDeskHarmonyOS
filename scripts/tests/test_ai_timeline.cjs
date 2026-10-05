@@ -193,6 +193,15 @@ console.log('PASS Codex added and deleted files count every line');
   const plainFiles = plain(timeline.aiDiffFiles(['--- a/a', '+++ b/a', '@@ -1 +1 @@', '-1', '+2', '--- a/b', '+++ b/b',
     '@@ -1 +1 @@', '-3', '+4'].join('\n')));
   assert.deepEqual(plainFiles.map(file => [file.path, file.added, file.removed]), [['a', 1, 1], ['b', 1, 1]]);
+  // A deleted file keeps its own name (not /dev/null); timestamps after a tab are not part of the path.
+  const deleted = plain(timeline.aiDiffFiles(['--- a/a\t2026-10-05 10:00', '+++ b/a\t2026-10-05 10:01', '@@ -1 +1 @@', '-1', '+2',
+    '--- a/y\t2026-10-05 10:00', '+++ /dev/null', '@@ -1 +0,0 @@', '-gone'].join('\n')));
+  assert.deepEqual(deleted.map(file => [file.path, file.added, file.removed]), [['a', 1, 1], ['y', 0, 1]]);
+  // A '--- ' line not followed by '+++ ' is content, even past a hunk whose counts are short or missing.
+  const short = plain(timeline.aiDiffFiles(['diff --git a/s b/s', '@@ -1 +1 @@', '-a', '+b', '--- x', '+++y'].join('\n')));
+  assert.deepEqual(short.map(file => [file.path, file.added, file.removed]), [['s', 2, 2]]);
+  const bare = plain(timeline.aiDiffFiles(['diff --git a/t b/t', '@@', '-a', '--- x', ' c'].join('\n')));
+  assert.deepEqual(bare.map(file => [file.path, file.removed]), [['t', 2]]);
   const whole = timeline.aiDiffFiles('diff --git a/z b/z\n@@ -1 +1 @@\n-x\n+y');
   const cut = timeline.aiDiffFiles('diff --git a/z b/z\n@@ -1 +1 @@\n-x\n+y');
   cut[0].truncated = true;

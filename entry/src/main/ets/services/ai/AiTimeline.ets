@@ -90,6 +90,12 @@ export function aiDiffStats(added: number, removed: number): string {
   return '+' + added.toString() + ' −' + removed.toString();
 }
 
+/** A path of a '--- ' or '+++ ' header: no trailing timestamp, no 'a/' or 'b/' prefix. */
+function headerPath(text: string, prefix: string): string {
+  const path = text.split('\t')[0];
+  return path.startsWith(prefix) ? path.slice(prefix.length) : path;
+}
+
 /** The new path of a `diff --git a/x b/y` header, found without a backtracking pattern. */
 function gitHeaderPath(line: string): string {
   const at = line.lastIndexOf(' b/');
@@ -128,8 +134,12 @@ export function aiDiffFiles(diff: string): AiDiffFile[] {
     full = true;
     return false;
   };
-  for (const line of diff.split('\n')) {
+  const lines = diff.split('\n');
+  // The '--- ' path of a plain diff, for a deleted file whose '+++ ' is /dev/null.
+  let fromPath = '';
+  for (let index = 0; index < lines.length; index++) {
     if (full) { break; }
+    const line = lines[index];
     const raw = line.endsWith('\r') ? line.slice(0, line.length - 1) : line;
     // Hunk content always starts with ' ', '+', '-' or '\\': only '+++ ' and '--- ' can be either.
     const inHunk = oldLeft > 0 || newLeft > 0;
@@ -148,13 +158,16 @@ export function aiDiffFiles(diff: string): AiDiffFile[] {
       continue;
     }
     if (!inHunk && raw.startsWith('+++ ')) {
-      const path = raw.slice(4).replace(/^b\//, '');
+      const named = headerPath(raw.slice(4), 'b/');
+      const path = named === '/dev/null' ? fromPath : named;
       if (current === null) { current = open(path); }
-      else if (path !== '/dev/null' && current.lines.length === 0) { current.path = path; }
+      else if (path !== '' && path !== '/dev/null' && current.lines.length === 0) { current.path = path; }
       continue;
     }
-    if (!inHunk && raw.startsWith('--- ')) {
-      // Without git headers, '--- ' after a file's lines starts the next file (its '+++ ' names it).
+    // A file header is '--- ' directly followed by '+++ '; anything else outside a hunk is content.
+    if (!inHunk && raw.startsWith('--- ') && index + 1 < lines.length && lines[index + 1].startsWith('+++ ')) {
+      fromPath = headerPath(raw.slice(4), 'a/');
+      // Without git headers, the header after a file's lines starts the next file.
       if (current !== null && current.lines.length > 0) { current = null; }
       continue;
     }
