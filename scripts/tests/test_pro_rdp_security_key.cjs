@@ -333,7 +333,8 @@ test('the phone path refuses at once when nothing can answer, and a timeout or c
 
 test('a phone that cannot answer is set aside and the key selection returns with the reason', async () => {
   const f = fixture(); f.state.watchId = 1; f.service.attachContext({}); f.service.start(7);
-  const ask = (id) => f.request({ id, kind: 9, text: 'github.com', timeoutMs: 45000, payload: ctapGetAssertion(null) });
+  const ask = (id) => f.request({ id, kind: 9, text: 'github.com', operation: 1, timeoutMs: 45000,
+    payload: ctapGetAssertion(null) });
   const setAside = (id) => {
     assert.deepEqual(f.state.exResponses.pop(), { id, ok: false, payload: null, authenticator: 1 });
     assert.equal(f.state.released, ++released);
@@ -384,8 +385,9 @@ test('a phone that cannot answer is set aside and the key selection returns with
 
 test('choosing a USB key while the phone is asked withdraws the phone request and returns to selection', async () => {
   const f = fixture(); f.state.watchId = 1; f.service.attachContext({}); f.service.start(7);
-  f.deliver(f.request({ id: 100, kind: 9, text: 'github.com', payload: ctapGetAssertion(null) }));
+  f.deliver(f.request({ id: 100, kind: 9, text: 'github.com', operation: 1, payload: ctapGetAssertion(null) }));
   await settle();
+  assert.equal(f.last().phone, true);
   const sent = f.state.phoneRequests.pop();
   f.service.useSecurityKey(99);
   assert.equal(f.state.withdrawn.length, 0);
@@ -396,6 +398,23 @@ test('choosing a USB key while the phone is asked withdraws the phone request an
   assert.equal(f.last(), null);
   await settle();
   assert.equal(f.state.exResponses.length, 0);
+});
+
+test('when the request cannot go back to selection, there is no switch and no reason is kept', async () => {
+  const f = fixture(); f.state.watchId = 1; f.service.attachContext({}); f.service.start(7);
+  f.deliver(f.request({ id: 140, kind: 9, text: 'github.com', operation: 0, payload: ctapGetAssertion(null) }));
+  await settle();
+  assert.equal(f.last().phone, false);
+  f.service.useSecurityKey(140);
+  assert.equal(f.state.withdrawn.length, 0);
+  assert.equal(f.state.exResponses.length, 0);
+  // The phone does not answer: the request ends, the phone is set aside, the next selection says nothing stale.
+  f.state.phoneSend(null);
+  await settle();
+  assert.deepEqual(f.state.exResponses.pop(), { id: 140, ok: false, payload: null, authenticator: 1 });
+  assert.equal(f.state.released, 1);
+  f.deliver(f.request({ id: 141, kind: 2 }));
+  assert.equal(f.last().error, '');
 });
 
 test('a request that ends while the channel is joined or the request is signed never reaches the phone', async () => {

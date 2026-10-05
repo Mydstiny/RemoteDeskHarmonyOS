@@ -29,7 +29,8 @@ enum class Kind : uint32_t {
     Read = 6,      // timeoutMs bounds one 64-byte HID input report; reply report
     Release = 7,   // notification only: release the authorized key
     Dismiss = 8,   // notification only: id = a delivered prompt that ended unanswered (timeout, cancel, close)
-    Passkey = 9,   // payload = CTAP command byte + CBOR request for the phone; reply payload = status byte + CBOR
+    Passkey = 9,   // payload = CTAP command byte + CBOR for the phone, text = confirmed relying party, operation =
+                   // 1 when the user may still switch to another authenticator; reply payload = status byte + CBOR
 };
 
 // What answers the session's WebAuthn requests once the user chose it in the Select prompt.
@@ -108,7 +109,9 @@ public:
     Authenticator Authorized(std::string& product) const;
     // Hands one CTAP command to the phone (through ArkTS); the reply is the phone's CTAP response. rpId is the
     // relying party the user confirmed for it (request text); ArkTS refuses a command that names another.
-    std::optional<std::vector<uint8_t>> Passkey(const std::vector<uint8_t>& command, const std::string& rpId);
+    // canReselect: setting the phone aside now still lets the user choose a key for this request.
+    std::optional<std::vector<uint8_t>> Passkey(const std::vector<uint8_t>& command, const std::string& rpId,
+                                                bool canReselect);
     // The authorized key could not be opened: forget it and have ArkTS release it.
     void Forget();
     std::optional<std::string> Pin(int32_t retries);

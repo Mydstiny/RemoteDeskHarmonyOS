@@ -184,7 +184,8 @@ BOOL remotedesk_rdpewa_passkey(rdpContext* context, const BYTE* command, size_t 
     *responseLen = 0;
     const auto broker = RdpSecurityKey::ForContext(context);
     if (!broker || command == nullptr) return FALSE;
-    const auto reply = broker->Passkey(std::vector<uint8_t>(command, command + commandLen), rpId != nullptr ? rpId : "");
+    const auto reply = broker->Passkey(std::vector<uint8_t>(command, command + commandLen), rpId != nullptr ? rpId : "",
+                                       reselect != nullptr);
     if (!reply || reply->empty()) {
         // ArkTS set the phone aside (unreachable, unpaired, or the user chose a USB key): while the request lasts,
         // the user may choose again.

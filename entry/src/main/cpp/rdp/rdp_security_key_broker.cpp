@@ -384,11 +384,13 @@ void Broker::Unauthorize() {
     Wipe(product_);
 }
 
-std::optional<std::vector<uint8_t>> Broker::Passkey(const std::vector<uint8_t>& command, const std::string& rpId) {
+std::optional<std::vector<uint8_t>> Broker::Passkey(const std::vector<uint8_t>& command, const std::string& rpId,
+                                                    bool canReselect) {
     if (command.size() < 2 || command.size() > kMaxPasskeyRequestBytes) return std::nullopt;
     Request request;
     request.kind = Kind::Passkey;
     request.text = SanitizeRpId(rpId);
+    request.operation = canReselect ? 1 : 0;
     request.payload = command;
     // The phone may keep the request open for what is left of the remote request, within its own limit.
     request.timeoutMs = std::min<uint32_t>(RemainingMs(), kMaxPhoneRequestMs);

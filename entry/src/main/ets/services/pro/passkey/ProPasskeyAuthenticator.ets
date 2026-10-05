@@ -48,6 +48,8 @@ export class ProPasskeyAuthenticator {
       if (point === null) { throw new Error('PASSKEY_KEY_EXPORT_FAILED'); }
       const authData = authenticatorData(sha256(utf8(request.rpId)), PASSKEY_FLAG_UP | PASSKEY_FLAG_UV | PASSKEY_FLAG_AT,
         0, credentialId, coseEc2PublicKey(point[0], point[1]));
+      // Not worth a face or fingerprint prompt when the request ended while the key was being made.
+      if (!current()) { throw new Error('PASSKEY_EXPIRED'); }
       // User verification: the new key must be unlocked once, which also proves it works on this device.
       await ProPasskeyKeys.sign(alias, unlock, concatBytes([authData, clientDataHash]),
         '注册「' + request.rpId + '」的通行密钥');

@@ -83,16 +83,21 @@ export class PasskeyConfirmation {
     let timer: number = -1;
     let content: ComponentContent<PasskeyDialogParams> | null = null;
     const takeDown = (shown: ComponentContent<PasskeyDialogParams>): void => {
-      ui.getPromptAction().closeCustomDialog(shown).catch((): void => { /* already closed */ })
-        .finally((): void => { shown.dispose(); });
+      try {
+        ui.getPromptAction().closeCustomDialog(shown).catch((): void => { /* already closed */ })
+          .finally((): void => { shown.dispose(); });
+      } catch (_error) {
+        shown.dispose();
+      }
     };
     const finish = (allowed: boolean): void => {
       if (done) { return; }
       done = true;
       if (timer >= 0) { clearTimeout(timer); timer = -1; }
+      // The answer settles first: the receiver frees itself whatever closing the dialog does.
+      settle(allowed);
       // A dialog still opening is taken down as soon as it has opened.
       if (content !== null && opened) { takeDown(content); }
-      settle(allowed);
     };
     this.finish = finish;
     params.onAnswer = finish;

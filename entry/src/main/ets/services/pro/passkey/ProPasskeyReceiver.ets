@@ -30,6 +30,8 @@ class ActiveRequest {
   id: string;
   deadline: number;
   ended: boolean = false;
+  /** The user answered the dialog (the unlock that follows may move the app to the background). */
+  answered: boolean = false;
   confirmation: PasskeyConfirmation | null = null;
 
   constructor(id: string, deadline: number) { this.id = id; this.deadline = deadline; }
@@ -75,6 +77,7 @@ export class ProPasskeyReceiver {
   private observers: ((state: PasskeyReceiverState) => void)[] = [];
   private watching: boolean = false;
   private active: ActiveRequest | null = null;
+  private activeRequest: PasskeyRequest | null = null;
 
   private owner(): string { return AccountSessionCoordinator.getInstance().currentScope().ownerScopeId; }
 
@@ -91,9 +94,25 @@ export class ProPasskeyReceiver {
     void this.evaluate();
   }
 
-  /** EntryAbility: the app went to the background; nothing is answered until it returns. */
+  /**
+   * EntryAbility: the app went to the background; nothing is answered until it returns. A request still waiting
+   * for the user is cancelled: while away this device stops hearing withdrawals, so an answer given on return could
+   * create a passkey nobody waits for. A request already being unlocked carries on.
+   */
   background(): void {
     this.inForeground = false;
+    const active = this.active;
+    if (active !== null && !active.answered && !active.ended) {
+      const request = this.activeRequest;
+      active.end();
+      if (request !== null && request.id === active.id) {
+        this.respond(ProPasskeyAuthenticator.failed(request, 'PASSKEY_USER_CANCELLED'));
+        this.note('应用切到后台，未确认的请求已取消');
+        // The answer needs a moment to sync before this device leaves the channel.
+        setTimeout((): void => { if (!this.inForeground) { void this.evaluate(); } }, 500);
+        return;
+      }
+    }
     void this.evaluate();
   }
 
@@ -214,16 +233,18 @@ export class ProPasskeyReceiver {
   private async onRequest(request: PasskeyRequest): Promise<void> {
     const context = this.context;
     const owner = this.owner();
-    if (context === null || owner === '' || !this.listening) { return; }
+    if (context === null || owner === '' || !this.listening || !this.inForeground) { return; }
     if (this.busy) {
       // One request at a time: the newer requester hears it right away instead of waiting out its timeout.
       this.respond(ProPasskeyAuthenticator.failed(request, 'PASSKEY_BUSY'));
       return;
     }
     this.busy = true;
-    // The requester's own wait began before the request reached this device, so this deadline is never later.
-    const active = new ActiveRequest(request.id, Date.now() + request.ttlMs);
+    // The requester's own wait began before the request reached this device; ending 3 s earlier than its time to
+    // live leaves room for the transfer, so this device never answers after the requester stopped waiting.
+    const active = new ActiveRequest(request.id, Date.now() + Math.max(1000, request.ttlMs - 3000));
     this.active = active;
+    this.activeRequest = request;
     const current = (): boolean => !active.ended && Date.now() < active.deadline && this.owner() === owner;
     try {
       if (request.op === 'pair') {
@@ -277,7 +298,7 @@ export class ProPasskeyReceiver {
       this.note('未完成：处理请求时出错');
     } finally {
       active.end();
-      if (this.active === active) { this.active = null; }
+      if (this.active === active) { this.active = null; this.activeRequest = null; }
       this.busy = false;
     }
   }
@@ -325,6 +346,9 @@ export class ProPasskeyReceiver {
     params.deadline = active.deadline;
     const confirmation = new PasskeyConfirmation(ui, params);
     active.confirmation = confirmation;
-    return confirmation.answer;
+    return confirmation.answer.then((allowed: boolean): boolean => {
+      active.answered = true;
+      return allowed;
+    });
   }
 }

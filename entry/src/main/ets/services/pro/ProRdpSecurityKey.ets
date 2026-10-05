@@ -47,7 +47,7 @@ export interface RdpSecurityKeyPrompt {
   /** select: true while the system authorization dialog is open */
   busy: boolean;
   error: string;
-  /** select: the paired phone's passkey may answer instead of a USB key */
+  /** select: the paired phone's passkey may answer instead of a USB key; phone: the user may still switch to one */
   phone: boolean;
 }
 
@@ -193,8 +193,8 @@ export class ProRdpSecurityKey {
   /** While the phone is asked: use a USB key instead. The phone's request is withdrawn and the selection returns. */
   useSecurityKey(requestId: number): void {
     const current = this.prompt;
-    if (current === null || current.kind !== 'phone' || current.requestId !== requestId || this.stopped ||
-        this.sessionId <= 0) { return; }
+    if (current === null || current.kind !== 'phone' || current.requestId !== requestId || !current.phone ||
+        this.stopped || this.sessionId <= 0) { return; }
     this.withdrawPhone();
     this.dropPhone(this.sessionId, requestId, '');
   }
@@ -323,19 +323,22 @@ export class ProRdpSecurityKey {
       this.respondPasskey(sessionId, id, ctapStatus(CTAP2_ERR_NO_CREDENTIALS));
       return;
     }
+    // Whether this request can still go back to key selection (native allows it once per request).
+    const switchable = request.operation === 1;
+    const drop = (notice: string): void => { this.dropPhone(sessionId, id, switchable ? notice : ''); };
     const context = this.context;
     if (context === null || !ProPasskeyReceiver.available()) {
-      this.dropPhone(sessionId, id, '手机通行密钥当前不可用，请改用 USB 安全密钥');
+      drop('手机通行密钥当前不可用，请改用 USB 安全密钥');
       return;
     }
     this.show({ kind: 'phone', requestId: id, rpId: command.rpId, register: command.op === 'register', retries: -1,
-      candidates: [], busy: false, error: '', phone: true });
+      candidates: [], busy: false, error: '', phone: switchable });
     // Every await may outlive the request: the user cancelled, the remote request ended or the page stopped.
     const current = (): boolean => !this.stopped && this.sessionId === sessionId && this.prompt !== null &&
       this.prompt.kind === 'phone' && this.prompt.requestId === id;
     try {
       if (!(await ProPasskeyReceiver.getInstance().ensureChannel(context))) {
-        if (current()) { this.dropPhone(sessionId, id, '无法连接同账号设备：请确认手机登录同一华为账号并已联网'); }
+        if (current()) { drop('无法连接同账号设备：请确认手机登录同一华为账号并已联网'); }
         return;
       }
       if (!current()) { return; }
@@ -351,11 +354,11 @@ export class ProRdpSecurityKey {
         response.error === 'PASSKEY_DEVICE_NOT_PAIRED' || response.error === 'PASSKEY_SIGNATURE_INVALID' ?
           '手机还没有与这台设备配对：请在 设置 → Pro 功能 → 手机通行密钥 中配对' :
         response.error === 'PASSKEY_BUSY' ? '手机正在处理另一个请求，请稍后重试' : '';
-      if (problem !== '') { this.dropPhone(sessionId, id, problem); return; }
+      if (problem !== '') { drop(problem); return; }
       this.respondPasskey(sessionId, id, ctapResponseFromPasskey(command.op, response));
       this.show(null);
     } catch (_error) {
-      if (current()) { this.dropPhone(sessionId, id, '手机通行密钥出错，请重试或改用 USB 安全密钥'); }
+      if (current()) { drop('手机通行密钥出错，请重试或改用 USB 安全密钥'); }
     }
   }
 

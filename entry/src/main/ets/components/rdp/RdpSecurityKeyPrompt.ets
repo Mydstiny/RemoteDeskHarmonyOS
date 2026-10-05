@@ -156,7 +156,9 @@ export struct RdpSecurityKeyPromptView {
       Text('手机需要打开 RemoteDesk 并开启“接收登录请求”。').fontSize(12).fontColor(this.pal().text3).width('100%')
       Row({ space: 10 }) {
         this.button('取消', false, true, (): void => { this.onCancel(); })
-        this.button('改用 USB 安全密钥', false, true, (): void => { this.onUseKey(this.prompt.requestId); })
+        if (this.prompt.phone) {
+          this.button('改用 USB 安全密钥', false, true, (): void => { this.onUseKey(this.prompt.requestId); })
+        }
       }.width('100%').margin({ top: 6 })
     } else {
       Text('安全密钥闪烁时轻触它，完成远程电脑上的验证。')

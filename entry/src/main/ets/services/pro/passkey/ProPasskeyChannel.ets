@@ -97,7 +97,14 @@ export class ProPasskeyChannel {
   }
 
   private settled(): void {
-    if (this.leaveWhenIdle && this.pending.size === 0 && this.onRequest === null) { this.leave(); }
+    if (!this.leaveWhenIdle || this.pending.size > 0 || this.onRequest !== null) { return; }
+    // A withdrawal written just now needs a moment to sync before this device leaves.
+    const generation = this.generation;
+    setTimeout((): void => {
+      if (generation === this.generation && this.leaveWhenIdle && this.pending.size === 0 && this.onRequest === null) {
+        this.leave();
+      }
+    }, 500);
   }
 
   leave(): void {
@@ -136,7 +143,13 @@ export class ProPasskeyChannel {
     this.remember(this.sent, request.id);
     return new Promise<PasskeyResponse | null>((resolve: (response: PasskeyResponse | null) => void): void => {
       const timer = setTimeout((): void => {
-        if (this.pending.delete(request.id)) { this.clearRequest(request.id); resolve(null); this.settled(); }
+        if (this.pending.delete(request.id)) {
+          // Told like a withdrawal, so a dialog still open on another device comes down.
+          this.markCancelled(request.id);
+          this.clearRequest(request.id);
+          resolve(null);
+          this.settled();
+        }
       }, request.ttlMs);
       this.pending.set(request.id, (response: PasskeyResponse | null): void => {
         clearTimeout(timer);
@@ -162,11 +175,14 @@ export class ProPasskeyChannel {
     const resolve = this.pending.get(id);
     if (resolve === undefined) { return; }
     this.pending.delete(id);
-    const object = this.object;
-    if (object !== null) {
-      try { object.cancel = id; } catch (_error) { /* the request still expires on the phone */ }
-    }
+    this.markCancelled(id);
     resolve(null);
+  }
+
+  private markCancelled(id: string): void {
+    const object = this.object;
+    if (object === null) { return; }
+    try { object.cancel = id; } catch (_error) { /* the request still expires on the other device */ }
   }
 
   private changed(object: ChannelObject, fields: string[]): void {

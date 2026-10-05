@@ -24,8 +24,11 @@ const b64 = bytes => Buffer.from(bytes).toString('base64url');
 function fixture() {
   const state = { now: 1_000_000, owner: 'owner-a', receiving: true, peers: new Map(), signatureValid: true,
     dialogs: [], responses: [], listener: null, withdraw: null, joined: false, released: 0, records: [],
-    keys: new Set(), removedKeys: [], unlock: null, savedPeers: [] };
+    keys: new Set(), removedKeys: [], unlock: null, savedPeers: [], timers: [], generated: null, signs: 0 };
   const clock = { now: () => state.now };
+  const timers = { setTimeout: (callback) => { state.timers.push(callback); return state.timers.length; },
+    clearTimeout: () => {} };
+  state.runTimers = () => { const pending = state.timers.splice(0); pending.forEach(callback => callback()); };
   class PasskeyDialogParams {
     constructor() { this.title = ''; this.message = ''; this.code = ''; this.cancel = '拒绝'; this.confirm = '允许'; this.deadline = 0; }
   }
@@ -59,12 +62,12 @@ function fixture() {
   // HUKS stand-in: keys exist after generate; sign() is where face, fingerprint or PIN would be asked.
   const keys = {
     preferredUnlock: () => 'face',
-    async generate(alias) { state.keys.add(alias); },
+    async generate(alias) { state.keys.add(alias); if (state.generated !== null) await state.generated(); },
     async publicKey() {
       const { publicKey } = crypto.generateKeyPairSync('ec', { namedCurve: 'P-256' });
       return new Uint8Array(publicKey.export({ type: 'spki', format: 'der' }));
     },
-    async sign() { if (state.unlock !== null) await state.unlock(); return new Uint8Array(70).fill(1); },
+    async sign() { state.signs++; if (state.unlock !== null) await state.unlock(); return new Uint8Array(70).fill(1); },
     async remove(alias) { state.keys.delete(alias); state.removedKeys.push(alias); },
     async exists(alias) { return state.keys.has(alias); }
   };
@@ -92,7 +95,7 @@ function fixture() {
       passkeyRequestSignedBy: async () => state.signatureValid },
     './ProPasskeyKeys': keyModule,
     './ProPasskeyPeers': { ProPasskeyPeers: peers }
-  }, { Date: clock });
+  }, { Date: clock, ...timers });
   const receiver = new receiverModule.ProPasskeyReceiver();
   const device = b64(crypto.randomBytes(16));
   state.peers.set('owner-a/' + device, { owner: 'owner-a', id: device, name: 'MateBook‮exe', publicKey: b64(new Uint8Array(91)),
@@ -126,13 +129,13 @@ test('only paired devices with a valid signature reach a dialog', async () => {
   assert.equal(f.state.dialogs.length, 0);
 });
 
-test('one request at a time; the dialog shows cleaned names and the request deadline', async () => {
+test('one request at a time; the dialog shows cleaned names and ends before the requester stops waiting', async () => {
   const f = await started();
   const first = f.request({ ttlMs: 30000 });
   f.state.listener(first);
   await settle();
   const dialog = f.state.dialogs[0];
-  assert.equal(dialog.params.deadline, f.state.now + 30000);
+  assert.equal(dialog.params.deadline, f.state.now + 27000);
   assert.ok(dialog.params.message.includes('「MateBookexe」') && !dialog.params.message.includes('‮'));
   f.state.listener(f.request());
   await settle();
@@ -166,6 +169,20 @@ test('an approval after the request expired neither creates a passkey nor answer
   f.state.now += 600000;
   f.state.dialogs[0].resolve(true);
   await settle();
+  assert.equal(f.state.keys.size, 0);
+  assert.equal(f.state.records.length, 0);
+  assert.equal(f.state.responses.length, 0);
+});
+
+test('a request that ends while its key is made asks for no unlock and leaves no key behind', async () => {
+  const f = await started();
+  const asked = f.register();
+  f.state.generated = async () => { f.state.withdraw(asked.id); };
+  f.state.listener(asked);
+  await settle();
+  f.state.dialogs[0].resolve(true);
+  await settle();
+  assert.equal(f.state.signs, 0);
   assert.equal(f.state.keys.size, 0);
   assert.equal(f.state.records.length, 0);
   assert.equal(f.state.responses.length, 0);
@@ -226,20 +243,51 @@ test('pairing shows the code in the dialog and stores the device under a cleaned
   assert.equal(f.state.savedPeers.length, 0);
 });
 
-test('turning receiving off takes an open dialog down; going to the background does not', async () => {
+test('turning receiving off takes an open dialog down without an answer', async () => {
   const f = await started();
   f.state.listener(f.request());
-  await settle();
-  f.receiver.background();
-  await settle();
-  assert.equal(f.state.dialogs[0].closed, false);
-  f.receiver.foreground({}, () => ({}));
   await settle();
   await f.receiver.setEnabled(false, {});
   await settle();
   assert.equal(f.state.dialogs[0].closed, true);
   assert.equal(f.state.responses.length, 0);
   assert.ok(f.state.released > 0);
+});
+
+test('going to the background cancels an unanswered request, but not one being unlocked', async () => {
+  const f = await started();
+  const waiting = f.request();
+  f.state.listener(waiting);
+  await settle();
+  const late = f.state.listener;
+  f.receiver.background();
+  await settle();
+  assert.equal(f.state.dialogs[0].closed, true);
+  assert.deepEqual([f.state.responses[0].id, f.state.responses[0].error], [waiting.id, 'PASSKEY_USER_CANCELLED']);
+  // The answer gets a moment to sync before the channel is let go.
+  const released = f.state.released;
+  f.state.runTimers();
+  await settle();
+  assert.ok(f.state.released > released);
+  // A request delivered late, while away, is not shown.
+  late(f.request());
+  await settle();
+  assert.equal(f.state.dialogs.length, 1);
+  // Back in front: a request being unlocked when the app leaves again carries on.
+  f.receiver.foreground({}, () => ({}));
+  await settle();
+  const unlocking = f.register();
+  let finishUnlock;
+  f.state.unlock = () => new Promise((resolve) => { finishUnlock = resolve; });
+  f.state.listener(unlocking);
+  await settle();
+  f.state.dialogs[1].resolve(true);
+  await settle();
+  f.receiver.background();
+  finishUnlock();
+  await settle();
+  const answer = f.state.responses.pop();
+  assert.deepEqual([answer.id, answer.ok], [unlocking.id, true]);
 });
 
 (async () => {
