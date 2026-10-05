@@ -27,6 +27,9 @@ import {
 import { HostOrganizationManager } from './pro/org/HostOrganizationManager';
 import { WorkspaceStore } from '../services/pro/workspace/WorkspaceStore';
 import { ProWorkspaceEditorPanel } from './ProWorkspaceEditorPanel';
+import { ProPhonePasskeyPanel } from './pro/passkey/ProPhonePasskeyPanel';
+import { ProAppRuntime } from '../services/pro/ProAppRuntime';
+import { DEBUG } from 'BuildProfile';
 
 /** Quick picks for the custom start/end color. */
 const PRO_BADGE_CUSTOM_SWATCHES: string[] = [
@@ -36,6 +39,7 @@ const PRO_BADGE_CUSTOM_SWATCHES: string[] = [
 
 const HOST_MANAGEMENT_FEATURE: string = 'pro.hostManagement';
 const WORKSPACES_FEATURE: string = 'pro.workspaces';
+const PHONE_PASSKEY_FEATURE: string = 'pro.security.phonePasskey';
 
 
 /** Settings sheet for one Pro feature: live status, scope, display switch and its own options. */
@@ -91,6 +95,14 @@ export struct ProFeatureDetailPanel {
   private status(_revision: number): ProFeatureStatus | null {
     const feature = this.feature(this.revision);
     return feature === undefined ? null : proFeatureCurrentStatus(feature);
+  }
+  /** The phone passkey prototype is a Debug experiment for an entitled account; Release never shows it. */
+  private phonePasskeyAvailable(_revision: number): boolean {
+    if (DEBUG) {
+      return ProAppRuntime.getInstance().runtime.decision(PHONE_PASSKEY_FEATURE,
+        ProAppRuntime.getInstance().context()).executable;
+    }
+    return false;
   }
   private toneColor(status: ProFeatureStatus | null): ResourceColor {
     if (status !== null && status.tone === 'ready') { return this.accent; }
@@ -378,6 +390,7 @@ export struct ProFeatureDetailPanel {
         if (this.featureId === PRO_CONTINUATION_FEATURE) { this.continuationOptions() }
         if (this.featureId === HOST_MANAGEMENT_FEATURE) { this.hostManagementOptions() }
         if (this.featureId === WORKSPACES_FEATURE) { this.workspaceOptions() }
+        if (this.featureId === PHONE_PASSKEY_FEATURE && this.phonePasskeyAvailable(this.revision)) { ProPhonePasskeyPanel() }
       } else {
         Text('此功能已不在目录中').fontSize(14).fontColor(this.pal().text2).fontFamily(AppConfig.fontFamily)
       }

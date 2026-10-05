@@ -69,6 +69,13 @@ function securityKeyRedirect(): ProFeature {
   feature.capabilities = ['SystemCapability.USB.USBManager'];
   return feature;
 }
+function phonePasskey(): ProFeature {
+  const feature = planned('pro.security.phonePasskey', '手机通行密钥',
+    '原型：用同一华为账号的手机作为通行密钥，确认后验证人脸、指纹或锁屏密码，完成其他设备上的注册和登录。', 23);
+  // Debug prototype only (experimental); Release keeps it closed.
+  feature.availability = 'experimental';
+  return feature;
+}
 function personalization(): ProFeature {
   const feature = planned(PRO_PERSONALIZATION_FEATURE, '个性化方案',
     '自定义组合键（命名、按键序列、系统键与小键盘）与 SSH 终端皮肤：字体、配色、功能键栏和顶栏成套切换，也可以自由搭配。');
@@ -154,7 +161,7 @@ export function proFeatures(): ProFeature[] {
     continuation(),
     proFeedback(),
     securityKeyRedirect(),
-    planned('pro.security.phonePasskey', '手机通行密钥', '探索使用华为手机完成远端支持的认证。')
+    phonePasskey()
   ];
 }
 /** Where each feature stands in development and device acceptance; shown on the Pro page. */
@@ -169,7 +176,7 @@ export function proFeatureProgress(id: string): string {
     case 'pro.ai.dsh': return '已开发（局域网连接） · 实机验收暂缓';
     case 'pro.ai.rustdeskTransport': return '规划中 · 等待 RustDesk 数据通道';
     case 'pro.security.webauthnRedirect': return '开发中 · RDP 安全密钥通道已接入调试版，待鸿蒙 PC、安全密钥与 Windows 验收';
-    case 'pro.security.phonePasskey': return '可行性研究中';
+    case 'pro.security.phonePasskey': return '原型 · 调试版可在同账号设备间测试注册与登录；RDP 接入待鸿蒙 PC 验收';
     case 'pro.personalization': return '已完成 · 实机验收通过（自定义组合键与 SSH 终端皮肤）';
     case 'pro.workspaces':
       return '已开发 · 试用开放 · 平板 SSH + RustDesk 实机通过；RustDesk + RDP 与 PC 窗口摆放待验收；手机默认关闭';
