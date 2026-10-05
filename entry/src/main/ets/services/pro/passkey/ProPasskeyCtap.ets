@@ -1,10 +1,13 @@
-import { base64UrlDecode, base64UrlEncode, PasskeyRequest, PasskeyResponse, PASSKEY_MAX_TTL_MS,
-  PASSKEY_PROTOCOL_VERSION, validRpId } from './ProPasskeyCodec';
+import { attestedCredential, base64UrlDecode, base64UrlEncode, bytesEqual, passkeyCleanText, PasskeyRequest,
+  PasskeyResponse, PASSKEY_FLAG_AT, PASSKEY_MAX_CREDENTIAL_IDS, PASSKEY_MAX_TTL_MS, PASSKEY_PROTOCOL_VERSION,
+  validRpId } from './ProPasskeyCodec';
 
 /**
  * The CTAP2 side of 手机通行密钥 in a remote session: a remote Windows MakeCredential/GetAssertion (CTAP command
  * byte + CBOR, as MS-RDPEWA carries it) becomes a passkey request for the paired phone, and the phone's answer
  * becomes the CTAP response (attestation "none"). Only the CBOR CTAP2 needs is supported: canonical, definite.
+ * Anything a canonical encoder would not produce (duplicate keys, long-form numbers, overlong UTF-8) is refused,
+ * so this reading can never differ from the native one that showed the confirmation.
  */
 
 export const CTAP_MAKE_CREDENTIAL: number = 0x01;
@@ -14,6 +17,7 @@ export const CTAP1_ERR_INVALID_PARAMETER: number = 0x02;
 export const CTAP2_ERR_CBOR_UNEXPECTED_TYPE: number = 0x11;
 export const CTAP2_ERR_INVALID_CBOR: number = 0x12;
 export const CTAP2_ERR_MISSING_PARAMETER: number = 0x14;
+export const CTAP2_ERR_LIMIT_EXCEEDED: number = 0x15;
 export const CTAP2_ERR_CREDENTIAL_EXCLUDED: number = 0x19;
 export const CTAP2_ERR_UNSUPPORTED_ALGORITHM: number = 0x26;
 export const CTAP2_ERR_OPERATION_DENIED: number = 0x27;
@@ -25,7 +29,6 @@ const COSE_ES256: number = -7;
 const MAX_DEPTH: number = 8;
 const MAX_ITEMS: number = 1024;
 const PHONE_CREDENTIAL_ID_BYTES: number = 16;
-const MAX_LISTED_CREDENTIALS: number = 16;
 
 /** One decoded CBOR data item. */
 export class CborItem {
@@ -77,7 +80,16 @@ class CborReader {
     let value = 0;
     for (let i = 0; i < size; i++) { value = value * 256 + this.byte(); }
     if (!Number.isSafeInteger(value)) { throw new Error('CBOR_UNSUPPORTED'); }
+    // Canonical CBOR uses the shortest form.
+    const smallest = size === 1 ? 24 : size === 2 ? 0x100 : size === 4 ? 0x10000 : 0x100000000;
+    if (value < smallest) { throw new Error('CBOR_NOT_CANONICAL'); }
     return value;
+  }
+
+  private same(a: number[], b: number[]): boolean {
+    if (a[1] - a[0] !== b[1] - b[0]) { return false; }
+    for (let i = 0; i < a[1] - a[0]; i++) { if (this.data[a[0] + i] !== this.data[b[0] + i]) { return false; } }
+    return true;
   }
 
   private take(length: number): Uint8Array {
@@ -109,8 +121,14 @@ class CborReader {
     }
     if (major === 5) {
       const item = new CborItem('map');
+      const spans: number[][] = [];
       for (let i = 0; i < argument; i++) {
+        const start = this.offset;
         item.keys.push(this.read(depth + 1));
+        const span: number[] = [start, this.offset];
+        // A repeated key would let two readers take different values.
+        if (spans.some((other: number[]): boolean => this.same(other, span))) { throw new Error('CBOR_DUPLICATE_KEY'); }
+        spans.push(span);
         item.values.push(this.read(depth + 1));
       }
       return item;
@@ -136,6 +154,9 @@ function utf8Text(bytes: Uint8Array): string {
       if ((bytes[i + k] & 0xc0) !== 0x80) { throw new Error('CBOR_TEXT_INVALID'); }
       code = (code << 6) | (bytes[i + k] & 0x3f);
     }
+    // Shortest form only, no surrogates, nothing beyond U+10FFFF (as the native reader requires).
+    const smallest = length === 1 ? 0 : length === 2 ? 0x80 : length === 3 ? 0x800 : 0x10000;
+    if (code < smallest || code > 0x10ffff || (code >= 0xd800 && code <= 0xdfff)) { throw new Error('CBOR_TEXT_INVALID'); }
     text += String.fromCodePoint(code);
     i += length;
   }
@@ -218,7 +239,7 @@ function refused(status: number): CtapCommand {
 
 function cleanName(value: CborItem | null): string {
   if (value === null || value.kind !== 'text') { return ''; }
-  return value.text.replace(/[\u0000-\u001f\u007f]/g, '').slice(0, 64);
+  return passkeyCleanText(value.text, 64);
 }
 
 function credentialIds(list: CborItem | null): Uint8Array[] | null {
@@ -258,7 +279,8 @@ export function parseCtapCommand(command: Uint8Array): CtapCommand {
     if (rpId === null || rpId.kind !== 'text' || userId === null || userId.kind !== 'bytes') {
       return refused(CTAP2_ERR_MISSING_PARAMETER);
     }
-    result.rpId = rpId.text.toLowerCase();
+    // Exactly as sent: validRpId accepts only lower-case DNS names, so nothing is folded into another name.
+    result.rpId = rpId.text;
     result.clientDataHash = hash.bytes;
     if (userId.bytes.length < 1 || userId.bytes.length > 64) { return refused(CTAP1_ERR_INVALID_PARAMETER); }
     result.user = { id: userId.bytes, name: cleanName(user.get('name')), displayName: cleanName(user.get('displayName')) };
@@ -273,21 +295,24 @@ export function parseCtapCommand(command: Uint8Array): CtapCommand {
     if (!es256) { return refused(CTAP2_ERR_UNSUPPORTED_ALGORITHM); }
     const excluded = credentialIds(map.get(5));
     if (excluded === null) { return refused(CTAP2_ERR_CBOR_UNEXPECTED_TYPE); }
-    result.credentialIds = excluded.filter((id: Uint8Array): boolean => id.length === PHONE_CREDENTIAL_ID_BYTES)
-      .slice(0, MAX_LISTED_CREDENTIALS);
+    const mine = excluded.filter((id: Uint8Array): boolean => id.length === PHONE_CREDENTIAL_ID_BYTES);
+    // An exclude list cut short could let the phone register a second credential for the account.
+    if (mine.length > PASSKEY_MAX_CREDENTIAL_IDS) { return refused(CTAP2_ERR_LIMIT_EXCEEDED); }
+    result.credentialIds = mine;
   } else {
     result.op = 'signin';
     const rpId = map.get(1);
     const hash = map.get(2);
     if (rpId === null || hash === null) { return refused(CTAP2_ERR_MISSING_PARAMETER); }
     if (rpId.kind !== 'text' || hash.kind !== 'bytes') { return refused(CTAP2_ERR_CBOR_UNEXPECTED_TYPE); }
-    result.rpId = rpId.text.toLowerCase();
+    result.rpId = rpId.text;
     result.clientDataHash = hash.bytes;
     const allowed = credentialIds(map.get(3));
     if (allowed === null) { return refused(CTAP2_ERR_CBOR_UNEXPECTED_TYPE); }
     const mine = allowed.filter((id: Uint8Array): boolean => id.length === PHONE_CREDENTIAL_ID_BYTES);
+    if (mine.length > PASSKEY_MAX_CREDENTIAL_IDS) { return refused(CTAP2_ERR_LIMIT_EXCEEDED); }
     result.foreignAllowList = allowed.length > 0 && mine.length === 0;
-    result.credentialIds = mine.slice(0, MAX_LISTED_CREDENTIALS);
+    result.credentialIds = mine;
   }
   if (result.clientDataHash.length !== 32 || !validRpId(result.rpId)) { return refused(CTAP1_ERR_INVALID_PARAMETER); }
   return result;
@@ -338,14 +363,21 @@ export function ctapResponseFromPasskey(op: string, response: PasskeyResponse | 
   if (!response.ok) { return ctapStatus(ctapStatusForPasskeyError(response.error)); }
   const authData = base64UrlDecode(response.authData);
   const credentialId = base64UrlDecode(response.credentialId);
-  if (authData === null || credentialId === null) { return ctapStatus(CTAP1_ERR_OTHER); }
+  if (authData === null || credentialId === null || authData.length < 37 || credentialId.length < 16) {
+    return ctapStatus(CTAP1_ERR_OTHER);
+  }
   if (op === 'register') {
+    // The new credential must be the one the authenticator data attests.
+    const attested = attestedCredential(authData);
+    if (attested === null || !bytesEqual(attested[0], credentialId)) { return ctapStatus(CTAP1_ERR_OTHER); }
     // fmt "none" with an empty attestation statement: the RP sees an unattested platform-style key.
     const body = cborMap([[cborUint(1), cborText('none')], [cborUint(2), cborBytes(authData)], [cborUint(3), cborMap([])]]);
     return new Uint8Array([CTAP2_OK].concat(body));
   }
   const signature = base64UrlDecode(response.signature);
-  if (signature === null || signature.length === 0) { return ctapStatus(CTAP1_ERR_OTHER); }
+  if (signature === null || signature.length === 0 || (authData[32] & PASSKEY_FLAG_AT) !== 0) {
+    return ctapStatus(CTAP1_ERR_OTHER);
+  }
   const entries: number[][][] = [
     [cborUint(1), cborMap([[cborText('id'), cborBytes(credentialId)], [cborText('type'), cborText('public-key')]])],
     [cborUint(2), cborBytes(authData)],

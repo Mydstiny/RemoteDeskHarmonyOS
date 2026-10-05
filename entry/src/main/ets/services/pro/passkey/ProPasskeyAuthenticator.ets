@@ -19,11 +19,15 @@ function errorCode(error: Object): string {
 /**
  * The phone side of the prototype: a device-bound software authenticator. Each passkey is one HUKS P-256 key;
  * registration and every sign-in are confirmed by the user first and then unlocked by face, fingerprint or PIN.
+ * `current` says whether the requester still waits: a passkey is never created or used for a request that ended
+ * (expired or withdrawn) while the user was deciding or unlocking.
  */
 export class ProPasskeyAuthenticator {
-  static async register(context: common.Context, owner: string, request: PasskeyRequest): Promise<PasskeyResponse> {
+  static async register(context: common.Context, owner: string, request: PasskeyRequest,
+    current: () => boolean = (): boolean => true): Promise<PasskeyResponse> {
     const user = request.user;
     if (request.op !== 'register' || user === null) { return failure(request, 'PASSKEY_REQUEST_INVALID'); }
+    if (!current()) { return failure(request, 'PASSKEY_EXPIRED'); }
     const existing = ProPasskeyStore.forRp(context, owner, request.rpId);
     if (existing.some((record: PasskeyRecord): boolean => request.credentialIds.indexOf(record.id) >= 0)) {
       return failure(request, 'PASSKEY_CREDENTIAL_EXCLUDED');
@@ -47,6 +51,8 @@ export class ProPasskeyAuthenticator {
       // User verification: the new key must be unlocked once, which also proves it works on this device.
       await ProPasskeyKeys.sign(alias, unlock, concatBytes([authData, clientDataHash]),
         '注册「' + request.rpId + '」的通行密钥');
+      // The site would never learn of a key created after its request ended; it would only shadow real ones.
+      if (!current()) { throw new Error('PASSKEY_EXPIRED'); }
       const now = Date.now();
       ProPasskeyStore.save(context, { owner, id: base64UrlEncode(credentialId), rpId: request.rpId,
         userId: user.id, userName: user.name, displayName: user.displayName, alias, unlock,
@@ -59,8 +65,10 @@ export class ProPasskeyAuthenticator {
     }
   }
 
-  static async signIn(context: common.Context, owner: string, request: PasskeyRequest): Promise<PasskeyResponse> {
+  static async signIn(context: common.Context, owner: string, request: PasskeyRequest,
+    current: () => boolean = (): boolean => true): Promise<PasskeyResponse> {
     if (request.op !== 'signin') { return failure(request, 'PASSKEY_REQUEST_INVALID'); }
+    if (!current()) { return failure(request, 'PASSKEY_EXPIRED'); }
     const candidates = ProPasskeyStore.forRp(context, owner, request.rpId).filter((record: PasskeyRecord): boolean =>
       request.credentialIds.length === 0 || request.credentialIds.indexOf(record.id) >= 0);
     if (candidates.length === 0) { return failure(request, 'PASSKEY_NO_CREDENTIALS'); }

@@ -5,8 +5,8 @@ import {
 } from './ProPasskeyCodec';
 import { sha256, utf8 } from './ProPasskeyKeys';
 
-interface ChannelFields { request: string; response: string; }
-interface ChannelObject extends distributedDataObject.DataObject { request: string; response: string; }
+interface ChannelFields { request: string; response: string; cancel: string; }
+interface ChannelObject extends distributedDataObject.DataObject { request: string; response: string; cancel: string; }
 
 const SYNC_PERMISSION: Permissions = 'ohos.permission.DISTRIBUTED_DATASYNC';
 const DATA_OBJECT_CAPABILITY: string = 'SystemCapability.DistributedDataManager.DataObject.DistributedObject';
@@ -20,7 +20,8 @@ export function passkeySessionId(owner: string): string {
 /**
  * Prototype transport between devices of the same Huawei account: the official distributed data object, which only
  * syncs inside the account's trusted device network. One request and one response at a time; a device that joins
- * late never answers the request already in the object, and requests carry a freshness window.
+ * late never answers the request already in the object, and requests carry a freshness window. A sender that gives
+ * up names the request in `cancel`, so the phone takes its dialog down.
  */
 export class ProPasskeyChannel {
   private static instance: ProPasskeyChannel = new ProPasskeyChannel();
@@ -31,7 +32,10 @@ export class ProPasskeyChannel {
   private change: ((session: string, fields: string[]) => void) | null = null;
   private generation: number = 0;
   private onRequest: ((request: PasskeyRequest) => void) | null = null;
+  private onWithdraw: ((id: string) => void) | null = null;
   private pending: Map<string, (response: PasskeyResponse | null) => void> = new Map();
+  /** A user let go of the channel while requests were still out: leave once the last one settles. */
+  private leaveWhenIdle: boolean = false;
   private sent: string[] = [];
   private seen: string[] = [];
 
@@ -52,11 +56,12 @@ export class ProPasskeyChannel {
 
   async join(context: common.Context, owner: string): Promise<boolean> {
     const session = passkeySessionId(owner);
+    this.leaveWhenIdle = false;
     if (this.object !== null && this.session === session) { return true; }
     this.leave();
     if (owner === '' || !ProPasskeyChannel.supported()) { return false; }
     const generation = this.generation;
-    const source: ChannelFields = { request: '', response: '' };
+    const source: ChannelFields = { request: '', response: '', cancel: '' };
     let object: ChannelObject;
     try { object = distributedDataObject.create(context, source) as ChannelObject; }
     catch (_error) { return false; }
@@ -84,7 +89,19 @@ export class ProPasskeyChannel {
     }
   }
 
+  /** Leaves now, or after the requests still out have settled; a receiver keeps the channel open. */
+  release(): void {
+    if (this.onRequest !== null) { return; }
+    if (this.pending.size > 0) { this.leaveWhenIdle = true; return; }
+    this.leave();
+  }
+
+  private settled(): void {
+    if (this.leaveWhenIdle && this.pending.size === 0 && this.onRequest === null) { this.leave(); }
+  }
+
   leave(): void {
+    this.leaveWhenIdle = false;
     this.generation++;
     const object = this.object;
     const change = this.change;
@@ -100,7 +117,11 @@ export class ProPasskeyChannel {
   }
 
   /** Receives requests from other devices while set; null stops answering. */
-  listen(onRequest: ((request: PasskeyRequest) => void) | null): void { this.onRequest = onRequest; }
+  listen(onRequest: ((request: PasskeyRequest) => void) | null, onWithdraw: ((id: string) => void) | null = null): void {
+    this.onRequest = onRequest;
+    this.onWithdraw = onRequest === null ? null : onWithdraw;
+    if (onRequest !== null) { this.leaveWhenIdle = false; }
+  }
 
   respond(response: PasskeyResponse): boolean {
     const object = this.object;
@@ -115,20 +136,37 @@ export class ProPasskeyChannel {
     this.remember(this.sent, request.id);
     return new Promise<PasskeyResponse | null>((resolve: (response: PasskeyResponse | null) => void): void => {
       const timer = setTimeout((): void => {
-        if (this.pending.delete(request.id)) { this.clearRequest(request.id); resolve(null); }
+        if (this.pending.delete(request.id)) { this.clearRequest(request.id); resolve(null); this.settled(); }
       }, request.ttlMs);
       this.pending.set(request.id, (response: PasskeyResponse | null): void => {
         clearTimeout(timer);
         this.clearRequest(request.id);
         resolve(response);
+        this.settled();
       });
       try { object.request = JSON.stringify(request); }
       catch (_error) {
         clearTimeout(timer);
         this.pending.delete(request.id);
         resolve(null);
+        this.settled();
       }
     });
+  }
+
+  /**
+   * The sender no longer wants an answer (its user cancelled, the remote request ended): the request settles with
+   * null at once and the other devices are told, so a dialog for it comes down.
+   */
+  withdraw(id: string): void {
+    const resolve = this.pending.get(id);
+    if (resolve === undefined) { return; }
+    this.pending.delete(id);
+    const object = this.object;
+    if (object !== null) {
+      try { object.cancel = id; } catch (_error) { /* the request still expires on the phone */ }
+    }
+    resolve(null);
   }
 
   private changed(object: ChannelObject, fields: string[]): void {
@@ -140,6 +178,11 @@ export class ProPasskeyChannel {
         this.remember(this.seen, request.id);
         listener(request);
       }
+    }
+    if (fields.length === 0 || fields.indexOf('cancel') >= 0) {
+      const id: string = typeof object.cancel === 'string' ? object.cancel : '';
+      const listener = this.onWithdraw;
+      if (id !== '' && listener !== null) { listener(id); }
     }
     if (fields.length === 0 || fields.indexOf('response') >= 0) {
       const text: string = typeof object.response === 'string' ? object.response : '';

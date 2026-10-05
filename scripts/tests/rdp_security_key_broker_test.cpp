@@ -393,11 +393,13 @@ void PhonePasskey() {
     CHECK(select.get() == Authenticator::Phone);
     std::string product;
     CHECK(broker->Authorized(product) == Authenticator::Phone && product == "Phone passkey");
-    // A CTAP command goes to ArkTS with the time the phone may take; the phone's CTAP response comes back as is.
+    // A CTAP command goes to ArkTS with the confirmed relying party and the time the phone may take; the phone's
+    // CTAP response comes back as is.
     const std::vector<uint8_t> command{0x02, 0xa1, 0x01, 0x6a, 'g', 'i', 't', 'h', 'u', 'b', '.', 'c', 'o', 'm'};
-    auto passkey = std::async(std::launch::async, [&] { return broker->Passkey(command); });
+    auto passkey = std::async(std::launch::async, [&] { return broker->Passkey(command, "github.com"); });
     CHECK(Next(51, request, Kind::Passkey));
     CHECK(request.payload == command);
+    CHECK(request.text == "github.com");
     CHECK(request.timeoutMs > 0 && request.timeoutMs <= kMaxPhoneRequestMs);
     Reply answer = Ok("ignored");
     answer.payload = {0x00, 0xa1, 0x01, 0x02};
@@ -405,24 +407,52 @@ void PhonePasskey() {
     const auto response = passkey.get();
     CHECK(response.has_value() && *response == std::vector<uint8_t>({0x00, 0xa1, 0x01, 0x02}));
     // An empty or oversized response is refused; a cancelled request comes back empty.
-    auto empty = std::async(std::launch::async, [&] { return broker->Passkey(command); });
+    auto empty = std::async(std::launch::async, [&] { return broker->Passkey(command, "github.com"); });
     CHECK(Next(51, request, Kind::Passkey));
     CHECK(Respond(51, request.id, Ok()));
     CHECK(!empty.get().has_value());
-    auto oversized = std::async(std::launch::async, [&] { return broker->Passkey(command); });
+    auto oversized = std::async(std::launch::async, [&] { return broker->Passkey(command, "github.com"); });
     CHECK(Next(51, request, Kind::Passkey));
     Reply big = Ok();
     big.payload.assign(kMaxPasskeyReplyBytes + 1, 0);
     CHECK(Respond(51, request.id, big));
     CHECK(!oversized.get().has_value());
-    auto cancelled = std::async(std::launch::async, [&] { return broker->Passkey(command); });
+    auto cancelled = std::async(std::launch::async, [&] { return broker->Passkey(command, "github.com"); });
     CHECK(Next(51, request, Kind::Passkey));
     const uint32_t shown = request.id;
     Cancel(51);
     CHECK(!cancelled.get().has_value());
     CHECK(Poll(51, request) && request.kind == Kind::Dismiss && request.id == shown);
-    CHECK(!broker->Passkey(std::vector<uint8_t>(1, 0x01)).has_value());
-    // Forgetting or closing a phone choice owes ArkTS no release.
+    // Too short or too long a command never reaches ArkTS; a relying party is shown escaped and bounded.
+    CHECK(broker->Begin(60000));
+    CHECK(!broker->Passkey(std::vector<uint8_t>(1, 0x01), "github.com").has_value());
+    CHECK(!broker->Passkey(std::vector<uint8_t>(kMaxPasskeyRequestBytes + 1, 0x01), "github.com").has_value());
+    CHECK(!Poll(51, request));
+    auto escaped = std::async(std::launch::async, [&] { return broker->Passkey(command, "evil\ncom"); });
+    CHECK(Next(51, request, Kind::Passkey));
+    CHECK(request.text == "evil?com");
+    CHECK(Respond(51, request.id, Reply{}));
+    CHECK(!escaped.get().has_value());
+    // Without a remote deadline the phone may take its own limit.
+    CHECK(broker->Begin(0));
+    auto unbounded = std::async(std::launch::async, [&] { return broker->Passkey(command, "github.com"); });
+    CHECK(Next(51, request, Kind::Passkey));
+    CHECK(request.timeoutMs == kMaxPhoneRequestMs);
+    CHECK(Respond(51, request.id, Reply{}));
+    CHECK(!unbounded.get().has_value());
+    // ArkTS released the phone (Released, as when it cannot answer): the session asks for an authenticator again.
+    Released(51);
+    CHECK(broker->Authorized(product) == Authenticator::None);
+    CHECK(!Poll(51, request));
+    // Forgetting a phone choice owes ArkTS no release.
+    CHECK(broker->Begin(60000));
+    auto again = std::async(std::launch::async, [&] {
+        std::string name;
+        return broker->Select(name);
+    });
+    CHECK(Next(51, request, Kind::Select));
+    CHECK(Respond(51, request.id, phone));
+    CHECK(again.get() == Authenticator::Phone);
     broker->Forget();
     CHECK(broker->Authorized(product) == Authenticator::None);
     CHECK(!Poll(51, request));
@@ -437,6 +467,17 @@ void PhonePasskey() {
     odd.authenticator = Authenticator::None;
     CHECK(Respond(51, request.id, odd));
     CHECK(unknown.get() == Authenticator::None);
+    // Closing a session whose phone was chosen owes ArkTS no release either.
+    CHECK(broker->Begin(60000));
+    auto last = std::async(std::launch::async, [&] {
+        std::string name;
+        return broker->Select(name);
+    });
+    CHECK(Next(51, request, Kind::Select));
+    CHECK(Respond(51, request.id, phone));
+    CHECK(last.get() == Authenticator::Phone);
+    Close(&context);
+    CHECK(!Poll(51, request));
     Unwatch(51);
     Detach(&context);
 }

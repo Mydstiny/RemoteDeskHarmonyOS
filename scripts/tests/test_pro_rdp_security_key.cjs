@@ -27,7 +27,7 @@ function fixture() {
   const state = { available: true, executable: true, watchId: 0, owner: 0, queue: [], responses: [], cancels: 0,
     released: 0, unwatches: [], wake: null, respondResult: true, subscribers: [], authorizations: [],
     keyReleases: [], authorize: null, transfers: [], exResponses: [], phoneAvailable: true, channelOk: true,
-    phoneRequests: [], phoneReply: null, phoneSend: null };
+    phoneRequests: [], phoneReply: null, phoneSend: null, withdrawn: [], channelGate: null, signGate: null };
   const napi = {
     rdpSecurityKeyAvailable: () => state.available,
     rdpSecurityKeyWatch(sessionId, wake) {
@@ -80,12 +80,24 @@ function fixture() {
       send(request) {
         state.phoneRequests.push(request);
         return new Promise((resolve) => { state.phoneSend = resolve; });
+      },
+      // Like the channel: a withdrawn request settles with null at once.
+      withdraw(id) {
+        state.withdrawn.push(id);
+        const pending = state.phoneSend; state.phoneSend = null;
+        if (pending !== null) pending(null);
       } }) } },
     './passkey/ProPasskeyDevice': { passkeyDeviceLabel: () => 'MateBook',
-      ProPasskeyDevice: { signRequest: async (request) => ({ ...request, device: 'D'.repeat(22), sig: 'S'.repeat(94) }) } },
+      ProPasskeyDevice: { signRequest: async (request) => {
+        if (state.signGate !== null) await state.signGate.promise;
+        return { ...request, device: 'D'.repeat(22), sig: 'S'.repeat(94) };
+      } } },
     './passkey/ProPasskeyKeys': { randomBytes: n => new Uint8Array(n).fill(9) },
     './passkey/ProPasskeyReceiver': { ProPasskeyReceiver: { available: () => state.phoneAvailable,
-      getInstance: () => ({ ensureChannel: async () => state.channelOk }) } }
+      getInstance: () => ({ ensureChannel: async () => {
+        if (state.channelGate !== null) await state.channelGate.promise;
+        return state.channelOk;
+      } }) } }
   };
   const file = path.resolve(root, 'entry/src/main/ets/services/pro/ProRdpSecurityKey.ets');
   const module = { exports: {} };
@@ -97,7 +109,7 @@ function fixture() {
   const prompts = [];
   const service = new module.exports.ProRdpSecurityKey((prompt) => { prompts.push(prompt); });
   const request = (fields) => Object.assign({ id: 0, kind: 0, text: '', operation: 0, retries: -1, timeoutMs: 0,
-    report: new Uint8Array(64) }, fields);
+    report: new Uint8Array(64), payload: new Uint8Array(0) }, fields);
   const deliver = (...items) => { state.queue.push(...items); state.wake(); };
   return { state, service, prompts, request, deliver, exports: module.exports, Session: ProUsbFidoKeySession,
     last: () => prompts[prompts.length - 1] };
@@ -273,14 +285,15 @@ test('the select prompt offers the paired phone, and choosing it answers with th
 test('a remote sign-in is signed, sent to the phone and its answer goes back as a CTAP response', async () => {
   const f = fixture(); f.state.watchId = 1; f.service.attachContext({}); f.service.start(7);
   const credential = new Uint8Array(16).fill(4);
-  f.deliver(f.request({ id: 80, kind: 9, timeoutMs: 45000, payload: ctapGetAssertion(credential) }));
+  f.deliver(f.request({ id: 80, kind: 9, text: 'github.com', timeoutMs: 45000, payload: ctapGetAssertion(credential) }));
   await settle();
   assert.deepEqual([f.last().kind, f.last().rpId, f.last().register], ['phone', 'github.com', false]);
   const sent = f.state.phoneRequests.pop();
   assert.deepEqual([sent.op, sent.rpId, sent.ttlMs, sent.from, sent.device.length], ['signin', 'github.com', 45000, 'MateBook', 22]);
   assert.deepEqual(Array.from(sent.credentialIds), [Buffer.from(credential).toString('base64url')]);
   const b64 = bytes => Buffer.from(bytes).toString('base64url');
-  f.state.phoneSend({ v: 2, id: sent.id, ok: true, error: '', credentialId: b64(credential), authData: b64(new Uint8Array(37)),
+  const authData = new Uint8Array(37); authData[32] = 0x05;
+  f.state.phoneSend({ v: 2, id: sent.id, ok: true, error: '', credentialId: b64(credential), authData: b64(authData),
     signature: b64(new Uint8Array(70).fill(3)), userHandle: '', publicKey: '' });
   await settle();
   const answer = f.state.exResponses.pop();
@@ -290,44 +303,152 @@ test('a remote sign-in is signed, sent to the phone and its answer goes back as 
 
 test('the phone path refuses at once when nothing can answer, and a timeout or cancel never answers late', async () => {
   const f = fixture(); f.state.watchId = 1; f.service.attachContext({}); f.service.start(7);
+  const ask = (id, extra = {}) => f.request({ id, kind: 9, text: 'github.com', timeoutMs: 45000, payload: ctapGetAssertion(null),
+    ...extra });
   // The server allows only another authenticator's credential: no round trip to the phone.
-  f.deliver(f.request({ id: 81, kind: 9, timeoutMs: 45000, payload: ctapGetAssertion(new Uint8Array(48)) }));
+  f.deliver(ask(81, { payload: ctapGetAssertion(new Uint8Array(48)) }));
   await settle();
   assert.deepEqual(f.state.exResponses.pop().payload, [0x2e]);
   assert.equal(f.state.phoneRequests.length, 0);
   // Malformed command bytes are refused with their CTAP status.
-  f.deliver(f.request({ id: 82, kind: 9, payload: new Uint8Array([2, 0xff]) }));
+  f.deliver(ask(82, { payload: new Uint8Array([2, 0xff]) }));
   await settle();
   assert.deepEqual(f.state.exResponses.pop().payload, [0x12]);
-  // No phone feature (or no context): denied.
+  // The command names another relying party than the one confirmed here: refused, nothing sent.
+  f.deliver(ask(87, { text: 'webauthn.io' }));
+  await settle();
+  assert.deepEqual(f.state.exResponses.pop().payload, [0x02]);
+  assert.equal(f.state.phoneRequests.length, 0);
+  // The user cancels while waiting: the broker hears a refusal, the phone's request is withdrawn, nothing late.
+  f.deliver(ask(86));
+  await settle();
+  const sent = f.state.phoneRequests.pop();
+  f.service.cancel();
+  assert.deepEqual(f.state.responses.pop(), { id: 86, ok: false, report: null, text: null });
+  assert.deepEqual(f.state.withdrawn, [sent.id]);
+  await settle();
+  assert.equal(f.state.exResponses.length, 0);
+  assert.equal(f.state.released, 0);
+});
+
+test('a phone that cannot answer is set aside and the key selection returns with the reason', async () => {
+  const f = fixture(); f.state.watchId = 1; f.service.attachContext({}); f.service.start(7);
+  const ask = (id) => f.request({ id, kind: 9, text: 'github.com', timeoutMs: 45000, payload: ctapGetAssertion(null) });
+  const setAside = (id) => {
+    assert.deepEqual(f.state.exResponses.pop(), { id, ok: false, payload: null, authenticator: 1 });
+    assert.equal(f.state.released, ++released);
+  };
+  let released = 0;
+  // No phone feature: set aside without a prompt.
   f.state.phoneAvailable = false;
-  f.deliver(f.request({ id: 83, kind: 9, payload: ctapGetAssertion(null) }));
+  f.deliver(ask(90));
   await settle();
-  assert.deepEqual(f.state.exResponses.pop().payload, [0x27]);
+  setAside(90);
   f.state.phoneAvailable = true;
-  // The channel cannot be joined: denied and the prompt comes down.
+  // The channel cannot be joined.
   f.state.channelOk = false;
-  f.deliver(f.request({ id: 84, kind: 9, payload: ctapGetAssertion(null) }));
+  f.deliver(ask(91));
   await settle();
-  assert.deepEqual(f.state.exResponses.pop().payload, [0x27]);
+  setAside(91);
   assert.equal(f.last(), null);
   f.state.channelOk = true;
-  // No answer within the phone's time: the CTAP timeout status.
-  f.deliver(f.request({ id: 85, kind: 9, payload: ctapGetAssertion(null) }));
+  // No answer within the phone's time.
+  f.deliver(ask(92));
   await settle();
   f.state.phoneSend(null);
   await settle();
-  assert.deepEqual(f.state.exResponses.pop().payload, [0x2f]);
-  // The user cancels while waiting: the broker hears a refusal, and the phone's late answer is dropped.
-  f.deliver(f.request({ id: 86, kind: 9, payload: ctapGetAssertion(null) }));
+  setAside(92);
+  // The phone does not know this device; the next selection says why.
+  f.deliver(ask(93));
   await settle();
-  f.service.cancel();
-  assert.deepEqual(f.state.responses.pop(), { id: 86, ok: false, report: null, text: null });
-  f.state.phoneSend({ v: 2, id: 'late', ok: false, error: 'PASSKEY_USER_DENIED', credentialId: '', authData: '', signature: '',
-    userHandle: '', publicKey: '' });
+  const sent = f.state.phoneRequests.pop();
+  f.state.phoneSend({ v: 2, id: sent.id, ok: false, error: 'PASSKEY_DEVICE_NOT_PAIRED', credentialId: '', authData: '',
+    signature: '', userHandle: '', publicKey: '' });
+  await settle();
+  setAside(93);
+  f.deliver(f.request({ id: 94, kind: 2 }));
+  assert.equal(f.last().kind, 'select');
+  assert.match(f.last().error, /配对/);
+  f.deliver(f.request({ id: 95, kind: 2 }));
+  assert.equal(f.last().error, '');
+  // A refusal on the phone is the user's answer: the phone stays chosen.
+  f.deliver(ask(96));
+  await settle();
+  const declined = f.state.phoneRequests.pop();
+  f.state.phoneSend({ v: 2, id: declined.id, ok: false, error: 'PASSKEY_USER_DENIED', credentialId: '', authData: '',
+    signature: '', userHandle: '', publicKey: '' });
+  await settle();
+  assert.deepEqual(f.state.exResponses.pop(), { id: 96, ok: true, payload: [0x27], authenticator: 1 });
+  assert.equal(f.state.released, released);
+});
+
+test('choosing a USB key while the phone is asked withdraws the phone request and returns to selection', async () => {
+  const f = fixture(); f.state.watchId = 1; f.service.attachContext({}); f.service.start(7);
+  f.deliver(f.request({ id: 100, kind: 9, text: 'github.com', payload: ctapGetAssertion(null) }));
+  await settle();
+  const sent = f.state.phoneRequests.pop();
+  f.service.useSecurityKey(99);
+  assert.equal(f.state.withdrawn.length, 0);
+  f.service.useSecurityKey(100);
+  assert.deepEqual(f.state.withdrawn, [sent.id]);
+  assert.deepEqual(f.state.exResponses.pop(), { id: 100, ok: false, payload: null, authenticator: 1 });
+  assert.equal(f.state.released, 1);
+  assert.equal(f.last(), null);
   await settle();
   assert.equal(f.state.exResponses.length, 0);
 });
+
+test('a request that ends while the channel is joined or the request is signed never reaches the phone', async () => {
+  for (const [stage, end] of [['join', 'cancel'], ['join', 'dismiss'], ['join', 'stop'], ['sign', 'cancel'],
+    ['sign', 'dismiss'], ['sign', 'stop']]) {
+    const f = fixture(); f.state.watchId = 1; f.service.attachContext({}); f.service.start(7);
+    const blocker = gate();
+    if (stage === 'join') f.state.channelGate = blocker; else f.state.signGate = blocker;
+    f.deliver(f.request({ id: 110, kind: 9, text: 'github.com', payload: ctapGetAssertion(null) }));
+    await settle();
+    assert.equal(f.last().kind, 'phone');
+    if (end === 'cancel') f.service.cancel();
+    else if (end === 'dismiss') f.deliver(f.request({ id: 110, kind: 8 }));
+    else f.service.stop();
+    blocker.open();
+    await settle();
+    assert.equal(f.state.phoneRequests.length, 0, stage + '/' + end);
+    assert.equal(f.state.exResponses.length, 0, stage + '/' + end);
+  }
+});
+
+test('a dismissal or a stop while the phone is asked withdraws the request', async () => {
+  for (const end of ['dismiss', 'stop']) {
+    const f = fixture(); f.state.watchId = 1; f.service.attachContext({}); f.service.start(7);
+    f.deliver(f.request({ id: 120, kind: 9, text: 'github.com', payload: ctapGetAssertion(null) }));
+    await settle();
+    const sent = f.state.phoneRequests.pop();
+    if (end === 'dismiss') f.deliver(f.request({ id: 120, kind: 8 })); else f.service.stop();
+    assert.deepEqual(f.state.withdrawn, [sent.id], end);
+    await settle();
+    assert.equal(f.state.exResponses.length, 0, end);
+  }
+});
+
+test('choosing the phone lets go of a USB key held from before', async () => {
+  const f = fixture(); f.state.watchId = 1; f.service.start(7);
+  f.deliver(f.request({ id: 130, kind: 2 }));
+  const choosing = f.service.chooseKey(130, 'k1');
+  f.state.authorize.resolve(new f.Session('YubiKey 5'));
+  await choosing;
+  assert.equal(f.state.released, 1);
+  f.deliver(f.request({ id: 131, kind: 2 }));
+  f.service.choosePhone(131);
+  assert.deepEqual(f.state.keyReleases, ['YubiKey 5']);
+  assert.equal(f.state.released, 2);
+  assert.deepEqual(f.state.exResponses.pop(), { id: 131, ok: true, payload: null, authenticator: 2 });
+});
+
+function gate() {
+  let open;
+  const promise = new Promise((resolve) => { open = resolve; });
+  return { promise, open };
+}
 
 (async () => {
   let failed = 0;

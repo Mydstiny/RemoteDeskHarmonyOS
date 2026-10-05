@@ -4,7 +4,7 @@ import rdpnapi, { RdpSecurityKeyRequest } from 'librdpnapi.so';
 import { ProAccessContext } from './ProAccessPolicy';
 import { ProAppRuntime } from './ProAppRuntime';
 import { ProUsbFidoKeyCandidate, ProUsbFidoKeys, ProUsbFidoKeySession } from './ProUsbFidoKey';
-import { CTAP2_ERR_NO_CREDENTIALS, CTAP2_ERR_OPERATION_DENIED, ctapResponseFromPasskey, ctapStatus, parseCtapCommand,
+import { CTAP1_ERR_INVALID_PARAMETER, CTAP2_ERR_NO_CREDENTIALS, ctapResponseFromPasskey, ctapStatus, parseCtapCommand,
   passkeyRequestFromCtap } from './passkey/ProPasskeyCtap';
 import { ProPasskeyChannel } from './passkey/ProPasskeyChannel';
 import { passkeyDeviceLabel, ProPasskeyDevice } from './passkey/ProPasskeyDevice';
@@ -104,6 +104,10 @@ export class ProRdpSecurityKey {
   private stopRuntime: (() => void) | null = null;
   /** For the phone path: the cross-device permission is requested from this context. */
   private context: common.UIAbilityContext | null = null;
+  /** The phone request this session waits for ('' when none); withdrawn when the wait ends here first. */
+  private phoneRequestId: string = '';
+  /** Why the phone was set aside; shown with the next key selection. */
+  private selectNotice: string = '';
 
   constructor(onPrompt: (prompt: RdpSecurityKeyPrompt | null) => void) { this.onPrompt = onPrompt; }
 
@@ -143,14 +147,17 @@ export class ProRdpSecurityKey {
       if (owner) { try { rdpnapi.rdpSecurityKeyCancel(sessionId); } catch (_error) {} }
     }
     this.releaseKey(owner);
+    this.withdrawPhone();
     this.sessionId = 0;
     this.watchId = 0;
+    this.selectNotice = '';
     this.show(null);
   }
 
   /** The user dismissed the prompt or cancelled while the key was waiting for a touch. */
   cancel(): void {
     const current = this.prompt;
+    if (current !== null && current.kind === 'phone') { this.withdrawPhone(); }
     if (current !== null && current.kind !== 'touch') { this.respond(current.requestId, false, null, null); }
     if (!this.stopped && this.sessionId > 0) {
       try { rdpnapi.rdpSecurityKeyCancel(this.sessionId); } catch (_error) {}
@@ -177,15 +184,25 @@ export class ProRdpSecurityKey {
     if (current === null || current.kind !== 'select' || current.requestId !== requestId || current.busy ||
         !current.phone || this.stopped || this.sessionId <= 0) { return; }
     this.releaseKey(true);
+    this.selectNotice = '';
     try { rdpnapi.rdpSecurityKeyRespondEx(this.sessionId, requestId, true, null, AUTHENTICATOR_PHONE); }
     catch (_error) { /* the request already ended; its dismissal follows */ }
     this.show(null);
   }
 
+  /** While the phone is asked: use a USB key instead. The phone's request is withdrawn and the selection returns. */
+  useSecurityKey(requestId: number): void {
+    const current = this.prompt;
+    if (current === null || current.kind !== 'phone' || current.requestId !== requestId || this.stopped ||
+        this.sessionId <= 0) { return; }
+    this.withdrawPhone();
+    this.dropPhone(this.sessionId, requestId, '');
+  }
+
   refreshKeys(): void {
     const current = this.prompt;
     if (current === null || current.kind !== 'select' || current.busy) { return; }
-    this.show(this.selectPrompt(current.requestId, ''));
+    this.show(this.selectPrompt(current.requestId, current.error));
   }
 
   async chooseKey(requestId: number, candidateKey: string): Promise<void> {
@@ -237,7 +254,8 @@ export class ProRdpSecurityKey {
         return;
       case KIND_SELECT:
         if (!ProRdpSecurityKey.available()) { this.respond(request.id, false, null, null); return; }
-        this.show(this.selectPrompt(request.id, ''));
+        this.show(this.selectPrompt(request.id, this.selectNotice));
+        this.selectNotice = '';
         return;
       case KIND_PIN:
         if (!ProRdpSecurityKey.available()) { this.respond(request.id, false, null, null); return; }
@@ -265,6 +283,7 @@ export class ProRdpSecurityKey {
       case KIND_DISMISS:
         // The broker gave up on this prompt (timeout, server cancel, disconnect): an answer would be ignored.
         if (this.prompt !== null && this.prompt.kind !== 'touch' && this.prompt.requestId === request.id) {
+          if (this.prompt.kind === 'phone') { this.withdrawPhone(); }
           this.show(null);
         }
         return;
@@ -294,6 +313,11 @@ export class ProRdpSecurityKey {
     const id = request.id;
     const command = parseCtapCommand(request.payload);
     if (command.status !== 0) { this.respondPasskey(sessionId, id, ctapStatus(command.status)); return; }
+    // The phone signs only for the relying party the user confirmed here (the native reading of the same command).
+    if (command.rpId !== request.text) {
+      this.respondPasskey(sessionId, id, ctapStatus(CTAP1_ERR_INVALID_PARAMETER));
+      return;
+    }
     if (command.foreignAllowList) {
       // The server only accepts credentials the phone never issued.
       this.respondPasskey(sessionId, id, ctapStatus(CTAP2_ERR_NO_CREDENTIALS));
@@ -301,32 +325,59 @@ export class ProRdpSecurityKey {
     }
     const context = this.context;
     if (context === null || !ProPasskeyReceiver.available()) {
-      this.respondPasskey(sessionId, id, ctapStatus(CTAP2_ERR_OPERATION_DENIED));
+      this.dropPhone(sessionId, id, '手机通行密钥当前不可用，请改用 USB 安全密钥');
       return;
     }
     this.show({ kind: 'phone', requestId: id, rpId: command.rpId, register: command.op === 'register', retries: -1,
       candidates: [], busy: false, error: '', phone: true });
+    // Every await may outlive the request: the user cancelled, the remote request ended or the page stopped.
     const current = (): boolean => !this.stopped && this.sessionId === sessionId && this.prompt !== null &&
       this.prompt.kind === 'phone' && this.prompt.requestId === id;
     try {
       if (!(await ProPasskeyReceiver.getInstance().ensureChannel(context))) {
-        if (current()) {
-          this.respondPasskey(sessionId, id, ctapStatus(CTAP2_ERR_OPERATION_DENIED));
-          this.show(null);
-        }
+        if (current()) { this.dropPhone(sessionId, id, '无法连接同账号设备：请确认手机登录同一华为账号并已联网'); }
         return;
       }
+      if (!current()) { return; }
       const phoneRequest = await ProPasskeyDevice.signRequest(passkeyRequestFromCtap(command, randomBytes(16),
         passkeyDeviceLabel(), Date.now(), request.timeoutMs));
-      const response = await ProPasskeyChannel.getInstance().send(phoneRequest);
       if (!current()) { return; }
+      this.phoneRequestId = phoneRequest.id;
+      const response = await ProPasskeyChannel.getInstance().send(phoneRequest);
+      if (this.phoneRequestId === phoneRequest.id) { this.phoneRequestId = ''; }
+      if (!current()) { return; }
+      const problem = response === null ? '手机没有回应：请确认手机已打开 RemoteDesk 并开启「接收登录请求」' :
+        response.ok ? '' :
+        response.error === 'PASSKEY_DEVICE_NOT_PAIRED' || response.error === 'PASSKEY_SIGNATURE_INVALID' ?
+          '手机还没有与这台设备配对：请在 设置 → Pro 功能 → 手机通行密钥 中配对' :
+        response.error === 'PASSKEY_BUSY' ? '手机正在处理另一个请求，请稍后重试' : '';
+      if (problem !== '') { this.dropPhone(sessionId, id, problem); return; }
       this.respondPasskey(sessionId, id, ctapResponseFromPasskey(command.op, response));
       this.show(null);
     } catch (_error) {
-      if (current()) {
-        this.respondPasskey(sessionId, id, ctapStatus(CTAP2_ERR_OPERATION_DENIED));
-        this.show(null);
-      }
+      if (current()) { this.dropPhone(sessionId, id, '手机通行密钥出错，请重试或改用 USB 安全密钥'); }
+    }
+  }
+
+  /**
+   * The phone cannot answer for this session (unavailable, unreachable, unpaired, busy) or the user wants a USB key:
+   * the phone stops being the session's choice and the request goes back to key selection, which the native side
+   * shows again while the remote request lasts.
+   */
+  private dropPhone(sessionId: number, requestId: number, notice: string): void {
+    if (this.stopped || this.sessionId !== sessionId || requestId <= 0) { return; }
+    this.selectNotice = notice;
+    try { rdpnapi.rdpSecurityKeyReleased(sessionId); } catch (_error) {}
+    try { rdpnapi.rdpSecurityKeyRespondEx(sessionId, requestId, false, null, PASSKEY_RESPONSE); } catch (_error) {}
+    if (this.prompt !== null && this.prompt.requestId === requestId) { this.show(null); }
+  }
+
+  /** The wait for the phone ended here first: the phone is told, so its dialog comes down. */
+  private withdrawPhone(): void {
+    const id = this.phoneRequestId;
+    this.phoneRequestId = '';
+    if (id !== '') {
+      try { ProPasskeyChannel.getInstance().withdraw(id); } catch (_error) { /* the request still expires */ }
     }
   }
 

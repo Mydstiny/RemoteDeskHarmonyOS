@@ -18,6 +18,8 @@ export struct RdpSecurityKeyPromptView {
   onChoose: (requestId: number, key: string) => void = (_requestId: number, _key: string): void => {};
   onRefresh: () => void = (): void => {};
   onPhone: (requestId: number) => void = (_requestId: number): void => {};
+  /** While the phone is asked: switch this request to a USB security key. */
+  onUseKey: (requestId: number) => void = (_requestId: number): void => {};
   onPin: (requestId: number, pin: string) => void = (_requestId: number, _pin: string): void => {};
   onCancel: () => void = (): void => {};
 
@@ -152,8 +154,9 @@ export struct RdpSecurityKeyPromptView {
         '请求发到已配对的手机。请在手机上允许，并验证人脸、指纹或锁屏密码。')
         .fontSize(14).fontColor(this.pal().text).lineHeight(21).width('100%')
       Text('手机需要打开 RemoteDesk 并开启“接收登录请求”。').fontSize(12).fontColor(this.pal().text3).width('100%')
-      Row() {
+      Row({ space: 10 }) {
         this.button('取消', false, true, (): void => { this.onCancel(); })
+        this.button('改用 USB 安全密钥', false, true, (): void => { this.onUseKey(this.prompt.requestId); })
       }.width('100%').margin({ top: 6 })
     } else {
       Text('安全密钥闪烁时轻触它，完成远程电脑上的验证。')

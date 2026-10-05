@@ -3,7 +3,7 @@ import { AppConfig, Palette, buildDark, buildLight } from '../../../common/Theme
 import { AccountSessionCoordinator } from '../../../services/AccountSessionCoordinator';
 import {
   attestedCredential, base64UrlDecode, base64UrlEncode, bytesEqual, concatBytes, coseEc2PublicKey, p256PointFromSpki,
-  PasskeyRequest, PASSKEY_FLAG_AT, PASSKEY_FLAG_UP, PASSKEY_FLAG_UV, PASSKEY_PROTOCOL_VERSION
+  passkeyCleanText, PasskeyRequest, PASSKEY_FLAG_AT, PASSKEY_FLAG_UP, PASSKEY_FLAG_UV, PASSKEY_PROTOCOL_VERSION
 } from '../../../services/pro/passkey/ProPasskeyCodec';
 import { ProPasskeyAuthenticator } from '../../../services/pro/passkey/ProPasskeyAuthenticator';
 import { ProPasskeyChannel } from '../../../services/pro/passkey/ProPasskeyChannel';
@@ -293,7 +293,7 @@ export struct ProPhonePasskeyPanel {
     ForEach(this.peers, (peer: PasskeyPeer): void => {
       Row({ space: 10 }) {
         Column({ space: 2 }) {
-          Text(peer.name).fontSize(14).fontColor(this.pal().text).fontFamily(AppConfig.fontFamily)
+          Text(passkeyCleanText(peer.name, 40)).fontSize(14).fontColor(this.pal().text).fontFamily(AppConfig.fontFamily)
           Text('配对于 ' + formatDate(peer.pairedAt) + (peer.lastUsedAt > peer.pairedAt ? ' · 最近使用 ' +
             formatDate(peer.lastUsedAt) : '')).fontSize(11).fontColor(this.pal().text3).fontFamily(AppConfig.fontFamily)
         }.layoutWeight(1).alignItems(HorizontalAlign.Start)

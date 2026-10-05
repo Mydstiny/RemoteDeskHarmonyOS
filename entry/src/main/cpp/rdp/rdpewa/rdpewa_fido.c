@@ -196,17 +196,21 @@ static wStream* rdpewa_fido_cancelled_response(const RDPEWA_DEVICE_INFO* devInfo
 #define REMOTEDESK_CTAP2_ERR_OPERATION_DENIED 0x27
 
 /**
- * Answers one MakeCredential/GetAssertion with the paired phone. The phone builds the whole CTAP response
- * (attestation "none" for registrations); a decline or timeout is reported to the server as a cancellation.
+ * Answers one MakeCredential/GetAssertion with the paired phone, for the relying party the user confirmed. The
+ * phone builds the whole CTAP response (attestation "none" for registrations); a decline or timeout is reported to
+ * the server as a cancellation. When the phone was set aside for this session and reselect is given, it returns
+ * NULL with *reselect set: the caller lets the user choose an authenticator again.
  */
-static wStream* rdpewa_fido_phone(rdpContext* context, BYTE subCommand, const BYTE* ctapData, size_t ctapLen)
+static wStream* rdpewa_fido_phone(rdpContext* context, BYTE subCommand, const BYTE* ctapData, size_t ctapLen,
+                                  const char* rpId, BOOL* reselect)
 {
+	/* Like a key whose user verification works: the phone always verifies the user before it signs. */
 	RDPEWA_DEVICE_INFO devInfo = { .maxMsgSize = 1200,
 		                           .maxSerializedLargeBlobArray = 0,
 		                           .providerType = "Hid",
 		                           .providerName = "RemoteDeskPhonePasskey",
 		                           .uvStatus = 1,
-		                           .uvRetries = 0,
+		                           .uvRetries = 3,
 		                           .transports = 1 };
 	strncpy(devInfo.devicePath, "remotedesk-phone", sizeof(devInfo.devicePath) - 1);
 	strncpy(devInfo.product, "Phone passkey", sizeof(devInfo.product) - 1);
@@ -219,11 +223,18 @@ static wStream* rdpewa_fido_phone(rdpContext* context, BYTE subCommand, const BY
 		memcpy(command + 1, ctapData, ctapLen);
 	BYTE* reply = nullptr;
 	size_t replyLen = 0;
-	const BOOL answered = remotedesk_rdpewa_passkey(context, command, ctapLen + 1, &reply, &replyLen);
+	BOOL again = FALSE;
+	const BOOL answered =
+	    remotedesk_rdpewa_passkey(context, command, ctapLen + 1, rpId, &reply, &replyLen, reselect ? &again : nullptr);
 	free(command);
 	if (!answered || replyLen < 1)
 	{
 		free(reply);
+		if (reselect && again)
+		{
+			*reselect = TRUE;
+			return nullptr;
+		}
 		return rdpewa_fido_cancelled_response(&devInfo);
 	}
 
@@ -491,8 +502,19 @@ static wStream* rdpewa_fido_make_credential(rdpContext* context, const BYTE* cta
 	dev = rdpewa_fido_open_device(context, TRUE, &devInfo, &kind);
 	if (kind == REMOTEDESK_RDPEWA_PHONE)
 	{
-		ret = rdpewa_fido_phone(context, CTAPCBOR_CMD_MAKE_CREDENTIAL, ctapData, ctapLen);
-		goto out;
+		BOOL reselect = FALSE;
+		ret = rdpewa_fido_phone(context, CTAPCBOR_CMD_MAKE_CREDENTIAL, ctapData, ctapLen, fido_cred_rp_id(cred),
+		                        &reselect);
+		if (!reselect)
+			goto out;
+		/* The phone was set aside for this session: the user chooses again (once). */
+		dev = rdpewa_fido_open_device(context, TRUE, &devInfo, &kind);
+		if (kind == REMOTEDESK_RDPEWA_PHONE)
+		{
+			ret = rdpewa_fido_phone(context, CTAPCBOR_CMD_MAKE_CREDENTIAL, ctapData, ctapLen, fido_cred_rp_id(cred),
+			                        nullptr);
+			goto out;
+		}
 	}
 	if (!dev)
 	{
@@ -773,8 +795,19 @@ static wStream* rdpewa_fido_get_assertion(rdpContext* context, const BYTE* ctapD
 	dev = rdpewa_fido_open_device(context, TRUE, &devInfo, &kind);
 	if (kind == REMOTEDESK_RDPEWA_PHONE)
 	{
-		ret = rdpewa_fido_phone(context, CTAPCBOR_CMD_GET_ASSERTION, ctapData, ctapLen);
-		goto out;
+		BOOL reselect = FALSE;
+		ret = rdpewa_fido_phone(context, CTAPCBOR_CMD_GET_ASSERTION, ctapData, ctapLen, fido_assert_rp_id(assert),
+		                        &reselect);
+		if (!reselect)
+			goto out;
+		/* The phone was set aside for this session: the user chooses again (once). */
+		dev = rdpewa_fido_open_device(context, TRUE, &devInfo, &kind);
+		if (kind == REMOTEDESK_RDPEWA_PHONE)
+		{
+			ret = rdpewa_fido_phone(context, CTAPCBOR_CMD_GET_ASSERTION, ctapData, ctapLen, fido_assert_rp_id(assert),
+			                        nullptr);
+			goto out;
+		}
 	}
 	if (!dev)
 	{

@@ -162,6 +162,12 @@ def main():
                             raise AssertionError("Duplicate phone passkey gate")
                         method = "phonePasskeyAvailable"
                         methods[method] = []
+                    # The only way into the 手机通行密钥 settings panel.
+                    if args.fido_library and "components.ProFeatureManagerPanel&." in line and "#phonePasskeyAvailable(" in line:
+                        if "phonePasskeyPanelAvailable" in methods:
+                            raise AssertionError("Duplicate phone passkey panel gate")
+                        method = "phonePasskeyPanelAvailable"
+                        methods[method] = []
                     for name in ("setDebugMode", "snapshot", "decision"):
                         if "services.pro.ProRuntime&." in line and f"#{name}(" in line:
                             if name in methods:
@@ -176,7 +182,8 @@ def main():
         if args.usb_probe:
             expected.add("usbDebugAllowed")
         if args.fido_library:
-            expected.update(("usbLibraryAvailable", "rdpSecurityKeyAvailable", "phonePasskeyAvailable"))
+            expected.update(("usbLibraryAvailable", "rdpSecurityKeyAvailable", "phonePasskeyAvailable",
+                             "phonePasskeyPanelAvailable"))
         if args.sandbox_purchase:
             expected.update(("setSandbox", "sandboxSelected", "proBackendConfiguration", "productionFactory", "productionMain"))
         if set(methods) != expected:
@@ -196,7 +203,8 @@ def main():
         if '"entitlementIds"' not in decision or '"proFeatureAccess"' not in decision:
             raise AssertionError("Real entitlement policy call is missing")
         for gate in (["usbDebugAllowed"] if args.usb_probe else []) + \
-                (["usbLibraryAvailable", "rdpSecurityKeyAvailable", "phonePasskeyAvailable"] if args.fido_library else []):
+                (["usbLibraryAvailable", "rdpSecurityKeyAvailable", "phonePasskeyAvailable",
+                  "phonePasskeyPanelAvailable"] if args.fido_library else []):
             body = methods[gate]
             if "ldfalse" not in body or "return" not in body:
                 raise AssertionError("Release USB probe gate does not return false")

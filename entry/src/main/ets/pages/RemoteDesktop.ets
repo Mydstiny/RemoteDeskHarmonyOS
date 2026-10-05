@@ -24649,6 +24649,7 @@ struct RemoteDesktop {
           onChoose: (requestId: number, key: string): void => { this.rdpSecurityKey?.chooseKey(requestId, key); },
           onRefresh: (): void => { this.rdpSecurityKey?.refreshKeys(); },
           onPhone: (requestId: number): void => { this.rdpSecurityKey?.choosePhone(requestId); },
+          onUseKey: (requestId: number): void => { this.rdpSecurityKey?.useSecurityKey(requestId); },
           onPin: (requestId: number, pin: string): void => { this.rdpSecurityKey?.answerPin(requestId, pin); },
           onCancel: (): void => { this.rdpSecurityKey?.cancel(); }
         })

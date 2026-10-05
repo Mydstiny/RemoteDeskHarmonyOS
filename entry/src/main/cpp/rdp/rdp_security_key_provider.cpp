@@ -176,15 +176,25 @@ fido_dev_t* remotedesk_rdpewa_open(rdpContext* context, BOOL interactive, char* 
     return nullptr;
 }
 
-BOOL remotedesk_rdpewa_passkey(rdpContext* context, const BYTE* command, size_t commandLen, BYTE** response,
-                               size_t* responseLen) {
+BOOL remotedesk_rdpewa_passkey(rdpContext* context, const BYTE* command, size_t commandLen, const char* rpId,
+                               BYTE** response, size_t* responseLen, BOOL* reselect) {
+    if (reselect != nullptr) *reselect = FALSE;
     if (response == nullptr || responseLen == nullptr) return FALSE;
     *response = nullptr;
     *responseLen = 0;
     const auto broker = RdpSecurityKey::ForContext(context);
     if (!broker || command == nullptr) return FALSE;
-    const auto reply = broker->Passkey(std::vector<uint8_t>(command, command + commandLen));
-    if (!reply || reply->empty()) return FALSE;
+    const auto reply = broker->Passkey(std::vector<uint8_t>(command, command + commandLen), rpId != nullptr ? rpId : "");
+    if (!reply || reply->empty()) {
+        // ArkTS set the phone aside (unreachable, unpaired, or the user chose a USB key): while the request lasts,
+        // the user may choose again.
+        std::string name;
+        if (reselect != nullptr && broker->Authorized(name) == RdpSecurityKey::Authenticator::None &&
+            !broker->Cancelled() && !broker->Closed()) {
+            *reselect = TRUE;
+        }
+        return FALSE;
+    }
     auto* copy = static_cast<BYTE*>(std::malloc(reply->size()));
     if (copy == nullptr) return FALSE;
     std::memcpy(copy, reply->data(), reply->size());

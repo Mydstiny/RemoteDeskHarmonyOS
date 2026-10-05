@@ -7,6 +7,8 @@ export const PASSKEY_FLAG_AT: number = 0x40;
 /** v2: requests name the sending device and are signed by its device key; 'pair' introduces a device. */
 export const PASSKEY_PROTOCOL_VERSION: number = 2;
 export const PASSKEY_MAX_TTL_MS: number = 120000;
+/** Exclude/allow list entries a request may carry; servers list each credential of the account. */
+export const PASSKEY_MAX_CREDENTIAL_IDS: number = 64;
 /** Device-bound software authenticator without attestation: the all-zero AAGUID. */
 export const PASSKEY_AAGUID: Uint8Array = new Uint8Array(16);
 
@@ -140,8 +142,25 @@ export interface PasskeyResponse {
   publicKey: string;     // SPKI DER of the credential key (register)
 }
 
+/**
+ * Characters that change how a dialog reads without being visible: controls (C0, DEL, C1), bidirectional
+ * embeddings, overrides and isolates, zero-width characters, line and paragraph separators, BOM.
+ */
+const PASSKEY_UNSAFE_TEXT: RegExp =
+  /[\u0000-\u001f\u007f-\u009f\u00ad\u061c\u180e\u200b-\u200f\u2028-\u202e\u2060-\u206f\ufeff\ufff9-\ufffb]/;
+const PASSKEY_UNSAFE_TEXT_ALL: RegExp =
+  /[\u0000-\u001f\u007f-\u009f\u00ad\u061c\u180e\u200b-\u200f\u2028-\u202e\u2060-\u206f\ufeff\ufff9-\ufffb]/g;
+
+/** Text a confirmation dialog may show as is: no invisible or reordering characters. */
+export function passkeySafeText(text: string): boolean { return !PASSKEY_UNSAFE_TEXT.test(text); }
+
+/** Removes invisible and reordering characters and bounds the length, for names shown in dialogs. */
+export function passkeyCleanText(text: string, max: number): string {
+  return text.replace(PASSKEY_UNSAFE_TEXT_ALL, '').slice(0, max);
+}
+
 function isText(value: Object | undefined | null, max: number): boolean {
-  return typeof value === 'string' && (value as string).length <= max && !/[\u0000-\u001f\u007f]/.test(value as string);
+  return typeof value === 'string' && (value as string).length <= max && passkeySafeText(value as string);
 }
 
 function isB64(value: Object | undefined | null, minBytes: number, maxBytes: number): boolean {
@@ -195,7 +214,7 @@ export function passkeyPairingCode(digest: Uint8Array): string {
 }
 
 export function parsePasskeyRequest(text: string): PasskeyRequest | null {
-  if (text.length === 0 || text.length > 8192) { return null; }
+  if (text.length === 0 || text.length > 16384) { return null; }
   let raw: Record<string, Object>;
   try {
     const parsed: Object = JSON.parse(text) as Object;
@@ -215,7 +234,7 @@ export function parsePasskeyRequest(text: string): PasskeyRequest | null {
       (raw['sentAt'] as number) <= 0 || typeof raw['ttlMs'] !== 'number' || !Number.isInteger(raw['ttlMs'] as number) ||
       (raw['ttlMs'] as number) < 1000 || (raw['ttlMs'] as number) > PASSKEY_MAX_TTL_MS) { return null; }
   const ids: Object | null | undefined = raw['credentialIds'];
-  if (ids === null || ids === undefined || !Array.isArray(ids) || (ids as Object[]).length > 16 ||
+  if (ids === null || ids === undefined || !Array.isArray(ids) || (ids as Object[]).length > PASSKEY_MAX_CREDENTIAL_IDS ||
       (pair && (ids as Object[]).length > 0) ||
       (ids as Object[]).some((item: Object): boolean => !isB64(item, 16, 1023))) { return null; }
   let user: PasskeyUser | null = null;

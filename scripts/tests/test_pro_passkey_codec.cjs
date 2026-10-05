@@ -80,11 +80,18 @@ const bad = [
   { ...register, clientDataHash: b64(31) }, { ...register, ttlMs: 999 }, { ...register, ttlMs: 120001 },
   { ...register, ttlMs: 1.5 }, { ...register, from: 'x'.repeat(41) }, { ...register, user: null },
   { ...register, user: { ...register.user, name: 'a\nb' } }, { ...register, user: { ...register.user, id: b64(65) } },
-  { ...register, credentialIds: new Array(17).fill(b64(16)) }, { ...register, credentialIds: ['***'] },
+  { ...register, credentialIds: new Array(65).fill(b64(16)) }, { ...register, credentialIds: ['***'] },
+  { ...register, from: 'Mate\u202EBook' }, { ...register, from: 'Pad\u2066' }, { ...register, from: 'a\u200Bb' },
+  { ...register, user: { ...register.user, name: 'a\u2028b' } }, { ...register, user: { ...register.user, displayName: 'x\u0085' } },
   { ...signin, user: register.user }, { ...register, sentAt: 0 }, { ...register, sentAt: 1.5 }, { ...register, sentAt: '1' }
 ];
 for (const item of bad) assert.equal(c.parsePasskeyRequest(JSON.stringify(item)), null, JSON.stringify(item).slice(0, 80));
 assert.equal(c.parsePasskeyRequest('[]'), null);
+// Up to 64 listed credentials fit; text shown in dialogs keeps no invisible or reordering characters.
+assert.ok(c.parsePasskeyRequest(JSON.stringify({ ...register, credentialIds: new Array(64).fill(b64(16)) })));
+assert.equal(c.passkeyCleanText('Mate\u202EBook\u2028 Pro\u0007', 40), 'MateBook Pro');
+assert.equal(c.passkeyCleanText('x'.repeat(50), 40).length, 40);
+assert.equal(c.passkeySafeText('华为 MatePad Pro'), true);
 assert.equal(c.parsePasskeyRequest('not json'), null);
 assert.equal(c.parsePasskeyRequest('x'.repeat(8193)), null);
 assert.ok(c.passkeyRequestCurrent(register, register.sentAt + 119000));

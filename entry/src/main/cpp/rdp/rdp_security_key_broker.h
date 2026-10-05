@@ -106,8 +106,9 @@ public:
     Authenticator Select(std::string& product);
     // The authenticator chosen earlier in this session, or None.
     Authenticator Authorized(std::string& product) const;
-    // Hands one CTAP command to the phone (through ArkTS); the reply is the phone's CTAP response.
-    std::optional<std::vector<uint8_t>> Passkey(const std::vector<uint8_t>& command);
+    // Hands one CTAP command to the phone (through ArkTS); the reply is the phone's CTAP response. rpId is the
+    // relying party the user confirmed for it (request text); ArkTS refuses a command that names another.
+    std::optional<std::vector<uint8_t>> Passkey(const std::vector<uint8_t>& command, const std::string& rpId);
     // The authorized key could not be opened: forget it and have ArkTS release it.
     void Forget();
     std::optional<std::string> Pin(int32_t retries);

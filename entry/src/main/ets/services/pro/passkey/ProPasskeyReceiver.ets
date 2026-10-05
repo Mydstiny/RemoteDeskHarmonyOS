@@ -1,9 +1,10 @@
 import { common } from '@kit.AbilityKit';
-import { promptAction, UIContext } from '@kit.ArkUI';
+import { UIContext } from '@kit.ArkUI';
 import { DEBUG } from 'BuildProfile';
+import { PasskeyConfirmation, PasskeyDialogParams } from '../../../components/pro/passkey/ProPasskeyConfirmDialog';
 import { AccountSessionCoordinator } from '../../AccountSessionCoordinator';
 import { ProAppRuntime } from '../ProAppRuntime';
-import { base64UrlDecode, PasskeyRequest, PasskeyResponse } from './ProPasskeyCodec';
+import { base64UrlDecode, passkeyCleanText, PasskeyRequest, PasskeyResponse } from './ProPasskeyCodec';
 import { ProPasskeyAuthenticator } from './ProPasskeyAuthenticator';
 import { ProPasskeyChannel } from './ProPasskeyChannel';
 import { passkeyPairingCodeOf, passkeyRequestSignedBy } from './ProPasskeyDevice';
@@ -23,6 +24,23 @@ export interface PasskeyReceiverState {
 }
 
 function rpLabel(request: PasskeyRequest): string { return '「' + request.rpId + '」'; }
+
+/** The request being confirmed or answered; it ends when it expires, is withdrawn or the receiver stops. */
+class ActiveRequest {
+  id: string;
+  deadline: number;
+  ended: boolean = false;
+  confirmation: PasskeyConfirmation | null = null;
+
+  constructor(id: string, deadline: number) { this.id = id; this.deadline = deadline; }
+
+  end(): void {
+    this.ended = true;
+    const confirmation = this.confirmation;
+    this.confirmation = null;
+    if (confirmation !== null) { confirmation.close(); }
+  }
+}
 
 /**
  * The phone side of 手机通行密钥 for the whole app: while the app is in the foreground and receiving is on,
@@ -56,6 +74,7 @@ export class ProPasskeyReceiver {
   private generation: number = 0;
   private observers: ((state: PasskeyReceiverState) => void)[] = [];
   private watching: boolean = false;
+  private active: ActiveRequest | null = null;
 
   private owner(): string { return AccountSessionCoordinator.getInstance().currentScope().ownerScopeId; }
 
@@ -100,6 +119,7 @@ export class ProPasskeyReceiver {
     this.context = context;
     const owner = this.owner();
     if (owner === '') { this.setStatus('请先登录华为账号'); return false; }
+    if (on && !ProPasskeyReceiver.available()) { this.setStatus('手机通行密钥当前不可用'); return false; }
     if (on) {
       if (ProPasskeyKeys.preferredUnlock() === null) { this.setStatus('这台设备没有设置锁屏密码，不能作为通行密钥'); return false; }
       if (!ProPasskeyChannel.supported()) { this.setStatus('这台设备不支持跨设备数据同步'); return false; }
@@ -117,16 +137,16 @@ export class ProPasskeyReceiver {
   async ensureChannel(context: common.UIAbilityContext): Promise<boolean> {
     this.context = context;
     const owner = this.owner();
-    if (owner === '' || !ProPasskeyChannel.supported()) { return false; }
+    if (owner === '' || !ProPasskeyReceiver.available() || !ProPasskeyChannel.supported()) { return false; }
     const channel = ProPasskeyChannel.getInstance();
     if (channel.joined()) { return true; }
     if (!(await channel.requestPermission(context))) { return false; }
     return channel.join(context, owner);
   }
 
-  /** A sender is done; the channel stays only while this device is receiving. */
+  /** A sender is done; the channel stays while this device receives or still waits for an answer. */
   releaseChannel(): void {
-    if (!this.listening) { ProPasskeyChannel.getInstance().leave(); }
+    if (!this.listening) { ProPasskeyChannel.getInstance().release(); }
   }
 
   private setStatus(status: string): void {
@@ -151,12 +171,17 @@ export class ProPasskeyReceiver {
     const context = this.context;
     const owner = this.owner();
     const channel = ProPasskeyChannel.getInstance();
-    const wanted = this.inForeground && context !== null && owner !== '' && ProPasskeyReceiver.available() &&
+    const receiving = context !== null && owner !== '' && ProPasskeyReceiver.available() &&
       ProPasskeyPeers.receiving(context, owner);
+    const wanted = this.inForeground && receiving;
+    if (!receiving && this.active !== null) {
+      // Receiving was turned off, the account changed or the feature went away: nothing more is answered.
+      this.active.end();
+    }
     if (!wanted || context === null) {
       if (this.listening) {
         channel.listen(null);
-        channel.leave();
+        channel.release();
         this.listening = false;
       }
       this.setStatus(this.enabled() && !this.inForeground ? '应用在后台时暂停接收' : '');
@@ -169,12 +194,22 @@ export class ProPasskeyReceiver {
       this.setStatus('无法加入同账号设备通道，请确认设备登录同一华为账号并已联网');
       return;
     }
-    channel.listen((request: PasskeyRequest): void => { void this.onRequest(request); });
+    channel.listen((request: PasskeyRequest): void => { void this.onRequest(request); },
+      (id: string): void => { this.onWithdraw(id); });
     this.listening = true;
     this.setStatus('正在接收：已配对设备的请求会在任何页面弹出确认');
   }
 
   private respond(response: PasskeyResponse): void { ProPasskeyChannel.getInstance().respond(response); }
+
+  /** The requester gave up on `id` (its user cancelled, its remote request ended): the dialog comes down. */
+  private onWithdraw(id: string): void {
+    const active = this.active;
+    if (active !== null && active.id === id) {
+      active.end();
+      this.note('请求已取消');
+    }
+  }
 
   private async onRequest(request: PasskeyRequest): Promise<void> {
     const context = this.context;
@@ -186,85 +221,110 @@ export class ProPasskeyReceiver {
       return;
     }
     this.busy = true;
+    // The requester's own wait began before the request reached this device, so this deadline is never later.
+    const active = new ActiveRequest(request.id, Date.now() + request.ttlMs);
+    this.active = active;
+    const current = (): boolean => !active.ended && Date.now() < active.deadline && this.owner() === owner;
     try {
       if (request.op === 'pair') {
-        await this.pair(context, owner, request);
+        await this.pair(context, owner, request, active, current);
         return;
       }
+      const from = passkeyCleanText(request.from, 40);
       const peer: PasskeyPeer | null = ProPasskeyPeers.find(context, owner, request.device);
       if (peer === null) {
         this.respond(ProPasskeyAuthenticator.failed(request, 'PASSKEY_DEVICE_NOT_PAIRED'));
-        this.note('已拒绝未配对设备「' + request.from + '」的请求');
+        this.note('已拒绝未配对设备「' + from + '」的请求');
         return;
       }
+      const name = passkeyCleanText(peer.name, 40);
       const key = base64UrlDecode(peer.publicKey);
       if (key === null || !(await passkeyRequestSignedBy(request, key))) {
         this.respond(ProPasskeyAuthenticator.failed(request, 'PASSKEY_SIGNATURE_INVALID'));
-        this.note('已拒绝签名无效的请求（' + peer.name + '）');
+        this.note('已拒绝签名无效的请求（' + name + '）');
         return;
       }
       const register = request.op === 'register';
-      const allowed = await this.ask(register ? '注册通行密钥' : '使用通行密钥登录',
-        '「' + peer.name + '」请求' + (register ? '为' + rpLabel(request) + '注册新的通行密钥' : '登录' + rpLabel(request)) +
-        (request.user !== null ? '（账号 ' + request.user.name + '）' : '') +
-        '。\n\n只有确认是你本人发起的操作时才允许。允许后需要验证人脸、指纹或锁屏密码。', '拒绝', '允许');
+      const allowed = await this.ask(active, register ? '注册通行密钥' : '使用通行密钥登录',
+        '「' + name + '」请求' + (register ? '为' + rpLabel(request) + '注册新的通行密钥' : '登录' + rpLabel(request)) +
+        (request.user !== null ? '（账号 ' + passkeyCleanText(request.user.name, 64) + '）' : '') +
+        '。\n\n只有确认是你本人发起的操作时才允许。允许后需要验证人脸、指纹或锁屏密码。', '', '拒绝', '允许');
+      if (!current()) {
+        // Expired or withdrawn while the dialog was open: the requester no longer listens.
+        this.note('请求已结束：' + request.rpId + (register ? ' 注册' : ' 登录') + '（' + name + '）');
+        return;
+      }
       if (!allowed) {
         this.respond(ProPasskeyAuthenticator.declined(request));
-        this.note('已拒绝：' + request.rpId + (register ? ' 注册' : ' 登录') + '（' + peer.name + '）');
+        this.note('已拒绝：' + request.rpId + (register ? ' 注册' : ' 登录') + '（' + name + '）');
         return;
       }
       const response: PasskeyResponse = register ?
-        await ProPasskeyAuthenticator.register(context, owner, request) :
-        await ProPasskeyAuthenticator.signIn(context, owner, request);
+        await ProPasskeyAuthenticator.register(context, owner, request, current) :
+        await ProPasskeyAuthenticator.signIn(context, owner, request, current);
+      if (!current()) {
+        this.note('请求已结束：' + request.rpId + (register ? ' 注册' : ' 登录') + '（' + name + '）');
+        return;
+      }
       this.respond(response);
       peer.lastUsedAt = Date.now();
       try { ProPasskeyPeers.save(context, peer); } catch (_error) { /* the answer already went out */ }
-      this.note((response.ok ? '已完成：' : '未完成：') + request.rpId + (register ? ' 注册' : ' 登录') + '（' + peer.name +
+      this.note((response.ok ? '已完成：' : '未完成：') + request.rpId + (register ? ' 注册' : ' 登录') + '（' + name +
         (response.ok ? '）' : '，' + response.error + '）'));
     } catch (_error) {
-      // Never leave the requester waiting for its timeout.
-      this.respond(ProPasskeyAuthenticator.declined(request));
+      // Never leave a requester that still waits running into its timeout.
+      if (current()) { this.respond(ProPasskeyAuthenticator.declined(request)); }
       this.note('未完成：处理请求时出错');
     } finally {
+      active.end();
+      if (this.active === active) { this.active = null; }
       this.busy = false;
     }
   }
 
-  private async pair(context: common.UIAbilityContext, owner: string, request: PasskeyRequest): Promise<void> {
+  private async pair(context: common.UIAbilityContext, owner: string, request: PasskeyRequest, active: ActiveRequest,
+    current: () => boolean): Promise<void> {
     const key = base64UrlDecode(request.devicePub);
     if (key === null || !(await passkeyRequestSignedBy(request, key))) {
       this.respond(ProPasskeyAuthenticator.failed(request, 'PASSKEY_SIGNATURE_INVALID'));
       return;
     }
-    const confirmed = await this.ask('配对新设备',
-      '「' + request.from + '」请求与这台设备配对。配对后，它可以请求你用这台设备上的通行密钥注册和登录，每次仍需你确认。' +
-      '\n\n请确认两台设备显示的配对码一致：\n' + passkeyPairingCodeOf(request), '不一致', '一致，配对');
+    const from = passkeyCleanText(request.from, 40);
+    const confirmed = await this.ask(active, '配对新设备',
+      '「' + from + '」请求与这台设备配对。配对后，它可以请求你用这台设备上的通行密钥注册和登录，每次仍需你确认。' +
+      '\n\n请确认两台设备显示的配对码一致：', passkeyPairingCodeOf(request), '不一致', '一致，配对');
+    if (!current()) { this.note('配对请求已结束：' + from); return; }
     if (!confirmed) {
       this.respond(ProPasskeyAuthenticator.failed(request, 'PASSKEY_PAIRING_DECLINED'));
-      this.note('已拒绝配对：' + request.from);
+      this.note('已拒绝配对：' + from);
       return;
     }
     const now = Date.now();
     try {
-      ProPasskeyPeers.save(context, { owner, id: request.device, name: request.from, publicKey: request.devicePub,
+      ProPasskeyPeers.save(context, { owner, id: request.device, name: from, publicKey: request.devicePub,
         pairedAt: now, lastUsedAt: now });
     } catch (_error) {
       this.respond(ProPasskeyAuthenticator.failed(request, 'PASSKEY_STORE_UNAVAILABLE'));
       return;
     }
     this.respond(ProPasskeyAuthenticator.done(request));
-    this.note('已配对：' + request.from);
+    this.note('已配对：' + from);
   }
 
-  private ask(title: string, message: string, cancel: string, confirm: string): Promise<boolean> {
+  /** Shows the confirmation for `active`; false when refused, expired, withdrawn or no window can show it. */
+  private ask(active: ActiveRequest, title: string, message: string, code: string, cancel: string,
+    confirm: string): Promise<boolean> {
     const ui = this.ui();
-    if (ui === null) { return Promise.resolve(false); }
-    try {
-      return ui.getPromptAction().showDialog({ title, message,
-        buttons: [{ text: cancel, color: '#8A8780' }, { text: confirm, color: '#C96442' }] })
-        .then((result: promptAction.ShowDialogSuccessResponse): boolean => result.index === 1, (): boolean => false);
-    } catch (_error) {
-      return Promise.resolve(false);
-    }
+    if (ui === null || active.ended) { return Promise.resolve(false); }
+    const params = new PasskeyDialogParams();
+    params.title = title;
+    params.message = message;
+    params.code = code;
+    params.cancel = cancel;
+    params.confirm = confirm;
+    params.deadline = active.deadline;
+    const confirmation = new PasskeyConfirmation(ui, params);
+    active.confirmation = confirmation;
+    return confirmation.answer;
   }
 }

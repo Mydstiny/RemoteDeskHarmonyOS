@@ -67,7 +67,7 @@ const command = (code, map) => new Uint8Array([code].concat(enc(map)));
 // --- MakeCredential ---
 const hash = crypto.randomBytes(32), userId = crypto.randomBytes(16), mine = crypto.randomBytes(16);
 const makeCredential = new Map([
-  [1, hash], [2, new Map([['id', 'GitHub.com'], ['name', 'GitHub']])],
+  [1, hash], [2, new Map([['id', 'github.com'], ['name', 'GitHub']])],
   [3, new Map([['id', userId], ['name', 'octocat\n'], ['displayName', 'The Octocat']])],
   [4, [new Map([['alg', -257], ['type', 'public-key']]), new Map([['alg', -7], ['type', 'public-key']])]],
   [5, [new Map([['id', mine], ['type', 'public-key']]), new Map([['id', crypto.randomBytes(64)], ['type', 'public-key']])]],
@@ -101,6 +101,22 @@ const badRp = new Map(makeCredential); badRp.set(2, new Map([['id', 'evil..com']
 assert.equal(ctap.parseCtapCommand(command(1, badRp)).status, ctap.CTAP1_ERR_INVALID_PARAMETER);
 const longUser = new Map(makeCredential); longUser.set(3, new Map([['id', crypto.randomBytes(65)]]));
 assert.equal(ctap.parseCtapCommand(command(1, longUser)).status, ctap.CTAP1_ERR_INVALID_PARAMETER);
+// The relying party is taken exactly as sent: upper case, or a character that lower-cases into ASCII, is refused.
+for (const id of ['GitHub.com', '\u212Aey.com', 'xn--80ak6aa92e.com.']) {
+  const other = new Map(makeCredential); other.set(2, new Map([['id', id]]));
+  assert.equal(ctap.parseCtapCommand(command(1, other)).status, ctap.CTAP1_ERR_INVALID_PARAMETER, id);
+}
+// Names shown on the phone lose invisible and reordering characters.
+const spoof = new Map(makeCredential);
+spoof.set(3, new Map([['id', userId], ['name', 'a\u202Egnp.exe\u2028配对码 000 000'], ['displayName', 'x\u200By']]));
+parsed = ctap.parseCtapCommand(command(1, spoof));
+assert.deepEqual([parsed.user.name, parsed.user.displayName], ['agnp.exe配对码 000 000', 'xy']);
+// Up to 64 of the phone's credential IDs fit in a list; a longer exclude list is refused rather than cut short.
+const many = n => Array.from({ length: n }, () => new Map([['id', crypto.randomBytes(16)], ['type', 'public-key']]));
+const sixtyFour = new Map(makeCredential); sixtyFour.set(5, many(64));
+assert.equal(ctap.parseCtapCommand(command(1, sixtyFour)).credentialIds.length, 64);
+const tooMany = new Map(makeCredential); tooMany.set(5, many(65));
+assert.equal(ctap.parseCtapCommand(command(1, tooMany)).status, ctap.CTAP2_ERR_LIMIT_EXCEEDED);
 console.log('PASS MakeCredential becomes a phone registration request; unsupported or malformed ones are refused');
 
 // --- GetAssertion ---
@@ -114,6 +130,8 @@ assert.equal(ctap.parseCtapCommand(command(2, foreign)).foreignAllowList, true);
 const discoverable = new Map(getAssertion); discoverable.delete(3);
 parsed = ctap.parseCtapCommand(command(2, discoverable));
 assert.deepEqual([parsed.status, parsed.credentialIds.length, parsed.foreignAllowList], [0, 0, false]);
+const longAllow = new Map(getAssertion); longAllow.set(3, many(65));
+assert.equal(ctap.parseCtapCommand(command(2, longAllow)).status, ctap.CTAP2_ERR_LIMIT_EXCEEDED);
 console.log('PASS GetAssertion keeps only credentials the phone could have issued');
 
 // --- malformed input never throws ---
@@ -125,10 +143,39 @@ for (const bytes of [[], [1], [3, 0xa0], [1, 0xff], [1, 0x5f], [2, 0xa1, 0x01], 
 let nested = [0];
 for (let k = 0; k < 20; k++) nested = [0x81].concat(nested);
 assert.equal(ctap.parseCtapCommand(new Uint8Array([1].concat(nested))).status, ctap.CTAP2_ERR_INVALID_CBOR);
+// Only what a canonical encoder writes: anything that two readers could read differently is refused.
+const getBytes = enc(getAssertion);
+const invalid = bytes => ctap.parseCtapCommand(new Uint8Array([2].concat(bytes))).status;
+// A repeated key (first-wins here, last-wins in libcbor): {1: "github.com", 1: "webauthn.io", 2: hash}.
+assert.equal(invalid([0xa3].concat(enc(1), enc('github.com'), enc(1), enc('webauthn.io'), enc(2), enc(hash))),
+  ctap.CTAP2_ERR_INVALID_CBOR);
+// A repeated key inside a nested map (the rp map of MakeCredential).
+const dupRp = enc(makeCredential);
+const rpWithDup = [0xa2].concat(enc('id'), enc('github.com'), enc('id'), enc('webauthn.io'));
+assert.equal(ctap.parseCtapCommand(new Uint8Array([1].concat([0xa6], enc(1), enc(hash), enc(2), rpWithDup,
+  enc(3), enc(makeCredential.get(3)), enc(4), enc(makeCredential.get(4)), enc(5), enc(makeCredential.get(5)),
+  enc(7), enc(makeCredential.get(7))))).status, ctap.CTAP2_ERR_INVALID_CBOR);
+assert.ok(dupRp.length > 0);
+// Overlong UTF-8 ("id" with its i in three bytes), a surrogate, a code point past U+10FFFF.
+const overlongKey = [0x64, 0xe0, 0x81, 0xa9, 0x64];
+assert.equal(ctap.parseCtapCommand(new Uint8Array([1, 0xa1, 0x02, 0xa1].concat(overlongKey, enc('github.com')))).status,
+  ctap.CTAP2_ERR_INVALID_CBOR);
+assert.equal(invalid([0xa2, 0x01, 0x63, 0xed, 0xa0, 0x80, 0x02].concat(enc(hash))), ctap.CTAP2_ERR_INVALID_CBOR);
+assert.equal(invalid([0xa2, 0x01, 0x64, 0xf4, 0x90, 0x80, 0x80, 0x02].concat(enc(hash))), ctap.CTAP2_ERR_INVALID_CBOR);
+// Long-form numbers and lengths: 5 as 0x18 0x05, a text length as two bytes.
+assert.equal(invalid([0xa2, 0x18, 0x01].concat(enc('github.com'), enc(2), enc(hash))), ctap.CTAP2_ERR_INVALID_CBOR);
+assert.equal(invalid([0xa2, 0x01, 0x79, 0x00, 0x0a].concat([...Buffer.from('github.com')], enc(2), enc(hash))),
+  ctap.CTAP2_ERR_INVALID_CBOR);
+// Lengths beyond what can be addressed, item counts past the limit, bytes after the item.
+assert.equal(invalid([0xa1, 0x01, 0x7b, 0x00, 0x20, 0, 0, 0, 0, 0, 0]), ctap.CTAP2_ERR_INVALID_CBOR);
+assert.equal(invalid([0x9a, 0x00, 0x00, 0x04, 0x4c].concat(new Array(1100).fill(0))), ctap.CTAP2_ERR_INVALID_CBOR);
+assert.equal(invalid(getBytes.concat([0x00])), ctap.CTAP2_ERR_INVALID_CBOR);
+assert.equal(invalid(getBytes), 0);
 console.log('PASS malformed CBOR and commands are refused without throwing');
 
 // --- responses ---
-const authData = crypto.randomBytes(37), signature = crypto.randomBytes(71), credentialId = crypto.randomBytes(16);
+const authData = Buffer.concat([crypto.randomBytes(32), Buffer.from([0x05]), crypto.randomBytes(4)]);
+const signature = crypto.randomBytes(71), credentialId = crypto.randomBytes(16);
 const ok = { v: 2, id: 'x', ok: true, error: '', credentialId: b64(credentialId), authData: b64(authData),
   signature: b64(signature), userHandle: b64(userId), publicKey: '' };
 let response = ctap.ctapResponseFromPasskey('signin', ok);
@@ -146,9 +193,20 @@ assert.deepEqual([...response.slice(1)], enc(new Map([[1, new Map([['id', creden
   [2, authData], [3, signature], [4, new Map([['id', userId]])]])));
 body = dec(ctap.ctapResponseFromPasskey('signin', { ...ok, userHandle: '' }).slice(1));
 assert.deepEqual([...body.keys()], [1, 2, 3]);
-const attested = crypto.randomBytes(170);
+// Registration: authenticator data with the attested credential (flags UP|UV|AT, zero AAGUID, the new ID, its key).
+const attestedFor = id => Buffer.concat([crypto.randomBytes(32), Buffer.from([0x45, 0, 0, 0, 0]), Buffer.alloc(16),
+  Buffer.from([0, id.length]), id, crypto.randomBytes(77)]);
+const attested = attestedFor(credentialId);
 response = ctap.ctapResponseFromPasskey('register', { ...ok, authData: b64(attested), signature: '' });
 assert.deepEqual([...response], [0].concat(enc(new Map([[1, 'none'], [2, attested], [3, new Map()]]))));
+// A success that does not attest the credential it names (or names none) is not passed on.
+assert.deepEqual([...ctap.ctapResponseFromPasskey('register', { ...ok, authData: b64(attestedFor(crypto.randomBytes(16))),
+  signature: '' })], [0x7f]);
+assert.deepEqual([...ctap.ctapResponseFromPasskey('register', { ...ok, authData: b64(authData), signature: '' })], [0x7f]);
+assert.deepEqual([...ctap.ctapResponseFromPasskey('register', { ...ok, credentialId: '', authData: '', signature: '',
+  userHandle: '' })], [0x7f]);
+// A sign-in's authenticator data carries no attested credential.
+assert.deepEqual([...ctap.ctapResponseFromPasskey('signin', { ...ok, authData: b64(attested) })], [0x7f]);
 assert.deepEqual([...ctap.ctapResponseFromPasskey('signin', null)], [ctap.CTAP2_ERR_USER_ACTION_TIMEOUT]);
 for (const [error, status] of [['PASSKEY_USER_DENIED', 0x27], ['PASSKEY_DEVICE_NOT_PAIRED', 0x27], ['PASSKEY_NO_CREDENTIALS', 0x2e],
   ['PASSKEY_CREDENTIAL_EXCLUDED', 0x19], ['PASSKEY_KEY_MISSING', 0x2e], ['SOMETHING_ELSE', 0x7f]]) {

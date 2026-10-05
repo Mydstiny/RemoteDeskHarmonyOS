@@ -57,10 +57,12 @@ fido_dev_t* remotedesk_rdpewa_open(rdpContext* context, BOOL interactive, char* 
 
 /**
  * Sends one CTAP command (command byte + CBOR) to the paired phone and returns its CTAP response (status byte +
- * CBOR) in a new buffer the caller frees. FALSE when the user, the server or the session cancelled, or it timed out.
+ * CBOR) in a new buffer the caller frees. rpId is the relying party the user confirmed; the phone refuses a
+ * command naming another one. FALSE when the user, the server or the session cancelled, or it timed out; then
+ * *reselect (when given) says the phone was set aside for this session and the user may choose again.
  */
-BOOL remotedesk_rdpewa_passkey(rdpContext* context, const BYTE* command, size_t commandLen, BYTE** response,
-                               size_t* responseLen);
+BOOL remotedesk_rdpewa_passkey(rdpContext* context, const BYTE* command, size_t commandLen, const char* rpId,
+                               BYTE** response, size_t* responseLen, BOOL* reselect);
 
 /** Whether a key is authorized for this session, without any device I/O. product receives its name. */
 BOOL remotedesk_rdpewa_authorized(rdpContext* context, char* product, size_t productLen);
