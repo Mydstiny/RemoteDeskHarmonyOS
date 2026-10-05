@@ -62,18 +62,20 @@ class ActionRule {
 }
 
 /** Keys that are not SSH keys. */
-const OTHER_KEYS: string[] = ['通行密钥', '安全密钥', 'passkey', 'api key', 'apikey', 'coding plan key', 'usb 密钥', 'yubikey',
-  'fido', 'u2f'];
+const OTHER_KEYS: string[] = ['通行密钥', '安全密钥', 'passkey', 'api key', 'coding plan key', 'usb 密钥', 'yubikey', 'fido',
+  'u2f'];
+/** …though a step naming an SSH key is about one (用 ed25519-sk (FIDO) 生成 SSH 密钥). */
+const SSH_KEYS: string[] = ['ssh 密钥', 'ssh key', 'ssh-key', 'ssh 私钥', 'ssh 公钥'];
 
 const RULES: ActionRule[] = [
   new ActionRule('host.add', '打开添加主机', [['添加', '新建', '新增', '“+”', '"+"', '+'], ['主机', '连接', '协议', '设备']]),
   new ActionRule('cloud.sync', '打开云同步', [['云同步', '同步', '云端', '备份']], 'execute', true),
   new ActionRule('diagnostic.log', '查看诊断日志', [['日志', '诊断记录']], 'floating'),
   new ActionRule('feedback', '提交反馈', [['反馈', '联系开发', '联系我们']], 'execute', true),
-  new ActionRule('ssh.keys', '打开 SSH 密钥库', [['密钥', '公钥', '私钥', 'key']], 'execute', false, OTHER_KEYS),
+  new ActionRule('ssh.keys', '打开 SSH 密钥库', [['密钥', '公钥', '私钥', 'key']], 'execute', false, OTHER_KEYS, SSH_KEYS),
   new ActionRule('rdp.credentials', '管理 RDP 凭据', [['凭据', '账号密码', '用户名和密码', '登录凭证']], 'execute', true),
   new ActionRule('settings.appIcon', '打开应用图标设置', [['应用图标', '图标主题', '图标样式']]),
-  new ActionRule('settings.keyVault', '打开密钥库', [['密钥库', 'SSH 密钥', '密钥管理']], 'execute', false, OTHER_KEYS),
+  new ActionRule('settings.keyVault', '打开密钥库', [['密钥库', 'SSH 密钥', '密钥管理']], 'execute', false, OTHER_KEYS, SSH_KEYS),
   new ActionRule('settings.rdpCredentialEditor', '打开 RDP 凭据编辑器', [['RDP', '凭据'], ['编辑', '新增', '修改']],'execute', true),
   new ActionRule('settings.proBadge', '打开 Pro 标识设置', [['Pro 标识', 'Pro 徽章', '专业版标识']]),
   // 远程 AI (the computer's Codex, DSH, Claude Agent) has its own pages; this is the AI 助理's own service.
@@ -104,9 +106,8 @@ const RULES: ActionRule[] = [
   new ActionRule('settings.diagnosticAi', '打开 AI 助理设置', [['AI 助理', 'AI助理', '诊断与 AI', '诊断AI', 'AI 帮助'], ['设置', '页面', '入口', '帮助']]),
   // 远程 AI on its own (or its hosts and pairing) is its host page; its other pages take the steps about them.
   new ActionRule('settings.aiHosts', '打开远程 AI 主机设置',
-    [['远程 AI', 'AI 主机', '电脑端 AI', 'Claude Agent', 'Codex 主机', 'DSH 主机', '连接与配对']], 'execute', false,
-    ['风格', '显示设置', '显示与恢复', '文字大小', '数据', '导出', '导入', '安装', '插件'],
-    ['配对', 'AI 主机', 'Codex 主机', 'DSH 主机']),
+    [['远程 AI', 'AI 主机', '电脑端 AI', '电脑端插件', 'Claude Agent', 'Codex 主机', 'DSH 主机', '连接与配对']], 'execute', false,
+    ['风格', '显示设置', '显示与恢复', '文字大小', '工具执行过程', '恢复查看', '数据', '导出', '导入', '安装', '插件'], ['配对']),
   // Its own page's words only: 显示 alone is mostly a verb (远程 AI 显示“未配对”).
   new ActionRule('settings.aiDisplay', '打开远程 AI 显示设置',
     [['远程 AI', '会话页'], ['显示设置', '显示与恢复', '界面风格', 'Claude 风格', 'Codex 风格', '文字大小', '工具执行过程',
@@ -114,10 +115,12 @@ const RULES: ActionRule[] = [
   new ActionRule('settings.aiData', '打开远程 AI 数据设置', [['远程 AI', 'AI 数据'], ['数据', '导出', '导入']]),
   // The computer side of 远程 AI only: installing RustDesk, a VNC server, Sunshine or a driver is not it.
   new ActionRule('settings.aiInstall', '打开远程 AI 安装设置',
-    [['远程 AI', '电脑端 AI', 'Claude Agent', 'Codex 插件', 'DSH 插件', 'AI 插件'], ['安装', '插件']], 'execute', false,
-    ['配对', 'RustDesk', 'VNC', 'Sunshine', 'Moonlight', 'OpenSSH', '驱动']),
+    [['远程 AI', '电脑端 AI', '电脑端安装', 'Claude Agent', 'Claude Code', 'Codex 插件', 'DSH 插件', 'AI 插件', 'Codex 主机',
+      'DSH 主机', '安装 Codex', '安装 DSH', 'Codex 与 DSH'], ['安装', '插件']], 'execute', false,
+    ['配对', 'RustDesk', 'VNC', 'Sunshine', 'Moonlight', 'OpenSSH', '驱动'], ['电脑端安装', '安装 Codex', '安装 DSH', '安装 Claude']),
   new ActionRule('pro.phonePasskey', '打开手机通行密钥', [['通行密钥', 'passkey', '手机当密钥', '手机作为密钥']]),
-  new ActionRule('pro.securityKey', '打开安全密钥重定向', [['安全密钥', 'USB 密钥', 'FIDO', 'YubiKey', 'U2F']]),
+  new ActionRule('pro.securityKey', '打开安全密钥重定向', [['安全密钥', 'USB 密钥', 'FIDO', 'YubiKey', 'U2F']], 'execute', false,
+    SSH_KEYS),
 
   new ActionRule('settings.vncConnection', '打开 VNC 连接设置', [['VNC'], ['连接设置']]),
   new ActionRule('settings.vncTimeout', '打开 VNC 超时设置', [['VNC'], ['超时']]),
@@ -168,17 +171,19 @@ const RULES: ActionRule[] = [
   new ActionRule('session.disconnect', '断开远程连接', [['断开连接', '退出远程会话']], 'execute', true)
 ];
 
+function actionText(text: string): string { return text.toLowerCase().replace(/\s+/g, ''); }
+
 /** Match only a predeclared action. Unknown model text remains explanatory text. */
 export function diagnosticAiAppActionsForSteps(steps: string[]): DiagnosticAiAppAction[] {
   const found: DiagnosticAiAppAction[] = [];
   steps.forEach((step: string): void => {
-    const text: string = step.toLowerCase();
+    // Spaces do not count: models write 安装 Codex and 安装Codex alike.
+    const text: string = actionText(step);
     RULES.forEach((rule: ActionRule): void => {
       if (found.some((a: DiagnosticAiAppAction): boolean => a.id === rule.id)) { return; }
-      const matches: boolean = rule.groups.every((words: string[]): boolean =>
-        words.some((word: string): boolean => text.indexOf(word.toLowerCase()) >= 0)) &&
-        (!rule.except.some((word: string): boolean => text.indexOf(word.toLowerCase()) >= 0) ||
-          rule.keep.some((word: string): boolean => text.indexOf(word.toLowerCase()) >= 0));
+      const has = (word: string): boolean => text.indexOf(actionText(word)) >= 0;
+      const matches: boolean = rule.groups.every((words: string[]): boolean => words.some(has)) &&
+        (!rule.except.some(has) || rule.keep.some(has));
       if (matches) { found.push(new DiagnosticAiAppAction(rule.id, rule.label, rule.mode, rule.requiresConfirmation)); }
     });
   });

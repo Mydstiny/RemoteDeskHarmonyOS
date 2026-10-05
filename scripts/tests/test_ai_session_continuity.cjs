@@ -121,6 +121,50 @@ test('the AI settings catalog has the 远程 AI settings, and plain words pick t
   assert.deepEqual(pick('悬浮球用小艺光环球'), ['ai.motion.orb=xiaoyiRing']);
   assert.deepEqual(pick('完成动画不显示'), ['ai.motion.done=none']);
   assert.deepEqual(pick('H264'), ['rustdesk.codec=4'], 'a value alone still finds its setting');
+  // Each named toggle takes its own verb: an attributive 关掉的 is no verb, a trailing 再打开 wins, 要不要 asks for on.
+  const cases = [
+    ['把关掉的 RDP 音频重新打开', ['rdp.audioEnabled=true']],
+    ['先关闭再打开 RDP 剪贴板', ['rdp.clipboardEnabled=true']],
+    ['关闭 RDP 音频后再打开', ['rdp.audioEnabled=true']],
+    ['把禁用的 RDP 驱动器映射重新启用', ['rdp.driveEnabled=true']],
+    ['打开之前关闭的 RustDesk 剪贴板', ['rustdesk.clipboardEnabled=true']],
+    ['RDP 音频要不要打开', ['rdp.audioEnabled=true']],
+    ['要不要开启 RustDesk 隐私模式', ['rustdesk.privacyMode=true']],
+    ['别打开 RDP 音频', ['rdp.audioEnabled=false']],
+    ['不用打开 RDP 剪贴板', ['rdp.clipboardEnabled=false']],
+    ['RDP 音频不需要打开', ['rdp.audioEnabled=false']],
+    ['先关掉 RustDesk 隐私模式再开启音频', ['rustdesk.audioEnabled=true', 'rustdesk.privacyMode=false']],
+    ['把 RDP 音频关了再打开剪贴板', ['rdp.audioEnabled=false', 'rdp.clipboardEnabled=true']],
+    ['打开 RDP 剪贴板不要音频', ['rdp.audioEnabled=false', 'rdp.clipboardEnabled=true']],
+    // Lists: a name alone waits for the next clause's verb; protocols named alone go on to it.
+    ['RDP 音频和剪贴板都关了', ['rdp.audioEnabled=false', 'rdp.clipboardEnabled=false']],
+    ['RDP 和 RustDesk 都关掉音频', ['rdp.audioEnabled=false', 'rustdesk.audioEnabled=false']],
+    ['RDP 剪贴板不能用了，先关闭再打开试试', []],
+    // 显示 / 不显示 / 隐藏 only for the 显示… toggles, before what they show, never in a question.
+    ['别显示 RustDesk 诊断信息', ['rustdesk.showDiagnostics=false']],
+    ['RustDesk 显示本地光标', ['rustdesk.showLocalCursor=true']],
+    ['隐藏 RustDesk 本地光标', ['rustdesk.showLocalCursor=false']],
+    ['把诊断信息显示出来', ['rdp.showDiagnostics=true', 'rustdesk.showDiagnostics=true']],
+    ['远程 AI 里不显示执行过程', ['remoteAi.showExecution=false']],
+    ['RDP 的诊断信息怎么不显示', []],
+    ['为什么 RustDesk 本地光标不显示', []],
+    ['RustDesk 本地光标显示异常', []],
+    ['诊断信息显示不出来', []],
+    ['显示主机卡片敏感信息', []],
+    ['如何显示剪贴板历史', []],
+    ['为什么微信语音不显示', []],
+    ['关闭 RDP 音频，显示比例改成填满，剪贴板也一样',
+      ['rdp.audioEnabled=false', 'remote.displayScaleMode=fill', 'rdp.clipboardEnabled=false']],
+    // A value of a setting the clause does not name stays, unless a named one's words or values hold it.
+    ['RustDesk 用 H265 关掉声音', ['rustdesk.codec=5', 'rustdesk.audioEnabled=false']],
+    ['RustDesk 编码设为 H264 速度优先', ['rustdesk.imageQuality=0', 'rustdesk.codec=4']],
+    ['切到深色并打开沉浸光感', ['ui.theme=dark', 'ui.ambientLightEffect=true']],
+    ['局域网里 RustDesk 改成 H265', ['rustdesk.codec=5']],
+    ['思考动画换成小艺光环', ['ai.motion.thinking=xiaoyi']]
+  ];
+  for (const [question, expected] of cases) {
+    assert.deepEqual(pick(question).sort(), expected.slice().sort(), question);
+  }
   assert.deepEqual(pick('打开回到前台后恢复查看'), ['remoteAi.reconnectOnForeground=true']);
   assert.deepEqual(pick('切到小艺风格'), ['ai.style=xiaoyi'], 'AI 风格 stays its own setting');
   // The host page reports the account's values; the catalog shows them.
@@ -258,8 +302,18 @@ test('手机通行密钥 and 安全密钥重定向 are app actions; 远程 AI wo
   assert.deepEqual(ids('如果远程 AI 显示“未配对”，重新配对'), ['settings.aiHosts']);
   assert.deepEqual(ids('远程 AI 显示连接失败时，检查电脑防火墙'), ['settings.aiHosts']);
   assert.deepEqual(ids('在设置 → 远程 AI → 显示与恢复里关闭工具执行过程'), ['settings.aiDisplay']);
-  // A security key is not an SSH key; a 远程 AI session is not the AI 助理's own conversations.
+  // A security key is not an SSH key, unless the step is about an SSH key; a 远程 AI session is not the AI 助理's own
+  // conversations.
   assert.deepEqual(ids('使用 YubiKey 登录'), ['pro.securityKey']);
+  assert.deepEqual(ids('用 ed25519-sk (FIDO) 生成 SSH 密钥'), ['ssh.keys', 'settings.keyVault']);
+  // The install page by its own name and the hosts' plugins; pairing words keep the host page.
+  for (const step of ['在电脑上安装 Codex', '在电脑上安装DSH', '在电脑上安装 Claude Code', '按电脑端安装里的指引安装 DSH',
+    '在电脑端安装页复制 Codex 安装命令', '在电脑端安装 Codex 后回到 App 配对', '在 Codex 主机上更新插件到最新版本']) {
+    assert.deepEqual(ids(step), ['settings.aiInstall'], step);
+  }
+  assert.deepEqual(ids('扫描电脑端插件显示的二维码完成配对'), ['settings.aiHosts']);
+  assert.deepEqual(ids('在远程 AI 里关闭工具执行过程'), ['settings.aiDisplay']);
+  assert.deepEqual(ids('在远程 AI 主机里导出数据'), ['settings.aiData']);
   assert.deepEqual(ids('在远程 AI 会话里批准文件改动'), ['settings.aiHosts']);
   // A subject alone (键盘, 终端, SSH, RDP) opens its own page, not every page about it.
   // (session.* actions are a session's own toolbar, offered only there.)
