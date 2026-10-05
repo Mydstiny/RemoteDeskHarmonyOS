@@ -25,7 +25,7 @@ function fixture() {
   const state = { now: 1_000_000, owner: 'owner-a', receiving: true, peers: new Map(), signatureValid: true,
     dialogs: [], responses: [], listener: null, withdraw: null, joined: false, released: 0, records: [],
     keys: new Set(), removedKeys: [], unlock: null, savedPeers: [], timers: [], generated: null, signs: 0,
-    saving: null, joinGate: null };
+    saving: null, joinGate: null, joinResult: true, storeBroken: false };
   const clock = { now: () => state.now };
   const timers = { setTimeout: (callback) => { state.timers.push(callback); return state.timers.length; },
     clearTimeout: () => {} };
@@ -48,7 +48,11 @@ function fixture() {
   const channelInstance = {
     requestPermission: async () => true,
     joined: () => state.joined,
-    async join() { if (state.joinGate !== null) await state.joinGate; state.joined = true; return true; },
+    async join() {
+      if (state.joinGate !== null) await state.joinGate;
+      state.joined = state.joinResult;
+      return state.joinResult;
+    },
     listen(onRequest, onWithdraw) { state.listener = onRequest; state.withdraw = onRequest === null ? null : onWithdraw; },
     respond(response) { state.responses.push(response); return true; },
     release() { state.released++; },
@@ -82,6 +86,7 @@ function fixture() {
       if (state.saving !== null) state.saving();
     },
     remove(_context, owner, id) {
+      if (state.storeBroken) throw new Error('PASSKEY_STORE_UNAVAILABLE');
       const record = state.records.find(value => value.owner === owner && value.id === id);
       if (record === undefined) return null;
       state.records = state.records.filter(value => value !== record);
@@ -343,6 +348,67 @@ test('going to the background while still joining lets the channel go', async ()
   await settle();
   assert.equal(f.state.listener, null);
   assert.ok(f.state.released > 0);
+});
+
+test('a receiver that could not join never lets go of a channel a sender joined later', async () => {
+  const f = fixture();
+  f.state.joinResult = false;
+  f.receiver.foreground({}, () => ({}));
+  await settle();
+  assert.equal(f.state.listener, null);
+  // A sender (the settings page, the RDP path) joins now; going to the background must not take it away.
+  f.state.joinResult = true;
+  f.state.joined = true;
+  const released = f.state.released;
+  f.receiver.background();
+  await settle();
+  assert.equal(f.state.released, released);
+});
+
+test('closing the settings page does not interrupt the receiver joining', async () => {
+  const f = fixture();
+  let open;
+  f.state.joinGate = new Promise((resolve) => { open = resolve; });
+  f.receiver.foreground({}, () => ({}));
+  await settle();
+  const released = f.state.released;
+  f.receiver.releaseChannel();
+  assert.equal(f.state.released, released);
+  open();
+  await settle();
+  assert.equal(typeof f.state.listener, 'function');
+});
+
+test('a sign-in unlocked after its deadline sends no assertion and uses up no count', async () => {
+  const f = await started();
+  const registered = f.register();
+  f.state.listener(registered);
+  await settle();
+  f.state.dialogs[0].resolve(true);
+  await settle();
+  f.state.responses.pop();
+  const signIn = f.request({ ttlMs: 10000 });
+  f.state.unlock = async () => { f.state.now += 8000; };
+  f.state.listener(signIn);
+  await settle();
+  f.state.dialogs[1].resolve(true);
+  await settle();
+  const answer = f.state.responses.pop();
+  assert.deepEqual([answer.id, answer.ok, answer.error, answer.signature], [signIn.id, false, 'PASSKEY_EXPIRED', '']);
+  assert.equal(f.state.records[0].signCount, 0);
+});
+
+test('when a rollback cannot remove the record, the new key still goes', async () => {
+  const f = await started();
+  const asked = f.register();
+  f.state.saving = () => { f.state.withdraw(asked.id); f.state.storeBroken = true; };
+  f.state.listener(asked);
+  await settle();
+  f.state.dialogs[0].resolve(true);
+  await settle();
+  assert.equal(f.state.responses.length, 0);
+  assert.equal(f.state.keys.size, 0);
+  assert.equal(f.state.records.length, 1);
 });
 
 test('a request with too little time left is refused without a dialog', async () => {

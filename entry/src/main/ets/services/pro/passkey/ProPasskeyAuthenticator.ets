@@ -87,6 +87,8 @@ export class ProPasskeyAuthenticator {
         null, null);
       const signature = await ProPasskeyKeys.sign(record.alias, record.unlock, concatBytes([authData, clientDataHash]),
         '登录「' + request.rpId + '」');
+      // An assertion made after the request ended is never sent (and its count is not used up).
+      if (!current()) { throw new Error('PASSKEY_EXPIRED'); }
       record.signCount = signCount;
       record.lastUsedAt = Date.now();
       ProPasskeyStore.save(context, record);
@@ -98,10 +100,21 @@ export class ProPasskeyAuthenticator {
     }
   }
 
-  /** Deletes the record first, then its HUKS key; false when the record could not be removed. */
+  /**
+   * Deletes the record first, then its HUKS key; false when the record could not be removed. The key goes even then
+   * (found by the ID it was made with): a record without its key is cleared the next time it is used.
+   */
   static async remove(context: common.Context, owner: string, id: string): Promise<boolean> {
     let removed: PasskeyRecord | null = null;
-    try { removed = ProPasskeyStore.remove(context, owner, id); } catch (_error) { return false; }
+    try {
+      removed = ProPasskeyStore.remove(context, owner, id);
+    } catch (_error) {
+      const bytes = base64UrlDecode(id);
+      if (bytes !== null) {
+        try { await ProPasskeyKeys.remove('rd_pk_' + bytesToHex(bytes)); } catch (_keyError) { /* nothing more to try */ }
+      }
+      return false;
+    }
     if (removed !== null) { await ProPasskeyKeys.remove(removed.alias); }
     return true;
   }

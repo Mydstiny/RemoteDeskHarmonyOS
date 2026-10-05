@@ -36,6 +36,8 @@ export class ProPasskeyChannel {
   private pending: Map<string, (response: PasskeyResponse | null) => void> = new Map();
   /** A user let go of the channel while requests were still out: leave once the last one settles. */
   private leaveWhenIdle: boolean = false;
+  /** Sessions whose old object still lets a cancel sync before it leaves; joining one of them waits for that. */
+  private exiting: Map<string, Promise<void>> = new Map();
   private sent: string[] = [];
   private seen: string[] = [];
 
@@ -61,6 +63,11 @@ export class ProPasskeyChannel {
     this.leave();
     if (owner === '' || !ProPasskeyChannel.supported()) { return false; }
     const generation = this.generation;
+    const exiting = this.exiting.get(session);
+    if (exiting !== undefined) {
+      await exiting;
+      if (generation !== this.generation) { return false; }
+    }
     const source: ChannelFields = { request: '', response: '', cancel: '' };
     let object: ChannelObject;
     try { object = distributedDataObject.create(context, source) as ChannelObject; }
@@ -110,6 +117,7 @@ export class ProPasskeyChannel {
   leave(): void {
     this.leaveWhenIdle = false;
     this.generation++;
+    const session = this.session;
     // Requests still out settle first, while the object can still tell the other devices.
     const waiting = Array.from(this.pending.values());
     this.pending.clear();
@@ -124,8 +132,13 @@ export class ProPasskeyChannel {
     const exit = (): void => {
       try { void object.setSessionId('').catch((): void => {}); } catch (_error) {}
     };
+    if (waiting.length === 0) { exit(); return; }
     // A cancel written just now needs a moment to sync before the object leaves the session.
-    if (waiting.length > 0) { setTimeout(exit, 500); } else { exit(); }
+    const leaving = new Promise<void>((resolve: () => void): void => {
+      setTimeout((): void => { exit(); resolve(); }, 500);
+    });
+    this.exiting.set(session, leaving);
+    void leaving.then((): void => { if (this.exiting.get(session) === leaving) { this.exiting.delete(session); } });
   }
 
   /** Receives requests from other devices while set; null stops answering. */

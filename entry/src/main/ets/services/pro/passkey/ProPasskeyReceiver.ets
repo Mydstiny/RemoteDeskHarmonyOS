@@ -173,9 +173,9 @@ export class ProPasskeyReceiver {
     return channel.join(context, owner);
   }
 
-  /** A sender is done; the channel stays while this device receives or still waits for an answer. */
+  /** A sender is done; the channel stays while this device receives (or is joining to) or still waits for an answer. */
   releaseChannel(): void {
-    if (!this.listening) { ProPasskeyChannel.getInstance().release(); }
+    if (!this.listening && !this.receiverJoined) { ProPasskeyChannel.getInstance().release(); }
   }
 
   private setStatus(status: string): void {
@@ -226,6 +226,8 @@ export class ProPasskeyReceiver {
     const joined = await channel.join(context, owner);
     if (generation !== this.generation) { return; }
     if (!joined) {
+      // The channel left by itself: nothing of the receiver's to let go later.
+      this.receiverJoined = false;
       this.listening = false;
       this.setStatus('无法加入同账号设备通道，请确认设备登录同一华为账号并已联网');
       return;
@@ -322,7 +324,9 @@ export class ProPasskeyReceiver {
       // A request that ended, an account change or a lost channel means nobody receives it: no passkey stays.
       if (active.ended || this.owner() !== owner || !ProPasskeyChannel.getInstance().joined()) {
         if (register && response.ok) {
-          try { await ProPasskeyAuthenticator.remove(context, owner, response.credentialId); } catch (_error) {}
+          let removed = false;
+          try { removed = await ProPasskeyAuthenticator.remove(context, owner, response.credentialId); } catch (_error) {}
+          if (!removed) { this.note('未能删除刚创建的通行密钥记录（密钥已删除，下次使用时会自动清理）'); }
         }
         this.note('请求已结束：' + request.rpId + (register ? ' 注册' : ' 登录') + '（' + name + '）');
         return;
