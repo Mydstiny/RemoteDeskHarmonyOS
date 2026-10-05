@@ -24,7 +24,8 @@ const b64 = bytes => Buffer.from(bytes).toString('base64url');
 function fixture() {
   const state = { now: 1_000_000, owner: 'owner-a', receiving: true, peers: new Map(), signatureValid: true,
     dialogs: [], responses: [], listener: null, withdraw: null, joined: false, released: 0, records: [],
-    keys: new Set(), removedKeys: [], unlock: null, savedPeers: [], timers: [], generated: null, signs: 0 };
+    keys: new Set(), removedKeys: [], unlock: null, savedPeers: [], timers: [], generated: null, signs: 0,
+    saving: null, joinGate: null };
   const clock = { now: () => state.now };
   const timers = { setTimeout: (callback) => { state.timers.push(callback); return state.timers.length; },
     clearTimeout: () => {} };
@@ -47,7 +48,7 @@ function fixture() {
   const channelInstance = {
     requestPermission: async () => true,
     joined: () => state.joined,
-    async join() { state.joined = true; return true; },
+    async join() { if (state.joinGate !== null) await state.joinGate; state.joined = true; return true; },
     listen(onRequest, onWithdraw) { state.listener = onRequest; state.withdraw = onRequest === null ? null : onWithdraw; },
     respond(response) { state.responses.push(response); return true; },
     release() { state.released++; },
@@ -76,8 +77,16 @@ function fixture() {
     utf8: text => new Uint8Array(Buffer.from(text, 'utf8')) };
   const store = {
     forRp: (_context, owner, rpId) => state.records.filter(record => record.owner === owner && record.rpId === rpId),
-    save(_context, record) { state.records = state.records.filter(value => value.id !== record.id).concat([record]); },
-    remove() { return null; }
+    save(_context, record) {
+      state.records = state.records.filter(value => value.id !== record.id).concat([record]);
+      if (state.saving !== null) state.saving();
+    },
+    remove(_context, owner, id) {
+      const record = state.records.find(value => value.owner === owner && value.id === id);
+      if (record === undefined) return null;
+      state.records = state.records.filter(value => value !== record);
+      return record;
+    }
   };
   const authenticator = load('ProPasskeyAuthenticator', { './ProPasskeyCodec': codec, './ProPasskeyKeys': keyModule,
     './ProPasskeyStore': { ProPasskeyStore: store } }, { Date: clock });
@@ -298,6 +307,42 @@ test('going to the background cancels an unanswered request, but not one being u
   await settle();
   assert.ok(f.state.released > before);
   assert.equal(f.state.listener, null);
+});
+
+test('a registration saved as its deadline passes is still answered; one withdrawn meanwhile is rolled back', async () => {
+  const f = await started();
+  const late = f.register({ ttlMs: 10000 });
+  f.state.saving = () => { f.state.now += 8000; };
+  f.state.listener(late);
+  await settle();
+  f.state.dialogs[0].resolve(true);
+  await settle();
+  const answer = f.state.responses.pop();
+  assert.deepEqual([answer.id, answer.ok], [late.id, true]);
+  assert.equal(f.state.records.length, 1);
+  const withdrawn = f.register();
+  f.state.saving = () => { f.state.withdraw(withdrawn.id); };
+  f.state.listener(withdrawn);
+  await settle();
+  f.state.dialogs[1].resolve(true);
+  await settle();
+  assert.equal(f.state.responses.length, 0);
+  assert.equal(f.state.records.length, 1);
+  assert.equal(f.state.keys.size, 1);
+});
+
+test('going to the background while still joining lets the channel go', async () => {
+  const f = fixture();
+  let open;
+  f.state.joinGate = new Promise((resolve) => { open = resolve; });
+  f.receiver.foreground({}, () => ({}));
+  await settle();
+  f.receiver.background();
+  await settle();
+  open();
+  await settle();
+  assert.equal(f.state.listener, null);
+  assert.ok(f.state.released > 0);
 });
 
 test('a request with too little time left is refused without a dialog', async () => {

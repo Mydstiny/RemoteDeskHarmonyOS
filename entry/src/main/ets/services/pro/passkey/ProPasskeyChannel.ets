@@ -121,7 +121,11 @@ export class ProPasskeyChannel {
     this.session = '';
     if (object === null) { return; }
     try { if (change !== null) { object.off('change', change); } } catch (_error) {}
-    try { void object.setSessionId('').catch((): void => {}); } catch (_error) {}
+    const exit = (): void => {
+      try { void object.setSessionId('').catch((): void => {}); } catch (_error) {}
+    };
+    // A cancel written just now needs a moment to sync before the object leaves the session.
+    if (waiting.length > 0) { setTimeout(exit, 500); } else { exit(); }
   }
 
   /** Receives requests from other devices while set; null stops answering. */

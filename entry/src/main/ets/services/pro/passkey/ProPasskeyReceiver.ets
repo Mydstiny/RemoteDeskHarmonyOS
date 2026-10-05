@@ -80,6 +80,8 @@ export class ProPasskeyReceiver {
   private watching: boolean = false;
   private active: ActiveRequest | null = null;
   private activeRequest: PasskeyRequest | null = null;
+  /** The channel was joined to receive (a sender on this device joins and lets go of it on its own). */
+  private receiverJoined: boolean = false;
 
   private owner(): string { return AccountSessionCoordinator.getInstance().currentScope().ownerScopeId; }
 
@@ -206,16 +208,21 @@ export class ProPasskeyReceiver {
       this.active.end();
     }
     if (!wanted || context === null) {
-      // In the background with an allowed request still running: stay until it has been answered.
+      // In the background with an allowed request still running: stay until it has been answered. Otherwise let go
+      // of what receiving joined, also when a foreground evaluation still joining was overtaken by the background.
       const finishing = receiving && this.active !== null && !this.active.ended;
-      if (this.listening && !finishing) {
-        channel.listen(null);
+      if (!finishing && (this.listening || this.receiverJoined)) {
+        if (this.listening) {
+          channel.listen(null);
+          this.listening = false;
+        }
+        this.receiverJoined = false;
         channel.release();
-        this.listening = false;
       }
       this.setStatus(this.enabled() && !this.inForeground ? '应用在后台时暂停接收' : '');
       return;
     }
+    this.receiverJoined = true;
     const joined = await channel.join(context, owner);
     if (generation !== this.generation) { return; }
     if (!joined) {
@@ -311,7 +318,12 @@ export class ProPasskeyReceiver {
       const response: PasskeyResponse = register ?
         await ProPasskeyAuthenticator.register(context, owner, request, current) :
         await ProPasskeyAuthenticator.signIn(context, owner, request, current);
-      if (!current()) {
+      // The authenticator checked the deadline before it saved; from here the transfer margin covers the answer.
+      // A request that ended, an account change or a lost channel means nobody receives it: no passkey stays.
+      if (active.ended || this.owner() !== owner || !ProPasskeyChannel.getInstance().joined()) {
+        if (register && response.ok) {
+          try { await ProPasskeyAuthenticator.remove(context, owner, response.credentialId); } catch (_error) {}
+        }
         this.note('请求已结束：' + request.rpId + (register ? ' 注册' : ' 登录') + '（' + name + '）');
         return;
       }

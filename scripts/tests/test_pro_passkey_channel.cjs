@@ -179,8 +179,11 @@ test('leaving or switching accounts settles what was waiting', async () => {
   const first = f.object();
   await f.channel.join({}, 'owner-b');
   assert.equal(await waiting, null);
-  // The old account's devices are told before this device leaves them.
+  // The old account's devices are told, and the old object leaves only after the cancel had time to sync.
   assert.equal(first.cancel, out.id);
+  assert.deepEqual(first.sessions, [f.module.passkeySessionId('owner-a')]);
+  f.state.run(500);
+  assert.deepEqual(first.sessions.slice(-1), ['']);
   assert.deepEqual(f.state.objects.map(item => item.sessions[0]),
     [f.module.passkeySessionId('owner-a'), f.module.passkeySessionId('owner-b')]);
 });
