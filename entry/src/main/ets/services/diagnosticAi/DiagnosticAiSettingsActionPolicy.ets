@@ -277,8 +277,9 @@ export function diagnosticAiSettingValueLabel(settingId: string, value: string):
 
 const PROTOCOLS: string[] = ['rustdesk', 'moonlight', 'rdp', 'ssh', 'vnc'];
 const PROTOCOL_PREFIXES: string[] = ['RustDesk ', 'Moonlight ', 'RDP ', 'SSH ', 'VNC '];
-const TURN_ON: string[] = ['开启', '打开', '启用', '允许', '开一下', '打开一下'];
-const TURN_OFF: string[] = ['关闭', '关掉', '关了', '禁用', '停用', '取消', '不要'];
+const TURN_ON: string[] = ['开启', '打开', '启用', '允许', '开一下', '打开一下', '显示'];
+/** Read before TURN_ON: 不要打开 / 不显示 turn something off. */
+const TURN_OFF: string[] = ['关闭', '关掉', '关了', '禁用', '停用', '取消', '不要', '不显示'];
 
 /** Other words people use for a setting (its label without the protocol is always one). */
 function settingWords(id: string): string[] {
@@ -404,13 +405,21 @@ export function diagnosticAiSettingIntents(question: string): DiagnosticAiSettin
     const named: string[] = PROTOCOLS.filter((p: string): boolean => clause.indexOf(p) >= 0);
     if (named.length > 0) { protocolContext = named[0]; }
     const protocols: string[] = named.length > 0 ? named : protocolContext !== '' ? [protocolContext] : [];
-    if (TURN_ON.some((word: string): boolean => clause.indexOf(word) >= 0)) { verbContext = 'true'; }
-    else if (TURN_OFF.some((word: string): boolean => clause.indexOf(word) >= 0)) { verbContext = 'false'; }
-    SETTINGS.forEach((spec: AiSettingSpec): void => {
+    if (TURN_OFF.some((word: string): boolean => clause.indexOf(word) >= 0)) { verbContext = 'false'; }
+    else if (TURN_ON.some((word: string): boolean => clause.indexOf(word) >= 0)) { verbContext = 'true'; }
+    const candidates: AiSettingSpec[] = SETTINGS.filter((spec: AiSettingSpec): boolean => {
       const protocol: string = protocolOf(spec.id);
-      if (protocol !== '' && protocols.length > 0 && protocols.indexOf(protocol) < 0) { return; }
-      if (protocol === '' && named.length > 0 && spec.id.indexOf('ui.') !== 0 && spec.id.indexOf('remote.') !== 0) { return; }
-      const subjectHit: boolean = subjectWords(spec).some((word: string): boolean => word.length > 0 && clause.indexOf(word) >= 0);
+      if (protocol !== '' && protocols.length > 0 && protocols.indexOf(protocol) < 0) { return false; }
+      return !(protocol === '' && named.length > 0 && spec.id.indexOf('ui.') !== 0 && spec.id.indexOf('remote.') !== 0);
+    });
+    const hits: boolean[] = candidates.map((spec: AiSettingSpec): boolean =>
+      subjectWords(spec).some((word: string): boolean => word.length > 0 && clause.indexOf(word) >= 0));
+    // A clause that names a setting is about that setting: another one's value label in it (不显示 is also a 完成动画
+    // choice) does not count. Values alone (H265, 深色) still find their setting when none is named.
+    const anyNamed: boolean = hits.some((hit: boolean): boolean => hit);
+    candidates.forEach((spec: AiSettingSpec, index: number): void => {
+      const subjectHit: boolean = hits[index];
+      if (anyNamed && !subjectHit) { return; }
       let value: string = '';
       if (spec.isBoolean()) {
         if (!subjectHit || verbContext === '') { return; }

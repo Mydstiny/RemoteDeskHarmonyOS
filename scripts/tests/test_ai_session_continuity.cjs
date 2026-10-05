@@ -113,6 +113,14 @@ test('the AI settings catalog has the 远程 AI settings, and plain words pick t
   assert.deepEqual(pick('把远程 AI 从 Claude 风格换成 Codex 风格'), ['remoteAi.uiStyle=codex']);
   assert.deepEqual(pick('从 Siri 风格换成小艺风格'), ['ai.style=xiaoyi']);
   assert.deepEqual(pick('把 RustDesk 编码改成 H265，画质优先'), ['rustdesk.codec=5', 'rustdesk.imageQuality=2']);
+  // 不要打开 / 不显示 turn off; 显示 turns on.
+  assert.deepEqual(pick('不要打开 RDP 音频'), ['rdp.audioEnabled=false']);
+  assert.deepEqual(pick('不显示远程 AI 执行过程'), ['remoteAi.showExecution=false']);
+  assert.deepEqual(pick('显示 RDP 诊断信息'), ['rdp.showDiagnostics=true']);
+  // A clause that names a setting is about it alone: another setting's value label in it does not count.
+  assert.deepEqual(pick('悬浮球用小艺光环球'), ['ai.motion.orb=xiaoyiRing']);
+  assert.deepEqual(pick('完成动画不显示'), ['ai.motion.done=none']);
+  assert.deepEqual(pick('H264'), ['rustdesk.codec=4'], 'a value alone still finds its setting');
   assert.deepEqual(pick('打开回到前台后恢复查看'), ['remoteAi.reconnectOnForeground=true']);
   assert.deepEqual(pick('切到小艺风格'), ['ai.style=xiaoyi'], 'AI 风格 stays its own setting');
   // The host page reports the account's values; the catalog shows them.
@@ -239,6 +247,20 @@ test('手机通行密钥 and 安全密钥重定向 are app actions; 远程 AI wo
   assert.deepEqual(ids('打开设置 → 远程 AI → 连接与配对'), ['settings.aiHosts']);
   assert.deepEqual(ids('在设置 → 远程 AI 添加主机并扫码配对'), ['host.add', 'settings.aiHosts']);
   assert.deepEqual(ids('在设置 → 远程 AI 里导出 AI 配置'), ['settings.aiData']);
+  // Installing other remote-desktop servers on the computer is not 远程 AI's install page.
+  for (const step of ['在电脑上安装 RustDesk', '在电脑上安装 VNC 服务端，例如 TightVNC', 'Moonlight 需要电脑上安装 Sunshine',
+    '在电脑上安装 OpenSSH Server', '在电脑上安装最新的显卡驱动', '在 Codex 中安装依赖', '用 DSH 安装依赖包']) {
+    assert.ok(!ids(step).includes('settings.aiInstall'), step);
+  }
+  // Pairing is the host page's, whatever else the step mentions; 显示 alone is a verb, not the display page.
+  assert.deepEqual(ids('打开设置 → 远程 AI → 连接与配对，粘贴插件显示的邀请'), ['settings.aiHosts']);
+  assert.deepEqual(ids('确认电脑上的插件正在运行，再在远程 AI 里重新配对'), ['settings.aiHosts']);
+  assert.deepEqual(ids('如果远程 AI 显示“未配对”，重新配对'), ['settings.aiHosts']);
+  assert.deepEqual(ids('远程 AI 显示连接失败时，检查电脑防火墙'), ['settings.aiHosts']);
+  assert.deepEqual(ids('在设置 → 远程 AI → 显示与恢复里关闭工具执行过程'), ['settings.aiDisplay']);
+  // A security key is not an SSH key; a 远程 AI session is not the AI 助理's own conversations.
+  assert.deepEqual(ids('使用 YubiKey 登录'), ['pro.securityKey']);
+  assert.deepEqual(ids('在远程 AI 会话里批准文件改动'), ['settings.aiHosts']);
   // A subject alone (键盘, 终端, SSH, RDP) opens its own page, not every page about it.
   // (session.* actions are a session's own toolbar, offered only there.)
   const pages = (step) => ids(step).filter((id) => !id.startsWith('session.'));
