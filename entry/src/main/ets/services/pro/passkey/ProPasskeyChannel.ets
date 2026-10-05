@@ -6,6 +6,8 @@ import {
 import { sha256, utf8 } from './ProPasskeyKeys';
 
 interface ChannelFields { request: string; response: string; cancel: string; }
+/** A join under way, so a second caller for the same session shares it instead of starting over. */
+interface PendingJoin { session: string; result: Promise<boolean>; }
 interface ChannelObject extends distributedDataObject.DataObject { request: string; response: string; cancel: string; }
 
 const SYNC_PERMISSION: Permissions = 'ohos.permission.DISTRIBUTED_DATASYNC';
@@ -38,6 +40,7 @@ export class ProPasskeyChannel {
   private leaveWhenIdle: boolean = false;
   /** Sessions whose old object still lets a cancel sync before it leaves; joining one of them waits for that. */
   private exiting: Map<string, Promise<void>> = new Map();
+  private joining: PendingJoin | null = null;
   private sent: string[] = [];
   private seen: string[] = [];
 
@@ -60,6 +63,15 @@ export class ProPasskeyChannel {
     const session = passkeySessionId(owner);
     this.leaveWhenIdle = false;
     if (this.object !== null && this.session === session) { return true; }
+    // A receiver and a sender may both join the same session at once (for instance while an old object leaves it).
+    const pending = this.joining;
+    if (pending !== null && pending.session === session) { return pending.result; }
+    const entry: PendingJoin = { session, result: this.joinNow(context, owner, session) };
+    this.joining = entry;
+    try { return await entry.result; } finally { if (this.joining === entry) { this.joining = null; } }
+  }
+
+  private async joinNow(context: common.Context, owner: string, session: string): Promise<boolean> {
     this.leave();
     if (owner === '' || !ProPasskeyChannel.supported()) { return false; }
     const generation = this.generation;
@@ -129,13 +141,14 @@ export class ProPasskeyChannel {
     this.session = '';
     if (object === null) { return; }
     try { if (change !== null) { object.off('change', change); } } catch (_error) {}
-    const exit = (): void => {
-      try { void object.setSessionId('').catch((): void => {}); } catch (_error) {}
+    const exit = (): Promise<void> => {
+      try { return object.setSessionId('').then((): void => {}, (): void => {}); } catch (_error) { return Promise.resolve(); }
     };
-    if (waiting.length === 0) { exit(); return; }
-    // A cancel written just now needs a moment to sync before the object leaves the session.
+    if (waiting.length === 0) { void exit(); return; }
+    // A cancel written just now needs a moment to sync before the object leaves the session; a new object joins it
+    // only once the old one is out.
     const leaving = new Promise<void>((resolve: () => void): void => {
-      setTimeout((): void => { exit(); resolve(); }, 500);
+      setTimeout((): void => { void exit().then((): void => { resolve(); }); }, 500);
     });
     this.exiting.set(session, leaving);
     void leaving.then((): void => { if (this.exiting.get(session) === leaving) { this.exiting.delete(session); } });

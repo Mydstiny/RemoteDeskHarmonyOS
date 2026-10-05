@@ -33,6 +33,8 @@ function fixture() {
           this.sessions.push(id); this.sessionId = id;
           // Joining brings in what the account's other devices hold.
           if (id !== '' && state.synced) Object.assign(this, state.synced);
+          // Leaving may take a while on a device.
+          if (id === '' && state.leaveGate) return state.leaveGate;
           return Promise.resolve();
         } };
       state.objects.push(object);
@@ -191,6 +193,25 @@ test('leaving or switching accounts settles what was waiting', async () => {
   assert.equal(await back, true);
   assert.equal(f.state.objects.length, 3);
   assert.deepEqual(f.object().sessions, [f.module.passkeySessionId('owner-a')]);
+});
+
+test('a receiver and a sender joining one session at once share the join; it waits until the old object is out', async () => {
+  const f = fixture();
+  await f.channel.join({}, 'owner-a');
+  void f.channel.send(f.request());
+  await f.channel.join({}, 'owner-b');
+  let left;
+  f.state.leaveGate = new Promise((resolve) => { left = resolve; });
+  const receiver = f.channel.join({}, 'owner-a');
+  const sender = f.channel.join({}, 'owner-a');
+  f.state.run(500);
+  await settle();
+  // The old object asked to leave but is not out yet: nobody joins.
+  assert.equal(f.state.objects.length, 2);
+  left();
+  assert.deepEqual([await receiver, await sender], [true, true]);
+  assert.equal(f.state.objects.length, 3);
+  assert.equal(f.channel.joined(), true);
   assert.deepEqual(f.state.objects.map(item => item.sessions[0]),
     [f.module.passkeySessionId('owner-a'), f.module.passkeySessionId('owner-b'), f.module.passkeySessionId('owner-a')]);
 });
