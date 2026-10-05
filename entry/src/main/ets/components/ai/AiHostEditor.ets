@@ -7,7 +7,7 @@ import { AiActionButton } from './AiActionButton';
 import { AiBackendChoiceCard } from './AiBackendChoiceCard';
 import { AiFormField } from './AiFormField';
 import { ProBadge } from '../ProBadge';
-import { AiHost, AiBackend, emptyAiHost, aiHostError } from '../../services/ai/AiModels';
+import { AiHost, AiBackend, AI_BACKENDS, emptyAiHost, aiHostError, aiBackendDefaultPort, aiBackendName, aiBackendSubtitle } from '../../services/ai/AiModels';
 import { AiAccess, AiAccountLease } from '../../services/ai/AiAccess';
 import { AiLocalStore } from '../../services/ai/AiLocalStore';
 import { AiBridgeClient } from '../../services/ai/AiBridgeClient';
@@ -98,7 +98,7 @@ export struct AiHostEditor {
       if (!this.alive || this.inBackground || generation !== this.editGeneration ||
         !AiAccess.getInstance().current(account)) { return; }
       this.backend = settings.defaultBackend;
-      this.port = this.backend === 'codex' ? '9443' : '9444';
+      this.port = aiBackendDefaultPort(this.backend).toString();
       this.allowed = AiAccess.getInstance().executable(this.backend);
     } catch (error) {
       if (this.alive && generation === this.editGeneration) { this.error = aiErrorText((error as Error).message); }
@@ -139,7 +139,7 @@ export struct AiHostEditor {
   }
   private selectBackend(backend: AiBackend): void {
     if (this.busy || this.defaultsPending || !AiAccess.getInstance().proVisible() || this.backend === backend) { return; }
-    this.backend = backend; this.port = backend === 'codex' ? '9443' : '9444'; this.invite = ''; this.inviteStatus = ''; this.paired = false;
+    this.backend = backend; this.port = aiBackendDefaultPort(backend).toString(); this.invite = ''; this.inviteStatus = ''; this.paired = false;
     this.stopLanScan();
     this.allowed = AiAccess.getInstance().executable(backend);
   }
@@ -288,12 +288,11 @@ export struct AiHostEditor {
     Text('选择电脑端 AI').fontSize(14).fontFamily(AppConfig.fontFamily).fontWeight(FontWeight.Medium)
       .fontColor(this.pal().text).width('100%')
     Column({ space: 10 }) {
-      AiBackendChoiceCard({ backend: 'codex', title: 'Codex', subtitle: 'OpenAI Codex · 9443', isSelected: this.backend === 'codex',
-        onSelect: (): void => { this.selectBackend('codex'); } }).width('100%').enabled(!this.busy && !this.defaultsPending &&
-          AiAccess.getInstance().executable('codex'))
-      AiBackendChoiceCard({ backend: 'dsh', title: 'DSH', subtitle: 'DeepSeek Harness · 9444', isSelected: this.backend === 'dsh',
-        onSelect: (): void => { this.selectBackend('dsh'); } }).width('100%').enabled(!this.busy && !this.defaultsPending &&
-          AiAccess.getInstance().executable('dsh'))
+      ForEach(AI_BACKENDS, (backend: AiBackend): void => {
+        AiBackendChoiceCard({ backend, title: aiBackendName(backend), subtitle: aiBackendSubtitle(backend),
+          isSelected: this.backend === backend, onSelect: (): void => { this.selectBackend(backend); } })
+          .width('100%').enabled(!this.busy && !this.defaultsPending && AiAccess.getInstance().executable(backend))
+      }, (backend: AiBackend): string => backend)
     }.width('100%')
     Text('连接路径').fontSize(14).fontFamily(AppConfig.fontFamily).fontWeight(FontWeight.Medium)
       .fontColor(this.pal().text).width('100%')
@@ -386,7 +385,7 @@ export struct AiHostEditor {
     AiFormField({ title: this.transport === 'lan' ? '电脑地址' : '电脑地址（中继目标）', value: this.address,
       hint: this.transport === 'lan' ? '局域网 IP 或域名' : 'Agent 地址或已绑定目标地址', isEnabled: !this.busy && !this.defaultsPending && this.allowed,
       onChange: (v: string): void => { this.address = v; } })
-    AiFormField({ title: '端口', value: this.port, hint: this.backend === 'codex' ? '9443' : '9444',
+    AiFormField({ title: '端口', value: this.port, hint: aiBackendDefaultPort(this.backend).toString(),
       limit: 5, inputType: InputType.Number, isEnabled: !this.busy && !this.defaultsPending && this.allowed, onChange: (v: string): void => { this.port = v; } })
     AiFormField({ title: '证书服务器名称（可选）', value: this.serverName, hint: '默认使用电脑地址', isEnabled: !this.busy && !this.defaultsPending && this.allowed,
       onChange: (v: string): void => { this.serverName = v; } })
@@ -395,7 +394,7 @@ export struct AiHostEditor {
     if (this.wizard()) {
       Column({ space: 6 }) {
         Text(this.label).fontSize(16).fontWeight(FontWeight.Medium).fontFamily(AppConfig.fontFamily).fontColor(this.pal().text)
-        Text((this.backend === 'codex' ? 'Codex' : 'DSH') + ' · ' + this.address + ':' + this.port + ' · ' + this.routeSummary())
+        Text(aiBackendName(this.backend) + ' · ' + this.address + ':' + this.port + ' · ' + this.routeSummary())
           .fontSize(13).fontFamily(AppConfig.fontFamily).fontColor(this.pal().text2)
       }.width('100%').alignItems(HorizontalAlign.Start).padding(16).borderRadius(16).backgroundColor(this.pal().card)
     }
@@ -413,9 +412,8 @@ export struct AiHostEditor {
     }
     Text('电脑端生成方式').fontSize(13).fontFamily(AppConfig.fontFamily).fontWeight(FontWeight.Medium)
       .fontColor(this.pal().text).width('100%')
-    Text(this.backend === 'codex' ?
-      'Codex：在插件目录运行 node bin/remotedesk-codex.mjs invite --state "$STATE" --projects <项目ID> --role operator --out "$STATE/invite.json"' :
-      'DSH：在插件目录运行 node bin/remotedesk-dsh.mjs invite --state "$STATE" --projects <项目ID> --role operator --out "$STATE/invite.json"')
+    Text(aiBackendName(this.backend) + '：在插件目录运行 node bin/remotedesk-' + this.backend +
+      '.mjs invite --state "$STATE" --projects <项目ID> --role operator --out "$STATE/invite.json"')
       .fontSize(11).fontFamily('monospace').fontColor(this.pal().text2).width('100%')
     Text('电脑端设置页默认显示二维码；扫描结果可以直接粘贴，二维码不可用时切换到链接配对并复制链接。邀请由电脑端本地签发，有效 120 秒且只能使用一次；完成配对后删除传输副本。')
       .fontSize(12).fontFamily(AppConfig.fontFamily).fontColor(this.pal().text2).width('100%')

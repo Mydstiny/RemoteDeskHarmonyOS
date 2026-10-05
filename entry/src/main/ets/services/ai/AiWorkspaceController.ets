@@ -148,6 +148,8 @@ export class AiWorkspaceController {
             if (next === itemCursor) { throw new Error('AI_PAGINATION_INVALID'); } itemCursor = next;
           }
         }
+      } else if (client.host.backend === 'claudecode') {
+        aiArray(snapshot['events']).forEach((event: Object): void => this.transcript.claudeEvent(aiRecord(event)));
       } else { aiArray(snapshot['events']).forEach((event: Object): void => this.transcript.dshEvent(aiRecord(event))); }
       const next = aiString(snapshot['nextCursor']);
       if (next !== '' && next === cursor) { throw new Error('AI_PAGINATION_INVALID'); }
@@ -155,7 +157,7 @@ export class AiWorkspaceController {
       if (older && client.host.backend === 'codex') { this.transcript.prependIds(olderIds); }
       this.changed();
       // DSH replacements need their full source interval before SSE admission.
-    } while (client.host.backend === 'dsh' && cursor !== '');
+    } while (client.host.backend !== 'codex' && cursor !== '');
   }
   private async stream(token: number): Promise<void> {
     const client = this.client; if (client === null) { return; }
@@ -166,6 +168,7 @@ export class AiWorkspaceController {
         if (event.session !== this.sessionId) { return; }
         const type = aiString(event.event['type']);
         if (client.host.backend === 'codex') { this.scheduleLiveSnapshot(token); }
+        else if (client.host.backend === 'claudecode') { this.transcript.claudeEvent(event.event); }
         else { this.transcript.dshEvent(event.event); }
         if (type.startsWith('execution.')) { this.status = type.slice(10); }
         if (type.startsWith('approval.')) { void this.refreshApprovals().catch((): void => {}); }

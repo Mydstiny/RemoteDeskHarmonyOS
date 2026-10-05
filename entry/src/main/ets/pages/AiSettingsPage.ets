@@ -12,7 +12,7 @@ import { AiBackendChoiceCard } from '../components/ai/AiBackendChoiceCard';
 import { AiHostEditor } from '../components/ai/AiHostEditor';
 import { AiHostInstallPanel } from '../components/ai/AiHostInstallPanel';
 import { AiHostService } from '../services/ai/AiHostService';
-import { AiBackend, AiHost, AiSettings, defaultAiSettings } from '../services/ai/AiModels';
+import { AiBackend, AiHost, AiSettings, aiBackendName, defaultAiSettings } from '../services/ai/AiModels';
 import { AiAccess, AiAccountLease } from '../services/ai/AiAccess';
 import { AiLocalStore } from '../services/ai/AiLocalStore';
 import { AiDataTransfer } from '../services/ai/AiDataTransfer';
@@ -184,7 +184,7 @@ export struct AiSettingsSurface {
   }
   @Builder private hostActionRow(host: AiHost) {
     AppSettingsActionRow({ icon: protocolIcon('ai'), title: host.label,
-      detail: (host.backend === 'codex' ? 'Codex' : 'DSH') + ' · ' + host.address + ':' + host.port + ' · 编辑与配对',
+      detail: aiBackendName(host.backend) + ' · ' + host.address + ':' + host.port + ' · 编辑与配对',
       isEnabled: !this.busy, onAction: (): void => { this.openEditor(host); } })
   }
   @Builder private editor() {
@@ -236,6 +236,9 @@ export struct AiSettingsSurface {
             } })
             ProFeatureGate({ featureId: this.backendFeature('dsh'), context: ProAppRuntime.getInstance().context('ai'), content: (): void => {
               this.backendChoiceCard('dsh', 'DSH', 'DeepSeek Harness · 9444');
+            } })
+            ProFeatureGate({ featureId: this.backendFeature('claudecode'), context: ProAppRuntime.getInstance().context('ai'), content: (): void => {
+              this.backendChoiceCard('claudecode', 'Claude Agent', 'Anthropic Claude · 9445');
             } })
           }.width('100%')
           this.sectionTitle('主机与配对', '局域网连接 · RustDesk 中继将在后续版本开放')

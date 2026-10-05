@@ -380,21 +380,22 @@ const cases = [
     assert.ok(backendCard.includes('.height(68)') && backendCard.includes('.borderRadius(16)'));
     const routeCard = read('entry/src/main/ets/components/ai/AiConnectionPathCard.ets');
     assert.ok(routeCard.includes('.height(68)') && routeCard.includes('.borderRadius(16)'));
-    assert.ok(editor.includes('AiBackendChoiceCard({ backend: \'codex\''));
-    assert.ok(editor.includes("AiAccess.getInstance().executable('codex')"));
-    assert.ok(editor.includes("AiAccess.getInstance().executable('dsh')"));
+    // Every backend (Codex, DSH, Claude Agent) gets a card enabled by its own Pro entitlement.
+    assert.ok(editor.includes('ForEach(AI_BACKENDS') && editor.includes('AiBackendChoiceCard({ backend, title: aiBackendName(backend)'));
+    assert.ok(editor.includes('AiAccess.getInstance().executable(backend)'));
     assert.ok(editor.includes('AiConnectionPathCard({ path: \'lan\''));
     assert.ok(editor.includes('AiConnectionPathCard({ path: \'rustdesk\''));
     assert.ok(editor.includes('选择 RustDesk 中继'));
     assert.ok(editor.includes('局域网搜索') && editor.includes('搜索局域网 Agent'));
     assert.ok(editor.includes('selectLanAgent') && editor.includes('startLanScan'));
     assert.ok(editor.includes('从剪贴板粘贴邀请') && editor.includes('pasteInvite'));
-    assert.ok(editor.includes('bin/remotedesk-codex.mjs invite') && editor.includes('bin/remotedesk-dsh.mjs invite'));
+    assert.ok(editor.includes("'：在插件目录运行 node bin/remotedesk-' + this.backend") && editor.includes("'.mjs invite --state"));
     const lanDiscovery = read('entry/src/main/ets/services/ai/AiLanDiscoveryService.ets');
     assert.ok(lanDiscovery.includes('aiLanCandidateAddresses') && lanDiscovery.includes('MAX_CONCURRENCY'));
     assert.ok(lanDiscovery.includes('getDefaultNet') && lanDiscovery.includes('CONNECT_TIMEOUT_MS: number = 320'));
     assert.ok(settingsPage.includes('AiBackendChoiceCard({ backend: backend') && settingsPage.includes("this.backendChoiceCard('codex'"));
-    assert.ok(read('entry/src/main/ets/components/ai/AiHostInstallPanel.ets').includes('AiBackendChoiceCard({ backend: \'codex\''));
+    assert.ok(read('entry/src/main/ets/components/ai/AiHostInstallPanel.ets').includes('AiBackendChoiceCard({ backend, title: aiBackendName(backend)'));
+    assert.ok(settingsPage.includes("this.backendChoiceCard('claudecode', 'Claude Agent'"));
     assert.ok(settingsPage.includes("padding({ top: this.embedded ? 0 : (this.topInset > 0 ? px2vp(this.topInset) : 0) })"));
     const actionRow = read('entry/src/main/ets/components/AppSettingsActionRow.ets');
     assert.ok(!actionRow.includes('Button({ type: ButtonType.Normal })'), 'Settings action rows must not use native rectangular Button clipping');

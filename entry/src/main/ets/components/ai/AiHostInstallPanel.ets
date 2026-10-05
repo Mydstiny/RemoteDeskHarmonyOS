@@ -5,7 +5,7 @@ import { AppConfig, Palette, buildDark, buildLight } from '../../common/Theme';
 import { AppSettingsChoiceButton } from '../AppSettingsChoiceButton';
 import { AiBackendChoiceCard } from './AiBackendChoiceCard';
 import { AiActionButton } from './AiActionButton';
-import { AiBackend } from '../../services/ai/AiModels';
+import { AiBackend, AI_BACKENDS, aiBackendName, aiBackendSubtitle } from '../../services/ai/AiModels';
 import { AiInstallMode, aiInstallRelease, aiInstallPrompt, aiInstallManualUrl } from '../../services/ai/AiHostInstallPolicy';
 
 /** Public help only. All device/service/credential operations stay on the host. */
@@ -65,10 +65,10 @@ export struct AiHostInstallPanel {
     Column({ space: 12 }) {
       Text('选择电脑端 AI').fontSize(14).fontFamily(AppConfig.fontFamily).fontColor(this.pal().text).width('100%')
       Column({ space: 10 }) {
-        AiBackendChoiceCard({ backend: 'codex', title: 'Codex', subtitle: 'OpenAI Codex · 9443', isSelected: this.backend === 'codex',
-          onSelect: (): void => { this.selectBackend('codex'); } }).width('100%')
-        AiBackendChoiceCard({ backend: 'dsh', title: 'DSH', subtitle: 'DeepSeek Harness · 9444', isSelected: this.backend === 'dsh',
-          onSelect: (): void => { this.selectBackend('dsh'); } }).width('100%')
+        ForEach(AI_BACKENDS, (backend: AiBackend): void => {
+          AiBackendChoiceCard({ backend, title: aiBackendName(backend), subtitle: aiBackendSubtitle(backend),
+            isSelected: this.backend === backend, onSelect: (): void => { this.selectBackend(backend); } }).width('100%')
+        }, (backend: AiBackend): string => backend)
       }.width('100%')
       Text('插件 ' + aiInstallRelease(this.backend).version + ' · ' + aiInstallRelease(this.backend).engine)
         .fontSize(12).fontFamily(AppConfig.fontFamily).fontColor(this.pal().text2).width('100%')

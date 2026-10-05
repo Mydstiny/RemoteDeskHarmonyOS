@@ -25,7 +25,7 @@ let blocked='';const blockedAi=picker.resolveHostProtocolPickerOption('ai',true,
 picker.dispatchSelectedHostProtocol(blockedAi,protocol=>blocked=protocol);
 assert.equal(blocked,'');assert.equal(blockedAi.statusLabel,'需要 Pro');
 console.log('PASS non-Pro AI picker is visible only as a blocked route and cannot dispatch');
-const catalog=load('services/pro/ProFeatureCatalog').proFeatures();for(const id of ['pro.ai.workspace','pro.ai.codex','pro.ai.dsh']){
+const catalog=load('services/pro/ProFeatureCatalog').proFeatures();for(const id of ['pro.ai.workspace','pro.ai.codex','pro.ai.dsh','pro.ai.claudecode']){
   const item=catalog.find(item=>item.id===id);assert.equal(item.requiredEntitlementId,'pro.lifetime');assert.equal(item.availability,'available');assert.deepEqual(Array.from(item.protocols),['ai']);}
 assert.equal(catalog.find(item=>item.id==='pro.ai.rustdeskTransport').availability,'planned');
 const pages=JSON.parse(fs.readFileSync(path.join(root,'resources/base/profile/main_pages.json'),'utf8')).src;

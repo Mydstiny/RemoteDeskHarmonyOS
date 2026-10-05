@@ -87,6 +87,8 @@ export class AiEventDecoder {
   }
 }
 export function aiErrorText(code: string): string {
+  if (code.includes('CLAUDE_API_KEY_REQUIRED')) { return '电脑端 Claude Agent 尚未配置 Anthropic API Key，请在电脑设置页填写后重试'; }
+  if (code.includes('CLAUDE_QUERY_FAILED')) { return 'Claude Agent 执行失败，请检查电脑端 API Key、网络与额度后重试'; }
   if (code.includes('AI_MODEL_IMAGE')) { return '当前模型未声明图片能力，请选择支持图片的模型'; }
   if (code.includes('AI_ATTACHMENT')) { return '附件读取失败，请选择 500 KB 以内的 PNG、JPEG 或 UTF-8 文本'; }
   if (code.includes('AI_QUESTION_ANSWER')) { return '请填写所有问题的回答'; }

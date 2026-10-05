@@ -2,12 +2,12 @@ import { common } from '@kit.AbilityKit';
 import { RemoteHost } from '../../model/RemoteHost';
 import { AiAccess } from './AiAccess';
 import { AiLocalStore } from './AiLocalStore';
-import { AiHost } from './AiModels';
+import { AiHost, aiBackendName } from './AiModels';
 
 export function projectAiHost(ai: AiHost): RemoteHost {
   const host = new RemoteHost();
   host.id = 'ai:' + ai.id; host.label = ai.label; host.protocol = 'ai';
-  host.host = ai.address; host.port = ai.port; host.username = ai.backend === 'codex' ? 'Codex' : 'DSH';
+  host.host = ai.address; host.port = ai.port; host.username = aiBackendName(ai.backend);
   host.groupId = ai.groupId; host.sortOrder = ai.sortOrder; host.lastConnected = ai.lastConnected;
   return host;
 }
