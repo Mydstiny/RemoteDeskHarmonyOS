@@ -16,7 +16,9 @@ SOURCE = ROOT / 'entry/src/main/cpp/rdp'
 
 
 def main() -> int:
-    compiler = os.environ.get('CXX') or shutil.which('clang++') or shutil.which('g++')
+    # Prefer the host toolchain: scripts/macos_env.sh puts the OpenHarmony cross compiler first on PATH.
+    candidates = [os.environ.get('CXX'), '/usr/bin/clang++', shutil.which('clang++'), shutil.which('g++')]
+    compiler = next((c for c in candidates if c and Path(c).exists() and 'openharmony' not in c.lower()), None)
     if compiler is None:
         print('SKIP no host C++ compiler', file=sys.stderr)
         return 2

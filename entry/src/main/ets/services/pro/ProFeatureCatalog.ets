@@ -59,6 +59,16 @@ function connectionShare(): ProFeature {
   feature.capabilities = ['SystemCapability.Collaboration.HarmonyShare'];
   return feature;
 }
+function securityKeyRedirect(): ProFeature {
+  const feature = planned('pro.security.webauthnRedirect', '安全密钥重定向',
+    '在鸿蒙 PC 上插入 USB 安全密钥，供远程 Windows 里的网站和应用注册、登录；每次使用都先在本机确认。', 23);
+  // Debug builds reach it through the experimental path; Release keeps it closed until device acceptance.
+  feature.availability = 'experimental';
+  feature.devices = ['pc'];
+  feature.protocols = ['rdp'];
+  feature.capabilities = ['SystemCapability.USB.USBManager'];
+  return feature;
+}
 function personalization(): ProFeature {
   const feature = planned(PRO_PERSONALIZATION_FEATURE, '个性化方案',
     '自定义组合键（命名、按键序列、系统键与小键盘）与 SSH 终端皮肤：字体、配色、功能键栏和顶栏成套切换，也可以自由搭配。');
@@ -143,7 +153,7 @@ export function proFeatures(): ProFeature[] {
     connectionShare(),
     continuation(),
     proFeedback(),
-    planned('pro.security.webauthnRedirect', '安全密钥重定向', '在支持的 RDP 会话中使用本地安全密钥。'),
+    securityKeyRedirect(),
     planned('pro.security.phonePasskey', '手机通行密钥', '探索使用华为手机完成远端支持的认证。')
   ];
 }
@@ -158,7 +168,7 @@ export function proFeatureProgress(id: string): string {
     case 'pro.ai.codex':
     case 'pro.ai.dsh': return '已开发（局域网连接） · 实机验收暂缓';
     case 'pro.ai.rustdeskTransport': return '规划中 · 等待 RustDesk 数据通道';
-    case 'pro.security.webauthnRedirect': return '开发中 · USB 安全密钥能力探测通过，待硬件与 RDP 验证';
+    case 'pro.security.webauthnRedirect': return '开发中 · RDP 安全密钥通道已接入调试版，待鸿蒙 PC、安全密钥与 Windows 验收';
     case 'pro.security.phonePasskey': return '可行性研究中';
     case 'pro.personalization': return '已完成 · 实机验收通过（自定义组合键与 SSH 终端皮肤）';
     case 'pro.workspaces':

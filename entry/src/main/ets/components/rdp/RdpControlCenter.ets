@@ -64,6 +64,9 @@ export struct RdpControlCenter {
   @Prop @Watch('onDriveNameChange') driveName: string = 'RemoteDesktop';
   @Prop authIdentityMode: number = 1;
   @Prop tlsWithoutNla: boolean = false;
+  /** 安全密钥重定向 is visible to this account on this device (ProEntries.visible); hidden otherwise. */
+  @Prop securityKeyVisible: boolean = false;
+  @Prop securityKeyEnabled: boolean = false;
   @State private driveNameDraft: string = 'RemoteDesktop';
   @State private displayProfileShown: boolean = false;
   onClose: () => void = (): void => {};
@@ -89,6 +92,7 @@ export struct RdpControlCenter {
   onDriveName: (name: string) => void = (_name: string): void => {};
   onAuthIdentityMode: (mode: number) => void = (_mode: number): void => {};
   onTlsWithoutNla: (enabled: boolean) => void = (_enabled: boolean): void => {};
+  onSecurityKey: (enabled: boolean) => void = (_enabled: boolean): void => {};
   onDisconnect: () => void = (): void => {};
 
   private pal(): Palette { return buildDark(this.accentColor); }
@@ -171,6 +175,23 @@ export struct RdpControlCenter {
       height: SheetSize.FIT_CONTENT, dragBar: true, showClose: true,
       backgroundColor: this.pal().sheetBg, maskColor: 'rgba(0,0,0,0.4)'
     })
+  }
+
+  @Builder private securityKeyEntry() {
+    Divider().color(this.pal().divider).margin({ left: 12 })
+    Row({ space: 8 }) {
+      Column() {
+        Text('安全密钥重定向').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
+          .fontFamily(AppTheme.fontFamily)
+        Text('下次连接生效 · 远程电脑里的网站可使用本机 USB 安全密钥，每次都先确认')
+          .fontSize(10).fontColor(this.pal().text3).fontFamily(AppTheme.fontFamily)
+          .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis }).margin({ top: 2 })
+      }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+      ProBadge()
+      Toggle({ type: ToggleType.Switch, isOn: this.securityKeyEnabled }).selectedColor(RDP_SESSION_CONTROL_ACCENT)
+        .onChange((next: boolean): void => { this.onSecurityKey(next); })
+    }.width('100%').height(64).padding({ left: 12, right: 12, top: 7, bottom: 7 })
+    .accessibilityText('安全密钥重定向，Pro，下次连接生效')
   }
 
   private onDriveNameChange(): void { this.driveNameDraft = this.driveName; }
@@ -409,6 +430,9 @@ export struct RdpControlCenter {
             .onChange((value: string): void => { this.driveNameDraft = value; })
             .onSubmit((_enterKey: EnterKeyType): void => { this.onDriveName(this.driveNameDraft); })
             .onBlur((): void => { this.onDriveName(this.driveNameDraft); })
+        }
+        if (this.securityKeyVisible) {
+          this.securityKeyEntry()
         }
     }.width('100%').padding({ left: 12, right: 12, top: 12 })
       .backgroundColor(this.pal().card).borderRadius(16)

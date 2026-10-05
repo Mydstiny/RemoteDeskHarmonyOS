@@ -15,6 +15,30 @@ declare module 'librdpnapi.so' {
   export function proFidoProbeReply(operationId: number, requestId: number, data: Uint8Array, success: boolean): boolean;
   export function proFidoProbeCancel(operationId: number): void;
 
+  /** RDP security-key redirection (MS-RDPEWA) request from the session broker. */
+  export interface RdpSecurityKeyRequest {
+    id: number;
+    /** 1 confirm, 2 select key, 3 PIN, 4 touch prompt, 5 write report, 6 read report, 7 release key */
+    kind: number;
+    /** Confirm: relying party ID. */
+    text: string;
+    /** Confirm: 1 register, 2 sign in. Touch: 1 show, 0 hide. */
+    operation: number;
+    /** PIN: remaining attempts, or -1 when unknown. */
+    retries: number;
+    timeoutMs: number;
+    /** Write: the 64-byte output report. */
+    report: Uint8Array;
+  }
+  /** Debug-only; Release returns false and links no FIDO code. */
+  export function rdpSecurityKeyAvailable(): boolean;
+  export function rdpSecurityKeyWatch(sessionId: number, onRequest: () => void): boolean;
+  export function rdpSecurityKeyUnwatch(sessionId: number): void;
+  export function rdpSecurityKeyPoll(sessionId: number): RdpSecurityKeyRequest | null;
+  export function rdpSecurityKeyRespond(sessionId: number, id: number, ok: boolean,
+    report: Uint8Array | null, text: string | null): boolean;
+  export function rdpSecurityKeyCancel(sessionId: number): void;
+
   export interface AiTlsRequestOptions {
     id: string;
     address: string;
@@ -1064,6 +1088,8 @@ export interface SessionConfig {
   /** RDP /client-hostname:, never used as a transport or certificate identity. */
   clientHostname?: string;
   rdpDesktopScaleFactor?: number;
+  /** Debug + Pro only: load the MS-RDPEWA channel so the remote session can use a local USB security key. */
+  rdpSecurityKeyRedirect?: boolean;
   rdpDeviceScaleFactor?: number;
   rdpDesktopPhysicalWidthMm?: number;
   rdpDesktopPhysicalHeightMm?: number;

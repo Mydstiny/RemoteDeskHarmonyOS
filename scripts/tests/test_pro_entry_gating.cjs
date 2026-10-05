@@ -60,8 +60,9 @@ const badges = new Map([
   // AI cards/section (4) follow aiProVisible; the app-icon row follows ProEntries; the account card
   // marker follows ProEntries.proActive(); the RDP 远端显示方案 row follows rdpAdvancedDisplayVisible.
   ['pages/HostListPage.ets', [9, /aiProVisible = AiAccess\.getInstance\(\)\.proVisible\(\)/]],
-  // RDP session panel: the 远端显示方案 entry exists only while RemoteDesktop passes advancedDisplayVisible.
-  ['components/rdp/RdpControlCenter.ets', [1, /if \(this\.advancedDisplayVisible\) \{\s*this\.displayProfileEntry\(\)/]],
+  // RDP session panel: 远端显示方案 exists only while RemoteDesktop passes advancedDisplayVisible, and
+  // 安全密钥重定向 only while it passes securityKeyVisible.
+  ['components/rdp/RdpControlCenter.ets', [2, /(?=[\s\S]*if \(this\.advancedDisplayVisible\) \{\s*this\.displayProfileEntry\(\))(?=[\s\S]*if \(this\.securityKeyVisible\) \{\s*this\.securityKeyEntry\(\))/]],
   // The 远端显示方案 sheet opens only from those gated entries (settings row and session panel).
   ['components/rdp/RdpDisplayProfilePanel.ets', [1, /export struct RdpDisplayProfilePanel/]],
   // RustDesk display menu: the custom-resolution section follows rustDeskCustomVisible.
@@ -91,6 +92,13 @@ assert.match(sources.get('pages/HostListPage.ets'), /this\.settingsLeafSheetMode
 assert.match(remoteDesktop, /advancedDisplayVisible: this\.rdpAdvancedDisplayVisible\(\)/);
 assert.match(remoteDesktop, /return ProEntries\.visible\(PRO_RDP_ADVANCED_DISPLAY_FEATURE, context\)/);
 assert.match(remoteDesktop, /this\.rustDeskCustomVisible = ProEntries\.visible\(PRO_RUSTDESK_ADVANCED_DISPLAY_FEATURE,/);
+// RDP security-key redirection: the session row and the connect request both follow the entitlement.
+assert.match(remoteDesktop, /securityKeyVisible: this\.rdpSecurityKeyVisible\(\)/);
+assert.match(remoteDesktop, /return ProEntries\.visible\(PRO_SECURITY_KEY_FEATURE, rdpSecurityKeyContext\(\)\) && ProRdpSecurityKey\.available\(\)/);
+assert.match(remoteDesktop, /rdpSecurityKeyRedirect: this\.rdpSecurityKeyRequested\(host\)/);
+assert.match(remoteDesktop, /if \(host\.protocol !== 'rdp' \|\| !ProRdpSecurityKey\.available\(\)\) \{ return false; \}/);
+const securityKeyService = sources.get('services/pro/ProRdpSecurityKey.ets');
+assert.match(securityKeyService, /if \(DEBUG\) \{[\s\S]*?runtime\.decision\(PRO_SECURITY_KEY_FEATURE, rdpSecurityKeyContext\(\)\)\.executable/);
 
 // 诊断与 AI 帮助: the two AI sub-settings follow their own features; 传统日志抓取 stays free.
 const hostSource = sources.get('pages/HostListPage.ets');

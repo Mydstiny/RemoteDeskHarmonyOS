@@ -1,6 +1,6 @@
 # M6 第三增量：USB 安全密钥重定向到 RDP（RDPEWA）
 
-状态：IMPLEMENTING（2026-10-05 用户确认开始；先做 USB 安全密钥，手机通行密钥另行做可行性原型）
+状态：IMPLEMENTING（2026-10-05 用户确认开始）。S1 原生通道与代理 `7236c38df`；S2/S3 ArkTS 会话服务、提示界面、实验目录与主机本机开关已实现；S4 独立复核与 S5 真机验收（PC 统一测试）待执行。手机通行密钥另行做可行性原型。
 范围：Pro 目录 `pro.security.webauthnRedirect`。鸿蒙 PC/2in1 上插入的 USB FIDO2 安全密钥，经 MS-RDPEWA 供远端 Windows 会话里的网站和应用注册、登录。不包括 Windows 登录本身、智能卡/PIV、NFC/蓝牙密钥，也不包括手机通行密钥。
 基线：`codex/pro-purchase-foundation` @ `0aceeeb67`；前两个增量见 [M6 计划](2026-09-07-pro-m6-fido-transport.md)。
 
@@ -84,3 +84,12 @@
 | ArkTS 主线程繁忙导致 USB 往返延迟 | 只在唤醒后轮询；单次传输期限 1.5 s；触摸等待由设备侧计时 |
 | 通道线程与会话销毁竞争 | Broker 代次隔离，关闭时先取消再有界等待 |
 | 用户误以为可用于 Windows 登录 | 设置说明明确“仅远程会话里的网站和应用” |
+
+## 7. 实现记录
+
+| 阶段 | 实现 |
+|---|---|
+| S1 | `cpp/rdp/rdpewa/`（上游通道 + 设备提供者）、`rdp_security_key_broker.*`（纯 C++ 代理，主机 ASan/UBSan 测试 `test_rdp_security_key_broker.py`）、`rdp_security_key_provider.*`（libfido2 自定义 I/O、WinPR 取消事件）、`rdp_security_key_napi.cpp`（Release 为空实现）、适配器 addin provider 包装与生命周期；Release 构建 + `check_pro_release.py --usb-probe --fido-library` 通过，两 ABI Release 无 rdpewa/代理符号 |
+| S2 | `ProUsbFidoKey.ets`（候选、授权、描述符复核、非强制 claim、64 字节中断传输、释放取消在途传输）；`ProRdpSecurityKey.ets`（按会话 watch/poll/respond；确认、选密钥、PIN、触摸、读写、释放；Pro 失效即取消并释放）；`RdpSecurityKeyPrompt.ets`（四种提示，PIN 提交与关闭即清空） |
+| S3 | 目录 `pro.security.webauthnRedirect` → experimental（PC、RDP、USBManager 能力、API 23）；`ProRdpSecurityKeyPreference`（按账号作用域与主机本机保存，不同步）；RDP 控制中心“安全密钥重定向”行（`securityKeyVisible` 由 `ProEntries.visible` 决定，登记到 `test_pro_entry_gating`）；会话连接时按开关与权益请求通道，连上后启动服务，`disconnectAndCleanup` 停止 |
+

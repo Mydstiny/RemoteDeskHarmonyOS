@@ -1,0 +1,137 @@
+import { AppTheme, Palette, buildDark } from '../../common/Theme';
+import { RdpSecurityKeyPrompt } from '../../services/pro/ProRdpSecurityKey';
+import { ProUsbFidoKeyCandidate } from '../../services/pro/ProUsbFidoKey';
+
+/** Modal prompt for RDP security-key redirection: confirm, choose a key, enter the PIN, touch the key. */
+@Component
+export struct RdpSecurityKeyPromptView {
+  @StorageLink('accentColor') accentColor: string = '#007DFF';
+  @Prop prompt: RdpSecurityKeyPrompt = {
+    kind: 'touch', requestId: 0, rpId: '', register: false, retries: -1, candidates: [], busy: false, error: ''
+  };
+  @State pinDraft: string = '';
+  onAllow: (requestId: number) => void = (_requestId: number): void => {};
+  onDeny: (requestId: number) => void = (_requestId: number): void => {};
+  onChoose: (requestId: number, key: string) => void = (_requestId: number, _key: string): void => {};
+  onRefresh: () => void = (): void => {};
+  onPin: (requestId: number, pin: string) => void = (_requestId: number, _pin: string): void => {};
+  onCancel: () => void = (): void => {};
+
+  private pal(): Palette { return buildDark(this.accentColor); }
+
+  aboutToDisappear(): void { this.pinDraft = ''; }
+
+  private title(): string {
+    switch (this.prompt.kind) {
+      case 'confirm': return '安全密钥请求';
+      case 'select': return '选择安全密钥';
+      case 'pin': return '输入安全密钥 PIN';
+      default: return '请触摸安全密钥';
+    }
+  }
+
+  private submitPin(): void {
+    const pin = this.pinDraft;
+    this.pinDraft = '';
+    if (pin.length > 0) { this.onPin(this.prompt.requestId, pin); }
+  }
+
+  @Builder private button(label: string, primary: boolean, enabled: boolean, action: () => void) {
+    Button(label, { type: ButtonType.Capsule, stateEffect: true })
+      .fontSize(14).fontWeight(FontWeight.Medium).height(40).layoutWeight(1)
+      .fontColor(primary ? Color.White : this.pal().text)
+      .backgroundColor(primary ? this.accentColor : this.pal().surface)
+      .enabled(enabled).opacity(enabled ? 1 : 0.5)
+      .onClick(action)
+  }
+
+  @Builder private keyRow(candidate: ProUsbFidoKeyCandidate) {
+    Row({ space: 10 }) {
+      SymbolGlyph($r('sys.symbol.checkmark_shield')).fontSize(18).fontColor([this.accentColor])
+      Text(candidate.label).fontSize(13).fontColor(this.pal().text).layoutWeight(1)
+        .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
+      SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(14).fontColor([this.pal().text3])
+    }
+    .width('100%').padding({ left: 12, right: 10, top: 10, bottom: 10 }).borderRadius(12)
+    .backgroundColor(this.pal().surface).enabled(!this.prompt.busy)
+    .accessibilityText('选择安全密钥 ' + candidate.label)
+    .onClick((): void => { this.onChoose(this.prompt.requestId, candidate.key); })
+  }
+
+  @Builder private body() {
+    if (this.prompt.kind === 'confirm') {
+      Text('远程电脑上的「' + this.prompt.rpId + '」请求使用你的安全密钥' +
+        (this.prompt.register ? '注册新的登录凭据。' : '登录。'))
+        .fontSize(14).fontColor(this.pal().text).lineHeight(21).width('100%')
+      Text('只有确认是你自己在远程电脑上发起的操作时才允许。')
+        .fontSize(12).fontColor(this.pal().text3).lineHeight(18).width('100%')
+      Row({ space: 10 }) {
+        this.button('拒绝', false, true, (): void => { this.onDeny(this.prompt.requestId); })
+        this.button('允许', true, true, (): void => { this.onAllow(this.prompt.requestId); })
+      }.width('100%').margin({ top: 6 })
+    } else if (this.prompt.kind === 'select') {
+      Text(this.prompt.busy ? '请在系统弹窗中允许 RemoteDesk 访问这支安全密钥…' :
+        '插入 USB 安全密钥后选择它，系统会询问是否允许访问。')
+        .fontSize(13).fontColor(this.pal().text2).lineHeight(19).width('100%')
+      if (this.prompt.candidates.length === 0) {
+        Text('没有检测到安全密钥').fontSize(13).fontColor(this.pal().text3)
+          .width('100%').textAlign(TextAlign.Center).padding({ top: 14, bottom: 14 })
+      } else {
+        Column({ space: 8 }) {
+          ForEach(this.prompt.candidates, (candidate: ProUsbFidoKeyCandidate): void => { this.keyRow(candidate) },
+            (candidate: ProUsbFidoKeyCandidate): string => candidate.key)
+        }.width('100%')
+      }
+      if (this.prompt.error.length > 0) {
+        Text(this.prompt.error).fontSize(12).fontColor(this.pal().danger).width('100%')
+      }
+      Row({ space: 10 }) {
+        this.button('取消', false, true, (): void => { this.onCancel(); })
+        this.button('刷新', true, !this.prompt.busy, (): void => { this.onRefresh(); })
+      }.width('100%').margin({ top: 6 })
+    } else if (this.prompt.kind === 'pin') {
+      if (this.prompt.retries >= 0) {
+        Text('还可以尝试 ' + this.prompt.retries.toString() + ' 次，多次输错会锁定安全密钥。')
+          .fontSize(12).fontColor(this.prompt.retries <= 3 ? this.pal().danger : this.pal().text3).width('100%')
+      }
+      TextInput({ text: this.pinDraft, placeholder: '安全密钥 PIN' })
+        .type(InputType.Password).maxLength(63).height(44).fontSize(15)
+        .fontColor(this.pal().text).backgroundColor(this.pal().surface).borderRadius(12)
+        .enterKeyType(EnterKeyType.Done).defaultFocus(true)
+        .onChange((value: string): void => { this.pinDraft = value; })
+        .onSubmit((_key: EnterKeyType): void => { this.submitPin(); })
+      Text('PIN 只交给本机连接的安全密钥，不会发送到远程电脑或保存。')
+        .fontSize(11).fontColor(this.pal().text3).lineHeight(16).width('100%')
+      Row({ space: 10 }) {
+        this.button('取消', false, true, (): void => { this.pinDraft = ''; this.onCancel(); })
+        this.button('确定', true, this.pinDraft.length > 0, (): void => { this.submitPin(); })
+      }.width('100%').margin({ top: 6 })
+    } else {
+      Text('安全密钥闪烁时轻触它，完成远程电脑上的验证。')
+        .fontSize(14).fontColor(this.pal().text).lineHeight(21).width('100%')
+      Row() {
+        this.button('取消', false, true, (): void => { this.onCancel(); })
+      }.width('100%').margin({ top: 6 })
+    }
+  }
+
+  build() {
+    Stack({ alignContent: Alignment.Center }) {
+      Column({ space: 12 }) {
+        Row({ space: 10 }) {
+          Stack({ alignContent: Alignment.Center }) {
+            SymbolGlyph($r('sys.symbol.checkmark_shield')).fontSize(20).fontColor([this.accentColor])
+          }.width(38).height(38).borderRadius(12).backgroundColor(this.pal().surface)
+          Text(this.title()).fontSize(17).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
+            .fontFamily(AppTheme.fontFamily).layoutWeight(1)
+        }.width('100%')
+        this.body()
+      }
+      .width('88%').constraintSize({ maxWidth: 380 }).padding(18).borderRadius(20)
+      .backgroundColor(this.pal().card).border({ width: 0.5, color: this.pal().cardBorder })
+      .shadow({ radius: 24, color: '#59000000', offsetY: 8 })
+    }
+    .width('100%').height('100%').backgroundColor('rgba(0,0,0,0.45)')
+    .hitTestBehavior(HitTestMode.Block)
+  }
+}

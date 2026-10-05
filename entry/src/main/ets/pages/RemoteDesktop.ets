@@ -258,6 +258,14 @@ import {
 } from '../services/RemotePointerFocusPolicy';
 import { EMPTY_RDP_RENDER_STATS, RdpDiagnosticsHud } from '../components/RdpDiagnosticsHud';
 import { RdpControlCenter } from '../components/rdp/RdpControlCenter';
+import { RdpSecurityKeyPromptView } from '../components/rdp/RdpSecurityKeyPrompt';
+import {
+  PRO_SECURITY_KEY_FEATURE,
+  ProRdpSecurityKey,
+  RdpSecurityKeyPrompt,
+  rdpSecurityKeyContext
+} from '../services/pro/ProRdpSecurityKey';
+import { ProRdpSecurityKeyPreference } from '../services/pro/ProRdpSecurityKeyPreference';
 import { RdpSessionToolbar, RdpToolbarAction } from '../components/rdp/RdpSessionToolbar';
 import { VncSessionToolbar, VncSessionToolbarActions } from '../components/VncSessionToolbar';
 import {
@@ -1328,6 +1336,10 @@ struct RemoteDesktop {
   @State rdpSessionErrorCode: string = '';
   @State @Watch('onHarmonyShortcutInputOwnerChange') showRustDeskAuthSheet: boolean = false;
   @State @Watch('onHarmonyShortcutInputOwnerChange') showRustDeskTwoFactorSheet: boolean = false;
+  /** RDP security-key redirection: the prompt the session broker is waiting on, and this host's local choice. */
+  @State rdpSecurityKeyPrompt: RdpSecurityKeyPrompt | null = null;
+  @State rdpSecurityKeyEnabled: boolean = false;
+  private rdpSecurityKey: ProRdpSecurityKey | null = null;
   @State @Watch('onHarmonyShortcutInputOwnerChange') showVncCertificateSheet: boolean = false;
   @State vncCertificateState: VncCertificatePreflightState = VncCertificatePreflightState.IDLE;
   @State vncCertificateInfo: VncCertificateInfo | null = null;
@@ -6416,6 +6428,54 @@ struct RemoteDesktop {
     const context: ProAccessContext = ProAppRuntime.getInstance().context('rdp');
     context.capabilities = ['rdp.displayControl'];
     return ProEntries.visible(PRO_RDP_ADVANCED_DISPLAY_FEATURE, context);
+  }
+
+  /** 安全密钥重定向 is shown only to an entitled account on a device whose build carries the channel. */
+  private rdpSecurityKeyVisible(): boolean {
+    return ProEntries.visible(PRO_SECURITY_KEY_FEATURE, rdpSecurityKeyContext()) && ProRdpSecurityKey.available();
+  }
+
+  /** Whether this RDP host redirects a USB security key on this device (local choice AND entitlement). */
+  private rdpSecurityKeyRequested(host: RemoteHost): boolean {
+    if (host.protocol !== 'rdp' || !ProRdpSecurityKey.available()) { return false; }
+    return ProRdpSecurityKeyPreference.enabled(getContext(this) as common.Context,
+      AccountSessionCoordinator.getInstance().currentScope().ownerScopeId, host.id);
+  }
+
+  private setRdpSecurityKeyPreference(enabled: boolean): void {
+    const host: RemoteHost | null = this.pendingHost;
+    if (host === null || host.protocol !== 'rdp' || (enabled && !ProRdpSecurityKey.available())) {
+      this.rdpSecurityKeyEnabled = false;
+      return;
+    }
+    const saved: boolean = ProRdpSecurityKeyPreference.set(getContext(this) as common.Context,
+      AccountSessionCoordinator.getInstance().currentScope().ownerScopeId, host.id, enabled);
+    this.rdpSecurityKeyEnabled = saved ? enabled : !enabled;
+    if (saved) {
+      promptAction.showToast({
+        message: enabled ? '已开启安全密钥重定向，下次连接生效' : '已关闭安全密钥重定向，下次连接生效',
+        duration: 2000
+      });
+    }
+  }
+
+  private startRdpSecurityKey(sessionId: number): void {
+    this.stopRdpSecurityKey();
+    const service: ProRdpSecurityKey = new ProRdpSecurityKey((prompt: RdpSecurityKeyPrompt | null): void => {
+      this.rdpSecurityKeyPrompt = prompt;
+    });
+    if (service.start(sessionId)) {
+      this.rdpSecurityKey = service;
+    } else {
+      hilog.warn(RD_DOMAIN, RD_TAG, 'RDP security key broker unavailable for this session');
+    }
+  }
+
+  private stopRdpSecurityKey(): void {
+    const service: ProRdpSecurityKey | null = this.rdpSecurityKey;
+    this.rdpSecurityKey = null;
+    if (service !== null) { service.stop(); }
+    this.rdpSecurityKeyPrompt = null;
   }
 
   /** What this peer allows, from its version, platform, display index and permission. */
@@ -16140,6 +16200,7 @@ struct RemoteDesktop {
         rdpDesktopPhysicalWidthMm: desktop.rdpDisplay?.physicalWidthMm ?? 0,
         rdpDesktopPhysicalHeightMm: desktop.rdpDisplay?.physicalHeightMm ?? 0,
         rdpDesktopOrientation: desktop.rdpDisplay?.orientation ?? 0,
+        rdpSecurityKeyRedirect: this.rdpSecurityKeyRequested(host),
         rdpAuthIdentityMode: host.protocol === 'rdp' ? (AppStorage.get<number>('rdpAuthIdentityMode') ?? 1) : 0,
         rdpAuthMode: rdpAuthMode,
         rdpRestrictedAdminSecretSource: rdpRestrictedAdminSecretSource,
@@ -16454,6 +16515,10 @@ struct RemoteDesktop {
 
       this.nativeHandles.attachConnectedSession(sid, this.remoteProtocolOf(host));
       this.connected = true;
+      this.rdpSecurityKeyEnabled = this.rdpSecurityKeyRequested(host);
+      if (host.protocol === 'rdp' && cfg.rdpSecurityKeyRedirect === true) {
+        this.startRdpSecurityKey(sid);
+      }
       this.connecting = false;
       this.connectionProgressMessage = '';
       this.connectionError = '';
@@ -17069,6 +17134,7 @@ struct RemoteDesktop {
 
   private disconnectAndCleanup(reason: string): void {
     this.harmonyShortcutCapture.deactivate(this.harmonyShortcutCaptureOwner);
+    this.stopRdpSecurityKey();
     this.beginOrientationCleanup(reason);
     const explicitUserDisconnect: boolean = reason.indexOf('explicit') >= 0 ||
       reason.indexOf('toolbar') >= 0 || reason.indexOf('topbar') >= 0 ||
@@ -23963,6 +24029,9 @@ struct RemoteDesktop {
             onColorDepth: (depth: number): void => { this.setRdpColorDepthPreference(depth); },
             onAudio: (enabled: boolean): void => { this.setRdpAudioPreference(enabled); },
             onDrive: (enabled: boolean): void => { this.setRdpDrivePreference(enabled); },
+            securityKeyVisible: this.rdpSecurityKeyVisible(),
+            securityKeyEnabled: this.rdpSecurityKeyEnabled,
+            onSecurityKey: (enabled: boolean): void => { this.setRdpSecurityKeyPreference(enabled); },
             onDriveName: (name: string): void => { this.setRdpDriveNamePreference(name); },
             onAuthIdentityMode: (mode: number): void => {
               this.setRdpAuthIdentityModePreference(mode);
@@ -24498,6 +24567,18 @@ struct RemoteDesktop {
             this.transferPanelAccountUnsubscribe?.(); this.transferPanelAccountUnsubscribe = null;
           }
         })
+
+      if (this.rdpSecurityKeyPrompt !== null) {
+        RdpSecurityKeyPromptView({
+          prompt: this.rdpSecurityKeyPrompt,
+          onAllow: (requestId: number): void => { this.rdpSecurityKey?.answerConfirm(requestId, true); },
+          onDeny: (requestId: number): void => { this.rdpSecurityKey?.answerConfirm(requestId, false); },
+          onChoose: (requestId: number, key: string): void => { this.rdpSecurityKey?.chooseKey(requestId, key); },
+          onRefresh: (): void => { this.rdpSecurityKey?.refreshKeys(); },
+          onPin: (requestId: number, pin: string): void => { this.rdpSecurityKey?.answerPin(requestId, pin); },
+          onCancel: (): void => { this.rdpSecurityKey?.cancel(); }
+        })
+      }
     }
     .width('100%').height('100%')
     .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
