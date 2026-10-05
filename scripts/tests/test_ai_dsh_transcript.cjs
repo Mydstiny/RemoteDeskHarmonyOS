@@ -1,7 +1,8 @@
 'use strict';
 // DSH session events as @deepseek-ai/dsh-session declares them (types.d.ts SessionEventMap) and the DSH plugin
-// forwards them: tool/call {callId, name, arguments: JSON string}, tool/result {message: {content: [{type:
-// 'tool-result', toolCallId, content, isError}]}, error?}, turn/end {reason: {kind}}. Runs the production mapper.
+// forwards them: user/message is the message itself {id, role, content, source}, tool/call {callId, name,
+// arguments: JSON string}, tool/result {message: {content: [{type: 'tool-result', toolCallId, content, isError}]},
+// error?}, turn/end {reason: {kind}}. Runs the production mapper.
 const fs = require('node:fs'), path = require('node:path'), vm = require('node:vm'), assert = require('node:assert/strict');
 const ts = require(process.env.AI_TYPESCRIPT_PATH || 'typescript');
 const base = path.resolve(__dirname, '../../entry/src/main/ets/services/ai') + '/';
@@ -19,10 +20,12 @@ const { aiDshItems, AiTranscript } = load('AiTranscript', { './AiModels': models
 const plain = value => JSON.parse(JSON.stringify(value));
 const result = (callId, text, extra = {}) => ({ message: { id: 'm', role: 'user', source: { kind: 'tool', callId },
   content: [{ type: 'tool-result', toolCallId: callId, content: [{ type: 'text', text }], ...extra }] } });
+// A user/message event's data: the UserMessage itself (dsh-session deriveEventMessage returns event.data).
+const said = (text, source = { kind: 'user' }) => ({ id: 'm' + text.length, role: 'user', content: [{ type: 'text', text }], source });
 
 const events = [
   { seq: 0, type: 'turn/start', data: { turn: 1 } },
-  { seq: 1, type: 'user/message', data: { turn: 1, message: { content: [{ type: 'text', text: '跑一下测试' }] } }, surfaceOp: 'append' },
+  { seq: 1, type: 'user/message', data: said('跑一下测试'), surfaceOp: 'append' },
   { seq: 2, type: 'tool/call', data: { turn: 1, step: 0, callId: 'c1', name: 'bash', arguments: '{"command":"npm test"}' } },
   { seq: 3, type: 'tool/result', data: { turn: 1, step: 0, ...result('c1', '3 passing') }, surfaceOp: 'append' },
   { seq: 4, type: 'tool/call', data: { turn: 1, step: 1, callId: 'c2', name: 'edit',
@@ -53,8 +56,7 @@ console.log('PASS DSH tool calls carry their results, arguments and final state'
 const lone = plain(aiDshItems([{ seq: 9, type: 'tool/result', data: { turn: 2, ...result('gone', 'late output') } }]));
 assert.deepEqual(lone.map(item => [item.title, item.output, item.state]), [['工具结果', 'late output', 'completed']]);
 const replaced = plain(aiDshItems(events.slice(0, 4).concat([{ seq: 10, type: 'user/message',
-  data: { turn: 1, message: { content: [{ type: 'text', text: '摘要' }] } }, surfaceOp: { op: 'replace', start: 1, end: 3 },
-  sourceEventSeqs: [1, 3] }])));
+  data: said('摘要'), surfaceOp: { op: 'replace', start: 1, end: 3 }, sourceEventSeqs: [1, 3] }])));
 assert.deepEqual(replaced.map(item => item.text), ['摘要']);
 assert.throws(() => aiDshItems([{ seq: 1, type: 'user/message', data: { turn: 1, message: 'x' },
   surfaceOp: { op: 'replace', start: 7, end: 8 } }]), /AI_SURFACE_RANGE_INVALID/);
@@ -76,7 +78,7 @@ console.log('PASS DSH live events are mapped on flush and a bad replacement is r
 {
   const chunk = (seq, type, text, step = 0) => ({ seq, type: 'assistant/chunk', data: { turn: 4, step, chunk: { type, index: 0, text } } });
   const stream = [
-    { seq: 1, type: 'user/message', data: { turn: 4, message: { content: [{ type: 'text', text: '解释一下' }], source: { kind: 'user' } } } },
+    { seq: 1, type: 'user/message', data: said('解释一下') },
     { seq: 2, type: 'assistant/chunk', data: { turn: 4, step: 0, chunk: { type: 'block-start', index: 0, blockType: 'reasoning' } } },
     chunk(3, 'reasoning-delta', '先看'), chunk(4, 'reasoning-delta', '代码'),
     chunk(5, 'text-delta', '这是'), chunk(6, 'text-delta', '答案'),
@@ -93,20 +95,22 @@ console.log('PASS DSH live events are mapped on flush and a bad replacement is r
     ['dsh:1', 'user', '解释一下', 'completed'], ['dsh:8:r', 'thinking', '先看代码', 'completed'],
     ['dsh:8', 'assistant', '这是答案', 'completed']]);
   // A compaction naming the message removes its reasoning row too.
-  stream.push({ seq: 9, type: 'user/message', data: { turn: 4, message: { content: [{ type: 'text', text: '摘要' }] } },
-    surfaceOp: { op: 'replace', start: 1, end: 8 } });
+  stream.push({ seq: 9, type: 'user/message', data: said('摘要'), surfaceOp: { op: 'replace', start: 1, end: 8 } });
   assert.deepEqual(plain(aiDshItems(stream)).map(item => item.text), ['摘要']);
   console.log('PASS DSH streams one row per answer and reasoning, replaced by the assembled message');
 }
 
 // Context a plugin injected is part of the work, not the user's words; malformed fields are skipped.
 {
-  const injected = plain(aiDshItems([{ seq: 1, type: 'user/message', data: { turn: 1, message: {
-    content: [{ type: 'text', text: '# AGENTS.md\nrules…' }], source: { kind: 'plugin', plugin: 'dsh-agent-instructions' } } } },
-    { seq: 2, type: 'user/message', data: { turn: 1, message: { content: [{ type: 'text', text: 'x' }],
-      source: { kind: 'plugin', plugin: 'notice', form: 'notice', summary: '文件已变化' } } } }]));
+  const injected = plain(aiDshItems([
+    { seq: 1, type: 'user/message', data: said('# AGENTS.md\nrules…', { kind: 'plugin', plugin: 'dsh-agent-instructions' }) },
+    { seq: 2, type: 'user/message', data: said('x', { kind: 'plugin', plugin: 'notice', form: 'notice', summary: '文件已变化' }) },
+    { seq: 3, type: 'user/message', data: said('你好') },
+    // Older logs wrapped the message; it still reads the same.
+    { seq: 4, type: 'user/message', data: { turn: 1, message: said('[fixture] 上下文注入', { kind: 'plugin', plugin: 'fixture' }) } }]));
   assert.deepEqual(injected.map(item => [item.role, item.kind, item.title, item.text]), [
-    ['execution', 'tool', '上下文', '# AGENTS.md'], ['execution', 'tool', '上下文', '文件已变化']]);
+    ['execution', 'tool', '上下文', '# AGENTS.md'], ['execution', 'tool', '上下文', '文件已变化'], ['user', 'user', 'user', '你好'],
+    ['execution', 'tool', '上下文', '[fixture] 上下文注入']]);
   assert.equal(injected[0].output, '# AGENTS.md\nrules…');
   const odd = [{ seq: 1, type: 'turn/end', data: { turn: 1 } }, { seq: 2, type: 'tool/result', data: { turn: 1 } },
     { seq: 3, type: 'tool/call', data: { turn: 1, callId: 5, name: 7, arguments: 9 } }, { seq: 4, type: 'assistant/message', data: { turn: 1, message: 'plain' } },
@@ -124,7 +128,7 @@ console.log('PASS DSH live events are mapped on flush and a bad replacement is r
     const events = []; let seq = 0; let turn = 0;
     while (events.length < count) {
       turn++;
-      events.push({ seq: seq++, type: 'user/message', data: { turn, message: { content: [{ type: 'text', text: 'q' + turn }] } } });
+      events.push({ seq: seq++, type: 'user/message', data: said('q' + turn, random(6) ? { kind: 'user' } : { kind: 'plugin', plugin: 'skills' }) });
       for (let step = 0; step < 1 + random(3); step++) {
         const chunks = [];
         for (let k = 0; k < 5 + random(30); k++) {

@@ -56,7 +56,7 @@ Codex 条目与 DSH/Claude 事件都映射为同一组时间线项：用户消�
 | R2 | `AiTimeline`（工具步骤摘要、统一差异解析、Claude Edit/Write/MultiEdit 与 Codex fileChange 差异、对话/日志划分）、`AiStylePalette`（Claude 经典色与 Codex 中性色，深浅各一套）、`aiCodexItem`（命令含输出、文件修改转差异、思考、MCP、网页搜索）、DSH 工具步骤带输入/输出；会话页重写为两种风格：Claude 风格（右侧气泡、Markdown 正文、可展开的工具行与差异、折叠思考、运行中提示、内联审批卡、圆角输入框带附件/模型/权限模式与发送/停止）与 Codex 风格（任务列表、对话/日志/差异三个标签、修改汇总）；新组件 `AiRemoteMarkdown`、`AiDiffView`；远程 AI 设置新增「界面风格」（旧设置缺字段时按 Claude）；Claude 发送后本地先显示提问直到引擎回显；会话列表改为可点选的行；新内容自动跟随到底部，上滑后停止跟随。测试：`test_ai_timeline.cjs`，`test_ai_ui_parity.cjs` 按新结构更新（三个弹层表头、两种页头的 Pro 标识、不同高度/风格/审批组合下列表高度） |
 | R1 | 后端表 `AI_BACKENDS`（`codex`/`dsh`/`claudecode`）与名称、端口、校验；添加/编辑、安装说明、远程 AI 设置三处的 Claude Agent 卡片；目录 `pro.ai.claudecode`（available）；`aiClaudeItems`（Claude 事件 → 会话记录，含历史）；Claude 错误码中文提示；`test_ai_claude_transcript.cjs`、安装说明与入口测试补齐。电脑端 Claude 服务已重新初始化到 `192.168.31.142:9445`（旧状态备份于 `~/.remotedesk/claudecode.bak-20261005-lan`），验收项目 `acceptance` 指向 `~/Library/Application Support/RemoteDesk/workspaces/acceptance-claudecode` |
 
-插件侧待办（需另开插件 PR）：实时 `assistant/message` 的思考块用 `textOf(block)` 取文本，思考内容为空（应取 `block.thinking`）；用户自己的提问在实时流中不回显，App 发送后需本地先显示；打开已有历史的会话后，实时事件的 `seq` 从 0 重新编号（`open()` 建 handle 时 `sequence: 0`，未接续 `read()` 读到的历史），与历史重号（App 已改为按到达顺序编号，不依赖 `seq`）。
+插件侧待办（需另开插件 PR）：实时 `assistant/message` 的思考块用 `textOf(block)` 取文本，思考内容为空（应取 `block.thinking`）；用户自己的提问在实时流中不回显，App 发送后需本地先显示；打开已有历史的会话后，实时事件的 `seq` 从 0 重新编号（`open()` 建 handle 时 `sequence: 0`，未接续 `read()` 读到的历史），与历史重号（App 已改为按到达顺序编号，不依赖 `seq`）；`read()` 按偏移分页，而 history 满 4000 条后会从头部裁剪，翻页期间有新事件时后续页会漏事件；`read()` 在 history 为空时用新数组替换 `this.history`，与 `open()` 绑定的 `handle.history` 脱钩（先 open 后 read 的新建/分叉会话，之后读到的是过期数组）。
 
 ## 6. 独立复核（2026-10-05，Opus）
 
@@ -100,3 +100,17 @@ Codex 条目与 DSH/Claude 事件都映射为同一组时间线项：用户消�
 | 待确认：同回合合成用户消息误删回显；插件将来回显提问时显示两次 | 同回合兜底要求引擎文本包含提问；发送前 `mark()`，回执前已到的引擎副本也能抵消（一对一） |
 
 测试：`test_ai_dsh_transcript.cjs`（流式、注入上下文、异常字段、增量等价、3 万事件性能）、`test_ai_claude_transcript.cjs`（早到副本、补充指令位置、注入上下文、异常事件）、`test_ai_workspace.cjs`（两种后端的事件续接位置、回执不覆盖结束状态）、`test_ai_timeline.cjs`（hunk 计数、签名、工具名）、`test_ai_chat_mode.cjs`（Markdown 长行线性）。
+
+### 第三轮复核（2026-10-05，Opus 5.5 high）：FAIL（1 个 P2）→ 第四轮修复
+
+第二轮的 3 个 P2 核实已修复（DSH 增量与整体映射 500 轮随机对比 0 差异；6.2 万事件分页加载 265 ms，实时刷新约 0.15 ms）。新发现与处理：
+
+| 发现 | 修复 |
+|---|---|
+| P2 DSH `user/message` 的 data 就是消息本身（`{id, role, content, source}`，dsh-session `deriveEventMessage` 直接返回 `event.data`），映射却读 `data.message.source`，插件注入的上下文仍显示成用户气泡；测试用了旧的包装格式 | 先读 `data` 本身，旧日志的 `message` 包装仍兼容；测试改用真实结构并覆盖插件来源 |
+| P3 差异签名对超过 256 字符、只在后部不同的长行会碰撞 | 百万字符预算内逐字哈希，超出部分取两端和均匀采样 |
+| P3 Codex 新增文件内容以 `--- ` 等开头时被当成 diff 透传 | 只有确定的 diff 形态（`diff --git`，或可选的 `---/+++` 头后紧跟带计数的 `@@`）才透传 |
+| P3 `git diff --binary` 的二进制补丁被当成正文 | 显示为「（二进制文件）」并跳到下一个文件 |
+| P3 AiDshMapper 移除流式行时重复全表扫描 | 移除时同步删除 `bySeq` 项，`lastIndexOf` 从尾部查找 |
+| P3 工作区干净时显示「还没有读取到差异」 | 显示「工作区没有未提交的改动」 |
+| P3 Codex 审批的 `kind: null`、非对象 `nativeItem` 会在渲染时抛错 | 改用安全访问 |

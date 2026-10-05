@@ -348,7 +348,10 @@ export class AiWorkspaceController {
     const generation = this.generation;
     const result = aiRecord(await this.client.read('diff.read', aiParams(["sessionId"], [this.sessionId])));
     this.assertGeneration(generation);
-    this.diff = result['available'] === true ? aiString(result['diff'], JSON.stringify(result, null, 2)) : '此会话暂无可用的原生差异'; this.changed();
+    const diff = result['diff'];
+    this.diff = result['available'] !== true ? '此会话暂无可用的原生差异' : typeof diff !== 'string' ?
+      JSON.stringify(result, null, 2) : diff === '' ? '工作区没有未提交的改动' : diff;
+    this.changed();
   }
   async loadTerminals(): Promise<void> {
     if (this.client === null) { return; }

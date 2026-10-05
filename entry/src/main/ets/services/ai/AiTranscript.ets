@@ -179,8 +179,10 @@ function aiCodexChangeBody(change: Record<string, Object>): string {
   const kind = change['kind'];
   const type = typeof kind === 'string' ? kind as string : kind !== undefined && kind !== null && typeof kind === 'object' &&
     !Array.isArray(kind) ? aiString((kind as Record<string, Object>)['type']) : '';
-  if ((type !== 'add' && type !== 'delete') || body.startsWith('@@ -') || body.startsWith('--- ') ||
-    body.startsWith('diff --git')) {
+  // Passed through only when it is a diff for sure; a file whose first line looks like a header is still content.
+  if (type !== 'add' && type !== 'delete') { return body; }
+  if (body.startsWith('diff --git ') ||
+    /^(?:--- [^\n]*\n\+\+\+ [^\n]*\n)?@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@/.test(body)) {
     return body;
   }
   const sign = type === 'add' ? '+' : '-';
@@ -314,8 +316,9 @@ export class AiDshMapper {
     return -1;
   }
 
+  /** Removes an item; the ones removed are usually recent, so the search starts at the end. */
   private remove(item: AiTranscriptItem): void {
-    const index = this.list.indexOf(item);
+    const index = this.list.lastIndexOf(item);
     if (index >= 0) { this.list.splice(index, 1); }
   }
 
@@ -375,6 +378,7 @@ export class AiDshMapper {
         const stream = this.streams.get(key);
         if (stream !== undefined && (key.startsWith(prefix) || stream.seqs.some((value: number): boolean => sources.has(value)))) {
           this.remove(stream.item);
+          this.bySeq.delete(stream.seqs[0]);
           this.streams.delete(key);
         }
       });
@@ -394,9 +398,11 @@ export class AiDshMapper {
       put(text !== '' ? { id, role: 'assistant', title: 'assistant', text, state, turnId, kind: 'assistant', detail: '',
         output: '' } : { id, role: 'execution', title: '', text: '', state, turnId, kind: 'merged', detail: '', output: '' });
     } else if (type === 'user/message') {
+      // The event's data is the message itself ({id, role, content, source}); older logs wrapped it in `message`.
       const message = data['message'];
-      const record = aiObject(message);
-      const text = typeof message === 'string' ? message as string : aiContentText(record['content'] ?? data);
+      const record = message !== undefined && message !== null && typeof message === 'object' && !Array.isArray(message) ?
+        message as Record<string, Object> : data;
+      const text = typeof message === 'string' ? message as string : aiContentText(record['content'] ?? record);
       const source = aiObject(record['source']);
       if (aiString(source['kind']) === 'plugin') {
         // Instructions, skills or notices a plugin added: part of the work, not something the user typed.

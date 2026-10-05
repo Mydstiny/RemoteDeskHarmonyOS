@@ -27,7 +27,7 @@ export function aiFileChanges(value: Object | undefined): string {
     if (value === null || typeof value !== 'object' || Array.isArray(value)) { return JSON.stringify(value); }
     const change = aiRecord(value);
     const kind = change['kind'];
-    const operation = kind !== undefined && typeof kind === 'object' ? aiRecord(kind) : {} as Record<string, Object>;
+    const operation = aiFields(kind);
     const moved = aiString(operation['move_path'], aiString(operation['movePath']));
     const type = aiString(operation['type'], aiString(kind));
     return (type === 'add' ? '新增 ' : type === 'delete' ? '删除 ' : type === 'update' ? '修改 ' : type + ' ') + aiString(change['path']) + (moved !== '' ? ' → ' + moved : '') + '\n' +
@@ -78,7 +78,7 @@ export function aiApprovalDetails(request: Record<string, Object>): string {
   if (kind === 'fileChange' && aiString(request['engine']) === 'claudecode') { return aiClaudeFileChange(request, reason); }
   if (kind === 'fileChange') {
     if (request['nativeItemComplete'] !== true || request['nativeItem'] === undefined) { return '文件预览不可用，请取消本次请求后重试。'; }
-    const item = aiRecord(request['nativeItem']);
+    const item = aiFields(request['nativeItem']);
     const changes = aiFileChanges(item['changes']);
     return (reason !== '' ? reason + '\n\n' : '') + (changes || JSON.stringify(item, null, 2));
   }

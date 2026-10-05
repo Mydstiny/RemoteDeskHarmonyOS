@@ -129,4 +129,13 @@ function environment(){
     assert.equal(await run(false),'请求已接受，等待执行结果');
     console.log('PASS an acknowledgement never undoes a turn end reported before it');
   }
+  {
+    // A clean working tree is said so, not mistaken for a diff not yet read.
+    const e=environment();
+    e.onRead(async method=>method==='diff.read'?{available:true,diff:'',scope:'working-tree'}:[]);
+    await e.c.loadDiff();assert.equal(e.c.diff,'工作区没有未提交的改动');
+    e.onRead(async method=>method==='diff.read'?{available:false}:[]);
+    await e.c.loadDiff();assert.equal(e.c.diff,'此会话暂无可用的原生差异');e.c.close();
+    console.log('PASS diff.read distinguishes a clean working tree from an unavailable diff');
+  }
 })().catch(error=>{console.error(error);process.exitCode=1;});

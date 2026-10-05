@@ -163,3 +163,22 @@ console.log('PASS Codex added and deleted files count every line');
     ['运行', 'Get-ChildItem']);
   console.log('PASS diff signatures follow content; job_output and pwsh read like their Claude tools');
 }
+
+// Binary patches show as a binary file; long lines that differ after their first 256 characters sign differently;
+// a new file whose first line looks like a header is content.
+{
+  const binary = plain(timeline.aiDiffFiles(['diff --git a/logo.png b/logo.png', 'index 1..2 100644', 'GIT binary patch',
+    'literal 1234', 'zcmV-uz1A2=K~#7F', '', 'literal 0', 'HcmV?d00001', '', 'diff --git a/a.txt b/a.txt', '@@ -1 +1 @@', '-a', '+b'].join('\n')));
+  assert.deepEqual(binary.map(file => [file.path, file.added, file.removed, file.lines.length]), [['logo.png', 0, 0, 1], ['a.txt', 1, 1, 3]]);
+  assert.equal(binary[0].lines[0].text, '（二进制文件）');
+  const long = suffix => timeline.aiDiffFiles('diff --git a/m.js b/m.js\n@@ -1 +1 @@\n-' + 'x'.repeat(300) + 'v1' + 'y'.repeat(100) +
+    '\n+' + 'x'.repeat(300) + suffix + 'y'.repeat(100));
+  assert.notEqual(timeline.aiDiffSignature(long('v2')), timeline.aiDiffSignature(long('v3')));
+  const titled = plain(transcript.aiCodexItem({ id: 'h', type: 'fileChange', status: 'completed', changes: [
+    { path: 'notes.md', kind: { type: 'add' }, diff: '--- title\nbody\n' }] }, 't'));
+  assert.deepEqual(plain(timeline.aiDiffFiles(titled.output)).map(file => [file.path, file.added, file.removed]), [['notes.md', 2, 0]]);
+  const unified = plain(transcript.aiCodexItem({ id: 'i', type: 'fileChange', status: 'completed', changes: [
+    { path: 'n.md', kind: { type: 'add' }, diff: '--- /dev/null\n+++ b/n.md\n@@ -0,0 +1,2 @@\n+a\n+b\n' }] }, 't'));
+  assert.deepEqual(plain(timeline.aiDiffFiles(unified.output)).map(file => [file.path, file.added, file.removed]), [['n.md', 2, 0]]);
+  console.log('PASS binary patches, long-line signatures and header-like file content');
+}

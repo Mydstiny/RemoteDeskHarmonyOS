@@ -113,6 +113,8 @@ export function aiDiffFiles(diff: string): AiDiffFile[] {
   let total = 0;
   let oldLeft = 0;
   let newLeft = 0;
+  // `git diff --binary` follows 'GIT binary patch' with encoded data up to the next file.
+  let binary = false;
   const open = (path: string): AiDiffFile => {
     const file: AiDiffFile = { path, added: 0, removed: 0, lines: [] };
     files.push(file);
@@ -128,7 +130,15 @@ export function aiDiffFiles(diff: string): AiDiffFile[] {
     const inHunk = oldLeft > 0 || newLeft > 0;
     if (raw.startsWith('diff --git ')) {
       current = open(gitHeaderPath(raw));
-      oldLeft = 0; newLeft = 0;
+      oldLeft = 0; newLeft = 0; binary = false;
+      continue;
+    }
+    if (binary) { continue; }
+    if (!inHunk && raw === 'GIT binary patch') {
+      binary = true;
+      if (current === null) { current = open(''); }
+      current.lines.push({ kind: 'context', text: '（二进制文件）' });
+      total++;
       continue;
     }
     if (!inHunk && raw.startsWith('+++ ')) {
@@ -170,17 +180,26 @@ export function aiDiffFiles(diff: string): AiDiffFile[] {
 }
 
 /**
- * Identifies the content of a set of diffs (paths, lines, counts), so a view of them is rebuilt exactly when it
- * changes. Each line is hashed by its length and first 256 characters.
+ * Identifies the content of a set of diffs (paths, lines, counts), so a view of them is rebuilt when it changes.
+ * Every character is hashed until a budget of a million; beyond it a line contributes its ends and an even sample.
  */
 export function aiDiffSignature(files: AiDiffFile[]): string {
   let hash = 0x811c9dc5;
   let lines = 0;
+  let budget = 1000000;
+  const step = (code: number): void => { hash = Math.imul(hash ^ code, 0x01000193) >>> 0; };
   const mix = (text: string): void => {
-    for (let i = 0; i < text.length && i < 256; i++) {
-      hash = Math.imul(hash ^ text.charCodeAt(i), 0x01000193) >>> 0;
+    if (text.length <= budget) {
+      for (let i = 0; i < text.length; i++) { step(text.charCodeAt(i)); }
+      budget -= text.length;
+    } else {
+      const stride = Math.max(1, Math.floor(text.length / 256));
+      for (let i = 0; i < text.length && i < 256; i++) { step(text.charCodeAt(i)); }
+      for (let i = 0; i < text.length; i += stride) { step(text.charCodeAt(i)); }
+      for (let i = Math.max(0, text.length - 256); i < text.length; i++) { step(text.charCodeAt(i)); }
     }
-    hash = Math.imul(hash ^ (text.length & 0xffff), 0x01000193) >>> 0;
+    step(text.length & 0xffff);
+    step((text.length >>> 16) & 0xffff);
   };
   files.forEach((file: AiDiffFile): void => {
     mix(file.path);
