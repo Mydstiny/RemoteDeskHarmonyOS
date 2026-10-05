@@ -188,8 +188,10 @@ export function diagnosticAiAppActionsForSteps(steps: string[]): DiagnosticAiApp
     RULES.forEach((rule: ActionRule): void => {
       if (found.some((a: DiagnosticAiAppAction): boolean => a.id === rule.id)) { return; }
       const has = (word: string): boolean => text.indexOf(actionText(word)) >= 0;
+      // The page named outright (电脑端安装页) is that page whatever else the step mentions.
+      const page: boolean = rule.keep.some((word: string): boolean => word.endsWith('页') && has(word));
       const matches: boolean = rule.groups.every((words: string[]): boolean => words.some(has)) &&
-        (!rule.except.some(has) || rule.keep.some(has)) && !rule.never.some(has);
+        (page || ((!rule.except.some(has) || rule.keep.some(has)) && !rule.never.some(has)));
       if (matches) { found.push(new DiagnosticAiAppAction(rule.id, rule.label, rule.mode, rule.requiresConfirmation)); }
     });
   });

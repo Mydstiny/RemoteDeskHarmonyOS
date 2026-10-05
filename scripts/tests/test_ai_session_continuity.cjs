@@ -244,7 +244,44 @@ test('the AI settings catalog has the 远程 AI settings, and plain words pick t
     ['深色模式好看吗', []],
     ['小艺风格是什么样子', []],
     ['RDP剪贴板关了以后就不能复制了', []],
-    ['可以帮我打开RDP音频吗', ['rdp.audioEnabled=true']]);
+    ['可以帮我打开RDP音频吗', ['rdp.audioEnabled=true']],
+    // A question or a problem keeps its protocol for the next sentence; a request after a problem is still read.
+    ['RDP为什么没声音，帮我打开音频', ['rdp.audioEnabled=true']],
+    ['RustDesk画面卡住了，打开诊断信息', ['rustdesk.showDiagnostics=true']],
+    ['RDP用着有点卡，RustDesk黑屏了，帮我关掉隐私模式', ['rustdesk.privacyMode=false']],
+    ['RustDesk黑屏了帮我关掉隐私模式', ['rustdesk.privacyMode=false']],
+    ['RDP卡住了把色深调到16位', ['rdp.colorDepth=16']],
+    ['RDP画面卡住了色深改16位', ['rdp.colorDepth=16']],
+    ['为什么RDP这么卡？先把色深调到16位', ['rdp.colorDepth=16']],
+    ['H265和H264哪个好？先给我换成H265', ['rustdesk.codec=5']],
+    ['RDP音频怎么关？帮我关掉吧', ['rdp.audioEnabled=false']],
+    ['RDP色深改成16位会不会好点？帮我改一下', ['rdp.colorDepth=16']],
+    ['RustDesk隐私模式是干嘛的？先帮我关掉', ['rustdesk.privacyMode=false']],
+    ['RDP驱动器映射打开以后看不到文件夹', []],
+    // Refusals after a value or of a change; leaving something as it is; 夜间模式 turned off is not dark.
+    ['夜间模式关掉', []],
+    ['我不想要夜间模式', []],
+    ['AI风格不要小艺', []],
+    ['深色模式关掉', []],
+    ['H265不要了', []],
+    ['小艺风格关掉', ['ai.style=siri']],
+    ['不要换成深色模式', []],
+    ['RustDesk编码先不要换成H265', []],
+    ['不要改RDP音频', []],
+    ['关掉RDP音频，剪贴板留着', ['rdp.audioEnabled=false']],
+    ['RustDesk 用 H264 速度优先 关闭音频', ['rustdesk.audioEnabled=false', 'rustdesk.codec=4', 'rustdesk.imageQuality=0']],
+    ['远程 AI 风格改成 Claude 风格 关闭工具执行过程', ['remoteAi.showExecution=false', 'remoteAi.uiStyle=claude']],
+    // A previous verb carries only into a clause that is just names; 开 / 关 next to a setting are verbs.
+    ['关闭RDP音频，开剪贴板', ['rdp.audioEnabled=false', 'rdp.clipboardEnabled=true']],
+    ['先把RDP双指缩放关了，再把反向滚轮开了', ['remote.rdpPinchZoom=false', 'remote.rdpReverseWheel=true']],
+    ['先关RDP音频再开剪贴板', ['rdp.audioEnabled=false', 'rdp.clipboardEnabled=true']],
+    ['RustDesk 音频关 RDP 音频开', ['rdp.audioEnabled=true', 'rustdesk.audioEnabled=false']],
+    ['别给我开RDP音频', ['rdp.audioEnabled=false']],
+    ['这次先不开RDP驱动器映射', ['rdp.driveEnabled=false']],
+    ['跟RDP音频相关的设置', []],
+    // A change of mind in its own sentence; a protocol named after the change narrows it.
+    ['打开RDP音频。不对，关掉。', ['rdp.audioEnabled=false']],
+    ['把诊断信息显示出来，RDP 的', ['rdp.showDiagnostics=true']]);
   for (const [question, expected] of cases) {
     assert.deepEqual(pick(question).sort(), expected.slice().sort(), question);
   }
@@ -429,6 +466,9 @@ test('手机通行密钥 and 安全密钥重定向 are app actions; 远程 AI wo
   for (const step of ['在电脑端安装 RustDesk 服务', '在电脑端安装 VNC 服务器', '在电脑端安装 Sunshine', '在电脑端安装显卡驱动']) {
     assert.ok(!ids(step).includes('settings.aiInstall'), step);
   }
+  // The install page named outright is that page whatever else the step mentions.
+  assert.deepEqual(ids('打开电脑端安装页，安装 Codex 插件和所需依赖'), ['settings.aiInstall']);
+  assert.deepEqual(ids('用 pip 安装 DSH 依赖'), []);
   assert.deepEqual(ids('在远程 AI 里关闭工具执行过程'), ['settings.aiDisplay']);
   assert.deepEqual(ids('在远程 AI 主机里导出数据'), ['settings.aiData']);
   assert.deepEqual(ids('在远程 AI 会话里批准文件改动'), ['settings.aiHosts']);
