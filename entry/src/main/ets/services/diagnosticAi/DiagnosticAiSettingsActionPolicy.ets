@@ -319,7 +319,8 @@ function settingWords(id: string): string[] {
     case 'ai.motion.speed': return ['动效速度', '动画速度'];
     case 'remoteAi.uiStyle': return ['远程 ai 风格', '远程 ai 界面', '远程 ai 外观', '会话页风格', '工作区风格', 'claude 风格',
       'codex 风格'];
-    case 'remoteAi.showExecution': return ['工具执行过程', '执行过程', '工具调用'];
+    // Not 工具调用 / 执行过程 alone: those are the AI 助理's own tools.
+    case 'remoteAi.showExecution': return ['工具执行过程', '远程 ai 工具', '远程 ai 执行过程'];
     case 'remoteAi.reconnectOnForeground': return ['恢复查看', '回到前台'];
     default: break;
   }
@@ -349,8 +350,27 @@ function subjectWords(spec: AiSettingSpec): string[] {
   return [compact(subject)].concat(settingWords(spec.id).map((word: string): string => compact(word)));
 }
 
-/** The choice a clause names: the longest label (or, when the setting itself is named, value) found in it. */
+/** Words that put the wanted value after them: 从 A 换成 B means B. */
+const CHANGE_TO: string[] = ['换成', '改成', '改为', '切到', '切换到', '切换成', '换到', '设为', '设成', '调成', '调到', '变成'];
+
+/**
+ * The choice a clause names: what follows its last 换成 / 改成 / 切到 … when that names one, else the longest label (or,
+ * when the setting itself is named, value) found in the whole clause.
+ */
 function namedChoice(spec: AiSettingSpec, clause: string, subjectHit: boolean): AiSettingChoice | null {
+  let cut: number = -1;
+  CHANGE_TO.forEach((word: string): void => {
+    const at: number = clause.lastIndexOf(word);
+    if (at >= 0 && at + word.length > cut) { cut = at + word.length; }
+  });
+  if (cut > 0 && cut < clause.length) {
+    const wanted: AiSettingChoice | null = longestChoice(spec, clause.slice(cut), subjectHit);
+    if (wanted !== null) { return wanted; }
+  }
+  return longestChoice(spec, clause, subjectHit);
+}
+
+function longestChoice(spec: AiSettingSpec, clause: string, subjectHit: boolean): AiSettingChoice | null {
   let best: AiSettingChoice | null = null;
   let bestLength: number = 0;
   spec.choices.forEach((choice: AiSettingChoice): void => {

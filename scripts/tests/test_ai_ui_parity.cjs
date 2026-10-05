@@ -138,8 +138,8 @@ const cases = [
       const state = authority(); let attempted;
       const page = loadClass('entry/src/main/ets/pages/AiSettingsPage.ets', 'AiSettingsSurface', {
         ...models, AiAccess: { getInstance: () => state.access }, aiErrorText: value => value,
-        AiLocalStore: { getInstance: () => ({ saveSettings: async (_account, next) => {
-          attempted = next;
+        AiLocalStore: { getInstance: () => ({ updateSettings: async (_account, change) => {
+          attempted = change(models.defaultAiSettings());
           if (changeAccount) { state.owner = 'owner-' + 'b'.repeat(64); page.settings = { ...models.defaultAiSettings(), textSize: 21 }; }
           throw Error('storage unavailable');
         } }) }
@@ -158,7 +158,8 @@ const cases = [
     const store = { initialize: async () => {}, settings: async () => {
       if (failRead) throw Error('read failure');
       return { ...models.defaultAiSettings(), defaultBackend: 'dsh', textSize: 21 };
-    }, hosts: async () => [], saveSettings: async (lease, next) => { writes.push({ lease, next }); } };
+    }, hosts: async () => [], subscribe: () => () => {},
+    updateSettings: async (lease, change) => { const next = change(models.defaultAiSettings()); writes.push({ lease, next }); return next; } };
     const page = loadClass('entry/src/main/ets/pages/AiSettingsPage.ets', 'AiSettingsSurface', {
       ...models, AiAccess: { getInstance: () => state.access }, AiLocalStore: { getInstance: () => store },
       getContext: () => ({}), aiErrorText: value => value

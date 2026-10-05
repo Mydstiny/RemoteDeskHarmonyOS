@@ -56,21 +56,25 @@ export class AiHostService {
     return settings === null ? null : aiRemoteSettingValue(settings, id);
   }
   /**
-   * The AI 助理 changes a 远程 AI setting (界面风格, 显示工具执行过程, 回到前台后恢复查看): saved for the current account
-   * as 设置 → 远程 AI saves it. False when it cannot be saved now (no access, not read yet, or not one of those).
+   * The AI 助理 changes a 远程 AI setting (界面风格, 显示工具执行过程, 回到前台后恢复查看) for the current account, as
+   * 设置 → 远程 AI saves it: only that field, on what is stored at that moment (another change made meanwhile stays).
+   * False when it cannot be changed now (no access, not read yet, or not one of those); `onFailed` when the save fails.
    */
-  applyRemoteSetting(id: string, value: string): boolean {
+  applyRemoteSetting(id: string, value: string, onFailed: () => void = (): void => {}): boolean {
     const settings: AiSettings | null = this.ownSettings();
-    if (settings === null) { return false; }
-    const next: AiSettings | null = aiRemoteSettingChanged(settings, id, value);
-    if (next === null) { return false; }
+    if (settings === null || aiRemoteSettingChanged(settings, id, value) === null) { return false; }
     let account: AiAccountLease;
     try { account = AiAccess.getInstance().capture(); } catch (_error) { return false; }
-    this.settings = next; this.settingsOwner = account.owner;
-    AiLocalStore.getInstance().saveSettings(account, next).catch((): void => {
-      // Not saved: read back what is stored.
+    // Shown at once; what the store keeps replaces it.
+    this.settings = aiRemoteSettingChanged(settings, id, value); this.settingsOwner = account.owner;
+    AiLocalStore.getInstance().updateSettings(account, (stored: AiSettings): AiSettings | null =>
+      aiRemoteSettingChanged(stored, id, value)).then((saved: AiSettings): void => {
+      if (AiAccess.getInstance().current(account)) { this.settings = saved; this.settingsOwner = account.owner; }
+    }).catch((): void => {
+      // Not saved: show what is stored again, and say so.
       const context: common.Context | null = this.context;
       if (context !== null) { void this.refresh(context); }
+      onFailed();
     });
     return true;
   }

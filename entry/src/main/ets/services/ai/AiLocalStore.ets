@@ -155,6 +155,31 @@ export class AiLocalStore {
       } finally { rows.close(); }
     });
   }
+  /**
+   * Read, change and write the settings as one step of the store's queue, so a change made elsewhere in between is
+   * kept. `change` returns the settings to write, or null to leave them; the result is what is stored afterwards.
+   */
+  updateSettings(lease: AiAccountLease, change: (stored: AiSettings) => AiSettings | null): Promise<AiSettings> {
+    return this.serialize(lease, async (db: relationalStore.RdbStore): Promise<AiSettings> => {
+      const rows = await db.querySql('SELECT data FROM ai_settings WHERE owner=?', [lease.owner]);
+      let stored: AiSettings = defaultAiSettings();
+      try {
+        if (rows.goToFirstRow()) {
+          stored = JSON.parse(rows.getString(0)) as AiSettings;
+          if (!aiSettingsValid(stored)) { throw new Error('AI_SETTINGS_INVALID'); }
+        }
+      } finally { rows.close(); }
+      const next: AiSettings | null = change(JSON.parse(JSON.stringify(stored)) as AiSettings);
+      if (next === null) { return stored; }
+      if (!aiSettingsValid(next)) { throw new Error('AI_SETTINGS_INVALID'); }
+      const data = JSON.stringify(next);
+      await this.transaction(lease, db, async (): Promise<void> => {
+        await db.executeSql('INSERT OR REPLACE INTO ai_settings VALUES (?,?)', [lease.owner, data]);
+      });
+      this.publish();
+      return JSON.parse(data) as AiSettings;
+    });
+  }
   saveSettings(lease: AiAccountLease, settings: AiSettings): Promise<void> {
     if (!aiSettingsValid(settings)) { return Promise.reject(new Error('AI_SETTINGS_INVALID')); }
     const data = JSON.stringify(settings);

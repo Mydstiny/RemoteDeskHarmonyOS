@@ -51,6 +51,19 @@ export interface AiSettings {
   uiStyle?: AiUiStyle;
 }
 export function aiUiStyle(settings: AiSettings): AiUiStyle { return settings.uiStyle === 'codex' ? 'codex' : 'claude'; }
+/**
+ * `stored` with only what changed from `before` to `after` written over it: two writers (设置 → 远程 AI and the AI
+ * 助理) each change their own fields and never put back a value the other one just saved.
+ */
+export function aiSettingsMerged(stored: AiSettings, before: AiSettings, after: AiSettings): AiSettings {
+  const next: AiSettings = JSON.parse(JSON.stringify(stored)) as AiSettings;
+  if (after.showExecution !== before.showExecution) { next.showExecution = after.showExecution; }
+  if (after.textSize !== before.textSize) { next.textSize = after.textSize; }
+  if (after.reconnectOnForeground !== before.reconnectOnForeground) { next.reconnectOnForeground = after.reconnectOnForeground; }
+  if (after.defaultBackend !== before.defaultBackend) { next.defaultBackend = after.defaultBackend; }
+  if (aiUiStyle(after) !== aiUiStyle(before)) { next.uiStyle = aiUiStyle(after); }
+  return next;
+}
 /** 远程 AI 设置 the AI 助理 may change (ids in its settings catalog); the rest stay in 设置 → 远程 AI. */
 export const AI_REMOTE_SETTING_IDS: string[] = ['remoteAi.uiStyle', 'remoteAi.showExecution', 'remoteAi.reconnectOnForeground'];
 /** One of those settings as a catalog value (claude / codex, true / false), or null for another id. */

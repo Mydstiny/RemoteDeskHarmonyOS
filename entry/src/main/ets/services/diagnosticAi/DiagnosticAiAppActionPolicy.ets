@@ -97,12 +97,15 @@ const RULES: ActionRule[] = [
   new ActionRule('settings.rdpDisplay', '打开 RDP 显示设置', [['RDP'], ['分辨率', '显示缩放', '显示设置']]),
   new ActionRule('settings.sshSkin', '打开 SSH 外观设置', [['SSH', '终端'], ['皮肤', '外观']]),
   new ActionRule('settings.diagnosticAi', '打开 AI 助理设置', [['AI 助理', 'AI助理', '诊断与 AI', '诊断AI', 'AI 帮助'], ['设置', '页面', '入口', '帮助']]),
+  // 远程 AI on its own (or its hosts and pairing) is its host page; its other pages take the steps about them.
   new ActionRule('settings.aiHosts', '打开远程 AI 主机设置',
-    [['AI 主机', '电脑端 AI', 'Claude Agent', 'Codex 主机', 'DSH 主机', '远程 AI 主机', '添加远程 AI', '配对远程 AI']]),
+    [['远程 AI', 'AI 主机', '电脑端 AI', 'Claude Agent', 'Codex 主机', 'DSH 主机', '连接与配对']], 'execute', false,
+    ['风格', '显示', '文字大小', '数据', '导出', '导入', '安装', '插件']),
   new ActionRule('settings.aiDisplay', '打开远程 AI 显示设置',
     [['远程 AI', '会话页'], ['显示', '界面风格', 'Claude 风格', 'Codex 风格', '文字大小']]),
   new ActionRule('settings.aiData', '打开远程 AI 数据设置', [['远程 AI', 'AI 数据'], ['数据', '导出', '导入']]),
-  new ActionRule('settings.aiInstall', '打开远程 AI 安装设置', [['远程 AI', '电脑端'], ['安装', '插件']]),
+  new ActionRule('settings.aiInstall', '打开远程 AI 安装设置',
+    [['远程 AI', '电脑端', '电脑上', 'Claude Agent', 'Codex', 'DSH'], ['安装', '插件']]),
   new ActionRule('pro.phonePasskey', '打开手机通行密钥', [['通行密钥', 'passkey', '手机当密钥', '手机作为密钥']]),
   new ActionRule('pro.securityKey', '打开安全密钥重定向', [['安全密钥', 'USB 密钥', 'FIDO', 'YubiKey', 'U2F']]),
 

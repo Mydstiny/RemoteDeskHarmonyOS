@@ -1034,6 +1034,11 @@ struct HostListPage {
   @State aiIslandStartChat: boolean = false;
   /** A session's AI was up when the user left the host: it carries on here (see takeSessionAi). */
   @StorageProp(AI_SESSION_HANDOVER) @Watch('onSessionAiHandover') aiSessionHandover: number = 0;
+  /**
+   * This page is the one showing (between onPageShow and onPageHide). `pageActive` stays true under a page pushed
+   * over it, and after VncSettingsPage's replaceUrl two lists may be alive: only the one showing takes the AI over.
+   */
+  private pageShown: boolean = false;
   /** The island opens straight into the panel (taking over from the voice card) instead of its capsule sequence. */
   @State aiIslandQuickOpen: boolean = false;
   @StorageProp(AI_VOICE_REQUEST) @Watch('onAiVoiceRequest') aiVoiceRequest: number = 0;
@@ -2404,7 +2409,11 @@ struct HostListPage {
       case 'remote.vncReverseWheel': return this.saveAssistantReverseWheel('vnc', on);
       case 'remote.moonlightReverseWheel': return this.saveAssistantReverseWheel('moonlight', on);
       default:
-        if (id.indexOf('remoteAi.') === 0) { return AiHostService.getInstance().applyRemoteSetting(id, value); }
+        if (id.indexOf('remoteAi.') === 0) {
+          return AiHostService.getInstance().applyRemoteSetting(id, value, (): void => {
+            promptAction.showToast({ message: '远程 AI 设置没有保存，请重试', duration: 2200 });
+          });
+        }
         return id.indexOf('ai.') === 0 ? this.applyAssistantAiSetting(id, value) : false;
     }
   }
@@ -2925,6 +2934,7 @@ struct HostListPage {
 
   onPageShow(): void {
     this.pageActive = true;
+    this.pageShown = true;
     this.openPendingProOrder();
     this.openSharedToAi();
     this.takeSessionAi();
@@ -2957,6 +2967,7 @@ struct HostListPage {
   }
 
   onPageHide(): void {
+    this.pageShown = false;
     // A workspace entry whose session page covered the list counts as opened once the list returns.
     if (this.proWorkspaceRun !== null && connectingRunIndex(this.proWorkspaceRun as WorkspaceRun) >= 0) {
       this.proWorkspacePageHidden = true;
@@ -20835,7 +20846,7 @@ struct HostListPage {
 
   /**
    * The user left a host with its AI up (SessionAiHost): the AI carries on here as the orb with its small chat, on the
-   * same conversation (an answer still on its way lands in it). It waits while a session page is still on top, and is
+   * same conversation (an answer still on its way lands in it). It waits until this list is the page showing, and is
    * dropped when another session's AI is in front, the list's own AI is already up, or the user took too long.
    */
   private takeSessionAi(): void {
@@ -20844,7 +20855,9 @@ struct HostListPage {
     if (Date.now() - at > AI_SESSION_HANDOVER_TTL_MS) { AppStorage.setOrCreate(AI_SESSION_HANDOVER, 0); return; }
     let top: string = '';
     try { top = this.getUIContext().getRouter().getState().name; } catch (_error) { return; }
-    if (aiIsSessionPage(top) || top === 'MoonlightAppCatalogPage') { return; }
+    // Only once this list itself is showing (not a session, Moonlight's app list, or a page over it): until then it
+    // waits for onPageShow.
+    if (!this.pageShown || top !== 'HostListPage') { return; }
     AppStorage.setOrCreate(AI_SESSION_HANDOVER, 0);
     if (AiSessionRouter.sessionActive() || !this.diagnosticAiAssistantVisible || this.aiIslandShown || this.aiVoiceShown) {
       return;

@@ -12,7 +12,7 @@ import { AiBackendChoiceCard } from '../components/ai/AiBackendChoiceCard';
 import { AiHostEditor } from '../components/ai/AiHostEditor';
 import { AiHostInstallPanel } from '../components/ai/AiHostInstallPanel';
 import { AiHostService } from '../services/ai/AiHostService';
-import { AiBackend, AiHost, AiSettings, AiUiStyle, aiBackendName, aiUiStyle, defaultAiSettings } from '../services/ai/AiModels';
+import { AiBackend, AiHost, AiSettings, AiUiStyle, aiBackendName, aiSettingsMerged, aiUiStyle, defaultAiSettings } from '../services/ai/AiModels';
 import { AiAccess, AiAccountLease } from '../services/ai/AiAccess';
 import { AiLocalStore } from '../services/ai/AiLocalStore';
 import { AiDataTransfer } from '../services/ai/AiDataTransfer';
@@ -56,6 +56,7 @@ export struct AiSettingsSurface {
   private alive: boolean = false;
   private initialized: boolean = false;
   private stop: () => void = (): void => {};
+  private stopStore: () => void = (): void => {};
   private pal(): Palette { return this.theme === 'light' ? buildLight(this.accent) : buildDark(this.accent); }
   private normalizedSection(value: string): string {
     return ['hosts', 'display', 'data', 'install'].includes(value) ? value : '';
@@ -104,8 +105,12 @@ export struct AiSettingsSurface {
     });
     await this.run(async (): Promise<void> => { await this.load(); });
     this.initialized = true;
+    // What another writer saves (the AI 助理 changing 界面风格, another sheet) shows here, and is what this page edits.
+    if (this.alive) {
+      this.stopStore = AiLocalStore.getInstance().subscribe((): void => { if (this.initialized) { this.scheduleReload(); } });
+    }
   }
-  aboutToDisappear(): void { this.alive = false; this.initialized = false; this.stop(); }
+  aboutToDisappear(): void { this.alive = false; this.initialized = false; this.stop(); this.stopStore(); }
   private scheduleReload(): void {
     if (!this.alive) { return; }
     this.pendingReload = true;
@@ -154,11 +159,14 @@ export struct AiSettingsSurface {
     const next = JSON.parse(JSON.stringify(this.settings)) as AiSettings;
     void this.run(async (): Promise<void> => {
       try {
-        await AiLocalStore.getInstance().saveSettings(account, next);
+        // Only what was changed here, on what is stored now: a setting the AI 助理 changed meanwhile stays.
+        const saved: AiSettings = await AiLocalStore.getInstance().updateSettings(account,
+          (stored: AiSettings): AiSettings | null => aiSettingsMerged(stored, previous, next));
         if (!this.alive || !AiAccess.getInstance().proVisible() || !AiAccess.getInstance().current(account)) {
           throw new Error('AI_PRO_ACCESS_REQUIRED');
         }
-        this.savedSettings = next; this.savedSettingsAccount = account;
+        this.savedSettings = saved; this.savedSettingsAccount = account;
+        this.settings = JSON.parse(JSON.stringify(saved)) as AiSettings;
       } catch (error) {
         if (this.alive && AiAccess.getInstance().proVisible() && AiAccess.getInstance().current(account)) {
           this.settings = JSON.parse(JSON.stringify(previous)) as AiSettings;

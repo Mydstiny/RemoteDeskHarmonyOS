@@ -6295,8 +6295,9 @@ struct RemoteDesktop {
 
   /** The AI's session actions (session.*), through the same handlers as this session's toolbar. */
   private runSessionAiAction(action: DiagnosticAiAppActionId): boolean {
-    // The AI stays up while the connection is down; the session's toolbar actions need it back.
-    if (!this.connected && action.startsWith('session.')) {
+    // The AI stays up while the connection is down; the session's toolbar actions need it back (leaving does not: it
+    // also stops a reconnect under way).
+    if (!this.connected && action.startsWith('session.') && action !== 'session.disconnect') {
       promptAction.showToast({ message: '连接已断开，重新连接后再试', duration: 2200 });
       return true;
     }

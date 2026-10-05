@@ -72,12 +72,20 @@ function settingsFixture({ deferredInitialize = false } = {}) {
       if (!access.current(lease)) throw new Error('AI_ACCOUNT_CHANGED');
       state.hostReads++; return [{ id: state.owner + '-host', owner: state.owner }];
     },
-    saveSettings: async (_lease, settings) => { state.saves.push(JSON.parse(JSON.stringify(settings))); }
+    // Read, change and write in one step (AiLocalStore.updateSettings); what is stored here is always the defaults.
+    updateSettings: async (lease, change) => {
+      if (!access.current(lease)) throw new Error('AI_ACCOUNT_CHANGED');
+      const next = change(defaults()) || defaults();
+      state.saves.push(JSON.parse(JSON.stringify(next)));
+      return JSON.parse(JSON.stringify(next));
+    },
+    subscribe: () => () => {}
   };
   state.page = loadPage('AiSettingsPage', {
     AiAccess: { getInstance: () => access },
     AiLocalStore: { getInstance: () => store },
-    defaultAiSettings: defaults, getContext: () => ({}), aiErrorText: value => value
+    defaultAiSettings: defaults, aiSettingsMerged: loadModels().aiSettingsMerged, getContext: () => ({}),
+    aiErrorText: value => value
   }, 'AiSettingsSurface');
   state.changeAccount = owner => {
     state.owner = owner;
@@ -88,6 +96,15 @@ function settingsFixture({ deferredInitialize = false } = {}) {
     for (const callback of state.callbacks.slice()) callback();
   };
   return state;
+}
+
+function loadModels() {
+  const module = { exports: {} };
+  const source = ts.transpileModule(fs.readFileSync(path.join(root, 'entry/src/main/ets/services/ai/AiModels.ets'), 'utf8'),
+    { compilerOptions: { target: ts.ScriptTarget.ES2021, module: ts.ModuleKind.CommonJS } }).outputText;
+  vm.runInNewContext(source, { module, exports: module.exports, require: () => ({ parseEndpointHost: () => ({ ok: true }),
+    parseEndpointServerIdentity: () => ({ ok: true }) }) }, { filename: 'AiModels' });
+  return module.exports;
 }
 
 function loadTimeline() {
