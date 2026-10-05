@@ -49,6 +49,8 @@ const badges = new Map([
   ['components/hostadd/HostProtocolPicker.ets', [2, /aiProVisible = AiAccess\.getInstance\(\)\.proVisible\(\)[\s\S]*if \(this\.workspaceAvailable\) \{ this\.workspaceOption\(\) \}/]],
   ['components/ai/AiHostEditor.ets', [1, /AiAccess\.getInstance\(\)\.proVisible\(\)/]],
   ['pages/AiSettingsPage.ets', [1, /allowed = AiAccess\.getInstance\(\)\.proVisible\(\)/]],
+  // The remote AI session page (Claude and Codex style headers) clears its drafts and sheets when AI access is revoked.
+  ['pages/RemoteAiWorkspace.ets', [2, /!AiAccess\.getInstance\(\)\.proVisible\(\) \|\|\s*\(this\.host !== null && !AiAccess\.getInstance\(\)\.executable\(this\.host\.backend\)\)/]],
   ['pages/SshTerminal.ets', [1, /ProFeatureGate\(\{ featureId: 'pro\.file\.knockTransfer'/]],
   // Per-feature sheets open only from the Pro 功能 section, which requires an active Pro.
   // The skin sheet opens only from the Pro-gated 终端皮肤 row in settings.
