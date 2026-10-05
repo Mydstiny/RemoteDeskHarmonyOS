@@ -26,7 +26,7 @@ assert.match(proFeatureStatus(feature({ devices: ['pc'] }), denied('deviceUnsupp
 assert.match(proFeatureStatus(feature(), denied('versionUnsupported'), false).detail, /API 26/);
 assert.equal(proFeatureStatus(feature(), denied('capabilityUnsupported'), false).tone, 'unsupported');
 assert.equal(proFeatureStatus(feature(), { visible: true, executable: false, reason: 'permissionRequired' }, false).label, '需要授权');
-assert.equal(proFeatureScope(feature()), '手机/平板/PC · SSH/RDP · API 26+');
+assert.equal(proFeatureScope(feature()), '手机/平板/PC · SSH/RDP · 鸿蒙 7（API 26）及以上');
 assert.equal(proFeatureScope(feature({ devices: [], protocols: ['ai'], minApiVersion: 0 })), '远程 AI');
 // Only HarmonyOS system capabilities go through canIUse; the app's own protocol capabilities count as present,
 // so RDP/RustDesk 高级显示方案 no longer read as 系统能力不支持.

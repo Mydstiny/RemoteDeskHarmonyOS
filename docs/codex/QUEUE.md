@@ -14,7 +14,7 @@ Updated: 2026-10-04 Asia/Shanghai
 
 - RDP/RustDesk 高级显示计划：[2026-10-01 计划](plans/2026-10-01-rdp-rustdesk-pro-display-resolution-scale-plan.md) 的 P1 运行时闭环已实现，`b69d3c9f` 经 `/root/review_display_final` PASS，并补齐 marker 失败 fail-closed 回归；RDP/RustDesk profile 已按账号×主机×协议×设备隔离，RustDesk 能力/Pro/peer 权限门控保持封闭。编译、assembleHap、显示选择 5/5、Pro entry/runtime、Light/diff/state PASS；ohosTest 为 00306054。下一步是实际 Windows/RustDesk peer/设备矩阵与 Release/PR 验收。
 
-- Pro 工作区与高级主机管理：W0/H1/S1/S2/S3 基础实现已提交准备；继续 H2 分组胶囊/H3 批量操作/H4 导入导出/S3 编辑器/S4 当前会话捕获，并完成设备验收。
+- Pro 设备验收（2026-10-05，[清单](plans/2026-09-27-full-acceptance-checklist.md) 第七步/第 13 节）：个性化、Pro 反馈、Pro 标识、预设图标（仅鸿蒙 7/API 26+）、沙盒购买 PASS；工作区平板 SSH + RustDesk PASS。下一步：工作区平板 RustDesk + RDP、高级主机管理 HM1–HM5、RDP/RustDesk 高级显示；需要鸿蒙 PC 的项目最后统一测；正式购买为外部依赖。
 
 - Pro 反馈渠道（613b5126）：当前 session 任务为更新 Pro 反馈的两种二维码；QQ 竖版二维码按原始比例解码，签名 HAP 已部署到三台设备。
 

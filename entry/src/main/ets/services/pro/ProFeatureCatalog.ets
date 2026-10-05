@@ -29,7 +29,7 @@ function planned(id: string, title: string, description: string, api: number = 2
 }
 function appIcon(): ProFeature {
   const feature = planned('pro.personalization.appIcon', '预设应用图标',
-    '选择随应用提供的白底版或透明底版图标，随时恢复默认。', 26);
+    '选择随应用提供的白底版或透明底版图标，随时恢复默认。需要鸿蒙 7（API 26）及以上。', 26);
   feature.availability = 'available';
   return feature;
 }
@@ -73,14 +73,14 @@ function proFeedback(): ProFeature {
 }
 function workspaces(): ProFeature {
   const feature = planned('pro.workspaces', '工作区与布局',
-    '把常用的一组会话存成工作区，一键依次打开；SSH 可指定初始目录，PC 按保存的布局摆放窗口。');
+    '把常用的一组会话存成工作区，一键依次打开；SSH 可指定初始目录，PC 按保存的布局摆放窗口。需要鸿蒙 7（API 26）及以上。');
   feature.availability = 'available';
   feature.minApiVersion = 26;
   return feature;
 }
 function hostManagement(): ProFeature {
   const feature = planned('pro.hostManagement', '高级主机管理',
-    '跨协议分组与标签、智能分组筛选、多选批量编辑与连通检测，以及不含密码的导入导出。');
+    '跨协议分组与标签、智能分组筛选、多选批量编辑与连通检测，以及不含密码的导入导出。需要鸿蒙 7（API 26）及以上。');
   feature.availability = 'available';
   feature.minApiVersion = 26;
   return feature;
@@ -150,7 +150,7 @@ export function proFeatures(): ProFeature[] {
 /** Where each feature stands in development and device acceptance; shown on the Pro page. */
 export function proFeatureProgress(id: string): string {
   switch (id) {
-    case 'pro.personalization.appIcon': return '已完成 · 手机实机验收通过';
+    case 'pro.personalization.appIcon': return '已完成 · 实机验收通过 · 仅鸿蒙 7（API 26）及以上可用';
     case 'pro.connection.continuation': return '已完成 · 手机与平板实机验收通过（SSH、RDP、RustDesk、VNC）；PC 待验证';
     case 'pro.file.knockTransfer': return '已开发 · 等待鸿蒙 PC 实机验证，暂不开放';
     case 'pro.connection.knockShare': return '已开发 · 等待应用链接域名配置，暂不开放';
@@ -160,12 +160,13 @@ export function proFeatureProgress(id: string): string {
     case 'pro.ai.rustdeskTransport': return '规划中 · 等待 RustDesk 数据通道';
     case 'pro.security.webauthnRedirect': return '开发中 · USB 安全密钥能力探测通过，待硬件与 RDP 验证';
     case 'pro.security.phonePasskey': return '可行性研究中';
-    case 'pro.personalization': return '已开发 · 试用开放 · 自定义组合键与 SSH 终端皮肤待实机验收';
-    case 'pro.workspaces': return '已开发 · 试用开放 · 依次打开、布局编辑与 PC 窗口摆放待实机验收';
+    case 'pro.personalization': return '已完成 · 实机验收通过（自定义组合键与 SSH 终端皮肤）';
+    case 'pro.workspaces':
+      return '已开发 · 试用开放 · 平板 SSH + RustDesk 实机通过；RustDesk + RDP 与 PC 窗口摆放待验收；手机默认关闭';
     case 'pro.hostManagement': return '已开发 · 试用开放 · 分组、标签、智能分组、批量操作与导入导出待实机验收';
     case PRO_RDP_ADVANCED_DISPLAY_FEATURE: return '已开发 · 试用开放 · RDP 自定义尺寸与 Windows 缩放待真实 Windows 矩阵验收';
     case PRO_RUSTDESK_ADVANCED_DISPLAY_FEATURE: return '已开发 · 试用开放 · 能力感知自定义分辨率待 RustDesk peer/设备矩阵验收';
-    case 'pro.feedback': return '已上线 · Pro 专属畅联群与 QQ 群';
+    case 'pro.feedback': return '已上线 · 实机验收通过 · Pro 专属畅联群与 QQ 群';
     case PRO_DIAGNOSTICS_FEATURE:
       return '已上线（试用） · 聊天、助理诊断、AI 语音（Beta）、文档与数据管理、需求收集；更多服务商的实机验收进行中';
     case PRO_DIAGNOSTICS_PROVIDER_FEATURE: return '已上线（试用） · 多家服务商、本机安全存储密钥、模型列表';

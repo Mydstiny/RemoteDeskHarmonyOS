@@ -20,6 +20,11 @@ export function proSystemCapability(capability: string): boolean {
   return capability.startsWith('SystemCapability.');
 }
 
+/** HarmonyOS 7 is API 26; other levels keep the API number. */
+function apiName(api: number): string {
+  return api === 26 ? '鸿蒙 7（API 26）' : 'API ' + api.toString() + ' ';
+}
+
 /** Where a feature applies, for the management list. */
 export function proFeatureScope(feature: ProFeature): string {
   const parts: string[] = [];
@@ -28,7 +33,7 @@ export function proFeatureScope(feature: ProFeature): string {
     parts.push(feature.protocols.map((protocol: string): string =>
       protocol === 'ai' ? '远程 AI' : protocol.toUpperCase()).join('/'));
   }
-  if (feature.minApiVersion > 0) { parts.push('API ' + feature.minApiVersion.toString() + '+'); }
+  if (feature.minApiVersion > 0) { parts.push(apiName(feature.minApiVersion) + '及以上'); }
   return parts.join(' · ');
 }
 
@@ -54,7 +59,7 @@ export function proFeatureStatus(feature: ProFeature, decision: ProAccessDecisio
     return { label: '等待验证', detail: '联网刷新 Pro 状态后可用', tone: 'locked' };
   }
   if (reason === 'versionUnsupported') {
-    return { label: '版本不支持', detail: '需要 API ' + feature.minApiVersion.toString() + ' 或更新版本', tone: 'unsupported' };
+    return { label: '版本不支持', detail: '需要' + (feature.minApiVersion === 26 ? '' : ' ') + apiName(feature.minApiVersion) + '或更新版本', tone: 'unsupported' };
   }
   if (reason === 'deviceUnsupported') {
     return { label: '设备不支持', detail: '支持：' + feature.devices.map(deviceName).join('/'), tone: 'unsupported' };
