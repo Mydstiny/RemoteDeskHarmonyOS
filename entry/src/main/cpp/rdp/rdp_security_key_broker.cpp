@@ -215,8 +215,10 @@ bool Broker::Close() {
     if (closed_) return false;
     closed_ = true;
     SetCancelled(lock, true);
-    const bool authorized = authorized_;
+    // Only a USB key is held by ArkTS; the phone holds nothing for this session.
+    const bool authorized = authorized_ && authenticator_ == Authenticator::UsbKey;
     authorized_ = false;
+    authenticator_ = Authenticator::None;
     Wipe(product_);
     changed_.notify_all();
     return authorized;
@@ -288,6 +290,7 @@ bool Broker::Respond(uint32_t id, const Reply& reply) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (closed_ || !pending_ || !delivered_ || reply_ || pending_->id != id) return false;
     Reply accepted = reply;
+    if (pending_->kind != Kind::Passkey) accepted.payload.clear();
     switch (pending_->kind) {
         case Kind::Confirm:
         case Kind::Write:
@@ -295,6 +298,17 @@ bool Broker::Respond(uint32_t id, const Reply& reply) {
             break;
         case Kind::Select:
             accepted.text = SanitizeLabel(accepted.text, kMaxProductBytes);
+            if (accepted.authenticator != Authenticator::UsbKey && accepted.authenticator != Authenticator::Phone) {
+                accepted.ok = false;
+            }
+            break;
+        case Kind::Passkey:
+            Wipe(accepted.text);
+            // A CTAP response: one status byte, then the CBOR body when the status is success.
+            if (accepted.ok && (accepted.payload.empty() || accepted.payload.size() > kMaxPasskeyReplyBytes)) {
+                accepted.ok = false;
+            }
+            if (!accepted.ok) accepted.payload.clear();
             break;
         case Kind::Pin:
             if (!ValidPin(accepted.text)) accepted.ok = false;
@@ -329,40 +343,57 @@ bool Broker::Confirm(const std::string& rpId, uint32_t operation) {
     return reply && reply->ok;
 }
 
-bool Broker::Select(std::string& product) {
+Authenticator Broker::Select(std::string& product) {
     Request request;
     request.kind = Kind::Select;
     const auto reply = Exchange(request, kSelectTimeout, true);
-    if (!reply || !reply->ok) return false;
+    if (!reply || !reply->ok) return Authenticator::None;
     std::lock_guard<std::mutex> lock(mutex_);
-    if (closed_) return false;
+    if (closed_) return Authenticator::None;
     authorized_ = true;
+    authenticator_ = reply->authenticator;
     product_ = reply->text;
     product = product_;
-    return true;
+    return authenticator_;
 }
 
-bool Broker::Authorized(std::string& product) const {
+Authenticator Broker::Authorized(std::string& product) const {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (!authorized_ || closed_) return false;
+    if (!authorized_ || closed_) return Authenticator::None;
     product = product_;
-    return true;
+    return authenticator_;
 }
 
 void Broker::Forget() {
+    bool release = false;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         if (!authorized_) return;
+        release = authenticator_ == Authenticator::UsbKey;
         authorized_ = false;
+        authenticator_ = Authenticator::None;
         Wipe(product_);
     }
-    Post(sessionId_, Kind::Release, 0);
+    if (release) Post(sessionId_, Kind::Release, 0);
 }
 
 void Broker::Unauthorize() {
     std::lock_guard<std::mutex> lock(mutex_);
     authorized_ = false;
+    authenticator_ = Authenticator::None;
     Wipe(product_);
+}
+
+std::optional<std::vector<uint8_t>> Broker::Passkey(const std::vector<uint8_t>& command) {
+    if (command.size() < 2 || command.size() > kMaxPasskeyRequestBytes) return std::nullopt;
+    Request request;
+    request.kind = Kind::Passkey;
+    request.payload = command;
+    // The phone may keep the request open for what is left of the remote request, within its own limit.
+    request.timeoutMs = std::min<uint32_t>(RemainingMs(), kMaxPhoneRequestMs);
+    auto reply = Exchange(request, kPasskeyTimeout, true);
+    if (!reply || !reply->ok) return std::nullopt;
+    return std::move(reply->payload);
 }
 
 std::optional<std::string> Broker::Pin(int32_t retries) {

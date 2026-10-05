@@ -9,6 +9,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <vector>
 
 // Session-bound broker between the MS-RDPEWA channel worker (native threads) and the ArkTS owner of the
 // local UI and of USB I/O. One request is outstanding at a time; every wait is bounded; Close() makes every
@@ -28,6 +29,14 @@ enum class Kind : uint32_t {
     Read = 6,      // timeoutMs bounds one 64-byte HID input report; reply report
     Release = 7,   // notification only: release the authorized key
     Dismiss = 8,   // notification only: id = a delivered prompt that ended unanswered (timeout, cancel, close)
+    Passkey = 9,   // payload = CTAP command byte + CBOR request for the phone; reply payload = status byte + CBOR
+};
+
+// What answers the session's WebAuthn requests once the user chose it in the Select prompt.
+enum class Authenticator : uint32_t {
+    None = 0,
+    UsbKey = 1,
+    Phone = 2,
 };
 
 struct Request {
@@ -38,18 +47,27 @@ struct Request {
     int32_t retries = -1;
     uint32_t timeoutMs = 0;
     std::array<uint8_t, 64> report{};
+    std::vector<uint8_t> payload;
 };
 
 struct Reply {
     bool ok = false;
     std::string text;
     std::array<uint8_t, 64> report{};
+    std::vector<uint8_t> payload;
+    // Select: the chosen authenticator (UsbKey when absent).
+    Authenticator authenticator = Authenticator::UsbKey;
 };
 
 constexpr std::chrono::milliseconds kConfirmTimeout{60000};
 constexpr std::chrono::milliseconds kSelectTimeout{120000};
 constexpr std::chrono::milliseconds kPinTimeout{120000};
 constexpr std::chrono::milliseconds kWriteTimeout{2000};
+// The phone round trip includes the user confirming and unlocking on the phone.
+constexpr std::chrono::milliseconds kPasskeyTimeout{180000};
+constexpr uint32_t kMaxPhoneRequestMs = 120000;
+constexpr size_t kMaxPasskeyRequestBytes = 65536;
+constexpr size_t kMaxPasskeyReplyBytes = 16384;
 constexpr uint32_t kMaxReadMs = 5000;
 constexpr uint32_t kReadGraceMs = 1500;
 // A remote request's own timeout bounds its prompts, within these limits.
@@ -84,8 +102,12 @@ public:
     // Milliseconds left before the request deadline, or kNoDeadline.
     uint32_t RemainingMs() const;
     bool Confirm(const std::string& rpId, uint32_t operation);
-    bool Select(std::string& product);
-    bool Authorized(std::string& product) const;
+    // Asks the user to choose and authorize an authenticator; None when they did not.
+    Authenticator Select(std::string& product);
+    // The authenticator chosen earlier in this session, or None.
+    Authenticator Authorized(std::string& product) const;
+    // Hands one CTAP command to the phone (through ArkTS); the reply is the phone's CTAP response.
+    std::optional<std::vector<uint8_t>> Passkey(const std::vector<uint8_t>& command);
     // The authorized key could not be opened: forget it and have ArkTS release it.
     void Forget();
     std::optional<std::string> Pin(int32_t retries);
@@ -119,6 +141,7 @@ private:
     bool closed_ = false;
     bool cancelled_ = false;
     bool authorized_ = false;
+    Authenticator authenticator_ = Authenticator::None;
     std::string product_;
     std::chrono::steady_clock::time_point deadline_ = std::chrono::steady_clock::time_point::max();
     std::optional<Request> pending_;

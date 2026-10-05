@@ -6468,6 +6468,7 @@ struct RemoteDesktop {
       // A stopped or replaced service never touches this page again.
       if (this.rdpSecurityKey === service) { this.applyRdpSecurityKeyPrompt(prompt); }
     });
+    service.attachContext(getContext(this) as common.UIAbilityContext);
     this.rdpSecurityKey = service;
     if (service.start(sessionId)) {
       hilog.info(RD_DOMAIN, RD_TAG, 'RDP security key service started reason=' + reason);
@@ -24647,6 +24648,7 @@ struct RemoteDesktop {
           onDeny: (requestId: number): void => { this.rdpSecurityKey?.answerConfirm(requestId, false); },
           onChoose: (requestId: number, key: string): void => { this.rdpSecurityKey?.chooseKey(requestId, key); },
           onRefresh: (): void => { this.rdpSecurityKey?.refreshKeys(); },
+          onPhone: (requestId: number): void => { this.rdpSecurityKey?.choosePhone(requestId); },
           onPin: (requestId: number, pin: string): void => { this.rdpSecurityKey?.answerPin(requestId, pin); },
           onCancel: (): void => { this.rdpSecurityKey?.cancel(); }
         })

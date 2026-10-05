@@ -6,7 +6,8 @@
  * RemoteDesk: vendored from FreeRDP channels/rdpewa/client and modified. Devices come only from the RemoteDesk
  * security-key broker (remotedesk_rdpewa.h); requests are confirmed locally, PINs are entered locally, the touch
  * wait ends with the request's timeout, cancelled operations are joined before their device is freed, values
- * from the server are range-checked instead of asserted, and GET_CREDENTIALS answers without device I/O.
+ * from the server are range-checked instead of asserted, GET_CREDENTIALS answers without device I/O, and a
+ * request can be answered by the user's paired phone (its CTAP response is passed through unchanged).
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -173,10 +174,10 @@ static void rdpewa_fido_fill_device_info(fido_dev_t* dev, const char* path,
  * Caller must call fido_dev_close() + fido_dev_free() when done.
  */
 static fido_dev_t* rdpewa_fido_open_device(rdpContext* context, BOOL interactive,
-                                           RDPEWA_DEVICE_INFO* devInfo)
+                                           RDPEWA_DEVICE_INFO* devInfo, RemoteDeskRdpewaAuthenticator* kind)
 {
 	char product[128] = { 0 };
-	fido_dev_t* dev = remotedesk_rdpewa_open(context, interactive, product, sizeof(product));
+	fido_dev_t* dev = remotedesk_rdpewa_open(context, interactive, product, sizeof(product), kind);
 	if (!dev)
 		return nullptr;
 
@@ -189,6 +190,51 @@ static wStream* rdpewa_fido_cancelled_response(const RDPEWA_DEVICE_INFO* devInfo
 {
 	return rdpewa_cbor_encode_webauthn_response(REMOTEDESK_RDPEWA_HRESULT_CANCELLED, 0x01, nullptr, 0,
 	                                            devInfo);
+}
+
+/* CTAP2 status the phone returns when its user declined. */
+#define REMOTEDESK_CTAP2_ERR_OPERATION_DENIED 0x27
+
+/**
+ * Answers one MakeCredential/GetAssertion with the paired phone. The phone builds the whole CTAP response
+ * (attestation "none" for registrations); a decline or timeout is reported to the server as a cancellation.
+ */
+static wStream* rdpewa_fido_phone(rdpContext* context, BYTE subCommand, const BYTE* ctapData, size_t ctapLen)
+{
+	RDPEWA_DEVICE_INFO devInfo = { .maxMsgSize = 1200,
+		                           .maxSerializedLargeBlobArray = 0,
+		                           .providerType = "Hid",
+		                           .providerName = "RemoteDeskPhonePasskey",
+		                           .uvStatus = 1,
+		                           .uvRetries = 0,
+		                           .transports = 1 };
+	strncpy(devInfo.devicePath, "remotedesk-phone", sizeof(devInfo.devicePath) - 1);
+	strncpy(devInfo.product, "Phone passkey", sizeof(devInfo.product) - 1);
+
+	BYTE* command = malloc(ctapLen + 1);
+	if (!command)
+		return nullptr;
+	command[0] = subCommand;
+	if (ctapLen > 0)
+		memcpy(command + 1, ctapData, ctapLen);
+	BYTE* reply = nullptr;
+	size_t replyLen = 0;
+	const BOOL answered = remotedesk_rdpewa_passkey(context, command, ctapLen + 1, &reply, &replyLen);
+	free(command);
+	if (!answered || replyLen < 1)
+	{
+		free(reply);
+		return rdpewa_fido_cancelled_response(&devInfo);
+	}
+
+	wStream* s = nullptr;
+	if (reply[0] == REMOTEDESK_CTAP2_ERR_OPERATION_DENIED)
+		s = rdpewa_fido_cancelled_response(&devInfo);
+	else
+		s = rdpewa_cbor_encode_webauthn_response(reply[0] == 0 ? S_OK : E_FAIL, reply[0], reply + 1, replyLen - 1,
+		                                         &devInfo);
+	free(reply);
+	return s;
 }
 
 /**
@@ -441,7 +487,13 @@ static wStream* rdpewa_fido_make_credential(rdpContext* context, const BYTE* cta
 		goto out;
 	}
 
-	dev = rdpewa_fido_open_device(context, TRUE, &devInfo);
+	RemoteDeskRdpewaAuthenticator kind = REMOTEDESK_RDPEWA_NONE;
+	dev = rdpewa_fido_open_device(context, TRUE, &devInfo, &kind);
+	if (kind == REMOTEDESK_RDPEWA_PHONE)
+	{
+		ret = rdpewa_fido_phone(context, CTAPCBOR_CMD_MAKE_CREDENTIAL, ctapData, ctapLen);
+		goto out;
+	}
 	if (!dev)
 	{
 		ret = rdpewa_fido_cancelled_response(&devInfo);
@@ -717,7 +769,13 @@ static wStream* rdpewa_fido_get_assertion(rdpContext* context, const BYTE* ctapD
 		goto out;
 	}
 
-	dev = rdpewa_fido_open_device(context, TRUE, &devInfo);
+	RemoteDeskRdpewaAuthenticator kind = REMOTEDESK_RDPEWA_NONE;
+	dev = rdpewa_fido_open_device(context, TRUE, &devInfo, &kind);
+	if (kind == REMOTEDESK_RDPEWA_PHONE)
+	{
+		ret = rdpewa_fido_phone(context, CTAPCBOR_CMD_GET_ASSERTION, ctapData, ctapLen);
+		goto out;
+	}
 	if (!dev)
 	{
 		ret = rdpewa_fido_cancelled_response(&devInfo);

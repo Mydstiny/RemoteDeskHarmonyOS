@@ -22,7 +22,7 @@ export function rdpSecurityKeyUnwatch(sessionId: number, watchId: number): boole
 export interface RdpSecurityKeyRequest {
   id: number;
   /** 1 confirm, 2 select key, 3 PIN, 4 touch prompt, 5 write report, 6 read report, 7 release key,
-   *  8 dismiss: id names a prompt that ended unanswered */
+   *  8 dismiss: id names a prompt that ended unanswered, 9 passkey for the phone */
   kind: number;
   /** Confirm: relying party ID. */
   text: string;
@@ -33,6 +33,8 @@ export interface RdpSecurityKeyRequest {
   timeoutMs: number;
   /** Write: the 64-byte output report. */
   report: Uint8Array;
+  /** Passkey (kind 9): the CTAP command byte and CBOR request for the paired phone. */
+  payload: Uint8Array;
 }
 export function rdpSecurityKeyPoll(sessionId: number): RdpSecurityKeyRequest | null;
 export function rdpSecurityKeyRespond(sessionId: number, id: number, ok: boolean,
@@ -40,6 +42,9 @@ export function rdpSecurityKeyRespond(sessionId: number, id: number, ok: boolean
 export function rdpSecurityKeyCancel(sessionId: number): void;
 /** ArkTS released the session's key on its own; the next request asks for a key again. */
 export function rdpSecurityKeyReleased(sessionId: number): void;
+/** Passkey replies carry the phone's CTAP response; Select replies name the authenticator (1 USB key, 2 phone). */
+export function rdpSecurityKeyRespondEx(sessionId: number, id: number, ok: boolean, payload: Uint8Array | null,
+  authenticator: number): boolean;
 export type MoonlightNativeOperation =
   'pair' | 'catalog' | 'asset' | 'launch' | 'resume' | 'quit' | 'unpair' |
   'delete_identity';

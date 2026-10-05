@@ -26,6 +26,14 @@ typedef enum
 	REMOTEDESK_RDPEWA_SIGN_IN = 2
 } RemoteDeskRdpewaOperation;
 
+/** What answers a request: nothing (the user declined), a USB security key, or the paired phone's passkey. */
+typedef enum
+{
+	REMOTEDESK_RDPEWA_NONE = 0,
+	REMOTEDESK_RDPEWA_USB_KEY = 1,
+	REMOTEDESK_RDPEWA_PHONE = 2
+} RemoteDeskRdpewaAuthenticator;
+
 /**
  * Starts a remote request when it is dispatched: clears the previous cancellation and bounds the request's prompts
  * by its timeout (milliseconds, 0 for none). FALSE when the session has no open broker.
@@ -39,11 +47,20 @@ DWORD remotedesk_rdpewa_remaining(rdpContext* context);
 BOOL remotedesk_rdpewa_confirm(rdpContext* context, const char* rpId, RemoteDeskRdpewaOperation operation);
 
 /**
- * Opens the security key authorized for this session. When interactive, the user may be asked to select and
- * authorize a key; otherwise only a key that is already authorized is used and nothing is shown.
- * product receives a display name. The caller closes and frees the device.
+ * Opens the authenticator chosen for this session. When interactive, the user may be asked to choose one: a USB
+ * security key (opened and returned; the caller closes and frees it) or the paired phone (NULL is returned and
+ * kind says REMOTEDESK_RDPEWA_PHONE). Otherwise only an earlier choice is used and nothing is shown. product
+ * receives a display name; kind receives what was chosen (REMOTEDESK_RDPEWA_NONE on failure).
  */
-fido_dev_t* remotedesk_rdpewa_open(rdpContext* context, BOOL interactive, char* product, size_t productLen);
+fido_dev_t* remotedesk_rdpewa_open(rdpContext* context, BOOL interactive, char* product, size_t productLen,
+                                   RemoteDeskRdpewaAuthenticator* kind);
+
+/**
+ * Sends one CTAP command (command byte + CBOR) to the paired phone and returns its CTAP response (status byte +
+ * CBOR) in a new buffer the caller frees. FALSE when the user, the server or the session cancelled, or it timed out.
+ */
+BOOL remotedesk_rdpewa_passkey(rdpContext* context, const BYTE* command, size_t commandLen, BYTE** response,
+                               size_t* responseLen);
 
 /** Whether a key is authorized for this session, without any device I/O. product receives its name. */
 BOOL remotedesk_rdpewa_authorized(rdpContext* context, char* product, size_t productLen);

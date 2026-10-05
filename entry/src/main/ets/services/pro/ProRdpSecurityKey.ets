@@ -1,8 +1,15 @@
+import { common } from '@kit.AbilityKit';
 import { DEBUG } from 'BuildProfile';
 import rdpnapi, { RdpSecurityKeyRequest } from 'librdpnapi.so';
 import { ProAccessContext } from './ProAccessPolicy';
 import { ProAppRuntime } from './ProAppRuntime';
 import { ProUsbFidoKeyCandidate, ProUsbFidoKeys, ProUsbFidoKeySession } from './ProUsbFidoKey';
+import { CTAP2_ERR_NO_CREDENTIALS, CTAP2_ERR_OPERATION_DENIED, ctapResponseFromPasskey, ctapStatus, parseCtapCommand,
+  passkeyRequestFromCtap } from './passkey/ProPasskeyCtap';
+import { ProPasskeyChannel } from './passkey/ProPasskeyChannel';
+import { passkeyDeviceLabel, ProPasskeyDevice } from './passkey/ProPasskeyDevice';
+import { randomBytes } from './passkey/ProPasskeyKeys';
+import { ProPasskeyReceiver } from './passkey/ProPasskeyReceiver';
 
 export const PRO_SECURITY_KEY_FEATURE: string = 'pro.security.webauthnRedirect';
 const USB_CAPABILITY: string = 'SystemCapability.USB.USBManager';
@@ -15,12 +22,15 @@ const KIND_WRITE: number = 5;
 const KIND_READ: number = 6;
 const KIND_RELEASE: number = 7;
 const KIND_DISMISS: number = 8;
+const KIND_PASSKEY: number = 9;
+const AUTHENTICATOR_PHONE: number = 2;
+const PASSKEY_RESPONSE: number = 1;
 
 // CTAP2 client PIN: at least 4 characters (code points), at most 63 bytes of UTF-8.
 const PIN_MIN_CHARACTERS: number = 4;
 const PIN_MAX_BYTES: number = 63;
 
-export type RdpSecurityKeyPromptKind = 'confirm' | 'select' | 'pin' | 'touch';
+export type RdpSecurityKeyPromptKind = 'confirm' | 'select' | 'pin' | 'touch' | 'phone';
 
 /** What the RDP session page shows; null hides the prompt. */
 export interface RdpSecurityKeyPrompt {
@@ -37,6 +47,8 @@ export interface RdpSecurityKeyPrompt {
   /** select: true while the system authorization dialog is open */
   busy: boolean;
   error: string;
+  /** select: the paired phone's passkey may answer instead of a USB key */
+  phone: boolean;
 }
 
 /** Entitlement context for this feature: RDP on this device, with the USB capability when the system has it. */
@@ -90,8 +102,12 @@ export class ProRdpSecurityKey {
   private prompt: RdpSecurityKeyPrompt | null = null;
   private onPrompt: (prompt: RdpSecurityKeyPrompt | null) => void;
   private stopRuntime: (() => void) | null = null;
+  /** For the phone path: the cross-device permission is requested from this context. */
+  private context: common.UIAbilityContext | null = null;
 
   constructor(onPrompt: (prompt: RdpSecurityKeyPrompt | null) => void) { this.onPrompt = onPrompt; }
+
+  attachContext(context: common.UIAbilityContext): void { this.context = context; }
 
   /** Starts answering the broker of a connected session. False when the session has no broker. */
   start(sessionId: number): boolean {
@@ -155,6 +171,17 @@ export class ProRdpSecurityKey {
     this.show(null);
   }
 
+  /** The user chose the paired phone instead of a USB key; it answers this session's requests from now on. */
+  choosePhone(requestId: number): void {
+    const current = this.prompt;
+    if (current === null || current.kind !== 'select' || current.requestId !== requestId || current.busy ||
+        !current.phone || this.stopped || this.sessionId <= 0) { return; }
+    this.releaseKey(true);
+    try { rdpnapi.rdpSecurityKeyRespondEx(this.sessionId, requestId, true, null, AUTHENTICATOR_PHONE); }
+    catch (_error) { /* the request already ended; its dismissal follows */ }
+    this.show(null);
+  }
+
   refreshKeys(): void {
     const current = this.prompt;
     if (current === null || current.kind !== 'select' || current.busy) { return; }
@@ -206,7 +233,7 @@ export class ProRdpSecurityKey {
       case KIND_CONFIRM:
         if (!ProRdpSecurityKey.available()) { this.respond(request.id, false, null, null); return; }
         this.show({ kind: 'confirm', requestId: request.id, rpId: request.text, register: request.operation === 1,
-          retries: -1, candidates: [], busy: false, error: '' });
+          retries: -1, candidates: [], busy: false, error: '', phone: false });
         return;
       case KIND_SELECT:
         if (!ProRdpSecurityKey.available()) { this.respond(request.id, false, null, null); return; }
@@ -215,12 +242,12 @@ export class ProRdpSecurityKey {
       case KIND_PIN:
         if (!ProRdpSecurityKey.available()) { this.respond(request.id, false, null, null); return; }
         this.show({ kind: 'pin', requestId: request.id, rpId: '', register: false, retries: request.retries,
-          candidates: [], busy: false, error: '' });
+          candidates: [], busy: false, error: '', phone: false });
         return;
       case KIND_TOUCH:
         if (request.operation === 1) {
           this.show({ kind: 'touch', requestId: 0, rpId: '', register: false, retries: -1, candidates: [],
-            busy: false, error: '' });
+            busy: false, error: '', phone: false });
         } else if (this.prompt !== null && this.prompt.kind === 'touch') {
           this.show(null);
         }
@@ -231,6 +258,9 @@ export class ProRdpSecurityKey {
         return;
       case KIND_RELEASE:
         this.releaseKey(false);
+        return;
+      case KIND_PASSKEY:
+        void this.passkey(request);
         return;
       case KIND_DISMISS:
         // The broker gave up on this prompt (timeout, server cancel, disconnect): an answer would be ignored.
@@ -255,14 +285,64 @@ export class ProRdpSecurityKey {
       });
   }
 
+  /**
+   * One remote MakeCredential/GetAssertion answered by the paired phone: the CTAP command becomes a signed passkey
+   * request; the phone's answer (or a timeout or refusal) goes back as the CTAP response.
+   */
+  private async passkey(request: RdpSecurityKeyRequest): Promise<void> {
+    const sessionId = this.sessionId;
+    const id = request.id;
+    const command = parseCtapCommand(request.payload);
+    if (command.status !== 0) { this.respondPasskey(sessionId, id, ctapStatus(command.status)); return; }
+    if (command.foreignAllowList) {
+      // The server only accepts credentials the phone never issued.
+      this.respondPasskey(sessionId, id, ctapStatus(CTAP2_ERR_NO_CREDENTIALS));
+      return;
+    }
+    const context = this.context;
+    if (context === null || !ProPasskeyReceiver.available()) {
+      this.respondPasskey(sessionId, id, ctapStatus(CTAP2_ERR_OPERATION_DENIED));
+      return;
+    }
+    this.show({ kind: 'phone', requestId: id, rpId: command.rpId, register: command.op === 'register', retries: -1,
+      candidates: [], busy: false, error: '', phone: true });
+    const current = (): boolean => !this.stopped && this.sessionId === sessionId && this.prompt !== null &&
+      this.prompt.kind === 'phone' && this.prompt.requestId === id;
+    try {
+      if (!(await ProPasskeyReceiver.getInstance().ensureChannel(context))) {
+        if (current()) {
+          this.respondPasskey(sessionId, id, ctapStatus(CTAP2_ERR_OPERATION_DENIED));
+          this.show(null);
+        }
+        return;
+      }
+      const phoneRequest = await ProPasskeyDevice.signRequest(passkeyRequestFromCtap(command, randomBytes(16),
+        passkeyDeviceLabel(), Date.now(), request.timeoutMs));
+      const response = await ProPasskeyChannel.getInstance().send(phoneRequest);
+      if (!current()) { return; }
+      this.respondPasskey(sessionId, id, ctapResponseFromPasskey(command.op, response));
+      this.show(null);
+    } catch (_error) {
+      if (current()) {
+        this.respondPasskey(sessionId, id, ctapStatus(CTAP2_ERR_OPERATION_DENIED));
+        this.show(null);
+      }
+    }
+  }
+
+  private respondPasskey(sessionId: number, requestId: number, payload: Uint8Array): void {
+    if (this.stopped || this.sessionId !== sessionId || requestId <= 0) { return; }
+    try { rdpnapi.rdpSecurityKeyRespondEx(sessionId, requestId, true, payload, PASSKEY_RESPONSE); } catch (_error) {}
+  }
+
   private selectPrompt(requestId: number, error: string): RdpSecurityKeyPrompt {
     return { kind: 'select', requestId, rpId: '', register: false, retries: -1, candidates: this.keys.list(),
-      busy: false, error };
+      busy: false, error, phone: ProPasskeyReceiver.available() };
   }
 
   private withBusy(prompt: RdpSecurityKeyPrompt, busy: boolean, error: string): RdpSecurityKeyPrompt {
     return { kind: prompt.kind, requestId: prompt.requestId, rpId: prompt.rpId, register: prompt.register,
-      retries: prompt.retries, candidates: prompt.candidates, busy, error };
+      retries: prompt.retries, candidates: prompt.candidates, busy, error, phone: prompt.phone };
   }
 
   private matches(requestId: number, kind: RdpSecurityKeyPromptKind): boolean {

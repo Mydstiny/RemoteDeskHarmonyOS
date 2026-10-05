@@ -1,5 +1,4 @@
 import { common } from '@kit.AbilityKit';
-import { deviceInfo } from '@kit.BasicServicesKit';
 import { AppConfig, Palette, buildDark, buildLight } from '../../../common/Theme';
 import { AccountSessionCoordinator } from '../../../services/AccountSessionCoordinator';
 import {
@@ -8,7 +7,7 @@ import {
 } from '../../../services/pro/passkey/ProPasskeyCodec';
 import { ProPasskeyAuthenticator } from '../../../services/pro/passkey/ProPasskeyAuthenticator';
 import { ProPasskeyChannel } from '../../../services/pro/passkey/ProPasskeyChannel';
-import { passkeyPairingCodeOf, ProPasskeyDevice } from '../../../services/pro/passkey/ProPasskeyDevice';
+import { passkeyDeviceLabel, passkeyPairingCodeOf, ProPasskeyDevice } from '../../../services/pro/passkey/ProPasskeyDevice';
 import { randomBytes, sha256, utf8, verifyEs256 } from '../../../services/pro/passkey/ProPasskeyKeys';
 import { PasskeyPeer, ProPasskeyPeers } from '../../../services/pro/passkey/ProPasskeyPeers';
 import { PasskeyReceiverState, ProPasskeyReceiver } from '../../../services/pro/passkey/ProPasskeyReceiver';
@@ -36,12 +35,6 @@ const ERROR_TEXT: Record<string, string> = {
 
 function errorText(code: string): string {
   return ERROR_TEXT[code] ?? ('操作失败（' + code + '）');
-}
-
-function deviceLabel(): string {
-  const name: string = (deviceInfo.marketName || deviceInfo.productModel || 'HarmonyOS 设备')
-    .replace(/[\u0000-\u001f\u007f]/g, '');
-  return name.slice(0, 40);
 }
 
 function formatDate(time: number): string {
@@ -153,7 +146,7 @@ export struct ProPhonePasskeyPanel {
       rpId: op === 'pair' ? '' : TEST_RP_ID,
       clientDataHash: op === 'pair' ? '' : base64UrlEncode(randomBytes(32)),
       user: op === 'register' ? { id: base64UrlEncode(randomBytes(16)), name: 'remotedesk-test', displayName: 'RemoteDesk 测试' } : null,
-      credentialIds, from: deviceLabel(), sentAt: Date.now(), ttlMs: REQUEST_TTL_MS, device: '', devicePub: '', sig: ''
+      credentialIds, from: passkeyDeviceLabel(), sentAt: Date.now(), ttlMs: REQUEST_TTL_MS, device: '', devicePub: '', sig: ''
     };
     return ProPasskeyDevice.signRequest(request);
   }

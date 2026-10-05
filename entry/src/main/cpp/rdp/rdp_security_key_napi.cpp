@@ -198,6 +198,17 @@ napi_value Poll(napi_env env, napi_callback_info info) {
         napi_create_typedarray(env, napi_uint8_array, request.report.size(), buffer, 0, &report);
         napi_set_named_property(env, object, "report", report);
     }
+    // Passkey: the CTAP command for the phone.
+    void* payloadData = nullptr;
+    napi_value payloadBuffer = nullptr;
+    napi_value payload = nullptr;
+    if (napi_create_arraybuffer(env, request.payload.size(), &payloadData, &payloadBuffer) == napi_ok) {
+        if (!request.payload.empty() && payloadData != nullptr) {
+            std::memcpy(payloadData, request.payload.data(), request.payload.size());
+        }
+        napi_create_typedarray(env, napi_uint8_array, request.payload.size(), payloadBuffer, 0, &payload);
+        napi_set_named_property(env, object, "payload", payload);
+    }
     return object;
 #else
     (void)info;
@@ -249,6 +260,46 @@ napi_value Respond(napi_env env, napi_callback_info info) {
 #endif
 }
 
+// rdpSecurityKeyRespondEx(sessionId, id, ok, payload: Uint8Array | null, authenticator: number): boolean
+// Passkey replies carry the phone's CTAP response; Select replies name the chosen authenticator (1 key, 2 phone).
+napi_value RespondEx(napi_env env, napi_callback_info info) {
+#if defined(REMOTEDESK_RDP_SECURITY_KEY)
+    size_t argc = 5;
+    napi_value args[5] = {nullptr, nullptr, nullptr, nullptr, nullptr};
+    uint64_t sessionId = 0;
+    uint64_t id = 0;
+    bool ok = false;
+    uint32_t authenticator = 0;
+    if (napi_get_cb_info(env, info, &argc, args, nullptr, nullptr) != napi_ok || argc != 5 ||
+        !Integer(env, args[0], sessionId, 0x1fffffffffffffULL) || !Integer(env, args[1], id, UINT32_MAX) ||
+        napi_get_value_bool(env, args[2], &ok) != napi_ok ||
+        napi_get_value_uint32(env, args[4], &authenticator) != napi_ok) return Boolean(env, false);
+    RdpSecurityKey::Reply reply;
+    reply.ok = ok;
+    if (authenticator == static_cast<uint32_t>(RdpSecurityKey::Authenticator::Phone)) {
+        reply.authenticator = RdpSecurityKey::Authenticator::Phone;
+        reply.text = "Phone passkey";
+    } else if (authenticator != static_cast<uint32_t>(RdpSecurityKey::Authenticator::UsbKey)) {
+        reply.authenticator = RdpSecurityKey::Authenticator::None;
+    }
+    bool isTyped = false;
+    if (napi_is_typedarray(env, args[3], &isTyped) == napi_ok && isTyped) {
+        napi_typedarray_type type = napi_int8_array;
+        size_t length = 0;
+        void* data = nullptr;
+        if (napi_get_typedarray_info(env, args[3], &type, &length, &data, nullptr, nullptr) != napi_ok ||
+            type != napi_uint8_array || length > RdpSecurityKey::kMaxPasskeyReplyBytes ||
+            (length > 0 && data == nullptr)) return Boolean(env, false);
+        const auto* bytes = static_cast<const uint8_t*>(data);
+        reply.payload.assign(bytes, bytes + length);
+    }
+    return Boolean(env, RdpSecurityKey::Respond(sessionId, static_cast<uint32_t>(id), reply));
+#else
+    (void)info;
+    return Boolean(env, false);
+#endif
+}
+
 // rdpSecurityKeyCancel(sessionId): the local user cancelled the current request.
 napi_value Cancel(napi_env env, napi_callback_info info) {
 #if defined(REMOTEDESK_RDP_SECURITY_KEY)
@@ -284,6 +335,7 @@ napi_value Init(napi_env env, napi_value exports) {
         {"rdpSecurityKeyRespond", nullptr, Respond, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"rdpSecurityKeyCancel", nullptr, Cancel, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"rdpSecurityKeyReleased", nullptr, Released, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"rdpSecurityKeyRespondEx", nullptr, RespondEx, nullptr, nullptr, nullptr, napi_default, nullptr},
     };
     if (napi_define_properties(env, exports, sizeof(properties) / sizeof(properties[0]), properties) != napi_ok) {
         return nullptr;

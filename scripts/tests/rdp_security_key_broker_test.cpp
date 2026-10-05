@@ -121,7 +121,7 @@ void CancelDismissesPromptsButNotIo() {
     CHECK(!eventCancelled.load());
     broker->Cancel();
     std::string ignored;
-    CHECK(!broker->Select(ignored));
+    CHECK(broker->Select(ignored) == Authenticator::None);
     CHECK(!Poll(8, request));
     broker->OnCancelChanged(nullptr);
     Unwatch(8);
@@ -133,16 +133,16 @@ void SelectPinAndReports() {
     auto broker = Attach(&context, 9);
     CHECK(Watch(9, nullptr));
     std::string product;
-    CHECK(!broker->Authorized(product));
+    CHECK(broker->Authorized(product) == Authenticator::None);
     auto select = std::async(std::launch::async, [&] {
         std::string name;
-        return broker->Select(name) ? name : std::string("<none>");
+        return broker->Select(name) == Authenticator::UsbKey ? name : std::string("<none>");
     });
     Request request;
     CHECK(Next(9, request, Kind::Select));
     CHECK(Respond(9, request.id, Ok("Key\x07 \x1b[31m5C")));
     CHECK(select.get() == "Key [31m5C");
-    CHECK(broker->Authorized(product) && product == "Key [31m5C");
+    CHECK(broker->Authorized(product) == Authenticator::UsbKey && product == "Key [31m5C");
 
     auto pin = std::async(std::launch::async, [&] { return broker->Pin(5); });
     CHECK(Next(9, request, Kind::Pin));
@@ -190,7 +190,7 @@ void SelectPinAndReports() {
     CHECK(!oversized.get());
 
     broker->Forget();
-    CHECK(!broker->Authorized(product));
+    CHECK(broker->Authorized(product) == Authenticator::None);
     CHECK(Next(9, request, Kind::Release));
     Unwatch(9);
     Detach(&context);
@@ -249,7 +249,7 @@ void PollOrder() {
     CHECK(Watch(12, nullptr));
     auto select = std::async(std::launch::async, [&] {
         std::string name;
-        return broker->Select(name);
+        return broker->Select(name) == Authenticator::UsbKey;
     });
     Request request;
     CHECK(Next(12, request, Kind::Select));
@@ -260,7 +260,7 @@ void PollOrder() {
     broker->Touch(true);
     auto again = std::async(std::launch::async, [&] {
         std::string name;
-        return broker->Select(name);
+        return broker->Select(name) == Authenticator::UsbKey;
     });
     for (int i = 0; i < 400 && !broker->HasUndelivered(); ++i) std::this_thread::sleep_for(5ms);
     CHECK(Poll(12, request) && request.kind == Kind::Release);
@@ -281,7 +281,7 @@ void CloseFailsEverythingAndReleasesThroughTheSession() {
     CHECK(Watch(11, nullptr));
     auto select = std::async(std::launch::async, [&] {
         std::string name;
-        return broker->Select(name);
+        return broker->Select(name) == Authenticator::UsbKey;
     });
     Request request;
     CHECK(Next(11, request, Kind::Select));
@@ -301,7 +301,7 @@ void CloseFailsEverythingAndReleasesThroughTheSession() {
     std::array<uint8_t, 64> report{};
     CHECK(!broker->WriteReport(report));
     std::string product;
-    CHECK(!broker->Authorized(product));
+    CHECK(broker->Authorized(product) == Authenticator::None);
     // No open broker is left, yet the key ArkTS holds is still released.
     CHECK(ForSession(11) == nullptr);
     CHECK(Poll(11, request) && request.kind == Kind::Release);
@@ -361,7 +361,7 @@ void ReleasedForgetsTheKey() {
     CHECK(Watch(31, nullptr));
     auto select = std::async(std::launch::async, [&] {
         std::string name;
-        return broker->Select(name);
+        return broker->Select(name) == Authenticator::UsbKey;
     });
     Request request;
     CHECK(Next(31, request, Kind::Select));
@@ -369,9 +369,75 @@ void ReleasedForgetsTheKey() {
     CHECK(select.get());
     Released(31);
     std::string product;
-    CHECK(!broker->Authorized(product));
+    CHECK(broker->Authorized(product) == Authenticator::None);
     CHECK(!Poll(31, request));
     Unwatch(31);
+    Detach(&context);
+}
+
+void PhonePasskey() {
+    Context context;
+    auto broker = Attach(&context, 51);
+    CHECK(Watch(51, nullptr));
+    CHECK(broker->Begin(60000));
+    // The user picks the phone: remembered for the session, and nothing is held that would need a release.
+    auto select = std::async(std::launch::async, [&] {
+        std::string name;
+        return broker->Select(name);
+    });
+    Request request;
+    CHECK(Next(51, request, Kind::Select));
+    Reply phone = Ok("Phone passkey");
+    phone.authenticator = Authenticator::Phone;
+    CHECK(Respond(51, request.id, phone));
+    CHECK(select.get() == Authenticator::Phone);
+    std::string product;
+    CHECK(broker->Authorized(product) == Authenticator::Phone && product == "Phone passkey");
+    // A CTAP command goes to ArkTS with the time the phone may take; the phone's CTAP response comes back as is.
+    const std::vector<uint8_t> command{0x02, 0xa1, 0x01, 0x6a, 'g', 'i', 't', 'h', 'u', 'b', '.', 'c', 'o', 'm'};
+    auto passkey = std::async(std::launch::async, [&] { return broker->Passkey(command); });
+    CHECK(Next(51, request, Kind::Passkey));
+    CHECK(request.payload == command);
+    CHECK(request.timeoutMs > 0 && request.timeoutMs <= kMaxPhoneRequestMs);
+    Reply answer = Ok("ignored");
+    answer.payload = {0x00, 0xa1, 0x01, 0x02};
+    CHECK(Respond(51, request.id, answer));
+    const auto response = passkey.get();
+    CHECK(response.has_value() && *response == std::vector<uint8_t>({0x00, 0xa1, 0x01, 0x02}));
+    // An empty or oversized response is refused; a cancelled request comes back empty.
+    auto empty = std::async(std::launch::async, [&] { return broker->Passkey(command); });
+    CHECK(Next(51, request, Kind::Passkey));
+    CHECK(Respond(51, request.id, Ok()));
+    CHECK(!empty.get().has_value());
+    auto oversized = std::async(std::launch::async, [&] { return broker->Passkey(command); });
+    CHECK(Next(51, request, Kind::Passkey));
+    Reply big = Ok();
+    big.payload.assign(kMaxPasskeyReplyBytes + 1, 0);
+    CHECK(Respond(51, request.id, big));
+    CHECK(!oversized.get().has_value());
+    auto cancelled = std::async(std::launch::async, [&] { return broker->Passkey(command); });
+    CHECK(Next(51, request, Kind::Passkey));
+    const uint32_t shown = request.id;
+    Cancel(51);
+    CHECK(!cancelled.get().has_value());
+    CHECK(Poll(51, request) && request.kind == Kind::Dismiss && request.id == shown);
+    CHECK(!broker->Passkey(std::vector<uint8_t>(1, 0x01)).has_value());
+    // Forgetting or closing a phone choice owes ArkTS no release.
+    broker->Forget();
+    CHECK(broker->Authorized(product) == Authenticator::None);
+    CHECK(!Poll(51, request));
+    // A Select answer naming no known authenticator is a refusal.
+    CHECK(broker->Begin());
+    auto unknown = std::async(std::launch::async, [&] {
+        std::string name;
+        return broker->Select(name);
+    });
+    CHECK(Next(51, request, Kind::Select));
+    Reply odd = Ok("x");
+    odd.authenticator = Authenticator::None;
+    CHECK(Respond(51, request.id, odd));
+    CHECK(unknown.get() == Authenticator::None);
+    Unwatch(51);
     Detach(&context);
 }
 
@@ -401,12 +467,13 @@ int main() {
     CloseFailsEverythingAndReleasesThroughTheSession();
     ReconnectKeepsTheWatcherAndIds();
     ReleasedForgetsTheKey();
+    PhonePasskey();
     Deadlines();
     if (failures != 0) {
         std::fprintf(stderr, "%d broker check(s) failed\n", failures);
         return 1;
     }
     std::printf("PASS RDP security-key broker: prompts, dismiss, cancellation, close, reconnect, request IDs, "
-                "poll order, PIN and label rules, deadlines\n");
+                "poll order, PIN and label rules, phone passkey, deadlines\n");
     return 0;
 }

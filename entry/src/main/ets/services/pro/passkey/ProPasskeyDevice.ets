@@ -1,4 +1,5 @@
 import { huks } from '@kit.UniversalKeystoreKit';
+import { deviceInfo } from '@kit.BasicServicesKit';
 import {
   base64UrlDecode, base64UrlEncode, PasskeyRequest, passkeyPairingCode, passkeyPairingCodeInput,
   passkeyRequestSigningBytes
@@ -14,6 +15,13 @@ function properties(): huks.HuksParam[] {
     { tag: huks.HuksTag.HUKS_TAG_PURPOSE, value: huks.HuksKeyPurpose.HUKS_KEY_PURPOSE_SIGN },
     { tag: huks.HuksTag.HUKS_TAG_DIGEST, value: huks.HuksKeyDigest.HUKS_DIGEST_SHA256 }
   ];
+}
+
+/** How this device names itself in requests (the phone shows the name confirmed at pairing instead). */
+export function passkeyDeviceLabel(): string {
+  const name: string = (deviceInfo.marketName || deviceInfo.productModel || 'HarmonyOS 设备')
+    .replace(/[\u0000-\u001f\u007f]/g, '');
+  return name.slice(0, 40);
 }
 
 /** ID of a device key: its public key's SHA-256, first 16 bytes, base64url. */

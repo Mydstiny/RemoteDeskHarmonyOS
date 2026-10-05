@@ -12,6 +12,7 @@
 #include <map>
 #include <mutex>
 #include <string>
+#include <vector>
 
 namespace {
 constexpr const char* kPathPrefix = "remotedesk-usb:";
@@ -143,28 +144,59 @@ BOOL remotedesk_rdpewa_confirm(rdpContext* context, const char* rpId, RemoteDesk
     return broker && broker->Confirm(rpId != nullptr ? rpId : "", static_cast<uint32_t>(operation)) ? TRUE : FALSE;
 }
 
-fido_dev_t* remotedesk_rdpewa_open(rdpContext* context, BOOL interactive, char* product, size_t productLen) {
+fido_dev_t* remotedesk_rdpewa_open(rdpContext* context, BOOL interactive, char* product, size_t productLen,
+                                   RemoteDeskRdpewaAuthenticator* kind) {
+    using RdpSecurityKey::Authenticator;
+    if (kind != nullptr) *kind = REMOTEDESK_RDPEWA_NONE;
     const auto broker = RdpSecurityKey::ForContext(context);
     if (!broker || broker->Closed()) return nullptr;
     // A key authorized earlier may have been unplugged since: forget it and, when interactive, ask once more.
     for (int attempt = 0; attempt < 2; ++attempt) {
         std::string name;
-        const bool remembered = broker->Authorized(name);
-        if (!remembered && (!interactive || !broker->Select(name))) return nullptr;
+        const Authenticator remembered = broker->Authorized(name);
+        Authenticator chosen = remembered;
+        if (chosen == Authenticator::None) {
+            if (!interactive) return nullptr;
+            chosen = broker->Select(name);
+            if (chosen == Authenticator::None) return nullptr;
+        }
+        if (chosen == Authenticator::Phone) {
+            CopyLabel(name, product, productLen);
+            if (kind != nullptr) *kind = REMOTEDESK_RDPEWA_PHONE;
+            return nullptr;
+        }
         if (fido_dev_t* device = OpenDevice(*broker)) {
             CopyLabel(name, product, productLen);
+            if (kind != nullptr) *kind = REMOTEDESK_RDPEWA_USB_KEY;
             return device;
         }
         broker->Forget();
-        if (!remembered) return nullptr;
+        if (remembered == Authenticator::None) return nullptr;
     }
     return nullptr;
+}
+
+BOOL remotedesk_rdpewa_passkey(rdpContext* context, const BYTE* command, size_t commandLen, BYTE** response,
+                               size_t* responseLen) {
+    if (response == nullptr || responseLen == nullptr) return FALSE;
+    *response = nullptr;
+    *responseLen = 0;
+    const auto broker = RdpSecurityKey::ForContext(context);
+    if (!broker || command == nullptr) return FALSE;
+    const auto reply = broker->Passkey(std::vector<uint8_t>(command, command + commandLen));
+    if (!reply || reply->empty()) return FALSE;
+    auto* copy = static_cast<BYTE*>(std::malloc(reply->size()));
+    if (copy == nullptr) return FALSE;
+    std::memcpy(copy, reply->data(), reply->size());
+    *response = copy;
+    *responseLen = reply->size();
+    return TRUE;
 }
 
 BOOL remotedesk_rdpewa_authorized(rdpContext* context, char* product, size_t productLen) {
     const auto broker = RdpSecurityKey::ForContext(context);
     std::string name;
-    if (!broker || !broker->Authorized(name)) return FALSE;
+    if (!broker || broker->Authorized(name) == RdpSecurityKey::Authenticator::None) return FALSE;
     CopyLabel(name, product, productLen);
     return TRUE;
 }

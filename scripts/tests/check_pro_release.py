@@ -157,6 +157,11 @@ def main():
                             raise AssertionError("Duplicate RDP security-key gate")
                         method = "rdpSecurityKeyAvailable"
                         methods[method] = []
+                    if args.fido_library and "services.pro.passkey.ProPasskeyReceiver&." in line and "#available(" in line:
+                        if "phonePasskeyAvailable" in methods:
+                            raise AssertionError("Duplicate phone passkey gate")
+                        method = "phonePasskeyAvailable"
+                        methods[method] = []
                     for name in ("setDebugMode", "snapshot", "decision"):
                         if "services.pro.ProRuntime&." in line and f"#{name}(" in line:
                             if name in methods:
@@ -171,7 +176,7 @@ def main():
         if args.usb_probe:
             expected.add("usbDebugAllowed")
         if args.fido_library:
-            expected.update(("usbLibraryAvailable", "rdpSecurityKeyAvailable"))
+            expected.update(("usbLibraryAvailable", "rdpSecurityKeyAvailable", "phonePasskeyAvailable"))
         if args.sandbox_purchase:
             expected.update(("setSandbox", "sandboxSelected", "proBackendConfiguration", "productionFactory", "productionMain"))
         if set(methods) != expected:
@@ -191,7 +196,7 @@ def main():
         if '"entitlementIds"' not in decision or '"proFeatureAccess"' not in decision:
             raise AssertionError("Real entitlement policy call is missing")
         for gate in (["usbDebugAllowed"] if args.usb_probe else []) + \
-                (["usbLibraryAvailable", "rdpSecurityKeyAvailable"] if args.fido_library else []):
+                (["usbLibraryAvailable", "rdpSecurityKeyAvailable", "phonePasskeyAvailable"] if args.fido_library else []):
             body = methods[gate]
             if "ldfalse" not in body or "return" not in body:
                 raise AssertionError("Release USB probe gate does not return false")

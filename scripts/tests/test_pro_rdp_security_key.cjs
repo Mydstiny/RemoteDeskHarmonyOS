@@ -10,10 +10,24 @@ const tests = [];
 function test(name, body) { tests.push({ name, body }); }
 async function settle() { for (let i = 0; i < 20; i++) await Promise.resolve(); }
 
+// The pure passkey modules run as they are; the phone channel, device key and receiver are scripted.
+function loadPure(name, mocks) {
+  const file = path.resolve(root, 'entry/src/main/ets/services/pro/passkey/' + name + '.ets');
+  const module = { exports: {} };
+  vm.runInNewContext(ts.transpileModule(fs.readFileSync(file, 'utf8'), {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2021 }
+  }).outputText, { module, exports: module.exports, require: id => mocks[id], Uint8Array, JSON, Number, Array, Error, Math, String },
+  { filename: file });
+  return module.exports;
+}
+const passkeyCodec = loadPure('ProPasskeyCodec', {});
+const passkeyCtap = loadPure('ProPasskeyCtap', { './ProPasskeyCodec': passkeyCodec });
+
 function fixture() {
   const state = { available: true, executable: true, watchId: 0, owner: 0, queue: [], responses: [], cancels: 0,
     released: 0, unwatches: [], wake: null, respondResult: true, subscribers: [], authorizations: [],
-    keyReleases: [], authorize: null, transfers: [] };
+    keyReleases: [], authorize: null, transfers: [], exResponses: [], phoneAvailable: true, channelOk: true,
+    phoneRequests: [], phoneReply: null, phoneSend: null };
   const napi = {
     rdpSecurityKeyAvailable: () => state.available,
     rdpSecurityKeyWatch(sessionId, wake) {
@@ -30,7 +44,11 @@ function fixture() {
       state.responses.push({ id, ok, report, text }); return state.respondResult;
     },
     rdpSecurityKeyCancel() { state.cancels++; },
-    rdpSecurityKeyReleased() { state.released++; }
+    rdpSecurityKeyReleased() { state.released++; },
+    rdpSecurityKeyRespondEx(sessionId, id, ok, payload, authenticator) {
+      state.exResponses.push({ id, ok, payload: payload === null ? null : Array.from(payload), authenticator });
+      return state.respondResult;
+    }
   };
   const runtime = {
     decision: () => ({ executable: state.executable }),
@@ -56,7 +74,18 @@ function fixture() {
     'BuildProfile': { DEBUG: true },
     'librdpnapi.so': { default: napi },
     './ProAppRuntime': { ProAppRuntime: { getInstance: () => ({ runtime, context: () => ({ capabilities: [] }) }) } },
-    './ProUsbFidoKey': { ProUsbFidoKeys, ProUsbFidoKeySession }
+    './ProUsbFidoKey': { ProUsbFidoKeys, ProUsbFidoKeySession },
+    './passkey/ProPasskeyCtap': passkeyCtap,
+    './passkey/ProPasskeyChannel': { ProPasskeyChannel: { getInstance: () => ({
+      send(request) {
+        state.phoneRequests.push(request);
+        return new Promise((resolve) => { state.phoneSend = resolve; });
+      } }) } },
+    './passkey/ProPasskeyDevice': { passkeyDeviceLabel: () => 'MateBook',
+      ProPasskeyDevice: { signRequest: async (request) => ({ ...request, device: 'D'.repeat(22), sig: 'S'.repeat(94) }) } },
+    './passkey/ProPasskeyKeys': { randomBytes: n => new Uint8Array(n).fill(9) },
+    './passkey/ProPasskeyReceiver': { ProPasskeyReceiver: { available: () => state.phoneAvailable,
+      getInstance: () => ({ ensureChannel: async () => state.channelOk }) } }
   };
   const file = path.resolve(root, 'entry/src/main/ets/services/pro/ProRdpSecurityKey.ets');
   const module = { exports: {} };
@@ -216,6 +245,88 @@ test('a page that lost the watch to a newer page stops without cancelling or una
   g.service.answerConfirm(1, true);
   g.service.cancel();
   assert.equal(g.state.responses.length, 0);
+});
+
+// CTAP command bytes for the phone path, built with the module's own encoder.
+const enc = passkeyCtap;
+function ctapGetAssertion(allow) {
+  const entries = [[enc.cborUint(1), enc.cborText('github.com')], [enc.cborUint(2), enc.cborBytes(new Uint8Array(32).fill(1))]];
+  if (allow) entries.push([enc.cborUint(3), [0x81].concat(enc.cborMap([[enc.cborText('id'), enc.cborBytes(allow)],
+    [enc.cborText('type'), enc.cborText('public-key')]]))]);
+  return new Uint8Array([2].concat(enc.cborMap(entries)));
+}
+
+test('the select prompt offers the paired phone, and choosing it answers with the phone authenticator', async () => {
+  const f = fixture(); f.state.watchId = 1; f.service.start(7);
+  f.deliver(f.request({ id: 70, kind: 2 }));
+  assert.equal(f.last().phone, true);
+  f.service.choosePhone(70);
+  assert.deepEqual(f.state.exResponses.pop(), { id: 70, ok: true, payload: null, authenticator: 2 });
+  assert.equal(f.last(), null);
+  const g = fixture(); g.state.watchId = 1; g.state.phoneAvailable = false; g.service.start(7);
+  g.deliver(g.request({ id: 71, kind: 2 }));
+  assert.equal(g.last().phone, false);
+  g.service.choosePhone(71);
+  assert.equal(g.state.exResponses.length, 0);
+});
+
+test('a remote sign-in is signed, sent to the phone and its answer goes back as a CTAP response', async () => {
+  const f = fixture(); f.state.watchId = 1; f.service.attachContext({}); f.service.start(7);
+  const credential = new Uint8Array(16).fill(4);
+  f.deliver(f.request({ id: 80, kind: 9, timeoutMs: 45000, payload: ctapGetAssertion(credential) }));
+  await settle();
+  assert.deepEqual([f.last().kind, f.last().rpId, f.last().register], ['phone', 'github.com', false]);
+  const sent = f.state.phoneRequests.pop();
+  assert.deepEqual([sent.op, sent.rpId, sent.ttlMs, sent.from, sent.device.length], ['signin', 'github.com', 45000, 'MateBook', 22]);
+  assert.deepEqual(Array.from(sent.credentialIds), [Buffer.from(credential).toString('base64url')]);
+  const b64 = bytes => Buffer.from(bytes).toString('base64url');
+  f.state.phoneSend({ v: 2, id: sent.id, ok: true, error: '', credentialId: b64(credential), authData: b64(new Uint8Array(37)),
+    signature: b64(new Uint8Array(70).fill(3)), userHandle: '', publicKey: '' });
+  await settle();
+  const answer = f.state.exResponses.pop();
+  assert.deepEqual([answer.id, answer.ok, answer.authenticator, answer.payload[0]], [80, true, 1, 0]);
+  assert.equal(f.last(), null);
+});
+
+test('the phone path refuses at once when nothing can answer, and a timeout or cancel never answers late', async () => {
+  const f = fixture(); f.state.watchId = 1; f.service.attachContext({}); f.service.start(7);
+  // The server allows only another authenticator's credential: no round trip to the phone.
+  f.deliver(f.request({ id: 81, kind: 9, timeoutMs: 45000, payload: ctapGetAssertion(new Uint8Array(48)) }));
+  await settle();
+  assert.deepEqual(f.state.exResponses.pop().payload, [0x2e]);
+  assert.equal(f.state.phoneRequests.length, 0);
+  // Malformed command bytes are refused with their CTAP status.
+  f.deliver(f.request({ id: 82, kind: 9, payload: new Uint8Array([2, 0xff]) }));
+  await settle();
+  assert.deepEqual(f.state.exResponses.pop().payload, [0x12]);
+  // No phone feature (or no context): denied.
+  f.state.phoneAvailable = false;
+  f.deliver(f.request({ id: 83, kind: 9, payload: ctapGetAssertion(null) }));
+  await settle();
+  assert.deepEqual(f.state.exResponses.pop().payload, [0x27]);
+  f.state.phoneAvailable = true;
+  // The channel cannot be joined: denied and the prompt comes down.
+  f.state.channelOk = false;
+  f.deliver(f.request({ id: 84, kind: 9, payload: ctapGetAssertion(null) }));
+  await settle();
+  assert.deepEqual(f.state.exResponses.pop().payload, [0x27]);
+  assert.equal(f.last(), null);
+  f.state.channelOk = true;
+  // No answer within the phone's time: the CTAP timeout status.
+  f.deliver(f.request({ id: 85, kind: 9, payload: ctapGetAssertion(null) }));
+  await settle();
+  f.state.phoneSend(null);
+  await settle();
+  assert.deepEqual(f.state.exResponses.pop().payload, [0x2f]);
+  // The user cancels while waiting: the broker hears a refusal, and the phone's late answer is dropped.
+  f.deliver(f.request({ id: 86, kind: 9, payload: ctapGetAssertion(null) }));
+  await settle();
+  f.service.cancel();
+  assert.deepEqual(f.state.responses.pop(), { id: 86, ok: false, report: null, text: null });
+  f.state.phoneSend({ v: 2, id: 'late', ok: false, error: 'PASSKEY_USER_DENIED', credentialId: '', authData: '', signature: '',
+    userHandle: '', publicKey: '' });
+  await settle();
+  assert.equal(f.state.exResponses.length, 0);
 });
 
 (async () => {

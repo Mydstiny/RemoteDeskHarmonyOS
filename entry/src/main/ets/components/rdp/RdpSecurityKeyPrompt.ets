@@ -9,13 +9,15 @@ const PIN_INPUT_ID: string = 'rdpSecurityKeyPin';
 export struct RdpSecurityKeyPromptView {
   @StorageLink('accentColor') accentColor: string = '#007DFF';
   @Prop prompt: RdpSecurityKeyPrompt = {
-    kind: 'touch', requestId: 0, rpId: '', register: false, retries: -1, candidates: [], busy: false, error: ''
+    kind: 'touch', requestId: 0, rpId: '', register: false, retries: -1, candidates: [], busy: false, error: '',
+    phone: false
   };
   @State pinDraft: string = '';
   onAllow: (requestId: number) => void = (_requestId: number): void => {};
   onDeny: (requestId: number) => void = (_requestId: number): void => {};
   onChoose: (requestId: number, key: string) => void = (_requestId: number, _key: string): void => {};
   onRefresh: () => void = (): void => {};
+  onPhone: (requestId: number) => void = (_requestId: number): void => {};
   onPin: (requestId: number, pin: string) => void = (_requestId: number, _pin: string): void => {};
   onCancel: () => void = (): void => {};
 
@@ -28,6 +30,7 @@ export struct RdpSecurityKeyPromptView {
       case 'confirm': return '安全密钥请求';
       case 'select': return '选择安全密钥';
       case 'pin': return this.prompt.retries === 0 ? '安全密钥 PIN 已锁定' : '输入安全密钥 PIN';
+      case 'phone': return '请在手机上确认';
       default: return '请触摸安全密钥';
     }
   }
@@ -84,6 +87,19 @@ export struct RdpSecurityKeyPromptView {
       Text(this.prompt.busy ? '请在系统弹窗中允许 RemoteDesk 访问这支安全密钥…' :
         '插入 USB 安全密钥后选择它，系统会询问是否允许访问。')
         .fontSize(13).fontColor(this.pal().text2).lineHeight(19).width('100%')
+      if (this.prompt.phone) {
+        Row({ space: 10 }) {
+          SymbolGlyph($r('sys.symbol.phone_fill')).fontSize(18).fontColor([this.accentColor])
+          Column({ space: 2 }) {
+            Text('使用手机通行密钥').fontSize(13).fontColor(this.pal().text)
+            Text('由已配对的手机确认并验证，本次连接内一直使用').fontSize(11).fontColor(this.pal().text3)
+          }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+          SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(14).fontColor([this.pal().text3])
+        }
+        .width('100%').padding({ left: 12, right: 10, top: 10, bottom: 10 }).borderRadius(12)
+        .backgroundColor(this.pal().surface).enabled(!this.prompt.busy)
+        .accessibilityText('使用手机通行密钥').onClick((): void => { this.onPhone(this.prompt.requestId); })
+      }
       if (this.prompt.candidates.length === 0) {
         Text('没有检测到安全密钥').fontSize(13).fontColor(this.pal().text3)
           .width('100%').textAlign(TextAlign.Center).padding({ top: 14, bottom: 14 })
@@ -130,6 +146,14 @@ export struct RdpSecurityKeyPromptView {
       Row({ space: 10 }) {
         this.button('取消', false, true, (): void => { this.pinDraft = ''; this.onCancel(); })
         this.button('确定', true, rdpSecurityKeyPinProblem(this.pinDraft) === '', (): void => { this.submitPin(); })
+      }.width('100%').margin({ top: 6 })
+    } else if (this.prompt.kind === 'phone') {
+      Text('已把「' + this.prompt.rpId + '」的' + (this.prompt.register ? '注册' : '登录') +
+        '请求发到已配对的手机。请在手机上允许，并验证人脸、指纹或锁屏密码。')
+        .fontSize(14).fontColor(this.pal().text).lineHeight(21).width('100%')
+      Text('手机需要打开 RemoteDesk 并开启“接收登录请求”。').fontSize(12).fontColor(this.pal().text3).width('100%')
+      Row() {
+        this.button('取消', false, true, (): void => { this.onCancel(); })
       }.width('100%').margin({ top: 6 })
     } else {
       Text('安全密钥闪烁时轻触它，完成远程电脑上的验证。')

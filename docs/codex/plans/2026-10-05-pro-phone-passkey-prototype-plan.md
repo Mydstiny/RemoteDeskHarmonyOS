@@ -36,11 +36,12 @@
 - 不打印 challenge、签名、凭据 ID；手机只显示请求设备名和网站。
 - 手机需开启“接收登录请求”且应用在前台（任何页面均可）；应用在后台时暂停接收，第三方应用不能跨设备拉起，正式版需评估推送（Push Kit）唤起。
 
-## 4. 下一步：RDP 接入（需要鸿蒙 PC）
+## 4. RDP 接入（P2 已实现，需鸿蒙 PC 验收）
 
-1. 在 RDPEWA 的“选择安全密钥”提示里增加“使用手机通行密钥”。
-2. 选中后，原生通道把解析好的 makeCredential/getAssertion（rpId、clientDataHash、user、排除/允许列表）经代理交给 ArkTS，ArkTS 经本通道发给手机；手机返回 authData、签名、凭据 ID，原生用 libcbor 编码 CTAP 应答（fmt `none`）回给远端 Windows。
-3. 验收：鸿蒙 PC 远程 Windows，在 webauthn.io 与 GitHub 注册并登录；手机拒绝、超时、断开均能及时取消。
+1. RDPEWA 的“选择安全密钥”提示增加「使用手机通行密钥」（手机通行密钥可用时才显示）；选中后本次连接一直使用手机，断开或重新选择时结束。
+2. 原生：代理新增 `Authenticator`（无 / USB 密钥 / 手机）与 `Kind::Passkey`（载荷为 CTAP 命令字节 + CBOR，最多 64 KB；应答为状态字节 + CBOR，最多 16 KB，空或超长即拒绝）；手机路径的等待受远端请求截止时间约束（单次不超过 180 秒，手机端最多 120 秒）；通道把命令原样交给手机，应答原样封装回 Windows，手机拒绝按取消处理。
+3. ArkTS：`ProPasskeyCtap.ets` 解析 CTAP2 MakeCredential/GetAssertion（必须支持 ES256；只保留手机签发格式的 16 字节凭据 ID；允许列表只有其他验证器的凭据时直接返回“无凭据”，不打扰手机），生成签名的手机请求；手机应答转成规范 CBOR 的 CTAP 应答（注册为 attestation `none`），错误映射为 CTAP 状态码（拒绝 0x27、无凭据 0x2E、已存在 0x19、超时 0x2F）。等待时显示“请在手机上确认”，可取消。
+4. 验收：鸿蒙 PC 远程 Windows（已启用 WebAuthn 重定向），在 webauthn.io 与 GitHub 上用手机通行密钥注册并登录；手机拒绝、超时、取消、未配对、断开均能及时结束。
 
 ## 5. 原型测试步骤（手机 + 平板，同一华为账号，均为本 Debug 包）
 
@@ -53,6 +54,8 @@
 7. 手机切到后台（或锁屏）时平板发起请求：手机不弹窗，平板 90 秒后显示无应答；手机回到前台后恢复接收。
 
 ## 6. 验证记录
+
+- 2026-10-05 P2：`test_pro_passkey_ctap.cjs`（测试自带独立 CBOR 编解码器：命令解析、ES256 要求、缺参/坏参/深层嵌套/截断均拒绝且不抛异常、应答与独立编码器逐字节一致）；`test_pro_rdp_security_key.cjs` 增加选择手机、签名请求发往手机并回传 CTAP 应答、无法应答时立即拒绝、超时与取消不迟到应答；代理宿主测试增加手机选择、通行密钥往返、空/超长应答、取消后关闭提示；Release 检查增加 `ProPasskeyReceiver#available`，两个 ABI 的 Release ELF 不含 RDPEWA 标记。
 
 - 2026-10-05 P1：协议 v2（签名请求、配对请求、六位配对码、配对成功的空应答）；`test_pro_passkey_codec.cjs` 增加签名内容覆盖、改动任一字段签名内容即变化、Node 设备密钥签名验签、配对码两端一致与格式、v1 请求被拒等用例，全部通过。
 
