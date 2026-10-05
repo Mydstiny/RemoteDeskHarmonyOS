@@ -1,3 +1,10 @@
+/**
+ * AppStorage: a remote session's page went away while its AI was up (the user left the host, or the session window
+ * closed). The time it happened; the host list takes the AI over as the orb with its small chat, or 0 once taken.
+ */
+export const AI_SESSION_HANDOVER: string = 'aiSession.handover';
+/** How long a handover waits for the host list to be in front again (a session that replaced the page keeps it out). */
+export const AI_SESSION_HANDOVER_TTL_MS: number = 15000;
 /** AppStorage: the AI (chat, voice) asks the host page to open an app screen ('<action id>@<time>'). */
 export const AI_APP_ACTION_REQUEST: string = 'aiAppActionRequest';
 /** AppStorage: a question handed to 助理 ('<time>|<question>'); the panel switches to 助理 and asks it. */

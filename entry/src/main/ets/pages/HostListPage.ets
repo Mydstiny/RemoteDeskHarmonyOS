@@ -3,7 +3,9 @@ import { AI_VOICE_HOLD_EVENT } from '../components/diagnosticAi/AiVoiceIsland';
 import { AiIslandLayerParams, AiTopLayer, AiVoiceLayerParams } from '../components/diagnosticAi/AiTopLayer';
 import { AiSessionRouter, aiIsSessionPage } from '../services/diagnosticAi/AiSessionRouter';
 import { AI_VOICE_ENABLED, AiVoiceSettings } from '../services/diagnosticAi/AiVoiceSettings';
-import { AI_APP_ACTION_REQUEST, AI_FLOAT_REQUEST } from '../services/diagnosticAi/AiBridgeKeys';
+import {
+  AI_APP_ACTION_REQUEST, AI_FLOAT_REQUEST, AI_SESSION_HANDOVER, AI_SESSION_HANDOVER_TTL_MS
+} from '../services/diagnosticAi/AiBridgeKeys';
 import { DiagnosticAiMotionStore } from '../services/diagnosticAi/DiagnosticAiMotionPolicy';
 import { DiagnosticAiSettingsBridge } from '../services/diagnosticAi/DiagnosticAiSettingsActionPolicy';
 import { AiTriageHost, DiagnosticAiHostBridge } from '../services/diagnosticAi/DiagnosticAiTriagePolicy';
@@ -1028,6 +1030,10 @@ struct HostListPage {
   @State aiIslandStartAction: string = '';
   /** The island starts as the floating orb (voice mode floated). */
   @State aiIslandStartFloat: boolean = false;
+  /** That orb starts with its small chat shown (a session's AI carried on here). */
+  @State aiIslandStartChat: boolean = false;
+  /** A session's AI was up when the user left the host: it carries on here (see takeSessionAi). */
+  @StorageProp(AI_SESSION_HANDOVER) @Watch('onSessionAiHandover') aiSessionHandover: number = 0;
   /** The island opens straight into the panel (taking over from the voice card) instead of its capsule sequence. */
   @State aiIslandQuickOpen: boolean = false;
   @StorageProp(AI_VOICE_REQUEST) @Watch('onAiVoiceRequest') aiVoiceRequest: number = 0;
@@ -2263,6 +2269,8 @@ struct HostListPage {
   private readonly assistantSettingApplier = (id: string, value: string): boolean => this.applyAssistantSetting(id, value);
   private readonly assistantSettingReader = (id: string): string | null => {
     if (id === 'ui.hostCardSensitiveHidden') { return this.hostCardSensitiveInfoHidden ? 'true' : 'false'; }
+    // 远程 AI 设置 are the account's, read with its AI hosts.
+    if (id.indexOf('remoteAi.') === 0) { return AiHostService.getInstance().remoteSetting(id); }
     if (id === 'ai.personality' || id === 'ai.verbosity' || id === 'ai.role') {
       const prefs: DiagnosticAiAssistantPreferences = this.assistantConversationStore().assistantPreferences();
       return id === 'ai.personality' ? prefs.personality : id === 'ai.verbosity' ? prefs.verbosity : prefs.role;
@@ -2395,7 +2403,9 @@ struct HostListPage {
       case 'remote.sshReverseWheel': return this.saveAssistantReverseWheel('ssh', on);
       case 'remote.vncReverseWheel': return this.saveAssistantReverseWheel('vnc', on);
       case 'remote.moonlightReverseWheel': return this.saveAssistantReverseWheel('moonlight', on);
-      default: return id.indexOf('ai.') === 0 ? this.applyAssistantAiSetting(id, value) : false;
+      default:
+        if (id.indexOf('remoteAi.') === 0) { return AiHostService.getInstance().applyRemoteSetting(id, value); }
+        return id.indexOf('ai.') === 0 ? this.applyAssistantAiSetting(id, value) : false;
     }
   }
 
@@ -2917,6 +2927,7 @@ struct HostListPage {
     this.pageActive = true;
     this.openPendingProOrder();
     this.openSharedToAi();
+    this.takeSessionAi();
     this.cloudConnectionAvailable =
       CloudStore.getInstance().isCloudAvailable();
     this.refreshMoonlightDirectory();
@@ -2973,6 +2984,7 @@ struct HostListPage {
       this.aiIslandShown = false; this.aiIslandFloating = false; this.aiIslandQuickOpen = false;
       this.aiIslandStartAction = '';
       this.aiIslandStartFloat = false;
+      this.aiIslandStartChat = false;
       this.diagnosticAiOrbState = 'idle';
     }
   }
@@ -20755,6 +20767,11 @@ struct HostListPage {
       case 'settings.aiDisplay': this.openSettingsLeafSheet(SETTINGS_SHEET_AI_DISPLAY); return;
       case 'settings.aiData': this.openSettingsLeafSheet(SETTINGS_SHEET_AI_DATA); return;
       case 'settings.aiInstall': this.openSettingsLeafSheet(SETTINGS_SHEET_AI_INSTALL); return;
+      // Pro 功能 → 手机通行密钥 / 安全密钥重定向: their status, and the passkey's pairing panel where it is open.
+      case 'pro.phonePasskey':
+        this.selectedProFeatureId = 'pro.security.phonePasskey'; this.openSettingsLeafSheet(SETTINGS_SHEET_PRO_FEATURE); return;
+      case 'pro.securityKey':
+        this.selectedProFeatureId = 'pro.security.webauthnRedirect'; this.openSettingsLeafSheet(SETTINGS_SHEET_PRO_FEATURE); return;
       case 'settings.vncConnection': this.openSettingsLeafSheet(SETTINGS_SHEET_VNC_CONNECTION); return;
       case 'settings.vncTimeout': this.openSettingsLeafSheet(SETTINGS_SHEET_VNC_TIMEOUT); return;
       case 'settings.vncSecurity': this.openSettingsLeafSheet(SETTINGS_SHEET_VNC_SECURITY); return;
@@ -20809,6 +20826,38 @@ struct HostListPage {
       settings.init(getContext(this) as common.UIAbilityContext, this.assistantOwner());
       settings.read();
     } catch (_error) { /* stays off */ }
+  }
+
+  private onSessionAiHandover(): void {
+    // After the session page's own layers have closed and this page is back in front.
+    if (this.aiSessionHandover > 0) { setTimeout((): void => { this.takeSessionAi(); }, 240); }
+  }
+
+  /**
+   * The user left a host with its AI up (SessionAiHost): the AI carries on here as the orb with its small chat, on the
+   * same conversation (an answer still on its way lands in it). It waits while a session page is still on top, and is
+   * dropped when another session's AI is in front, the list's own AI is already up, or the user took too long.
+   */
+  private takeSessionAi(): void {
+    const at: number = AppStorage.get<number>(AI_SESSION_HANDOVER) ?? 0;
+    if (at <= 0) { return; }
+    if (Date.now() - at > AI_SESSION_HANDOVER_TTL_MS) { AppStorage.setOrCreate(AI_SESSION_HANDOVER, 0); return; }
+    let top: string = '';
+    try { top = this.getUIContext().getRouter().getState().name; } catch (_error) { return; }
+    if (aiIsSessionPage(top) || top === 'MoonlightAppCatalogPage') { return; }
+    AppStorage.setOrCreate(AI_SESSION_HANDOVER, 0);
+    if (AiSessionRouter.sessionActive() || !this.diagnosticAiAssistantVisible || this.aiIslandShown || this.aiVoiceShown) {
+      return;
+    }
+    hilog.info(0x0000, 'AiChat', 'host list carries on the session AI');
+    AiChatMemory.active = true;
+    AiChatMemory.voiceResume = false;
+    this.aiIslandStartAction = '';
+    this.aiIslandQuickOpen = false;
+    this.aiIslandStartFloat = true;
+    this.aiIslandStartChat = true;
+    this.aiIslandShown = true;
+    this.diagnosticAiOrbState = AiChatMemory.requestId !== '' ? 'thinking' : 'open';
   }
 
   private onAiVoiceRequest(): void {
@@ -20868,10 +20917,12 @@ struct HostListPage {
     p.quickOpen = this.aiIslandQuickOpen;
     p.startAction = this.aiIslandStartAction;
     p.startFloat = this.aiIslandStartFloat;
+    p.startChat = this.aiIslandStartChat;
     p.onDismissed = (): void => {
       this.aiIslandShown = false; this.aiIslandFloating = false; this.aiIslandQuickOpen = false;
       this.aiIslandStartAction = '';
       this.aiIslandStartFloat = false;
+      this.aiIslandStartChat = false;
       this.diagnosticAiOrbState = 'idle';
     };
     p.onFloatingChanged = (floating: boolean): void => { this.aiIslandFloating = floating; };
@@ -20900,6 +20951,7 @@ struct HostListPage {
     p.onFloat = (): void => {
       this.aiIslandStartAction = '';
       this.aiIslandStartFloat = true;
+      this.aiIslandStartChat = false;
       this.aiIslandQuickOpen = false;
       if (!this.aiIslandShown) { this.aiIslandShown = true; }
     };

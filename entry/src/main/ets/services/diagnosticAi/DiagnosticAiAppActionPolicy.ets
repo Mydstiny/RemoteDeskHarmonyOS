@@ -13,7 +13,7 @@ export type DiagnosticAiAppActionId =
   | 'settings.keyboardCustom' | 'settings.harmonyShortcut' | 'settings.secretVisibility'
   | 'settings.remotePortrait' | 'settings.remoteWheel' | 'settings.remotePinch' | 'settings.controlBar'
   | 'settings.rdpDisplay' | 'settings.sshSkin' | 'settings.diagnosticAi' | 'settings.aiHosts'
-  | 'settings.aiDisplay' | 'settings.aiData' | 'settings.aiInstall'
+  | 'settings.aiDisplay' | 'settings.aiData' | 'settings.aiInstall' | 'pro.phonePasskey' | 'pro.securityKey'
   | 'settings.appIcon' | 'settings.keyVault' | 'settings.rdpCredentialEditor' | 'settings.proBadge'
   | 'diagnosticAi.assistant' | 'diagnosticAi.usage' | 'diagnosticAi.personalization' | 'diagnosticAi.sessions'
   | 'diagnosticAi.classicLogs' | 'diagnosticAi.skills'
@@ -46,71 +46,83 @@ class ActionRule {
   groups: string[][];
   mode: DiagnosticAiAppActionMode;
   requiresConfirmation: boolean;
+  /** A step naming one of these is about something else (通行密钥 and API Key are not SSH keys). */
+  except: string[];
 
   constructor(id: DiagnosticAiAppActionId, label: string, groups: string[][],
-    mode: DiagnosticAiAppActionMode = 'execute', requiresConfirmation: boolean = false) {
+    mode: DiagnosticAiAppActionMode = 'execute', requiresConfirmation: boolean = false, except: string[] = []) {
     this.id = id; this.label = label; this.groups = groups; this.mode = mode;
     this.requiresConfirmation = requiresConfirmation;
+    this.except = except;
   }
 }
+
+/** Keys that are not SSH keys. */
+const OTHER_KEYS: string[] = ['通行密钥', '安全密钥', 'passkey', 'api key', 'apikey', 'coding plan key', 'usb 密钥'];
 
 const RULES: ActionRule[] = [
   new ActionRule('host.add', '打开添加主机', [['添加', '新建', '新增', '“+”', '"+"', '+'], ['主机', '连接', '协议', '设备']]),
   new ActionRule('cloud.sync', '打开云同步', [['云同步', '同步', '云端', '备份']], 'execute', true),
   new ActionRule('diagnostic.log', '查看诊断日志', [['日志', '诊断记录']], 'floating'),
   new ActionRule('feedback', '提交反馈', [['反馈', '联系开发', '联系我们']], 'execute', true),
-  new ActionRule('ssh.keys', '打开 SSH 密钥库', [['密钥', '公钥', '私钥', 'key']]),
+  new ActionRule('ssh.keys', '打开 SSH 密钥库', [['密钥', '公钥', '私钥', 'key']], 'execute', false, OTHER_KEYS),
   new ActionRule('rdp.credentials', '管理 RDP 凭据', [['凭据', '账号密码', '用户名和密码', '登录凭证']], 'execute', true),
   new ActionRule('settings.appIcon', '打开应用图标设置', [['应用图标', '图标主题', '图标样式']]),
-  new ActionRule('settings.keyVault', '打开密钥库', [['密钥库', 'SSH 密钥', '密钥管理']]),
+  new ActionRule('settings.keyVault', '打开密钥库', [['密钥库', 'SSH 密钥', '密钥管理']], 'execute', false, OTHER_KEYS),
   new ActionRule('settings.rdpCredentialEditor', '打开 RDP 凭据编辑器', [['RDP', '凭据'], ['编辑', '新增', '修改']],'execute', true),
   new ActionRule('settings.proBadge', '打开 Pro 标识设置', [['Pro 标识', 'Pro 徽章', '专业版标识']]),
-  new ActionRule('ai.config', '打开 AI 配置', [['AI', 'ai', '模型', 'Provider', '服务商'], ['配置', '设置', '密钥', 'API Key', 'apikey']]),
+  // 远程 AI (the computer's Codex, DSH, Claude Agent) has its own pages; this is the AI 助理's own service.
+  new ActionRule('ai.config', '打开 AI 配置', [['AI', 'ai', '模型', 'Provider', '服务商'], ['配置', '设置', '密钥', 'API Key', 'apikey']],
+    'execute', false, ['远程 AI', 'AI 主机', 'Claude Agent', '电脑端']),
 
   new ActionRule('settings.account', '打开账号设置', [['账号', '登录', '账户'], ['设置', '管理', '切换']]),
   new ActionRule('settings.appearance', '打开外观设置', [['外观', '主题', '颜色', '字体']]),
   new ActionRule('settings.wallpaper', '打开壁纸设置', [['壁纸', '背景']]),
   new ActionRule('settings.haloColor', '打开沉浸光晕设置', [['光晕', '沉浸光感', '光感']]),
-  new ActionRule('settings.terminalColor', '打开终端颜色设置', [['终端', '文字颜色', '前景色']]),
-  new ActionRule('settings.terminalFontSize', '打开终端字号设置', [['终端', '字号', '字体大小']]),
-  new ActionRule('settings.terminalSpacing', '打开终端行距设置', [['终端', '行距', '行间距']]),
+  new ActionRule('settings.terminalColor', '打开终端颜色设置', [['终端'], ['文字颜色', '前景色', '颜色']]),
+  new ActionRule('settings.terminalFontSize', '打开终端字号设置', [['终端'], ['字号', '字体大小']]),
+  new ActionRule('settings.terminalSpacing', '打开终端行距设置', [['终端'], ['行距', '行间距']]),
   new ActionRule('settings.popup', '打开弹窗设置', [['弹窗', '提示', '通知']]),
   new ActionRule('settings.keyboard', '打开虚拟键盘设置', [['虚拟键盘', '键盘']]),
-  new ActionRule('settings.keyboardBehavior', '打开键盘行为设置', [['键盘', '行为', '回车', '退格']]),
-  new ActionRule('settings.keyboardShortcuts', '打开键盘快捷键设置', [['键盘', '快捷键', '组合键']]),
-  new ActionRule('settings.keyboardFunctions', '打开键盘功能键设置', [['键盘', '功能键', 'F1', 'F2']]),
-  new ActionRule('settings.keyboardCustom', '打开自定义键盘设置', [['键盘', '自定义', '按键']]),
+  new ActionRule('settings.keyboardBehavior', '打开键盘行为设置', [['键盘'], ['行为', '回车', '退格']]),
+  new ActionRule('settings.keyboardShortcuts', '打开键盘快捷键设置', [['键盘'], ['快捷键', '组合键']]),
+  new ActionRule('settings.keyboardFunctions', '打开键盘功能键设置', [['键盘'], ['功能键', 'F1', 'F2']]),
+  new ActionRule('settings.keyboardCustom', '打开自定义键盘设置', [['键盘'], ['自定义', '按键']]),
   new ActionRule('settings.harmonyShortcut', '打开鸿蒙快捷方式设置', [['鸿蒙', '系统快捷方式', '快捷方式']]),
   new ActionRule('settings.secretVisibility', '打开敏感信息显示设置', [['敏感信息', '密钥显示', '密码显示']], 'execute', true),
   new ActionRule('settings.remotePortrait', '打开竖屏显示设置', [['竖屏', '旋转', '纵向显示']]),
   new ActionRule('settings.remoteWheel', '打开滚轮方向设置', [['滚轮', '滚动方向']]),
   new ActionRule('settings.remotePinch', '打开双指缩放设置', [['双指', '捏合', '缩放']]),
   new ActionRule('settings.controlBar', '打开会话控制栏设置', [['控制栏', '会话栏', '工具栏显示']]),
-  new ActionRule('settings.rdpDisplay', '打开 RDP 显示设置', [['RDP', '分辨率', '显示缩放']]),
-  new ActionRule('settings.sshSkin', '打开 SSH 外观设置', [['SSH', '终端皮肤', '终端外观']]),
+  new ActionRule('settings.rdpDisplay', '打开 RDP 显示设置', [['RDP'], ['分辨率', '显示缩放', '显示设置']]),
+  new ActionRule('settings.sshSkin', '打开 SSH 外观设置', [['SSH', '终端'], ['皮肤', '外观']]),
   new ActionRule('settings.diagnosticAi', '打开 AI 助理设置', [['AI 助理', 'AI助理', '诊断与 AI', '诊断AI', 'AI 帮助'], ['设置', '页面', '入口', '帮助']]),
-  new ActionRule('settings.aiHosts', '打开远程 AI 主机设置', [['远程 AI', 'AI 主机', '电脑端 AI']]),
-  new ActionRule('settings.aiDisplay', '打开远程 AI 显示设置', [['远程 AI', 'AI 显示', '显示入口']]),
-  new ActionRule('settings.aiData', '打开远程 AI 数据设置', [['远程 AI', 'AI 数据', '数据策略']]),
-  new ActionRule('settings.aiInstall', '打开远程 AI 安装设置', [['远程 AI', 'AI 安装', '安装电脑端']]),
+  new ActionRule('settings.aiHosts', '打开远程 AI 主机设置',
+    [['AI 主机', '电脑端 AI', 'Claude Agent', 'Codex 主机', 'DSH 主机', '远程 AI 主机', '添加远程 AI', '配对远程 AI']]),
+  new ActionRule('settings.aiDisplay', '打开远程 AI 显示设置',
+    [['远程 AI', '会话页'], ['显示', '界面风格', 'Claude 风格', 'Codex 风格', '文字大小']]),
+  new ActionRule('settings.aiData', '打开远程 AI 数据设置', [['远程 AI', 'AI 数据'], ['数据', '导出', '导入']]),
+  new ActionRule('settings.aiInstall', '打开远程 AI 安装设置', [['远程 AI', '电脑端'], ['安装', '插件']]),
+  new ActionRule('pro.phonePasskey', '打开手机通行密钥', [['通行密钥', 'passkey', '手机当密钥', '手机作为密钥']]),
+  new ActionRule('pro.securityKey', '打开安全密钥重定向', [['安全密钥', 'USB 密钥', 'FIDO', 'YubiKey', 'U2F']]),
 
-  new ActionRule('settings.vncConnection', '打开 VNC 连接设置', [['VNC', '连接设置']]),
-  new ActionRule('settings.vncTimeout', '打开 VNC 超时设置', [['VNC', '超时']]),
-  new ActionRule('settings.vncSecurity', '打开 VNC 安全设置', [['VNC', '安全', 'TLS']]),
-  new ActionRule('settings.vncDisplay', '打开 VNC 显示设置', [['VNC', '显示', '缩放']]),
-  new ActionRule('settings.vncInput', '打开 VNC 输入设置', [['VNC', '输入', '鼠标', '触控']]),
-  new ActionRule('settings.vncPerformance', '打开 VNC 性能设置', [['VNC', '性能', '帧率']]),
-  new ActionRule('settings.vncClipboard', '打开 VNC 剪贴板设置', [['VNC', '剪贴板']]),
-  new ActionRule('settings.vncTrust', '打开 VNC 信任设置', [['VNC', '信任', '证书']]),
-  new ActionRule('settings.vncHosts', '打开 VNC 主机管理', [['VNC', '主机管理', '地址簿']]),
-  new ActionRule('settings.vncGateway', '打开 VNC 网关设置', [['VNC', '网关', 'Repeater']]),
-  new ActionRule('settings.moonlightVideo', '打开 Moonlight 画面设置', [['Moonlight', '画面', '视频']]),
-  new ActionRule('settings.moonlightAudio', '打开 Moonlight 音频设置', [['Moonlight', '音频', '声音']]),
-  new ActionRule('settings.moonlightInput', '打开 Moonlight 输入设置', [['Moonlight', '输入', '手柄']]),
-  new ActionRule('settings.moonlightNetwork', '打开 Moonlight 网络设置', [['Moonlight', '网络', '安全']]),
-  new ActionRule('settings.moonlightDiagnostics', '打开 Moonlight 诊断设置', [['Moonlight', '诊断', '性能']]),
-  new ActionRule('settings.moonlightTrust', '打开 Moonlight 信任设置', [['Moonlight', '信任', '配对']]),
-  new ActionRule('settings.moonlightData', '打开 Moonlight 数据设置', [['Moonlight', '数据', '同步']]),
+  new ActionRule('settings.vncConnection', '打开 VNC 连接设置', [['VNC'], ['连接设置']]),
+  new ActionRule('settings.vncTimeout', '打开 VNC 超时设置', [['VNC'], ['超时']]),
+  new ActionRule('settings.vncSecurity', '打开 VNC 安全设置', [['VNC'], ['安全', 'TLS']]),
+  new ActionRule('settings.vncDisplay', '打开 VNC 显示设置', [['VNC'], ['显示', '缩放']]),
+  new ActionRule('settings.vncInput', '打开 VNC 输入设置', [['VNC'], ['输入', '鼠标', '触控']]),
+  new ActionRule('settings.vncPerformance', '打开 VNC 性能设置', [['VNC'], ['性能', '帧率']]),
+  new ActionRule('settings.vncClipboard', '打开 VNC 剪贴板设置', [['VNC'], ['剪贴板']]),
+  new ActionRule('settings.vncTrust', '打开 VNC 信任设置', [['VNC'], ['信任', '证书']]),
+  new ActionRule('settings.vncHosts', '打开 VNC 主机管理', [['VNC'], ['主机管理', '地址簿']]),
+  new ActionRule('settings.vncGateway', '打开 VNC 网关设置', [['VNC'], ['网关', 'Repeater']]),
+  new ActionRule('settings.moonlightVideo', '打开 Moonlight 画面设置', [['Moonlight'], ['画面', '视频']]),
+  new ActionRule('settings.moonlightAudio', '打开 Moonlight 音频设置', [['Moonlight'], ['音频', '声音']]),
+  new ActionRule('settings.moonlightInput', '打开 Moonlight 输入设置', [['Moonlight'], ['输入', '手柄']]),
+  new ActionRule('settings.moonlightNetwork', '打开 Moonlight 网络设置', [['Moonlight'], ['网络', '安全']]),
+  new ActionRule('settings.moonlightDiagnostics', '打开 Moonlight 诊断设置', [['Moonlight'], ['诊断', '性能']]),
+  new ActionRule('settings.moonlightTrust', '打开 Moonlight 信任设置', [['Moonlight'], ['信任', '配对']]),
+  new ActionRule('settings.moonlightData', '打开 Moonlight 数据设置', [['Moonlight'], ['数据', '同步']]),
   new ActionRule('diagnosticAi.assistant', '启动 AI 辅助', [['启动 AI 辅助', 'AI 助手', '询问 AI']]),
   new ActionRule('diagnosticAi.usage', '打开 AI 用量监控', [['AI 用量', 'Token 用量', '缓存命中', '费用估算']]),
   new ActionRule('diagnosticAi.personalization', '打开 AI 个性化设置', [['AI 个性化', '助手名字', '助手性格', '本地记忆']]),
@@ -150,7 +162,8 @@ export function diagnosticAiAppActionsForSteps(steps: string[]): DiagnosticAiApp
     RULES.forEach((rule: ActionRule): void => {
       if (found.some((a: DiagnosticAiAppAction): boolean => a.id === rule.id)) { return; }
       const matches: boolean = rule.groups.every((words: string[]): boolean =>
-        words.some((word: string): boolean => text.indexOf(word.toLowerCase()) >= 0));
+        words.some((word: string): boolean => text.indexOf(word.toLowerCase()) >= 0)) &&
+        !rule.except.some((word: string): boolean => text.indexOf(word.toLowerCase()) >= 0);
       if (matches) { found.push(new DiagnosticAiAppAction(rule.id, rule.label, rule.mode, rule.requiresConfirmation)); }
     });
   });

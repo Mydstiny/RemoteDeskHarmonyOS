@@ -25,6 +25,8 @@ export class AiIslandLayerParams {
   quickOpen: boolean = false;
   startAction: string = '';
   startFloat: boolean = false;
+  /** Starting as the orb, with its small chat shown. */
+  startChat: boolean = false;
   /** In a remote session: the AI starts as the orb with its small chat (see AiIsland.sessionMode). */
   sessionMode: boolean = false;
   /** In a session: the side bar's edge ('right' · 'left' · '') and width, for the orb to keep clear of. */
@@ -127,7 +129,7 @@ function aiIslandLayer(p: AiIslandLayerParams) {
   AiTopLayerFrame() {
     AiIsland({
       layerId: p.layerId, topInset: p.topInset, deviceClass: p.deviceClass, quickOpen: p.quickOpen, startAction: p.startAction,
-      startFloat: p.startFloat, sessionMode: p.sessionMode, sessionAvoidSide: p.sessionAvoidSide,
+      startFloat: p.startFloat, startChat: p.startChat, sessionMode: p.sessionMode, sessionAvoidSide: p.sessionAvoidSide,
       sessionAvoidWidth: p.sessionAvoidWidth, answersNow: p.answersNow, onDismissed: p.onDismissed,
       onFloatingChanged: p.onFloatingChanged, onActivityChanged: p.onActivityChanged,
       onCaptureStateChanged: p.onCaptureStateChanged, onAppAction: p.onAppAction,

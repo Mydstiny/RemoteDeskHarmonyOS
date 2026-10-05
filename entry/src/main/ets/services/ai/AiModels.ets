@@ -51,6 +51,25 @@ export interface AiSettings {
   uiStyle?: AiUiStyle;
 }
 export function aiUiStyle(settings: AiSettings): AiUiStyle { return settings.uiStyle === 'codex' ? 'codex' : 'claude'; }
+/** 远程 AI 设置 the AI 助理 may change (ids in its settings catalog); the rest stay in 设置 → 远程 AI. */
+export const AI_REMOTE_SETTING_IDS: string[] = ['remoteAi.uiStyle', 'remoteAi.showExecution', 'remoteAi.reconnectOnForeground'];
+/** One of those settings as a catalog value (claude / codex, true / false), or null for another id. */
+export function aiRemoteSettingValue(settings: AiSettings, id: string): string | null {
+  if (id === 'remoteAi.uiStyle') { return aiUiStyle(settings); }
+  if (id === 'remoteAi.showExecution') { return settings.showExecution ? 'true' : 'false'; }
+  if (id === 'remoteAi.reconnectOnForeground') { return settings.reconnectOnForeground ? 'true' : 'false'; }
+  return null;
+}
+/** A copy of `settings` with one of those set to a catalog value, or null when the id or value is not one of them. */
+export function aiRemoteSettingChanged(settings: AiSettings, id: string, value: string): AiSettings | null {
+  const next: AiSettings = JSON.parse(JSON.stringify(settings)) as AiSettings;
+  const flag: boolean | null = value === 'true' ? true : value === 'false' ? false : null;
+  if (id === 'remoteAi.uiStyle' && (value === 'claude' || value === 'codex')) { next.uiStyle = value === 'codex' ? 'codex' : 'claude'; }
+  else if (id === 'remoteAi.showExecution' && flag !== null) { next.showExecution = flag; }
+  else if (id === 'remoteAi.reconnectOnForeground' && flag !== null) { next.reconnectOnForeground = flag; }
+  else { return null; }
+  return aiSettingsValid(next) ? next : null;
+}
 export interface AiPendingOperation {
   id: string;
   hostId: string;

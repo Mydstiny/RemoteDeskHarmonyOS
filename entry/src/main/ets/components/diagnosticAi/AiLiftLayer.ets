@@ -3,7 +3,7 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 import { DiagnosticAiAssistantPanel } from './DiagnosticAiAssistantPanel';
 import { AI_FLOAT_ORB } from './AiIslandChrome';
 import { AiDoneMark, AiFloatingOrb, AiIslandRingsCheck } from './AiMotionViews';
-import { AiChatMemory, AiChatView } from './AiChatView';
+import { AiChatMemory, AiChatView, aiChatOwner } from './AiChatView';
 import { AI_CHAT_REFRESH_KEY } from '../../services/diagnosticAi/AiShareInbox';
 import { AI_ORB_HINT_TEXT, AI_ORB_VOICE_HINT_TEXT, AI_SESSION_ORB_HINT_TEXT, aiOrbHintWanted } from '../../services/diagnosticAi/AiOrbHintStore';
 import { AI_STYLE, aiInk } from '../../services/diagnosticAi/AiStylePolicy';
@@ -127,7 +127,8 @@ struct AiLiftLayer {
     AppStorage.setOrCreate(AI_ORB_DICTATION, aiOrbDictationEncode('listen', ''));
     this.getUIContext().animateTo({ curve: curves.springMotion(0.3, 0.6) }, (): void => { this.boxScale = 1.1; });
     hilog.info(0x0000, 'AiChat', 'orb listens held=%{public}s', String(held));
-    const owner: string = AiChatMemory.owner !== '' ? AiChatMemory.owner : 'device-local';
+    // The signed-in account's voice settings, also when no panel has opened yet (a session's orb).
+    const owner: string = aiChatOwner();
     void AiVoiceInput.start(this.getUIContext().getHostContext() as common.UIAbilityContext,
       (text: string, _final: boolean): void => {
         if (!this.orbListening) { return; }
@@ -747,7 +748,7 @@ struct AiLiftLayer {
         .transition(TransitionEffect.OPACITY)
       }
       if (this.chatShown && this.chatMode()) {
-        AiChatView({ mini: true, owner: AiChatMemory.owner !== '' ? AiChatMemory.owner : 'device-local',
+        AiChatView({ mini: true, owner: aiChatOwner(),
           deviceClass: this.controller.deviceClass, canExpand: !this.controller.sessionMode,
           onCardSize: (height: number): void => { this.chatResized(height); },
           onActivityChanged: (active: boolean): void => { this.chatBusy = active; this.controller.onActivityChanged(active); },

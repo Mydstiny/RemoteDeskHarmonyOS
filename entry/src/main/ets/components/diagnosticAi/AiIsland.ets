@@ -61,6 +61,8 @@ export struct AiIsland {
   @StorageProp(AI_FLOAT_REQUEST) @Watch('onFloatRequest') floatRequest: number = 0;
   /** Voice mode floated: the island starts as the orb (a tap brings voice mode back). */
   @Prop startFloat: boolean = false;
+  /** Starting as the orb: with its small chat already shown (a session's AI the host list carries on). */
+  @Prop startChat: boolean = false;
   /** Distance from the window top to the safe area (status bar); used only where there is no island anchor. */
   @Prop topInset: number = 24;
   @Prop deviceClass: DiagnosticAiDeviceClass = 'phone';
@@ -208,7 +210,7 @@ export struct AiIsland {
         this.later(30, (): void => {
           this.dragX = this.areaWidth / 2 - AI_FLOAT_ORB / 2 - 14;
           this.dragY = this.areaHeight * 0.3;
-          this.liftUp('', 'none', AiChatMemory.active ? 'chat' : 'assistant', 'chat', false,
+          this.liftUp('', 'none', AiChatMemory.active ? 'chat' : 'assistant', 'chat', this.startChat && AiChatMemory.active,
             (this.areaWidth - AI_FLOAT_ORB) / 2 + this.dragX, this.topOffset() + this.dragY);
           // Should the layer not open, the island's own orb shows instead.
           this.later(400, (): void => { if (this.liftLayer === null) { this.lifted = false; } });

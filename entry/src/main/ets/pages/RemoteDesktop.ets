@@ -6295,6 +6295,11 @@ struct RemoteDesktop {
 
   /** The AI's session actions (session.*), through the same handlers as this session's toolbar. */
   private runSessionAiAction(action: DiagnosticAiAppActionId): boolean {
+    // The AI stays up while the connection is down; the session's toolbar actions need it back.
+    if (!this.connected && action.startsWith('session.')) {
+      promptAction.showToast({ message: '连接已断开，重新连接后再试', duration: 2200 });
+      return true;
+    }
     if (this.isRustDeskSession()) {
       return runRemoteSessionAiAction(action, this.remoteSessionTopBarActions(), {
         privacyMode: this.rustdeskPrivacyMode, audioEnabled: this.rustdeskAudioEnabled,
@@ -24167,8 +24172,10 @@ struct RemoteDesktop {
         })
       }
 
-      // The AI in this session (RDP, RustDesk, VNC): the orb, its small chat and voice mode, in the AI top layer.
-      if (this.connected && this.sessionAiVisible()) {
+      // The AI in this session (RDP, RustDesk, VNC): the orb, its small chat and voice mode, in the AI top layer. It
+      // stays while the connection drops or reconnects (the user may be asking it why), and when the page goes with
+      // the AI up, the host list carries it on.
+      if (this.sessionAiVisible()) {
         SessionAiHost({
           openRequest: this.aiSessionOpenRequest,
           deviceClass: remoteTopBarLayout(this.isDesktopDevice, this.breakpoint, this.isPadDevice).deviceClass === 'pc' ? 'pc' :

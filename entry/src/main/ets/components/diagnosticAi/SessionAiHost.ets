@@ -1,9 +1,9 @@
 import { promptAction, window } from '@kit.ArkUI';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { AiIslandLayerParams, AiTopLayer, AiVoiceLayerParams } from './AiTopLayer';
-import { AI_VOICE_REQUEST, AiChatMemory } from './AiChatView';
+import { AI_VOICE_REQUEST, AiChatMemory, aiChatOwner } from './AiChatView';
 import { DiagnosticAiDeviceClass } from './AiIsland';
-import { AI_APP_ACTION_REQUEST } from '../../services/diagnosticAi/AiBridgeKeys';
+import { AI_APP_ACTION_REQUEST, AI_SESSION_HANDOVER } from '../../services/diagnosticAi/AiBridgeKeys';
 import { AiSessionRouter } from '../../services/diagnosticAi/AiSessionRouter';
 import { AI_VOICE_ENABLED } from '../../services/diagnosticAi/AiVoiceSettings';
 import { DiagnosticAiAppActionId, diagnosticAiAppActionId } from '../../services/diagnosticAi/DiagnosticAiAppActionPolicy';
@@ -15,7 +15,9 @@ let sessionHostCount: number = 0;
  * SSH's 「更多」) bumps `openRequest`: the AI appears as the floating orb with its small text chat beside it, above the
  * session, keeping clear of the side bar on whichever edge it is. On that orb a tap leaves the AI, a double tap starts
  * voice mode (in this window), and a drag moves it. While this AI is up, voice and app-action requests come here
- * rather than to the host list that may still be alive under the session (AiSessionRouter).
+ * rather than to the host list that may still be alive under the session (AiSessionRouter). It works for the signed-in
+ * account (its AI 配置 and chats), stays up while the connection drops or reconnects, and when the session page goes
+ * away with the AI up, the host list carries it on (AI_SESSION_HANDOVER).
  */
 @Component
 export struct SessionAiHost {
@@ -61,6 +63,8 @@ export struct SessionAiHost {
 
   aboutToDisappear(): void {
     this.disposed = true;
+    // Up (or between voice and the orb) as the page goes: the user left the host, not the AI.
+    const handover: boolean = this.island.isOpen() || this.voice.isOpen() || this.reopenTimer >= 0;
     if (this.reopenTimer >= 0) { clearTimeout(this.reopenTimer); this.reopenTimer = -1; }
     if (this.win !== null) {
       try { this.win.off('windowEvent', this.onWindowEvent); } catch (_error) { /* already off */ }
@@ -69,6 +73,11 @@ export struct SessionAiHost {
     this.island.close();
     this.voice.close();
     AiSessionRouter.release(this.hostId);
+    if (handover) {
+      // The conversation (and an answer still on its way) is in AiChatMemory: the host list's orb picks it up.
+      hilog.info(0x0000, 'AiChat', 'session AI hands over to the host list');
+      AppStorage.setOrCreate(AI_SESSION_HANDOVER, Date.now());
+    }
   }
 
   private active(): boolean { return AiSessionRouter.current() === this.hostId; }
@@ -93,6 +102,9 @@ export struct SessionAiHost {
     AiSessionRouter.claim(this.hostId);
     // The user opened it here, in this window: it answers from now on.
     AiSessionRouter.setInFront(this.hostId, true);
+    // The signed-in account's AI 配置 and chat, also when the host list's panel never opened in this run of the app.
+    const owner: string = aiChatOwner();
+    if (AiChatMemory.owner !== owner) { AiChatMemory.clear(owner); }
     AiChatMemory.active = true;
     // No orb here leads back to a voice mode the host list started.
     AiChatMemory.voiceResume = false;
@@ -120,7 +132,7 @@ export struct SessionAiHost {
     }
     this.island.close();
     const p: AiVoiceLayerParams = new AiVoiceLayerParams();
-    p.owner = AiChatMemory.owner !== '' ? AiChatMemory.owner : 'device-local';
+    p.owner = aiChatOwner();
     p.topInset = this.topInset;
     p.deviceClass = this.deviceClass;
     p.mode = 'hands';

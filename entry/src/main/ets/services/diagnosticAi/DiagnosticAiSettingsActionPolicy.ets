@@ -105,6 +105,13 @@ const SETTINGS: AiSettingSpec[] = [
   toggle('remote.sshReverseWheel', 'SSH 反向滚轮', 'sshReverseWheel'),
   toggle('remote.vncReverseWheel', 'VNC 反向滚轮', 'vncReverseWheel'),
   toggle('remote.moonlightReverseWheel', 'Moonlight 反向滚轮', 'moonlightReverseWheel'),
+  // 远程 AI (Codex, DSH, Claude Agent on the user's computer): kept per account by the host page's bridge.
+  new AiSettingSpec('remoteAi.uiStyle', '远程 AI 界面风格', 'remoteAi.uiStyle',
+    choices([['claude', 'Claude 风格'], ['codex', 'Codex 风格']]),
+    '远程 AI 会话页的外观：Claude 是对话时间线，Codex 是对话/日志/差异分页；下次打开会话生效'),
+  toggle('remoteAi.showExecution', '远程 AI 显示工具执行过程', 'remoteAi.showExecution', '会话里列出工具调用与执行记录'),
+  toggle('remoteAi.reconnectOnForeground', '远程 AI 回到前台后恢复查看', 'remoteAi.reconnectOnForeground',
+    '回到 App 时重新校验服务并读取会话，控制权仍需手动取得'),
   // AI 助理 itself: how it answers and how it moves.
   new AiSettingSpec('ai.personality', 'AI 回答风格', 'aiAssistant.personality',
     choices([['balanced', '均衡'], ['warm', '温和'], ['concise', '简洁'], ['technical', '技术']]), '技术风格才讲协议细节'),
@@ -310,6 +317,10 @@ function settingWords(id: string): string[] {
     case 'ai.motion.open': return ['展开动画', '打开动画'];
     case 'ai.motion.sendGlow': return ['发送按钮', '光晕'];
     case 'ai.motion.speed': return ['动效速度', '动画速度'];
+    case 'remoteAi.uiStyle': return ['远程 ai 风格', '远程 ai 界面', '远程 ai 外观', '会话页风格', '工作区风格', 'claude 风格',
+      'codex 风格'];
+    case 'remoteAi.showExecution': return ['工具执行过程', '执行过程', '工具调用'];
+    case 'remoteAi.reconnectOnForeground': return ['恢复查看', '回到前台'];
     default: break;
   }
   if (id.indexOf('PinchZoom') > 0) { return ['双指缩放', '捏合缩放']; }

@@ -199,11 +199,19 @@ export function aiChatAllowed(): boolean {
   return ProEntries.visible(PRO_DIAGNOSTICS_ASSISTANT_FEATURE, ProAppRuntime.getInstance().context());
 }
 
+/**
+ * The signed-in account the AI works for ('device-local' without one). Its AI 配置 (Provider, model, API Key) and its
+ * chats are kept under it: a surface that opens before the host list's panel ever did (a session's orb) uses this, not
+ * whatever AiChatMemory last held.
+ */
+export function aiChatOwner(): string {
+  const scope = AccountSessionCoordinator.getInstance().currentScope();
+  return scope.ownerScopeId.trim() === '' ? 'device-local' : scope.ownerScopeId;
+}
+
 /** Whether `owner` is still the signed-in account. */
 export function aiChatOwnerStill(owner: string): boolean {
-  const scope = AccountSessionCoordinator.getInstance().currentScope();
-  const current: string = scope.ownerScopeId.trim() === '' ? 'device-local' : scope.ownerScopeId;
-  return current === owner;
+  return aiChatOwner() === owner;
 }
 
 /** The assistant's personalisation as one line for the model. */
