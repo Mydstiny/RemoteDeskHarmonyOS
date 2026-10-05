@@ -277,30 +277,71 @@ function aiDshText(content: Object | undefined, type: string): string {
 }
 
 /** What DSH context a user/message carries, by its source kind, when the source names no summary. */
-const DSH_CONTEXT_LABELS: Record<string, string> = {
-  'agent-instructions': '项目说明（AGENTS.md）',
-  'skill-invocation': '技能',
-  'skill-catalog': '技能目录',
-  'agent-message': '子代理消息',
-  'subagent-settled': '子代理已完成',
-  'goal': '目标继续',
-  'session-reference': '引用的会话',
-  'webhook': 'Webhook 通知'
-};
+const DSH_CONTEXT_LABELS: Map<string, string> = new Map<string, string>([
+  ['agent-instructions', '项目说明（AGENTS.md）'],
+  ['skill-invocation', '技能'],
+  ['skill-catalog', '技能目录'],
+  ['agent-message', '子代理消息'],
+  ['subagent-settled', '子代理已完成'],
+  ['goal', '目标继续'],
+  ['session-reference', '引用的会话'],
+  ['webhook', 'Webhook 通知']
+]);
+
+/** Whether `text` at `at` opens a markup tag ('<name ...>' or '</name>'), and where it ends, or -1. */
+function aiTagEnd(text: string, at: number): number {
+  if (text.charAt(at) !== '<') { return -1; }
+  let i = at + 1;
+  if (text.charAt(i) === '/') { i++; }
+  if (!/[A-Za-z]/.test(text.charAt(i))) { return -1; }
+  const close = text.indexOf('>', i);
+  if (close < 0 || close - at > 82) { return -1; }
+  const inner = text.slice(i, close);
+  return inner.indexOf('<') >= 0 || inner.indexOf('\n') >= 0 ? -1 : close + 1;
+}
+
+/**
+ * A line without the markup tags around it ('<system-reminder>…</system-reminder>'); tags inside are text. At most
+ * eight tags go from each end, so remote text full of tags stays linear.
+ */
+function aiUntagged(line: string): string {
+  let text = line.trim();
+  for (let count = 0, end = aiTagEnd(text, 0); count < 8 && end > 0; count++, end = aiTagEnd(text, 0)) {
+    text = text.slice(end).trim();
+  }
+  for (let count = 0, open = text.lastIndexOf('<'); count < 8 && open >= 0 && aiTagEnd(text, open) === text.length;
+    count++, open = text.lastIndexOf('<')) {
+    text = text.slice(0, open).trim();
+  }
+  return text;
+}
 
 /** The first line that says something, without surrounding markup tags. */
 function aiFirstLine(text: string): string {
   for (const raw of text.split('\n')) {
-    const line = raw.replace(/<\/?[A-Za-z][^<>\n]{0,80}>/g, '').trim();
+    const line = aiUntagged(raw);
     if (line !== '') { return line.length > 120 ? line.slice(0, 119) + '…' : line; }
   }
   return '';
 }
 
+/** The given field of each entry of a source list, as DSH's client shows them ('a.md、b.md'). */
+function aiSourceNames(list: Object | undefined, field: string): string {
+  return aiArray(list).map((value: Object): string => aiString(aiObject(value)[field])).filter((name: string): boolean =>
+    name !== '').slice(0, 3).join('、');
+}
+
 function aiDshContextLabel(kind: string, source: Record<string, Object>, text: string): string {
   const summary = aiString(source['summary']);
   if (summary !== '') { return summary; }
-  const named = DSH_CONTEXT_LABELS[kind];
+  if (kind === 'skill-invocation' && aiString(source['name']) !== '') { return '技能：' + aiString(source['name']); }
+  if (kind === 'agent-instructions' && aiSourceNames(source['changes'], 'path') !== '') {
+    return '项目说明：' + aiSourceNames(source['changes'], 'path');
+  }
+  if (kind === 'session-reference' && aiSourceNames(source['references'], 'label') !== '') {
+    return '引用的会话：' + aiSourceNames(source['references'], 'label');
+  }
+  const named = DSH_CONTEXT_LABELS.get(kind);
   if (named !== undefined) { return named; }
   const line = aiFirstLine(text);
   if (line !== '') { return line; }

@@ -383,10 +383,12 @@ export struct RemoteAiWorkspace {
   private stepDiffs(): AiDiffFile[] {
     if (this.stepDiffItems !== this.items) {
       this.stepDiffItems = this.items;
-      // Diffs come from tool steps only; their inputs and outputs grow or settle, they are not rewritten in place.
+      // Diffs come from tool steps only; their inputs and outputs grow or settle. Lengths and both ends tell a change.
+      const ends = (text: string): string => text.length.toString() + ':' +
+        (text.length > 48 ? text.slice(0, 24) + text.slice(text.length - 24) : text);
       const key = this.items.filter((item: AiTranscriptItem): boolean => item.role === 'execution')
-        .map((item: AiTranscriptItem): string => item.id + '\u0001' + item.title + '\u0001' +
-          (item.detail ?? '').length.toString() + '\u0001' + (item.output ?? '').length.toString()).join('\u0002');
+        .map((item: AiTranscriptItem): string => item.id + '\u0001' + item.title + '\u0001' + ends(item.detail ?? '') +
+          '\u0001' + ends(item.output ?? '')).join('\u0002');
       if (key !== this.stepDiffKey) {
         let files: AiDiffFile[] = [];
         this.items.forEach((item: AiTranscriptItem): void => { files = files.concat(aiItemDiff(item)); });

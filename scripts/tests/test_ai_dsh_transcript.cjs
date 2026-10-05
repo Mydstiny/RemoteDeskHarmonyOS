@@ -127,6 +127,20 @@ console.log('PASS DSH live events are mapped on flush and a bad replacement is r
     { seq: 7, type: 'user/message', data: 'oops' }, { seq: 8, type: 'assistant/message', data: { turn: 1 }, surfaceOp: 'append' }];
   assert.doesNotThrow(() => aiDshItems(odd));
   assert.deepEqual(plain(aiDshItems(odd)).map(item => item.title), ['工具结果', '工具', 'assistant', 'user']);
+  // Titles carry what DSH's own client shows; markup around the first line goes, brackets inside stay; source kinds
+  // named like object members are just names.
+  const titled = plain(aiDshItems([
+    { seq: 1, type: 'user/message', data: said('…', { kind: 'skill-invocation', name: 'deploy', form: 'instructions' }) },
+    { seq: 2, type: 'user/message', data: said('…', { kind: 'agent-instructions', form: 'instructions',
+      changes: [{ action: 'set', scope: 'project', path: 'AGENTS.md' }, { action: 'set', scope: 'dir', path: 'src/AGENTS.md' }] }) },
+    { seq: 3, type: 'user/message', data: said('…', { kind: 'session-reference', form: 'recall', version: 1,
+      references: [{ sessionId: 's1', label: '修复登录' }] }) },
+    { seq: 4, type: 'user/message', data: said('<note>Vec<String> 修复 a<b and c>d</note>', { kind: 'plugin', plugin: 'x' }) },
+    { seq: 5, type: 'user/message', data: said('真实内容', { kind: 'constructor' }) },
+    { seq: 6, type: 'user/message', data: said('<a>'.repeat(5000), { kind: '__proto__' }) }]));
+  assert.deepEqual(titled.map(item => item.text), ['技能：deploy', '项目说明：AGENTS.md、src/AGENTS.md', '引用的会话：修复登录',
+    'Vec<String> 修复 a<b and c>d', '真实内容', '<a>'.repeat(4984).slice(0, 119) + '…']);
+  assert.ok(titled.every(item => typeof item.text === 'string'));
   console.log('PASS DSH injected context reads as a step and malformed fields are skipped');
 }
 

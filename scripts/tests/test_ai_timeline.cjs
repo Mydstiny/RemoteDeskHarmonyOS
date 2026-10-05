@@ -189,5 +189,13 @@ console.log('PASS Codex added and deleted files count every line');
   assert.deepEqual(atLimit.map(file => [file.path, file.lines.length, file.truncated === true]), [['a', 3999, false], ['i.png', 1, false]]);
   const over = plain(timeline.aiDiffFiles('diff --git a/a b/a\n@@ -0,0 +1,4001 @@\n' + filler + '\n+y\n+z\n+w\n'));
   assert.deepEqual(over.map(file => [file.lines.length, file.truncated === true]), [[4000, true]]);
+  // Plain diffs without git headers keep their files apart; a cut-short diff signs differently.
+  const plainFiles = plain(timeline.aiDiffFiles(['--- a/a', '+++ b/a', '@@ -1 +1 @@', '-1', '+2', '--- a/b', '+++ b/b',
+    '@@ -1 +1 @@', '-3', '+4'].join('\n')));
+  assert.deepEqual(plainFiles.map(file => [file.path, file.added, file.removed]), [['a', 1, 1], ['b', 1, 1]]);
+  const whole = timeline.aiDiffFiles('diff --git a/z b/z\n@@ -1 +1 @@\n-x\n+y');
+  const cut = timeline.aiDiffFiles('diff --git a/z b/z\n@@ -1 +1 @@\n-x\n+y');
+  cut[0].truncated = true;
+  assert.notEqual(timeline.aiDiffSignature(whole), timeline.aiDiffSignature(cut));
   console.log('PASS binary patches, long-line signatures and file content that looks like a diff');
 }

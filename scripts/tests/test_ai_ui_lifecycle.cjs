@@ -321,9 +321,15 @@ const cases = [
     }
     assert.equal(state.itemDiffs, parses);
     assert.equal(state.signatures, signs);
+    // A step rewritten in place with the same length still changes the diff.
+    const rewritten = item('e1', 'execution', 'tool', { title: 'Edit',
+      detail: JSON.stringify({ file_path: '/r/a.ts', old_string: 'a', new_string: 'c' }) });
+    state.page.items = [item('u', 'user', 'user'), rewritten, item('s', 'assistant', 'assistant', { text: '完成' })];
+    assert.notEqual(state.page.sessionDiffKey(), first);
+    const second = state.page.sessionDiffKey();
     state.page.items = state.page.items.concat([item('e2', 'execution', 'tool', { title: 'Write',
       detail: JSON.stringify({ file_path: '/r/b.ts', content: 'new' }) })]);
-    assert.notEqual(state.page.sessionDiffKey(), first);
+    assert.notEqual(state.page.sessionDiffKey(), second);
     // The engine's own diff takes over and is signed once per text.
     state.page.diff = 'diff --git a/c b/c\n@@ -1 +1 @@\n-1\n+2';
     const native = state.page.sessionDiffKey();

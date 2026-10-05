@@ -153,7 +153,12 @@ export function aiDiffFiles(diff: string): AiDiffFile[] {
       else if (path !== '/dev/null' && current.lines.length === 0) { current.path = path; }
       continue;
     }
-    if ((!inHunk && raw.startsWith('--- ')) || raw.startsWith('index ') || raw.startsWith('new file mode') ||
+    if (!inHunk && raw.startsWith('--- ')) {
+      // Without git headers, '--- ' after a file's lines starts the next file (its '+++ ' names it).
+      if (current !== null && current.lines.length > 0) { current = null; }
+      continue;
+    }
+    if (raw.startsWith('index ') || raw.startsWith('new file mode') ||
       raw.startsWith('deleted file mode') || raw.startsWith('similarity index') || raw.startsWith('rename ') ||
       raw.startsWith('Binary files')) {
       continue;
@@ -212,7 +217,7 @@ export function aiDiffSignature(files: AiDiffFile[]): string {
   };
   files.forEach((file: AiDiffFile): void => {
     mix(file.path);
-    mix(file.added.toString() + '/' + file.removed.toString());
+    mix(file.added.toString() + '/' + file.removed.toString() + (file.truncated === true ? '/cut' : ''));
     file.lines.forEach((line: AiDiffLine): void => { mix(line.kind); mix(line.text); lines++; });
   });
   return files.length.toString() + ':' + lines.toString() + ':' + hash.toString(16);
