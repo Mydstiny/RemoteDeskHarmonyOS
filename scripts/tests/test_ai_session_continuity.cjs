@@ -162,8 +162,56 @@ test('the AI settings catalog has the 远程 AI settings, and plain words pick t
     ['局域网里 RustDesk 改成 H265', ['rustdesk.codec=5']],
     ['思考动画换成小艺光环', ['ai.motion.thinking=xiaoyi']]
   ];
+  cases.push(
+    // 关闭 / 取消 / 不再 / 别再 / 不想 / 停止 before a 显示… switch turn it off; 不要显示 / 别显示 may follow it.
+    ['关闭 RustDesk 显示本地光标', ['rustdesk.showLocalCursor=false']],
+    ['取消显示RDP诊断信息', ['rdp.showDiagnostics=false']],
+    ['关闭远程 AI 显示工具执行过程', ['remoteAi.showExecution=false']],
+    ['以后不再显示RDP诊断信息', ['rdp.showDiagnostics=false']],
+    ['别再显示本地光标了', ['rustdesk.showLocalCursor=false']],
+    ['RustDesk 诊断信息不要显示', ['rustdesk.showDiagnostics=false']],
+    ['RDP 诊断信息别显示了', ['rdp.showDiagnostics=false']],
+    ['显示 RustDesk 本地光标和诊断信息', ['rustdesk.showDiagnostics=true', 'rustdesk.showLocalCursor=true']],
+    ['隐藏 RDP 和 RustDesk 的诊断信息', ['rdp.showDiagnostics=false', 'rustdesk.showDiagnostics=false']],
+    ['把 RDP 诊断信息隐藏', ['rdp.showDiagnostics=false']],
+    // A protocol said in passing is not carried into the next clause.
+    ['RDP 连不上，RustDesk 音频打开', ['rustdesk.audioEnabled=true']],
+    ['我平时用 RDP，RustDesk 的剪贴板帮我关了', ['rustdesk.clipboardEnabled=false']],
+    // A verb goes to the setting right next to it; one with its own object (取消静音) is not the setting's.
+    ['光感打开分组关掉', ['ui.ambientLightEffect=true', 'ui.groupedHostCards=false']],
+    ['rdp音频打开rustdesk音频关闭', ['rdp.audioEnabled=true', 'rustdesk.audioEnabled=false']],
+    ['远程 AI 回到前台恢复查看打开 工具执行过程关掉',
+      ['remoteAi.reconnectOnForeground=true', 'remoteAi.showExecution=false']],
+    ['开启RustDesk隐私模式不要让别人看到屏幕', ['rustdesk.privacyMode=true']],
+    ['打开RDP音频取消静音', ['rdp.audioEnabled=true']],
+    ['远程AI工具调用关掉', ['remoteAi.showExecution=false']],
+    // Keeping something on, leaving it off, and switches stored the other way round.
+    ['不要关闭 RDP 剪贴板', ['rdp.clipboardEnabled=true']],
+    ['RDP 音频不要关', ['rdp.audioEnabled=true']],
+    ['RDP 音频不用开', ['rdp.audioEnabled=false']],
+    ['不得不打开 RDP 剪贴板', ['rdp.clipboardEnabled=true']],
+    ['关闭会话快速退出', ['remote.quickExitDisabled=true']],
+    ['语气温和一点', ['ai.personality=warm']],
+    ['AI 回答简短一点', ['ai.verbosity=concise']]);
   for (const [question, expected] of cases) {
     assert.deepEqual(pick(question).sort(), expected.slice().sort(), question);
+  }
+  // Run-on speech: two or three RDP switches, each verb before or after its own.
+  const parts = [['音频', 'rdp.audioEnabled'], ['剪贴板', 'rdp.clipboardEnabled'], ['驱动器映射', 'rdp.driveEnabled']];
+  for (const count of [2, 3]) {
+    for (let ways = 0; ways < (1 << count); ways++) {
+      for (let after = 0; after < (1 << count); after++) {
+        let said = 'RDP';
+        const expected = [];
+        for (let i = 0; i < count; i++) {
+          const on = Boolean(ways >> i & 1);
+          const verb = on ? ['打开', '开启'][i % 2] : ['关闭', '关掉'][i % 2];
+          said += (after >> i & 1) ? parts[i][0] + verb : verb + parts[i][0];
+          expected.push(parts[i][1] + '=' + on);
+        }
+        assert.deepEqual(pick(said).sort(), expected.sort(), said);
+      }
+    }
   }
   assert.deepEqual(pick('打开回到前台后恢复查看'), ['remoteAi.reconnectOnForeground=true']);
   assert.deepEqual(pick('切到小艺风格'), ['ai.style=xiaoyi'], 'AI 风格 stays its own setting');
@@ -308,10 +356,15 @@ test('手机通行密钥 and 安全密钥重定向 are app actions; 远程 AI wo
   assert.deepEqual(ids('用 ed25519-sk (FIDO) 生成 SSH 密钥'), ['ssh.keys', 'settings.keyVault']);
   // The install page by its own name and the hosts' plugins; pairing words keep the host page.
   for (const step of ['在电脑上安装 Codex', '在电脑上安装DSH', '在电脑上安装 Claude Code', '按电脑端安装里的指引安装 DSH',
-    '在电脑端安装页复制 Codex 安装命令', '在电脑端安装 Codex 后回到 App 配对', '在 Codex 主机上更新插件到最新版本']) {
+    '在电脑端安装页复制 Codex 安装命令', '在电脑端安装 Codex 后回到 App 配对', '在 Codex 主机上更新插件到最新版本',
+    '在电脑上运行 DSH 安装脚本', 'Codex 安装失败时检查 Node 版本', '确认电脑端插件正在运行']) {
     assert.deepEqual(ids(step), ['settings.aiInstall'], step);
   }
   assert.deepEqual(ids('扫描电脑端插件显示的二维码完成配对'), ['settings.aiHosts']);
+  assert.deepEqual(ids('电脑端插件已运行但远程AI仍显示离线，请在远程AI里刷新主机'), ['settings.aiHosts']);
+  for (const step of ['在电脑端安装 RustDesk 服务', '在电脑端安装 VNC 服务器', '在电脑端安装 Sunshine', '在电脑端安装显卡驱动']) {
+    assert.ok(!ids(step).includes('settings.aiInstall'), step);
+  }
   assert.deepEqual(ids('在远程 AI 里关闭工具执行过程'), ['settings.aiDisplay']);
   assert.deepEqual(ids('在远程 AI 主机里导出数据'), ['settings.aiData']);
   assert.deepEqual(ids('在远程 AI 会话里批准文件改动'), ['settings.aiHosts']);

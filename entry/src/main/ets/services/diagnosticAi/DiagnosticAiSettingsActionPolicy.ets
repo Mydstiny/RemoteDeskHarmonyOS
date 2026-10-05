@@ -277,16 +277,31 @@ export function diagnosticAiSettingValueLabel(settingId: string, value: string):
 
 const PROTOCOLS: string[] = ['rustdesk', 'moonlight', 'rdp', 'ssh', 'vnc'];
 const PROTOCOL_PREFIXES: string[] = ['RustDesk ', 'Moonlight ', 'RDP ', 'SSH ', 'VNC '];
-const TURN_ON: string[] = ['开启', '打开', '启用', '允许', '开一下'];
-const TURN_OFF: string[] = ['关闭', '关掉', '关了', '禁用', '停用', '取消', '不要'];
-/** Right before an on-word these turn it off (不要打开, 别开启, 不用打开, 不打开); 要不要打开 asks to turn it on. */
-const NEGATIONS: string[] = ['不需要', '不要', '不用', '无需', '不必', '别', '不'];
+/** On and off words; 不要关 / 别关闭 keep something on, 不用开 / 别开 leave it off. */
+const TURN_ON: string[] = ['不要关闭', '不要关掉', '不要禁用', '别关闭', '别关掉', '别禁用', '不要关', '不用关', '别关', '开启', '打开',
+  '启用', '允许', '开一下'];
+const TURN_OFF: string[] = ['关闭', '关掉', '关了', '禁用', '停用', '取消', '不要开', '不用开', '别开', '不要'];
+/** Right before an on-word these turn it off (不要打开, 别开启, 不再打开); 要不要打开 asks to turn it on, 不得不打开 must. */
+const NEGATIONS: string[] = ['不需要', '不要', '不用', '无需', '不必', '不再', '别再', '不想', '别', '不'];
+/** …and before 显示 these too (关闭显示本地光标, 取消显示诊断信息); before 打开 they are a verb of their own (关闭开启剪贴板). */
+const SHOW_NEGATIONS: string[] = ['停止', '取消', '关闭', '关掉'];
 /** Words ending in 别 that do not negate (分别打开). */
 const NOT_NEGATIONS: string[] = ['分别', '特别', '区别', '识别', '级别', '类别', '个别', '告别'];
+/** Names that may stand between a verb and what it turns (打开 RDP 音频, 关闭 RustDesk 显示本地光标). */
+const NAMES: string[] = ['rustdesk', 'moonlight', 'rdp', 'ssh', 'vnc', '远程ai', 'ai'];
+/** What may stand between a verb and the setting after it (关闭 RDP 的音频). */
+const BEFORE_FILLER: string[] = NAMES.concat(['所有', '全部', '这个', '那个', '一下', '会话', '协议', '的', '把', '将', '下', '里',
+  '中', '上']);
+/** …and between a setting and the verb after it (音频也打开, 音频关闭后再打开, 音频要不要打开). */
+const AFTER_FILLER: string[] = NAMES.concat(['要不要', '都给我', '给我', '帮我', '重新', '后再', '统统', '一起', '全部', '还是', '的话',
+  '都', '也', '再', '就', '先', '后', '要', '全', '给']);
+/** What may end a clause after a verb that follows its setting (音频关掉吧). */
+const PARTICLES: string[] = ['就可以', '就好', '就行', '即可', '可以', '试试', '看看', '一下', '起来', '了', '吧', '啊', '呀', '哦', '吗',
+  '呢', '嘛', '掉', '下', '的'];
 /**
  * 显示 / 隐藏 turn the 显示… settings (诊断信息, 本地光标, 工具执行过程) on and off: only those, never in a question, and
- * only before what they show (显示本地光标). After it they mostly describe what is seen (本地光标显示异常, 诊断信息显示
- * 不出来), except 显示出来 / 隐藏起来 (把诊断信息显示出来).
+ * before what they show (显示本地光标). After it they mostly describe what is seen (本地光标不显示, 显示异常, 显示不出来),
+ * except 显示出来 / 隐藏起来 / 隐藏掉, 不要显示 / 别显示, and 把…隐藏.
  */
 const SHOW: string[] = ['显示出来', '显示'];
 const HIDE: string[] = ['隐藏起来', '隐藏掉', '隐藏'];
@@ -294,13 +309,16 @@ const SHOW_AFTER: string[] = ['显示出来', '隐藏起来', '隐藏掉'];
 const QUESTION_WORDS: string[] = ['怎么', '为什么', '为何', '什么', '如何', '吗', '?', '？'];
 /** Values too plain to name a setting by themselves (不显示 is also what people say about anything on screen). */
 const PLAIN_LABELS: string[] = ['不显示'];
+/** 开启 / 关闭 (or 开 / 关) as a setting's two values: it is turned on and off like a switch (会话快速退出, 窗口晕染). */
+const ON_LABELS: string[] = ['开启', '开'];
+const OFF_LABELS: string[] = ['关闭', '关'];
 
 /** Other words people use for a setting (its label without the protocol is always one). */
 function settingWords(id: string): string[] {
   switch (id) {
     case 'ui.theme': return ['外观', '主题', '深色模式', '浅色模式', '暗色', '夜间模式', '跟随系统'];
     case 'ui.ambientLightEffect': return ['沉浸光感', '光感'];
-    case 'ui.groupedHostCards': return ['分组'];
+    case 'ui.groupedHostCards': return ['分组卡片', '分组'];
     case 'ui.hostCardSensitiveHidden': return ['隐藏连接信息', '隐藏地址', '敏感信息'];
     case 'ui.liveViewEnabled': return ['实况窗', '后台连接'];
     case 'ui.virtualMouseStyle': return ['虚拟鼠标', '鼠标样式'];
@@ -321,7 +339,7 @@ function settingWords(id: string): string[] {
     case 'remote.displayScaleMode': return ['画面缩放', '缩放比例', '显示比例'];
     case 'remote.quickExitDisabled': return ['快速退出'];
     case 'ai.personality': return ['回答风格', '说话风格', '语气'];
-    case 'ai.verbosity': return ['回答长度', '回答详细', '说得详细', '说得简短'];
+    case 'ai.verbosity': return ['回答长度', '回答详细', '回答简短', '说得详细', '说得简短', '详细一点', '简短一点'];
     case 'ai.role': return ['助手角色', 'ai 角色'];
     case 'ai.reducedMotion': return ['减少动效', '减少动画', '关闭动画'];
     case 'ai.style': return ['ai 风格', 'ai 外观', '小艺风格', 'siri 风格', '小艺样式', 'siri 样式'];
@@ -337,7 +355,7 @@ function settingWords(id: string): string[] {
     // Not 工具调用 / 执行过程 alone: those are the AI 助理's own tools. A word with + needs all its parts (远程 AI 里不
     // 显示执行过程).
     case 'remoteAi.showExecution': return ['工具执行过程', '远程 ai+执行过程', '远程 ai+工具过程', '远程 ai+执行记录',
-      '远程 ai+工具执行'];
+      '远程 ai+工具执行', '远程 ai+工具调用'];
     case 'remoteAi.reconnectOnForeground': return ['恢复查看', '回到前台'];
     default: break;
   }
@@ -360,11 +378,27 @@ function protocolOf(id: string): string {
 function compact(text: string): string { return text.toLowerCase().replace(/\s+/g, ''); }
 
 function subjectWords(spec: AiSettingSpec): string[] {
+  const words: string[] = settingWords(spec.id).map((word: string): string => compact(word));
+  // A 显示… switch is named by what it shows (本地光标): 显示 / 不显示 before that read as verbs.
+  if (isShowSwitch(spec) && words.length > 0) { return words; }
   let subject: string = spec.label;
   PROTOCOL_PREFIXES.forEach((prefix: string): void => {
     if (subject.indexOf(prefix) === 0) { subject = subject.slice(prefix.length); }
   });
-  return [compact(subject)].concat(settingWords(spec.id).map((word: string): string => compact(word)));
+  return [compact(subject)].concat(words);
+}
+
+function isShowSwitch(spec: AiSettingSpec): boolean { return spec.id.indexOf('.show') > 0; }
+
+/** The value that turns a setting on (or off), or null when it is not a switch. */
+function switchValue(spec: AiSettingSpec, on: boolean): string | null {
+  if (spec.isBoolean()) { return on ? 'true' : 'false'; }
+  if (spec.choices.length !== 2) { return null; }
+  const wanted: AiSettingChoice | undefined = spec.choices.find((choice: AiSettingChoice): boolean =>
+    (on ? ON_LABELS : OFF_LABELS).indexOf(choice.label) >= 0);
+  const other: AiSettingChoice | undefined = spec.choices.find((choice: AiSettingChoice): boolean =>
+    (on ? OFF_LABELS : ON_LABELS).indexOf(choice.label) >= 0);
+  return wanted !== undefined && other !== undefined ? wanted.value : null;
 }
 
 /** Words that put the wanted value after them: 从 A 换成 B means B. */
@@ -433,16 +467,64 @@ class AiSpan {
   }
 }
 
-/** The negation right before an on-word (不要 / 别 / 不用 / 不), or '' (要不要打开 asks to turn it on). */
-function negationBefore(clause: string, at: number): string {
-  const before: string = clause.slice(Math.max(0, at - 3), at);
-  if (before.endsWith('要不要') || before.endsWith('要不')) { return ''; }
-  for (let i = 0; i < NEGATIONS.length; i++) {
-    if (!before.endsWith(NEGATIONS[i])) { continue; }
-    if (NEGATIONS[i] === '别' && NOT_NEGATIONS.some((word: string): boolean => before.endsWith(word))) { return ''; }
-    return NEGATIONS[i];
+/** A negation before an on-word: where it starts and which it is. */
+class AiNegation {
+  start: number;
+  word: string;
+
+  constructor(start: number, word: string) {
+    this.start = start;
+    this.word = word;
   }
-  return '';
+}
+
+/** The text from `from` on, without the names (RDP, 远程 AI …) it starts with; returns where the rest starts. */
+function afterNames(clause: string, from: number): number {
+  let at: number = from;
+  let moved: boolean = true;
+  while (moved) {
+    moved = false;
+    for (let i = 0; i < NAMES.length; i++) {
+      if (clause.startsWith(NAMES[i], at)) { at += NAMES[i].length; moved = true; }
+    }
+  }
+  return at;
+}
+
+/** Whether `text` is only these words (any number, in any order). */
+function onlyFiller(text: string, fillers: string[]): boolean {
+  let rest: string = text;
+  let moved: boolean = true;
+  while (rest.length > 0 && moved) {
+    moved = false;
+    let longest: string = '';
+    for (let i = 0; i < fillers.length; i++) {
+      if (rest.startsWith(fillers[i]) && fillers[i].length > longest.length) { longest = fillers[i]; }
+    }
+    if (longest !== '') { rest = rest.slice(longest.length); moved = true; }
+  }
+  return rest.length === 0;
+}
+
+/** The negation right before an on-word (names between them do not separate them: 关闭 RustDesk 显示…), or null. */
+function negationOf(clause: string, at: number, word: string): AiNegation | null {
+  let end: number = at;
+  let moved: boolean = true;
+  while (moved) {
+    moved = false;
+    for (let i = 0; i < NAMES.length; i++) {
+      if (end >= NAMES[i].length && clause.slice(end - NAMES[i].length, end) === NAMES[i]) { end -= NAMES[i].length; moved = true; }
+    }
+  }
+  const before: string = clause.slice(Math.max(0, end - 3), end);
+  if (before.endsWith('要不要') || before.endsWith('要不') || before.endsWith('不得不')) { return null; }
+  const negations: string[] = SHOW.indexOf(word) >= 0 ? SHOW_NEGATIONS.concat(NEGATIONS) : NEGATIONS;
+  for (let i = 0; i < negations.length; i++) {
+    if (!before.endsWith(negations[i])) { continue; }
+    if (negations[i] === '别' && NOT_NEGATIONS.some((other: string): boolean => before.endsWith(other))) { return null; }
+    return new AiNegation(end - negations[i].length, negations[i]);
+  }
+  return null;
 }
 
 /**
@@ -451,20 +533,24 @@ function negationBefore(clause: string, at: number): string {
  */
 function clauseVerbs(clause: string, onWords: string[], offWords: string[]): AiVerb[] {
   const verbs: AiVerb[] = [];
-  const add = (at: number, length: number, on: boolean, word: string): void => {
-    if (clause.charAt(at + length) === '的') { return; }
+  const add = (at: number, end: number, on: boolean, word: string, negation: string): void => {
+    if (clause.charAt(end) === '的') { return; }
     for (let i = 0; i < verbs.length; i++) {
-      if (at < verbs[i].at + verbs[i].length && verbs[i].at < at + length) { return; }
+      if (at < verbs[i].at + verbs[i].length && verbs[i].at < end) { return; }
     }
-    const shows: boolean = SHOW.indexOf(word) >= 0 || HIDE.indexOf(word) >= 0;
-    verbs.push(new AiVerb(at, length, on, !shows || SHOW_AFTER.indexOf(word) >= 0));
+    let trails: boolean = true;
+    if (SHOW.indexOf(word) >= 0 || HIDE.indexOf(word) >= 0) {
+      trails = SHOW_AFTER.indexOf(word) >= 0 || (negation !== '' && negation !== '不') ||
+        (word === '隐藏' && clause.lastIndexOf('把', at) >= 0);
+    }
+    verbs.push(new AiVerb(at, end - at, on, trails));
   };
   for (let w = 0; w < onWords.length; w++) {
     let at: number = clause.indexOf(onWords[w]);
     while (at >= 0) {
-      const negation: string = negationBefore(clause, at);
-      if (negation !== '') { add(at - negation.length, negation.length + onWords[w].length, false, onWords[w]); }
-      else { add(at, onWords[w].length, true, onWords[w]); }
+      const negation: AiNegation | null = negationOf(clause, at, onWords[w]);
+      if (negation !== null) { add(negation.start, at + onWords[w].length, false, onWords[w], negation.word); }
+      else { add(at, at + onWords[w].length, true, onWords[w], ''); }
       at = clause.indexOf(onWords[w], at + onWords[w].length);
     }
   }
@@ -472,7 +558,9 @@ function clauseVerbs(clause: string, onWords: string[], offWords: string[]): AiV
     let at: number = clause.indexOf(offWords[w]);
     while (at >= 0) {
       // 要不要 asks rather than refuses.
-      if (!(offWords[w] === '不要' && clause.charAt(at - 1) === '要')) { add(at, offWords[w].length, false, offWords[w]); }
+      if (!(offWords[w] === '不要' && clause.charAt(at - 1) === '要')) {
+        add(at, at + offWords[w].length, false, offWords[w], '');
+      }
       at = clause.indexOf(offWords[w], at + offWords[w].length);
     }
   }
@@ -481,11 +569,18 @@ function clauseVerbs(clause: string, onWords: string[], offWords: string[]): AiV
 }
 
 /**
- * Where the clause names a setting: the last of its words found, the plainest name of it (本地光标 rather than the
- * label's 显示本地光标, whose 显示 is then a verb before it). A word with + needs all its parts and is placed at the last
- * one (远程 AI 里不显示执行过程: the 不显示 before 执行过程 is about it).
+ * Where the clause names a setting: of its words found, the one ending last (the longest at that end: 远程音频 over
+ * 音频). A protocol's setting is looked for after that protocol's name (RDP 音频打开 RustDesk 音频关闭). A word with +
+ * needs all its parts and is placed at the last one (远程 AI 里不显示执行过程).
  */
 function subjectSpan(spec: AiSettingSpec, clause: string): AiSpan | null {
+  const protocol: string = protocolOf(spec.id);
+  const from: number = protocol !== '' ? Math.max(0, clause.indexOf(protocol)) : 0;
+  const span: AiSpan | null = spanFrom(spec, clause, from);
+  return span !== null || from === 0 ? span : spanFrom(spec, clause, 0);
+}
+
+function spanFrom(spec: AiSettingSpec, clause: string, from: number): AiSpan | null {
   let best: AiSpan | null = null;
   const words: string[] = subjectWords(spec);
   for (let w = 0; w < words.length; w++) {
@@ -494,21 +589,50 @@ function subjectSpan(spec: AiSettingSpec, clause: string): AiSpan | null {
     let found: boolean = true;
     let at: number = -1;
     for (let p = 0; p < parts.length && found; p++) {
-      at = clause.indexOf(parts[p]);
+      at = clause.indexOf(parts[p], from);
       found = at >= 0;
     }
     if (!found) { continue; }
-    const last: string = parts[parts.length - 1];
-    if (best === null || at > best.start) { best = new AiSpan(at, at + last.length); }
+    const span: AiSpan = new AiSpan(at, at + parts[parts.length - 1].length);
+    if (best === null || span.end > best.end || (span.end === best.end && span.start < best.start)) { best = span; }
   }
   return best;
 }
 
+/** The verb right before a setting, with only names or particles between (打开 RDP 的音频), or null. */
+function verbBefore(clause: string, span: AiSpan, verbs: AiVerb[]): AiVerb | null {
+  for (let i = verbs.length - 1; i >= 0; i--) {
+    const end: number = verbs[i].at + verbs[i].length;
+    if (end > span.start) { continue; }
+    return onlyFiller(clause.slice(end, span.start), BEFORE_FILLER) ? verbs[i] : null;
+  }
+  return null;
+}
+
 /**
- * Which way a clause turns a toggle it names: the last verb after it when nothing else is named after that verb
- * (关闭 RDP 音频后再打开 · RDP 音频要不要打开 · 把关掉的音频重新打开), else the nearest verb before it
- * (先关掉隐私模式再开启音频: each its own), else the first verb after it ahead of the next setting named
- * (把 RDP 音频关了再打开剪贴板), else '' (the request carried from earlier clauses applies).
+ * The verb right after a setting (音频也打开, 音频关闭后再打开), when nothing of its own follows it: the clause ends (or
+ * only particles do), or another setting or verb comes next (音频打开剪贴板关闭). 取消静音, 不要让别人看到 are about
+ * something else.
+ */
+function verbAfter(clause: string, span: AiSpan, verbs: AiVerb[], named: AiSpan[]): AiVerb | null {
+  for (let i = 0; i < verbs.length; i++) {
+    const verb: AiVerb = verbs[i];
+    if (verb.at < span.end) { continue; }
+    if (!verb.trails || !onlyFiller(clause.slice(span.end, verb.at), AFTER_FILLER)) { return null; }
+    const end: number = verb.at + verb.length;
+    const next: number = afterNames(clause, end);
+    const ends: boolean = onlyFiller(clause.slice(end), PARTICLES) ||
+      named.some((other: AiSpan): boolean => other.start === next) ||
+      verbs.some((other: AiVerb): boolean => other.at === next);
+    return ends ? verb : null;
+  }
+  return null;
+}
+
+/**
+ * Which way a clause turns a switch with no verb right next to it: the last verb after it when nothing else is named
+ * after that verb (音频剪贴板都打开), else the nearest verb before it (打开之前关闭的剪贴板), else the first verb after
+ * it, else '' (the request carried from earlier clauses applies).
  */
 function toggleWay(span: AiSpan, verbs: AiVerb[], named: AiSpan[]): string {
   let trailing: AiVerb | null = null;
@@ -517,15 +641,15 @@ function toggleWay(span: AiSpan, verbs: AiVerb[], named: AiSpan[]): string {
     if (verb.at < span.end || !verb.trails) { continue; }
     if (!named.some((other: AiSpan): boolean => other.start >= verb.at + verb.length)) { trailing = verb; }
   }
-  if (trailing !== null) { return trailing.on ? 'true' : 'false'; }
+  if (trailing !== null) { return trailing.on ? 'on' : 'off'; }
   let before: AiVerb | null = null;
   for (let i = 0; i < verbs.length; i++) {
     if (verbs[i].at + verbs[i].length <= span.start) { before = verbs[i]; }
   }
-  if (before !== null) { return before.on ? 'true' : 'false'; }
+  if (before !== null) { return before.on ? 'on' : 'off'; }
   for (let i = 0; i < verbs.length; i++) {
     const verb: AiVerb = verbs[i];
-    if (verb.at >= span.end && verb.trails) { return verb.on ? 'true' : 'false'; }
+    if (verb.at >= span.end && verb.trails) { return verb.on ? 'on' : 'off'; }
   }
   return '';
 }
@@ -559,14 +683,56 @@ function bareClause(clause: string, spans: AiSpan[], protocols: string[]): boole
   return rest.replace(/[都也的把将还和]/g, '').length <= 1;
 }
 
+/** A setting named in a clause, with the verbs right before and after it. */
+class AiNamedSwitch {
+  spec: AiSettingSpec;
+  span: AiSpan;
+  before: AiVerb | null = null;
+  after: AiVerb | null = null;
+
+  constructor(spec: AiSettingSpec, span: AiSpan) {
+    this.spec = spec;
+    this.span = span;
+  }
+}
+
+/**
+ * Gives each switch named in a clause the verb next to it. A verb between two of them (音频打开剪贴板关闭, 打开音频关掉剪贴板)
+ * goes to the one that has no other; when one has verbs on both sides, the one after is where it ends (关闭音频后再打开).
+ */
+function pairVerbs(clause: string, switches: AiNamedSwitch[], verbs: AiVerb[], showVerbs: AiVerb[], named: AiSpan[]): void {
+  switches.forEach((item: AiNamedSwitch): void => {
+    const list: AiVerb[] = isShowSwitch(item.spec) ? showVerbs : verbs;
+    item.before = verbBefore(clause, item.span, list);
+    item.after = verbAfter(clause, item.span, list, named);
+  });
+  switches.sort((a: AiNamedSwitch, b: AiNamedSwitch): number => a.span.start - b.span.start);
+  for (let k = 0; k + 1 < switches.length; k++) {
+    // Switches named by the same words (RDP 和 RustDesk 的诊断信息) share their verbs.
+    let m: number = k + 1;
+    while (m < switches.length && switches[m].span.start === switches[k].span.start) { m++; }
+    if (m >= switches.length) { break; }
+    const left: AiNamedSwitch = switches[k];
+    const right: AiNamedSwitch = switches[m];
+    if (left.after === null || right.before === null || left.after.at !== right.before.at) { continue; }
+    const toRight: boolean = left.before !== null || right.after === null;
+    for (let j = k; j < m; j++) { if (toRight) { switches[j].after = null; } }
+    if (!toRight) {
+      for (let j = m; j < switches.length && switches[j].span.start === right.span.start; j++) { switches[j].before = null; }
+    }
+  }
+}
+
 /**
  * Setting changes the user asked for in plain words ("把 RustDesk 编码改成 H265，画质优先", "关闭 RDP 音频和剪贴板"),
  * read locally so a request always gets its one-tap buttons even when the model only describes the steps. Clauses
  * carry the protocol and the on/off verb forward ("画质优先" after a RustDesk clause is RustDesk's).
  */
 export function diagnosticAiSettingIntents(question: string): DiagnosticAiSettingProposal[] {
-  const clauses: string[] = question.split(/[，,。；;、\n]|并且|然后|同时|还有|以及|和/)
-    .map((part: string): string => compact(part)).filter((part: string): boolean => part.length > 0);
+  // 温和 is a value, not 温 and 和.
+  const clauses: string[] = question.split('温和').join('\u0001').split(/[，,。；;、\n]|并且|然后|同时|还有|以及|和/)
+    .map((part: string): string => compact(part.split('\u0001').join('温和')))
+    .filter((part: string): boolean => part.length > 0);
   const found: DiagnosticAiSettingProposal[] = [];
   const propose = (spec: AiSettingSpec, value: string): void => {
     if (found.some((p: DiagnosticAiSettingProposal): boolean => p.settingId === spec.id)) { return; }
@@ -574,11 +740,20 @@ export function diagnosticAiSettingIntents(question: string): DiagnosticAiSettin
     found.push({ settingId: spec.id, currentValue: current ?? '', proposedValue: value, reason: '按你的要求修改',
       evidenceRefs: [], risk: 'low', requiresUserConfirmation: true, rollbackValue: current ?? '' });
   };
+  // A clause's changes are proposed in the catalog's order, as they always were.
+  let clauseSpecs: AiSettingSpec[] = [];
+  let clauseValues: string[] = [];
+  const turn = (spec: AiSettingSpec, way: string): void => {
+    const value: string | null = switchValue(spec, way === 'on');
+    if (value !== null) { clauseSpecs.push(spec); clauseValues.push(value); }
+  };
   let protocolContext: string = '';
+  // The way the last clause with a verb turned things (…和剪贴板 follows it); 显示 / 隐藏 only for the 显示… switches.
   let verbContext: string = '';
+  let showContext: string = '';
   // RDP 和 RustDesk 都关掉音频: protocols named alone go on to the next clause.
   let pendingProtocols: string[] = [];
-  // RDP 音频和剪贴板都关了: toggles named on their own, without a verb, wait for the next clause's.
+  // RDP 音频和剪贴板都关了: switches named on their own, without a verb, wait for the next clause's.
   let pending: AiSettingSpec[] = [];
   clauses.forEach((clause: string): void => {
     const named: string[] = PROTOCOLS.filter((p: string): boolean => clause.indexOf(p) >= 0);
@@ -590,45 +765,64 @@ export function diagnosticAiSettingIntents(question: string): DiagnosticAiSettin
       if (protocol !== '' && protocols.length > 0 && protocols.indexOf(protocol) < 0) { return false; }
       return !(protocol === '' && named.length > 0 && spec.id.indexOf('ui.') !== 0 && spec.id.indexOf('remote.') !== 0);
     });
-    const spans: (AiSpan | null)[] = candidates.map((spec: AiSettingSpec): AiSpan | null => subjectSpan(spec, clause));
     const namedSpans: AiSpan[] = [];
     const namedSpecs: AiSettingSpec[] = [];
-    for (let i = 0; i < candidates.length; i++) {
-      const span: AiSpan | null = spans[i];
-      if (span !== null) { namedSpans.push(span); namedSpecs.push(candidates[i]); }
-    }
+    const spanOf: Map<string, AiSpan> = new Map<string, AiSpan>();
+    candidates.forEach((spec: AiSettingSpec): void => {
+      const span: AiSpan | null = subjectSpan(spec, clause);
+      if (span !== null) { namedSpans.push(span); namedSpecs.push(spec); spanOf.set(spec.id, span); }
+    });
     const verbs: AiVerb[] = clauseVerbs(clause, TURN_ON, TURN_OFF);
-    if (verbs.length > 0 && pending.length > 0) {
-      // Where that clause leaves things (关闭再打开: on).
-      const way: string = verbs[verbs.length - 1].on ? 'true' : 'false';
-      pending.forEach((spec: AiSettingSpec): void => { propose(spec, way); });
-      pending = [];
-    }
-    const bare: boolean = bareClause(clause, namedSpans, named);
     const asking: boolean = QUESTION_WORDS.some((word: string): boolean => clause.indexOf(word) >= 0);
     const showVerbs: AiVerb[] = asking ? verbs : clauseVerbs(clause, TURN_ON.concat(SHOW), TURN_OFF.concat(HIDE));
-    for (let i = 0; i < candidates.length; i++) {
-      const spec: AiSettingSpec = candidates[i];
-      const span: AiSpan | null = spans[i];
-      if (spec.isBoolean()) {
-        if (span === null) { continue; }
-        const way: string = toggleWay(span, spec.id.indexOf('.show') > 0 ? showVerbs : verbs, namedSpans);
-        const value: string = way !== '' ? way : verbContext;
-        if (value === '') {
-          if (bare) { pending.push(spec); }
-          continue;
-        }
-        propose(spec, value);
-      } else {
-        const choice: AiSettingChoice | null = namedChoice(spec, clause, span !== null);
-        if (choice === null) { continue; }
-        if (span === null && claimedByNamed(compact(choice.label), spec, namedSpecs)) { continue; }
-        propose(spec, choice.value);
-      }
+    // Switches left without a verb by the clauses before take this one's (where it ends: 关闭再打开 is on).
+    if (pending.length > 0) {
+      pending = pending.filter((spec: AiSettingSpec): boolean => {
+        const list: AiVerb[] = isShowSwitch(spec) ? showVerbs : verbs;
+        if (list.length === 0) { return true; }
+        const value: string | null = switchValue(spec, list[list.length - 1].on);
+        if (value !== null) { propose(spec, value); }
+        return false;
+      });
     }
-    pendingProtocols = namedSpans.length === 0 ? listed : [];
-    // A later clause without its own verb (…和剪贴板) is turned the same way as this one ended.
-    if (verbs.length > 0) { verbContext = verbs[verbs.length - 1].on ? 'true' : 'false'; }
+    clauseSpecs = [];
+    clauseValues = [];
+    const switches: AiNamedSwitch[] = [];
+    namedSpecs.forEach((spec: AiSettingSpec): void => {
+      const span: AiSpan | undefined = spanOf.get(spec.id);
+      if (span !== undefined && switchValue(spec, true) !== null) { switches.push(new AiNamedSwitch(spec, span)); }
+    });
+    pairVerbs(clause, switches, verbs, showVerbs, namedSpans);
+    const bare: boolean = bareClause(clause, namedSpans, named);
+    switches.forEach((item: AiNamedSwitch): void => {
+      const verb: AiVerb | null = item.after !== null ? item.after : item.before;
+      let way: string = verb !== null ? (verb.on ? 'on' : 'off') : '';
+      if (way === '') { way = toggleWay(item.span, isShowSwitch(item.spec) ? showVerbs : verbs, namedSpans); }
+      if (way === '') { way = isShowSwitch(item.spec) && showContext !== '' ? showContext : verbContext; }
+      if (way === '') {
+        if (bare) { pending.push(item.spec); }
+        return;
+      }
+      turn(item.spec, way);
+    });
+    candidates.forEach((spec: AiSettingSpec): void => {
+      if (switchValue(spec, true) !== null) { return; }
+      const span: AiSpan | undefined = spanOf.get(spec.id);
+      const choice: AiSettingChoice | null = namedChoice(spec, clause, span !== undefined);
+      if (choice === null) { return; }
+      if (span === undefined && claimedByNamed(compact(choice.label), spec, namedSpecs)) { return; }
+      clauseSpecs.push(spec);
+      clauseValues.push(choice.value);
+    });
+    SETTINGS.forEach((spec: AiSettingSpec): void => {
+      const at: number = clauseSpecs.indexOf(spec);
+      if (at >= 0) { propose(spec, clauseValues[at]); }
+    });
+    // Protocols named in an otherwise empty clause (RDP，RustDesk，音频关掉) carry on; one said in passing does not.
+    const verbSpans: AiSpan[] = showVerbs.map((verb: AiVerb): AiSpan => new AiSpan(verb.at, verb.at + verb.length));
+    pendingProtocols = namedSpans.length === 0 && bareClause(clause, verbSpans, named) ? listed : [];
+    if (verbs.length > 0) { verbContext = verbs[verbs.length - 1].on ? 'on' : 'off'; }
+    if (!asking && showVerbs.length > 0) { showContext = showVerbs[showVerbs.length - 1].on ? 'on' : 'off'; }
   });
   return found.slice(0, 6);
 }

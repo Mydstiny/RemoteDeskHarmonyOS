@@ -75,7 +75,8 @@ const RULES: ActionRule[] = [
   new ActionRule('ssh.keys', '打开 SSH 密钥库', [['密钥', '公钥', '私钥', 'key']], 'execute', false, OTHER_KEYS, SSH_KEYS),
   new ActionRule('rdp.credentials', '管理 RDP 凭据', [['凭据', '账号密码', '用户名和密码', '登录凭证']], 'execute', true),
   new ActionRule('settings.appIcon', '打开应用图标设置', [['应用图标', '图标主题', '图标样式']]),
-  new ActionRule('settings.keyVault', '打开密钥库', [['密钥库', 'SSH 密钥', '密钥管理']], 'execute', false, OTHER_KEYS, SSH_KEYS),
+  new ActionRule('settings.keyVault', '打开密钥库', [['密钥库', 'SSH 密钥', 'SSH 公钥', 'SSH 私钥', '密钥管理']], 'execute', false, OTHER_KEYS,
+    SSH_KEYS),
   new ActionRule('settings.rdpCredentialEditor', '打开 RDP 凭据编辑器', [['RDP', '凭据'], ['编辑', '新增', '修改']],'execute', true),
   new ActionRule('settings.proBadge', '打开 Pro 标识设置', [['Pro 标识', 'Pro 徽章', '专业版标识']]),
   // 远程 AI (the computer's Codex, DSH, Claude Agent) has its own pages; this is the AI 助理's own service.
@@ -107,7 +108,8 @@ const RULES: ActionRule[] = [
   // 远程 AI on its own (or its hosts and pairing) is its host page; its other pages take the steps about them.
   new ActionRule('settings.aiHosts', '打开远程 AI 主机设置',
     [['远程 AI', 'AI 主机', '电脑端 AI', '电脑端插件', 'Claude Agent', 'Codex 主机', 'DSH 主机', '连接与配对']], 'execute', false,
-    ['风格', '显示设置', '显示与恢复', '文字大小', '工具执行过程', '恢复查看', '数据', '导出', '导入', '安装', '插件'], ['配对']),
+    ['风格', '显示设置', '显示与恢复', '文字大小', '工具执行过程', '恢复查看', '数据', '导出', '导入', '安装', '插件'],
+    ['配对', '刷新主机', '主机离线', '显示离线']),
   // Its own page's words only: 显示 alone is mostly a verb (远程 AI 显示“未配对”).
   new ActionRule('settings.aiDisplay', '打开远程 AI 显示设置',
     [['远程 AI', '会话页'], ['显示设置', '显示与恢复', '界面风格', 'Claude 风格', 'Codex 风格', '文字大小', '工具执行过程',
@@ -115,9 +117,10 @@ const RULES: ActionRule[] = [
   new ActionRule('settings.aiData', '打开远程 AI 数据设置', [['远程 AI', 'AI 数据'], ['数据', '导出', '导入']]),
   // The computer side of 远程 AI only: installing RustDesk, a VNC server, Sunshine or a driver is not it.
   new ActionRule('settings.aiInstall', '打开远程 AI 安装设置',
-    [['远程 AI', '电脑端 AI', '电脑端安装', 'Claude Agent', 'Claude Code', 'Codex 插件', 'DSH 插件', 'AI 插件', 'Codex 主机',
-      'DSH 主机', '安装 Codex', '安装 DSH', 'Codex 与 DSH'], ['安装', '插件']], 'execute', false,
-    ['配对', 'RustDesk', 'VNC', 'Sunshine', 'Moonlight', 'OpenSSH', '驱动'], ['电脑端安装', '安装 Codex', '安装 DSH', '安装 Claude']),
+    [['远程 AI', '电脑端 AI', '电脑端安装', '电脑端插件', 'Claude Agent', 'Claude Code', 'Codex 插件', 'DSH 插件', 'AI 插件',
+      'Codex 主机', 'DSH 主机', '安装 Codex', '安装 DSH', 'Codex 安装', 'DSH 安装', 'Codex 与 DSH'], ['安装', '插件']], 'execute', false,
+    ['配对', '刷新主机', '离线', '依赖', 'RustDesk', 'VNC', 'Sunshine', 'Moonlight', 'OpenSSH', '驱动'],
+    ['电脑端安装页', '电脑端安装里', '安装 Codex', '安装 DSH', '安装 Claude']),
   new ActionRule('pro.phonePasskey', '打开手机通行密钥', [['通行密钥', 'passkey', '手机当密钥', '手机作为密钥']]),
   new ActionRule('pro.securityKey', '打开安全密钥重定向', [['安全密钥', 'USB 密钥', 'FIDO', 'YubiKey', 'U2F']], 'execute', false,
     SSH_KEYS),
