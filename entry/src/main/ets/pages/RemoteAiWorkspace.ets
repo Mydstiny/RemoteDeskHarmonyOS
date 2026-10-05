@@ -75,6 +75,8 @@ export struct RemoteAiWorkspace {
   @State expandedIds: string[] = [];
   /** Codex style: 0 对话 · 1 日志 · 2 差异 */
   @State codexTab: number = 0;
+  /** Pro access lets this page (re)connect to its host, whether or not it is connected right now. */
+  @State canReconnect: boolean = false;
   private controller: AiWorkspaceController = new AiWorkspaceController();
   private host: AiHost | null = null;
   private pageAccount: AiAccountLease | null = null;
@@ -126,6 +128,7 @@ export struct RemoteAiWorkspace {
         (this.host !== null && !AiAccess.getInstance().executable(this.host.backend))) {
         this.resetDrafts(); this.showDetails = false; this.showSessionPicker = false; this.showApproval = false; this.allowed = false;
       }
+      this.canReconnect = this.accessible();
     });
     this.inBackground = AppStorage.get<boolean>('remoteDesktopBgFlag') === true;
     const application = (getContext(this) as common.UIAbilityContext).getApplicationContext();
@@ -149,6 +152,7 @@ export struct RemoteAiWorkspace {
     if (!this.alive || mount !== this.mountGeneration || this.pageAccount === null || !AiAccess.getInstance().current(this.pageAccount)) { return; }
     this.host = AiHostService.getInstance().find(params['hostId'] ?? '');
     if (this.host === null) { this.error = '主机不存在或当前账号已变化'; return; }
+    this.canReconnect = this.accessible();
     try {
       const account = AiAccess.getInstance().capture();
       const settings = await AiLocalStore.getInstance().settings(account);
@@ -182,9 +186,21 @@ export struct RemoteAiWorkspace {
       if (this.pendingForeground && this.alive && !this.inBackground) { this.pendingForeground = false; void this.reconnect(); }
     }
   }
+  /** Pro access lets this page use its host's backend right now (the connection itself may still be closed). */
+  private accessible(): boolean {
+    const host = this.host;
+    return host !== null && this.pageAccount !== null && AiAccess.getInstance().current(this.pageAccount) &&
+      AiAccess.getInstance().proVisible() && AiAccess.getInstance().executable(host.backend);
+  }
+  /** A new session, project or connection starts at the bottom of the conversation with everything folded. */
+  private resetView(): void {
+    this.followBottom = true; this.expandedIds = []; this.codexTab = 0;
+  }
   private async reconnect(): Promise<void> {
     const host = this.host;
-    if (host === null || !this.allowed || !AiAccess.getInstance().proVisible()) { return; }
+    // Gated on access, not on `allowed`: that reflects the connection, which the first open has yet to make.
+    if (host === null || !this.accessible()) { return; }
+    this.resetView();
     const resumeValid = this.resumeAccount !== null && AiAccess.getInstance().current(this.resumeAccount);
     const session = this.controller.sessionId || (resumeValid ? this.resumeSession : '');
     const project = this.controller.projectId || (resumeValid ? this.resumeProject : '');
@@ -299,8 +315,12 @@ export struct RemoteAiWorkspace {
   private backendName(): string { return this.host === null ? '远程 AI' : aiBackendName(this.host.backend); }
   /** A turn is under way (or was just accepted and has not reported back yet). */
   private working(): boolean {
-    return ['running', 'inProgress', 'background'].includes(this.rawStatus) || this.rawStatus.startsWith('请求已接受');
+    return ['running', 'inProgress'].includes(this.rawStatus) || this.rawStatus.startsWith('请求已接受');
   }
+  /** The turn ended but tasks it started (a dev server, a watcher) still run on the computer. */
+  private backgroundTasks(): boolean { return this.rawStatus === 'background'; }
+  /** The composer's main button: stop the running turn, or send a new one (also while background tasks run). */
+  private composerMode(): string { return this.working() && this.control ? 'stop' : 'send'; }
   /** Follows new output while the reader is at the bottom; scrolling up stops following until they return. */
   private listScroller: Scroller | null = null;
   private followBottom: boolean = true;
@@ -308,8 +328,20 @@ export struct RemoteAiWorkspace {
     if (this.listScroller === null) { this.listScroller = new Scroller(); }
     return this.listScroller;
   }
+  /** The transcript rows the current style and tab show (the Codex diff tab shows its own pane instead). */
+  private shownItems(): AiTranscriptItem[] {
+    if (this.uiStyle !== 'codex') { return this.visibleItems(); }
+    if (this.codexTab === 2) { return []; }
+    return this.items.filter((item: AiTranscriptItem): boolean => (this.codexTab === 0) === aiConversationItem(item));
+  }
+  /** Rows in the list, the same way build() lays them out, so following knows where the bottom is. */
   private listLength(): number {
-    return this.visibleItems().length + (this.historyCursor !== '' ? 1 : 0) + (this.working() ? 1 : 0);
+    const diffTab = this.uiStyle === 'codex' && this.codexTab === 2;
+    let count = (this.historyCursor !== '' && !diffTab ? 1 : 0) + (this.items.length === 0 && !diffTab ? 1 : 0);
+    if (diffTab) { return count + 1; }
+    count += this.shownItems().length + (this.working() ? 1 : 0);
+    if (this.uiStyle === 'codex' && this.codexTab === 0 && this.changeSummary() !== '') { count++; }
+    return count;
   }
   private followTranscript(): void {
     const scroller = this.listScroller;
@@ -326,19 +358,44 @@ export struct RemoteAiWorkspace {
     this.expandedIds = this.expanded(id) ? this.expandedIds.filter((value: string): boolean => value !== id) :
       this.expandedIds.concat([id]);
   }
+  /** With 显示工具执行过程 off only tool steps and thinking are hidden; notices (errors, compaction) stay. */
   private visibleItems(): AiTranscriptItem[] {
-    return this.items.filter((item: AiTranscriptItem): boolean => this.showExecution || item.role !== 'execution');
+    if (this.showExecution) { return this.items; }
+    return this.items.filter((item: AiTranscriptItem): boolean => {
+      const kind = item.kind ?? (item.role === 'execution' ? 'tool' : item.role);
+      return kind !== 'tool' && kind !== 'thinking';
+    });
   }
   private toolView(item: AiTranscriptItem): AiToolView { return aiToolView(item); }
+  // Diffs are parsed once per transcript (or native diff) update, not on every render.
+  private stepDiffItems: AiTranscriptItem[] | null = null;
+  private stepDiffFiles: AiDiffFile[] = [];
+  private sessionDiffSource: string = '';
+  private sessionDiffItems: AiTranscriptItem[] | null = null;
+  private sessionDiffFiles: AiDiffFile[] = [];
   /** Every change the steps of this session carry, newest last (used when the engine has no native diff). */
   private stepDiffs(): AiDiffFile[] {
-    let files: AiDiffFile[] = [];
-    this.items.forEach((item: AiTranscriptItem): void => { files = files.concat(aiItemDiff(item)); });
-    return files.filter((file: AiDiffFile): boolean => file.lines.length > 0);
+    if (this.stepDiffItems !== this.items) {
+      let files: AiDiffFile[] = [];
+      this.items.forEach((item: AiTranscriptItem): void => { files = files.concat(aiItemDiff(item)); });
+      this.stepDiffFiles = files.filter((file: AiDiffFile): boolean => file.lines.length > 0);
+      this.stepDiffItems = this.items;
+    }
+    return this.stepDiffFiles;
   }
   private sessionDiffs(): AiDiffFile[] {
-    const native = this.diff.includes('@@') || this.diff.startsWith('diff ') ? aiDiffFiles(this.diff) : [];
-    return native.length > 0 ? native : this.stepDiffs();
+    if (this.sessionDiffItems !== this.items || this.sessionDiffSource !== this.diff) {
+      const native = this.diff.includes('@@') || this.diff.startsWith('diff ') ? aiDiffFiles(this.diff) : [];
+      this.sessionDiffFiles = native.length > 0 ? native : this.stepDiffs();
+      this.sessionDiffItems = this.items; this.sessionDiffSource = this.diff;
+    }
+    return this.sessionDiffFiles;
+  }
+  /** Identifies the diff pane's content, so the pane is rebuilt only when the diff changes. */
+  private sessionDiffKey(): string {
+    let lines = 0;
+    this.sessionDiffs().forEach((file: AiDiffFile): void => { lines += file.lines.length + file.added * 3 + file.removed * 7; });
+    return this.sessionDiffs().length.toString() + ':' + lines.toString() + ':' + this.diff.length.toString();
   }
   private changeSummary(): string {
     const files = this.stepDiffs();
@@ -346,6 +403,18 @@ export struct RemoteAiWorkspace {
     let added = 0, removed = 0;
     files.forEach((file: AiDiffFile): void => { added += file.added; removed += file.removed; });
     return '修改了 ' + files.length.toString() + ' 个文件 · ' + aiDiffStats(added, removed);
+  }
+  /** Claude's file approvals carry the whole edit in their input; Codex ones need the native item to be complete. */
+  private approvalAcceptable(approval: AiApproval): boolean {
+    return approval.request['kind'] !== 'fileChange' || approval.request['nativeItemComplete'] === true ||
+      approval.request['engine'] === 'claudecode';
+  }
+  /** A collapsed log output: its first lines, and never more than a screenful of characters. */
+  private outputPreview(output: string): string {
+    const head = output.length > 800 ? output.slice(0, 800) : output;
+    const lines = head.split('\n');
+    const preview = lines.slice(0, 6).join('\n');
+    return preview.length < output.length ? preview + '\n…' : preview;
   }
   private toolSymbol(icon: string): Resource {
     switch (icon) {
@@ -395,7 +464,7 @@ export struct RemoteAiWorkspace {
   private canAccept(): boolean {
     const approval = this.approval;
     return approval !== null && approval.expires > Date.now() && this.control && this.allowed &&
-      (approval.request['kind'] !== 'fileChange' || approval.request['nativeItemComplete'] === true);
+      this.approvalAcceptable(approval);
   }
   @Builder private approvalSheet() {
     Column() {
@@ -543,15 +612,17 @@ export struct RemoteAiWorkspace {
   }
   private async chooseProject(id: string): Promise<void> {
     if (!this.allowed || !AiAccess.getInstance().proVisible() || !this.projects.some((project: AiProject): boolean => project.id === id)) { return; }
+    this.resetView();
     await this.run(async (): Promise<void> => { this.resetDrafts(); await this.controller.selectProject(id); });
   }
   private async chooseSession(id: string): Promise<void> {
     if (!this.allowed || !AiAccess.getInstance().proVisible() || !this.sessions.some((session: AiSession): boolean => session.id === id)) { return; }
-    this.followBottom = true; this.expandedIds = []; this.codexTab = 0;
+    this.resetView();
     await this.run(async (): Promise<void> => { this.resetDrafts(); await this.controller.selectSession(id); this.showSessionPicker = false; });
   }
   private async newSession(): Promise<void> {
     if (!this.allowed || !AiAccess.getInstance().proVisible()) { return; }
+    this.resetView();
     await this.run(async (): Promise<void> => { this.resetDrafts(); await this.controller.create('新会话'); this.showSessionPicker = false; });
   }
   @Builder private pillButton(label: string, primary: boolean, enabled: boolean, action: () => void) {
@@ -634,20 +705,21 @@ export struct RemoteAiWorkspace {
   @Builder private moreMenuButton() {
     Stack() {
       SymbolGlyph($r('sys.symbol.line_3_horizontal')).fontSize(20).fontColor([this.palette().text2])
-    }.width(40).height(40).borderRadius(20).accessibilityText('更多').focusable(true).enabled(this.allowed)
+    }.width(40).height(40).borderRadius(20).accessibilityText('更多').focusable(true).enabled(this.allowed || this.canReconnect)
     .bindMenu([
       { value: '模型与会话设置', action: (): void => { if (this.allowed) { this.detailTab = 0; this.showDetails = true; } } },
       { value: '差异', action: (): void => {
-        if (!this.capability('diffs')) { return; }
+        if (!this.allowed || !this.capability('diffs')) { return; }
         if (this.uiStyle === 'codex') { this.codexTab = 2; } else { this.detailTab = 1; this.showDetails = true; }
         void this.run(async (): Promise<void> => { await this.controller.loadDiff(); });
       } },
       { value: '终端任务', action: (): void => {
-        if (!this.capability('terminalManagement')) { return; }
+        if (!this.allowed || !this.capability('terminalManagement')) { return; }
         this.detailTab = 2; this.showDetails = true;
         void this.run(async (): Promise<void> => { await this.controller.loadTerminals(); });
       } },
       { value: '待确认操作', action: (): void => {
+        if (!this.allowed) { return; }
         this.detailTab = 3; this.showDetails = true;
         void this.run(async (): Promise<void> => { await this.controller.refreshOperations(); });
       } },
@@ -855,8 +927,7 @@ export struct RemoteAiWorkspace {
         Text(item.text).fontSize(13).fontFamily(AppConfig.fontFamily).fontColor(this.palette().text2).width('100%')
       }
       if (item.kind !== 'thinking' && (item.output ?? '') !== '' && item.title !== 'fileChange') {
-        Text(this.expanded(item.id) ? (item.output ?? '').slice(0, 6000) :
-          (item.output ?? '').split('\n').slice(0, 6).join('\n'))
+        Text(this.expanded(item.id) ? (item.output ?? '').slice(0, 6000) : this.outputPreview(item.output ?? ''))
           .fontSize(12).lineHeight(17).fontFamily('monospace').fontColor(this.palette().codeText)
           .copyOption(CopyOptions.InApp).width('100%').padding(10).borderRadius(8).backgroundColor(this.palette().codeBg)
       }
@@ -879,8 +950,10 @@ export struct RemoteAiWorkspace {
       } else {
         Text(this.sessionDiffs().length.toString() + ' 个文件').fontSize(12).fontFamily(AppConfig.fontFamily)
           .fontColor(this.palette().text3).width('100%')
-        AiDiffView({ files: this.sessionDiffs(), textSize: 12, palette: this.palette(),
-          startOpen: this.sessionDiffs().length <= 3 })
+        ForEach([this.sessionDiffKey()], (_key: string): void => {
+          AiDiffView({ files: this.sessionDiffs(), textSize: 12, palette: this.palette(),
+            startOpen: this.sessionDiffs().length <= 3 })
+        }, (key: string): string => key)
       }
     }.width('100%')
   }
@@ -896,9 +969,11 @@ export struct RemoteAiWorkspace {
       SymbolGlyph($r('sys.symbol.ellipsis_bubble')).fontSize(36).fontColor([this.palette().text3])
       Text(this.sessionId === '' ? '选择项目和会话，或新建会话开始使用。' : '会话准备就绪，取得控制权后即可发送任务。')
         .fontSize(14).fontFamily(AppConfig.fontFamily).fontColor(this.palette().text2).textAlign(TextAlign.Center)
-      if (this.sessionId === '') {
-        this.pillButton(this.uiStyle === 'codex' ? '打开任务列表' : '项目与会话', true, this.allowed && !this.busy,
+      if (this.sessionId === '' && this.allowed) {
+        this.pillButton(this.uiStyle === 'codex' ? '打开任务列表' : '项目与会话', true, !this.busy,
           (): void => { this.showSessionPicker = true; })
+      } else if (this.sessionId === '') {
+        this.pillButton('重新连接', true, this.canReconnect && !this.busy, (): void => { void this.reconnect(); })
       }
     }.width('100%').padding({ top: 48, bottom: 48 })
   }
@@ -926,8 +1001,7 @@ export struct RemoteAiWorkspace {
           this.pillButton('拒绝', false, this.control && this.allowed && !this.busy,
             (): void => { void this.answerInline(approval, 'decline'); })
           this.pillButton('允许此次', true, this.control && this.allowed && !this.busy && approval.expires > Date.now() &&
-            (approval.request['kind'] !== 'fileChange' || approval.request['nativeItemComplete'] === true),
-            (): void => { void this.answerInline(approval, 'accept'); })
+            this.approvalAcceptable(approval), (): void => { void this.answerInline(approval, 'accept'); })
         }
         Blank()
         Text('完整请求').fontSize(13).fontFamily(AppConfig.fontFamily).fontColor(this.palette().accent)
@@ -962,6 +1036,21 @@ export struct RemoteAiWorkspace {
           }
         }.width('100%')
       }
+      if (this.backgroundTasks()) {
+        Row({ space: 6 }) {
+          LoadingProgress().width(14).height(14).color(this.palette().text3)
+          Text('上一轮启动的任务仍在电脑上运行').fontSize(12).fontFamily(AppConfig.fontFamily)
+            .fontColor(this.palette().text2).layoutWeight(1)
+          if (this.capability('terminalManagement')) {
+            Text('查看').fontSize(12).fontFamily(AppConfig.fontFamily).fontColor(this.palette().accent)
+              .enabled(this.allowed && !this.busy).onClick((): void => {
+                if (!this.allowed || this.busy) { return; }
+                this.detailTab = 2; this.showDetails = true;
+                void this.run(async (): Promise<void> => { await this.controller.loadTerminals(); });
+              })
+          }
+        }.width('100%')
+      }
       if (this.attachments.length > 0) {
         Row({ space: 6 }) {
           SymbolGlyph($r('sys.symbol.paperclip')).fontSize(13).fontColor([this.palette().text3])
@@ -988,7 +1077,7 @@ export struct RemoteAiWorkspace {
               (): void => { this.detailTab = 0; this.showDetails = true; })
           }
           Blank()
-          if (this.working() && this.control) {
+          if (this.composerMode() === 'stop') {
             if (this.draft.trim() !== '' && this.capability('steer')) {
               this.roundAction($r('sys.symbol.arrow_up'), '补充指令', false, this.allowed && !this.busy && !this.archived,
                 (): void => { void this.send(true); })
@@ -1029,13 +1118,11 @@ export struct RemoteAiWorkspace {
         if (this.uiStyle === 'codex' && this.codexTab === 2) {
           ListItem() { this.codexDiffPane() }
         } else {
-          ForEach(this.uiStyle === 'codex' ? this.items : this.visibleItems(), (item: AiTranscriptItem): void => {
-            if (this.uiStyle !== 'codex') {
-              ListItem() { this.claudeItem(item) }
-            } else if ((this.codexTab === 0) === aiConversationItem(item)) {
-              ListItem() {
-                if (this.codexTab === 0) { this.codexConversationItem(item) } else { this.codexLogItem(item) }
-              }
+          ForEach(this.shownItems(), (item: AiTranscriptItem): void => {
+            ListItem() {
+              if (this.uiStyle !== 'codex') { this.claudeItem(item) }
+              else if (this.codexTab === 0) { this.codexConversationItem(item) }
+              else { this.codexLogItem(item) }
             }
           }, (item: AiTranscriptItem): string => item.id + ':' + item.state + ':' + item.text.length.toString() + ':' +
             (item.output ?? '').length.toString() + ':' + this.codexTab.toString() + (this.expanded(item.id) ? ':open' : ''))

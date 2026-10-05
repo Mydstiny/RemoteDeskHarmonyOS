@@ -41,9 +41,24 @@ export class AiWorkspaceController {
   private liveBusy: Set<number> = new Set();
   private liveDirty: Set<number> = new Set();
   private streamToken: number = 0;
+  private changeTimer: number = -1;
   private stopAccess: () => void = (): void => {};
   private key(): string { return (this.client?.host.id ?? '') + ':' + this.sessionId; }
-  private changed(): void { this.onChange(); }
+  /** Maps the events recorded since the last change, then tells the page. */
+  private changed(): void {
+    if (this.changeTimer >= 0) { clearTimeout(this.changeTimer); this.changeTimer = -1; }
+    const problem = this.transcript.flush();
+    if (problem !== '') {
+      // DSH could not place a surface replacement: the transcript is only right again after a new snapshot.
+      this.error = aiErrorText(problem); this.status = '需重新连接以恢复快照'; this.client?.stopEvents();
+    }
+    this.onChange();
+  }
+  /** Streamed events arrive token by token; the page follows them a few times a second rather than per event. */
+  private changeSoon(): void {
+    if (this.changeTimer >= 0) { return; }
+    this.changeTimer = setTimeout((): void => { this.changeTimer = -1; this.changed(); }, 80);
+  }
   private assertGeneration(generation: number): void {
     if (generation !== this.generation || this.client === null) { throw new Error('AI_CONNECTION_CLOSED'); }
     AiAccess.getInstance().assertCurrent(this.client.account);
@@ -149,8 +164,13 @@ export class AiWorkspaceController {
           }
         }
       } else if (client.host.backend === 'claudecode') {
-        aiArray(snapshot['events']).forEach((event: Object): void => this.transcript.claudeEvent(aiRecord(event)));
-      } else { aiArray(snapshot['events']).forEach((event: Object): void => this.transcript.dshEvent(aiRecord(event))); }
+        aiArray(snapshot['events']).forEach((event: Object): void => this.transcript.claudeEvent(aiRecord(event), true));
+      } else {
+        aiArray(snapshot['events']).forEach((event: Object): void => this.transcript.dshEvent(aiRecord(event), true));
+        // A page is mapped once; a surface replacement it cannot place ends the snapshot.
+        const problem = this.transcript.flush();
+        if (problem !== '') { throw new Error(problem); }
+      }
       const next = aiString(snapshot['nextCursor']);
       if (next !== '' && next === cursor) { throw new Error('AI_PAGINATION_INVALID'); }
       cursor = next; this.historyCursor = cursor;
@@ -168,12 +188,12 @@ export class AiWorkspaceController {
         if (event.session !== this.sessionId) { return; }
         const type = aiString(event.event['type']);
         if (client.host.backend === 'codex') { this.scheduleLiveSnapshot(token); }
-        else if (client.host.backend === 'claudecode') { this.transcript.claudeEvent(event.event); }
-        else { this.transcript.dshEvent(event.event); }
+        else if (client.host.backend === 'claudecode') { this.transcript.claudeEvent(event.event, true); }
+        else { this.transcript.dshEvent(event.event, true); }
         if (type.startsWith('execution.')) { this.status = type.slice(10); }
         if (type.startsWith('approval.')) { void this.refreshApprovals().catch((): void => {}); }
-        if (type === 'snapshot.required') { this.status = '需重新连接以恢复快照'; client.stopEvents(); }
-        this.changed();
+        if (type === 'snapshot.required') { this.status = '需重新连接以恢复快照'; client.stopEvents(); this.changed(); }
+        else { this.changeSoon(); }
       });
       if (token === this.streamToken) { this.status = '事件连接已断开，请重新连接'; this.changed(); }
     } catch (error) {
@@ -266,12 +286,16 @@ export class AiWorkspaceController {
     const generation = this.generation, session = this.sessionId;
     const params: Record<string, Object> = aiParams(["sessionId", "lease"], [session, this.lease]);
     Object.keys(extra).forEach((key: string): void => { params[key] = extra[key]; });
+    const statusBefore = this.status;
     try {
       const result = await client.write(method, params, session);
       this.assertGeneration(generation);
       if (method === 'session.archive') { this.archived = true; }
       if (method === 'session.resume') { this.archived = false; }
-      if (method === 'turn.start' || method === 'session.compact') { this.status = '请求已接受，等待执行结果'; }
+      // The stream may already have reported the turn (even its end) before the acknowledgement arrived.
+      if ((method === 'turn.start' || method === 'session.compact') && this.status === statusBefore) {
+        this.status = '请求已接受，等待执行结果';
+      }
       return result;
     } finally { if (generation === this.generation) { await this.refreshOperations().catch((): void => {}); this.changed(); } }
   }
@@ -346,6 +370,7 @@ export class AiWorkspaceController {
   }
   close(): void {
     this.generation++; this.streamToken++; this.clearTimers(); this.stopAccess(); this.stopAccess = (): void => {};
+    if (this.changeTimer >= 0) { clearTimeout(this.changeTimer); this.changeTimer = -1; }
     this.client?.close(); this.client = null;
     this.writerOwners.forEach((writer: string, key: string): void => { this.dropWriter(key, writer); }); this.lease = ''; this.leaseExpires = 0;
     this.projects = []; this.sessions = []; this.models = []; this.projectId = ''; this.sessionId = '';

@@ -90,9 +90,23 @@ function settingsFixture({ deferredInitialize = false } = {}) {
   return state;
 }
 
+function loadTimeline() {
+  const load = (name, mocks) => {
+    const module = { exports: {} };
+    const source = ts.transpileModule(fs.readFileSync(path.join(root, 'entry/src/main/ets/services/ai', name + '.ets'), 'utf8'),
+      { compilerOptions: { target: ts.ScriptTarget.ES2021, module: ts.ModuleKind.CommonJS } }).outputText;
+    vm.runInNewContext(source, { module, exports: module.exports, require: key => mocks[key] }, { filename: name });
+    return module.exports;
+  };
+  const models = load('AiModels', { '../EndpointAddressPolicy': { parseEndpointHost: () => ({ ok: true }),
+    parseEndpointServerIdentity: () => ({ ok: true }) } });
+  return load('AiTimeline', { './AiModels': models });
+}
+const timeline = loadTimeline();
+
 function workspaceFixture(reconnect, {
   background = false, deferredConnect = false, deferredRefresh = false,
-  deferredRelease = false, manualTimers = false
+  deferredRelease = false, manualTimers = false, firstOpen = false
 } = {}) {
   const state = { background, connects: 0, reads: 0, registered: 0, removed: 0,
     closes: 0, releases: 0, navigations: 0, timers: new Map(), timerSequence: 0 };
@@ -138,12 +152,16 @@ function workspaceFixture(reconnect, {
     getContext: () => ({ getApplicationContext: () => application }),
     AppStorage: { get: () => state.background },
     router: { getParams: () => ({ hostId: 'host-fixture' }), back: () => { state.navigations++; } },
-    aiErrorText: value => value, aiStatusLabel: value => value, ...timers
+    aiErrorText: value => value, aiStatusLabel: value => value, aiConversationItem: timeline.aiConversationItem,
+    aiItemDiff: timeline.aiItemDiff, aiDiffFiles: timeline.aiDiffFiles, aiDiffStats: timeline.aiDiffStats, ...timers
   });
   state.page.sync = () => {};
-  state.page.allowed = true;
+  if (!firstOpen) { state.page.allowed = true; }
   return state;
 }
+
+const item = (id, role, kind, extra = {}) => ({ id, role, title: role, text: id, state: 'completed', turnId: 't', kind,
+  detail: '', output: '', ...extra });
 
 const cases = [
   ['settings busy account change reloads the new owner', async () => {
@@ -226,6 +244,73 @@ const cases = [
     deadline.callback(); await until(leaving, 'release deadline');
     assert.equal(state.closes, 1); assert.equal(state.navigations, 1); assert.equal(state.timers.size, 0);
     state.finishRelease(); await flush(); assert.equal(state.navigations, 1);
+  }],
+  ['first open connects before any connection has reported access', async () => {
+    const state = workspaceFixture(false, { firstOpen: true });
+    assert.equal(state.page.allowed, false);
+    await until(state.page.aboutToAppear(), 'first open');
+    assert.equal(state.connects, 1);
+    assert.equal(state.page.canReconnect, true);
+    state.page.aboutToDisappear();
+  }],
+  ['background tasks keep the send button; a running or just accepted turn shows stop', async () => {
+    const state = workspaceFixture(false);
+    state.page.control = true;
+    for (const [status, mode] of [['background', 'send'], ['idle', 'send'], ['running', 'stop'], ['inProgress', 'stop'],
+      ['请求已接受，等待执行结果', 'stop']]) {
+      state.page.rawStatus = status;
+      assert.equal(state.page.composerMode(), mode, status);
+    }
+    state.page.rawStatus = 'background';
+    assert.equal(state.page.backgroundTasks(), true);
+    state.page.control = false; state.page.rawStatus = 'running';
+    assert.equal(state.page.composerMode(), 'send');
+  }],
+  ['hiding tool steps keeps notices and conversation', async () => {
+    const state = workspaceFixture(false);
+    state.page.items = [item('u', 'user', 'user'), item('tool', 'execution', 'tool'), item('think', 'execution', 'thinking'),
+      item('notice', 'execution', 'notice'), item('a', 'assistant', 'assistant'), item('legacy', 'execution', undefined)];
+    state.page.showExecution = false;
+    assert.deepEqual(state.page.visibleItems().map(value => value.id), ['u', 'notice', 'a']);
+    state.page.showExecution = true;
+    assert.equal(state.page.visibleItems().length, 6);
+  }],
+  ['the follow check counts the rows each style and tab actually shows', async () => {
+    const state = workspaceFixture(false);
+    const rows = [];
+    for (let turn = 0; turn < 5; turn++) {
+      rows.push(item('u' + turn, 'user', 'user'));
+      for (let step = 0; step < 4; step++) {
+        rows.push(item('c' + turn + step, 'execution', 'tool', { title: 'Bash', detail: '{"command":"ls"}' }));
+      }
+      rows.push(item('a' + turn, 'assistant', 'assistant'));
+    }
+    state.page.items = rows; state.page.historyCursor = ''; state.page.rawStatus = 'idle';
+    state.page.uiStyle = 'claude';
+    assert.equal(state.page.listLength(), 30);
+    state.page.uiStyle = 'codex'; state.page.codexTab = 0;
+    assert.equal(state.page.shownItems().length, 10); assert.equal(state.page.listLength(), 10);
+    state.page.codexTab = 1;
+    assert.equal(state.page.shownItems().length, 20); assert.equal(state.page.listLength(), 20);
+    state.page.codexTab = 2;
+    assert.equal(state.page.shownItems().length, 0); assert.equal(state.page.listLength(), 1);
+    state.page.codexTab = 0; state.page.rawStatus = 'running'; state.page.historyCursor = 'older';
+    assert.equal(state.page.listLength(), 12);
+  }],
+  ['Claude file edits can be allowed; Codex ones need the complete native item', async () => {
+    const state = workspaceFixture(false);
+    const approval = request => ({ id: 'a', request, expires: Date.now() + 60000 });
+    assert.equal(state.page.approvalAcceptable(approval({ kind: 'fileChange', engine: 'claudecode', tool: 'Edit' })), true);
+    assert.equal(state.page.approvalAcceptable(approval({ kind: 'fileChange', engine: 'codex' })), false);
+    assert.equal(state.page.approvalAcceptable(approval({ kind: 'fileChange', engine: 'codex', nativeItemComplete: true })), true);
+    assert.equal(state.page.approvalAcceptable(approval({ kind: 'command' })), true);
+  }],
+  ['a collapsed log output is bounded in lines and characters', async () => {
+    const state = workspaceFixture(false);
+    assert.equal(state.page.outputPreview('a\nb'), 'a\nb');
+    assert.equal(state.page.outputPreview('1\n2\n3\n4\n5\n6\n7'), '1\n2\n3\n4\n5\n6\n…');
+    const single = state.page.outputPreview('x'.repeat(1000000));
+    assert.ok(single.length <= 802 && single.endsWith('…'));
   }]
 ];
 

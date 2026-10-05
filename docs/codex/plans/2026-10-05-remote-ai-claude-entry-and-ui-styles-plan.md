@@ -56,4 +56,27 @@ Codex 条目与 DSH/Claude 事件都映射为同一组时间线项：用户消�
 | R2 | `AiTimeline`（工具步骤摘要、统一差异解析、Claude Edit/Write/MultiEdit 与 Codex fileChange 差异、对话/日志划分）、`AiStylePalette`（Claude 经典色与 Codex 中性色，深浅各一套）、`aiCodexItem`（命令含输出、文件修改转差异、思考、MCP、网页搜索）、DSH 工具步骤带输入/输出；会话页重写为两种风格：Claude 风格（右侧气泡、Markdown 正文、可展开的工具行与差异、折叠思考、运行中提示、内联审批卡、圆角输入框带附件/模型/权限模式与发送/停止）与 Codex 风格（任务列表、对话/日志/差异三个标签、修改汇总）；新组件 `AiRemoteMarkdown`、`AiDiffView`；远程 AI 设置新增「界面风格」（旧设置缺字段时按 Claude）；Claude 发送后本地先显示提问直到引擎回显；会话列表改为可点选的行；新内容自动跟随到底部，上滑后停止跟随。测试：`test_ai_timeline.cjs`，`test_ai_ui_parity.cjs` 按新结构更新（三个弹层表头、两种页头的 Pro 标识、不同高度/风格/审批组合下列表高度） |
 | R1 | 后端表 `AI_BACKENDS`（`codex`/`dsh`/`claudecode`）与名称、端口、校验；添加/编辑、安装说明、远程 AI 设置三处的 Claude Agent 卡片；目录 `pro.ai.claudecode`（available）；`aiClaudeItems`（Claude 事件 → 会话记录，含历史）；Claude 错误码中文提示；`test_ai_claude_transcript.cjs`、安装说明与入口测试补齐。电脑端 Claude 服务已重新初始化到 `192.168.31.142:9445`（旧状态备份于 `~/.remotedesk/claudecode.bak-20261005-lan`），验收项目 `acceptance` 指向 `~/Library/Application Support/RemoteDesk/workspaces/acceptance-claudecode` |
 
-插件侧待办（需另开插件 PR）：实时 `assistant/message` 的思考块用 `textOf(block)` 取文本，思考内容为空（应取 `block.thinking`）；用户自己的提问在实时流中不回显，App 发送后需本地先显示。
+插件侧待办（需另开插件 PR）：实时 `assistant/message` 的思考块用 `textOf(block)` 取文本，思考内容为空（应取 `block.thinking`）；用户自己的提问在实时流中不回显，App 发送后需本地先显示；打开已有历史的会话后，实时事件的 `seq` 从 0 重新编号（`open()` 建 handle 时 `sequence: 0`，未接续 `read()` 读到的历史），与历史重号（App 已改为按到达顺序编号，不依赖 `seq`）。
+
+## 6. 独立复核（2026-10-05，Opus）
+
+第一轮 FAIL（1 个 P1、6 个 P2、4 个 P3），已全部修复：
+
+| 发现 | 修复 |
+|---|---|
+| P1 回合结束后仍有后台任务（`background`）时只剩「停止/补充指令」，无法发送新任务 | `working()` 不再含 `background`；输入框显示「上一轮启动的任务仍在电脑上运行」和「查看」（终端任务）；按钮判定提为 `composerMode()` 并加行为测试；`turn.start` 回执不再覆盖事件流已报告的状态（快速失败的回合不会卡在「请求已接受」） |
+| P2 提问回显被历史中同文本的消息吞掉；回显 ID 重复、同回合顺序颠倒（P3） | 回显只由**之后到达**的引擎用户消息一对一抵消（先按同文本，再按同回合）；ID 用单调计数；同回合按发送顺序插入 |
+| P2 Codex 风格自动跟随失效 | 列表数据统一由 `shownItems()` 提供，`listLength()` 按风格与标签页计算真实行数并加测试 |
+| P2 DSH 工具步骤回归（一直转圈、参数二次编码、结果行错误、小写工具名不识别） | 新的纯函数 `aiDshItems`：按 `toolCallId` 把结果并入调用、参数先解析再格式化、`turn/end` 收尾、结果事件保留隐藏占位以便压缩区间定位；`bash/read/edit/write/grep/glob/web_*/todo_write/str_replace_editor` 按 Claude 工具显示摘要与差异；新测试 `test_ai_dsh_transcript.cjs`（按 `@deepseek-ai/dsh-session` 的 `SessionEventMap`） |
+| P2 关闭「显示工具执行过程」后错误通知也被隐藏 | 只隐藏 `tool` 与 `thinking` |
+| P2 远端内容无上限（日志单行 1 MB、替换型差异 6 万行、展开时一次创建全部行） | 折叠预览限 6 行且 ≤800 字符；`aiReplacementDiff`/`MultiEdit`/统一差异都限 4000 行并标记 `truncated`；差异视图每次多显示 400 行，超限提示「其余内容请在电脑端查看」 |
+| P2 长会话 UI 线程开销呈平方增长 | 快照整页记录后只映射一次；实时事件只记录，页面最多每 80 ms 刷新一次；Claude 日志在整条消息到达后丢弃已被替换的分片；分片查找改为 Map；差异汇总按会话记录缓存；`AiDiffView` 不再深拷贝文件数组（内容变化时按键重建） |
+| P2 测试只检查源码字符串 | 新增行为测试：首次打开即连接、发送/停止判定、通知过滤、两种风格各标签页行数、Claude 文件审批、日志预览上限、回显各情形、DSH 映射、差异上限与线性解析 |
+| P3 流式回答每个分片整体重建 | 随 80 ms 刷新节流缓解（ForEach 键仍含长度，否则 V1 不会刷新该行） |
+| P3 畸形输入下正则超线性 | 表格分隔行先 trim 并限长；`diff --git` 头不再用回溯正则，并去掉行尾 `\r` |
+| P3 新建会话/切项目/重连后视图状态未重置 | `resetView()` 统一重置跟随、展开与标签页 |
+
+待确认项核对结果（对照电脑上运行中的插件 `0.2.0-82f7608`）：`turn.start` 回执带 `turnId`（`steer` 不带，按文本抵消）；历史与实时 `seq` 不是同一序列（见上方插件待办）；Claude 文件审批 `kind` 为 `fileChange` 且不带 `nativeItemComplete`，App 原先只能拒绝——已改为 Claude 的文件审批可以允许，并在审批卡显示编辑内容（`-`/`+` 行，超长截断）；Codex 新增/删除文件的 `diff` 为文件原文，已改为整段按新增/删除计数。
+
+范围外既有问题（c8b7b9ac0 引入，阻塞验收）已一并修复：首次打开会话页时 `allowed` 尚为 false，`reconnect()` 直接返回、页面停在「未连接」；现在按 Pro 权益（`accessible()`）判断能否连接，「更多 → 重新连接」与空状态的「重新连接」在未连接时也可用。
+

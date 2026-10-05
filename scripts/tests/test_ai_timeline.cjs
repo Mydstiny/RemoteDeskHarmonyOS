@@ -99,3 +99,41 @@ assert.equal(models.aiUiStyle({ ...old, uiStyle: 'codex' }), 'codex');
 assert.equal(models.aiSettingsValid({ ...old, uiStyle: 'codex' }), true);
 assert.equal(models.aiSettingsValid({ ...old, uiStyle: 'material' }), false);
 console.log('PASS saved page style');
+
+// DSH names its tools in lower case and passes the model's raw arguments; they read like the Claude tools.
+assert.deepEqual(plain(timeline.aiToolView(tool('bash', { command: 'npm test\nnpm run lint' }))),
+  { icon: 'terminal', verb: '运行', target: 'npm test', stats: '' });
+assert.deepEqual(plain(timeline.aiToolView(tool('edit', { file_path: '/repo/src/a.ts', old_string: 'x\ny', new_string: 'z' }))),
+  { icon: 'edit', verb: '修改', target: '…/src/a.ts', stats: '+1 −2' });
+assert.equal(timeline.aiToolView(tool('write', { file_path: '/repo/b.md', content: 'one\ntwo\n' })).stats, '+2');
+assert.equal(timeline.aiToolView(tool('web_search', { queries: ['harmonyos passkey', 'ctap2'] })).target, 'harmonyos passkey');
+assert.equal(timeline.aiToolView(tool('read', { file_path: '/repo/c.ts' })).verb, '读取');
+assert.deepEqual(plain(timeline.aiItemDiff(tool('str_replace_editor', { command: 'create', path: '/r/new.ts', file_text: 'a\nb' })))
+  .map(file => [file.path, file.added, file.removed]), [['/r/new.ts', 2, 0]]);
+assert.equal(timeline.aiToolView(tool('str_replace_editor', { command: 'view', path: '/r/x.ts' })).verb, '读取');
+console.log('PASS DSH tool names and arguments');
+
+// Remote text is untrusted: CRLF diffs, huge files and pathological header lines stay bounded and fast.
+const crlf = plain(timeline.aiDiffFiles('diff --git a/a b c.txt b/a b c.txt\r\n@@ -1 +1 @@\r\n-old\r\n+new\r\n'));
+assert.deepEqual(crlf.map(file => [file.path, file.added, file.removed]), [['a b c.txt', 1, 1]]);
+assert.deepEqual(crlf[0].lines.map(line => line.text), ['@@ -1 +1 @@', 'old', 'new']);
+let started = Date.now();
+timeline.aiDiffFiles('diff --git a/' + ' b/x'.repeat(15000) + '\r');
+assert.ok(Date.now() - started < 200, 'a long git header parses in linear time');
+const huge = Array.from({ length: 60000 }, (_value, index) => 'line ' + index).join('\n');
+const written = plain(timeline.aiItemDiff(tool('Write', { file_path: '/big.txt', content: huge })))[0];
+assert.equal(written.added, 60000);
+assert.equal(written.lines.length, 4000);
+assert.equal(written.truncated, true);
+const unified = plain(timeline.aiDiffFiles('diff --git a/x b/x\n@@ -1 +1 @@\n' + Array.from({ length: 5000 }, () => '+y').join('\n')));
+assert.equal(unified[0].lines.length, 4000);
+assert.equal(unified[0].truncated, true);
+console.log('PASS diffs from remote text are bounded and parse in linear time');
+
+// Codex added and deleted files carry their content, so lines starting with + or - are content, not diff marks.
+const added = plain(transcript.aiCodexItem({ id: 'f', type: 'fileChange', status: 'completed',
+  changes: [{ path: 'notes.md', kind: { type: 'add' }, diff: '- a list item\n+ not a diff\nplain\n' },
+    { path: 'old.txt', kind: 'delete', diff: 'gone\n' }] }, 't'));
+assert.deepEqual(plain(timeline.aiDiffFiles(added.output)).map(file => [file.path, file.added, file.removed]),
+  [['notes.md', 3, 0], ['old.txt', 0, 1]]);
+console.log('PASS Codex added and deleted files count every line');

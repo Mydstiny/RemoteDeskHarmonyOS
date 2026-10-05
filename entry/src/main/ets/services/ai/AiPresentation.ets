@@ -34,9 +34,42 @@ export function aiFileChanges(value: Object | undefined): string {
       aiString(change['diff'], JSON.stringify(change, null, 2));
   }).join('\n\n');
 }
+const MAX_EDIT_PREVIEW: number = 20000;
+
+function aiMarkedLines(text: string, mark: string): string {
+  if (text === '') { return ''; }
+  return text.split('\n').map((line: string): string => mark + line).join('\n');
+}
+
+/** A Claude Edit/MultiEdit/Write/NotebookEdit approval: the request carries the whole edit in its tool input. */
+function aiClaudeFileChange(request: Record<string, Object>, reason: string): string {
+  const tool = aiString(request['tool']);
+  const input = aiRecord(request['input']);
+  const path = aiString(input['file_path'], aiString(input['notebook_path']));
+  const head = [reason, aiString(request['description'])].filter((value: string): boolean => value !== '').join('\n');
+  let body = '';
+  if (tool === 'Edit') {
+    body = '修改 ' + path + '\n' + [aiMarkedLines(aiString(input['old_string']), '- '),
+      aiMarkedLines(aiString(input['new_string']), '+ ')].filter((value: string): boolean => value !== '').join('\n');
+  } else if (tool === 'MultiEdit') {
+    body = '修改 ' + path + aiArray(input['edits']).map((value: Object): string => {
+      const edit = aiRecord(value);
+      return '\n@@\n' + [aiMarkedLines(aiString(edit['old_string']), '- '),
+        aiMarkedLines(aiString(edit['new_string']), '+ ')].filter((part: string): boolean => part !== '').join('\n');
+    }).join('');
+  } else if (tool === 'Write') {
+    body = '写入 ' + path + '\n' + aiMarkedLines(aiString(input['content']), '+ ');
+  } else {
+    body = (tool !== '' ? tool + ' ' : '') + path + '\n' + JSON.stringify(input, null, 2);
+  }
+  if (body.length > MAX_EDIT_PREVIEW) { body = body.slice(0, MAX_EDIT_PREVIEW) + '\n…（其余内容在电脑端）'; }
+  return (head !== '' ? head + '\n\n' : '') + body;
+}
+
 export function aiApprovalDetails(request: Record<string, Object>): string {
   const kind = aiString(request['kind']);
   const reason = aiString(request['reason']);
+  if (kind === 'fileChange' && aiString(request['engine']) === 'claudecode') { return aiClaudeFileChange(request, reason); }
   if (kind === 'fileChange') {
     if (request['nativeItemComplete'] !== true || request['nativeItem'] === undefined) { return '文件预览不可用，请取消本次请求后重试。'; }
     const item = aiRecord(request['nativeItem']);

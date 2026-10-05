@@ -69,7 +69,10 @@ function tableCells(line: string): string[] {
 }
 
 function isTableSeparator(line: string): boolean {
-  return /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/.test(line);
+  // Trimmed first: surrounding runs of white space would make the pattern backtrack heavily on long lines.
+  const value: string = line.trim();
+  if (value.length < 2 || value.length > 4000 || value.indexOf('--') < 0) { return false; }
+  return /^\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?$/.test(value);
 }
 
 export function aiMarkdownBlocks(text: string): AiMdBlock[] {

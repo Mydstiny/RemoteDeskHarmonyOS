@@ -84,14 +84,46 @@ console.log('PASS stored history maps text, thinking, tools and their results');
 seq = 0;
 assert.deepEqual(plain(aiClaudeItems([ev('assistant/chunk', 'oops'), ev('assistant/chunk', { chunk: ['x'] }),
   ev('user/message', { message: 42 }), ev('unknown/type', {})])), []);
+// The plugin numbers live events apart from the history it read (its live seq restarts at 0), so events keep their
+// arrival order and are renumbered: history first, then live events, every item id unique.
 const transcript = new AiTranscript();
-transcript.claudeEvent({ seq: 2, type: 'assistant/message', data: { message: 'second', kind: 'text' }, turn: 't' });
-transcript.claudeEvent({ seq: 1, type: 'user/message', data: { message: 'first' }, turn: 't' });
-transcript.claudeEvent({ seq: -1, type: 'user/message', data: { message: 'ignored' }, turn: 't' });
-assert.deepEqual(plain(transcript.items).map(item => item.role + ':' + item.text), ['user:first', 'assistant:second']);
+transcript.claudeEvent({ seq: 0, type: 'user/message', data: { message: 'first' }, turn: 'h1' });
+transcript.claudeEvent({ seq: 1, type: 'assistant/message', data: { message: 'second', kind: 'text' }, turn: 'h2' });
+transcript.claudeEvent({ seq: 0, type: 'user/message', data: { message: 'third' }, turn: 'run' });
+transcript.claudeEvent({ seq: 1, type: 'assistant/message', data: { message: 'fourth', kind: 'text' }, turn: 'run' });
+assert.deepEqual(plain(transcript.items).map(item => item.role + ':' + item.text),
+  ['user:first', 'assistant:second', 'user:third', 'assistant:fourth']);
+assert.deepEqual(plain(transcript.items).map(item => item.id), ['claude:0', 'claude:1', 'claude:2', 'claude:3']);
 transcript.clear();
 assert.equal(transcript.items.length, 0);
-console.log('PASS malformed Claude events are skipped and events are ordered by sequence');
+console.log('PASS malformed Claude events are skipped and events keep their arrival order');
+
+// History pages are recorded first and mapped once; a later flush maps nothing new.
+const batched = new AiTranscript();
+for (let index = 0; index < 50; index++) {
+  batched.claudeEvent({ seq: index, type: index % 2 ? 'assistant/message' : 'user/message',
+    data: { message: 'm' + index, kind: 'text' }, turn: 'h' + index }, true);
+}
+assert.equal(batched.items.length, 0);
+assert.equal(batched.flush(), '');
+assert.equal(batched.items.length, 50);
+console.log('PASS deferred Claude events are mapped once on flush');
+
+// A finished message replaces its turn's streamed chunks; dropping those chunks from the log changes nothing shown.
+seq = 0;
+const stream = [ev('turn/start', { id: 'run' }, 'run')];
+for (let round = 0; round < 3; round++) {
+  for (let index = 0; index < 20; index++) { stream.push(ev('assistant/chunk', { chunk: { text: 'r' + round + 'c' + index + ' ' } }, 'run')); }
+  stream.push(ev('assistant/message', { message: 'round ' + round, kind: 'text' }, 'run'));
+  stream.push(ev('tool/call', { id: 'tool' + round, name: 'Read', input: { file_path: '/a' + round } }, 'run'));
+}
+stream.push(ev('assistant/chunk', { chunk: { text: 'tail' } }, 'run'));
+const compacted = new AiTranscript();
+stream.forEach(event => compacted.claudeEvent(event, true));
+compacted.flush();
+assert.deepEqual(view(compacted.items), view(aiClaudeItems(stream)));
+assert.deepEqual(view(compacted.items).slice(-1), [['assistant', 'tail', 'running']]);
+console.log('PASS dropping replaced chunks keeps the mapped transcript identical');
 
 // A sent prompt shows at once and sits before its turn's output; the engine's own copy replaces it.
 const echoed = new AiTranscript();
@@ -105,6 +137,32 @@ assert.deepEqual(plain(echoed.items).filter(item => item.role === 'user').map(it
 echoed.echo('   ', 'run-2');
 assert.equal(plain(echoed.items).length, 2);
 console.log('PASS sent prompts show at once and give way to the engine copy');
+
+// The same words already in the history never stand for a new prompt: only a later engine event can.
+const repeated = new AiTranscript();
+repeated.claudeEvent({ seq: 0, type: 'user/message', data: { message: [{ type: 'text', text: '继续' }] }, turn: 'old' });
+repeated.claudeEvent({ seq: 1, type: 'assistant/message', data: { message: '好的', kind: 'text' }, turn: 'old' });
+repeated.echo('继续', 'run-9');
+assert.deepEqual(plain(repeated.items).map(item => item.role + ':' + item.text), ['user:继续', 'assistant:好的', 'user:继续']);
+repeated.claudeEvent({ seq: 0, type: 'assistant/chunk', data: { chunk: { text: '继续处理' } }, turn: 'run-9' });
+assert.deepEqual(plain(repeated.items).map(item => item.role + ':' + item.text),
+  ['user:继续', 'assistant:好的', 'user:继续', 'assistant:继续处理']);
+// Two prompts of one turn keep their sending order and their own ids.
+repeated.echo('再补充一句', 'run-9');
+const echoes = plain(repeated.items).filter(item => item.id.startsWith('echo:'));
+assert.deepEqual(echoes.map(item => item.text), ['继续', '再补充一句']);
+assert.equal(new Set(echoes.map(item => item.id)).size, 2);
+// A tool result of the same turn is not the prompt; the engine's own copy of the prompt is.
+repeated.claudeEvent({ seq: 1, type: 'user/message', data: { message: [{ type: 'tool_result', tool_use_id: 'x', content: 'ok' }] }, turn: 'run-9' });
+assert.equal(plain(repeated.items).filter(item => item.id.startsWith('echo:')).length, 2);
+repeated.claudeEvent({ seq: 2, type: 'user/message', data: { message: [{ type: 'text', text: '继续' }] }, turn: 'run-9' });
+assert.deepEqual(plain(repeated.items).filter(item => item.id.startsWith('echo:')).map(item => item.text), ['再补充一句']);
+// A steered prompt has no turn id; the engine copy with the same words replaces it.
+repeated.echo('改用 TypeScript', '');
+assert.deepEqual(plain(repeated.items).slice(-1).map(item => item.text), ['改用 TypeScript']);
+repeated.claudeEvent({ seq: 3, type: 'user/message', data: { message: [{ type: 'text', text: '改用 TypeScript' }] }, turn: 'run-9' });
+assert.ok(!plain(repeated.items).some(item => item.id.startsWith('echo:') && item.text === '改用 TypeScript'));
+console.log('PASS a prompt echo is replaced only by a later engine event, one for one, in sending order');
 
 // The backend table: Claude Agent is a third backend with its own port, name and validation.
 assert.deepEqual(Array.from(models.AI_BACKENDS), ['codex', 'dsh', 'claudecode']);

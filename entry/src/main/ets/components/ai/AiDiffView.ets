@@ -3,11 +3,15 @@ import { AiDiffFile, AiDiffLine, aiDiffStats } from '../../services/ai/AiTimelin
 import { AiStylePalette } from '../../services/ai/AiStylePalette';
 
 const PREVIEW_LINES: number = 80;
+const MORE_LINES: number = 400;
 
-/** Unified diff by file: header with counts, coloured lines, long files folded until asked. */
+/**
+ * Unified diff by file: header with counts, coloured lines, long files shown a page at a time. `files` is set once:
+ * callers rebuild the view (through its list key) when the diff changes, so large diffs are not copied per render.
+ */
 @Component
 export struct AiDiffView {
-  @Prop files: AiDiffFile[] = [];
+  files: AiDiffFile[] = [];
   @Prop textSize: number = 13;
   @Prop palette: AiStylePalette = {
     bg: '#FFFFFF', surface: '#F7F7F8', raised: '#FFFFFF', border: '#E5E5E5', text: '#0D0D0D', text2: '#5D5D5D',
@@ -18,9 +22,20 @@ export struct AiDiffView {
   /** Files start open when there are few of them. */
   @Prop startOpen: boolean = true;
   @State toggled: string[] = [];
-  @State unfolded: string[] = [];
+  /** Lines shown per file beyond the preview, by file key. */
+  @State shown: Map<string, number> = new Map();
 
   private fileKey(file: AiDiffFile, index: number): string { return index.toString() + ':' + file.path; }
+
+  private visible(file: AiDiffFile, key: string): number {
+    return Math.min(file.lines.length, this.shown.get(key) ?? PREVIEW_LINES);
+  }
+
+  private showMore(file: AiDiffFile, key: string): void {
+    const next: Map<string, number> = new Map(this.shown);
+    next.set(key, Math.min(file.lines.length, this.visible(file, key) + MORE_LINES));
+    this.shown = next;
+  }
 
   private open(key: string): boolean { return this.startOpen !== this.toggled.includes(key); }
 
@@ -57,18 +72,22 @@ export struct AiDiffView {
           if (this.open(this.fileKey(file, index))) {
             Scroll() {
               Column() {
-                ForEach(this.unfolded.includes(this.fileKey(file, index)) ? file.lines :
-                  file.lines.slice(0, PREVIEW_LINES), (line: AiDiffLine): void => {
+                ForEach(file.lines.slice(0, this.visible(file, this.fileKey(file, index))), (line: AiDiffLine): void => {
                   this.line(line)
                 }, (line: AiDiffLine, row: number): string => row.toString() + line.kind)
               }.alignItems(HorizontalAlign.Start)
             }.scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off).width('100%').align(Alignment.Start)
             .backgroundColor(this.palette.codeBg).padding({ top: 4, bottom: 4 })
-            if (file.lines.length > PREVIEW_LINES && !this.unfolded.includes(this.fileKey(file, index))) {
-              Text('显示其余 ' + (file.lines.length - PREVIEW_LINES).toString() + ' 行').fontSize(12)
-                .fontFamily(AppConfig.fontFamily).fontColor(this.palette.accent).padding(10).width('100%')
+            if (file.lines.length > this.visible(file, this.fileKey(file, index))) {
+              Text('再显示 ' + Math.min(MORE_LINES, file.lines.length - this.visible(file, this.fileKey(file, index))).toString() +
+                ' 行（还有 ' + (file.lines.length - this.visible(file, this.fileKey(file, index))).toString() + ' 行）')
+                .fontSize(12).fontFamily(AppConfig.fontFamily).fontColor(this.palette.accent).padding(10).width('100%')
                 .textAlign(TextAlign.Center).backgroundColor(this.palette.codeBg)
-                .onClick((): void => { this.unfolded = this.unfolded.concat([this.fileKey(file, index)]); })
+                .onClick((): void => { this.showMore(file, this.fileKey(file, index)); })
+            } else if (file.truncated === true) {
+              Text('改动较大，其余内容请在电脑端查看').fontSize(12).fontFamily(AppConfig.fontFamily)
+                .fontColor(this.palette.text3).padding(10).width('100%').textAlign(TextAlign.Center)
+                .backgroundColor(this.palette.codeBg)
             }
           }
         }
