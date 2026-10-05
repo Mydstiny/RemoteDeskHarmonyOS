@@ -9657,6 +9657,8 @@ struct RemoteDesktop {
         hilog.info(RD_DOMAIN, RD_TAG,
           'deferred page disappear: background signal arrived, preserving session');
         this.applyAbilityBackgroundState(true);
+        // This page is gone; the page that adopts the session starts its own service.
+        this.stopRdpSecurityKey();
         return;
       }
 
@@ -10967,6 +10969,8 @@ struct RemoteDesktop {
         hilog.info(RD_DOMAIN, RD_TAG, 'aboutToDisappear: background skip action=' + action.toString());
       }
       this.cancelPendingDisappearDecision();
+      // The session outlives this page; the page that adopts it starts its own security-key service.
+      this.stopRdpSecurityKey();
       return;
     }
 

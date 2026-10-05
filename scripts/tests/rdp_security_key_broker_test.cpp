@@ -203,6 +203,11 @@ void LabelsAndPins() {
     CHECK(SanitizeLabel("\xc2\x85" "x", 63) == "x");
     CHECK(SanitizeLabel("安全密钥", 7) == "安全");
     CHECK(SanitizeLabel(std::string(70, 'k'), kMaxProductBytes).size() == kMaxProductBytes);
+    // A CJK key name of 80 characters (240 bytes) fits the reply limit and is cut to 21 whole characters.
+    std::string longName;
+    for (int i = 0; i < 80; ++i) longName += "密";
+    CHECK(longName.size() <= kMaxReplyTextBytes);
+    CHECK(SanitizeLabel(longName, kMaxProductBytes) == longName.substr(0, 63));
     CHECK(ValidPin("1234"));
     CHECK(ValidPin("密钥口令"));
     CHECK(!ValidPin("密钥口"));

@@ -231,7 +231,7 @@ napi_value Respond(napi_env env, napi_callback_info info) {
     if (napi_typeof(env, args[4], &textType) == napi_ok && textType == napi_string) {
         size_t length = 0;
         if (napi_get_value_string_utf8(env, args[4], nullptr, 0, &length) != napi_ok ||
-            length > RdpSecurityKey::kMaxPinBytes + 1) return Boolean(env, false);
+            length > RdpSecurityKey::kMaxReplyTextBytes) return Boolean(env, false);
         std::vector<char> buffer(length + 1, '\0');
         size_t copied = 0;
         if (napi_get_value_string_utf8(env, args[4], buffer.data(), buffer.size(), &copied) != napi_ok) {

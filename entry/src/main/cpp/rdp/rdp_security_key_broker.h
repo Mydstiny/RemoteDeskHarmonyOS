@@ -62,6 +62,10 @@ constexpr size_t kMinPinCodePoints = 4;
 constexpr size_t kMaxPinBytes = 63;
 // Key names end up in fixed 64-byte fields of the channel reply.
 constexpr size_t kMaxProductBytes = 63;
+// Reply text accepted from ArkTS before the per-kind rules apply: key names arrive uncut (up to 80 UTF-16 units)
+// and are shortened by SanitizeLabel; an over-long PIN reaches ValidPin and is refused there.
+constexpr size_t kMaxReplyTextBytes = 255;
+static_assert(kMaxReplyTextBytes >= 80 * 3, "a key name of 80 UTF-16 units must reach SanitizeLabel");
 
 class Broker final {
 public:
