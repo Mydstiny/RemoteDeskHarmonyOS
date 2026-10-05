@@ -18,7 +18,8 @@ declare module 'librdpnapi.so' {
   /** RDP security-key redirection (MS-RDPEWA) request from the session broker. */
   export interface RdpSecurityKeyRequest {
     id: number;
-    /** 1 confirm, 2 select key, 3 PIN, 4 touch prompt, 5 write report, 6 read report, 7 release key */
+    /** 1 confirm, 2 select key, 3 PIN, 4 touch prompt, 5 write report, 6 read report, 7 release key,
+     *  8 dismiss: id names a prompt that ended unanswered */
     kind: number;
     /** Confirm: relying party ID. */
     text: string;
@@ -32,12 +33,16 @@ declare module 'librdpnapi.so' {
   }
   /** Debug-only; Release returns false and links no FIDO code. */
   export function rdpSecurityKeyAvailable(): boolean;
-  export function rdpSecurityKeyWatch(sessionId: number, onRequest: () => void): boolean;
-  export function rdpSecurityKeyUnwatch(sessionId: number): void;
+  /** Watches a session across reconnects; returns the watch ID, or 0 when the session has no broker. */
+  export function rdpSecurityKeyWatch(sessionId: number, onRequest: () => void): number;
+  /** True when watchId was still the session's watcher (a newer page may have taken over). */
+  export function rdpSecurityKeyUnwatch(sessionId: number, watchId: number): boolean;
   export function rdpSecurityKeyPoll(sessionId: number): RdpSecurityKeyRequest | null;
   export function rdpSecurityKeyRespond(sessionId: number, id: number, ok: boolean,
     report: Uint8Array | null, text: string | null): boolean;
   export function rdpSecurityKeyCancel(sessionId: number): void;
+  /** ArkTS released the session's key on its own; the next request asks for a key again. */
+  export function rdpSecurityKeyReleased(sessionId: number): void;
 
   export interface AiTlsRequestOptions {
     id: string;

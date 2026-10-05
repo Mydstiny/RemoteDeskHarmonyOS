@@ -15,6 +15,7 @@
 
 namespace {
 constexpr const char* kPathPrefix = "remotedesk-usb:";
+constexpr int kFidoTimeoutMs = 60000;
 
 std::mutex g_eventMutex;
 std::map<const void*, HANDLE> g_cancelEvents;
@@ -24,12 +25,13 @@ struct IoHandle {
     std::shared_ptr<RdpSecurityKey::Broker> broker;
 };
 
+// The path names one broker generation, so a device opened for a closed connection never reaches its successor.
 void* IoOpen(const char* path) {
     if (path == nullptr || std::strncmp(path, kPathPrefix, std::strlen(kPathPrefix)) != 0) return nullptr;
     char* end = nullptr;
-    const unsigned long long sessionId = std::strtoull(path + std::strlen(kPathPrefix), &end, 10);
-    if (end == nullptr || *end != '\0' || sessionId == 0) return nullptr;
-    auto broker = RdpSecurityKey::ForSession(sessionId);
+    const unsigned long long generation = std::strtoull(path + std::strlen(kPathPrefix), &end, 10);
+    if (end == nullptr || *end != '\0' || generation == 0) return nullptr;
+    auto broker = RdpSecurityKey::ForGeneration(generation);
     if (!broker || broker->Closed()) return nullptr;
     return new IoHandle{broker};
 }
@@ -54,11 +56,28 @@ int IoWrite(void* handle, const unsigned char* bytes, size_t length) {
     return io->broker->WriteReport(report) ? 65 : -1;
 }
 
+// Copies a broker label (already valid UTF-8) without cutting a character in half.
 void CopyLabel(const std::string& value, char* out, size_t length) {
     if (out == nullptr || length == 0) return;
-    const size_t count = std::min(value.size(), length - 1);
+    size_t count = std::min(value.size(), length - 1);
+    while (count > 0 && count < value.size() && (static_cast<unsigned char>(value[count]) & 0xc0) == 0x80) --count;
     std::memcpy(out, value.data(), count);
     out[count] = '\0';
+}
+
+fido_dev_t* OpenDevice(const RdpSecurityKey::Broker& broker) {
+    // FIDO2 keys only; U2F-only keys are not offered to the remote session.
+    std::call_once(g_fidoInit, []() { fido_init(FIDO_DISABLE_U2F_FALLBACK); });
+    static const fido_dev_io_t io = {IoOpen, IoClose, IoRead, IoWrite};
+    const std::string path = std::string(kPathPrefix) + std::to_string(broker.Generation());
+    fido_dev_t* device = fido_dev_new();
+    if (device == nullptr) return nullptr;
+    if (fido_dev_set_io_functions(device, &io) != FIDO_OK || fido_dev_set_timeout(device, kFidoTimeoutMs) != FIDO_OK ||
+        fido_dev_open(device, path.c_str()) != FIDO_OK) {
+        fido_dev_free(&device);
+        return nullptr;
+    }
+    return device;
 }
 } // namespace
 
@@ -107,9 +126,16 @@ void DetachContext(void* context) {
 
 extern "C" {
 
-BOOL remotedesk_rdpewa_begin(rdpContext* context) {
+BOOL remotedesk_rdpewa_begin(rdpContext* context, UINT32 timeoutMs) {
     const auto broker = RdpSecurityKey::ForContext(context);
-    return broker && broker->Begin() ? TRUE : FALSE;
+    return broker && broker->Begin(timeoutMs) ? TRUE : FALSE;
+}
+
+DWORD remotedesk_rdpewa_remaining(rdpContext* context) {
+    const auto broker = RdpSecurityKey::ForContext(context);
+    if (!broker) return 0;
+    const uint32_t remaining = broker->RemainingMs();
+    return remaining == RdpSecurityKey::kNoDeadline ? INFINITE : static_cast<DWORD>(remaining);
 }
 
 BOOL remotedesk_rdpewa_confirm(rdpContext* context, const char* rpId, RemoteDeskRdpewaOperation operation) {
@@ -120,23 +146,19 @@ BOOL remotedesk_rdpewa_confirm(rdpContext* context, const char* rpId, RemoteDesk
 fido_dev_t* remotedesk_rdpewa_open(rdpContext* context, BOOL interactive, char* product, size_t productLen) {
     const auto broker = RdpSecurityKey::ForContext(context);
     if (!broker || broker->Closed()) return nullptr;
-    std::string name;
-    if (!broker->Authorized(name) && (!interactive || !broker->Select(name))) return nullptr;
-    // FIDO2 keys only; U2F-only keys are not offered to the remote session.
-    std::call_once(g_fidoInit, []() { fido_init(FIDO_DISABLE_U2F_FALLBACK); });
-    static const fido_dev_io_t io = {IoOpen, IoClose, IoRead, IoWrite};
-    const std::string path = std::string(kPathPrefix) + std::to_string(broker->SessionId());
-    fido_dev_t* device = fido_dev_new();
-    if (device == nullptr) return nullptr;
-    if (fido_dev_set_io_functions(device, &io) != FIDO_OK || fido_dev_set_timeout(device, 60000) != FIDO_OK ||
-        fido_dev_open(device, path.c_str()) != FIDO_OK) {
-        fido_dev_free(&device);
-        // A failed open usually means the key was removed: ask again next time.
+    // A key authorized earlier may have been unplugged since: forget it and, when interactive, ask once more.
+    for (int attempt = 0; attempt < 2; ++attempt) {
+        std::string name;
+        const bool remembered = broker->Authorized(name);
+        if (!remembered && (!interactive || !broker->Select(name))) return nullptr;
+        if (fido_dev_t* device = OpenDevice(*broker)) {
+            CopyLabel(name, product, productLen);
+            return device;
+        }
         broker->Forget();
-        return nullptr;
+        if (!remembered) return nullptr;
     }
-    CopyLabel(name, product, productLen);
-    return device;
+    return nullptr;
 }
 
 BOOL remotedesk_rdpewa_authorized(rdpContext* context, char* product, size_t productLen) {

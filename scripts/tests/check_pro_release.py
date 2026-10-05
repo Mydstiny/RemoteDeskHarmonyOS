@@ -94,7 +94,8 @@ def main():
     parser.add_argument("hap", type=Path)
     parser.add_argument("--disassembler", type=Path, required=True)
     parser.add_argument("--usb-probe", action="store_true", help="Also require the Debug USB probe gate to return false")
-    parser.add_argument("--fido-library", action="store_true", help="Check library availability pruning and both native ABI binaries")
+    parser.add_argument("--fido-library", action="store_true",
+                        help="Check library and RDP security-key availability pruning and both native ABI binaries")
     parser.add_argument("--debug-hap", type=Path, help="Debug positive control for --fido-library")
     parser.add_argument("--sandbox-purchase", action="store_true", help="Require sandbox pruning and the production default to stay disabled")
     args = parser.parse_args()
@@ -113,11 +114,13 @@ def main():
                     for abi in ('arm64-v8a', 'x86_64'):
                         name = f'libs/{abi}/librdpnapi.so'
                         release_bytes, debug_bytes = hap.read(name), debug.read(name)
+                        # libfido2/libcbor, the USB probe worker, the MS-RDPEWA channel and its session broker.
                         for marker in (b'fido_dev_open', b'fido_dev_get_cbor_info', b'cbor_load',
-                                       b'remotedesk-debug-usb-capability-probe'):
+                                       b'remotedesk-debug-usb-capability-probe', b'rdpewa_DVCPluginEntry',
+                                       b'remotedesk_rdpewa_open', b'remotedesk-usb:', b'rdpSecurityKeyWake'):
                             if marker not in debug_bytes or marker in release_bytes:
                                 raise AssertionError(f'FIDO native pruning/positive control failed: {abi}: {marker!r}')
-                        print(f'PASS {abi} Release ELF excludes FIDO/CBOR worker markers present in Debug')
+                        print(f'PASS {abi} Release ELF excludes FIDO/CBOR worker and RDPEWA markers present in Debug')
         subprocess.run([str(args.disassembler), str(abc), str(assembly)], check=True,
                        stdout=subprocess.DEVNULL)
         assembly_text = assembly.read_text(errors="replace")
@@ -149,6 +152,11 @@ def main():
                             raise AssertionError("Duplicate FIDO library gate")
                         method = "usbLibraryAvailable"
                         methods[method] = []
+                    if args.fido_library and "services.pro.ProRdpSecurityKey&." in line and "#available(" in line:
+                        if "rdpSecurityKeyAvailable" in methods:
+                            raise AssertionError("Duplicate RDP security-key gate")
+                        method = "rdpSecurityKeyAvailable"
+                        methods[method] = []
                     for name in ("setDebugMode", "snapshot", "decision"):
                         if "services.pro.ProRuntime&." in line and f"#{name}(" in line:
                             if name in methods:
@@ -163,7 +171,7 @@ def main():
         if args.usb_probe:
             expected.add("usbDebugAllowed")
         if args.fido_library:
-            expected.add("usbLibraryAvailable")
+            expected.update(("usbLibraryAvailable", "rdpSecurityKeyAvailable"))
         if args.sandbox_purchase:
             expected.update(("setSandbox", "sandboxSelected", "proBackendConfiguration", "productionFactory", "productionMain"))
         if set(methods) != expected:
@@ -182,7 +190,8 @@ def main():
         decision = "\n".join(methods["decision"])
         if '"entitlementIds"' not in decision or '"proFeatureAccess"' not in decision:
             raise AssertionError("Real entitlement policy call is missing")
-        for gate in (["usbDebugAllowed"] if args.usb_probe else []) + (["usbLibraryAvailable"] if args.fido_library else []):
+        for gate in (["usbDebugAllowed"] if args.usb_probe else []) + \
+                (["usbLibraryAvailable", "rdpSecurityKeyAvailable"] if args.fido_library else []):
             body = methods[gate]
             if "ldfalse" not in body or "return" not in body:
                 raise AssertionError("Release USB probe gate does not return false")

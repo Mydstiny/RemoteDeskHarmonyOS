@@ -26,6 +26,10 @@ napi_value Boolean(napi_env env, bool value) {
     napi_value result = nullptr;
     return napi_get_boolean(env, value, &result) == napi_ok ? result : nullptr;
 }
+napi_value Number(napi_env env, uint32_t value) {
+    napi_value result = nullptr;
+    return napi_create_uint32(env, value, &result) == napi_ok ? result : nullptr;
+}
 
 #if defined(REMOTEDESK_RDP_SECURITY_KEY)
 bool Integer(napi_env env, napi_value value, uint64_t& out, uint64_t max) {
@@ -51,8 +55,16 @@ struct WakeTarget {
     }
 };
 
+// One ArkTS watcher per session. Watch IDs let a page that lost the watch to a newer page (independent-window
+// handoff, page restore) stop without unwatching or cancelling the newer page's session.
+struct Watcher {
+    uint32_t id = 0;
+    std::shared_ptr<WakeTarget> target;
+};
+
 std::mutex g_watchMutex;
-std::map<uint64_t, std::shared_ptr<WakeTarget>> g_watches;
+std::map<uint64_t, Watcher> g_watches;
+uint32_t g_lastWatchId = 0;
 
 void CallJs(napi_env env, napi_value callback, void*, void*) {
     if (env == nullptr || callback == nullptr) return;
@@ -60,29 +72,21 @@ void CallJs(napi_env env, napi_value callback, void*, void*) {
     napi_call_function(env, undefined, callback, 0, nullptr, nullptr);
 }
 
-void Unwatch(uint64_t sessionId) {
-    std::shared_ptr<WakeTarget> target;
-    {
-        std::lock_guard<std::mutex> lock(g_watchMutex);
-        const auto found = g_watches.find(sessionId);
-        if (found == g_watches.end()) return;
-        target = found->second;
-        g_watches.erase(found);
-    }
-    if (const auto broker = RdpSecurityKey::ForSession(sessionId)) broker->SetWake(nullptr);
-    target->Release();
-}
-
 void Cleanup(void*) {
-    std::map<uint64_t, std::shared_ptr<WakeTarget>> watches;
+    std::map<uint64_t, Watcher> watches;
     {
         std::lock_guard<std::mutex> lock(g_watchMutex);
         watches.swap(g_watches);
+        for (const auto& entry : watches) RdpSecurityKey::Unwatch(entry.first);
     }
-    for (auto& entry : watches) {
-        if (const auto broker = RdpSecurityKey::ForSession(entry.first)) broker->SetWake(nullptr);
-        entry.second->Release();
-    }
+    for (auto& entry : watches) entry.second.target->Release();
+}
+
+bool SessionArgument(napi_env env, napi_callback_info info, uint64_t& sessionId) {
+    size_t argc = 1;
+    napi_value arg = nullptr;
+    return napi_get_cb_info(env, info, &argc, &arg, nullptr, nullptr) == napi_ok && argc == 1 &&
+        Integer(env, arg, sessionId, 0x1fffffffffffffULL);
 }
 #endif
 
@@ -94,7 +98,8 @@ napi_value Available(napi_env env, napi_callback_info) {
 #endif
 }
 
-// rdpSecurityKeyWatch(sessionId, onRequest): wakes onRequest whenever the broker has something for ArkTS.
+// rdpSecurityKeyWatch(sessionId, onRequest): number. Wakes onRequest whenever the session has something for ArkTS,
+// across reconnects. Returns the watch ID, or 0 when the session has no open broker.
 napi_value Watch(napi_env env, napi_callback_info info) {
 #if defined(REMOTEDESK_RDP_SECURITY_KEY)
     size_t argc = 2;
@@ -103,20 +108,55 @@ napi_value Watch(napi_env env, napi_callback_info info) {
     napi_valuetype type = napi_undefined;
     if (napi_get_cb_info(env, info, &argc, args, nullptr, nullptr) != napi_ok || argc != 2 ||
         !Integer(env, args[0], sessionId, 0x1fffffffffffffULL) ||
-        napi_typeof(env, args[1], &type) != napi_ok || type != napi_function) return Boolean(env, false);
-    const auto broker = RdpSecurityKey::ForSession(sessionId);
-    if (!broker || broker->Closed()) return Boolean(env, false);
-    Unwatch(sessionId);
+        napi_typeof(env, args[1], &type) != napi_ok || type != napi_function) return Number(env, 0);
+    if (!RdpSecurityKey::ForSession(sessionId)) return Number(env, 0);
     napi_value name = nullptr;
     napi_create_string_utf8(env, "rdpSecurityKeyWake", NAPI_AUTO_LENGTH, &name);
     auto target = std::make_shared<WakeTarget>();
     if (napi_create_threadsafe_function(env, args[1], nullptr, name, 0, 1, nullptr, nullptr, nullptr, CallJs,
-                                        &target->function) != napi_ok) return Boolean(env, false);
+                                        &target->function) != napi_ok) return Number(env, 0);
+    uint32_t id = 0;
+    std::shared_ptr<WakeTarget> previous;
     {
         std::lock_guard<std::mutex> lock(g_watchMutex);
-        g_watches[sessionId] = target;
+        if (RdpSecurityKey::Watch(sessionId, [target]() { target->Call(); })) {
+            if (++g_lastWatchId == 0) ++g_lastWatchId;
+            id = g_lastWatchId;
+            auto& slot = g_watches[sessionId];
+            previous = slot.target;
+            slot = Watcher{id, target};
+        }
     }
-    broker->SetWake([target]() { target->Call(); });
+    if (previous) previous->Release();
+    if (id == 0) target->Release();
+    return Number(env, id);
+#else
+    (void)info;
+    return Number(env, 0);
+#endif
+}
+
+// rdpSecurityKeyUnwatch(sessionId, watchId): boolean. True when that watch was still the session's watcher.
+napi_value UnwatchNapi(napi_env env, napi_callback_info info) {
+#if defined(REMOTEDESK_RDP_SECURITY_KEY)
+    size_t argc = 2;
+    napi_value args[2] = {nullptr, nullptr};
+    uint64_t sessionId = 0;
+    uint64_t watchId = 0;
+    if (napi_get_cb_info(env, info, &argc, args, nullptr, nullptr) != napi_ok || argc != 2 ||
+        !Integer(env, args[0], sessionId, 0x1fffffffffffffULL) || !Integer(env, args[1], watchId, UINT32_MAX)) {
+        return Boolean(env, false);
+    }
+    std::shared_ptr<WakeTarget> target;
+    {
+        std::lock_guard<std::mutex> lock(g_watchMutex);
+        const auto found = g_watches.find(sessionId);
+        if (found == g_watches.end() || found->second.id != watchId) return Boolean(env, false);
+        target = found->second.target;
+        g_watches.erase(found);
+        RdpSecurityKey::Unwatch(sessionId);
+    }
+    target->Release();
     return Boolean(env, true);
 #else
     (void)info;
@@ -124,32 +164,15 @@ napi_value Watch(napi_env env, napi_callback_info info) {
 #endif
 }
 
-napi_value UnwatchNapi(napi_env env, napi_callback_info info) {
-#if defined(REMOTEDESK_RDP_SECURITY_KEY)
-    size_t argc = 1;
-    napi_value arg = nullptr;
-    uint64_t sessionId = 0;
-    if (napi_get_cb_info(env, info, &argc, &arg, nullptr, nullptr) == napi_ok && argc == 1 &&
-        Integer(env, arg, sessionId, 0x1fffffffffffffULL)) Unwatch(sessionId);
-#else
-    (void)info;
-#endif
-    return Undefined(env);
-}
-
 // rdpSecurityKeyPoll(sessionId): the next request or notification, or null.
 napi_value Poll(napi_env env, napi_callback_info info) {
     napi_value result = nullptr;
     napi_get_null(env, &result);
 #if defined(REMOTEDESK_RDP_SECURITY_KEY)
-    size_t argc = 1;
-    napi_value arg = nullptr;
     uint64_t sessionId = 0;
-    if (napi_get_cb_info(env, info, &argc, &arg, nullptr, nullptr) != napi_ok || argc != 1 ||
-        !Integer(env, arg, sessionId, 0x1fffffffffffffULL)) return result;
-    const auto broker = RdpSecurityKey::ForSession(sessionId);
+    if (!SessionArgument(env, info, sessionId)) return result;
     RdpSecurityKey::Request request;
-    if (!broker || !broker->Poll(request)) return result;
+    if (!RdpSecurityKey::Poll(sessionId, request)) return result;
     napi_value object = nullptr;
     if (napi_create_object(env, &object) != napi_ok) return result;
     const auto setUint = [&](const char* key, uint32_t value) {
@@ -217,8 +240,7 @@ napi_value Respond(napi_env env, napi_callback_info info) {
         reply.text.assign(buffer.data(), copied);
         std::fill(buffer.begin(), buffer.end(), '\0');
     }
-    const auto broker = RdpSecurityKey::ForSession(sessionId);
-    const bool accepted = broker && broker->Respond(static_cast<uint32_t>(id), reply);
+    const bool accepted = RdpSecurityKey::Respond(sessionId, static_cast<uint32_t>(id), reply);
     std::fill(reply.text.begin(), reply.text.end(), '\0');
     return Boolean(env, accepted);
 #else
@@ -230,13 +252,19 @@ napi_value Respond(napi_env env, napi_callback_info info) {
 // rdpSecurityKeyCancel(sessionId): the local user cancelled the current request.
 napi_value Cancel(napi_env env, napi_callback_info info) {
 #if defined(REMOTEDESK_RDP_SECURITY_KEY)
-    size_t argc = 1;
-    napi_value arg = nullptr;
     uint64_t sessionId = 0;
-    if (napi_get_cb_info(env, info, &argc, &arg, nullptr, nullptr) == napi_ok && argc == 1 &&
-        Integer(env, arg, sessionId, 0x1fffffffffffffULL)) {
-        if (const auto broker = RdpSecurityKey::ForSession(sessionId)) broker->Cancel();
-    }
+    if (SessionArgument(env, info, sessionId)) RdpSecurityKey::Cancel(sessionId);
+#else
+    (void)info;
+#endif
+    return Undefined(env);
+}
+
+// rdpSecurityKeyReleased(sessionId): ArkTS released the session's key on its own; the next request selects again.
+napi_value Released(napi_env env, napi_callback_info info) {
+#if defined(REMOTEDESK_RDP_SECURITY_KEY)
+    uint64_t sessionId = 0;
+    if (SessionArgument(env, info, sessionId)) RdpSecurityKey::Released(sessionId);
 #else
     (void)info;
 #endif
@@ -255,6 +283,7 @@ napi_value Init(napi_env env, napi_value exports) {
         {"rdpSecurityKeyPoll", nullptr, Poll, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"rdpSecurityKeyRespond", nullptr, Respond, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"rdpSecurityKeyCancel", nullptr, Cancel, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"rdpSecurityKeyReleased", nullptr, Released, nullptr, nullptr, nullptr, napi_default, nullptr},
     };
     if (napi_define_properties(env, exports, sizeof(properties) / sizeof(properties[0]), properties) != napi_ok) {
         return nullptr;

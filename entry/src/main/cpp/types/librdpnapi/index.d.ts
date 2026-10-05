@@ -15,11 +15,14 @@ export function proFidoProbeReply(operationId: number, requestId: number, data: 
 export function proFidoProbeCancel(operationId: number): void;
 /** RDP security-key redirection (MS-RDPEWA); false in Release, which links no FIDO code. */
 export function rdpSecurityKeyAvailable(): boolean;
-export function rdpSecurityKeyWatch(sessionId: number, onRequest: () => void): boolean;
-export function rdpSecurityKeyUnwatch(sessionId: number): void;
+/** Watches a session across reconnects; returns the watch ID, or 0 when the session has no broker. */
+export function rdpSecurityKeyWatch(sessionId: number, onRequest: () => void): number;
+/** True when watchId was still the session's watcher (a newer page may have taken over). */
+export function rdpSecurityKeyUnwatch(sessionId: number, watchId: number): boolean;
 export interface RdpSecurityKeyRequest {
   id: number;
-  /** 1 confirm, 2 select key, 3 PIN, 4 touch prompt, 5 write report, 6 read report, 7 release key */
+  /** 1 confirm, 2 select key, 3 PIN, 4 touch prompt, 5 write report, 6 read report, 7 release key,
+   *  8 dismiss: id names a prompt that ended unanswered */
   kind: number;
   /** Confirm: relying party ID. */
   text: string;
@@ -35,6 +38,8 @@ export function rdpSecurityKeyPoll(sessionId: number): RdpSecurityKeyRequest | n
 export function rdpSecurityKeyRespond(sessionId: number, id: number, ok: boolean,
   report: Uint8Array | null, text: string | null): boolean;
 export function rdpSecurityKeyCancel(sessionId: number): void;
+/** ArkTS released the session's key on its own; the next request asks for a key again. */
+export function rdpSecurityKeyReleased(sessionId: number): void;
 export type MoonlightNativeOperation =
   'pair' | 'catalog' | 'asset' | 'launch' | 'resume' | 'quit' | 'unpair' |
   'delete_identity';

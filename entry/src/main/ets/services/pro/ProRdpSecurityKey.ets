@@ -14,6 +14,11 @@ const KIND_TOUCH: number = 4;
 const KIND_WRITE: number = 5;
 const KIND_READ: number = 6;
 const KIND_RELEASE: number = 7;
+const KIND_DISMISS: number = 8;
+
+// CTAP2 client PIN: at least 4 characters (code points), at most 63 bytes of UTF-8.
+const PIN_MIN_CHARACTERS: number = 4;
+const PIN_MAX_BYTES: number = 63;
 
 export type RdpSecurityKeyPromptKind = 'confirm' | 'select' | 'pin' | 'touch';
 
@@ -25,7 +30,7 @@ export interface RdpSecurityKeyPrompt {
   rpId: string;
   /** confirm: true for registration, false for sign-in */
   register: boolean;
-  /** pin: remaining attempts, -1 when unknown */
+  /** pin: remaining attempts, -1 when unknown, 0 when the key's PIN is blocked */
   retries: number;
   /** select: FIDO HID interfaces currently plugged in */
   candidates: ProUsbFidoKeyCandidate[];
@@ -41,6 +46,21 @@ export function rdpSecurityKeyContext(): ProAccessContext {
     if (canIUse(USB_CAPABILITY)) { context.capabilities = [USB_CAPABILITY]; }
   } catch (_error) { /* capability unavailable */ }
   return context;
+}
+
+/** Why a PIN cannot be sent to the key, or '' when it can. Checked locally so a typo never costs a key retry. */
+export function rdpSecurityKeyPinProblem(pin: string): string {
+  let characters: number = 0;
+  let bytes: number = 0;
+  for (const character of pin) {
+    const code: number = character.codePointAt(0) ?? 0;
+    if (code === 0) { return 'PIN 不能包含空字符'; }
+    characters++;
+    bytes += code < 0x80 ? 1 : code < 0x800 ? 2 : code < 0x10000 ? 3 : 4;
+  }
+  if (characters < PIN_MIN_CHARACTERS) { return 'PIN 至少 4 位'; }
+  if (bytes > PIN_MAX_BYTES) { return 'PIN 太长'; }
+  return '';
 }
 
 /**
@@ -62,6 +82,7 @@ export class ProRdpSecurityKey {
   }
 
   private sessionId: number = 0;
+  private watchId: number = 0;
   private stopped: boolean = true;
   private draining: boolean = false;
   private key: ProUsbFidoKeySession | null = null;
@@ -76,30 +97,38 @@ export class ProRdpSecurityKey {
   start(sessionId: number): boolean {
     if (!ProRdpSecurityKey.available() || !Number.isInteger(sessionId) || sessionId <= 0) { return false; }
     this.stop();
+    let watchId: number = 0;
+    try { watchId = rdpnapi.rdpSecurityKeyWatch(sessionId, (): void => { this.drain(); }); }
+    catch (_error) { watchId = 0; }
+    if (!Number.isInteger(watchId) || watchId <= 0) { return false; }
     this.sessionId = sessionId;
+    this.watchId = watchId;
     this.stopped = false;
-    let watching: boolean = false;
-    try { watching = rdpnapi.rdpSecurityKeyWatch(sessionId, (): void => { this.drain(); }); }
-    catch (_error) { watching = false; }
-    if (!watching) { this.stopped = true; this.sessionId = 0; return false; }
     // Pro revocation, account change or Debug view change ends the current request; the key is released.
     this.stopRuntime = ProAppRuntime.getInstance().runtime.subscribe((): void => {
-      if (!this.stopped && !ProRdpSecurityKey.available()) { this.cancel(); this.releaseKey(); }
+      if (!this.stopped && !ProRdpSecurityKey.available()) { this.cancel(); this.releaseKey(true); }
     });
     this.drain();
     return true;
   }
 
+  /**
+   * Stops answering. When another page has taken over the session's watch (independent-window handoff), the
+   * session's request and authorization are left to that page; only this page's own key and prompt go away.
+   */
   stop(): void {
     const sessionId = this.sessionId;
+    const watchId = this.watchId;
     this.stopped = true;
     if (this.stopRuntime !== null) { this.stopRuntime(); this.stopRuntime = null; }
-    if (sessionId > 0) {
-      try { rdpnapi.rdpSecurityKeyCancel(sessionId); } catch (_error) {}
-      try { rdpnapi.rdpSecurityKeyUnwatch(sessionId); } catch (_error) {}
+    let owner: boolean = false;
+    if (sessionId > 0 && watchId > 0) {
+      try { owner = rdpnapi.rdpSecurityKeyUnwatch(sessionId, watchId); } catch (_error) { owner = false; }
+      if (owner) { try { rdpnapi.rdpSecurityKeyCancel(sessionId); } catch (_error) {} }
     }
+    this.releaseKey(owner);
     this.sessionId = 0;
-    this.releaseKey();
+    this.watchId = 0;
     this.show(null);
   }
 
@@ -107,7 +136,9 @@ export class ProRdpSecurityKey {
   cancel(): void {
     const current = this.prompt;
     if (current !== null && current.kind !== 'touch') { this.respond(current.requestId, false, null, null); }
-    if (this.sessionId > 0) { try { rdpnapi.rdpSecurityKeyCancel(this.sessionId); } catch (_error) {} }
+    if (!this.stopped && this.sessionId > 0) {
+      try { rdpnapi.rdpSecurityKeyCancel(this.sessionId); } catch (_error) {}
+    }
     this.show(null);
   }
 
@@ -119,7 +150,7 @@ export class ProRdpSecurityKey {
 
   answerPin(requestId: number, pin: string): void {
     if (!this.matches(requestId, 'pin')) { return; }
-    const accepted = pin.length > 0 && pin.length <= 63 && ProRdpSecurityKey.available();
+    const accepted = rdpSecurityKeyPinProblem(pin) === '' && ProRdpSecurityKey.available();
     this.respond(requestId, accepted, null, accepted ? pin : null);
     this.show(null);
   }
@@ -136,19 +167,23 @@ export class ProRdpSecurityKey {
     const sessionId = this.sessionId;
     const isCurrent = (): boolean => !this.stopped && this.sessionId === sessionId &&
       this.prompt !== null && this.prompt.requestId === requestId && ProRdpSecurityKey.available();
+    // A key still held from an earlier authorization would hold the same interface claimed.
+    this.releaseKey(true);
     this.show(this.withBusy(current, true, ''));
+    let key: ProUsbFidoKeySession;
     try {
-      const key = await this.keys.authorize(candidateKey, isCurrent);
-      if (!isCurrent()) { key.release(); return; }
-      this.releaseKey();
-      this.key = key;
-      this.respond(requestId, true, null, key.label);
-      this.show(null);
+      key = await this.keys.authorize(candidateKey, isCurrent);
     } catch (error) {
       if (isCurrent()) {
         this.show(this.selectPrompt(requestId, error instanceof Error ? error.message : '无法连接安全密钥'));
       }
+      return;
     }
+    if (!isCurrent()) { key.release(); return; }
+    this.key = key;
+    // The request may have ended while the system dialog was open; then nobody uses the claim.
+    if (!this.respond(requestId, true, null, key.label)) { this.releaseKey(false); }
+    this.show(null);
   }
 
   private drain(): void {
@@ -195,7 +230,13 @@ export class ProRdpSecurityKey {
         this.transfer(request);
         return;
       case KIND_RELEASE:
-        this.releaseKey();
+        this.releaseKey(false);
+        return;
+      case KIND_DISMISS:
+        // The broker gave up on this prompt (timeout, server cancel, disconnect): an answer would be ignored.
+        if (this.prompt !== null && this.prompt.kind !== 'touch' && this.prompt.requestId === request.id) {
+          this.show(null);
+        }
         return;
       default:
         return;
@@ -228,15 +269,21 @@ export class ProRdpSecurityKey {
     return !this.stopped && this.prompt !== null && this.prompt.kind === kind && this.prompt.requestId === requestId;
   }
 
-  private respond(requestId: number, ok: boolean, report: Uint8Array | null, text: string | null): void {
-    if (this.sessionId <= 0 || requestId <= 0) { return; }
-    try { rdpnapi.rdpSecurityKeyRespond(this.sessionId, requestId, ok, report, text); } catch (_error) {}
+  /** False when the broker no longer waits for this request. */
+  private respond(requestId: number, ok: boolean, report: Uint8Array | null, text: string | null): boolean {
+    if (this.stopped || this.sessionId <= 0 || requestId <= 0) { return false; }
+    try { return rdpnapi.rdpSecurityKeyRespond(this.sessionId, requestId, ok, report, text); }
+    catch (_error) { return false; }
   }
 
-  private releaseKey(): void {
+  /** tellBroker: this side let go on its own, so the session's next request asks for a key again. */
+  private releaseKey(tellBroker: boolean): void {
     const key = this.key;
     this.key = null;
     if (key !== null) { key.release(); }
+    if (tellBroker && this.sessionId > 0) {
+      try { rdpnapi.rdpSecurityKeyReleased(this.sessionId); } catch (_error) {}
+    }
   }
 
   private show(prompt: RdpSecurityKeyPrompt | null): void {

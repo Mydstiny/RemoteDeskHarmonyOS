@@ -3,8 +3,10 @@
  * WebAuthn Virtual Channel Extension [MS-RDPEWA]
  * https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpewa/68f2df2e-7c40-4a93-9bb0-517e4283a991
  *
- * RemoteDesk: vendored from FreeRDP channels/rdpewa/client. Payloads are never hex-dumped (they carry
- * challenges, credential IDs and signatures), and CANCEL_CUR_OP and channel close cancel the in-flight request.
+ * RemoteDesk: vendored from FreeRDP channels/rdpewa/client and modified. Payloads are never hex-dumped (they
+ * carry challenges, credential IDs and signatures); a request starts (and takes its timeout) when it is
+ * dispatched; a new request, CANCEL_CUR_OP and channel close cancel the in-flight one; every WEB_AUTHN request
+ * gets a reply, and GET_CREDENTIALS never touches the key.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -52,6 +54,25 @@ typedef struct
 	IWTSVirtualChannel* channel;
 } RDPEWA_ASYNC_WORK;
 
+/** A WEB_AUTHN reply that carries only a failure, for requests that never reached an authenticator. */
+static wStream* rdpewa_failed_response(void)
+{
+	const RDPEWA_DEVICE_INFO devInfo = WINPR_C_ARRAY_INIT;
+	wStream* s = rdpewa_cbor_encode_webauthn_response(E_FAIL, 0x01, nullptr, 0, &devInfo);
+	return s ? s : rdpewa_cbor_encode_hresult_response(E_FAIL);
+}
+
+static void rdpewa_write_failure(IWTSVirtualChannel* channel)
+{
+	wStream* s = rdpewa_failed_response();
+	if (!s)
+		return;
+	const UINT status = channel->Write(channel, (ULONG)Stream_GetPosition(s), Stream_Buffer(s), nullptr);
+	if (status != CHANNEL_RC_OK)
+		WLog_ERR(TAG, "Write failed with 0x%08" PRIx32, status);
+	Stream_Free(s, TRUE);
+}
+
 static DWORD WINAPI rdpewa_async_webauthn_thread(LPVOID arg)
 {
 	RDPEWA_ASYNC_WORK* work = (RDPEWA_ASYNC_WORK*)arg;
@@ -64,6 +85,13 @@ static DWORD WINAPI rdpewa_async_webauthn_thread(LPVOID arg)
 			break;
 		default:
 			break;
+	}
+
+	if (!s)
+	{
+		/* Malformed CTAP data, an unknown sub-command or an allocation failure: still answer the server. */
+		WLog_ERR(TAG, "Async: FIDO operation failed for command %" PRIu32, work->request.command);
+		s = rdpewa_failed_response();
 	}
 
 	if (s)
@@ -79,10 +107,6 @@ static DWORD WINAPI rdpewa_async_webauthn_thread(LPVOID arg)
 			if (status != CHANNEL_RC_OK)
 				WLog_ERR(TAG, "Async: Write failed with 0x%08" PRIx32, status);
 		}
-	}
-	else
-	{
-		WLog_ERR(TAG, "Async: FIDO operation failed for command %" PRIu32, work->request.command);
 	}
 
 	Stream_Free(s, TRUE);
@@ -134,6 +158,7 @@ static UINT rdpewa_on_data_received(IWTSVirtualChannelCallback* pChannelCallback
 			if (!work)
 			{
 				free(request.request);
+				rdpewa_write_failure(callback->channel);
 				return ERROR_INTERNAL_ERROR;
 			}
 			work->rdpContext = rdpewa->rdp_context;
@@ -142,14 +167,19 @@ static UINT rdpewa_on_data_received(IWTSVirtualChannelCallback* pChannelCallback
 			/* Transfer ownership of request.request to the worker */
 			request.request = nullptr;
 
-			/* Wait for any previous in-flight operation to finish before
-			 * starting a new one, to avoid use-after-free on the channel. */
+			/* A new request supersedes the one in flight: cancel it, then join it (every broker wait is
+			 * bounded), so the worker never outlives its channel and this thread is never held for long. */
 			if (ecb->workerThread)
 			{
+				remotedesk_rdpewa_cancel(rdpewa->rdp_context);
 				WaitForSingleObject(ecb->workerThread, INFINITE);
 				CloseHandle(ecb->workerThread);
 				ecb->workerThread = nullptr;
 			}
+
+			/* From here on a CANCEL_CUR_OP cancels this request, and its prompts end with its timeout. A
+			 * missing or closed broker fails the request at its first prompt. */
+			(void)remotedesk_rdpewa_begin(rdpewa->rdp_context, work->request.timeout);
 
 			ecb->workerThread =
 			    CreateThread(nullptr, 0, rdpewa_async_webauthn_thread, work, 0, nullptr);
@@ -157,6 +187,7 @@ static UINT rdpewa_on_data_received(IWTSVirtualChannelCallback* pChannelCallback
 			{
 				free(work->request.request);
 				free(work);
+				rdpewa_write_failure(callback->channel);
 				return ERROR_INTERNAL_ERROR;
 			}
 			return CHANNEL_RC_OK;
@@ -179,11 +210,8 @@ static UINT rdpewa_on_data_received(IWTSVirtualChannelCallback* pChannelCallback
 			break;
 
 		case CTAPCBOR_RPC_COMMAND_GET_CREDENTIALS:
-		{
-			RDPEWA_PLUGIN* rdpewa = (RDPEWA_PLUGIN*)callback->plugin;
-			response = rdpewa_fido_get_credentials(rdpewa->rdp_context, request.rpId);
+			response = rdpewa_fido_get_credentials();
 			break;
-		}
 
 		case CTAPCBOR_RPC_COMMAND_GET_AUTHENTICATOR_LIST:
 		{

@@ -3,7 +3,8 @@
  *
  * The channel never enumerates or opens system HID devices. Every request goes through the RemoteDesk security-key
  * broker of the RDP session: the local user confirms the remote relying party, authorizes one USB security key,
- * enters a PIN locally and is told when to touch the key. Every wait is bounded and ends on cancellation.
+ * enters a PIN locally and is told when to touch the key. Every wait is bounded, ends on cancellation and ends
+ * with the remote request's own timeout.
  */
 #ifndef REMOTEDESK_RDPEWA_PROVIDER_H
 #define REMOTEDESK_RDPEWA_PROVIDER_H
@@ -25,8 +26,14 @@ typedef enum
 	REMOTEDESK_RDPEWA_SIGN_IN = 2
 } RemoteDeskRdpewaOperation;
 
-/** Starts a remote request: clears the previous cancellation. FALSE when the session has no broker. */
-BOOL remotedesk_rdpewa_begin(rdpContext* context);
+/**
+ * Starts a remote request when it is dispatched: clears the previous cancellation and bounds the request's prompts
+ * by its timeout (milliseconds, 0 for none). FALSE when the session has no open broker.
+ */
+BOOL remotedesk_rdpewa_begin(rdpContext* context, UINT32 timeoutMs);
+
+/** Milliseconds left before the current request's deadline, or INFINITE. */
+DWORD remotedesk_rdpewa_remaining(rdpContext* context);
 
 /** Asks the local user whether the remote relying party may use the security key. */
 BOOL remotedesk_rdpewa_confirm(rdpContext* context, const char* rpId, RemoteDeskRdpewaOperation operation);

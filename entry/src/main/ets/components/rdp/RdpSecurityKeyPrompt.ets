@@ -1,6 +1,8 @@
 import { AppTheme, Palette, buildDark } from '../../common/Theme';
-import { RdpSecurityKeyPrompt } from '../../services/pro/ProRdpSecurityKey';
+import { RdpSecurityKeyPrompt, rdpSecurityKeyPinProblem } from '../../services/pro/ProRdpSecurityKey';
 import { ProUsbFidoKeyCandidate } from '../../services/pro/ProUsbFidoKey';
+
+const PIN_INPUT_ID: string = 'rdpSecurityKeyPin';
 
 /** Modal prompt for RDP security-key redirection: confirm, choose a key, enter the PIN, touch the key. */
 @Component
@@ -25,15 +27,24 @@ export struct RdpSecurityKeyPromptView {
     switch (this.prompt.kind) {
       case 'confirm': return '安全密钥请求';
       case 'select': return '选择安全密钥';
-      case 'pin': return '输入安全密钥 PIN';
+      case 'pin': return this.prompt.retries === 0 ? '安全密钥 PIN 已锁定' : '输入安全密钥 PIN';
       default: return '请触摸安全密钥';
     }
   }
 
-  private submitPin(): void {
+  private submitPin(): boolean {
     const pin = this.pinDraft;
+    if (rdpSecurityKeyPinProblem(pin) !== '') { return false; }
     this.pinDraft = '';
-    if (pin.length > 0) { this.onPin(this.prompt.requestId, pin); }
+    this.onPin(this.prompt.requestId, pin);
+    return true;
+  }
+
+  /** defaultFocus only applies when a page first shows; this prompt appears over a live session. */
+  private focusPin(): void {
+    setTimeout((): void => {
+      try { this.getUIContext().getFocusController().requestFocus(PIN_INPUT_ID); } catch (_error) {}
+    }, 0);
   }
 
   @Builder private button(label: string, primary: boolean, enabled: boolean, action: () => void) {
@@ -89,22 +100,36 @@ export struct RdpSecurityKeyPromptView {
         this.button('取消', false, true, (): void => { this.onCancel(); })
         this.button('刷新', true, !this.prompt.busy, (): void => { this.onRefresh(); })
       }.width('100%').margin({ top: 6 })
+    } else if (this.prompt.kind === 'pin' && this.prompt.retries === 0) {
+      Text('这支安全密钥连续输错 PIN 的次数过多，已被锁定。需要先按厂商说明重置安全密钥，才能再次使用。')
+        .fontSize(14).fontColor(this.pal().text).lineHeight(21).width('100%')
+      Row() {
+        this.button('关闭', false, true, (): void => { this.onCancel(); })
+      }.width('100%').margin({ top: 6 })
     } else if (this.prompt.kind === 'pin') {
-      if (this.prompt.retries >= 0) {
+      if (this.prompt.retries > 0) {
         Text('还可以尝试 ' + this.prompt.retries.toString() + ' 次，多次输错会锁定安全密钥。')
           .fontSize(12).fontColor(this.prompt.retries <= 3 ? this.pal().danger : this.pal().text3).width('100%')
       }
-      TextInput({ text: this.pinDraft, placeholder: '安全密钥 PIN' })
+      TextInput({ text: this.pinDraft, placeholder: '安全密钥 PIN（至少 4 位）' })
+        .id(PIN_INPUT_ID)
         .type(InputType.Password).maxLength(63).height(44).fontSize(15)
         .fontColor(this.pal().text).backgroundColor(this.pal().surface).borderRadius(12)
-        .enterKeyType(EnterKeyType.Done).defaultFocus(true)
+        .enterKeyType(EnterKeyType.Done)
+        .onAppear((): void => { this.focusPin(); })
         .onChange((value: string): void => { this.pinDraft = value; })
-        .onSubmit((_key: EnterKeyType): void => { this.submitPin(); })
+        .onSubmit((_key: EnterKeyType, event: SubmitEvent): void => {
+          // A PIN that would be refused keeps the field open for correction.
+          if (!this.submitPin()) { event.keepEditableState(); }
+        })
+      if (this.pinDraft.length > 0 && rdpSecurityKeyPinProblem(this.pinDraft) !== '') {
+        Text(rdpSecurityKeyPinProblem(this.pinDraft)).fontSize(12).fontColor(this.pal().danger).width('100%')
+      }
       Text('PIN 只交给本机连接的安全密钥，不会发送到远程电脑或保存。')
         .fontSize(11).fontColor(this.pal().text3).lineHeight(16).width('100%')
       Row({ space: 10 }) {
         this.button('取消', false, true, (): void => { this.pinDraft = ''; this.onCancel(); })
-        this.button('确定', true, this.pinDraft.length > 0, (): void => { this.submitPin(); })
+        this.button('确定', true, rdpSecurityKeyPinProblem(this.pinDraft) === '', (): void => { this.submitPin(); })
       }.width('100%').margin({ top: 6 })
     } else {
       Text('安全密钥闪烁时轻触它，完成远程电脑上的验证。')

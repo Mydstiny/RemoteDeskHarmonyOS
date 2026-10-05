@@ -3,9 +3,10 @@
  * WebAuthn Virtual Channel Extension [MS-RDPEWA]
  * libfido2 authenticator integration
  *
- * RemoteDesk: vendored from FreeRDP channels/rdpewa/client. Devices come only from the RemoteDesk
- * security-key broker (remotedesk_rdpewa.h); requests are confirmed locally, PINs are entered locally and
- * cancelled operations are joined before their device is freed.
+ * RemoteDesk: vendored from FreeRDP channels/rdpewa/client and modified. Devices come only from the RemoteDesk
+ * security-key broker (remotedesk_rdpewa.h); requests are confirmed locally, PINs are entered locally, the touch
+ * wait ends with the request's timeout, cancelled operations are joined before their device is freed, values
+ * from the server are range-checked instead of asserted, and GET_CREDENTIALS answers without device I/O.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -28,7 +29,6 @@
 #include <stdlib.h>
 
 #include <fido.h>
-#include <fido/credman.h>
 #include <cbor.h>
 
 #include <winpr/assert.h>
@@ -84,8 +84,8 @@ static DWORD WINAPI rdpewa_fido_getassert_thread(LPVOID arg)
 
 /**
  * Waits for the operation thread while the "touch your key" prompt is shown. On cancellation (user, server,
- * disconnect) the pending CTAP request is cancelled and the thread is joined before the caller frees its device:
- * every broker I/O wait is bounded, so the join always returns.
+ * disconnect) or when the request's timeout passes, the pending CTAP request is cancelled and the thread is joined
+ * before the caller frees its device: every broker I/O wait is bounded, so the join always returns.
  */
 static bool notifyWait(rdpContext* context, HANDLE ft, fido_dev_t* dev)
 {
@@ -96,7 +96,7 @@ static bool notifyWait(rdpContext* context, HANDLE ft, fido_dev_t* dev)
 	HANDLE hdl[] = { ft, freerdp_abort_event(context), cancel };
 	const DWORD count = cancel ? 3 : 2;
 	remotedesk_rdpewa_touch(context, TRUE);
-	const DWORD status = WaitForMultipleObjects(count, hdl, FALSE, INFINITE);
+	const DWORD status = WaitForMultipleObjects(count, hdl, FALSE, remotedesk_rdpewa_remaining(context));
 	remotedesk_rdpewa_touch(context, FALSE);
 
 	const bool rc = (status == WAIT_OBJECT_0);
@@ -333,6 +333,7 @@ static wStream* rdpewa_fido_make_credential(rdpContext* context, const BYTE* cta
 				if (cbor_isa_array(v) && cbor_array_size(v) > 0)
 				{
 					cbor_item_t* first = cbor_array_get(v, 0);
+					BOOL badAlg = FALSE;
 
 					if (first && cbor_isa_map(first))
 					{
@@ -348,10 +349,15 @@ static wStream* rdpewa_fido_make_credential(rdpContext* context, const BYTE* cta
 							if (cbor_string_length(pPairs[j].key) == 3 &&
 							    memcmp(pk, "alg", 3) == 0 && cbor_is_int(pPairs[j].value))
 							{
-								int alg =
-								    WINPR_ASSERTING_INT_CAST(int, cbor_get_int(pPairs[j].value));
-								if (cbor_isa_negint(pPairs[j].value))
-									alg = -(alg + 1);
+								/* COSE algorithm identifiers fit an int; a larger value is a bad request. */
+								const uint64_t magnitude = cbor_get_int(pPairs[j].value);
+								const BOOL negative = cbor_isa_negint(pPairs[j].value);
+								if (magnitude > (uint64_t)INT32_MAX - (negative ? 1 : 0))
+								{
+									badAlg = TRUE;
+									break;
+								}
+								const int alg = negative ? -(int)magnitude - 1 : (int)magnitude;
 								fido_cred_set_type(cred, alg);
 							}
 						}
@@ -359,6 +365,11 @@ static wStream* rdpewa_fido_make_credential(rdpContext* context, const BYTE* cta
 
 					if (first)
 						cbor_decref(&first);
+					if (badAlg)
+					{
+						WLog_ERR(TAG, "Invalid CTAP MakeCredential algorithm");
+						goto out;
+					}
 				}
 				break;
 
@@ -424,8 +435,7 @@ static wStream* rdpewa_fido_make_credential(rdpContext* context, const BYTE* cta
 		}
 	}
 
-	if (!remotedesk_rdpewa_begin(context) ||
-	    !remotedesk_rdpewa_confirm(context, fido_cred_rp_id(cred), REMOTEDESK_RDPEWA_REGISTER))
+	if (!remotedesk_rdpewa_confirm(context, fido_cred_rp_id(cred), REMOTEDESK_RDPEWA_REGISTER))
 	{
 		ret = rdpewa_fido_cancelled_response(&devInfo);
 		goto out;
@@ -701,8 +711,7 @@ static wStream* rdpewa_fido_get_assertion(rdpContext* context, const BYTE* ctapD
 	}
 
 	int r = FIDO_ERR_NO_CREDENTIALS;
-	if (!remotedesk_rdpewa_begin(context) ||
-	    !remotedesk_rdpewa_confirm(context, fido_assert_rp_id(assert), REMOTEDESK_RDPEWA_SIGN_IN))
+	if (!remotedesk_rdpewa_confirm(context, fido_assert_rp_id(assert), REMOTEDESK_RDPEWA_SIGN_IN))
 	{
 		ret = rdpewa_fido_cancelled_response(&devInfo);
 		goto out;
@@ -1032,217 +1041,16 @@ wStream* rdpewa_fido_get_authenticator_list(rdpContext* context)
 	return s;
 }
 
-wStream* rdpewa_fido_get_credentials(rdpContext* context, const char* rpId)
+wStream* rdpewa_fido_get_credentials(void)
 {
-
-	if (!rpId || !rpId[0])
-	{
-		WLog_WARN(TAG, "GET_CREDENTIALS: no rpId provided");
-		return rdpewa_cbor_encode_hresult_response(S_OK);
-	}
-
-	/* Only the key already authorized in this session; this query never prompts the user. */
-	const size_t ndevs = 1;
-	RDPEWA_DEVICE_INFO devInfo = WINPR_C_ARRAY_INIT;
-	fido_dev_t* dev = rdpewa_fido_open_device(context, FALSE, &devInfo);
-	if (!dev)
-		return rdpewa_cbor_encode_hresult_response(S_OK);
-
-	cbor_item_t* arr = cbor_new_definite_array(0);
-	if (!arr)
-	{
-		fido_dev_close(dev);
-		fido_dev_free(&dev);
-		return nullptr;
-	}
-
-	for (size_t devIdx = 0; devIdx < ndevs; devIdx++)
-	{
-		if (!fido_dev_supports_credman(dev))
-		{
-			WLog_DBG(TAG,
-			         "GET_CREDENTIALS: device %" PRIuz " does not support credential management",
-			         devIdx);
-			continue;
-		}
-
-		/* Credential management requires a PIN token. We don't prompt for PIN here
-		 * since the platform handles credential selection differently. The server
-		 * sends allowList in command 5 and the authenticator handles it at touch time.
-		 * Only enumerate credentials from devices that don't require a PIN, to avoid
-		 * spamming the user with PIN prompts. */
-		if (fido_dev_has_pin(dev))
-		{
-			WLog_DBG(TAG, "GET_CREDENTIALS: device %" PRIuz " requires PIN, skipping", devIdx);
-			continue;
-		}
-
-		const char* pin = nullptr;
-
-		fido_credman_rk_t* rk = fido_credman_rk_new();
-		if (!rk)
-			continue;
-
-		int r = fido_credman_get_dev_rk(dev, rpId, rk, pin);
-		if (r != FIDO_OK)
-		{
-			WLog_DBG(TAG, "GET_CREDENTIALS: device %" PRIuz ": %s", devIdx, fido_strerr(r));
-			fido_credman_rk_free(&rk);
-			continue;
-		}
-
-		size_t ncreds = fido_credman_rk_count(rk);
-		WLog_DBG(TAG, "GET_CREDENTIALS: device %" PRIuz ": found %" PRIuz " credentials", devIdx,
-		         ncreds);
-
-		for (size_t i = 0; i < ncreds; i++)
-		{
-			const fido_cred_t* cred = fido_credman_rk(rk, i);
-			if (!cred)
-				continue;
-
-			cbor_item_t* entry = cbor_new_definite_map(4);
-			if (!entry)
-				continue;
-
-			cbor_item_t* k0 = cbor_build_uint8(0);
-			cbor_item_t* v0 = cbor_build_uint8(4);
-			if (!cbor_map_add(entry, (struct cbor_pair){ .key = k0, .value = v0 }))
-			{
-				cbor_decref(&k0);
-				cbor_decref(&v0);
-				cbor_decref(&entry);
-				continue;
-			}
-			cbor_decref(&k0);
-			cbor_decref(&v0);
-
-			cbor_item_t* k1 = cbor_build_uint8(1);
-			cbor_item_t* v1 = cbor_build_bytestring(fido_cred_id_ptr(cred), fido_cred_id_len(cred));
-			if (!cbor_map_add(entry, (struct cbor_pair){ .key = k1, .value = v1 }))
-			{
-				cbor_decref(&k1);
-				cbor_decref(&v1);
-				cbor_decref(&entry);
-				continue;
-			}
-			cbor_decref(&k1);
-			cbor_decref(&v1);
-
-			cbor_item_t* k2 = cbor_build_uint8(2);
-			cbor_item_t* rpMap = cbor_new_definite_map(1);
-			{
-				cbor_item_t* rk2 = cbor_build_string("id");
-				cbor_item_t* rv2 = cbor_build_string(rpId);
-				if (!cbor_map_add(rpMap, (struct cbor_pair){ .key = rk2, .value = rv2 }))
-				{
-					cbor_decref(&rk2);
-					cbor_decref(&rv2);
-					cbor_decref(&k2);
-					cbor_decref(&rpMap);
-					cbor_decref(&entry);
-					continue;
-				}
-				cbor_decref(&rk2);
-				cbor_decref(&rv2);
-			}
-
-			if (!cbor_map_add(entry, (struct cbor_pair){ .key = k2, .value = rpMap }))
-			{
-				cbor_decref(&k2);
-				cbor_decref(&rpMap);
-				cbor_decref(&entry);
-				continue;
-			}
-			cbor_decref(&k2);
-			cbor_decref(&rpMap);
-
-			cbor_item_t* k3 = cbor_build_uint8(3);
-			cbor_item_t* userMap = cbor_new_definite_map(2);
-			{
-				cbor_item_t* uk = cbor_build_string("id");
-				cbor_item_t* uv =
-				    cbor_build_bytestring(fido_cred_user_id_ptr(cred), fido_cred_user_id_len(cred));
-				if (!cbor_map_add(userMap, (struct cbor_pair){ .key = uk, .value = uv }))
-				{
-					cbor_decref(&uk);
-					cbor_decref(&uv);
-					cbor_decref(&k3);
-					cbor_decref(&userMap);
-					cbor_decref(&entry);
-					continue;
-				}
-				cbor_decref(&uk);
-				cbor_decref(&uv);
-
-				const char* uname = fido_cred_user_name(cred);
-				if (uname)
-				{
-					cbor_item_t* unk = cbor_build_string("name");
-					cbor_item_t* unv = cbor_build_string(uname);
-					if (!cbor_map_add(userMap, (struct cbor_pair){ .key = unk, .value = unv }))
-					{
-						cbor_decref(&unk);
-						cbor_decref(&unv);
-						cbor_decref(&k3);
-						cbor_decref(&userMap);
-						cbor_decref(&entry);
-						continue;
-					}
-					cbor_decref(&unk);
-					cbor_decref(&unv);
-				}
-			}
-
-			if (!cbor_map_add(entry, (struct cbor_pair){ .key = k3, .value = userMap }))
-			{
-				cbor_decref(&k3);
-				cbor_decref(&userMap);
-				cbor_decref(&entry);
-				continue;
-			}
-			cbor_decref(&k3);
-			cbor_decref(&userMap);
-
-			if (!cbor_array_push(arr, entry))
-			{
-				cbor_decref(&entry);
-				continue;
-			}
-			cbor_decref(&entry);
-		}
-
-		fido_credman_rk_free(&rk);
-	}
-
-	if (dev)
-	{
-		fido_dev_close(dev);
-		fido_dev_free(&dev);
-	}
-
-	size_t cborLen = cbor_serialized_size(arr);
-	if (cborLen == 0)
-	{
-		cbor_decref(&arr);
-		return nullptr;
-	}
-
-	wStream* s = Stream_New(nullptr, 4 + cborLen);
+	/* The server only uses this to list discoverable credentials ahead of a request. Enumerating them needs device
+	 * I/O and a PIN token on the channel thread, outside any confirmed request, so report none: the key is still
+	 * found through the allow list when the user confirms the sign-in. */
+	wStream* s = Stream_New(nullptr, 5);
 	if (!s)
-	{
-		cbor_decref(&arr);
 		return nullptr;
-	}
 
 	Stream_Write_UINT32(s, (UINT32)S_OK);
-	if (cbor_serialize(arr, Stream_Pointer(s), cborLen) == 0)
-	{
-		cbor_decref(&arr);
-		Stream_Free(s, TRUE);
-		return nullptr;
-	}
-	Stream_Seek(s, cborLen);
-	cbor_decref(&arr);
+	Stream_Write_UINT8(s, 0x80); /* CBOR: empty array */
 	return s;
 }

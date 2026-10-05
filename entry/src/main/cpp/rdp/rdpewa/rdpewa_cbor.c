@@ -3,6 +3,9 @@
  * WebAuthn Virtual Channel Extension [MS-RDPEWA]
  * CBOR encoding/decoding
  *
+ * RemoteDesk: vendored from FreeRDP channels/rdpewa/client and modified. Out-of-range values from the server or
+ * the key are rejected or clamped instead of asserted.
+ *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
@@ -31,6 +34,20 @@
 #include "rdpewa_cbor.h"
 
 #define TAG CHANNELS_TAG("rdpewa.client")
+
+static BOOL rdpewa_cbor_get_uint32(const cbor_item_t* item, UINT32* value)
+{
+	const uint64_t raw = cbor_get_int(item);
+	if (raw > UINT32_MAX)
+		return FALSE;
+	*value = (UINT32)raw;
+	return TRUE;
+}
+
+static uint16_t rdpewa_cbor_clamp_uint16(UINT32 value)
+{
+	return value > UINT16_MAX ? UINT16_MAX : (uint16_t)value;
+}
 
 BOOL rdpewa_cbor_decode_request(const BYTE* data, size_t length, RDPEWA_REQUEST* out)
 {
@@ -72,8 +89,8 @@ BOOL rdpewa_cbor_decode_request(const BYTE* data, size_t length, RDPEWA_REQUEST*
 		const char* keyStr = (const char*)cbor_string_handle(key);
 		const size_t keyLen = cbor_string_length(key);
 
-		WLog_DBG(TAG, "  key[%" PRIuz "]: \"%.*s\" type=%u", i,
-		         WINPR_ASSERTING_INT_CAST(int, keyLen), keyStr, cbor_typeof(value));
+		WLog_DBG(TAG, "  key[%" PRIuz "]: \"%.*s\" type=%u", i, (int)(keyLen < 64 ? keyLen : 64), keyStr,
+		         cbor_typeof(value));
 
 		switch (keyLen)
 		{
@@ -98,7 +115,11 @@ BOOL rdpewa_cbor_decode_request(const BYTE* data, size_t length, RDPEWA_REQUEST*
 						WLog_ERR(TAG, "\"flags\"is not an unsigned int");
 						goto out;
 					}
-					out->flags = WINPR_ASSERTING_INT_CAST(UINT32, cbor_get_int(value));
+					if (!rdpewa_cbor_get_uint32(value, &out->flags))
+					{
+						WLog_ERR(TAG, "\"flags\" does not fit 32 bits");
+						goto out;
+					}
 				}
 				break;
 			case 7:
@@ -109,7 +130,11 @@ BOOL rdpewa_cbor_decode_request(const BYTE* data, size_t length, RDPEWA_REQUEST*
 						WLog_ERR(TAG, "\"command\"is not an unsigned int");
 						goto out;
 					}
-					out->command = WINPR_ASSERTING_INT_CAST(UINT32, cbor_get_int(value));
+					if (!rdpewa_cbor_get_uint32(value, &out->command))
+					{
+						WLog_ERR(TAG, "\"command\" does not fit 32 bits");
+						goto out;
+					}
 				}
 				else if (memcmp(keyStr, "request", 7) == 0)
 				{
@@ -134,7 +159,11 @@ BOOL rdpewa_cbor_decode_request(const BYTE* data, size_t length, RDPEWA_REQUEST*
 						WLog_ERR(TAG, "\"timeout\"is not an unsigned int");
 						goto out;
 					}
-					out->timeout = WINPR_ASSERTING_INT_CAST(UINT32, cbor_get_int(value));
+					if (!rdpewa_cbor_get_uint32(value, &out->timeout))
+					{
+						WLog_ERR(TAG, "\"timeout\" does not fit 32 bits");
+						goto out;
+					}
 				}
 				break;
 			case 13:
@@ -220,10 +249,9 @@ wStream* rdpewa_cbor_encode_webauthn_response(HRESULT hresult, BYTE ctapStatus,
 		/* The casing is all over the place, but that's how it's defined in the spec */
 		cbor_item_t* pairs[][2] = {
 			{ cbor_build_string("maxMsgSize"),
-			  cbor_build_uint16(WINPR_ASSERTING_INT_CAST(uint16_t, devInfo->maxMsgSize)) },
+			  cbor_build_uint16(rdpewa_cbor_clamp_uint16(devInfo->maxMsgSize)) },
 			{ cbor_build_string("maxSerializedLargeBlobArray"),
-			  cbor_build_uint16(
-			      WINPR_ASSERTING_INT_CAST(uint16_t, devInfo->maxSerializedLargeBlobArray)) },
+			  cbor_build_uint16(rdpewa_cbor_clamp_uint16(devInfo->maxSerializedLargeBlobArray)) },
 			{ cbor_build_string("providerType"), cbor_build_string(devInfo->providerType) },
 			{ cbor_build_string("providerName"), cbor_build_string(devInfo->providerName) },
 			{ cbor_build_string("devicePath"), cbor_build_string(devInfo->devicePath) },
@@ -234,7 +262,7 @@ wStream* rdpewa_cbor_encode_webauthn_response(HRESULT hresult, BYTE ctapStatus,
 			{ cbor_build_string("uvStatus"), cbor_build_uint8(devInfo->uvStatus) },
 			{ cbor_build_string("uvRetries"), cbor_build_uint8(devInfo->uvRetries) },
 			{ cbor_build_string("transports"),
-			  cbor_build_uint8(WINPR_ASSERTING_INT_CAST(uint8_t, devInfo->transports)) }
+			  cbor_build_uint8((uint8_t)(devInfo->transports & 0x07)) }
 		};
 		for (size_t i = 0; i < 11; i++)
 		{

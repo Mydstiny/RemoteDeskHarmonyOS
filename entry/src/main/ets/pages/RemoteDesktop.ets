@@ -4632,7 +4632,7 @@ struct RemoteDesktop {
       this.modifierPanelVisible || this.shortcutPanelVisible ||
       this.rdpControlCenterVisible || this.showRustDeskDisplayResolutionMenu ||
       this.inputDevicePromptVisible || this.physicalKeyboardLayoutPromptVisible ||
-      this.virtualTouchpadKeyboardGuidePromptVisible;
+      this.virtualTouchpadKeyboardGuidePromptVisible || this.rdpSecurityKeyPrompt !== null;
   }
 
   private harmonyShortcutRemoteInputAllowed(): boolean {
@@ -6443,39 +6443,81 @@ struct RemoteDesktop {
   }
 
   private setRdpSecurityKeyPreference(enabled: boolean): void {
+    // The switch already shows `enabled`; mirror it first so a refused change is a visible change back.
+    this.rdpSecurityKeyEnabled = enabled;
     const host: RemoteHost | null = this.pendingHost;
-    if (host === null || host.protocol !== 'rdp' || (enabled && !ProRdpSecurityKey.available())) {
-      this.rdpSecurityKeyEnabled = false;
+    const saved: boolean = host !== null && host.protocol === 'rdp' &&
+      (!enabled || ProRdpSecurityKey.available()) &&
+      ProRdpSecurityKeyPreference.set(getContext(this) as common.Context,
+        AccountSessionCoordinator.getInstance().currentScope().ownerScopeId, host.id, enabled);
+    if (!saved) {
+      const actual: boolean = host !== null && this.rdpSecurityKeyRequested(host);
+      setTimeout((): void => { this.rdpSecurityKeyEnabled = actual; }, 0);
+      promptAction.showToast({ message: '安全密钥重定向设置未保存，请稍后再试', duration: 2000 });
       return;
     }
-    const saved: boolean = ProRdpSecurityKeyPreference.set(getContext(this) as common.Context,
-      AccountSessionCoordinator.getInstance().currentScope().ownerScopeId, host.id, enabled);
-    this.rdpSecurityKeyEnabled = saved ? enabled : !enabled;
-    if (saved) {
-      promptAction.showToast({
-        message: enabled ? '已开启安全密钥重定向，下次连接生效' : '已关闭安全密钥重定向，下次连接生效',
-        duration: 2000
-      });
-    }
+    promptAction.showToast({
+      message: enabled ? '已开启安全密钥重定向，下次连接生效' : '已关闭安全密钥重定向，下次连接生效',
+      duration: 2000
+    });
   }
 
-  private startRdpSecurityKey(sessionId: number): void {
+  private startRdpSecurityKey(sessionId: number, reason: string): void {
     this.stopRdpSecurityKey();
     const service: ProRdpSecurityKey = new ProRdpSecurityKey((prompt: RdpSecurityKeyPrompt | null): void => {
-      this.rdpSecurityKeyPrompt = prompt;
+      // A stopped or replaced service never touches this page again.
+      if (this.rdpSecurityKey === service) { this.applyRdpSecurityKeyPrompt(prompt); }
     });
+    this.rdpSecurityKey = service;
     if (service.start(sessionId)) {
-      this.rdpSecurityKey = service;
+      hilog.info(RD_DOMAIN, RD_TAG, 'RDP security key service started reason=' + reason);
     } else {
-      hilog.warn(RD_DOMAIN, RD_TAG, 'RDP security key broker unavailable for this session');
+      this.rdpSecurityKey = null;
+      // Expected on restore when the session was connected without redirection.
+      hilog.info(RD_DOMAIN, RD_TAG, 'RDP security key: no broker for this session reason=' + reason);
     }
   }
 
+  /** Teardown and handoff: the prompt goes away without handing the keyboard back to the session. */
   private stopRdpSecurityKey(): void {
     const service: ProRdpSecurityKey | null = this.rdpSecurityKey;
     this.rdpSecurityKey = null;
     if (service !== null) { service.stop(); }
     this.rdpSecurityKeyPrompt = null;
+  }
+
+  /**
+   * A page that adopted a live RDP session (independent PC window, restore) answers its security-key broker. The
+   * source page stopped its own service at the handoff; a running service on this page is kept as is.
+   */
+  private resumeRdpSecurityKeyAfterRestore(): void {
+    const host: RemoteHost | null = this.pendingHost;
+    if (host === null || host.protocol !== 'rdp' || this.sessionId <= 0) { return; }
+    // The switch shows the choice for the next connection; this session keeps what it was connected with.
+    this.rdpSecurityKeyEnabled = this.rdpSecurityKeyRequested(host);
+    if (this.rdpSecurityKey === null && ProRdpSecurityKey.available()) {
+      this.startRdpSecurityKey(this.sessionId, 'restore');
+    }
+  }
+
+  /**
+   * While the security-key prompt is open it owns local input: the keyboard proxy swallows keys (so a PIN never
+   * reaches the remote or the log), canForwardInput drops pointer and key input, remote focus is not reclaimed and
+   * HarmonyOS shortcuts are not captured. Closing it hands the keyboard back to the remote session.
+   */
+  private applyRdpSecurityKeyPrompt(prompt: RdpSecurityKeyPrompt | null): void {
+    const wasOpen: boolean = this.rdpSecurityKeyPrompt !== null;
+    if (prompt !== null && !wasOpen) {
+      // Release what the remote believes is held before the prompt starts swallowing key-ups.
+      this.releaseAllHeldKeys();
+      this.clearRemoteInputFocusSchedule();
+    }
+    this.rdpSecurityKeyPrompt = prompt;
+    if ((prompt !== null) === wasOpen) { return; }
+    this.syncHarmonyShortcutCapture(prompt !== null ? 'security-key-prompt-open' : 'security-key-prompt-close');
+    if (prompt === null) {
+      this.scheduleRemoteInputFocus('security-key-prompt-closed');
+    }
   }
 
   /** What this peer allows, from its version, platform, display index and permission. */
@@ -10333,6 +10375,8 @@ struct RemoteDesktop {
       // late source-page lifecycle callback from disconnecting it or clearing
       // the target surface after the new page has attached.
       this.pcWindowHandoffComplete = true;
+      // The target window answers the security-key broker from now on.
+      this.stopRdpSecurityKey();
       this.nativeHandles.markAsyncTeardownTransferred();
       this.nativeDisconnectIdentity = null;
       this.cleanupDisconnectIdentity = null;
@@ -10885,6 +10929,7 @@ struct RemoteDesktop {
       this.cancelPendingDisappearDecision();
       this.unbindVncAccountScopeListener();
       this.unregisterKeyboardAvoidListener();
+      this.stopRdpSecurityKey();
       hilog.info(RD_DOMAIN, RD_TAG,
         'aboutToDisappear: source teardown skipped after independent-window handoff');
       return;
@@ -13134,6 +13179,12 @@ struct RemoteDesktop {
         ' restoreInProgress=' + (this.restoreInProgress ? '1' : '0'));
       return false;
     }
+    if (this.rdpSecurityKeyPrompt !== null) {
+      if (source !== 'mouseMove') {
+        hilog.info(RD_DOMAIN, RD_TAG, 'dropInput ' + source + ' securityKeyPrompt=1');
+      }
+      return false;
+    }
     if (this.isExplicitPhoneSession() && !this.explicitPhoneGeometryReady) { return false; }
     if (this.isVncViewOnlySession()) {
       const now: number = Date.now();
@@ -13517,6 +13568,11 @@ struct RemoteDesktop {
    */
   private scheduleRemoteInputFocus(reason: string, force: boolean = false,
     allowInterruptedProxy: boolean = false): void {
+    if (this.rdpSecurityKeyPrompt !== null) {
+      // The prompt owns the keyboard; closing it schedules the remote focus again.
+      hilog.info(RD_DOMAIN, RD_TAG, 'remote-input-focus skip reason=' + reason + ' securityKeyPrompt=1');
+      return;
+    }
     if (this.connected && this.shouldRequirePhysicalKeyboardLayout() &&
       !this.physicalKeyboardLayoutConfirmed && !this.physicalKeyboardLayoutPromptVisible) {
       this.promptPhysicalKeyboardLayout();
@@ -13531,7 +13587,7 @@ struct RemoteDesktop {
     this.remoteInputFocusTimer = setTimeout((): void => {
       this.remoteInputFocusTimer = -1;
       if (!this.connected || this.sessionId <= 0 || !this.inputForwardReady || this.keyboardOpen ||
-        this.physicalKeyboardLayoutPromptVisible ||
+        this.physicalKeyboardLayoutPromptVisible || this.rdpSecurityKeyPrompt !== null ||
         (this.shouldRequirePhysicalKeyboardLayout() && !this.physicalKeyboardLayoutConfirmed)) {
         return;
       }
@@ -16517,7 +16573,7 @@ struct RemoteDesktop {
       this.connected = true;
       this.rdpSecurityKeyEnabled = this.rdpSecurityKeyRequested(host);
       if (host.protocol === 'rdp' && cfg.rdpSecurityKeyRedirect === true) {
-        this.startRdpSecurityKey(sid);
+        this.startRdpSecurityKey(sid, 'connect');
       }
       this.connecting = false;
       this.connectionProgressMessage = '';
@@ -18233,6 +18289,7 @@ struct RemoteDesktop {
    * a disconnect against the shared session.
    */
   private abandonSupersededRegistryRestore(): void {
+    this.stopRdpSecurityKey();
     this.restoreInProgress = false;
     this.bgRestorePending = false;
     this.registryPresentationRestorePending = false;
@@ -18560,6 +18617,7 @@ struct RemoteDesktop {
 
         // 恢复状态
         this.connected = true;
+        this.resumeRdpSecurityKeyAfterRestore();
         this.connectStarted = false;
         this.connecting = false;
         this.connectionProgressMessage = '';
@@ -21155,7 +21213,8 @@ struct RemoteDesktop {
   }
 
   private handleKeyboardDidInsert(info: InsertValue): void {
-    if (!this.keyboardImeActive || info.insertValue.length === 0) {
+    // Text committed while the security-key prompt is open is never queued for the remote.
+    if (!this.keyboardImeActive || info.insertValue.length === 0 || this.rdpSecurityKeyPrompt !== null) {
       return;
     }
     this.keyboardSyncedCaret = info.insertOffset + info.insertValue.length;
@@ -22386,6 +22445,11 @@ struct RemoteDesktop {
 
   /** 输入框代理的前置按键回调：在 IME 消费功能键前将其发送到远端。 */
   private handleKeyboardProxyPreIme = (event: KeyEvent): boolean => {
+    if (this.rdpSecurityKeyPrompt !== null) {
+      // A key typed while the security-key prompt is open (a PIN) never reaches the remote or the log.
+      event.stopPropagation();
+      return true;
+    }
     const intercept: boolean = this.shouldInterceptKeyboardProxyKey(event);
     hilog.info(RD_DOMAIN, RD_TAG, 'hwkey-pre-ime type=' + event.type.toString() +
       ' code=' + event.keyCode.toString() +
@@ -22658,6 +22722,10 @@ struct RemoteDesktop {
   }
 
   private handleXComponentKey = (event: KeyEvent): boolean => {
+    if (this.rdpSecurityKeyPrompt !== null) {
+      try { event.stopPropagation(); } catch (_err) {}
+      return true;
+    }
     if (this.sessionWindowId.length > 0 && event.keyCode === KeyCode.KEYCODE_F11) {
       try { event.stopPropagation(); } catch (_err) {}
       if (event.type === KeyType.Down) { this.toggleIndependentWindowFullscreen(); }

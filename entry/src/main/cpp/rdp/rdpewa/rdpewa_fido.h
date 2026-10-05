@@ -3,6 +3,9 @@
  * WebAuthn Virtual Channel Extension [MS-RDPEWA]
  * libfido2 authenticator integration
  *
+ * RemoteDesk: vendored from FreeRDP channels/rdpewa/client and modified. The authenticator list and the
+ * credential query take their answer from the RemoteDesk security-key broker instead of enumerating devices.
+ *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
@@ -62,11 +65,11 @@ wStream* rdpewa_fido_get_authenticator_list(rdpContext* context);
 
 /** @brief Handle CTAPCBOR_RPC_COMMAND_GET_CREDENTIALS.
  *
- *  @param context   RDP context for user interaction (PIN prompt)
- *  @param rpId      relying party ID to query credentials for
+ *  Always reports no discoverable credentials, without device I/O.
+ *
  *  @return a new wStream on success (caller frees with Stream_Free(s, TRUE)), nullptr on failure
  */
 WINPR_ATTR_MALLOC(Stream_Free, 1)
-wStream* rdpewa_fido_get_credentials(rdpContext* context, const char* rpId);
+wStream* rdpewa_fido_get_credentials(void);
 
 #endif /* FREERDP_CHANNEL_RDPEWA_CLIENT_FIDO_H */
