@@ -393,7 +393,7 @@ const cases = [
     const lanDiscovery = read('entry/src/main/ets/services/ai/AiLanDiscoveryService.ets');
     assert.ok(lanDiscovery.includes('aiLanCandidateAddresses') && lanDiscovery.includes('MAX_CONCURRENCY'));
     assert.ok(lanDiscovery.includes('getDefaultNet') && lanDiscovery.includes('CONNECT_TIMEOUT_MS: number = 320'));
-    assert.ok(settingsPage.includes('AiBackendChoiceCard({ backend: \'codex\''));
+    assert.ok(settingsPage.includes('AiBackendChoiceCard({ backend: backend') && settingsPage.includes("this.backendChoiceCard('codex'"));
     assert.ok(read('entry/src/main/ets/components/ai/AiHostInstallPanel.ets').includes('AiBackendChoiceCard({ backend: \'codex\''));
     assert.ok(settingsPage.includes("padding({ top: this.embedded ? 0 : (this.topInset > 0 ? px2vp(this.topInset) : 0) })"));
     const actionRow = read('entry/src/main/ets/components/AppSettingsActionRow.ets');

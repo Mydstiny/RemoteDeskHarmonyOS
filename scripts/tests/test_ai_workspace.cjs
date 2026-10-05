@@ -15,7 +15,7 @@ function environment(){
     write:(method,params,session)=>{writes.push({method,params,session});return writeHook(method,params,session);}};
   const mocks={'./AiAccess':{AiAccess:{getInstance:()=>access}},'./AiBridgeClient':{AiBridgeClient:{connect:async()=>client}},
     '../EndpointAddressPolicy':{parseEndpointHost:()=>({ok:true}),parseEndpointServerIdentity:()=>({ok:true})},
-    './AiTransport':{aiRandomId:()=> 'writer'+(++randomSeq)},
+    './AiTransport':{aiRandomId:()=> 'writer'+(++randomSeq)},'@kit.ArkTS':{util:{}},
     './AiLocalStore':{AiLocalStore:{getInstance:()=>({operations:async()=>[]})}}};
   function load(name){if(modules.has(name))return modules.get(name).exports;const module={exports:{}};modules.set(name,module);
     const source=ts.transpileModule(fs.readFileSync(base+name+'.ets','utf8'),{compilerOptions:{target:ts.ScriptTarget.ES2021,module:ts.ModuleKind.CommonJS}}).outputText;
