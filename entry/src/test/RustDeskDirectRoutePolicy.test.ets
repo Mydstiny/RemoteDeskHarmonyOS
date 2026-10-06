@@ -100,10 +100,10 @@ export default function rustDeskDirectRoutePolicyTest(): void {
       expect(rustDeskDirectAddressClassCode('not_applicable')).assertEqual(11);
     });
 
-    it('explains the failed layer and never blames EasyTier for login or video', 0, () => {
+    it('explains the failed layer and never blames the overlay network for login or video', 0, () => {
       expect(rustDeskDirectFailureMessage('tcp_refused', 21119).indexOf('21119') >= 0).assertTrue();
-      expect(rustDeskDirectFailureMessage('tcp_timeout', 21118).indexOf('EasyTier') >= 0).assertTrue();
-      expect(rustDeskDirectFailureMessage('login_password', 21118).indexOf('EasyTier') < 0).assertTrue();
+      expect(rustDeskDirectFailureMessage('tcp_timeout', 21118).indexOf('虚拟组网') >= 0).assertTrue();
+      expect(rustDeskDirectFailureMessage('login_password', 21118).indexOf('虚拟组网') < 0).assertTrue();
       expect(rustDeskDirectFailureMessage('first_frame', 21118).indexOf('与直连网络无关') >= 0).assertTrue();
       expect(rustDeskDirectFailureMessage('unknown', 21118)).assertEqual('');
     });

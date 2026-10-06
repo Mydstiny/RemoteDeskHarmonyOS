@@ -148,14 +148,14 @@ export function rustDeskDirectFailureMessage(stage: RustDeskDirectStage, port: n
   const portText: string = port > 0 ? port.toString() : '21118';
   switch (stage) {
     case 'input':
-      return '直连地址无效：请填写局域网 IP、EasyTier 等虚拟网 IP 或域名，不要填写 RustDesk ID。';
+      return '直连地址无效：请填写局域网 IP、虚拟组网 IP 或域名，不要填写 RustDesk ID。';
     case 'tcp_timeout':
-      return '连接对端端口 ' + portText + ' 超时：请确认两端在同一局域网或 EasyTier 虚拟网已互通，' +
+      return '连接对端端口 ' + portText + ' 超时：请确认两端在同一局域网，或虚拟组网 / VPN 已互通，' +
         '并确认对端 RustDesk 已开启“允许 IP 直接访问”。';
     case 'tcp_refused':
       return '对端拒绝连接：对端 RustDesk 可能未开启“允许 IP 直接访问”，或直连端口不是 ' + portText + '。';
     case 'tcp_unreachable':
-      return '本机没有到该地址的路由：请确认 EasyTier 等虚拟网正在运行，且本应用可以访问该虚拟网。';
+      return '本机没有到该地址的路由：请确认虚拟组网或 VPN 正在运行，且本应用可以访问该网络。';
     case 'tcp_interrupted':
       return '直连 TCP 已建立但被中断：请检查对端 RustDesk 版本和网络稳定性。';
     case 'tcp_failed':

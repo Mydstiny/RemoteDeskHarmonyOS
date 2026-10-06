@@ -379,7 +379,7 @@ check('the new look changes only what it gates; classic values stay as they were
   const header = member(page, '@Builder settingsAccordionHeader(');
   assert.ok(header.includes(".height(this.settingsModern() ? 'auto' : 64)"));
   assert.ok(header.includes('this.settingsSectionSummary(section, subtitle, this.settingsValuesRevision)'));
-  assert.ok(page.includes("constraintSize({ maxWidth: this.settingsModern() && this.breakpoint !== 'sm' ? 760 : '100%' })"));
+  assert.ok(page.includes("constraintSize({ maxWidth: this.settingsModern() && this.isDesktopDevice && this.breakpoint === 'xl' ? 760 : '100%' })"));
   assert.ok(member(page, 'private settingsLeafSheetWidth(): number | undefined {')
     .includes('if (!this.settingsModern() || this.settingsLeafUsesBottomSheet()) { return undefined; }'));
   assert.ok(member(page, 'private settingsSectionExpandedMaxHeight(section: string): number {')

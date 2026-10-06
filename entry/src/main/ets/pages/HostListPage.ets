@@ -18664,8 +18664,8 @@ struct HostListPage {
         ListItem() { Column().height(this.isDesktopDevice && this.breakpoint === 'xl' ? 24 : 120) }
       }
       .width('100%').layoutWeight(1).id('settingsList')
-      // 全新视觉 on Pad and PC: a readable column instead of rows stretched across the whole window.
-      .constraintSize({ maxWidth: this.settingsModern() && this.breakpoint !== 'sm' ? 760 : '100%' })
+      // 全新视觉 on PC: a readable column in the wide window. Pad keeps the full width, like the other pages.
+      .constraintSize({ maxWidth: this.settingsModern() && this.isDesktopDevice && this.breakpoint === 'xl' ? 760 : '100%' })
       .scrollBar(BarState.Off).edgeEffect(EdgeEffect.Spring)
       .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
       .overlay(this.TitleBarOverlay(), { align: Alignment.Top })
