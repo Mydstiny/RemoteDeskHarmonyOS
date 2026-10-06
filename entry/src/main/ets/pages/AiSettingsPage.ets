@@ -8,6 +8,8 @@ import { common } from '@kit.AbilityKit';
 import { AppConfig, Palette, buildDark, buildLight } from '../common/Theme';
 import { ProBadge } from '../components/ProBadge';
 import { SettingsSavedBadge } from '../components/SettingsSavedBadge';
+import { AppSheetHeader } from '../components/AppSheetHeader';
+import { settingsVisualIsModern } from '../services/SettingsVisualStylePolicy';
 import { ProFeatureGate } from '../components/ProFeatureGate';
 import { AiBackendChoiceCard } from '../components/ai/AiBackendChoiceCard';
 import { AiHostEditor } from '../components/ai/AiHostEditor';
@@ -30,6 +32,8 @@ export struct AiSettingsSurface {
   @StorageProp('currentTheme') theme: string = 'light';
   @StorageProp('accentColor') accent: string = '#007DFF';
   @StorageProp('topRectHeight') topInset: number = 0;
+  /** 设置 → 个性化 → 全新视觉: the shared sheet header when embedded, icons and plain wording on the rows. */
+  @StorageProp('settingsVisualStyle') visualStyle: string = 'classic';
   // When hosted by HostListPage this surface is rendered inside its shared
   // settings bindSheet. Route pages keep using router params as before.
   @Prop @Watch('onRequestedSectionChange') requestedSection: string = '';
@@ -252,8 +256,14 @@ export struct AiSettingsSurface {
       if (detail !== '') { Text(detail).fontSize(12).fontFamily(AppConfig.fontFamily).fontColor(this.pal().text2).width('100%') }
     }.width('100%').padding({ left: 4, right: 4 })
   }
+  private modern(): boolean { return settingsVisualIsModern(this.visualStyle); }
+
   build() {
     Column() {
+      if (this.embedded && this.modern()) {
+        AppSheetHeader({ title: this.title(), subtitle: this.accessText === '' ? 'Pro 远程 AI' : this.accessText,
+          showProBadge: true, savedTick: this.savedTick, whiteOnAccent: true, onClose: (): void => { this.onClose(); } })
+      } else {
       Row({ space: 12 }) {
         Button() { SymbolGlyph($r('sys.symbol.chevron_left')).fontSize(20).fontColor([this.pal().text]) }
           .width(44).height(44).padding(0).backgroundColor(Color.Transparent)
@@ -267,6 +277,7 @@ export struct AiSettingsSurface {
         SettingsSavedBadge({ savedTick: this.savedTick })
         ProBadge()
       }.width('100%').padding({ left: 12, right: 24, top: 8, bottom: 8 })
+      }
       // Errors show under the title, where they are seen, instead of after the last section.
       if (this.error !== '') {
         Row({ space: 8 }) {
@@ -309,7 +320,8 @@ export struct AiSettingsSurface {
               this.hostActionRow(host);
             } })
           }, (host: AiHost): string => host.id + ':' + host.revision.toString())
-          AppSettingsActionRow({ icon: protocolIcon('ai'), title: '添加主机', detail: '沿用当前经典／全新添加偏好',
+          AppSettingsActionRow({ icon: this.modern() ? $r('sys.symbol.plus_circle_fill') : protocolIcon('ai'), title: '添加主机',
+            detail: this.modern() ? '填写电脑地址，再粘贴电脑端生成的邀请完成配对' : '沿用当前经典／全新添加偏好',
             isEnabled: !this.busy, onAction: (): void => { this.openEditor(null); } })
           }
           if (this.sectionVisible('display')) {
@@ -344,18 +356,18 @@ export struct AiSettingsSurface {
           }
           if (this.sectionVisible('data')) {
           this.sectionTitle('本机数据管理', '配置备份只包含主机地址和显示偏好，不含配对凭据、会话正文或操作内容。')
-          AppSettingsActionRow({ title: '导出 AI 配置', detail: '保存不含配对凭据的配置备份', isEnabled: !this.busy && this.allowed,
+          AppSettingsActionRow({ icon: this.modern() ? $r('sys.symbol.arrow_up') : undefined, title: '导出 AI 配置', detail: '保存不含配对凭据的配置备份', isEnabled: !this.busy && this.allowed,
             onAction: (): void => {
               void this.run(async (): Promise<void> => { if (await AiDataTransfer.exportConfig()) { promptAction.showToast({ message: 'AI 配置已导出' }); } });
             } })
-          AppSettingsActionRow({ title: '导入 AI 配置', detail: '新增未配对主机，保留已有主机', isEnabled: !this.busy && this.allowed,
+          AppSettingsActionRow({ icon: this.modern() ? $r('sys.symbol.arrow_down') : undefined, title: '导入 AI 配置', detail: '新增未配对主机，保留已有主机', isEnabled: !this.busy && this.allowed,
             onAction: (): void => {
               void this.run(async (): Promise<void> => {
                 const count = await AiDataTransfer.importConfig(); await this.load();
                 promptAction.showToast({ message: '已新增 ' + count + ' 个未配对主机' });
               });
             } })
-          AppSettingsActionRow({ title: '清理已确认操作记录', detail: '待确认操作继续保留，避免重复执行', isEnabled: !this.busy && this.allowed,
+          AppSettingsActionRow({ icon: this.modern() ? $r('sys.symbol.trash') : undefined, title: '清理已确认操作记录', detail: '待确认操作继续保留，避免重复执行', isEnabled: !this.busy && this.allowed,
             onAction: (): void => { this.confirmClearOperations(); } })
           }
           if (this.sectionVisible('install')) {

@@ -438,10 +438,14 @@ check('shared sheet chrome: optional white-on-accent text and saved flash, defau
   assert.ok(header.includes('this.whiteOnAccent ? appUiOnAccentText(this.accent) : appUiButtonText(this.accent)'));
   const choice = read('components/AppSettingsChoiceButton.ets');
   assert.ok(choice.includes('@Prop whiteOnAccent: boolean = false;'));
-  // The remote AI pages keep the old contrast choice (they never pass whiteOnAccent).
-  for (const file of ['pages/AiSettingsPage.ets', 'pages/RemoteAiWorkspace.ets', 'components/ai/AiHostInstallPanel.ets']) {
+  // The remote AI pages keep the old contrast choice; only the 全新视觉 settings header opts in.
+  for (const file of ['pages/RemoteAiWorkspace.ets', 'components/ai/AiHostInstallPanel.ets']) {
     assert.ok(!read(file).includes('whiteOnAccent'), file);
   }
+  const remoteAi = read('pages/AiSettingsPage.ets');
+  assert.equal((remoteAi.match(/whiteOnAccent/g) || []).length, 1);
+  assert.ok(remoteAi.slice(remoteAi.indexOf('whiteOnAccent') - 300, remoteAi.indexOf('whiteOnAccent'))
+    .includes('if (this.embedded && this.modern()) {'));
 });
 
 check('settings sheets switch to the shared header only in 全新视觉 and keep their classic header otherwise', () => {
@@ -503,6 +507,42 @@ check('the host page sheets use the shared header in 全新视觉 and drop the s
   }
   assert.ok(page.includes("ColorPickerSheet({ onClose: (): void => { this.closeSettingsLeafSheetByUser(); } })"));
   assert.ok(member(page, 'onPageShow(): void {').includes('this.settingsValuesRevision++;'));
+});
+
+// ------------------------------------------------------------------ batch D: VNC, Moonlight, remote AI, AI 助理
+check('VNC sheets: 44vp header buttons and plain wording in 全新视觉, original text in classic', () => {
+  const scaffold = read('components/vnc/VncSheetScaffold.ets');
+  assert.ok(scaffold.includes('return this.modern() ? 44 : (this.compactHeight() ? 32 : 36);'));
+  const vnc = read('components/VncSettingsSheet.ets');
+  const plain = member(vnc, 'private plainSubtitle(): string {');
+  for (const jargon of ['owner', 'remotehosts', 'native', 'trust', 'RFB', 'fail-closed']) {
+    assert.ok(!plain.includes(jargon), jargon);
+  }
+  const classic = member(vnc, 'private classicSubtitle(): string {');
+  assert.ok(classic.includes("'主机记录不会进入 remotehosts'"), 'classic keeps its text');
+  assert.ok(vnc.includes("settingsVisualIsModern(this.visualStyle) ? 'WebSocket 网关和 SSH 隧道暂未开放，服务端就绪后会提供。' :"));
+  assert.ok(vnc.includes("'WebSocket Gateway 和 SSH tunnel 仍处于 fail-closed，部署并验证服务端契约后才会开放。'"));
+});
+
+check('Moonlight: typed custom size, 44vp choices and plain wording only in 全新视觉', () => {
+  const page = read('pages/MoonlightSettingsPage.ets');
+  assert.ok(page.includes('@Builder private customSizeField(width: boolean) {'));
+  const commit = member(page, 'private commitCustomSize(width: boolean): void {');
+  assert.ok(commit.includes('this.setVideoWidth(value)') && commit.includes('this.setVideoHeight(value)'),
+    'typed sizes go through the same clamping as the sliders');
+  assert.ok(page.includes(".height(this.modern() ? 44 : 36).layoutWeight(1).fontSize(this.modern() ? 13 : 11)"));
+  assert.ok(page.includes("this.modern() ? '画面不可见时' : '无可见 Surface'"));
+});
+
+check('remote AI and AI 助理 settings use the shared header and palette colors in 全新视觉', () => {
+  const remote = read('pages/AiSettingsPage.ets');
+  assert.ok(remote.includes("icon: this.modern() ? $r('sys.symbol.plus_circle_fill') : protocolIcon('ai'), title: '添加主机',"));
+  assert.ok(remote.includes("this.accessText === '' ? 'Pro 远程 AI' : this.accessText"));
+  const ai = read('components/diagnosticAi/DiagnosticAiSettingsSheet.ets');
+  const header = member(ai, '@Builder private header() {');
+  assert.ok(header.includes('if (this.modern()) {') && header.includes('this.classicHeader()'));
+  assert.ok(ai.includes(".fontColor(this.modern() ? this.pal().danger : '#FF453A')"));
+  assert.ok(!/\.fontColor\('#FF453A'\)/.test(ai), 'every red label is gated');
 });
 
 console.log('settings overhaul: ' + passed + ' checks passed');

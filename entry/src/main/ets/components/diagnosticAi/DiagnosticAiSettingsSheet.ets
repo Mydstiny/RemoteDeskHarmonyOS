@@ -1,4 +1,6 @@
 import { AiMotionSettingsPanel } from './AiMotionSettingsPanel';
+import { AppSheetHeader } from '../AppSheetHeader';
+import { settingsVisualIsModern } from '../../services/SettingsVisualStylePolicy';
 import { appUiOnAccentText } from '../../common/AppUiColorPolicy';
 import { common } from '@kit.AbilityKit';
 import { deviceInfo } from '@kit.BasicServicesKit';
@@ -149,6 +151,8 @@ export struct DiagnosticAiSettingsSheet {
   @StorageProp('currentTheme') theme: string = 'light';
   @StorageProp('accentColor') accent: string = '#007DFF';
   @StorageProp('currentBreakpoint') breakpoint: string = 'md';
+  /** 设置 → 个性化 → 全新视觉: the shared sheet header, palette colors and plain wording. */
+  @StorageProp('settingsVisualStyle') visualStyle: string = 'classic';
   onClose: () => void = (): void => {};
   onAppAction: (action: DiagnosticAiAppActionId) => void = (_action: DiagnosticAiAppActionId): void => {};
   /** Replace the current native settings sheet with the assistant sheet for a saved session. */
@@ -898,7 +902,13 @@ export struct DiagnosticAiSettingsSheet {
     if (this.section === 8) { return 'AI 语音'; }
     return '辅助 AI 配置';
   }
+  private modern(): boolean { return settingsVisualIsModern(this.visualStyle); }
+
   private headerDetail(): string {
+    if (this.modern() && this.section !== 1 && this.section !== 3 && this.section !== 4 && this.section !== 5 &&
+      this.section !== 6 && this.section !== 7 && this.section !== 8) {
+      return '选择服务商、模型，以及哪些数据可以发给它';
+    }
     if (this.section === 1) { return '询问应用、协助设置、诊断问题并生成反馈草稿'; }
     if (this.section === 3) { return '按时间和订阅查看请求、Token、缓存命中和费用'; }
     if (this.section === 4) { return '名称、语气和仅保存在本机的助手记忆'; }
@@ -910,6 +920,15 @@ export struct DiagnosticAiSettingsSheet {
   }
 
   @Builder private header() {
+    if (this.modern()) {
+      AppSheetHeader({ title: this.headerTitle(), subtitle: this.headerDetail(), horizontalPadding: 0,
+        whiteOnAccent: true, onClose: (): void => { this.onClose(); } }).margin({ bottom: 8 })
+    } else {
+      this.classicHeader()
+    }
+  }
+
+  @Builder private classicHeader() {
     Row({ space: 12 }) {
       Column() {
         SymbolGlyph(this.section === 1 ? $r('sys.symbol.performance') : this.section === 6 ? $r('sys.symbol.wand_and_stars') :
@@ -1093,7 +1112,7 @@ export struct DiagnosticAiSettingsSheet {
           Text(this.tokenText(this.currentUsage().prompt + this.currentUsage().completion) + ' Token').fontSize(13)
             .fontColor(this.pal().text2)
           if (this.currentUsage().failed > 0) {
-            Text(this.currentUsage().failed.toString() + ' 次失败').fontSize(13).fontColor('#FF453A')
+            Text(this.currentUsage().failed.toString() + ' 次失败').fontSize(13).fontColor(this.modern() ? this.pal().danger : '#FF453A')
           }
         }
         if ((this.usageSnapshot.chatRequestCount ?? 0) > 0 && this.usageProviderFilter === '') {
@@ -1198,7 +1217,7 @@ export struct DiagnosticAiSettingsSheet {
         ' 次请求的服务没有返回用量，Token 为本机按实际发送内容估算。' : '') +
         '费用按模型价格表估算，不是服务商账单；价格待确认的模型按 ¥0.30/百万 Token 粗估。统计只保存在本机当前账号下。')
         .fontSize(11).lineHeight(16).fontColor(this.pal().text3).width('100%')
-      Text('清空用量统计').fontSize(13).fontColor('#FF453A')
+      Text('清空用量统计').fontSize(13).fontColor(this.modern() ? this.pal().danger : '#FF453A')
         .padding({ top: 4, bottom: 8 }).onClick((): void => { this.confirmClearUsage(); })
     }.width('100%')
   }
@@ -1276,7 +1295,7 @@ export struct DiagnosticAiSettingsSheet {
         Row() {
           Text('共 ' + this.kindSessions().length.toString() + ' 个对话').fontSize(12).fontColor(this.pal().text3)
             .layoutWeight(1)
-          Text('清空全部').fontSize(12).fontColor('#FF453A')
+          Text('清空全部').fontSize(12).fontColor(this.modern() ? this.pal().danger : '#FF453A')
             .onClick((): void => { this.confirmClearSessions(); })
         }.width('100%')
         if (this.sessionGroups().length === 0) {
@@ -1321,8 +1340,8 @@ export struct DiagnosticAiSettingsSheet {
         Text('改动会立即生效并保存在本机').fontSize(12).fontColor(this.pal().text3).layoutWeight(1)
         if (this.assistantSavedFlash) {
           Row({ space: 4 }) {
-            SymbolGlyph($r('sys.symbol.checkmark_circle_fill')).fontSize(14).fontColor(['#34C759'])
-            Text('已保存').fontSize(12).fontColor('#34C759')
+            SymbolGlyph($r('sys.symbol.checkmark_circle_fill')).fontSize(14).fontColor([this.modern() ? this.pal().success : '#34C759'])
+            Text('已保存').fontSize(12).fontColor(this.modern() ? this.pal().success : '#34C759')
           }.transition(TransitionEffect.OPACITY.animation({ duration: 200 }))
         }
       }.width('100%').padding({ left: 4, right: 4 })
@@ -1416,7 +1435,7 @@ export struct DiagnosticAiSettingsSheet {
             .fontSize(11).lineHeight(16).fontColor(this.pal().text3).width('100%').maxLines(this.memoryExpanded ? 40 : 3)
             .textOverflow({ overflow: TextOverflow.Ellipsis })
           if (this.memoryDraft.trim() !== '') {
-            Text('清除我补充的偏好').fontSize(13).fontColor('#FF453A')
+            Text('清除我补充的偏好').fontSize(13).fontColor(this.modern() ? this.pal().danger : '#FF453A')
               .onClick((): void => {
                 this.confirmDanger('清除你补充的偏好？', 'AI 不再记住这段偏好，自动生成的对话摘要不受影响。', '清除',
                   (): void => { this.memoryDraft = ''; this.saveAssistantNow(); });
@@ -1561,7 +1580,7 @@ export struct DiagnosticAiSettingsSheet {
                     Text(this.profileKind(profile)).fontSize(10).fontColor(this.accent)
                       .padding({ left: 6, right: 6, top: 1, bottom: 1 }).borderRadius(6).backgroundColor(this.pal().surface)
                     if (profile.providerId === this.settings.selectedProviderId && profile.modelId === this.settings.selectedModelId) {
-                      Text('使用中').fontSize(10).fontColor('#2BB673')
+                      Text('使用中').fontSize(10).fontColor(this.modern() ? this.pal().success : '#2BB673')
                     }
                   }
                   Text(profile.modelId === '' ? '尚未选择模型' : profile.modelId).fontSize(11).fontColor(this.pal().text3)
