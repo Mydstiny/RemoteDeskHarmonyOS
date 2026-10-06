@@ -13,6 +13,9 @@ import { AI_ORB_DICTATION, aiOrbDictationEncode } from '../../services/diagnosti
 import { AiReadAloud, AiVoiceInput } from '../../services/diagnosticAi/AiSpeech';
 import { XyLiveLevel } from '../../services/diagnosticAi/AiXiaoyiLight';
 import { common } from '@kit.AbilityKit';
+import { AiTouchShield } from '../../services/diagnosticAi/AiTouchShield';
+
+let aiLiftLayerCount: number = 0;
 
 /** The island's square when 灵动岛光环 opens out of it. */
 const AI_ISLAND_CARD: number = 148;
@@ -276,7 +279,25 @@ struct AiLiftLayer {
     this.restSoon(520);
   };
 
+  private readonly shieldId: string = 'ai-lift-' + (++aiLiftLayerCount).toString();
+
+  /** Window coordinates (vp) on the orb or its shown chat: a session canvas leaves touches that start there alone. */
+  private covers(x: number, y: number): boolean {
+    if (this.phase !== 2) { return false; }
+    const ly: number = y - this.originY;
+    const pad: number = 8;
+    const orb: number = AI_FLOAT_ORB * Math.max(1, this.boxScale);
+    if (x >= this.boxX - pad && x <= this.boxX + orb + pad && ly >= this.boxY - pad && ly <= this.boxY + orb + pad) {
+      return true;
+    }
+    if (!this.chatShown) { return false; }
+    const cx: number = this.chatX() + this.chatShiftX;
+    const cy: number = this.chatY() + this.chatShiftY;
+    return x >= cx && x <= cx + this.chatWidth() && ly >= cy && ly <= cy + this.chatH;
+  }
+
   aboutToAppear(): void {
+    AiTouchShield.register(this.shieldId, (x: number, y: number): boolean => this.covers(x, y));
     // Floated while an answer is still coming: the orb thinks from the start.
     this.chatBusy = AiChatMemory.requestId !== '';
     this.topSafe = this.controller.topInset;
@@ -308,6 +329,7 @@ struct AiLiftLayer {
   }
 
   aboutToDisappear(): void {
+    AiTouchShield.unregister(this.shieldId);
     if (this.orbListening) {
       this.orbListening = false;
       AiVoiceInput.cancel();

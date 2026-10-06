@@ -34,6 +34,8 @@ function fixture(protocol = 'rdp', scale = 4, mode = 1) {
   vm.runInNewContext(compiled, context);
   const h = new context.module.exports();
   Object.assign(h, {
+    // No AI orb on screen: nothing is shielded.
+    aiTouchShield: { shields: () => false },
     connected: true, pendingHost: { protocol }, touchFingerCount: 0, touchMaxFingers: 0,
     touchLeftDown: false, touchMoved: false, touchDragActive: false, touchpadPointerDown: false,
     rdpTouchPressX: 0, rdpTouchPressY: 0, remoteCursorX: 0, remoteCursorY: 0,

@@ -34,7 +34,7 @@ function load(file, mocks = {}, cache = new Map()) {
   const full = path.join(ETS, file + '.ets');
   if (!fs.existsSync(full)) return anyModule;
   const context = vm.createContext({ Math, Number, String, Object, Array, Map, Set, Error, JSON, Date, Promise, AppStorage,
-    isNaN, console });
+    isNaN, console, TouchType: { Down: 0, Up: 1, Move: 2, Cancel: 3 } });
   const output = ts.transpileModule(fs.readFileSync(full, 'utf8'), {
     compilerOptions: { target: ts.ScriptTarget.ES2021, module: ts.ModuleKind.CommonJS } }).outputText;
   const fresh = { exports: {} };
@@ -690,6 +690,28 @@ test('AI 控制面板: the AI button opens it (or starts the AI with 点 AI 按�
   const settings = load(D + 'DiagnosticAiSettingsActionPolicy');
   for (const id of ['ai.voice.sessionStartVoice', 'ai.voice.sessionQuickStart']) { assert.ok(settings.diagnosticAiSettingSpec(id), id); }
   assert.ok(load(D + 'DiagnosticAiKnowledgeBase').aiAppGuide().includes('AI 控制面板'));
+});
+
+test('a touch that starts on the AI orb or its chat never reaches the remote side', () => {
+  const lift = read('components/diagnosticAi/AiLiftLayer.ets');
+  assert.match(lift, /AiTouchShield\.register\(this\.shieldId, \(x: number, y: number\): boolean => this\.covers\(x, y\)\);/);
+  assert.match(lift, /AiTouchShield\.unregister\(this\.shieldId\);/);
+  assert.match(read('pages/RemoteDesktop.ets'),
+    /private handleConfiguredTouchInput = \(event: TouchEvent\): void => \{\s*if \(this\.aiTouchShield\.shields\(event\)\) \{ return; \}/);
+  const ml = read('pages/MoonlightStreamPage.ets');
+  assert.match(ml, /private handleMoonlightSurfaceTouch = \(event: TouchEvent\): void => \{\s*if \(this\.aiTouchShield\.shields\(event\)\) \{ return; \}/);
+  // The tracker: a finger down on the AI is kept out (moves and lift too); others pass.
+  const shield = load(D + 'AiTouchShield');
+  shield.AiTouchShield.register('t', (x, y) => x < 100 && y < 100);
+  const tracker = new shield.AiTouchShieldTracker();
+  const ev = (type, id, x, y) => ({ type, changedTouches: [{ id, windowX: x, windowY: y }], touches: [] });
+  assert.equal(tracker.shields(ev(0, 1, 50, 50)), true);
+  assert.equal(tracker.shields(ev(2, 1, 400, 400)), true, 'the drag moves away from where it started');
+  assert.equal(tracker.shields(ev(1, 1, 400, 400)), true);
+  assert.equal(tracker.shields(ev(0, 2, 300, 300)), false);
+  assert.equal(tracker.shields(ev(2, 2, 310, 300)), false);
+  shield.AiTouchShield.unregister('t');
+  assert.equal(tracker.shields(ev(0, 3, 50, 50)), false);
 });
 
 (async () => {

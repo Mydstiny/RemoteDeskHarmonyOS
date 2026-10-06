@@ -1,5 +1,6 @@
 import { recordVncFailure } from '../services/VncDiagnosticEvents';
 import { AI_SESSION_RAIL_EXPANDED } from '../services/diagnosticAi/AiBridgeKeys';
+import { AiTouchShieldTracker } from '../services/diagnosticAi/AiTouchShield';
 import { recordRustDeskFailure, recordRustDeskFirstFrame, recordRustDeskQualityRequest,
   recordRustDeskQualityResult } from '../services/RustDeskDiagnosticEvents';
 import {
@@ -22220,7 +22221,11 @@ struct RemoteDesktop {
     }
   }
 
+  /** Fingers that went down on the AI orb or its chat (its layer lets touches through): never the remote's. */
+  private readonly aiTouchShield: AiTouchShieldTracker = new AiTouchShieldTracker();
+
   private handleConfiguredTouchInput = (event: TouchEvent): void => {
+    if (this.aiTouchShield.shields(event)) { return; }
     // A physical mouse owns onMouse; its synthesized touch must not mutate
     // finger tracking or emit a second RDP click.
     if (this.isRdpRemoteSession() && event.sourceTool === SourceTool.MOUSE) { return; }

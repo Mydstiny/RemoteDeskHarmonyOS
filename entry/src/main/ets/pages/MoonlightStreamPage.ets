@@ -1,5 +1,6 @@
 import { MoonlightNativeStreamSnapshot } from '../services/MoonlightHostService';
 import { SessionAiHost } from '../components/diagnosticAi/SessionAiHost';
+import { AiTouchShieldTracker } from '../services/diagnosticAi/AiTouchShield';
 import { ProEntries } from '../services/pro/ProEntries';
 import { ProAppRuntime } from '../services/pro/ProAppRuntime';
 import { PRO_DIAGNOSTICS_ASSISTANT_FEATURE } from '../services/pro/ProFeatureCatalog';
@@ -4849,8 +4850,12 @@ struct MoonlightStreamPage {
     this.clampAndPublishTrackpadCursor();
   }
 
+  /** Fingers that went down on the AI orb or its chat (its layer lets touches through): never the stream's. */
+  private readonly aiTouchShield: AiTouchShieldTracker = new AiTouchShieldTracker();
+
   private handleMoonlightTouch = (event: TouchEvent): void => {
     event.stopPropagation();
+    if (this.aiTouchShield.shields(event)) { return; }
     this.observeMoonlightAdaptiveInput('touch');
     const phase: MoonlightTouchPhase = this.moonlightTouchPhase(event);
     if (this.resolvedMoonlightControlMode() === 'trackpad') {
@@ -4859,6 +4864,7 @@ struct MoonlightStreamPage {
   }
 
   private handleMoonlightSurfaceTouch = (event: TouchEvent): void => {
+    if (this.aiTouchShield.shields(event)) { return; }
     if (this.controlMode === 'keyboardMouse') {
       if (!this.moonlightPinchZoomEnabled || event.sourceTool !== SourceTool.Finger) {
         return;
