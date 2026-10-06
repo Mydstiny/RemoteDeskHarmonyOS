@@ -125,11 +125,12 @@ export struct SshKeyInstallSheet {
 
   /** 取消 while installing or verifying: stop the operation and go back to the host choice. */
   private cancelInstall(): void {
+    const verifying: boolean = this.verifying;
     this.cancelOperation();
     this.installing = false;
     this.verifying = false;
     this.backToHostChoice();
-    promptAction.showToast({ message: '已取消安装', duration: 1500 });
+    promptAction.showToast({ message: verifying ? '已取消验证；公钥已写入这台主机' : '已取消安装', duration: 2000 });
   }
 
   private backToHostChoice(): void {
@@ -165,6 +166,11 @@ export struct SshKeyInstallSheet {
         promptAction.showToast({ message: '所选 SSH 主机已被删除，请重新选择', duration: 2000 });
       }
     }
+  }
+
+  private targetEncrypted(): boolean {
+    const key: SshKey | undefined = this.kvs.getSshKey(this.targetKeyId);
+    return key !== undefined && key.privateKeyEncrypted;
   }
 
   private targetView(): SshKeyInstallTargetView | null {
@@ -405,7 +411,16 @@ export struct SshKeyInstallSheet {
       }
     } catch (err) {
       if (generation !== this.installGeneration) { return; }
-      this.verifying = false;
+      if (this.verifying) {
+        // The install had already succeeded: this was the verification failing.
+        this.verifying = false;
+        const failed: SshAuthTestResult = { ok: false, code: -1, message: '验证时出错，请重试' };
+        this.verifyResult = failed;
+        this.step = 3;
+        this.cancelOperation();
+        this.installing = false;
+        return;
+      }
       this.installResult = {
         ok: false, alreadyInstalled: false, verified: false, code: -99,
         message: '安装时出错，请检查网络和主机后重试'
@@ -485,10 +500,11 @@ export struct SshKeyInstallSheet {
 
         // The option comes before the button it changes.
         Row() {
-          Text('安装成功后，这台主机改用新密钥登录')
-            .fontSize(12).fontColor(this.pal().text2).fontFamily(this.font()).layoutWeight(1)
-          Toggle({ type: ToggleType.Switch, isOn: this.switchToNewKey })
-            .selectedColor(this.accentColor)
+          Text(this.targetEncrypted() ? '这把密钥设有密码，安装后不会自动切换主机的登录方式' :
+            '安装成功后，这台主机改用新密钥登录')
+            .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font()).layoutWeight(1)
+          Toggle({ type: ToggleType.Switch, isOn: this.switchToNewKey && !this.targetEncrypted() })
+            .enabled(!this.targetEncrypted())
             .onChange((v: boolean) => { this.switchToNewKey = v; })
             .margin({ left: 8 })
         }.width('100%').margin({ top: 12 })
@@ -578,6 +594,14 @@ export struct SshKeyInstallSheet {
                 .margin({ left: 10 })
                 .onClick(() => { void this.doInstall(); })
             }.width('100%').margin({ top: 12 })
+          }
+
+          if (this.step >= 3 && this.verifyResult !== null && !this.verifyResult['ok']) {
+            // A failed verification can be run again; the public key is already on the host.
+            Button('重新安装并验证').width('100%').height(40).fontSize(14)
+              .backgroundColor(this.pal().surface).fontColor(this.accentColor).borderRadius(10)
+              .margin({ top: 12 })
+              .onClick(() => { void this.doInstall(); })
           }
 
           if (this.step >= 3) {

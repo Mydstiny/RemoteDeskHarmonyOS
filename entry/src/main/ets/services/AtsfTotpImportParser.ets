@@ -34,6 +34,12 @@ export function totpEntryFromImportObject(value: Object): TotpEntry | null {
   entry.period = typeof periodValue === 'number' && periodValue === 60 ? 60 : 30;
   const algorithmValue = row['algorithm'];
   if (typeof algorithmValue === 'string') { entry.algorithm = importedAlgorithm(algorithmValue); }
+  // The app's own backups store the algorithm as its number and keep the custom name and icon.
+  if (typeof algorithmValue === 'number' && (algorithmValue === 0 || algorithmValue === 1 || algorithmValue === 2)) {
+    entry.algorithm = algorithmValue as TotpAlgorithm;
+  }
+  if (typeof row['displayName'] === 'string') { entry.displayName = (row['displayName'] as string).trim(); }
+  if (typeof row['iconUrl'] === 'string') { entry.iconUrl = row['iconUrl'] as string; }
   return entry;
 }
 

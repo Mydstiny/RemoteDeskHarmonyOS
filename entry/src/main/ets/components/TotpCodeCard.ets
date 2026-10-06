@@ -531,7 +531,13 @@ export struct TotpCodeCard {
           .fontSize(24)
           .fontColor([this.pal().text3])
           .accessibilityText(this.entry.locked && !this.pageLocked ? '解锁这个 2FA 账户' : '已锁定')
-          .onClick((): void => { this.unlockEntry(); })
+          .onClick((): void => {
+            if (this.showCheckbox) {
+              if (this.onCheckChange) { this.onCheckChange(!this.checkboxSelected); }
+              return;
+            }
+            void this.unlockEntry();
+          })
       }
       if (this.isDesktopDevice && !this.showCheckbox && !this.pageLocked) {
         Button() {

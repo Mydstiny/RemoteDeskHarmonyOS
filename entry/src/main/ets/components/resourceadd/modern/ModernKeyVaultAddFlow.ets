@@ -11,6 +11,7 @@ import { Palette, buildDark, buildLight, AppTheme } from '../../../common/Theme'
 import { ResourceFabPicker } from '../ResourceFabPicker';
 import { QrCodeScanner } from '../../QrCodeScanner';
 import { appUiOnAccentText } from '../../../common/AppUiColorPolicy';
+import { normalizeTotpSecret, totpSecretProblem } from '../../../services/KeyVaultFormPolicy';
 
 @Component
 export struct ModernKeyVaultAddFlow {
@@ -62,7 +63,7 @@ export struct ModernKeyVaultAddFlow {
     this.step = 'method'; this.busy = false; this.errorText = '';
     this.label = ''; this.comment = ''; this.privateKeyText = ''; this.importedFileName = '';
     this.importedKey = null; this.keyType = SshKeyType.ED25519; this.rsaBits = 4096;
-    this.passphrase = ''; this.generatedKey = null;
+    this.passphrase = ''; this.passphraseConfirm = ''; this.generatedKey = null;
     this.issuer = ''; this.account = ''; this.secret = ''; this.otpUri = '';
     this.digits = 6; this.period = 30; this.algorithm = TotpAlgorithm.SHA1;
     this.importEntries = []; this.selectedImportIds = []; this.importFileName = ''; this.importFormat = '';
@@ -124,7 +125,7 @@ export struct ModernKeyVaultAddFlow {
   private async generateKey(): Promise<void> {
     if (this.busy) { return; }
     if (this.label.trim().length === 0) { this.errorText = '请输入密钥名称'; return; }
-    if (this.passphrase !== this.passphraseConfirm) { this.errorText = '两次输入的密钥密码不一致'; return; }
+    if (this.passphrase !== '' && this.passphrase !== this.passphraseConfirm) { this.errorText = '两次输入的密钥密码不一致'; return; }
     this.busy = true; this.errorText = '';
     // Let 生成中… draw before the generation (RSA-4096 takes a moment).
     await new Promise<void>((resolve: () => void): void => { setTimeout(resolve, 32); });
@@ -170,11 +171,11 @@ export struct ModernKeyVaultAddFlow {
   }
 
   private saveTotp(): void {
-    const normalized = this.secret.trim().replace(/\s+/g, '').toUpperCase();
-    if (this.issuer.trim().length === 0 || normalized.length === 0) { this.errorText = '发行方和 Secret 不能为空'; return; }
-    if (!/^[A-Z2-7]+=*$/.test(normalized)) { this.errorText = 'Secret 不是有效的 Base32 字符串'; return; }
-    const duplicate = this.kvs.getAllTotpEntries().find((item: TotpEntry): boolean => item.secret === normalized);
-    if (duplicate !== undefined) { this.errorText = '该 Secret 已存在，请勿重复添加'; return; }
+    const normalized = normalizeTotpSecret(this.secret);
+    if (this.issuer.trim().length === 0) { this.errorText = '请填写发行方，例如 GitHub'; return; }
+    // The same rule as the classic form (KeyVaultFormPolicy): stored secrets compared normalized.
+    const problem: string = totpSecretProblem(normalized, this.existingSecrets());
+    if (problem !== '') { this.errorText = problem; return; }
     const entry = new TotpEntry(); entry.id = TotpEntry.generateId(); entry.issuer = this.issuer.trim();
     entry.account = this.account.trim(); entry.secret = normalized; entry.digits = this.digits;
     entry.period = this.period; entry.algorithm = this.algorithm as TotpAlgorithm;
@@ -185,16 +186,22 @@ export struct ModernKeyVaultAddFlow {
   private async pickTotpFile(): Promise<void> {
     if (this.busy) { return; }
     this.busy = true; this.errorText = '';
-    const result: TotpImportResult | null = await this.totpImporter.pickAndParse();
-    this.busy = false;
+    AppStorage.setOrCreate('keyVaultExternalPickerActive', true);
+    let result: TotpImportResult | null = null;
+    try {
+      result = await this.totpImporter.pickAndParse();
+    } finally {
+      AppStorage.setOrCreate('keyVaultExternalPickerActive', false);
+      this.busy = false;
+    }
     if (result === null) { return; }
     if (!result.ok) { this.errorText = result.error; return; }
-    const existing = this.kvs.getAllTotpEntries();
+    const existing: string[] = this.existingSecrets();
     const valid: TotpEntry[] = [];
     for (let i = 0; i < result.entries.length; i++) {
       const entry = result.entries[i];
-      const duplicate = existing.find((item: TotpEntry): boolean => item.secret === entry.secret) !== undefined ||
-        valid.find((item: TotpEntry): boolean => item.secret === entry.secret) !== undefined;
+      const duplicate = existing.indexOf(normalizeTotpSecret(entry.secret)) >= 0 ||
+        valid.find((item: TotpEntry): boolean => normalizeTotpSecret(item.secret) === normalizeTotpSecret(entry.secret)) !== undefined;
       if (!duplicate) { valid.push(entry); }
     }
     this.importEntries = result.entries; this.selectedImportIds = valid.map((entry: TotpEntry): string => entry.id);
@@ -203,8 +210,11 @@ export struct ModernKeyVaultAddFlow {
   }
 
   private isImportSelected(id: string): boolean { return this.selectedImportIds.includes(id); }
+  private existingSecrets(): string[] {
+    return this.kvs.getAllTotpEntries().map((entry: TotpEntry): string => normalizeTotpSecret(entry.secret));
+  }
   private isExistingSecret(secret: string): boolean {
-    return this.kvs.getAllTotpEntries().find((entry: TotpEntry): boolean => entry.secret === secret) !== undefined;
+    return this.existingSecrets().indexOf(normalizeTotpSecret(secret)) >= 0;
   }
   private toggleImport(entry: TotpEntry): void {
     if (this.isExistingSecret(entry.secret)) { return; }
@@ -332,7 +342,7 @@ export struct ModernKeyVaultAddFlow {
     }
     this.field('备注（可选）', 'user@example.com', this.comment, (value: string): void => { this.comment = value; })
     this.field('密钥密码（可选）', '用于保护生成的私钥', this.passphrase,
-      (value: string): void => { this.passphrase = value; }, true)
+      (value: string): void => { this.passphrase = value; if (value === '') { this.passphraseConfirm = ''; } }, true)
     if (this.passphrase.length > 0) {
       this.field('再次输入密钥密码', '与上面相同', this.passphraseConfirm,
         (value: string): void => { this.passphraseConfirm = value; }, true)

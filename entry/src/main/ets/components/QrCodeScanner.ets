@@ -27,6 +27,7 @@ export struct QrCodeScanner {
 
   private async startScan(): Promise<void> {
     this.status = '正在启动扫码...';
+    AppStorage.setOrCreate('keyVaultExternalPickerActive', true);
     try {
       const options: scanBarcode.ScanOptions = {
         scanTypes: [scanCore.ScanType.QR_CODE],
@@ -44,6 +45,8 @@ export struct QrCodeScanner {
       }
     } catch (err) {
       this.status = '没有完成扫码（已取消，或这台设备不能扫码）。也可以在下面粘贴 otpauth 配置';
+    } finally {
+      AppStorage.setOrCreate('keyVaultExternalPickerActive', false);
     }
   }
 
@@ -91,7 +94,7 @@ export struct QrCodeScanner {
 
       if (this.status !== '') {
         Text(this.status).fontSize(12)
-          .fontColor(this.status.includes('成功') ? this.pal().success : this.pal().text2)
+          .fontColor(this.status.includes('成功') ? '#51CF66' : this.pal().text2)
           .margin({ bottom: 10 })
       }
 

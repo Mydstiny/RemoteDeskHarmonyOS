@@ -150,7 +150,14 @@ check('selection belongs to one list, taps select in multi-select, locked keys s
   assert.ok(member(page, 'private onInnerTabChange(): void {').includes('this.selectionMode = false;'));
   const batch = member(page, 'private doBatchDelete(): void {');
   assert.ok(batch.indexOf('promptAction.showDialog({') < batch.indexOf('showLockGate('), 'confirm first, then verify once');
-  assert.ok(batch.includes('keyVaultBatchDeleteMessage(ids.length, locked.length, ssh)') && batch.includes("'已删除 '"));
+  assert.ok(batch.includes('keyVaultBatchDeleteMessage(ids.length, this.lockedSelectionCount(ids, ssh), ssh)') &&
+    batch.includes("'已删除 '"));
+  assert.ok(batch.includes('const lockedNow: number = this.lockedSelectionCount(ids, ssh);'), 'locks read after the confirmation');
+  assert.ok((batch.match(/if \(!ssh && this\.totpListLocked\(\)\) \{/g) || []).length === 2, 'a locked 2FA page cannot be batch deleted');
+  assert.ok(page.includes("if (this.selectionMode && !(this.keyVaultInnerTab === 1 && this.totpListLocked())) {"),
+    'no selection toolbar over a locked 2FA page');
+  assert.ok(member(page, 'private onTotpLockChange(): void {').includes('this.selectionMode = false;'));
+  assert.ok(member(page, 'private async deleteTotpItem(entry: TotpEntry): Promise<void> {').includes('if (entry.locked) {'));
   const lock = member(page, 'private async toggleSshLock(key: SshKey): Promise<void> {');
   assert.ok(lock.indexOf('if (key.locked) {') < lock.indexOf('showLockGate('), 'only unlocking asks for verification');
   const card = read('components/SshKeyCard.ets');
@@ -165,7 +172,7 @@ check('selection belongs to one list, taps select in multi-select, locked keys s
 
 check('2FA relocks in the background; turning protection on starts locked', () => {
   const page = read('pages/KeyVaultPage.ets');
-  assert.ok(page.includes("@StorageLink('totpUnlocked') totpUnlocked: boolean = false;"));
+  assert.ok(page.includes("@StorageLink('totpUnlocked') @Watch('onTotpLockChange') totpUnlocked: boolean = false;"));
   assert.ok(member(page, 'private onAppBackground(): void {').includes('this.totpUnlocked = false;'));
   assert.ok(read('pages/HostListPage.ets').includes("// Protection starts locked: an earlier unlock of the 2FA page does not carry over.\n                      AppStorage.setOrCreate('totpUnlocked', false);"));
 });
@@ -191,7 +198,9 @@ check('key sheets report real results, a removal is its own step, installs never
 check('classic forms: multi-line private keys, detected types, busy saves; PC offers no camera scan', () => {
   const page = read('pages/KeyVaultPage.ets');
   assert.ok(page.includes("TextArea({ placeholder: '粘贴 OpenSSH 格式私钥...', text: this.formPasteKey })"));
-  assert.ok(page.includes("key.keyType = sshKeyTypeFromName(info['keyType'], key.keyType);"));
+  assert.ok(page.includes("key.keyType = info['keyType'] !== '' ? sshKeyTypeFromNative(info['keyType']) : key.keyType;"));
+  assert.ok(page.includes("if (key.privateKey.indexOf('BEGIN RSA PRIVATE KEY') >= 0) { key.keyType = SshKeyType.RSA; }"),
+    'an encrypted PEM key keeps its type');
   assert.ok(member(page, 'private async doAddSshKey(): Promise<void> {').includes('if (this.savingKey) { return; }'));
   assert.ok(page.includes("      if (!this.isDesktopDevice) {\n        Button() {"), 'the classic form hides the scanner on PC');
   assert.ok(read('components/resourceadd/ResourceFabPicker.ets').includes("if (!this.isDesktopDevice) {\n          this.option('scan'"));
@@ -201,6 +210,24 @@ check('classic forms: multi-line private keys, detected types, busy saves; PC of
   assert.ok(modern.includes(".constraintSize({ maxHeight: this.stepMaxHeight() })"));
   assert.ok(!/Color\.White/.test(modern));
   assert.ok(read('components/QrCodeScanner.ets').includes('if (this.showTitle) {'));
+});
+
+check('batch 2 review: scans and imports keep the 2FA page unlocked; backups keep algorithm and names', () => {
+  const page = read('pages/KeyVaultPage.ets');
+  assert.ok(member(page, 'private onAppBackground(): void {').includes("AppStorage.get<boolean>('keyVaultExternalPickerActive') !== true"));
+  for (const file of ['components/QrCodeScanner.ets', 'components/resourceadd/modern/ModernKeyVaultAddFlow.ets', 'pages/KeyVaultPage.ets']) {
+    const text = read(file);
+    assert.ok(text.includes("AppStorage.setOrCreate('keyVaultExternalPickerActive', true);") &&
+      text.includes("AppStorage.setOrCreate('keyVaultExternalPickerActive', false);"), file);
+  }
+  const parser = read('services/AtsfTotpImportParser.ets');
+  assert.ok(parser.includes('entry.algorithm = algorithmValue as TotpAlgorithm;') && parser.includes('entry.displayName ='));
+  const modern = read('components/resourceadd/modern/ModernKeyVaultAddFlow.ets');
+  assert.ok(modern.includes("if (this.passphrase !== '' && this.passphrase !== this.passphraseConfirm)"));
+  assert.ok(modern.includes('totpSecretProblem(normalized, this.existingSecrets())'), 'one duplicate rule');
+  const install = read('components/SshKeyInstallSheet.ets');
+  assert.ok(install.includes("Button('重新安装并验证')") && install.includes("'已取消验证；公钥已写入这台主机'"));
+  assert.ok(install.includes('.enabled(!this.targetEncrypted())'));
 });
 
 console.log('three screens: ' + passed + ' checks passed');

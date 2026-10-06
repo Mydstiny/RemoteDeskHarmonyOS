@@ -12,7 +12,7 @@ import { ExtensionLoader } from '../services/ExtensionLoader';
 import { GeneratedSshKeyPair, SshPrivateKeyInfo } from '../types/rdpnapi';
 import { TotpAlgorithm, TotpEntry } from '../model/TotpEntry';
 import { KeyVaultService } from '../services/KeyVaultService';
-import { SshKeyImportService, SshKeyImportResult } from '../services/SshKeyImportService';
+import { SshKeyImportService, SshKeyImportResult, sshKeyTypeFromNative } from '../services/SshKeyImportService';
 import { TotpEngine } from '../services/TotpEngine';
 import { SshKeyCard } from '../components/SshKeyCard';
 import { SshKeyManagerSheet, SshKeyPassphraseSubSheet } from '../components/SshKeyManagerSheet';
@@ -36,14 +36,6 @@ import {
   totpSecretProblem
 } from '../services/KeyVaultFormPolicy';
 
-/** inspectSshPrivateKey's key type name → SshKeyType. */
-function sshKeyTypeFromName(name: string, fallback: SshKeyType): SshKeyType {
-  if (name === 'ssh-ed25519') { return SshKeyType.ED25519; }
-  if (name === 'ssh-rsa') { return SshKeyType.RSA; }
-  if (name.startsWith('ecdsa-sha2-')) { return SshKeyType.ECDSA; }
-  return fallback;
-}
-
 @Component
 export struct KeyVaultPage {
   /** The AI entry, the same on every tab: shown while the account may use the assistant; a tap asks the host page
@@ -56,14 +48,14 @@ export struct KeyVaultPage {
   @Link @Watch('onInnerTabChange') keyVaultInnerTab: number;
   @Prop @Watch('onAddTrigger') addTrigger: number = 0;
   @Prop hideTabBar: boolean = false;
-  @StorageProp('totpLocked') totpPageLocked: boolean = false;
+  @StorageProp('totpLocked') @Watch('onTotpLockChange') totpPageLocked: boolean = false;
   @StorageProp('currentBreakpoint') breakpoint: string = 'sm';
   @StorageProp('isDesktopDevice') isDesktopDevice: boolean = false;
   @StorageProp('topRectHeight') topRectHeight: number = 0;
   @StorageProp('hostAddMode') fabAddStyle: string = 'modern';
   @State showAddTab: number = 0;
   /** One unlock for this page, shared with 设置 (turning the protection on or off resets it). */
-  @StorageLink('totpUnlocked') totpUnlocked: boolean = false;
+  @StorageLink('totpUnlocked') @Watch('onTotpLockChange') totpUnlocked: boolean = false;
   /** The 2FA page locks again as soon as the app goes to the background. */
   @StorageProp('remoteDesktopBgFlag') @Watch('onAppBackground') appInBackground: boolean = false;
   @State selectionMode: boolean = false;
@@ -148,7 +140,22 @@ export struct KeyVaultPage {
   }
 
   private onAppBackground(): void {
-    if (this.appInBackground) { this.totpUnlocked = false; }
+    // A scan or a file picker sends the app to the background too: those keep the page unlocked.
+    if (this.appInBackground && AppStorage.get<boolean>('keyVaultExternalPickerActive') !== true) {
+      this.totpUnlocked = false;
+    }
+  }
+
+  /** The 2FA page locked again (background, or protection turned on): a selection made while unlocked ends. */
+  private onTotpLockChange(): void {
+    if (this.totpListLocked() && this.keyVaultInnerTab === 1 && this.selectionMode) {
+      this.selectionMode = false;
+      this.selectedIds = new Set<string>();
+    }
+  }
+
+  private totpListLocked(): boolean {
+    return this.totpPageLocked && !this.totpUnlocked;
   }
 
   aboutToDisappear(): void {
@@ -401,13 +408,21 @@ export struct KeyVaultPage {
     .justifyContent(FlexAlign.Center)
     .borderRadius(14)
     .backgroundColor(this.pal().danger)
-    .onClick(() => { this.deleteTotpItem(entry); })
+    .onClick(() => { void this.deleteTotpItem(entry); })
   }
 
-  private deleteTotpItem(entry: TotpEntry): void {
+  private async deleteTotpItem(entry: TotpEntry): Promise<void> {
       if (this.totpPageLocked && !this.totpUnlocked) {
         promptAction.showToast({ message: '请先验证身份', duration: 1500 });
         return;
+      }
+      if (entry.locked) {
+        const gate: LockGateResult = await showLockGate(entry.displayLabel() || '2FA', 'biometric');
+        if (!gate.ok) {
+          const msg: string = lockGateErrorMessage(gate);
+          if (msg !== '') { promptAction.showToast({ message: msg, duration: 2000 }); }
+          return;
+        }
       }
       const label: string = entry.displayLabel() || '2FA';
       promptAction.showDialog({
@@ -494,14 +509,23 @@ export struct KeyVaultPage {
     )
   }
 
+  /** Selected entries that are locked on their own, read now (a sync can lock one while the dialog is open). */
+  private lockedSelectionCount(ids: string[], ssh: boolean): number {
+    return ssh ? this.kvs.getAllSshKeys().filter((key: SshKey): boolean => ids.indexOf(key.id) >= 0 && key.locked).length :
+      this.kvs.getAllTotpEntries().filter((entry: TotpEntry): boolean => ids.indexOf(entry.id) >= 0 && entry.locked).length;
+  }
+
   private doBatchDelete(): void {
     const ids: string[] = Array.from(this.selectedIds);
     if (ids.length === 0) { return; }
     const ssh: boolean = this.keyVaultInnerTab === 0;
-    const locked: SshKey[] = ssh ? this.sshKeys.filter((key: SshKey): boolean => ids.indexOf(key.id) >= 0 && key.locked) : [];
+    if (!ssh && this.totpListLocked()) {
+      promptAction.showToast({ message: '请先验证身份', duration: 1500 });
+      return;
+    }
     promptAction.showDialog({
       title: '批量删除',
-      message: keyVaultBatchDeleteMessage(ids.length, locked.length, ssh),
+      message: keyVaultBatchDeleteMessage(ids.length, this.lockedSelectionCount(ids, ssh), ssh),
       buttons: [
         { text: '取消', color: this.pal().text2 },
         { text: '删除', color: this.pal().danger }
@@ -509,9 +533,14 @@ export struct KeyVaultPage {
     }).then(async (result: Object): Promise<void> => {
       const r: Record<string, number> = result as Record<string, number>;
       if (r['index'] !== 1) { return; }
-      // Locked keys are protected as they are when deleted one by one: one verification covers them all.
-      if (locked.length > 0) {
-        const gate: LockGateResult = await showLockGate('删除 ' + locked.length.toString() + ' 把已锁定的密钥', 'biometric');
+      // Locked keys and entries are protected as they are when deleted one by one: one verification covers them.
+      const lockedNow: number = this.lockedSelectionCount(ids, ssh);
+      if (!ssh && this.totpListLocked()) {
+        promptAction.showToast({ message: '请先验证身份', duration: 1500 });
+        return;
+      }
+      if (lockedNow > 0) {
+        const gate: LockGateResult = await showLockGate('删除 ' + lockedNow.toString() + (ssh ? ' 把已锁定的密钥' : ' 个已锁定的 2FA 账户'), 'biometric');
         if (!gate.ok) {
           const msg: string = lockGateErrorMessage(gate);
           if (msg !== '') { promptAction.showToast({ message: msg, duration: 2000 }); }
@@ -611,6 +640,10 @@ export struct KeyVaultPage {
           key.fingerprint = '';
           key.privateKeyEncrypted = true;
           key.formatVersion = 1;
+          // Encrypted: the type is read from a PEM header; an OpenSSH key gets its type once its passphrase is
+          // entered in 密钥管理 (that save inspects it again).
+          if (key.privateKey.indexOf('BEGIN RSA PRIVATE KEY') >= 0) { key.keyType = SshKeyType.RSA; }
+          else if (key.privateKey.indexOf('BEGIN EC PRIVATE KEY') >= 0) { key.keyType = SshKeyType.ECDSA; }
         } else {
           promptAction.showToast({
             message: '私钥无法识别：' + (info['error'] || '请确认粘贴的是完整的 OpenSSH 私钥'),
@@ -625,7 +658,7 @@ export struct KeyVaultPage {
         key.privateKeyEncrypted = info['encrypted'];
         key.formatVersion = 1;
         // The detected type, not the chip's default.
-        key.keyType = sshKeyTypeFromName(info['keyType'], key.keyType);
+        key.keyType = info['keyType'] !== '' ? sshKeyTypeFromNative(info['keyType']) : key.keyType;
       }
     } else if (!isEdit) {
       // 生成模式 — 使用 native OpenSSL EVP_PKEY 生成标准 OpenSSH 密钥对；先让「生成中…」画出来
@@ -704,7 +737,13 @@ export struct KeyVaultPage {
 
   // TOTP 导入：与全新添加流程同一个解析器（ATSF、TXT、JSON、CSV，按 UTF-8 读取）
   private async importTotpFile(): Promise<void> {
-    const result: TotpImportResult | null = await this.totpImporter.pickAndParse();
+    AppStorage.setOrCreate('keyVaultExternalPickerActive', true);
+    let result: TotpImportResult | null = null;
+    try {
+      result = await this.totpImporter.pickAndParse();
+    } finally {
+      AppStorage.setOrCreate('keyVaultExternalPickerActive', false);
+    }
     if (result === null) { return; }
     if (!result.ok) {
       promptAction.showToast({ message: result.error || '文件无法导入', duration: 2400 });
@@ -754,8 +793,8 @@ export struct KeyVaultPage {
         // 顶栏占位: 跟随真实系统避让区, 与渐变玻璃层高度一致
         ListItem() { Column().height(this.titleBarHeight() + 8) }
 
-        // 选择工具栏
-        if (this.selectionMode) {
+        // 选择工具栏 (never over a locked 2FA page)
+        if (this.selectionMode && !(this.keyVaultInnerTab === 1 && this.totpListLocked())) {
           ListItem() {
             if (this.keyVaultInnerTab === 0) {
               this.selectionToolbar(this.sshKeys.map((k: SshKey) => k.id))
@@ -876,7 +915,7 @@ export struct KeyVaultPage {
                   onUnlock: () => { this.unlockTotpEntry(entry); },
                   onRename: () => { this.handleTotpEdit(entry); },
                   onSelect: () => { this.beginSelection(entry.id); },
-                  onDelete: () => { this.deleteTotpItem(entry); }
+                  onDelete: () => { void this.deleteTotpItem(entry); }
                 })
               }
               .gesture(
@@ -1345,11 +1384,11 @@ export struct KeyVaultPage {
         .margin({ bottom: 12 }).onClick(() => { this.parseOtpAuthInput(); })
 
       this._f('发行方 (Issuer)', '如 GitHub', this.formIssuer,
-        (v: string) => { this.formIssuer = v; })
+        (v: string) => { this.formIssuer = v; this.formError = ''; })
       this._f('账户名 (可选)', '如 user@example.com', this.formAccount,
         (v: string) => { this.formAccount = v; })
       this._f('密钥 (Secret)', 'Base32 字符串', this.formSecret,
-        (v: string) => { this.formSecret = v; })
+        (v: string) => { this.formSecret = v; this.formError = ''; })
 
       Row() {
         Column() {
