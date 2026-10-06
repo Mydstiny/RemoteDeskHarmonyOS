@@ -6,6 +6,7 @@
  * a typed VNC gateway payload and an optional write-only token.
  */
 import { Palette, buildDark, buildLight } from '../../common/Theme';
+import { appUiOnAccentText } from '../../common/AppUiColorPolicy';
 import { promptAction } from '@kit.ArkUI';
 import { DataCrypto } from '../../services/DataCrypto';
 import {
@@ -29,6 +30,11 @@ export struct VncGatewayAddFlow {
   @StorageProp('accentColor') accentColor: string = '#007DFF';
   @Prop initialGateway: VncGatewayView | null = null;
   @Prop editingId: string = '';
+  /** The relay sheet sizes to its content (FIT_CONTENT), like the VNC host-add sheet: no inner scroll viewport. */
+  @Prop fitContent: boolean = false;
+  /** Opened from 添加中继服务器's picker: the first step's back returns there, as the host-add flows do. */
+  @Prop canReturnToProtocols: boolean = false;
+  onBackToProtocols: () => void = (): void => {};
   onClose: () => void = (): void => {};
   onSave: (values: VncGatewayValues, id: string, accessToken: string,
     plainStorageConfirmed: boolean) => void =
@@ -134,6 +140,8 @@ export struct VncGatewayAddFlow {
     this.errorText = '';
     if (this.step > 0) {
       this.step = previousVncFlowStep(this.step, VNC_GATEWAY_ADD_STEP_COUNT);
+    } else if (this.canReturnToProtocols) {
+      this.onBackToProtocols();
     } else {
       this.onClose();
     }
@@ -248,14 +256,16 @@ export struct VncGatewayAddFlow {
 
   @Builder private actionBar() {
     Row() {
-      Button(this.step === 0 ? '取消' : '上一步').layoutWeight(1).height(44).borderRadius(12)
+      Button(this.step === 0 ? (this.canReturnToProtocols ? '返回协议' : '取消') : '上一步').layoutWeight(1).height(44).borderRadius(12)
         .backgroundColor(this.pal().surface).fontColor(this.pal().text2).onClick((): void => { this.back(); })
       if (this.step < VNC_GATEWAY_ADD_STEP_COUNT - 1) {
         Button('下一步').layoutWeight(1).height(44).borderRadius(12).margin({ left: 8 })
-          .backgroundColor(this.accentColor).fontColor(Color.White).onClick((): void => { this.next(); })
+          .backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor))
+          .onClick((): void => { this.next(); })
       } else {
         Button(this.isEditing() ? '更新' : '保存').layoutWeight(1).height(44).borderRadius(12).margin({ left: 8 })
-          .backgroundColor(this.accentColor).fontColor(Color.White).onClick((): void => { this.save(); })
+          .backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor))
+          .onClick((): void => { this.save(); })
       }
     }.width('100%')
   }
@@ -285,6 +295,7 @@ export struct VncGatewayAddFlow {
       stepText: (this.step + 1).toString() + '/' + VNC_GATEWAY_ADD_STEP_COUNT.toString() +
         '  ' + this.stepTitle(),
       leadingBack: true,
+      fitContent: this.fitContent,
       onLeadingAction: (): void => { this.back(); },
       contentBuilder: (): void => { this.flowBody(); },
       footerBuilder: (): void => { this.actionBar(); }

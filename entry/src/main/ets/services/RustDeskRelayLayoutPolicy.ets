@@ -11,12 +11,3 @@ export function rustDeskRelayDirectoryBottomClearance(breakpoint: string): numbe
   return breakpoint === 'sm' ? RUSTDESK_RELAY_PHONE_BOTTOM_CLEARANCE :
     RUSTDESK_RELAY_OTHER_BOTTOM_CLEARANCE;
 }
-
-/**
- * Match the host-add Sheet keyboard contract: only the VNC flow resizes the
- * Sheet on non-phone windows; every other add flow translates and scrolls.
- */
-export function rustDeskRelaySheetUsesResizeOnly(sheetContent: number,
-  breakpoint: string): boolean {
-  return sheetContent === 10 && breakpoint !== 'sm';
-}

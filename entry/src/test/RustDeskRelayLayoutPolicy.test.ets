@@ -1,8 +1,9 @@
 import { describe, it, expect } from '@ohos/hypium';
+import { rustDeskRelayDirectoryBottomClearance } from '../main/ets/services/RustDeskRelayLayoutPolicy';
 import {
-  rustDeskRelayDirectoryBottomClearance,
-  rustDeskRelaySheetUsesResizeOnly
-} from '../main/ets/services/RustDeskRelayLayoutPolicy';
+  resolveHostAddSheetContentMode,
+  resolveHostAddSheetKeyboardAvoidMode
+} from '../main/ets/services/HostAddSheetLayoutPolicy';
 
 export default function rustDeskRelayLayoutPolicyTest(): void {
   describe('RustDeskRelayLayoutPolicy', (): void => {
@@ -11,11 +12,12 @@ export default function rustDeskRelayLayoutPolicyTest(): void {
       expect(rustDeskRelayDirectoryBottomClearance('md')).assertEqual(120);
     });
 
-    it('matches_host_add_keyboard_avoidance', 0, (): void => {
-      expect(rustDeskRelaySheetUsesResizeOnly(10, 'md')).assertTrue();
-      expect(rustDeskRelaySheetUsesResizeOnly(10, 'xl')).assertTrue();
-      expect(rustDeskRelaySheetUsesResizeOnly(10, 'sm')).assertFalse();
-      expect(rustDeskRelaySheetUsesResizeOnly(1, 'md')).assertFalse();
+    it('vnc_gateway_add_follows_the_vnc_host_add_sheet', 0, (): void => {
+      // The relay page asks the host-add policy for 'vnc', so the two VNC add sheets cannot drift apart again.
+      for (const breakpoint of ['sm', 'md', 'xl']) {
+        expect(resolveHostAddSheetContentMode('vnc', breakpoint)).assertEqual('fitContent');
+        expect(resolveHostAddSheetKeyboardAvoidMode('vnc', breakpoint)).assertEqual('translateAndScroll');
+      }
     });
   });
 }

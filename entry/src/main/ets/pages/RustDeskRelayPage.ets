@@ -74,10 +74,11 @@ import {
   RustDeskRelaySetupDraft
 } from '../services/RustDeskRelaySetupCoordinator';
 import { DataMutationStage } from '../services/DataMutationResult';
+import { rustDeskRelayDirectoryBottomClearance } from '../services/RustDeskRelayLayoutPolicy';
 import {
-  rustDeskRelayDirectoryBottomClearance,
-  rustDeskRelaySheetUsesResizeOnly
-} from '../services/RustDeskRelayLayoutPolicy';
+  resolveHostAddSheetContentMode,
+  resolveHostAddSheetKeyboardAvoidMode
+} from '../services/HostAddSheetLayoutPolicy';
 
 class TcpTestResult {
   ok: boolean = false;
@@ -171,6 +172,9 @@ export struct RustDeskRelayPage {
   @State proViewRevision: number = 0;
   @State vncViewRevision: number = 0;
   @State editingVncGateway: VncGatewayView | null = null;
+  /** The add flow was reached through 添加中继服务器's picker, so its back returns there (as host-add flows do). */
+  @State vncGatewayFromPicker: boolean = false;
+  @State relayFormFromPicker: boolean = false;
   @State testingVncGatewayId: string = '';
   @State testingVncGatewayRequestId: number = 0;
   @State vncTestResultId: string = '';
@@ -457,14 +461,16 @@ export struct RustDeskRelayPage {
   private openRustDeskRelaySheet(): void {
     if (this.relaySheetClosing) { return; }
     this.resetRelayForm();
+    this.relayFormFromPicker = false;
     this.relayKind = 'oss';
     this.sheetContent = 1;
     this.showSheet = true;
   }
 
-  private openVncGatewaySheet(): void {
+  private openVncGatewaySheet(fromPicker: boolean = false): void {
     if (this.relaySheetClosing) { return; }
     this.editingVncGateway = null;
+    this.vncGatewayFromPicker = fromPicker;
     this.sheetContent = 10;
     this.showSheet = true;
   }
@@ -493,6 +499,8 @@ export struct RustDeskRelayPage {
     this.proBusy = false;
     this.savedRelayId = '';
     this.editingVncGateway = null;
+    this.vncGatewayFromPicker = false;
+    this.relayFormFromPicker = false;
     this.testingVncGatewayId = '';
     this.vncTestResultId = '';
     this.vncTestResult = '';
@@ -506,6 +514,7 @@ export struct RustDeskRelayPage {
   private openEditRelaySheet(relay: RustDeskRelayConfig): void {
     if (this.relaySheetClosing) { return; }
     this.menuVisibleRelayId = '';
+    this.relayFormFromPicker = false;
     this.editingRelayId = relay.id;
     this.relayDraftId = relay.id;
     this.formIdServer = relay.idServer;
@@ -533,6 +542,7 @@ export struct RustDeskRelayPage {
   private openEditVncGatewaySheet(gateway: VncGatewayView): void {
     if (this.relaySheetClosing) { return; }
     this.editingVncGateway = gateway;
+    this.vncGatewayFromPicker = false;
     this.sheetContent = 10;
     this.showSheet = true;
   }
@@ -1247,8 +1257,9 @@ export struct RustDeskRelayPage {
 
   private relaySheetHeight(): SheetSize { return SheetSize.FIT_CONTENT; }
 
+  /** The VNC Gateway flow follows the VNC host-add sheet: the same keyboard and content contract. */
   private relaySheetKeyboardAvoidMode(): SheetKeyboardAvoidMode {
-    return rustDeskRelaySheetUsesResizeOnly(this.sheetContent, this.breakpoint)
+    return resolveHostAddSheetKeyboardAvoidMode(this.sheetContent === 10 ? 'vnc' : '', this.breakpoint) === 'resize'
       ? SheetKeyboardAvoidMode.RESIZE_ONLY
       : SheetKeyboardAvoidMode.TRANSLATE_AND_SCROLL;
   }
@@ -2024,9 +2035,10 @@ export struct RustDeskRelayPage {
         if (option === 'rustdesk') {
           this.relayKind = 'oss';
           this.formControlPlaneProfile = RUSTDESK_CONTROL_PLANE_DEFAULT;
+          this.relayFormFromPicker = true;
           this.sheetContent = 1;
         }
-        if (option === 'vnc') { this.openVncGatewaySheet(); }
+        if (option === 'vnc') { this.openVncGatewaySheet(true); }
       },
       onClose: (): void => { this.closeSheet(); }
     })
@@ -2291,9 +2303,18 @@ export struct RustDeskRelayPage {
 
   @Builder relayEditSheet() {
     Column() {
-      Text(this.editingRelayId !== '' ? '编辑 RustDesk 中继' : '添加 RustDesk 中继')
-        .fontSize(19).fontWeight(FontWeight.Bold).fontColor(this.pal().text).fontFamily(this.font())
-        .width('100%')
+      Row() {
+        // Reached through 添加中继服务器's picker: back returns there, as the host-add flows do.
+        if (this.relayFormFromPicker && this.editingRelayId === '') {
+          Button() { SymbolGlyph($r('sys.symbol.chevron_left')).fontSize(18).fontColor([this.pal().text2]) }
+            .width(36).height(36).borderRadius(18).padding(0).backgroundColor(this.pal().surface)
+            .margin({ right: 10 }).enabled(!this.relaySaving).accessibilityText('返回协议')
+            .onClick((): void => { this.relayFormFromPicker = false; this.sheetContent = 5; })
+        }
+        Text(this.editingRelayId !== '' ? '编辑 RustDesk 中继' : '添加 RustDesk 中继')
+          .fontSize(19).fontWeight(FontWeight.Bold).fontColor(this.pal().text).fontFamily(this.font())
+          .layoutWeight(1)
+      }.width('100%')
       Text('默认只需服务器地址和公钥；保存后再测试连接或登录地址簿。')
         .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
         .width('100%').lineHeight(17).margin({ top: 5, bottom: 14 })
@@ -2575,6 +2596,9 @@ export struct RustDeskRelayPage {
       VncGatewayAddFlow({
         initialGateway: this.editingVncGateway,
         editingId: this.editingVncGateway === null ? '' : this.editingVncGateway.id,
+        fitContent: resolveHostAddSheetContentMode('vnc', this.breakpoint) === 'fitContent',
+        canReturnToProtocols: this.vncGatewayFromPicker && this.editingVncGateway === null,
+        onBackToProtocols: (): void => { this.vncGatewayFromPicker = false; this.sheetContent = 5; },
         onClose: (): void => { this.closeSheet(); },
         onSave: (values: VncGatewayValues, id: string, accessToken: string,
           plainStorageConfirmed: boolean): void => {
