@@ -648,7 +648,7 @@ check('batches 5-7: 全新视觉 extends to the three main pages; the classic lo
   assert.ok(page.includes('if (this.hostSelectionMode && !this.settingsModern()) {'), 'classic keeps the bar in the list');
   assert.ok(page.includes('.onClick(() => { this.onFabAddClick(); })') && page.includes('this.onFabAddClick(); })\n              }'));
   assert.ok(page.includes('if (!this.hostSelectionMode && (this.isDesktopDevice || this.settingsModern())) {'));
-  assert.ok(read('components/SshKeyCard.ets').includes("Button('复制公钥')"));
+  assert.ok(read('components/SshKeyCard.ets').includes("Text('复制公钥')") && !read('components/SshKeyCard.ets').includes("Button('复制公钥')"));
   assert.ok(read('components/TotpCodeCard.ets').includes("settingsVisualIsModern(this.visualStyle) && this.codeStr.length >= 6"));
   assert.ok(read('pages/RustDeskRelayPage.ets').includes("if (this.breakpoint !== 'sm' || settingsVisualIsModern(this.visualStyle)) {"));
 });

@@ -80,7 +80,7 @@ export struct SshKeyCard {
   }
 
   private sshKeyMenuWidth(): number {
-    const labels: string[] = ['管理', this.sshKey.locked ? '解锁' : '上锁', '多选', '删除'];
+    const labels: string[] = ['管理', '复制公钥', this.sshKey.locked ? '解锁' : '上锁', '多选', '删除'];
     let longestTextVp: number = 0;
     const uiContext = this.getUIContext();
     labels.forEach((label: string): void => {
@@ -104,6 +104,18 @@ export struct SshKeyCard {
       .onClick(() => { animateTo({ duration: 150 }, () => { this.menuVisible = false; }); if (this.onEdit) { this.onEdit(); } })
 
       Divider().strokeWidth(0.5).color(this.pal().cardBorder).width('100%')
+
+      // 全新视觉: a tap opens 密钥管理, so copying lives here.
+      if (settingsVisualIsModern(this.visualStyle)) {
+        Row() {
+          SymbolGlyph($r('sys.symbol.key_fill')).fontSize(16).fontColor([this.pal().text])
+          Text('复制公钥').fontSize(13).fontColor(this.pal().text).margin({ left: 8 })
+        }
+        .width('100%').padding({ left: 12, right: 12, top: 8, bottom: 8 })
+        .onClick(() => { animateTo({ duration: 150 }, () => { this.menuVisible = false; }); void this.copyPublicKey(); })
+
+        Divider().strokeWidth(0.5).color(this.pal().cardBorder).width('100%')
+      }
 
       Row() {
         SymbolGlyph(this.sshKey.locked ? $r('sys.symbol.lock_open') : $r('sys.symbol.ohos_lock'))
@@ -244,12 +256,6 @@ export struct SshKeyCard {
         }
         this.copyPublicKey();
       })
-
-      if (settingsVisualIsModern(this.visualStyle) && !this.showCheckbox) {
-        Button('复制公钥').height(32).fontSize(12).borderRadius(16).padding({ left: 10, right: 10 })
-          .backgroundColor(this.pal().surface).fontColor(appUiAccentTextOnSurface(this.accentColor, this.pal().text))
-          .margin({ left: 4 }).onClick((): void => { void this.copyPublicKey(); })
-      }
 
       // PC/2in1 (and every device in 全新视觉): 省略号按钮 → 弹出操作菜单
       if ((this.isDesktopDevice || settingsVisualIsModern(this.visualStyle)) && !this.showCheckbox) {
