@@ -1,5 +1,5 @@
 import { curves, window } from '@kit.ArkUI';
-import { AI_SESSION_RAIL_EXPANDED } from '../../services/diagnosticAi/AiBridgeKeys';
+import { AI_ORB_LISTEN_REQUEST, AI_ORB_SPEAKING, AI_SESSION_RAIL_EXPANDED } from '../../services/diagnosticAi/AiBridgeKeys';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { DiagnosticAiAssistantPanel } from './DiagnosticAiAssistantPanel';
 import { AI_FLOAT_ORB } from './AiIslandChrome';
@@ -10,7 +10,7 @@ import { AI_ORB_HINT_TEXT, AI_ORB_VOICE_HINT_TEXT, AI_SESSION_ORB_HINT_TEXT, aiO
 import { AI_STYLE, aiInk } from '../../services/diagnosticAi/AiStylePolicy';
 import { AI_VOICE_ENABLED } from '../../services/diagnosticAi/AiVoiceSettings';
 import { AI_ORB_DICTATION, aiOrbDictationEncode } from '../../services/diagnosticAi/AiBridgeKeys';
-import { AiVoiceInput } from '../../services/diagnosticAi/AiSpeech';
+import { AiReadAloud, AiVoiceInput } from '../../services/diagnosticAi/AiSpeech';
 import { XyLiveLevel } from '../../services/diagnosticAi/AiXiaoyiLight';
 import { common } from '@kit.AbilityKit';
 
@@ -104,6 +104,10 @@ struct AiLiftLayer {
   @StorageProp(AI_STYLE) aiStyle: string = 'siri';
   /** In a session: its side rail collapses to a thin handle, and the orb may then rest at the real edge. */
   @StorageProp(AI_SESSION_RAIL_EXPANDED) @Watch('onRailChange') railExpanded: boolean = true;
+  /** In a session: its voice mode asks the orb to listen (SessionAiHost, or the chat after reading an answer). */
+  @StorageProp(AI_ORB_LISTEN_REQUEST) @Watch('onListenRequest') listenRequest: number = 0;
+  /** In a session: an answer is being read aloud (the orb shows itself busy). */
+  @StorageProp(AI_ORB_SPEAKING) orbSpeaking: boolean = false;
   /** The chat beside the orb is waiting for an answer: the orb itself turns (its ring thinks). */
   @State private chatBusy: boolean = false;
   /**
@@ -122,6 +126,8 @@ struct AiLiftLayer {
   private startOrbVoice(held: boolean): void {
     if (this.phase !== 2 || this.orbListening || this.dragging) { return; }
     if (!this.voiceEnabled) { this.toast('AI 语音还没打开，可以在「设置 → AI 语音」里开启'); return; }
+    // Talking over an answer being read: the reading stops, the orb listens.
+    if (AiReadAloud.speakingId !== '') { AiReadAloud.stop(); }
     this.hintShown = false;
     if (!this.chatShown) { this.unread = false; this.setChatShown(true); }
     this.orbListening = true;
@@ -153,6 +159,12 @@ struct AiLiftLayer {
         }
       },
       (level: number): void => { XyLiveLevel.value = level; }, false, owner);
+  }
+
+  /** A session's voice mode: the orb listens now (its voice button, 语音模式, or its turn after an answer was read). */
+  private onListenRequest(): void {
+    if (this.listenRequest <= 0 || !this.controller.sessionMode || this.phase !== 2 || this.orbListening) { return; }
+    this.startOrbVoice(false);
   }
 
   /** Done listening: send what was heard (`send`), or drop it. */
@@ -709,7 +721,8 @@ struct AiLiftLayer {
               .width('100%').height('100%').opacity(this.doneOpacity)
           }
           if (this.orbMounted) {
-            AiFloatingOrb({ orbSize: AI_FLOAT_ORB, active: this.chatBusy, listening: this.orbListening }).opacity(this.orbOpacity)
+            AiFloatingOrb({ orbSize: AI_FLOAT_ORB, active: this.chatBusy || (this.controller.sessionMode && this.orbSpeaking),
+              listening: this.orbListening }).opacity(this.orbOpacity)
           }
         }
         .width(this.boxW).height(this.boxH).borderRadius(this.boxR)
@@ -724,6 +737,7 @@ struct AiLiftLayer {
           if (visible && ratio > 0.01) { this.overflowSeen = true; }
         }, true)
         .accessibilityText(this.phase !== 2 ? this.controller.label : this.orbListening ? 'AI 正在听，单击发送，双击取消' :
+          this.controller.sessionMode && this.orbSpeaking ? 'AI 正在朗读回答，双击打断并说话' :
           this.controller.sessionMode ?
           'AI 助手，单击' + (this.chatShown ? '收起' : '展开') + '对话框，双击说话，按住可拖动；在侧栏的 AI 按钮关闭' :
           (this.chatMode() ? 'AI 聊天' : 'AI 助手') + '，单击展开主对话，双击' + (this.chatShown ? '收起' : '启动') +
@@ -777,6 +791,7 @@ struct AiLiftLayer {
       if (this.chatShown && this.chatMode()) {
         AiChatView({ mini: true, owner: aiChatOwner(),
           deviceClass: this.controller.deviceClass, canExpand: !this.controller.sessionMode,
+          sessionVoice: this.controller.sessionMode,
           onCardSize: (height: number): void => { this.chatResized(height); },
           onActivityChanged: (active: boolean): void => { this.chatBusy = active; this.controller.onActivityChanged(active); },
           onExpand: (): void => { this.controller.onOrbTap(this.boxX, this.boxY + this.originY); } })

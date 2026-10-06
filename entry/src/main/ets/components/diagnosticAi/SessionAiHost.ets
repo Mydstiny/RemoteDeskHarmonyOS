@@ -1,10 +1,11 @@
 import { promptAction, window } from '@kit.ArkUI';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { AiIslandLayerParams, AiTopLayer, AiVoiceLayerParams } from './AiTopLayer';
+import { AiIslandLayerParams, AiTopLayer } from './AiTopLayer';
 import { AI_VOICE_REQUEST, AiChatMemory, aiChatOwner } from './AiChatView';
 import { DiagnosticAiDeviceClass } from './AiIsland';
-import { AI_APP_ACTION_REQUEST, AI_SESSION_HANDOVER, AI_SESSION_OPEN } from '../../services/diagnosticAi/AiBridgeKeys';
+import { AI_APP_ACTION_REQUEST, AI_ORB_LISTEN_REQUEST, AI_ORB_SPEAKING, AI_SESSION_HANDOVER, AI_SESSION_OPEN } from '../../services/diagnosticAi/AiBridgeKeys';
 import { AiSessionRouter } from '../../services/diagnosticAi/AiSessionRouter';
+import { AiReadAloud } from '../../services/diagnosticAi/AiSpeech';
 import { AI_VOICE_ENABLED } from '../../services/diagnosticAi/AiVoiceSettings';
 import { DiagnosticAiAppActionId, diagnosticAiAppActionId } from '../../services/diagnosticAi/DiagnosticAiAppActionPolicy';
 
@@ -15,10 +16,12 @@ let sessionHostCount: number = 0;
  * SSH's 「更多」) bumps `openRequest`: the first press opens the AI as the floating orb with its small text chat beside
  * it, above the session, keeping clear of the side bar on whichever edge it is; the next press closes it. On that orb a
  * tap folds the chat away or brings it back, a double tap makes the orb listen (the words go into its chat), and a drag
- * (on the orb or its chat) moves it. While this AI is up, voice and app-action requests come here
- * rather than to the host list that may still be alive under the session (AiSessionRouter). It works for the signed-in
- * account (its AI 配置 and chats), stays up while the connection drops or reconnects, and when the session page goes
- * away with the AI up, the host list carries it on (AI_SESSION_HANDOVER).
+ * (on the orb or its chat) moves it. There is no voice ball over the session: answers are read aloud by the orb as
+ * 连接中语音回答 says, and voice mode (the chat's voice button, 语音模式, 用语音回答我) is the orb reading every answer
+ * and listening again. While this AI is up, voice and app-action requests come here rather than to the host list that
+ * may still be alive under the session (AiSessionRouter). It works for the signed-in account (its AI 配置, chats and AI
+ * 语音), stays up while the connection drops or reconnects, and when the session page goes away with the AI up, the
+ * host list carries it on (AI_SESSION_HANDOVER).
  */
 @Component
 export struct SessionAiHost {
@@ -34,10 +37,8 @@ export struct SessionAiHost {
   @StorageProp(AI_APP_ACTION_REQUEST) @Watch('onAppActionRequest') appActionRequest: string = '';
   private readonly hostId: string = 'session-ai-' + (++sessionHostCount).toString() + '-' + Date.now().toString(36);
   private island: AiTopLayer = new AiTopLayer();
-  private voice: AiTopLayer = new AiTopLayer();
   private topInset: number = 24;
   private win: window.Window | null = null;
-  private reopenTimer: number = -1;
   private disposed: boolean = false;
   /** A PC session window behind the main one leaves AI requests to the window the user is in. */
   private readonly onWindowEvent = (event: window.WindowEventType): void => {
@@ -64,15 +65,14 @@ export struct SessionAiHost {
 
   aboutToDisappear(): void {
     this.disposed = true;
-    // Up (or between voice and the orb) as the page goes: the user left the host, not the AI.
-    const handover: boolean = this.island.isOpen() || this.voice.isOpen() || this.reopenTimer >= 0;
-    if (this.reopenTimer >= 0) { clearTimeout(this.reopenTimer); this.reopenTimer = -1; }
+    // Up as the page goes: the user left the host, not the AI.
+    const handover: boolean = this.island.isOpen();
     if (this.win !== null) {
       try { this.win.off('windowEvent', this.onWindowEvent); } catch (_error) { /* already off */ }
       this.win = null;
     }
+    this.stopTalking();
     this.island.close();
-    this.voice.close();
     AppStorage.setOrCreate<boolean>(AI_SESSION_OPEN, false);
     AiSessionRouter.release(this.hostId);
     if (handover) {
@@ -85,7 +85,14 @@ export struct SessionAiHost {
   private active(): boolean { return AiSessionRouter.current() === this.hostId; }
 
   private releaseIfIdle(): void {
-    if (!this.island.isOpen() && !this.voice.isOpen()) { AiSessionRouter.release(this.hostId); }
+    if (!this.island.isOpen()) { AiSessionRouter.release(this.hostId); }
+  }
+
+  /** The orb's voice mode ends and nothing is read aloud any more (the AI closed, or the session went). */
+  private stopTalking(): void {
+    AiChatMemory.sessionTalk = '';
+    if (this.active() || AppStorage.get<boolean>(AI_ORB_SPEAKING) === true) { AiReadAloud.stop(); }
+    AppStorage.setOrCreate(AI_ORB_SPEAKING, false);
   }
 
   private toast(message: string): void {
@@ -95,25 +102,24 @@ export struct SessionAiHost {
   /** The side bar's AI button: opens the AI, or closes it when it is up. */
   private onOpenRequest(): void {
     if (this.openRequest <= 0) { return; }
-    if (this.island.isOpen() || this.voice.isOpen() || this.reopenTimer >= 0) {
+    if (this.island.isOpen()) {
       this.closeAi();
       return;
     }
     this.openOrb();
   }
 
-  /** Closed from the side bar (or by the AI's own exit): the orb, its chat and any voice mode go. */
+  /** Closed from the side bar: the orb, its chat and its voice mode go (reading aloud stops). */
   private closeAi(): void {
-    if (this.reopenTimer >= 0) { clearTimeout(this.reopenTimer); this.reopenTimer = -1; }
     AiChatMemory.voiceResume = false;
+    this.stopTalking();
     this.island.close();
-    this.voice.close();
     this.publishOpen();
     AiSessionRouter.release(this.hostId);
   }
 
   private publishOpen(): void {
-    AppStorage.setOrCreate<boolean>(AI_SESSION_OPEN, this.island.isOpen() || this.voice.isOpen() || this.reopenTimer >= 0);
+    AppStorage.setOrCreate<boolean>(AI_SESSION_OPEN, this.island.isOpen());
   }
 
   /** The orb with its small text chat (text mode is the default in a session). */
@@ -128,6 +134,8 @@ export struct SessionAiHost {
     AiChatMemory.active = true;
     // No orb here leads back to a voice mode the host list started.
     AiChatMemory.voiceResume = false;
+    // Text first: voice mode starts when asked for, here.
+    AiChatMemory.sessionTalk = '';
     const p: AiIslandLayerParams = new AiIslandLayerParams();
     p.topInset = this.topInset;
     p.deviceClass = this.deviceClass;
@@ -136,6 +144,8 @@ export struct SessionAiHost {
     p.sessionAvoidWidth = this.avoidWidth;
     p.answersNow = (): boolean => this.active();
     p.onDismissed = (): void => {
+      // 拜拜 / the back key: the AI goes, and so does its voice.
+      this.stopTalking();
       this.island.close();
       this.releaseIfIdle();
       this.publishOpen();
@@ -146,45 +156,22 @@ export struct SessionAiHost {
     this.publishOpen();
   }
 
+  /**
+   * Voice mode in a session (the small chat's voice button, 「语音模式」, or the AI's switch_mode for 用语音回答我): the
+   * orb talks — it reads every answer aloud and then listens again — never a voice ball over the remote screen. An
+   * answer on its way is read first; otherwise the orb listens now.
+   */
   private onVoiceRequest(): void {
-    if (this.voiceRequest <= 0 || !this.active() || this.voice.isOpen()) { return; }
+    if (this.voiceRequest <= 0 || !this.active() || !this.island.isOpen()) { return; }
     if (AppStorage.get<boolean>(AI_VOICE_ENABLED) !== true) {
       this.toast('AI 语音还没打开，可以在「设置 → AI 语音」里开启');
       return;
     }
-    this.island.close();
-    const p: AiVoiceLayerParams = new AiVoiceLayerParams();
-    p.owner = aiChatOwner();
-    p.topInset = this.topInset;
-    p.deviceClass = this.deviceClass;
-    p.mode = 'hands';
-    p.startShape = 'island';
-    p.keepSystemBars = true;
-    p.onDismissed = (): void => {
-      this.voice.close();
-      this.releaseIfIdle();
-    };
-    // Back to text: the orb with its chat again (a session has no full panel to hand over to).
-    p.onOpenChat = (): void => { this.reopenOrbAfterVoice(); };
-    p.onFloat = (): void => { this.reopenOrbAfterVoice(); };
-    // Voice confirmed an app screen: a session action runs here, the rest is on the host list. Either way the orb
-    // comes back (no orb here leads back to voice mode, so voice's resume mark goes).
-    p.onOpenScreen = (action: string): void => {
-      AiChatMemory.voiceResume = false;
-      const id: DiagnosticAiAppActionId | null = diagnosticAiAppActionId(action);
-      if (id !== null) { this.runAction(id); } else { this.toast('这个页面在主机列表里，回到主机列表后再打开'); }
-      this.reopenOrbAfterVoice();
-    };
-    hilog.info(0x0000, 'AiChat', 'session AI starts voice mode');
-    this.voice.openVoice(this.getUIContext(), p);
-  }
-
-  private reopenOrbAfterVoice(): void {
-    if (this.reopenTimer >= 0) { clearTimeout(this.reopenTimer); }
-    this.reopenTimer = setTimeout((): void => {
-      this.reopenTimer = -1;
-      if (!this.disposed && !this.island.isOpen()) { this.openOrb(); }
-    }, 360);
+    hilog.info(0x0000, 'AiChat', 'session AI talks in its orb');
+    AiChatMemory.sessionTalk = 'on';
+    if (AiChatMemory.requestId === '' && AiReadAloud.speakingId === '') {
+      AppStorage.setOrCreate(AI_ORB_LISTEN_REQUEST, Date.now());
+    }
   }
 
   private onAppActionRequest(): void {

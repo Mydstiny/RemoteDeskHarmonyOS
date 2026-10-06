@@ -209,6 +209,14 @@ for (const q of ['拜拜', '好的拜拜。', '拜拜啦', '再见', '那就先�
 for (const q of ['怎么跟同事礼貌地说再见，帮我写三种说法', '退出登录怎么操作', '关闭深色模式']) {
   assert.ok(!route.aiQuestionIsGoodbye(q), q);
 }
+// 用语音回答我: the answers come by voice (a session's orb reads them; at home voice mode opens); 用文字回答 goes back.
+for (const [q, mode] of [['用语音回答我', 'voice'], ['以后都用语音回复吧', 'voice'], ['改用语音跟我说', 'voice'],
+  ['用文字回答我', 'text'], ['接下来用文字回复', 'text']]) {
+  assert.equal(route.aiModeCommand(q), mode, q);
+}
+for (const q of ['怎么用语音回答', '语音回答的设置在哪里', '用语音回答我刚才的问题可以吗请详细一点']) {
+  assert.equal(route.aiModeCommand(q), '', q);
+}
 for (const [q, mode] of [['回到文字模式', 'text'], ['切换到文字聊天', 'text'], ['我要打字', 'text'], ['退出语音模式', 'text'],
   ['文字模式', 'text'], ['切换到语音模式', 'voice'], ['语音模式', 'voice'], ['切到助理', 'assistant'], ['交给助理吧', 'assistant'],
   ['切到聊天模式', 'chat'], ['缩成悬浮球', 'orb'], ['帮我写一份周报', ''], ['把语音设置打开', ''], ['RDP 连不上', '']]) {

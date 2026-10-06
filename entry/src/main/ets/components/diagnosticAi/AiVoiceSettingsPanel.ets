@@ -5,6 +5,7 @@ import { Palette, buildDark, buildLight } from '../../common/Theme';
 import { AiSegmented } from './AiSegmented';
 import { AiReadAloud } from '../../services/diagnosticAi/AiSpeech';
 import { AI_ASR_ENGINES, AI_ASR_MODELS, AI_TTS_PROVIDERS, AiTtsProvider, AiVoiceConfig, AiVoiceSettings, aiTtsProvider } from '../../services/diagnosticAi/AiVoiceSettings';
+import { AI_SESSION_REPLY_MODES } from '../../services/diagnosticAi/AiSessionVoicePolicy';
 
 const SAMPLE: string = '你好，我是你的 AI 助理。语音模式下，你可以直接和我说话，我会一边想一边告诉你。';
 
@@ -374,12 +375,23 @@ export struct AiVoiceSettingsPanel {
           this.label('语音模式')
           Column() {
             Column() {
-              this.switchRow('连续对话', '回答说完后接着听你说，直到你说“再见”或点关闭', this.config.continuous,
+              this.switchRow('连续对话', '回答说完后接着听你说，直到你说“再见”或点关闭；远程连接里的悬浮球语音模式也一样', this.config.continuous,
                 (on: boolean): void => { this.settings.setContinuous(on); this.reload(); })
               Divider().color(this.pal().divider)
               this.switchRow('按住 AI 按钮说话', '在主页长按 AI 按钮开始说话，松手发送', this.config.holdToTalk,
                 (on: boolean): void => { this.settings.setHoldToTalk(on); this.reload(); })
             }.width('100%')
+          }.cardStyle()
+          this.label('远程连接中')
+          Column() {
+            Column({ space: 10 }) {
+              Text('连接中语音回答').fontSize(15).fontWeight(FontWeight.Medium).fontColor(this.pal().text).width('100%')
+              AiSegmented({ options: AI_SESSION_REPLY_MODES, current: this.config.sessionReply,
+                trackColor: this.pal().surface, textColor: this.pal().text, segmentHeight: 34,
+                onPick: (mode: string): void => { this.settings.setSessionReply(mode); this.reload(); } })
+              Text('远程连接里没有语音大球：双击悬浮球说话，回答由悬浮球读出来。说「语音模式」或「用语音回答我」时每次都读并接着听，说「用文字回答」停止。')
+                .fontSize(12).lineHeight(17).fontColor(this.pal().text3).width('100%')
+            }.width('100%').padding({ top: 12, bottom: 14 }).alignItems(HorizontalAlign.Start)
           }.cardStyle()
           Text(this.privacyText())
             .fontSize(12).lineHeight(18).fontColor(this.pal().text3).width('100%').padding({ left: 4, right: 4, bottom: 8 })

@@ -259,7 +259,7 @@ function chatSystemPrompt(request: AiChatRequest, active: AiSkill[], tools: bool
       '- 用户提出 App 还没有的功能、改进想法（“要是能……就好了”“希望……”）时，用 manage_feature_requests 记下，不必追问；' +
         '用户想要这些功能或让你发给开发者时，用它 send。\n' : '') +
     (tools && hasTool(on, 'switch_mode') ?
-      '- 用户要回到文字、进入语音模式、切到助理或聊天、缩成悬浮球、开始新对话（开个新对话、清空对话、换个话题重新聊），或者表示要结束（拜拜、退出、就这样吧）时，调用 switch_mode。\n' : '') +
+      '- 用户要回到文字（用文字回答）、进入语音模式（用语音回答我、把回答读出来）、切到助理或聊天、缩成悬浮球、开始新对话（开个新对话、清空对话、换个话题重新聊），或者表示要结束（拜拜、退出、就这样吧）时，调用 switch_mode。\n' : '') +
     (tools ? '- 应用里的数据可以增删改查：记住或忘掉事情用 update_memory；对话记录用 list_conversations / delete_conversation；' +
       '主机用 list_hosts / connect_host / edit_host / delete_host；提醒用 set_reminder / list_reminders / cancel_reminder。' +
       '删除和会改动数据的操作都会先显示确认卡片，回答里说明要做什么并提醒用户点确认，不要说已经完成。\n' : '') +

@@ -82,17 +82,21 @@ export function aiQuestionIsGoodbye(question: string): boolean {
  * A command to change the AI's mode, said or typed in any mode: 'text' (回到文字 / 我要打字 / 退出语音), 'voice'
  * (语音模式), 'assistant' (切到助理), 'chat' (切到聊天), 'orb' (悬浮球), 'exit' (拜拜, 退出) — or '' for anything else.
  */
+/** 用语音回答我 / 以后都用文字回复 / 改用语音跟我说: how the answers should come (before 语音 / 文字, and after it). */
+const REPLY_WITH: string = '(请|你)?(以后|之后|接下来|后面|从现在开始)?(都|就)?(用|改用|换成|换用)';
+const REPLY_VERB: string = '(来)?(回答|回复|答复|回我|跟我说|和我说|跟我讲|说给我听|说)(我)?(吧|好吗|可以吗)?$';
+
 export function aiModeCommand(question: string): string {
   const t: string = commandText(question);
   if (t === '' || t.length > 16) { return ''; }
   const to: string = '(请|帮我)?(回到|回|切到|切回|切换到|切换回|切换成|换成|换回|换到|改成|改回|转到|转成|变成|变回|返回|用|进入|打开|开启|交给)';
   if (new RegExp('^' + to + '(文字|文本|打字|键盘|输入框|文字聊天|聊天界面)(模式|输入|聊天|对话)?(吧)?$').test(t) ||
     /^(退出|关闭|关掉|不用|结束|停止)语音(模式|对话|聊天)?(吧)?$/.test(t) || /^我(要|想)(打字|用文字|文字聊)/.test(t) ||
-    /^(文字|打字)模式(吧)?$/.test(t)) {
+    /^(文字|打字)模式(吧)?$/.test(t) || new RegExp('^' + REPLY_WITH + '文字' + REPLY_VERB).test(t)) {
     return 'text';
   }
   if (new RegExp('^' + to + '语音(模式|对话|聊天)?(吧)?$').test(t) || /^(跟我|和我)?语音(聊天|对话)(吧)?$/.test(t) ||
-    /^语音模式(吧)?$/.test(t)) {
+    /^语音模式(吧)?$/.test(t) || new RegExp('^' + REPLY_WITH + '语音' + REPLY_VERB).test(t)) {
     return 'voice';
   }
   // 新对话: the current one is kept in 对话记录, a new one starts (asked as a whole sentence, not "新对话在哪").

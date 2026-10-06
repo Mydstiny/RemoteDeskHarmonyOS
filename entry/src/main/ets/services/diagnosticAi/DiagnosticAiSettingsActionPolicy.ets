@@ -1,6 +1,7 @@
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { recordDiagnosticEvent } from '../DiagnosticCaptureRuntime';
 import { DiagnosticAiSettingProposal } from './DiagnosticAiModels';
+import { AI_SESSION_REPLY_MODES } from './AiSessionVoicePolicy';
 
 /** One value a setting can take: what is stored and what the user reads. */
 export class AiSettingChoice {
@@ -124,6 +125,12 @@ const SETTINGS: AiSettingSpec[] = [
     choices([['remote-expert', '远程桌面专家'], ['beginner-guide', '新手引导'], ['diagnostic-first', '排障优先'],
       ['privacy-first', '隐私优先']])),
   toggle('ai.reducedMotion', '减少 AI 动效', 'diagnosticAiReducedMotion', '关闭持续旋转和弹簧转场'),
+  // AI 语音 (per account): kept by the host page's bridge.
+  toggle('ai.voice.enabled', 'AI 语音', 'aiVoice.enabled', '语音模式、对悬浮球说话和自动朗读回答的总开关'),
+  new AiSettingSpec('ai.voice.sessionReply', '连接中语音回答', 'aiVoice.sessionReply', choices(AI_SESSION_REPLY_MODES),
+    '远程连接里的悬浮球 AI 什么时候把回答读出来；只在本次连接用语音回答时改用 switch_mode 的 voice，不必改设置'),
+  new AiSettingSpec('ai.voice.rate', 'AI 朗读语速', 'aiVoice.rate', choices([['slow', '慢'], ['normal', '正常'], ['fast', '快']])),
+  toggle('ai.voice.continuous', 'AI 连续对话', 'aiVoice.continuous', '语音模式下回答说完后接着听'),
   new AiSettingSpec('ai.style', 'AI 风格', 'aiStyle', choices([['siri', 'Siri 风格'], ['xiaoyi', '小艺风格']]),
     '小艺风格是蓝紫渐变和彩色光环，会一起换掉思考动画、悬浮球和完成动画'),
   new AiSettingSpec('ai.style.wash', 'AI 窗口晕染', 'aiStyle.wash', choices([['on', '开'], ['off', '关']]), '小艺风格下才有'),

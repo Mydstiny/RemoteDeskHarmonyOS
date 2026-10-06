@@ -9,6 +9,10 @@ export const AI_SESSION_HANDOVER_TTL_MS: number = 15000;
 export const AI_SESSION_RAIL_EXPANDED: string = 'aiSession.railExpanded';
 /** AppStorage: the AI is up in the session (its side-bar button shows it on, and a tap there closes it). */
 export const AI_SESSION_OPEN: string = 'aiSession.open';
+/** AppStorage: a session's orb is asked to listen now ('<time>'): its voice mode, or the next turn after an answer was read. */
+export const AI_ORB_LISTEN_REQUEST: string = 'aiOrb.listenRequest';
+/** AppStorage: a session's orb is reading an answer aloud (it shows itself busy meanwhile). */
+export const AI_ORB_SPEAKING: string = 'aiOrb.speaking';
 /** AppStorage: the AI (chat, voice) asks the host page to open an app screen ('<action id>@<time>'). */
 export const AI_APP_ACTION_REQUEST: string = 'aiAppActionRequest';
 /** AppStorage: a question handed to 助理 ('<time>|<question>'); the panel switches to 助理 and asks it. */

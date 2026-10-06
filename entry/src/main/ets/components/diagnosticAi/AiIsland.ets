@@ -7,6 +7,7 @@ import { AiThinkingIndicator } from './AiMotionViews';
 import { AiLiftController, aiLiftLayer } from './AiLiftLayer';
 import { AI_VOICE_REQUEST, AiChatMemory } from './AiChatView';
 import { AI_VOICE_ENABLED } from '../../services/diagnosticAi/AiVoiceSettings';
+import { AiReadAloud } from '../../services/diagnosticAi/AiSpeech';
 import { AI_FLOAT_REQUEST, AI_HANDOVER_FADE_DELAY_MS, AI_HANDOVER_FADE_MS, AI_HANDOVER_RECT, AI_MODE_REQUEST } from '../../services/diagnosticAi/AiBridgeKeys';
 import { AI_ORB_HINT_TEXT, aiOrbHintWanted } from '../../services/diagnosticAi/AiOrbHintStore';
 import { aiIsSessionPage } from '../../services/diagnosticAi/AiSessionRouter';
@@ -87,7 +88,7 @@ export struct AiIsland {
    * floating orb (or the AI in a session) goes away. A running capture or analysis is never stopped by it.
    */
   @StorageProp('aiTop.back') @Watch('onBackKey') backKey: string = '';
-  /** In a session there is no panel to act on 拜拜 / 语音模式 typed in the small chat: the island does it. */
+  /** In a session there is no panel to act on 拜拜 / 语音模式 / 回到文字 in the small chat: the island does it. */
   @StorageProp(AI_MODE_REQUEST) @Watch('onSessionModeRequest') modeRequest: string = '';
   onDismissed: () => void = (): void => {};
   /** Floating or not: the host lets touches through its overlay node only while the island floats. */
@@ -597,7 +598,7 @@ export struct AiIsland {
     this.onDismissed();
   }
 
-  /** A double tap on the session orb: voice mode, in this window (SessionAiHost opens it and closes the orb). */
+  /** 语音模式 in a session: the orb's own voice mode (SessionAiHost; no voice ball over the session). */
   private voiceFromOrb(): void {
     if (AppStorage.get<boolean>(AI_VOICE_ENABLED) !== true) {
       try {
@@ -785,6 +786,12 @@ export struct AiIsland {
     const mode: string = this.modeRequest.split('@')[0];
     if (mode === 'exit') { this.leaveFromOrb(); return; }
     if (mode === 'voice') { this.voiceFromOrb(); return; }
+    // 回到文字 / 用文字回答: the orb stops reading and leaves its voice mode (until 语音模式 again).
+    if (mode === 'text') {
+      AiChatMemory.sessionTalk = 'off';
+      AiReadAloud.stop();
+      return;
+    }
     if (mode === 'assistant') {
       try {
         this.getUIContext().getPromptAction().showToast({ message: '助理在主机列表里，回到主机列表后可以打开', duration: 2200 });

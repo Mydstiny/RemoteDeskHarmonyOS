@@ -12,10 +12,11 @@ import { AiChatAppData, AiChatReply, AiChatService, AiChatTurn, AiConversationRo
 import { AiAttachment, AiDocument, aiCreateDocument, aiDocumentAvailable, aiDocumentErrorText, aiDocumentKind, aiDocumentKindLabel, aiImportDocument, aiOpenDocument, aiPickDocuments, aiPrintDocument, aiSaveDocumentAs, aiShareDocument, aiTextAttachment } from '../../services/diagnosticAi/AiDocumentService';
 import { AiChatAction, aiActionErrorText, aiRunAction } from '../../services/diagnosticAi/AiSystemTools';
 import { AiReadAloud, AiVoiceInput } from '../../services/diagnosticAi/AiSpeech';
-import { AI_VOICE_ENABLED } from '../../services/diagnosticAi/AiVoiceSettings';
+import { AI_VOICE_ENABLED, AiVoiceConfig, AiVoiceSettings } from '../../services/diagnosticAi/AiVoiceSettings';
+import { aiSessionListensAgain, aiSessionReadsAnswer } from '../../services/diagnosticAi/AiSessionVoicePolicy';
 import { AiMdBlock, AiMdSpan, aiMarkdownBlocks } from '../../services/diagnosticAi/AiMarkdownPolicy';
 import { aiAutoRoute, aiModeCommand, aiPendingCardReply } from '../../services/diagnosticAi/AiChatRoutePolicy';
-import { AI_MODE_REQUEST, AI_ORB_DICTATION, AiOrbDictation, aiOrbDictationDecode } from '../../services/diagnosticAi/AiBridgeKeys';
+import { AI_MODE_REQUEST, AI_ORB_DICTATION, AI_ORB_LISTEN_REQUEST, AI_ORB_SPEAKING, AiOrbDictation, aiOrbDictationDecode } from '../../services/diagnosticAi/AiBridgeKeys';
 import { AI_STYLE, aiInk, aiStyleIsXiaoyi, aiXiaoyiGlass } from '../../services/diagnosticAi/AiStylePolicy';
 import { AI_CHAT_REFRESH_KEY, AiShareInbox, AiSharedItem, aiChatRefresh } from '../../services/diagnosticAi/AiShareInbox';
 import { AiSkill, AiToolSpec, aiSkillsForQuestion, aiThinkingPhrases } from '../../services/diagnosticAi/AiSkillCatalog';
@@ -97,6 +98,11 @@ export class AiChatMemory {
   static handoff: string = '';
   /** Voice mode opened an app screen: the orb over it brings voice mode back (not the text panel). */
   static voiceResume: boolean = false;
+  /**
+   * A remote session's orb in voice mode: 'on' (it reads every answer and listens again), 'off' (回到文字: it reads
+   * none), '' (连接中语音回答 decides). SessionAiHost sets it; it lasts while the session's AI is up.
+   */
+  static sessionTalk: string = '';
   /** The request out now ('' none); 新对话 clears it, so a late answer is dropped. */
   static requestId: string = '';
   static status: string = '';
@@ -387,6 +393,10 @@ export struct AiChatView {
   @StorageProp('currentTheme') theme: string = 'light';
   /** The small chat's 展开 (none in a session: there is no full panel there). */
   @Prop canExpand: boolean = true;
+  /** A remote session's orb chat: answers are read aloud as 连接中语音回答 (or the orb's voice mode) says. */
+  @Prop sessionVoice: boolean = false;
+  /** The question being sent was heard by the orb (not typed). */
+  private spokenNext: boolean = false;
   onExpand: () => void = (): void => {};
   onCardSize: (height: number) => void = (_height: number): void => {};
   @State private messages: AiChatMessage[] = [];
@@ -485,7 +495,7 @@ export struct AiChatView {
     const heard: AiOrbDictation = aiOrbDictationDecode(this.dictation);
     if (heard.state === 'listen') { this.dictating = true; this.draft = heard.text; return; }
     this.dictating = false;
-    if (heard.state === 'done') { this.draft = heard.text; this.submit(); return; }
+    if (heard.state === 'done') { this.draft = heard.text; this.spokenNext = true; this.submit(); return; }
     if (heard.state === 'cancel') { this.draft = ''; }
   }
 
@@ -677,11 +687,38 @@ export struct AiChatView {
   private toggleReadAloud(message: AiChatMessage): void {
     if (this.speakingId === message.id) { AiReadAloud.stop(); return; }
     void AiReadAloud.speak(this.context(), this.owner, message.id, message.text, (id: string): void => {
+      if (this.sessionVoice) { AppStorage.setOrCreate(AI_ORB_SPEAKING, id !== ''); }
       if (!this.alive) { return; }
       this.speakingId = id;
       // The list only re-keys its rows when the array changes: hand it a new one so 朗读 / 停止朗读 redraws.
       this.messages = this.messages.slice();
     }).then((note: string): void => { if (note !== '' && this.alive) { this.toast(note); } });
+  }
+
+  /**
+   * A remote session's orb answers by voice: as 连接中语音回答 says (a question the orb heard, every answer, or none),
+   * always in its voice mode — which then listens again (连续对话). Also when the chat is folded away meanwhile.
+   */
+  private readInSession(context: common.UIAbilityContext, answer: AiChatMessage, spoken: boolean): void {
+    if (!this.sessionVoice || answer.text.trim() === '') { return; }
+    const settings: AiVoiceSettings = new AiVoiceSettings();
+    settings.init(context, this.owner);
+    const config: AiVoiceConfig = settings.read();
+    if (!aiSessionReadsAnswer(config.sessionReply, AiChatMemory.sessionTalk, spoken, config.enabled)) { return; }
+    hilog.info(0x0000, 'AiChat', 'session reads the answer aloud talk=%{public}s', AiChatMemory.sessionTalk);
+    void AiReadAloud.speak(context, this.owner, answer.id, answer.text, (id: string): void => {
+      AppStorage.setOrCreate(AI_ORB_SPEAKING, id !== '');
+      if (!this.alive) { return; }
+      this.speakingId = id;
+      this.messages = this.messages.slice();
+    }).then((note: string): void => {
+      if (note !== '' && this.alive) { this.toast(note); }
+      // Voice mode: the user's turn again, unless something else is being read now (the orb is gone if the AI was
+      // closed meanwhile; then nobody listens).
+      if (aiSessionListensAgain(AiChatMemory.sessionTalk, config.continuous) && AiReadAloud.speakingId === '') {
+        AppStorage.setOrCreate(AI_ORB_LISTEN_REQUEST, Date.now());
+      }
+    });
   }
 
   private setAction(messageId: string, action: AiChatAction, status: string, result: string): void {
@@ -749,6 +786,8 @@ export struct AiChatView {
   // ------------------------------------------------------------------ asking
 
   private submit(): void {
+    const spoken: boolean = this.spokenNext;
+    this.spokenNext = false;
     if (this.busy || this.importing) { return; }
     const typed: string = this.draft.trim();
     if (typed === '' && this.pending.length === 0) { return; }
@@ -780,7 +819,7 @@ export struct AiChatView {
     this.routeBypass = '';
     this.draft = '';
     this.hideKeyboard();
-    void this.ask(question, false);
+    void this.ask(question, false, spoken);
   }
 
   /** The one card waiting under the latest answer, confirmed or cancelled by what was typed (true: handled). */
@@ -805,7 +844,9 @@ export struct AiChatView {
 
   private preferenceText(): string { return aiChatPreferenceText(this.preferences); }
 
-  private async ask(question: string, retry: boolean): Promise<void> {
+  private async ask(question: string, retry: boolean, spoken: boolean = false): Promise<void> {
+    // Kept for reading the answer aloud, which may land after this view has gone (the chat folded away).
+    const context: common.UIAbilityContext = this.context();
     if (!this.allowed()) { this.error = '当前账号没有 AI 助理权限'; return; }
     const profile: DiagnosticAiProviderProfile | undefined = this.selectedProfile();
     if (profile === undefined) { this.error = '请先在辅助 AI 配置中保存 API Key 并选择模型'; return; }
@@ -868,6 +909,7 @@ export struct AiChatView {
       } else {
         AiChatMemory.messages = AiChatMemory.messages.concat([answer]);
       }
+      this.readInSession(context, answer, spoken);
       aiChatSaveSession(this.conversationStore, sessionId, AiChatMemory.messages, profile);
       this.recordUsage(profile, reply);
       hilog.info(0x0000, 'AiChat', 'answered chars=%{public}s docs=%{public}s tools=%{public}s', reply.text.length.toString(),

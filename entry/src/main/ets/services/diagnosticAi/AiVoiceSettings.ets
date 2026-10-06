@@ -1,11 +1,14 @@
 import { common } from '@kit.AbilityKit';
 import { preferences } from '@kit.ArkData';
 import { DiagnosticAiSecretStore } from './DiagnosticAiSecretStore';
+import { aiSessionReplyMode } from './AiSessionVoicePolicy';
 
 /** AppStorage mirror of AI 语音 (Beta) being on, so the chat can show its voice button without reading preferences. */
 export const AI_VOICE_ENABLED: string = 'aiVoice.enabled';
 /** AppStorage mirror of 按住 AI 按钮说话. */
 export const AI_VOICE_HOLD: string = 'aiVoice.holdToTalk';
+/** AppStorage mirror of 连接中语音回答 (AiSessionVoicePolicy). */
+export const AI_VOICE_SESSION_REPLY: string = 'aiVoice.sessionReply';
 
 /** One speech engine the user can pick in AI 语音. */
 export class AiTtsProvider {
@@ -75,6 +78,8 @@ export class AiVoiceConfig {
   groupId: string = '';
   continuous: boolean = true;
   holdToTalk: boolean = true;
+  /** 连接中语音回答: 'spoken' · 'always' · 'off' (AiSessionVoicePolicy). */
+  sessionReply: string = 'spoken';
   /** A cloud engine is chosen and has a key; otherwise speech falls back to the system voice. */
   hasKey: boolean = false;
   /** 语音识别 engine ('system' | 'dashscope') and its model; asrReady once the 阿里云百炼 key is saved. */
@@ -147,12 +152,14 @@ export class AiVoiceSettings {
     config.groupId = this.text(config.provider + '.groupId', '');
     config.continuous = this.flag('continuous', true);
     config.holdToTalk = this.flag('holdToTalk', true);
+    config.sessionReply = aiSessionReplyMode(this.text('sessionReply', 'spoken'));
     config.hasKey = provider.needsKey && this.keyFingerprint(config.provider) !== '';
     config.asr = this.text('asr', 'system') === 'dashscope' ? 'dashscope' : 'system';
     config.asrModel = this.text('asr.model', AI_ASR_MODELS[0]);
     config.asrReady = config.asr === 'dashscope' && this.keyFingerprint('dashscope') !== '';
     AppStorage.setOrCreate(AI_VOICE_ENABLED, config.enabled);
     AppStorage.setOrCreate(AI_VOICE_HOLD, config.enabled && config.holdToTalk);
+    AppStorage.setOrCreate(AI_VOICE_SESSION_REPLY, config.sessionReply);
     return config;
   }
 
@@ -161,6 +168,7 @@ export class AiVoiceSettings {
   setRate(rate: string): void { this.put('rate', rate === 'slow' || rate === 'fast' ? rate : 'normal'); }
   setContinuous(on: boolean): void { this.put('continuous', on); }
   setHoldToTalk(on: boolean): void { this.put('holdToTalk', on); this.read(); }
+  setSessionReply(mode: string): void { this.put('sessionReply', aiSessionReplyMode(mode)); this.read(); }
   setModel(provider: string, model: string): void { this.put(provider + '.model', model.trim().slice(0, 120)); }
   setVoice(provider: string, voice: string): void { this.put(provider + '.voice', voice.trim().slice(0, 120)); }
   setBaseUrl(provider: string, url: string): void { this.put(provider + '.baseUrl', url.trim().replace(/\/+$/, '').slice(0, 300)); }

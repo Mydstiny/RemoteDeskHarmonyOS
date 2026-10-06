@@ -532,7 +532,7 @@ test('the knowledge base describes 远程 AI, its style, both keys and the sessi
   const kb = load(D + 'DiagnosticAiKnowledgeBase');
   const settings = load(D + 'DiagnosticAiSettingsActionPolicy');
   const actions = load(D + 'DiagnosticAiAppActionPolicy');
-  assert.match(kb.DIAGNOSTIC_AI_KNOWLEDGE_VERSION, /2026-10-06-v11$/);
+  assert.match(kb.DIAGNOSTIC_AI_KNOWLEDGE_VERSION, /2026-10-06-v12$/);
   const guide = kb.aiAppGuide();
   for (const words of ['Claude Agent', 'Anthropic API Key', 'DSH', 'Codex 风格', '手机通行密钥', '安全密钥重定向',
     '退出主机回到主机列表后', '连接断开或重连时 AI 不会关闭', '当前登录账号的 AI 配置']) {
@@ -562,9 +562,11 @@ test('the session AI uses the signed-in account, survives a dropped connection a
 
   const host = read('components/diagnosticAi/SessionAiHost.ets');
   assert.match(host, /private openOrb\(\): void \{[\s\S]*?const owner: string = aiChatOwner\(\);\s*if \(AiChatMemory\.owner !== owner\) \{ AiChatMemory\.clear\(owner\); \}[\s\S]*?this\.island\.openIsland/);
-  assert.match(host, /p\.owner = aiChatOwner\(\);/);
+  // Answers are read with the signed-in account's AI 语音 (the chat's owner).
+  assert.match(chat, /private readInSession\([^)]*\): void \{[\s\S]*?settings\.init\(context, this\.owner\);[\s\S]*?AiReadAloud\.speak\(context, this\.owner,/);
   const leaving = host.slice(host.indexOf('aboutToDisappear(): void {'), host.indexOf('private active()'));
-  assert.match(leaving, /const handover: boolean = this\.island\.isOpen\(\) \|\| this\.voice\.isOpen\(\) \|\| this\.reopenTimer >= 0;/);
+  assert.match(leaving, /const handover: boolean = this\.island\.isOpen\(\);/);
+  assert.match(leaving, /this\.stopTalking\(\);/, 'reading aloud stops with the session page');
   assert.ok(leaving.indexOf('AiSessionRouter.release(this.hostId)') < leaving.indexOf('AppStorage.setOrCreate(AI_SESSION_HANDOVER'),
     'released before the host list is asked (it skips while a session answers)');
   assert.match(leaving, /if \(handover\) \{[\s\S]*?AppStorage\.setOrCreate\(AI_SESSION_HANDOVER, Date\.now\(\)\);/);
@@ -608,6 +610,57 @@ test('the host list carries the session AI on as the orb with its chat, only onc
   assert.match(island, /@Prop startChat: boolean = false;/);
   assert.match(island, /this\.liftUp\('', 'none', AiChatMemory\.active \? 'chat' : 'assistant', 'chat', this\.startChat && AiChatMemory\.active,/);
   assert.match(read('components/diagnosticAi/AiTopLayer.ets'), /startChat: p\.startChat/);
+});
+
+// ---------------------------------------------------------------- the session AI talks in its orb
+test('连接中语音回答: when a session answer is read aloud, and voice mode listens again', () => {
+  const policy = load(D + 'AiSessionVoicePolicy');
+  assert.deepEqual(Array.from(policy.AI_SESSION_REPLY_MODES, m => m[0]), ['spoken', 'always', 'off']);
+  assert.equal(policy.aiSessionReplyMode('nonsense'), 'spoken');
+  // The setting: a question the orb heard (spoken), every answer, or none.
+  assert.equal(policy.aiSessionReadsAnswer('spoken', '', true, true), true);
+  assert.equal(policy.aiSessionReadsAnswer('spoken', '', false, true), false);
+  assert.equal(policy.aiSessionReadsAnswer('always', '', false, true), true);
+  assert.equal(policy.aiSessionReadsAnswer('off', '', true, true), false);
+  // Voice mode (语音模式 / 用语音回答我) reads everything; 回到文字 reads nothing; AI 语音 off reads nothing.
+  assert.equal(policy.aiSessionReadsAnswer('off', 'on', false, true), true);
+  assert.equal(policy.aiSessionReadsAnswer('always', 'off', true, true), false);
+  assert.equal(policy.aiSessionReadsAnswer('always', 'on', true, false), false);
+  assert.equal(policy.aiSessionListensAgain('on', true), true);
+  assert.equal(policy.aiSessionListensAgain('on', false), false);
+  assert.equal(policy.aiSessionListensAgain('', true), false);
+});
+
+test('in a session no voice ball opens: the orb listens and reads, and the AI can change 连接中语音回答', () => {
+  const host = read('components/diagnosticAi/SessionAiHost.ets');
+  assert.doesNotMatch(host, /openVoice|AiVoiceLayerParams/, 'no voice ball over the session');
+  const voice = host.slice(host.indexOf('private onVoiceRequest(): void {'), host.indexOf('private onAppActionRequest(): void {'));
+  assert.match(voice, /AiChatMemory\.sessionTalk = 'on';/);
+  assert.match(voice, /if \(AiChatMemory\.requestId === '' && AiReadAloud\.speakingId === ''\) \{\s*AppStorage\.setOrCreate\(AI_ORB_LISTEN_REQUEST, Date\.now\(\)\);/,
+    'an answer on its way is read first, then the orb listens');
+  const close = host.slice(host.indexOf('private closeAi(): void {'), host.indexOf('private publishOpen(): void {'));
+  assert.match(close, /this\.stopTalking\(\);/, 'closing the AI stops reading and voice mode');
+  const lift = read('components/diagnosticAi/AiLiftLayer.ets');
+  assert.match(lift, /private onListenRequest\(\): void \{\s*if \(this\.listenRequest <= 0 \|\| !this\.controller\.sessionMode/);
+  assert.match(lift, /if \(AiReadAloud\.speakingId !== ''\) \{ AiReadAloud\.stop\(\); \}/, 'a double tap talks over the reading');
+  assert.match(lift, /sessionVoice: this\.controller\.sessionMode,/);
+  const chat = read('components/diagnosticAi/AiChatView.ets');
+  assert.match(chat, /this\.spokenNext = true; this\.submit\(\);/, 'what the orb heard counts as spoken');
+  assert.match(chat, /this\.readInSession\(context, answer, spoken\);/);
+  const island = read('components/diagnosticAi/AiIsland.ets');
+  assert.match(island, /if \(mode === 'text'\) \{\s*AiChatMemory\.sessionTalk = 'off';\s*AiReadAloud\.stop\(\);/);
+  // The AI's interfaces: its settings catalog and the host page's bridge.
+  const settings = load(D + 'DiagnosticAiSettingsActionPolicy');
+  for (const id of ['ai.voice.enabled', 'ai.voice.sessionReply', 'ai.voice.rate', 'ai.voice.continuous']) {
+    assert.ok(settings.diagnosticAiSettingSpec(id), id + ' is a setting');
+  }
+  assert.deepEqual(Array.from(settings.diagnosticAiSettingSpec('ai.voice.sessionReply').choices, c => c.value), ['spoken', 'always', 'off']);
+  const page = read('pages/HostListPage.ets');
+  assert.match(page, /if \(id\.indexOf\('ai\.voice\.'\) === 0\) \{ return this\.assistantVoiceSetting\(id\); \}/);
+  assert.match(page, /else if \(id === 'ai\.voice\.sessionReply'\) \{ voice\.setSessionReply\(value\); \}/);
+  assert.match(read('services/diagnosticAi/AiSkillCatalog.ets'), /voice=进入语音模式（用户说语音模式、用语音回答我时；在远程连接里是悬浮球把回答读出来并接着听，不会弹出语音大球）/);
+  assert.ok(load(D + 'DiagnosticAiKnowledgeBase').aiAppGuide().includes('连接中语音回答'));
+  assert.match(read('components/diagnosticAi/AiVoiceSettingsPanel.ets'), /AiSegmented\(\{ options: AI_SESSION_REPLY_MODES, current: this\.config\.sessionReply,/);
 });
 
 (async () => {

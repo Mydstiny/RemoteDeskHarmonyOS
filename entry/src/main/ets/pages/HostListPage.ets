@@ -2386,6 +2386,8 @@ struct HostListPage {
     if (id === 'ui.hostCardSensitiveHidden') { return this.hostCardSensitiveInfoHidden ? 'true' : 'false'; }
     // 远程 AI 设置 are the account's, read with its AI hosts.
     if (id.indexOf('remoteAi.') === 0) { return AiHostService.getInstance().remoteSetting(id); }
+    // AI 语音 is the account's too (its own preferences).
+    if (id.indexOf('ai.voice.') === 0) { return this.assistantVoiceSetting(id); }
     if (id === 'ai.personality' || id === 'ai.verbosity' || id === 'ai.role') {
       const prefs: DiagnosticAiAssistantPreferences = this.assistantConversationStore().assistantPreferences();
       return id === 'ai.personality' ? prefs.personality : id === 'ai.verbosity' ? prefs.verbosity : prefs.role;
@@ -2404,8 +2406,33 @@ struct HostListPage {
     return store;
   }
 
-  /** AI 助理's own settings: its answers (assistant preferences), reduced motion (profile) and AI 动效 (motion store). */
+  /** 设置 › AI 语音 for the signed-in account, as the assistant reads it ('true' / 'false' for switches). */
+  private assistantVoiceSetting(id: string): string | null {
+    const voice: AiVoiceSettings = new AiVoiceSettings();
+    voice.init(getContext(this) as common.UIAbilityContext, this.assistantOwner());
+    const config = voice.read();
+    if (id === 'ai.voice.enabled') { return config.enabled ? 'true' : 'false'; }
+    if (id === 'ai.voice.sessionReply') { return config.sessionReply; }
+    if (id === 'ai.voice.rate') { return config.rate; }
+    if (id === 'ai.voice.continuous') { return config.continuous ? 'true' : 'false'; }
+    return null;
+  }
+
+  /**
+   * AI 助理's own settings: its answers (assistant preferences), reduced motion (profile), AI 动效 (motion store) and
+   * AI 语音 (the account's voice preferences, as 设置 › AI 语音 saves them).
+   */
   private applyAssistantAiSetting(id: string, value: string): boolean {
+    if (id.indexOf('ai.voice.') === 0) {
+      const voice: AiVoiceSettings = new AiVoiceSettings();
+      voice.init(getContext(this) as common.UIAbilityContext, this.assistantOwner());
+      if (id === 'ai.voice.enabled') { voice.setEnabled(value === 'true'); }
+      else if (id === 'ai.voice.sessionReply') { voice.setSessionReply(value); }
+      else if (id === 'ai.voice.rate') { voice.setRate(value); }
+      else if (id === 'ai.voice.continuous') { voice.setContinuous(value === 'true'); }
+      else { return false; }
+      return this.assistantVoiceSetting(id) === value;
+    }
     if (id === 'ai.personality' || id === 'ai.verbosity' || id === 'ai.role') {
       const store: DiagnosticAiConversationStore = this.assistantConversationStore();
       const prefs: DiagnosticAiAssistantPreferences = store.assistantPreferences();
