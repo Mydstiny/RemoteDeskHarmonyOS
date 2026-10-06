@@ -193,7 +193,8 @@ export struct AiVoiceSettingsPanel {
       Column({ space: 10 }) {
         Text('音色').fontSize(13).fontColor(this.pal().text3).width('100%')
         AiSegmented({ options: [['13', '女声 · 聆小珊'], ['21', '男声 · 凌飞哲']], current: this.config.voice,
-          trackColor: this.pal().surface, textColor: this.pal().text, segmentHeight: 34,
+          trackColor: this.pal().surface, thumbColor: this.accent, textColor: appUiOnAccentText(this.accent),
+          mutedColor: this.pal().text, segmentHeight: 34,
           onPick: (id: string): void => { this.settings.setVoice('system', id); this.reload(); } })
         if (this.config.voice === '21' && !this.maleReady) {
           Row({ space: 8 }) {
@@ -269,7 +270,8 @@ export struct AiVoiceSettingsPanel {
     Column() {
       Column({ space: 10 }) {
         AiSegmented({ options: AI_ASR_ENGINES, current: this.config.asr,
-          trackColor: this.pal().surface, textColor: this.pal().text, segmentHeight: 34,
+          trackColor: this.pal().surface, thumbColor: this.accent, textColor: appUiOnAccentText(this.accent),
+          mutedColor: this.pal().text, segmentHeight: 34,
           onPick: (id: string): void => { this.pickAsr(id); } })
         Text(this.config.asr === 'system' ?
           '鸿蒙本机的离线识别：免费，声音不离开手机，但模型小，准确率一般。' :
@@ -356,7 +358,8 @@ export struct AiVoiceSettingsPanel {
             Column({ space: 10 }) {
               Text('语速').fontSize(13).fontColor(this.pal().text3).width('100%')
               AiSegmented({ options: [['slow', '慢'], ['normal', '正常'], ['fast', '快']], current: this.config.rate,
-                trackColor: this.pal().surface, textColor: this.pal().text, segmentHeight: 34,
+                trackColor: this.pal().surface, thumbColor: this.accent, textColor: appUiOnAccentText(this.accent),
+          mutedColor: this.pal().text, segmentHeight: 34,
                 onPick: (rate: string): void => { this.settings.setRate(rate); this.reload(); } })
               Row({ space: 8 }) {
                 SymbolGlyph($r(this.sampling ? 'sys.symbol.stop_circle_fill' : 'sys.symbol.play_fill')).fontSize(14)
@@ -387,7 +390,8 @@ export struct AiVoiceSettingsPanel {
             Column({ space: 10 }) {
               Text('连接中语音回答').fontSize(15).fontWeight(FontWeight.Medium).fontColor(this.pal().text).width('100%')
               AiSegmented({ options: AI_SESSION_REPLY_MODES, current: this.config.sessionReply,
-                trackColor: this.pal().surface, textColor: this.pal().text, segmentHeight: 34,
+                trackColor: this.pal().surface, thumbColor: this.accent, textColor: appUiOnAccentText(this.accent),
+          mutedColor: this.pal().text, segmentHeight: 34,
                 onPick: (mode: string): void => { this.settings.setSessionReply(mode); this.reload(); } })
               Text('远程连接里没有语音大球：双击悬浮球说话，回答由悬浮球读出来。语音模式下每个回答都读并接着听，双击悬浮球、说「用文字回答」或在 AI 控制面板关闭即退出。')
                 .fontSize(12).lineHeight(17).fontColor(this.pal().text3).width('100%')

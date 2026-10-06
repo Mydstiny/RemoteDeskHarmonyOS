@@ -127,16 +127,16 @@ struct SessionAiPanel {
   }
 
   @Builder private section(title: string) {
-    Text(title).fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text3).width('100%')
-      .padding({ left: 4, top: 4 })
+    Text(title).fontSize(14).fontWeight(FontWeight.Bold).fontColor(this.pal().text2).width('100%')
+      .padding({ left: 4, top: 6 })
   }
 
   @Builder private switchRow(title: string, detail: string, on: boolean, enabled: boolean, change: (on: boolean) => void) {
     Row({ space: 10 }) {
       Column({ space: 3 }) {
-        Text(title).fontSize(15).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
+        Text(title).fontSize(16).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
         if (detail !== '') {
-          Text(detail).fontSize(12).lineHeight(17).fontColor(this.pal().text3)
+          Text(detail).fontSize(13).lineHeight(19).fontColor(this.pal().text2)
         }
       }.layoutWeight(1).alignItems(HorizontalAlign.Start)
       Toggle({ type: ToggleType.Switch, isOn: on }).selectedColor(this.accent).enabled(enabled)
@@ -146,21 +146,25 @@ struct SessionAiPanel {
 
   @Builder private segmentRow(title: string, options: string[][], current: string, pick: (id: string) => void) {
     Column({ space: 8 }) {
-      Text(title).fontSize(15).fontWeight(FontWeight.Medium).fontColor(this.pal().text).width('100%')
-      AiSegmented({ options: options, current: current, trackColor: this.pal().surface, textColor: this.pal().text,
-        segmentHeight: 36, onPick: (id: string): void => { pick(id); } })
+      Text(title).fontSize(16).fontWeight(FontWeight.Medium).fontColor(this.pal().text).width('100%')
+      // The chosen one in the accent with its own readable text; the others in the normal text colour.
+      AiSegmented({ options: options, current: current, trackColor: this.pal().surface,
+        thumbColor: this.accent, textColor: appUiOnAccentText(this.accent), mutedColor: this.pal().text,
+        segmentHeight: 40, labelSize: 15, onPick: (id: string): void => { pick(id); } })
     }.width('100%').padding({ top: 10, bottom: 12 })
   }
 
   @Builder private chipRow(title: string, options: string[][], current: string, pick: (id: string) => void) {
     Column({ space: 8 }) {
-      Text(title).fontSize(15).fontWeight(FontWeight.Medium).fontColor(this.pal().text).width('100%')
+      Text(title).fontSize(16).fontWeight(FontWeight.Medium).fontColor(this.pal().text).width('100%')
       Flex({ wrap: FlexWrap.Wrap }) {
         ForEach(options, (option: string[]): void => {
-          Text(option[1]).fontSize(13)
+          Text(option[1]).fontSize(14).fontWeight(option[0] === current ? FontWeight.Medium : FontWeight.Regular)
             .fontColor(option[0] === current ? appUiOnAccentText(this.accent) : this.pal().text)
-            .padding({ left: 12, right: 12 }).height(36).margin({ right: 8, bottom: 8 }).borderRadius(18)
+            .padding({ left: 14, right: 14 }).height(40).margin({ right: 8, bottom: 8 }).borderRadius(20)
             .backgroundColor(option[0] === current ? this.accent : this.pal().surface)
+            .border({ width: 1, color: option[0] === current ? this.accent : this.pal().divider })
+            .accessibilityText(option[1] + (option[0] === current ? '，已选中' : ''))
             .onClick((): void => { pick(option[0]); })
         }, (option: string[]): string => option[0] + (option[0] === current ? '-on' : ''))
       }.width('100%')
@@ -173,7 +177,7 @@ struct SessionAiPanel {
         Column({ space: 2 }) {
           Text('AI 助理').fontSize(20).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
           Text(this.params.aiOpen ? (this.talking ? 'AI 开着 · 语音模式' : 'AI 开着 · 文字') : '设置好后点下面的按钮启动')
-            .fontSize(12).fontColor(this.pal().text3)
+            .fontSize(13).fontColor(this.pal().text2)
         }.layoutWeight(1).alignItems(HorizontalAlign.Start)
         Button() {
           SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor([this.pal().text2])
@@ -196,8 +200,8 @@ struct SessionAiPanel {
             if (this.params.aiOpen) {
               Divider().color(this.pal().divider)
               Row() {
-                Text('开始新对话').fontSize(15).fontWeight(FontWeight.Medium).fontColor(this.accent).layoutWeight(1)
-                SymbolGlyph($r('sys.symbol.plus')).fontSize(18).fontColor([this.accent])
+                Text('开始新对话').fontSize(16).fontWeight(FontWeight.Medium).fontColor(this.pal().text).layoutWeight(1)
+                SymbolGlyph($r('sys.symbol.plus')).fontSize(20).fontColor([this.pal().text])
               }.width('100%').height(48)
               .accessibilityText('开始新对话，当前对话保存在对话记录里')
               .onClick((): void => { this.params.onNewChat(); })
@@ -212,8 +216,8 @@ struct SessionAiPanel {
               Divider().color(this.pal().divider)
             } else if (this.profiles.length === 1) {
               Row() {
-                Text('模型').fontSize(15).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
-                Text(this.profileLabel(this.profiles[0])).fontSize(13).fontColor(this.pal().text3)
+                Text('模型').fontSize(16).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
+                Text(this.profileLabel(this.profiles[0])).fontSize(14).fontColor(this.pal().text2)
                   .layoutWeight(1).textAlign(TextAlign.End).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
               }.width('100%').height(48)
               Divider().color(this.pal().divider)
@@ -273,13 +277,13 @@ struct SessionAiPanel {
               (orb: string): void => { DiagnosticAiMotionStore.save(this.context(), 'aiMotion.orb', orb); })
           }.width('100%').padding({ left: 14, right: 14 }).borderRadius(16).backgroundColor(this.pal().card)
           Text('这些都是本账号的 AI 设置，「设置 → AI 助理」里改的是同一份；引擎、密钥和语音识别在「设置 → AI 语音」。')
-            .fontSize(12).lineHeight(17).fontColor(this.pal().text3).width('100%').padding({ left: 4, right: 4, bottom: 8 })
+            .fontSize(13).lineHeight(19).fontColor(this.pal().text2).width('100%').padding({ left: 4, right: 4, bottom: 8 })
         }.width('100%')
       }
       .layoutWeight(1)
       .scrollBar(BarState.Off).edgeEffect(EdgeEffect.Spring).align(Alignment.Top)
       Button(this.params.aiOpen ? '关闭 AI' : (this.talking ? '启动 AI（语音模式）' : '启动 AI'))
-        .width('100%').height(48).fontSize(16).fontWeight(FontWeight.Medium)
+        .width('100%').height(50).fontSize(17).fontWeight(FontWeight.Bold)
         .fontColor(this.params.aiOpen ? this.pal().danger : appUiOnAccentText(this.accent))
         .backgroundColor(this.params.aiOpen ? this.pal().surface : this.accent)
         .onClick((): void => { this.params.onStartOrClose(); })

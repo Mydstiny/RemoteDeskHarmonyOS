@@ -1,4 +1,4 @@
-import { ComponentContent, promptAction, window } from '@kit.ArkUI';
+import { ComponentContent, display, promptAction, window } from '@kit.ArkUI';
 import { common } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { AiIslandLayerParams, AiTopLayer } from './AiTopLayer';
@@ -179,9 +179,11 @@ export struct SessionAiHost {
     const theme: string = AppStorage.get<string>('currentTheme') ?? 'light';
     const accent: string = AppStorage.get<string>('accentColor') ?? '#007DFF';
     const sheetBg: string = theme === 'light' ? buildLight(accent).sheetBg : buildDark(accent).sheetBg;
-    // A sheet, as the app's other settings are: half height first, drag up for all of it.
+    // A sheet, as the app's other settings are: half height first, drag up for all of it — a short window (a phone
+    // held sideways) gets all of it at once, half would show next to nothing.
+    const short: boolean = this.windowHeight() < 560;
     this.getUIContext().openBindSheet(content, {
-      detents: [SheetSize.MEDIUM, SheetSize.LARGE],
+      detents: short ? [SheetSize.LARGE, SheetSize.LARGE] : [SheetSize.MEDIUM, SheetSize.LARGE],
       dragBar: true,
       showClose: false,
       backgroundColor: sheetBg,
@@ -191,6 +193,14 @@ export struct SessionAiHost {
         this.afterPanel();
       }
     }).catch((): void => { if (this.panel === content) { this.panel = null; } content.dispose(); });
+  }
+
+  /** The session window's height now (vp), for how tall the panel opens. */
+  private windowHeight(): number {
+    try {
+      if (this.win !== null) { return this.getUIContext().px2vp(this.win.getWindowProperties().windowRect.height); }
+    } catch (_error) { /* fall back to the screen */ }
+    try { return this.getUIContext().px2vp(display.getDefaultDisplaySync().height); } catch (_error) { return 800; }
   }
 
   private closePanel(): void {
