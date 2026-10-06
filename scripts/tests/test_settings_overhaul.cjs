@@ -566,7 +566,7 @@ check('batch D review: typed Moonlight sizes count as unsaved, rows grow, plain 
   assert.ok(member(page, 'private loadCurrentSettings(): void {').includes('this.customWidthEditing = false;'));
 
   const vnc = read('components/VncSettingsSheet.ets');
-  assert.ok(vnc.includes("settingsVisualIsModern(this.visualStyle) ? '当前账号还没有可用的中继网关，请先添加并启用。' :"));
+  assert.ok(vnc.includes("settingsVisualIsModern(this.visualStyle) ? '当前账号还没有可用的网关，请先添加并启用。' :"));
   assert.ok(vnc.includes("settingsVisualIsModern(this.visualStyle) ? '也可以从设置里的“数据安全”打开同一个管理器。' :"));
 
   const about = read('components/AboutSettingsSheet.ets');
@@ -578,6 +578,41 @@ check('batch D review: typed Moonlight sizes count as unsaved, rows grow, plain 
   assert.ok(member(host, '@Builder proDebugModeChip(label: string, mode: string) {').includes('appUiOnAccentText(this.accentColor)'));
   assert.ok(member(host, '@Builder cloudSyncSheet() {').includes(
     ".fontColor(this.currentCloudSyncSheetSpec().primaryDestructive ? '#FFFFFF' : appUiOnAccentText(this.accentColor))"));
+});
+
+check('batch D review round 2: any resolution choice or slider drag ends typing; back gesture asks first', () => {
+  const page = read('pages/MoonlightSettingsPage.ets');
+  const select = member(page, 'private selectResolution(value: string): void {');
+  assert.ok(select.indexOf('this.customWidthEditing = false;') >= 0 && select.indexOf('this.customHeightEditing = false;') >= 0 &&
+    select.indexOf('this.customHeightEditing = false;') < select.indexOf('this.update('),
+    'a resolution choice ends typing even when it leaves the numbers unchanged');
+  assert.ok(member(page, '@Builder private videoWidthSlider() {').includes('this.customWidthEditing = false;\n          this.setVideoWidth(next);'));
+  assert.ok(member(page, '@Builder private videoHeightSlider() {').includes('this.customHeightEditing = false;\n          this.setVideoHeight(next);'));
+  const load = member(page, 'private loadCurrentSettings(): void {');
+  assert.ok(load.includes('this.customWidthEditing = false;') && load.includes('this.customHeightEditing = false;'));
+  const pending = member(page, 'private customSizePending(width: boolean): boolean {');
+  assert.ok(pending.includes("if (text === '' || !Number.isFinite(value)) { return false; }") &&
+    pending.includes('this.clampVideoWidth(value) !== this.videoWidthDraft'), 'an empty or same-value field is not unsaved');
+  assert.ok(member(page, '@Builder private customSizeField(width: boolean) {')
+    .includes('if (this.customSizeTyping(width)) { return; }'), 'focusing again keeps unapplied typing');
+  for (const signature of ['private setVideoWidth(value: number): void {', 'private setVideoHeight(value: number): void {']) {
+    assert.ok(/this\.clampVideo(Width|Height)\(value\)/.test(member(page, signature)), signature);
+  }
+  const routed = page.slice(page.indexOf('struct MoonlightSettingsPage {'));
+  assert.ok(routed.includes('onBackPress(): boolean {') && routed.includes('this.closeRequest++;') &&
+    routed.includes('MoonlightSettingsSurface({ closeRequest: this.closeRequest })'));
+  assert.ok(page.includes("@Prop @Watch('onCloseRequest') closeRequest: number = 0;"));
+  assert.ok(member(page, 'private onCloseRequest(): void {').includes('this.close();'));
+
+  const vnc = read('components/VncSettingsSheet.ets');
+  const gateway = member(vnc, '@Builder private defaultGatewayChoices() {');
+  for (const modern of ["'默认网关'", "'打开网关管理'", "'当前账号还没有可用的网关，请先添加并启用。'"]) {
+    assert.ok(gateway.includes('settingsVisualIsModern(this.visualStyle) ? ' + modern), modern);
+  }
+  for (const classic of ["'默认 Gateway'", "'打开 Gateway 管理'", "' · mode12'", "'当前账号没有可用的 mode12 Gateway；请先添加并启用 Gateway。'"]) {
+    assert.ok(gateway.includes(classic), 'classic keeps ' + classic);
+  }
+  assert.ok(vnc.includes("this.choice(settingsVisualIsModern(this.visualStyle) ? 'Repeater' : 'Repeater mode12',"));
 });
 
 console.log('settings overhaul: ' + passed + ' checks passed');

@@ -81,7 +81,8 @@ export struct MoonlightSettingsSurface {
   @State customWidthEditing: boolean = false;
   @State customHeightText: string = '';
   @State customHeightEditing: boolean = false;
-  /** The width / height when typing started; if the slider or a resolution choice changes it, the typing is dropped. */
+  /** The width / height when typing started. A slider drag or a resolution choice ends the typing; so does any other
+   * change of the value meanwhile. */
   private customWidthBase: number = 0;
   private customHeightBase: number = 0;
   @Prop embedded: boolean = false;
@@ -122,6 +123,8 @@ export struct MoonlightSettingsSurface {
   private keyboardTargetPromptVisible: boolean = false;
   onClose: () => void = (): void => {};
   onDirtyChanged: (dirty: boolean) => void = (_dirty: boolean): void => {};
+  /** Bumped by the routed page's system back gesture; closes like the back button. */
+  @Prop @Watch('onCloseRequest') closeRequest: number = 0;
 
   private modern(): boolean { return settingsVisualIsModern(this.visualStyle); }
 
@@ -283,14 +286,22 @@ export struct MoonlightSettingsSurface {
     this.update((next: MoonlightSettings): void => { next.video.bitrateKbps = bitrate; });
   }
 
+  private clampVideoWidth(value: number): number {
+    return Math.max(320, Math.min(7680, Math.round(value / 2) * 2));
+  }
+
+  private clampVideoHeight(value: number): number {
+    return Math.max(240, Math.min(4320, Math.round(value / 2) * 2));
+  }
+
   private setVideoWidth(value: number): void {
-    const width: number = Math.max(320, Math.min(7680, Math.round(value / 2) * 2));
+    const width: number = this.clampVideoWidth(value);
     this.videoWidthDraft = width;
     this.update((next: MoonlightSettings): void => { next.video.customWidth = width; });
   }
 
   private setVideoHeight(value: number): void {
-    const height: number = Math.max(240, Math.min(4320, Math.round(value / 2) * 2));
+    const height: number = this.clampVideoHeight(value);
     this.videoHeightDraft = height;
     this.update((next: MoonlightSettings): void => { next.video.customHeight = height; });
   }
@@ -334,6 +345,8 @@ export struct MoonlightSettingsSurface {
   }
 
   private selectResolution(value: string): void {
+    this.customWidthEditing = false;
+    this.customHeightEditing = false;
     this.videoResolutionDraft = value;
     this.update((next: MoonlightSettings): void => {
       if (value === 'host') {
@@ -607,6 +620,10 @@ export struct MoonlightSettingsSurface {
       message = '此设备的 Moonlight 本地数据和安全身份已删除；云端副本保留';
     }
     promptAction.showToast({ message, duration: 2800 });
+  }
+
+  private onCloseRequest(): void {
+    if (this.closeRequest > 0) { this.close(); }
   }
 
   private close(): void {
@@ -924,6 +941,7 @@ export struct MoonlightSettingsSurface {
         .fontColor(this.pal().text).backgroundColor(this.pal().surface).borderRadius(10)
         .accessibilityText(width ? '自定义宽度' : '自定义高度')
         .onFocus((): void => {
+          if (this.customSizeTyping(width)) { return; }
           if (width) {
             this.customWidthBase = this.videoWidthDraft;
             this.customWidthText = this.videoWidthDraft.toString();
@@ -952,10 +970,14 @@ export struct MoonlightSettingsSurface {
       this.customHeightEditing && this.customHeightBase === this.videoHeightDraft;
   }
 
+  /** Unsaved only when applying the typed text would change the value (an empty field changes nothing). */
   private customSizePending(width: boolean): boolean {
     if (!this.customSizeTyping(width)) { return false; }
-    return width ? this.customWidthText.trim() !== this.videoWidthDraft.toString() :
-      this.customHeightText.trim() !== this.videoHeightDraft.toString();
+    const text: string = (width ? this.customWidthText : this.customHeightText).trim();
+    const value: number = Number(text);
+    if (text === '' || !Number.isFinite(value)) { return false; }
+    return width ? this.clampVideoWidth(value) !== this.videoWidthDraft :
+      this.clampVideoHeight(value) !== this.videoHeightDraft;
   }
 
   private customSizeText(width: boolean): string {
@@ -1004,7 +1026,10 @@ export struct MoonlightSettingsSurface {
         min: 320, max: 7680, step: 2 })
         .width('100%').selectedColor(this.accentColor).trackColor(this.pal().surface)
         .showTips(true).showSteps(false)
-        .onChange((next: number, _mode: SliderChangeMode): void => { this.setVideoWidth(next); })
+        .onChange((next: number, _mode: SliderChangeMode): void => {
+          this.customWidthEditing = false;
+          this.setVideoWidth(next);
+        })
         .margin({ top: 7 })
     }.width('100%').padding({ top: 7, bottom: 7 })
   }
@@ -1027,7 +1052,10 @@ export struct MoonlightSettingsSurface {
         min: 240, max: 4320, step: 2 })
         .width('100%').selectedColor(this.accentColor).trackColor(this.pal().surface)
         .showTips(true).showSteps(false)
-        .onChange((next: number, _mode: SliderChangeMode): void => { this.setVideoHeight(next); })
+        .onChange((next: number, _mode: SliderChangeMode): void => {
+          this.customHeightEditing = false;
+          this.setVideoHeight(next);
+        })
         .margin({ top: 7 })
     }.width('100%').padding({ top: 7, bottom: 7 })
   }
@@ -1559,9 +1587,17 @@ export struct MoonlightSettingsSurface {
 @Entry
 @Component
 struct MoonlightSettingsPage {
+  @State closeRequest: number = 0;
+
+  /** The system back gesture asks before dropping unsaved changes, like the back button. */
+  onBackPress(): boolean {
+    this.closeRequest++;
+    return true;
+  }
+
   build() {
     Column() {
-      MoonlightSettingsSurface()
+      MoonlightSettingsSurface({ closeRequest: this.closeRequest })
     }.width('100%').height('100%')
   }
 }

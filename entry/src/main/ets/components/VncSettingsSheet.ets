@@ -403,7 +403,7 @@ export struct VncSettingsSheet {
           (): boolean => this.defaultTransport === 'direct_tcp'), (): void => {
           this.defaultTransport = 'direct_tcp'; this.markDirty();
         })
-        this.choice('Repeater mode12', UIUtils.makeBinding<boolean>(
+        this.choice(settingsVisualIsModern(this.visualStyle) ? 'Repeater' : 'Repeater mode12', UIUtils.makeBinding<boolean>(
           (): boolean => this.defaultTransport === 'ultravnc_repeater'), (): void => {
           this.defaultTransport = 'ultravnc_repeater'; this.markDirty();
         }, 8)
@@ -422,13 +422,14 @@ export struct VncSettingsSheet {
 
   @Builder private defaultGatewayChoices() {
     Column() {
-      Text('默认 Gateway').fontSize(12).fontColor(this.pal().text3).margin({ top: 2, bottom: 7 })
+      Text(settingsVisualIsModern(this.visualStyle) ? '默认网关' : '默认 Gateway').fontSize(12).fontColor(this.pal().text3)
+        .margin({ top: 2, bottom: 7 })
       if (this.selectableGateways().length === 0) {
-        Text(settingsVisualIsModern(this.visualStyle) ? '当前账号还没有可用的中继网关，请先添加并启用。' :
+        Text(settingsVisualIsModern(this.visualStyle) ? '当前账号还没有可用的网关，请先添加并启用。' :
           '当前账号没有可用的 mode12 Gateway；请先添加并启用 Gateway。')
           .fontSize(settingsVisualIsModern(this.visualStyle) ? 12 : 11).fontColor(this.pal().danger).lineHeight(17)
           .margin({ bottom: 8 })
-        Button('打开 Gateway 管理').width('100%').height(settingsVisualIsModern(this.visualStyle) ? 44 : 38).borderRadius(9)
+        Button(settingsVisualIsModern(this.visualStyle) ? '打开网关管理' : '打开 Gateway 管理').width('100%').height(settingsVisualIsModern(this.visualStyle) ? 44 : 38).borderRadius(9)
           .backgroundColor(this.pal().surface).fontColor(this.accentColor)
           .onClick((): void => { this.onOpenGatewayManager(); })
       } else {
@@ -437,7 +438,7 @@ export struct VncSettingsSheet {
             Column() {
               Text(gateway.label === '' ? gateway.host : gateway.label)
                 .fontSize(13).fontColor(this.pal().text)
-              Text(gateway.host + ':' + gateway.port.toString() + ' · mode12')
+              Text(gateway.host + ':' + gateway.port.toString() + (settingsVisualIsModern(this.visualStyle) ? '' : ' · mode12'))
                 .fontSize(settingsVisualIsModern(this.visualStyle) ? 12 : 10).fontColor(settingsVisualIsModern(this.visualStyle) ? this.pal().text2 : this.pal().text3).margin({ top: 2 })
             }.alignItems(HorizontalAlign.Start).layoutWeight(1)
             if (this.defaultGatewayId === gateway.id) {
