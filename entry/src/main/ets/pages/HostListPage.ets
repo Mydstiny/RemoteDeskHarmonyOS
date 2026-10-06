@@ -419,16 +419,7 @@ import { SshWorkspaceCapabilityStore } from
   '../services/ssh/workspace/SshWorkspaceCapabilityStore';
 import { SshProxyProfileV1 } from '../services/SshProxyProfilePolicy';
 import { SshProxyProfileStore } from '../services/SshProxyProfileStore';
-import {
-  SshProxyEditorBuildResult,
-  SshProxyEditorKind,
-  SshProxyEditorValue,
-  applySshProxyProfileToLegacyHost,
-  buildSshProxyProfile,
-  defaultSshProxyEditorValue,
-  defaultSshProxyHop,
-  sshProxyEditorValueFromProfile
-} from '../services/SshProxyEditorPolicy';
+import { SshProxyEditorBuildResult, SshProxyEditorKind, SshProxyEditorValue, applySshProxyProfileToLegacyHost, buildSshProxyProfile, defaultSshProxyEditorValue, defaultSshProxyHop, sshProxyEditorValueFromProfile, sshProxyEditorInputKey } from '../services/SshProxyEditorPolicy';
 import {
   SshProxyRuntimePlan,
   resolveSshProxyRuntimePlan,
@@ -1219,6 +1210,8 @@ struct HostListPage {
   private hostAddFlowDirty: boolean = false;
   /** The classic editor's fields as the sheet appeared; a difference is unsaved input. */
   private classicEditorBaseline: string = '';
+  /** Counts add-sheet dismissals: a 放弃 question answered after its sheet went away does nothing. */
+  private hostAddSheetDismissCount: number = 0;
   @State moonlightAddOwnerToken: number = 1;
   @State moonlightLanCandidates: MoonlightHostAddCandidate[] = [];
   @State moonlightDiscoveryRunning: boolean = false;
@@ -4764,7 +4757,7 @@ struct HostListPage {
     this.moonlightAddCommitted = false;
     this.addFlowSaveError = '';
     this.hostAddFlowDirty = false;
-    this.classicEditorBaseline = '';
+    this.hostAddSheetDismissCount++;
     this.noteSheetDismissed();
     this.addSheetClosing = false;
     this.addSheetShowsModernPicker = false;
@@ -4789,6 +4782,8 @@ struct HostListPage {
     const preserveForm: boolean = this.preserveFormOnAddSheetDisappear;
     this.rustDeskTotpBindingPendingOpen = false;
     this.preserveFormOnAddSheetDisappear = false;
+    // A form kept for the 2FA binding comes back with what was typed: it keeps the baseline it opened with.
+    if (!preserveForm) { this.classicEditorBaseline = ''; }
 
     if (openRustDeskTotpBinding) {
       const generation: number = this.rustDeskTotpBindingGeneration;
@@ -4950,7 +4945,9 @@ struct HostListPage {
       this.sheetRustdeskDirectEnabled, this.sheetRustdeskDirectHost, this.sheetRustdeskDirectPort, this.sheetPwdMode,
       this.sheetRustdeskTotpEntryId, this.vncHostTransport, this.vncHostGatewayId, this.vncHostViewOnly,
       this.vncHostScalingMode, this.vncHostSecurityPolicy, this.vncHostTls, this.vncHostDisplayOverrideEnabled,
-      this.vncHostClipboardEnabled]);
+      this.vncHostClipboardEnabled, sshProxyEditorInputKey(this.sheetSshProxyEditorValue), this.sheetKeyPassphrase,
+      this.sheetRustdeskAuthMode, this.sheetRustdeskTargetDevice, this.sheetRustdeskAdaptiveOrientation,
+      this.sheetRdpCredentialStorageMode, this.vncHostRepeaterMode]);
   }
 
   /** Whether closing the add sheet now would throw away input (a Moonlight host already saved is not lost). */
@@ -4964,6 +4961,7 @@ struct HostListPage {
   /** Asks before throwing away unsaved input; `proceed` runs when nothing is lost or the user agrees. */
   private confirmDiscardHostAdd(proceed: () => void): void {
     if (!this.hostAddHasUnsavedInput()) { proceed(); return; }
+    const dismissCount: number = this.hostAddSheetDismissCount;
     promptAction.showDialog({
       title: '放弃未保存的内容？',
       message: '填写的内容还没有保存，放弃后不会保留。',
@@ -4971,6 +4969,8 @@ struct HostListPage {
     }).then((result: Object): void => {
       const value: Record<string, number> = result as Record<string, number>;
       if (value['index'] !== 1) { return; }
+      // The sheet closed some other way meanwhile (rotation, a window resize…): nothing left to close.
+      if (this.hostAddSheetDismissCount !== dismissCount || !this.showAddSheet) { return; }
       this.hostAddFlowDirty = false;
       this.classicEditorBaseline = this.classicEditorSnapshot();
       proceed();
@@ -4995,6 +4995,8 @@ struct HostListPage {
       clearTimeout(this.pendingSheetOpenTimer);
       this.pendingSheetOpenTimer = -1;
     }
+    // No sheet up: nothing to close, and no dismissal will come to clear the closing flag.
+    if (!this.showAddSheet) { return; }
     this.activateSheetReleaseFence();
     this.addSheetClosing = true;
     this.showAddSheet = false;
@@ -15148,8 +15150,9 @@ struct HostListPage {
           blurStyle: BlurStyle.NONE,
           showClose: false,
           onAppear: (): void => {
-            // The classic editor as it opened (an edit's values are loaded by now).
-            this.classicEditorBaseline = this.classicEditorSnapshot();
+            // The classic editor as it opened (an edit's values are loaded by now); a form kept across the 2FA
+            // binding still has its first baseline.
+            if (this.classicEditorBaseline === '') { this.classicEditorBaseline = this.classicEditorSnapshot(); }
           },
           onWillDismiss: (action: DismissSheetAction): void => {
             // requestAddSheetClose (a save, or a close already confirmed) also arrives here: it goes straight through.
@@ -23617,8 +23620,11 @@ struct HostListPage {
           });
         },
         onOpenSettings: (): void => {
-          this.pendingVncGatewayDirectoryOpen = true;
-          this.requestAddSheetClose();
+          // Opening the gateway directory drops this form: the same question as closing.
+          this.confirmDiscardHostAdd((): void => {
+            this.pendingVncGatewayDirectoryOpen = true;
+            this.requestAddSheetClose();
+          });
         },
         onClose: (): void => { this.requestAddSheetCloseByUser(); },
         onDirtyChange: (dirty: boolean): void => { this.hostAddFlowDirty = dirty; },
@@ -24062,8 +24068,10 @@ struct HostListPage {
                   .backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor)).borderRadius(16)
                   .margin({ top: 10 }).padding({ left: 16, right: 16 })
                   .onClick(() => {
-                    this.pendingRustDeskRelayDirectoryOpen = true;
-                    this.requestAddSheetClose();
+                    this.confirmDiscardHostAdd((): void => {
+                      this.pendingRustDeskRelayDirectoryOpen = true;
+                      this.requestAddSheetClose();
+                    });
                   })
               }.width('100%').padding({ top: 16, bottom: 16 })
               .borderRadius(10).backgroundColor(this.pal().surface)
@@ -24139,8 +24147,10 @@ struct HostListPage {
                     Blank()
                     Text('去添加 →').fontSize(11).fontColor(this.accentColor).fontFamily(this.font())
                       .onClick(() => {
-                        this.pendingRustDeskRelayDirectoryOpen = true;
-                        this.requestAddSheetClose();
+                        this.confirmDiscardHostAdd((): void => {
+                          this.pendingRustDeskRelayDirectoryOpen = true;
+                          this.requestAddSheetClose();
+                        });
                       })
                   }.width('100%').padding({ left: 10, right: 10, top: 8, bottom: 8 })
                 }
@@ -24279,8 +24289,8 @@ struct HostListPage {
           this.prepareClassicVncEditor(null);
         }
         if (protoVal === 'rustdesk') { this.sheetPwdMode = 0; }
-        // Switching the protocol of an untouched form is not input (VNC loads its own defaults).
-        if (untouched) { this.classicEditorBaseline = this.classicEditorSnapshot(); }
+        // Switching the protocol of an untouched form is not input; switching to VNC starts its form afresh.
+        if (untouched || protoVal === 'vnc') { this.classicEditorBaseline = this.classicEditorSnapshot(); }
       })
   }
 

@@ -217,6 +217,8 @@ export struct RustDeskRelayPage {
   /** Unsaved input reported by the paste sheet and the VNC gateway flow. */
   private pasteConfigDirty: boolean = false;
   private vncGatewayDirty: boolean = false;
+  /** Counts sheet dismissals: a 放弃 question answered after its sheet went away does nothing. */
+  private relaySheetDismissCount: number = 0;
   @State relayViewRevision: number = 0;
   @State proViewRevision: number = 0;
   @State vncViewRevision: number = 0;
@@ -615,6 +617,7 @@ export struct RustDeskRelayPage {
       this.pendingHostAddReturnRelayId;
     this.pendingHostAddReturnRelayId = '';
     this.relaySheetClosing = false;
+    this.relaySheetDismissCount++;
     this.sheetContent = 1;
     this.pasteConfigDirty = false;
     this.vncGatewayDirty = false;
@@ -807,11 +810,13 @@ export struct RustDeskRelayPage {
 
   /** What closing the sheet now would throw away ('' when nothing): typed input that is not saved yet. */
   private relaySheetUnsavedLabel(): string {
-    if (this.sheetContent === 1 && !this.relaySaving && this.relayFormSnapshot() !== this.relayFormBaseline) {
+    if (this.sheetContent === 9 && this.pasteConfigDirty) { return '粘贴内容'; }
+    // The relay form keeps what was typed while the paste sheet or the picker is on screen: it is still at stake.
+    if ((this.sheetContent === 1 || this.sheetContent === 5 || this.sheetContent === 9) && !this.relaySaving &&
+      this.relayFormSnapshot() !== this.relayFormBaseline) {
       return '中继配置';
     }
     if (this.sheetContent === 3 && !this.proBusy && this.proFormSnapshot() !== this.proFormBaseline) { return '登录信息'; }
-    if (this.sheetContent === 9 && this.pasteConfigDirty) { return '粘贴的配置'; }
     if (this.sheetContent === 10 && this.vncGatewayDirty) { return 'VNC 中继配置'; }
     return '';
   }
@@ -820,6 +825,7 @@ export struct RustDeskRelayPage {
   private confirmDiscardRelaySheet(proceed: () => void): void {
     const label: string = this.relaySheetUnsavedLabel();
     if (label === '') { proceed(); return; }
+    const dismissCount: number = this.relaySheetDismissCount;
     promptAction.showDialog({
       title: '放弃未保存的' + label + '？',
       message: '填写的内容还没有保存，放弃后不会保留。',
@@ -827,6 +833,8 @@ export struct RustDeskRelayPage {
     }).then((result: Object): void => {
       const value: Record<string, number> = result as Record<string, number>;
       if (value['index'] !== 1) { return; }
+      // The sheet closed some other way meanwhile: nothing left to close.
+      if (this.relaySheetDismissCount !== dismissCount || !this.showSheet) { return; }
       this.relayFormBaseline = this.relayFormSnapshot();
       this.proFormBaseline = this.proFormSnapshot();
       this.pasteConfigDirty = false;
@@ -897,7 +905,11 @@ export struct RustDeskRelayPage {
     if (!result.ok) {
       this.relaySaveError = result.message;
       this.relaySaveRecovery = result.recovery;
-      if (result.localCommitted) { this.load(); }
+      if (result.localCommitted) {
+        this.load();
+        // Stored on this device already: closing loses nothing typed.
+        this.relayFormBaseline = this.relayFormSnapshot();
+      }
       return;
     }
     this.relaySaveStage = 'completed';

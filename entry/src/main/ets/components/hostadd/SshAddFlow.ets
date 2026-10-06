@@ -13,7 +13,8 @@ import {
   SshProxyEditorValue,
   applySshProxyProfileToLegacyHost,
   buildSshProxyProfile,
-  defaultSshProxyEditorValue
+  defaultSshProxyEditorValue,
+  sshProxyEditorInputKey
 } from '../../services/SshProxyEditorPolicy';
 import {
   EndpointAddressResult,
@@ -87,7 +88,7 @@ export struct SshAddFlow {
 
   private draftSnapshot(): string {
     return JSON.stringify([this.label, this.address, this.portText, this.username, this.useKey, this.password,
-      this.keyId, this.passphrase, JSON.stringify(this.proxyEditorValue)]);
+      this.keyId, this.passphrase, sshProxyEditorInputKey(this.proxyEditorValue)]);
   }
 
   private pal(): Palette { return this.theme === 'light' ? buildLight(this.accentColor) : buildDark(this.accentColor); }

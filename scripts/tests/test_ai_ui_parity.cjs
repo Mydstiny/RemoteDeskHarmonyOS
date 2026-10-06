@@ -200,9 +200,10 @@ const cases = [
     page.address = ''; page.nextStep(); assert.equal(page.step, 1);
     page.address = '192.0.2.1'; page.nextStep(); assert.equal(page.step, 2);
     page.previousStep(); assert.equal(page.step, 1); assert.equal(state.backs, 0);
-    page.invite = 'fixture'; page.previousStep(); assert.equal(state.backs, 1); assert.equal(page.invite, '');
+    // The page may ask 放弃未保存的内容？ and keep the editor (继续编辑): the invite stays until the editor goes.
+    page.invite = 'fixture'; page.previousStep(); assert.equal(state.backs, 1); assert.equal(page.invite, 'fixture');
     page.canReturnToProtocols = false; page.previousStep(); assert.equal(state.backs, 1);
-    assert.equal(state.saves.length + state.pairs.length, 0); page.aboutToDisappear();
+    assert.equal(state.saves.length + state.pairs.length, 0); page.aboutToDisappear(); assert.equal(page.invite, '');
   }],
   ['classic full form and modern step visibility declarations', async () => {
     const source = read(editorFile);

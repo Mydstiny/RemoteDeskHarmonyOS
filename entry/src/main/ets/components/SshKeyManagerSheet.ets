@@ -572,10 +572,21 @@ export struct SshKeyPassphraseSubSheet {
   @StorageLink('currentTheme') theme: string = 'light';
   @StorageProp('accentColor') accentColor: string = '#007DFF';
   onComplete?: (newPrivateKey: string, newEncrypted: boolean) => void;
+  /** Whether a passphrase has been typed (the page asks before throwing it away). */
+  onDirtyChange?: (dirty: boolean) => void;
 
-  @State oldPass: string = '';
-  @State newPass: string = '';
-  @State confirmPass: string = '';
+  @State @Watch('reportDirty') oldPass: string = '';
+  @State @Watch('reportDirty') newPass: string = '';
+  @State @Watch('reportDirty') confirmPass: string = '';
+  private typedDirty: boolean = false;
+
+  private reportDirty(): void {
+    const dirty: boolean = this.oldPass !== '' || this.newPass !== '' || this.confirmPass !== '';
+    if (dirty !== this.typedDirty) {
+      this.typedDirty = dirty;
+      if (this.onDirtyChange) { this.onDirtyChange(dirty); }
+    }
+  }
   @State showOldPass: boolean = false;
   @State showNewPass: boolean = false;
   @State error: string = '';

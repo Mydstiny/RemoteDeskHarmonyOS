@@ -40,7 +40,7 @@ export struct RustDeskAddFlow {
     (_host: RemoteHost, _connectNow: boolean): void => {};
   @State step: number = 1;
   @State @Watch('reportDirty') direct: boolean = false;
-  @State useLan: boolean = false;
+  @State @Watch('reportDirty') useLan: boolean = false;
   @State @Watch('reportDirty') selectedLanPeerId: string = '';
   @State lanAddressMode: string = '';
   @State @Watch('reportDirty') label: string = '';
@@ -58,9 +58,9 @@ export struct RustDeskAddFlow {
   /** A save the page could not complete: its reason shows in the form as well as in the toast. */
   @Prop @Watch('onSaveError') saveError: string = '';
   @Prop @Watch('onSaveError') saveErrorRevision: number = 0;
-  @State targetDevice: RustDeskTargetDevice = 'computer';
+  @State @Watch('reportDirty') targetDevice: RustDeskTargetDevice = 'computer';
   @State phoneChoiceVersion: number = 0;
-  @State adaptiveOrientation: boolean = false;
+  @State @Watch('reportDirty') adaptiveOrientation: boolean = false;
 
   aboutToAppear(): void {
     this.directPortText = this.defaultDirectPort.toString();
@@ -73,7 +73,8 @@ export struct RustDeskAddFlow {
 
   private draftSnapshot(): string {
     return JSON.stringify([this.direct, this.selectedLanPeerId, this.label, this.controlId, this.directHost,
-      this.directPortText, this.relayId, this.password, this.passwordMode, this.totpEntryId]);
+      this.directPortText, this.relayId, this.password, this.passwordMode, this.totpEntryId, this.useLan,
+      this.targetDevice, this.adaptiveOrientation]);
   }
   private onSaveError(): void {
     if (this.saveError !== '') { this.errorText = this.saveError; }

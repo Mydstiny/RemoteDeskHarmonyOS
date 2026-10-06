@@ -545,8 +545,8 @@ check('host add flows report unsaved input; ✕, back to the picker and swipe-do
   assert.ok(page.includes("if (this.addSheetClosing || !this.hostAddHasUnsavedInput()) {\n              action.dismiss();"),
     'a programmatic close is not asked about');
   assert.ok(page.includes('if (!this.addSheetClosing && this.hostAddHasUnsavedInput()) { action.springBack(); }'));
-  assert.ok(page.includes('this.classicEditorBaseline = this.classicEditorSnapshot();\n          },\n          onWillDismiss'));
-  assert.ok(page.includes('if (untouched) { this.classicEditorBaseline = this.classicEditorSnapshot(); }'),
+  assert.ok(page.includes("if (this.classicEditorBaseline === '') { this.classicEditorBaseline = this.classicEditorSnapshot(); }\n          },\n          onWillDismiss"));
+  assert.ok(page.includes("if (untouched || protoVal === 'vnc') { this.classicEditorBaseline = this.classicEditorSnapshot(); }"),
     'switching the protocol of an untouched classic form is not input');
   const gone = member(page, 'private handleAddSheetDisappear(): void {');
   assert.ok(gone.includes('this.hostAddFlowDirty = false;') && gone.includes("this.classicEditorBaseline = '';"));
@@ -572,6 +572,55 @@ check('key vault sheets ask before throwing away input; saves and transitions cl
   const host = read('pages/HostListPage.ets');
   assert.ok(host.includes("'选中的主机已不在当前列表中'") &&
     host.includes('.enabled(this.hostSelectionMode || !this.hostPresenceProbeBusyIds.has(host.id))'));
+});
+
+check('batch 4 review: a stale question does nothing, kept forms keep their baseline, every input counts', () => {
+  const page = read('pages/HostListPage.ets');
+  const confirm = member(page, 'private confirmDiscardHostAdd(proceed: () => void): void {');
+  assert.ok(confirm.includes('if (this.hostAddSheetDismissCount !== dismissCount || !this.showAddSheet) { return; }'),
+    'a sheet closed by rotation or resize leaves no stuck closing flag');
+  assert.ok(member(page, 'private requestAddSheetClose(): void {').includes('if (!this.showAddSheet) { return; }'));
+  const gone = member(page, 'private handleAddSheetDisappear(): void {');
+  assert.ok(gone.includes('this.hostAddSheetDismissCount++;') &&
+    gone.includes("if (!preserveForm) { this.classicEditorBaseline = ''; }"), 'the 2FA binding round trip keeps the baseline');
+  assert.ok(page.includes("if (this.classicEditorBaseline === '') { this.classicEditorBaseline = this.classicEditorSnapshot(); }"));
+  const snap = member(page, 'private classicEditorSnapshot(): string {');
+  for (const field of ['sshProxyEditorInputKey(this.sheetSshProxyEditorValue)', 'this.sheetKeyPassphrase', 'this.sheetRustdeskAuthMode',
+    'this.sheetRustdeskTargetDevice', 'this.sheetRdpCredentialStorageMode', 'this.vncHostRepeaterMode']) {
+    assert.ok(snap.includes(field), field);
+  }
+  assert.ok(page.includes("if (untouched || protoVal === 'vnc') { this.classicEditorBaseline = this.classicEditorSnapshot(); }"));
+  assert.equal((page.match(/this\.confirmDiscardHostAdd\(\(\): void => \{\n\s+this\.pendingRustDeskRelayDirectoryOpen = true;/g) || []).length, 2,
+    '去添加中继 and 去添加 → ask first');
+  assert.ok(page.includes('this.confirmDiscardHostAdd((): void => {\n            this.pendingVncGatewayDirectoryOpen = true;'));
+
+  const relay = read('pages/RustDeskRelayPage.ets');
+  assert.ok(member(relay, 'private confirmDiscardRelaySheet(proceed: () => void): void {')
+    .includes('if (this.relaySheetDismissCount !== dismissCount || !this.showSheet) { return; }'));
+  const label = member(relay, 'private relaySheetUnsavedLabel(): string {');
+  assert.ok(label.includes('(this.sheetContent === 1 || this.sheetContent === 5 || this.sheetContent === 9)') &&
+    label.includes("return '粘贴内容';"), 'the form typed before the paste sheet or the picker is still protected');
+  assert.ok(relay.includes('// Stored on this device already: closing loses nothing typed.'));
+
+  const keys = read('pages/KeyVaultPage.ets');
+  assert.ok(member(keys, 'private confirmDiscardKeyVaultSheet(proceed: () => void): void {')
+    .includes('if (this.keyVaultSheetDismissCount !== dismissCount || !this.showSheet) { return; }'));
+  assert.ok(member(keys, 'private keyVaultSheetUnsavedLabel(): string {').includes("if (this.sheetMode === 4 && this.passphraseSheetDirty) { return '口令'; }"));
+  assert.ok(keys.includes('onDirtyChange: (dirty: boolean): void => { this.passphraseSheetDirty = dirty; },'));
+  assert.ok(read('components/SshKeyManagerSheet.ets').includes("@State @Watch('reportDirty') newPass: string = '';"));
+
+  const ai = read('components/ai/AiHostEditor.ets');
+  assert.ok(ai.includes('else if (this.canReturnToProtocols) { this.onBackToProtocols(); }'), 'back clears nothing before the question');
+  assert.equal((member(ai, 'private async save(connect: boolean): Promise<void> {').match(/this\.markSaved\(\);/g) || []).length, 3,
+    'a stored host is clean at once');
+  assert.ok(read('components/pro/workspace/WorkspaceAddFlow.ets').includes('JSON.stringify([this.name, this.color, this.icon, this.picked])'));
+  assert.ok(read('components/hostadd/RdpAddFlow.ets').includes('this.authMode, this.credentialStorageMode]);'));
+  assert.ok(read('components/hostadd/RustDeskAddFlow.ets').includes('this.targetDevice, this.adaptiveOrientation]);'));
+  assert.ok(read('components/hostadd/SshAddFlow.ets').includes('sshProxyEditorInputKey(this.proxyEditorValue)'));
+  const proxy = read('services/SshProxyEditorPolicy.ets');
+  const inputKey = proxy.slice(proxy.indexOf('export function sshProxyEditorInputKey('),
+    proxy.indexOf('export function defaultSshProxyHop('));
+  assert.ok(inputKey.length > 0 && inputKey.indexOf('hop.hopId') < 0 && inputKey.includes('hop.host'), 'a generated hop id is not input');
 });
 
 console.log('three screens: ' + passed + ' checks passed');

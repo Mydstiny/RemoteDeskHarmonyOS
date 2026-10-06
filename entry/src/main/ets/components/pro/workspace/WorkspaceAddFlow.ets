@@ -38,8 +38,8 @@ export struct WorkspaceAddFlow {
   onCreated: (workspace: Workspace, openNow: boolean) => void = (_workspace: Workspace, _openNow: boolean): void => {};
   @State step: number = 1;
   @State @Watch('reportDirty') name: string = '';
-  @State color: string = WORKSPACE_COLORS[0];
-  @State icon: string = WORKSPACE_ICONS[0];
+  @State @Watch('reportDirty') color: string = WORKSPACE_COLORS[0];
+  @State @Watch('reportDirty') icon: string = WORKSPACE_ICONS[0];
   @State query: string = '';
   @State @Watch('reportDirty') picked: string[] = [];
   @State errorText: string = '';
@@ -53,7 +53,7 @@ export struct WorkspaceAddFlow {
   }
 
   private draftSnapshot(): string {
-    return JSON.stringify([this.name, this.picked]);
+    return JSON.stringify([this.name, this.color, this.icon, this.picked]);
   }
 
   private reportDirty(): void {

@@ -44,8 +44,8 @@ export struct RdpAddFlow {
   @State @Watch('reportDirty') username: string = '';
   @State @Watch('reportDirty') password: string = '';
   @State @Watch('reportDirty') credentialId: string = '';
-  @State authMode: RdpAuthMode = 'password';
-  @State credentialStorageMode: RdpCredentialStorageMode = 'saved';
+  @State @Watch('reportDirty') authMode: RdpAuthMode = 'password';
+  @State @Watch('reportDirty') credentialStorageMode: RdpCredentialStorageMode = 'saved';
   @State blankPasswordConfirmed: boolean = false;
   @State restrictedAdminSource: RdpRestrictedAdminSecretSource = 'ntlm_hash';
   @State @Watch('reportDirty') restrictedAdminHash: string = '';
@@ -93,7 +93,8 @@ export struct RdpAddFlow {
 
   private draftSnapshot(): string {
     return JSON.stringify([this.label, this.hostAddress, this.portText, this.targetServerName, this.clientHostname,
-      this.username, this.password, this.credentialId, this.restrictedAdminHash, this.selectedLanStableId]);
+      this.username, this.password, this.credentialId, this.restrictedAdminHash, this.selectedLanStableId,
+      this.authMode, this.credentialStorageMode]);
   }
 
   aboutToAppear(): void {

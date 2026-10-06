@@ -66,8 +66,11 @@ export struct KeyVaultPage {
   @StorageProp('remoteDesktopBgFlag') @Watch('onAppBackground') appInBackground: boolean = false;
   /** A save or a confirmed close is closing the sheet (onWillDismiss lets it through). */
   private keyVaultSheetClosing: boolean = false;
-  /** The modern add flow holds unsaved input (it reports it). */
+  /** The modern add flow and the passphrase sheet hold unsaved input (they report it). */
   private modernFlowDirty: boolean = false;
+  private passphraseSheetDirty: boolean = false;
+  /** Counts sheet dismissals: a 放弃 question answered after its sheet went away does nothing. */
+  private keyVaultSheetDismissCount: number = 0;
   @State selectionMode: boolean = false;
   // 统一 Sheet: 单 bindSheet + mode 切换内容 (KeyVaultPage 非 @Entry, 限 1 个 bindSheet)
   @State showSheet: boolean = false;
@@ -179,6 +182,7 @@ export struct KeyVaultPage {
       return '';
     }
     if (this.sheetMode === 6 && this.modernFlowDirty) { return '内容'; }
+    if (this.sheetMode === 4 && this.passphraseSheetDirty) { return '口令'; }
     if (this.sheetMode === 7 && this.editingTotpName.trim() !== this.editingTotpEntry.displayName.trim()) { return '名称'; }
     return '';
   }
@@ -187,6 +191,7 @@ export struct KeyVaultPage {
   private confirmDiscardKeyVaultSheet(proceed: () => void): void {
     const label: string = this.keyVaultSheetUnsavedLabel();
     if (label === '') { proceed(); return; }
+    const dismissCount: number = this.keyVaultSheetDismissCount;
     promptAction.showDialog({
       title: '放弃未保存的' + label + '？',
       message: '填写的内容还没有保存，放弃后不会保留。',
@@ -194,7 +199,10 @@ export struct KeyVaultPage {
     }).then((result: Object): void => {
       const value: Record<string, number> = result as Record<string, number>;
       if (value['index'] !== 1) { return; }
+      // The sheet closed some other way meanwhile: nothing left to close.
+      if (this.keyVaultSheetDismissCount !== dismissCount || !this.showSheet) { return; }
       this.modernFlowDirty = false;
+      this.passphraseSheetDirty = false;
       proceed();
     }).catch((): void => {});
   }
@@ -1052,7 +1060,9 @@ export struct KeyVaultPage {
       },
       onDisappear: () => {
         this.keyVaultSheetClosing = false;
+        this.keyVaultSheetDismissCount++;
         this.modernFlowDirty = false;
+        this.passphraseSheetDirty = false;
         if (this.sheetMode === 0) { this.resetSshForm(); this.resetTotpForm(); }
         else { this.load(); }
       }
@@ -1175,13 +1185,18 @@ export struct KeyVaultPage {
           .fontColor(this.pal().text).fontFamily(this.font())
           .layoutWeight(1)
         Text('返回').fontSize(13).fontColor(this.accentColor)
-          .fontFamily(this.font()).onClick(() => { this.sheetMode = 2; })
+          .fontFamily(this.font()).onClick(() => {
+            // Typed passphrases are dropped on the way back: the same question as closing.
+            this.confirmDiscardKeyVaultSheet((): void => { this.passphraseSheetDirty = false; this.sheetMode = 2; });
+          })
       }.width('100%').margin({ bottom: 14 })
 
       SshKeyPassphraseSubSheet({
         sshKey: this.sheetKey,
         removeMode: this.passphraseRemoveMode,
+        onDirtyChange: (dirty: boolean): void => { this.passphraseSheetDirty = dirty; },
         onComplete: (newPrivateKey: string, newEncrypted: boolean) => {
+          this.passphraseSheetDirty = false;
           const updated: SshKey = new SshKey();
           updated.id = this.sheetKey.id;
           updated.label = this.sheetKey.label;

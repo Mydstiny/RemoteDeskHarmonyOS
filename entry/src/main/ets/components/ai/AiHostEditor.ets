@@ -136,6 +136,15 @@ export struct AiHostEditor {
     return JSON.stringify([this.label, this.address, this.groupId, this.serverName, this.invite]);
   }
 
+  /** Stored: what the editor holds now is saved, so closing must not ask about it. */
+  private markSaved(): void {
+    this.draftBaseline = this.draftSnapshot();
+    if (this.draftDirty) {
+      this.draftDirty = false;
+      this.onDirtyChange(false);
+    }
+  }
+
   private reportDirty(): void {
     if (this.draftBaseline === '') { return; }
     const dirty: boolean = this.draftSnapshot() !== this.draftBaseline;
@@ -156,7 +165,8 @@ export struct AiHostEditor {
   private previousStep(): void {
     if (this.busy) { return; } this.error = '';
     if (this.step === 2) { this.step = 1; }
-    else if (this.canReturnToProtocols) { this.invite = ''; this.inviteStatus = ''; this.editGeneration++; this.onBackToProtocols(); }
+    // The page may ask first and keep the editor: nothing is cleared here (leaving disposes the editor anyway).
+    else if (this.canReturnToProtocols) { this.onBackToProtocols(); }
   }
   private selectBackend(backend: AiBackend): void {
     if (this.busy || this.defaultsPending || !AiAccess.getInstance().proVisible() || this.backend === backend) { return; }
@@ -279,13 +289,14 @@ export struct AiHostEditor {
       }
       AiAccess.getInstance().assertCurrent(account);
       if (invitation !== '') {
-        await AiBridgeClient.pair(next, invitation, 'HarmonyOS'); this.paired = true;
+        await AiBridgeClient.pair(next, invitation, 'HarmonyOS'); this.paired = true; this.markSaved();
         if (!AiAccess.getInstance().proVisible() || !AiAccess.getInstance().executable(next.backend)) {
           throw new Error('AI_PRO_ACCESS_REQUIRED');
         }
         connectRequested = connect && next.transport === 'lan';
       } else {
         await AiLocalStore.getInstance().saveHost(account, next);
+        this.markSaved();
         if (!AiAccess.getInstance().proVisible() || !AiAccess.getInstance().executable(next.backend)) {
           throw new Error('AI_PRO_ACCESS_REQUIRED');
         }
@@ -297,6 +308,7 @@ export struct AiHostEditor {
         connectRequested = connect && next.transport === 'lan' && this.paired;
       }
       this.invite = '';
+      this.markSaved();
       if (this.alive && !this.inBackground && generation === this.editGeneration &&
         AiAccess.getInstance().proVisible() && AiAccess.getInstance().executable(next.backend) &&
         AiAccess.getInstance().current(account)) {
