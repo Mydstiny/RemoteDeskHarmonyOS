@@ -23810,9 +23810,7 @@ struct HostListPage {
     .borderRadius(this.breakpoint === 'sm' ? 0 : 20)
     .backgroundColor(this.pal().sheetBg)
     .backgroundBlurStyle(BlurStyle.Regular)
-    .shadow({ radius: this.breakpoint === 'sm' || this.settingsModern() ? 0 : 24,
-      color: this.breakpoint === 'sm' || this.settingsModern() ? 'rgba(0,0,0,0)' : 'rgba(0,0,0,0.12)',
-      offsetY: this.breakpoint === 'sm' || this.settingsModern() ? 0 : 6 })
+    .shadow({ radius: this.breakpoint === 'sm' ? 0 : 24, color: this.breakpoint === 'sm' ? 'rgba(0,0,0,0)' : 'rgba(0,0,0,0.12)', offsetY: this.breakpoint === 'sm' ? 0 : 6 })
     .border(this.breakpoint === 'sm'
       ? { width: 0, color: Color.Transparent, style: BorderStyle.Solid }
       : { width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })

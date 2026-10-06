@@ -233,7 +233,7 @@ export struct ColorPickerSheet {
               .border({ width: this.selectedHex === preset.hex ? 3 : 0, color: this.pal().text })
             Text(preset.pantone).fontSize(this.modern() ? 12 : 9)
               .fontColor(this.modern() ? this.pal().text2 : this.pal().text3).margin({ top: 4 }).maxLines(1)
-              .textOverflow({ overflow: TextOverflow.Ellipsis })
+              .textOverflow({ overflow: this.modern() ? TextOverflow.Ellipsis : TextOverflow.Clip })
           }.alignItems(HorizontalAlign.Center)
           .onClick(() => { this.selectPreset(preset.hex); })
         }

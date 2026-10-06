@@ -313,7 +313,8 @@ export struct RdpDisplayProfilePanel {
     Scroll() {
       Column({ space: 14 }) {
         if (this.showClose && !this.forceDark && settingsVisualIsModern(this.visualStyle)) {
-          AppSheetHeader({ title: '远端显示方案', subtitle: this.applyHint, showProBadge: true, horizontalPadding: 0,
+          AppSheetHeader({ title: '远端显示方案', subtitle: '远端桌面尺寸与 Windows 缩放', showProBadge: true,
+            horizontalPadding: 0,
             whiteOnAccent: true, onClose: (): void => { this.onClose(); } })
         } else {
           Row({ space: 8 }) {
