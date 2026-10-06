@@ -56,6 +56,8 @@ const SETTINGS: AiSettingSpec[] = [
   toggle('ui.hostCardSensitiveHidden', '主机卡片隐藏连接信息', 'hostCardSensitiveInfoHidden', '卡片上不显示地址与用户名'),
   toggle('ui.liveViewEnabled', '实时视图', 'liveViewEnabled'),
   new AiSettingSpec('ui.hostAddMode', '添加主机样式', 'hostAddMode', choices([['modern', '新版'], ['classic', '经典']])),
+  new AiSettingSpec('ui.settingsVisual', '设置页外观', 'settingsVisualStyle',
+    choices([['modern', '全新视觉'], ['classic', '经典']]), '全新视觉：分组、搜索、显示当前值；经典：原来的样子'),
   new AiSettingSpec('ui.virtualMouseStyle', '虚拟鼠标样式', 'virtualMouseStyle', choices([['circle', '圆形'], ['arrow', '箭头']])),
   // RDP
   toggle('rdp.audioEnabled', 'RDP 远程音频', 'rdpAudioEnabled'),

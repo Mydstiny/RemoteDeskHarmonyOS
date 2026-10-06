@@ -241,4 +241,164 @@ check('small fixes: breakpoint key, color drag, VNC draft and numbers, empty she
   }
 });
 
-console.log('settings overhaul batch A: ' + passed + ' checks passed');
+// ------------------------------------------------------------------ batch B: 全新视觉 (opt-in, off by default)
+/** Loads a services module that imports other services modules (relative imports only). */
+function loadTree(file, cache = new Map()) {
+  if (cache.has(file)) return cache.get(file).exports;
+  const source = fs.readFileSync(path.join(ETS, file + '.ets'), 'utf8');
+  const output = ts.transpileModule(source, {
+    compilerOptions: { target: ts.ScriptTarget.ES2021, module: ts.ModuleKind.CommonJS } }).outputText;
+  const module = { exports: {} };
+  cache.set(file, module);
+  const requireRelative = (name) => {
+    if (!name.startsWith('.')) return {};
+    return loadTree(path.posix.normalize(path.posix.join(path.posix.dirname(file), name)), cache);
+  };
+  // $r() is a compile-time resource; here it only needs to give each name a distinct value.
+  vm.runInNewContext(output, { module, exports: module.exports, require: requireRelative, Math, Number, String, JSON,
+    $r: (name) => 'R:' + name }, { filename: file });
+  return module.exports;
+}
+
+check('全新视觉 is opt-in: stored per account, cloud-synced, and readable and settable by the AI', () => {
+  const style = load('services/SettingsVisualStylePolicy');
+  assert.equal(style.SETTINGS_VISUAL_STYLE_KEY, 'settingsVisualStyle');
+  for (const value of ['', 'classic', 'Modern', 'new', undefined]) {
+    assert.equal(style.normalizeSettingsVisualStyle(value), 'classic', String(value));
+    assert.equal(style.settingsVisualIsModern(value), false);
+  }
+  assert.equal(style.normalizeSettingsVisualStyle('modern'), 'modern');
+  const sync = load('services/CloudSyncSettingsPolicy');
+  assert.ok(sync.cloudUserSettingIsSyncable('settingsVisualStyle'));
+  const page = read('pages/HostListPage.ets');
+  assert.ok(page.includes("@StorageLink('settingsVisualStyle') settingsVisualStyle: string = 'classic';"));
+  assert.ok(page.includes('prefs.getSync(SETTINGS_VISUAL_STYLE_KEY, SETTINGS_VISUAL_STYLE_CLASSIC)'));
+  assert.ok(page.includes("case 'ui.settingsVisual': this.saveSettingsVisualStyle(value === SETTINGS_VISUAL_STYLE_MODERN)"));
+  assert.ok(member(page, '@Builder settingsVisualStyleRow() {').includes("accessibilityText('全新视觉')"));
+  const ai = read('services/diagnosticAi/DiagnosticAiSettingsActionPolicy.ets');
+  assert.ok(ai.includes("new AiSettingSpec('ui.settingsVisual', '设置页外观', 'settingsVisualStyle',"));
+  assert.ok(ai.includes("choices([['modern', '全新视觉'], ['classic', '经典']])"));
+  const kb = read('services/diagnosticAi/DiagnosticAiKnowledgeBase.ets');
+  assert.ok(kb.includes('全新视觉') && kb.includes('ui.settingsVisual'));
+});
+
+check('the classic page keeps its sections and order; the new look groups the same sections', () => {
+  const page = read('pages/HostListPage.ets');
+  const content = member(page, '@Builder settingsContent() {');
+  const classicOrder = ['Appearance', 'Home', 'CloudSync', 'ConnectionLive', 'DisplayInteraction', 'VirtualKeyboard',
+    'Rdp', 'RustDesk', 'Ssh', 'Vnc', 'Moonlight', 'RemoteAi', 'ProDebug', 'Pro', 'Security', 'Tutorial', 'About',
+    'Diagnostics', 'Actions'];
+  const classic = content.slice(content.indexOf('} else {\n          this.settingsSectionAppearance()'));
+  const calls = [...classic.matchAll(/this\.settingsSection(\w+)\(\)/g)].map((m) => m[1]);
+  assert.deepEqual(calls.slice(0, classicOrder.length), classicOrder);
+  const modern = member(page, '@Builder settingsModernSections() {');
+  const modernCalls = [...modern.matchAll(/this\.settingsSection(\w+)\(\)|this\.settingsGroupTitle\('([^']+)'\)/g)]
+    .map((m) => m[1] || '#' + m[2]);
+  assert.deepEqual(modernCalls, ['#通用', 'Appearance', 'Home', 'ConnectionLive', 'DisplayInteraction',
+    'VirtualKeyboard', '#连接协议', 'Rdp', 'RustDesk', 'Ssh', 'Vnc', 'Moonlight', '#AI 与 Pro', 'Diagnostics',
+    'RemoteAi', 'ProDebug', 'Pro', '#安全与数据', 'CloudSync', 'Security', '#帮助', 'Tutorial', 'About', 'Actions']);
+  for (const name of classicOrder) { assert.ok(page.includes('  @Builder settingsSection' + name + '() {'), name); }
+  // The scroll index follows the same layout: the policy's groups are the builder's groups.
+  const policy = loadTree('services/SettingsModernPolicy');
+  const sectionIds = { Appearance: 'appearance', Home: 'homeLayout', ConnectionLive: 'connectionLive',
+    DisplayInteraction: 'displayInteraction', VirtualKeyboard: 'virtualKeyboard', Rdp: 'windowsRdp',
+    RustDesk: 'rustdesk', Ssh: 'ssh', Vnc: 'vnc', Moonlight: 'moonlight', Diagnostics: 'diagnostics',
+    RemoteAi: 'remoteAi', ProDebug: 'proDebug', Pro: 'proFeatures', CloudSync: 'cloudSync', Security: 'security',
+    Tutorial: 'tutorial', About: 'about', Actions: 'actions' };
+  // JSON round trip: the module runs in its own VM realm, so its arrays have another Array prototype.
+  const fromPolicy = JSON.parse(JSON.stringify(policy.settingsModernGroups()
+    .flatMap((group) => ['#' + group.title].concat(group.sections))));
+  assert.deepEqual(fromPolicy, modernCalls.map((call) => call.startsWith('#') ? call : sectionIds[call]));
+  const all = { remoteAi: true, proDebug: false, pro: true };
+  // spacer, search, account | 通用 heading → 个性化 header at 4.
+  assert.equal(policy.settingsModernSectionIndex('appearance', all), 4);
+  assert.equal(policy.settingsModernSectionIndex('homeLayout', all), 6);
+  assert.equal(policy.settingsModernSectionIndex('displayInteraction', all), 11);
+  assert.equal(policy.settingsModernSectionIndex('windowsRdp', all), 16);
+  assert.equal(policy.settingsModernSectionIndex('remoteAi', all), 29);
+  assert.equal(policy.settingsModernSectionIndex('remoteAi', { remoteAi: false, proDebug: true, pro: false }), -1);
+  assert.equal(policy.settingsModernSectionIndex('security', { remoteAi: false, proDebug: true, pro: false }), 33);
+  // Each section builder renders as many ListItems as the policy counts.
+  for (const [name, id] of Object.entries(sectionIds)) {
+    const body = member(page, '@Builder settingsSection' + name + '() {');
+    const items = (body.match(/\n    ListItem\(\)/g) || []).length;
+    assert.equal(items, policy.settingsModernSectionItemCount(id, { remoteAi: true, proDebug: true, pro: true }), name);
+  }
+});
+
+check('settings search finds rows by name or everyday words and opens them like the AI does', () => {
+  const search = loadTree('services/SettingsSearchCatalog');
+  const actions = loadTree('services/diagnosticAi/DiagnosticAiAppActionPolicy');
+  const entries = search.settingsSearchEntries();
+  assert.ok(entries.length >= 90);
+  const top = (query) => (search.settingsSearchMatches(query, entries, 5)[0] || { title: '' }).title;
+  assert.equal(top('滚轮'), '远程滚轮方向');
+  assert.equal(top('深色'), '深色模式');
+  assert.equal(top('暗色'), '深色模式');
+  assert.equal(top('h265'), 'RustDesk 编码');
+  assert.equal(top('rdp 音频'), 'RDP 远端音频');
+  assert.equal(top('API Key'), '辅助 AI 配置');
+  assert.equal(top('全新'), '全新视觉');
+  assert.equal(search.settingsSearchMatches('完全无关的词', entries, 5).length, 0);
+  assert.equal(search.settingsSearchMatches('   ', entries, 5).length, 0);
+  const page = read('pages/HostListPage.ets');
+  const requirement = member(page, 'private settingsSearchRequirementMet(requires: string): boolean {');
+  const seen = new Set();
+  for (const entry of entries) {
+    assert.ok(!seen.has(entry.section + entry.title), 'duplicate ' + entry.title);
+    seen.add(entry.section + entry.title);
+    if (entry.action.startsWith('ai:')) {
+      assert.ok(Number.isInteger(Number(entry.action.slice(3))), entry.title);
+    } else if (entry.action !== '') {
+      assert.ok(actions.diagnosticAiAppActionId(entry.action), entry.title + ' → ' + entry.action);
+      assert.ok(page.includes("case '" + entry.action + "':"), entry.action + ' is handled by the page');
+    }
+    assert.ok(entry.requires === '' || requirement.includes("case '" + entry.requires + "':"), entry.requires);
+    assert.notEqual(search.settingsSectionTitle(entry.section), '设置', entry.title);
+  }
+});
+
+check('the new look changes only what it gates; classic values stay as they were', () => {
+  const page = read('pages/HostListPage.ets');
+  const sections = page.slice(page.indexOf('  @Builder settingsSectionAppearance() {'),
+    page.indexOf('  /** 全新视觉: the same sections as the classic page'));
+  // Every row height in the sections is either a fixed classic number or the gated auto height.
+  for (const match of sections.matchAll(/\.height\(([^)]+)\)/g)) {
+    assert.ok(/^\d+$/.test(match[1]) || /^this\.settingsModern\(\) \? 'auto' : \d+$/.test(match[1]) ||
+      /^'100%'$/.test(match[1]) || match[1].startsWith('this.') || /^[\d.]+$/.test(match[1]), match[1]);
+  }
+  assert.ok(!/Text\(' >'\)/.test(sections), 'text arrows go through settingsRowChevron');
+  assert.ok(member(page, '@Builder settingsRowChevron(leftMargin: number) {')
+    .includes("Text(' >').fontSize(14).fontColor(this.pal().text3).margin({ left: leftMargin })"));
+  for (const glyph of ["'⌖', 22, false", "'Aa', 16, true", "'T', 14, true", "'◎', 22, false"]) {
+    assert.ok(sections.includes('this.settingsRowGlyph(' + glyph), glyph);
+  }
+  assert.ok(member(page, '@Builder settingsAccountGlyph() {').includes("Text('👤').fontSize(30)"));
+  // Subtitles: classic keeps 11/text3 (or 10/text3), the new look reads 12/text2.
+  assert.ok(!/\.fontSize\(11\)\.fontColor\(this\.pal\(\)\.text3\)/.test(sections));
+  const header = member(page, '@Builder settingsAccordionHeader(');
+  assert.ok(header.includes(".height(this.settingsModern() ? 'auto' : 64)"));
+  assert.ok(header.includes('this.settingsSectionSummary(section, subtitle, this.settingsValuesRevision)'));
+  assert.ok(page.includes("constraintSize({ maxWidth: this.settingsModern() && this.breakpoint !== 'sm' ? 760 : '100%' })"));
+  assert.ok(member(page, 'private settingsLeafSheetWidth(): number | undefined {')
+    .includes('if (!this.settingsModern() || this.settingsLeafUsesBottomSheet()) { return undefined; }'));
+  assert.ok(member(page, 'private settingsSectionExpandedMaxHeight(section: string): number {')
+    .includes('Math.ceil(classic * 1.5) : classic'));
+});
+
+check('inline fields save once confirmed, and the RDP account format fits a phone card', () => {
+  const page = read('pages/HostListPage.ets');
+  const drive = member(page, '@Builder rdpDriveNameRow() {');
+  assert.ok(drive.includes('.onBlur((): void => { this.commitRdpDriveNameDraft(); })'));
+  assert.ok(!drive.includes('.onChange((v: string): void => { this.saveRdpDriveName(v); })'));
+  const scale = member(page, '@Builder remoteDisplayScaleRow() {');
+  assert.ok(scale.includes('.onBlur((): void => { this.commitRemoteDisplayScaleDraft(); })'));
+  assert.ok(!scale.includes('this.saveRemoteDisplayCustomScalePercent(value)'));
+  assert.ok(member(page, 'private commitRemoteDisplayScaleDraft(): void {').includes('if (!valid) {'));
+  // Five chips plus gaps and padding within a phone card (about 288vp).
+  const phone = 5 * 52 + 4 * 2 + 6;
+  assert.ok(phone <= 288, String(phone));
+  assert.ok(page.includes("private rdpAuthChipWidth(): number { return this.breakpoint === 'sm' ? 52 : 58; }"));
+});
+
+console.log('settings overhaul: ' + passed + ' checks passed');

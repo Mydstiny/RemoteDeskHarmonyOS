@@ -137,14 +137,14 @@ assert.match(host, /this\.aiProVisible\) \{\s*ListItem\(\) \{\s*this\.settingsAc
 // 4. The account card and sheet show the Pro marker only while the account's Pro is active.
 assert.equal(count(host, /if \(this\.proManagerVisible && !this\.appCloneLocalOnly\) \{\s*ProBadge\(/g), 2);
 // 5. Custom key combinations belong to Pro 个性化方案 in settings, the session panel and the editor.
-assert.match(host, /if \(this\.personalizationProVisible\) \{[\s\S]{0,900}ProBadge\(\)[\s\S]{0,300}SETTINGS_SHEET_VIRTUAL_KEYBOARD_CUSTOM/);
+assert.match(host, /if \(this\.personalizationProVisible\) \{[\s\S]{0,900}ProBadge\(\)[\s\S]{0,500}SETTINGS_SHEET_VIRTUAL_KEYBOARD_CUSTOM/);
 assert.match(host, /this\.personalizationProVisible = ProEntries\.visible\(PRO_PERSONALIZATION_FEATURE\)/);
 const panel = sources.get('components/RemoteModifierPanel.ets');
 assert.match(panel, /if \(this\.proCustomShortcuts\) \{\s*this\.SectionChoice\('custom'/);
 assert.match(panel, /this\.proCustomShortcuts = ProEntries\.visible\(PRO_PERSONALIZATION_FEATURE\)/);
 assert.match(sources.get('components/VirtualKeyboardSettingsSheet.ets'),
   /requestedSection === 'custom'\) \{\s*if \(ProEntries\.visible\(PRO_PERSONALIZATION_FEATURE\)\)/);
-assert.match(host, /if \(this\.personalizationProVisible\) \{[\s\S]{0,900}ProBadge\(\)[\s\S]{0,300}SETTINGS_SHEET_SSH_SKIN/);
+assert.match(host, /if \(this\.personalizationProVisible\) \{[\s\S]{0,900}ProBadge\(\)[\s\S]{0,500}SETTINGS_SHEET_SSH_SKIN/);
 assert.match(sources.get('services/ssh/skin/SshSkinStore.ets'),
   /resolveSshSkin\(this\.settings, hostId, ProEntries\.visible\(PRO_PERSONALIZATION_FEATURE\)\)/);
 console.log('PASS Pro entry points follow the entitlement through ProEntries and every Pro badge is registered');

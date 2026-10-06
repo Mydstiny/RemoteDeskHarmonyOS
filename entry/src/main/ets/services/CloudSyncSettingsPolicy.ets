@@ -7,7 +7,8 @@ const CLOUD_USER_SETTING_NAMES: string[] = [
   'haloColorLight',
   'haloColorDark',
   'hostAddMode',
-  'totpLogoMode'
+  'totpLogoMode',
+  'settingsVisualStyle'
 ];
 
 // Structured Pro organization/workspace rows share usersettings. Values are
