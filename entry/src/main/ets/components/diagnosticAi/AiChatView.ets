@@ -395,6 +395,8 @@ export struct AiChatView {
   @Prop canExpand: boolean = true;
   /** A remote session's orb chat: answers are read aloud as 连接中语音回答 (or the orb's voice mode) says. */
   @Prop sessionVoice: boolean = false;
+  /** The small chat's answer area at most this tall (a short window gives it less, so the card fits beside the orb). */
+  @Prop miniAnswerLimit: number = 240;
   /** The question being sent was heard by the orb (not typed). */
   private spokenNext: boolean = false;
   onExpand: () => void = (): void => {};
@@ -1650,7 +1652,7 @@ export struct AiChatView {
                   this.blocksOf(this.lastAnswer() as AiChatMessage).length))
             }, (document: AiDocument): string => 'mini-d' + document.path)
           }.width('100%')
-        }.constraintSize({ maxHeight: 240 }).scrollBar(BarState.Off).edgeEffect(EdgeEffect.Spring).align(Alignment.Top)
+        }.constraintSize({ maxHeight: this.miniAnswerLimit }).scrollBar(BarState.Off).edgeEffect(EdgeEffect.Spring).align(Alignment.Top)
         .fadingEdge(true, { fadingEdgeLength: LengthMetrics.vp(16) })
         .opacity(this.clearing ? 0 : 1)
         .translate({ y: this.clearing ? -12 : 0 })

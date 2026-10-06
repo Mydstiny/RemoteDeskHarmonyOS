@@ -20,6 +20,10 @@ const AI_ISLAND_CARD_RADIUS: number = 46;
 const AI_CAPSULE_HEIGHT: number = 58;
 /** Between the orb and its mini chat. */
 const AI_CHAT_GAP: number = 10;
+/** The small chat at its tallest (a full answer area); a window with less room than this puts it beside the orb. */
+const AI_CHAT_TALL: number = 380;
+/** The small chat's own parts around its answer area (question, field, padding). */
+const AI_CHAT_FRAME: number = 150;
 /** Orb resting distance from the side it snaps to. */
 const AI_EDGE: number = 14;
 /** The one-time hint beside the orb. */
@@ -516,14 +520,38 @@ struct AiLiftLayer {
     if (this.controller.sessionMode) { return AI_SESSION_ORB_HINT_TEXT; }
     return this.voiceEnabled ? AI_ORB_VOICE_HINT_TEXT : AI_ORB_HINT_TEXT;
   }
-  private chatSpace(): number { return this.chatShown ? this.chatH + AI_CHAT_GAP : 0; }
+  private chatSpace(): number { return this.chatShown && !this.chatBeside() ? this.chatH + AI_CHAT_GAP : 0; }
+
+  /**
+   * A short window (a phone held sideways, or the keyboard up): the chat cannot fit over or under the orb once an
+   * answer is in, so it sits beside the orb, as tall as the window allows — it never covers the orb.
+   */
+  private chatBeside(): boolean {
+    return this.bottomLimit() - this.topLimit() - AI_FLOAT_ORB - AI_CHAT_GAP < AI_CHAT_TALL &&
+      this.layerW >= this.chatWidth() + AI_FLOAT_ORB + AI_CHAT_GAP + 24;
+  }
+
+  /** How tall the chat's answer may grow: all of it over or under the orb, or the window's height beside it. */
+  private answerLimit(): number {
+    const room: number = this.chatBeside() ? this.bottomLimit() - this.topLimit() :
+      this.bottomLimit() - this.topLimit() - AI_FLOAT_ORB - AI_CHAT_GAP;
+    return Math.max(60, Math.min(240, room - AI_CHAT_FRAME));
+  }
 
   private chatX(): number {
     const w: number = this.chatWidth();
+    if (this.chatBeside()) {
+      const side: number = this.orbOnRight() ? this.boxX - AI_CHAT_GAP - w : this.boxX + AI_FLOAT_ORB + AI_CHAT_GAP;
+      return Math.max(8, Math.min(this.layerW - w - 8, side));
+    }
     const x: number = this.chatRightSide ? this.boxX + AI_FLOAT_ORB - w : this.boxX;
     return Math.max(8, Math.min(this.layerW - w - 8, x));
   }
   private chatY(): number {
+    if (this.chatBeside()) {
+      const centered: number = this.boxY + (AI_FLOAT_ORB - this.chatH) / 2;
+      return Math.max(this.topLimit(), Math.min(this.bottomLimit() - this.chatH, centered));
+    }
     const y: number = this.chatBelowSide ? this.boxY + AI_FLOAT_ORB + AI_CHAT_GAP : this.boxY - AI_CHAT_GAP - this.chatH;
     // While dragging the orb may sit where neither side fits; the chat still never leaves the window.
     return Math.max(this.topLimit(), Math.min(this.bottomLimit() - this.chatH, y));
@@ -791,7 +819,7 @@ struct AiLiftLayer {
       if (this.chatShown && this.chatMode()) {
         AiChatView({ mini: true, owner: aiChatOwner(),
           deviceClass: this.controller.deviceClass, canExpand: !this.controller.sessionMode,
-          sessionVoice: this.controller.sessionMode,
+          sessionVoice: this.controller.sessionMode, miniAnswerLimit: this.answerLimit(),
           onCardSize: (height: number): void => { this.chatResized(height); },
           onActivityChanged: (active: boolean): void => { this.chatBusy = active; this.controller.onActivityChanged(active); },
           onExpand: (): void => { this.controller.onOrbTap(this.boxX, this.boxY + this.originY); } })

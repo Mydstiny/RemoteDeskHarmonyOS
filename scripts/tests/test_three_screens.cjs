@@ -666,6 +666,11 @@ check('session AI: tap folds the chat, double tap listens in the orb, the side b
   assert.ok(member(lift, 'private orbDoubleTapped(): void {').includes('this.startOrbVoice(this.holdToTalk);'));
   assert.ok(!member(lift, 'private startOrbVoice(held: boolean): void {').includes('this.controller.sessionMode ||'));
   assert.ok(lift.includes('(this.railExpanded ? Math.max(0, this.controller.avoidWidth) : 0)'));
+  // A short window (phone sideways): the chat sits beside the orb and its answer area fits the height — never over it.
+  assert.ok(member(lift, 'private chatX(): number {').includes('if (this.chatBeside()) {'));
+  assert.ok(member(lift, 'private chatY(): number {').includes('if (this.chatBeside()) {'));
+  assert.ok(lift.includes('miniAnswerLimit: this.answerLimit()'));
+  assert.ok(read('components/diagnosticAi/AiChatView.ets').includes('.constraintSize({ maxHeight: this.miniAnswerLimit })'));
   assert.equal((lift.match(/\.onActionStart\(\(\): void => \{ this\.dragBegin\(\); \}\)/g) || []).length, 3, 'orb and both chats drag');
   const host = read('components/diagnosticAi/SessionAiHost.ets');
   assert.ok(member(host, 'private onOpenRequest(): void {').includes('this.closeAi();'));
