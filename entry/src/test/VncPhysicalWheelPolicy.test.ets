@@ -4,7 +4,6 @@ import {
   resetVncPhysicalWheelState,
   resolveVncPhysicalWheelRoute,
   shouldTreatPhysicalAxisAsContinuous,
-  VNC_PHYSICAL_MOUSE_MAX_DELTA,
   VNC_PHYSICAL_TOUCHPAD_MAX_DELTA,
   VncPhysicalWheelState,
   vncPhysicalMouseWheelDelta
@@ -66,21 +65,20 @@ export default function vncPhysicalWheelPolicyTest(): void {
       expect(mouse.resetAfter).assertFalse();
     });
 
-    it('preserves_captured_mouse_scroll_step_without_multiplying_raw_degrees', 0, (): void => {
-      expect(vncPhysicalMouseWheelDelta(45, 3)).assertEqual(3);
-      expect(vncPhysicalMouseWheelDelta(-45, 3)).assertEqual(-3);
+    it('maps_each_mouse_notch_to_one_tick_whatever_the_local_scroll_step', 0, (): void => {
+      expect(vncPhysicalMouseWheelDelta(45, 3)).assertEqual(1);
+      expect(vncPhysicalMouseWheelDelta(-45, 3)).assertEqual(-1);
       expect(vncPhysicalMouseWheelDelta(120, 1)).assertEqual(1);
       expect(vncPhysicalMouseWheelDelta(1, undefined)).assertEqual(1);
       expect(vncPhysicalMouseWheelDelta(-1, Number.NaN)).assertEqual(-1);
-      expect(vncPhysicalMouseWheelDelta(120, 100))
-        .assertEqual(VNC_PHYSICAL_MOUSE_MAX_DELTA);
+      expect(vncPhysicalMouseWheelDelta(120, 100)).assertEqual(1);
     });
 
-    it('applies_the_same_ten_times_wire_gain_to_mouse_and_touchpad', 0, (): void => {
+    it('applies_the_same_three_times_wire_gain_to_mouse_and_touchpad', 0, (): void => {
       expect(amplifyVncWheelOutputDelta(vncPhysicalMouseWheelDelta(45, 3)))
-        .assertEqual(30);
+        .assertEqual(3);
       expect(amplifyVncWheelOutputDelta(accumulateTwoSamples(45)))
-        .assertEqual(10);
+        .assertEqual(3);
     });
 
     it('adapts_touchpad_1_45_and_120_units_to_two_samples_per_tick', 0, (): void => {

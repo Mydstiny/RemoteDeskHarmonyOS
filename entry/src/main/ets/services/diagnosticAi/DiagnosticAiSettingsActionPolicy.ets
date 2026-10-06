@@ -48,11 +48,12 @@ function toggle(id: string, label: string, key: string, note: string = ''): AiSe
 }
 
 const CONTROL_MODES: string[][] = [['0', '触控板'], ['1', '触控'], ['2', '键鼠']];
-/** 远程滚轮 › 速度: 25%–400% in 25% steps (100% is each protocol's tuned default). */
-const WHEEL_SPEEDS: string[][] = remoteWheelSpeedChoices().map((v: number): string[] => [v.toString(), remoteWheelSpeedLabel(v)]);
+/** 远程滚轮 › 速度: 25% steps from 25% to 400% (VNC to 1000%); 100% is each protocol's tuned default. */
 function wheelSpeed(protocol: string, name: string): AiSettingSpec {
-  return new AiSettingSpec('remote.' + protocol + 'WheelSpeed', name + ' 滚轮速度', protocol + 'WheelSpeed', choices(WHEEL_SPEEDS),
-    '每格滚轮、每次双指滑动在远端滚动的距离；嫌快调低、嫌慢调高，100% 为默认');
+  const speeds: string[][] = remoteWheelSpeedChoices(protocol).map((v: number): string[] => [v.toString(), remoteWheelSpeedLabel(v)]);
+  return new AiSettingSpec('remote.' + protocol + 'WheelSpeed', name + ' 滚轮速度', protocol + 'WheelSpeed', choices(speeds),
+    '每格滚轮、每次双指滑动在远端滚动的距离；嫌快调低、嫌慢调高，100% 为默认' +
+      (protocol === 'vnc' ? '；macOS 屏幕共享等滚得少的服务器可调到 400%–1000%' : ''));
 }
 
 const SETTINGS: AiSettingSpec[] = [

@@ -8,7 +8,6 @@
  * make an actual mouse or touchpad unusably slow.
  */
 
-export const VNC_PHYSICAL_MOUSE_MAX_DELTA: number = 8;
 export const VNC_PHYSICAL_TOUCHPAD_SAMPLES_PER_TICK: number = 2;
 export const VNC_PHYSICAL_TOUCHPAD_MAX_DELTA: number = 4;
 export const VNC_PHYSICAL_TOUCHPAD_MAX_NORMALIZED_SAMPLE: number = 4;

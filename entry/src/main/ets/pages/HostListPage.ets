@@ -2721,11 +2721,12 @@ struct HostListPage {
         this.isDesktopDevice);
       const savedRemoteWheelPreferences: RemoteWheelPreferences =
         this.restoreRemoteWheelPreferences(prefs);
-      const savedWheelSpeed = (key: string): number => normalizeRemoteWheelSpeed(prefs.getSync(key, 100) as number);
+      const savedWheelSpeed = (key: string, protocol: string): number =>
+        normalizeRemoteWheelSpeed(prefs.getSync(key, 100) as number, protocol);
       const savedRemoteWheelSpeeds: RemoteWheelSpeeds = {
-        rdp: savedWheelSpeed(RDP_WHEEL_SPEED_KEY), rustdesk: savedWheelSpeed(RUSTDESK_WHEEL_SPEED_KEY),
-        ssh: savedWheelSpeed(SSH_WHEEL_SPEED_KEY), vnc: savedWheelSpeed(VNC_WHEEL_SPEED_KEY),
-        moonlight: savedWheelSpeed(MOONLIGHT_WHEEL_SPEED_KEY)
+        rdp: savedWheelSpeed(RDP_WHEEL_SPEED_KEY, 'rdp'), rustdesk: savedWheelSpeed(RUSTDESK_WHEEL_SPEED_KEY, 'rustdesk'),
+        ssh: savedWheelSpeed(SSH_WHEEL_SPEED_KEY, 'ssh'), vnc: savedWheelSpeed(VNC_WHEEL_SPEED_KEY, 'vnc'),
+        moonlight: savedWheelSpeed(MOONLIGHT_WHEEL_SPEED_KEY, 'moonlight')
       };
       // 核心外观设置
       const savedTheme: string = prefs.getSync('currentTheme', '') as string;
@@ -13648,7 +13649,7 @@ struct HostListPage {
 
   /** 远程滚轮 › 速度: kept on this device like the direction (input feel depends on the device); sessions read it live. */
   private saveRemoteWheelSpeed(protocol: RemoteWheelProtocol, speed: number): boolean {
-    const value: number = normalizeRemoteWheelSpeed(speed);
+    const value: number = normalizeRemoteWheelSpeed(speed, protocol);
     const key: string = remoteWheelSpeedKey(protocol);
     if (!this.persistPreferenceValue(key, value)) { return false; }
     if (protocol === 'rdp') { this.rdpWheelSpeed = value; }

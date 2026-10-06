@@ -170,6 +170,11 @@ export function remoteWheelSelectionSummary(values: RemoteWheelPreferences): str
 export const REMOTE_WHEEL_SPEED_DEFAULT: number = 100;
 export const REMOTE_WHEEL_SPEED_MIN: number = 25;
 export const REMOTE_WHEEL_SPEED_MAX: number = 400;
+/**
+ * VNC servers differ most (macOS Screen Sharing and UltraVNC scroll little per click): its range reaches 1000%, which is
+ * exactly the speed device acceptance settled on for them before the calmer default (2026-08: 10 clicks a tick).
+ */
+export const VNC_WHEEL_SPEED_MAX: number = 1000;
 export const REMOTE_WHEEL_SPEED_STEP: number = 25;
 export const RDP_WHEEL_SPEED_KEY: string = 'rdpWheelSpeed';
 export const RUSTDESK_WHEEL_SPEED_KEY: string = 'rustdeskWheelSpeed';
@@ -197,22 +202,28 @@ export function remoteWheelSpeedKey(protocol: RemoteWheelProtocol): string {
   return MOONLIGHT_WHEEL_SPEED_KEY;
 }
 
-/** A stored or typed speed on the 25% grid between 25% and 400%; anything unreadable is the default. */
-export function normalizeRemoteWheelSpeed(value: number): number {
-  if (!Number.isFinite(value) || value <= 0) { return REMOTE_WHEEL_SPEED_DEFAULT; }
-  const snapped: number = Math.round(value / REMOTE_WHEEL_SPEED_STEP) * REMOTE_WHEEL_SPEED_STEP;
-  return Math.max(REMOTE_WHEEL_SPEED_MIN, Math.min(REMOTE_WHEEL_SPEED_MAX, snapped));
+/** The highest speed a protocol offers (VNC 1000%, the others 400%). */
+export function remoteWheelSpeedMax(protocol: string): number {
+  return protocol === 'vnc' ? VNC_WHEEL_SPEED_MAX : REMOTE_WHEEL_SPEED_MAX;
 }
 
-/** Every speed the settings offer (also the AI's choices). */
-export function remoteWheelSpeedChoices(): number[] {
+/** A stored or typed speed on the 25% grid within the protocol's range; anything unreadable is the default. */
+export function normalizeRemoteWheelSpeed(value: number, protocol: string = ''): number {
+  if (!Number.isFinite(value) || value <= 0) { return REMOTE_WHEEL_SPEED_DEFAULT; }
+  const snapped: number = Math.round(value / REMOTE_WHEEL_SPEED_STEP) * REMOTE_WHEEL_SPEED_STEP;
+  return Math.max(REMOTE_WHEEL_SPEED_MIN, Math.min(remoteWheelSpeedMax(protocol), snapped));
+}
+
+/** Every speed the settings offer for a protocol (also the AI's choices). */
+export function remoteWheelSpeedChoices(protocol: string = ''): number[] {
   const out: number[] = [];
-  for (let v = REMOTE_WHEEL_SPEED_MIN; v <= REMOTE_WHEEL_SPEED_MAX; v += REMOTE_WHEEL_SPEED_STEP) { out.push(v); }
+  const max: number = remoteWheelSpeedMax(protocol);
+  for (let v = REMOTE_WHEEL_SPEED_MIN; v <= max; v += REMOTE_WHEEL_SPEED_STEP) { out.push(v); }
   return out;
 }
 
 export function remoteWheelSpeedLabel(value: number): string {
-  const v: number = normalizeRemoteWheelSpeed(value);
+  const v: number = normalizeRemoteWheelSpeed(value, 'vnc');
   return v === REMOTE_WHEEL_SPEED_DEFAULT ? '100%（默认）' : v.toString() + '%';
 }
 
@@ -227,7 +238,7 @@ export function remoteWheelSpeed(values: RemoteWheelSpeeds, protocol: string): n
 
 export function withRemoteWheelSpeed(values: RemoteWheelSpeeds, protocol: RemoteWheelProtocol,
   speed: number): RemoteWheelSpeeds {
-  const v: number = normalizeRemoteWheelSpeed(speed);
+  const v: number = normalizeRemoteWheelSpeed(speed, protocol);
   return {
     rdp: protocol === 'rdp' ? v : values.rdp,
     rustdesk: protocol === 'rustdesk' ? v : values.rustdesk,
@@ -250,7 +261,7 @@ export function remoteWheelSettingsSummary(directions: RemoteWheelPreferences, s
   const parts: string[] = [];
   WHEEL_PROTOCOL_NAMES.forEach((pair: string[]): void => {
     const reversed: boolean = remoteWheelPreference(directions, pair[0]);
-    const speed: number = normalizeRemoteWheelSpeed(remoteWheelSpeed(speeds, pair[0]));
+    const speed: number = normalizeRemoteWheelSpeed(remoteWheelSpeed(speeds, pair[0]), pair[0]);
     if (!reversed && speed === REMOTE_WHEEL_SPEED_DEFAULT) { return; }
     const bits: string[] = [];
     if (reversed) { bits.push('反转'); }

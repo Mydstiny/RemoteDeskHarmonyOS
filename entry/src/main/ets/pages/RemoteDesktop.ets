@@ -4775,7 +4775,7 @@ struct RemoteDesktop {
     const protocol: string = this.isVncSession() ? 'vnc' : this.currentProtocolName();
     if (protocol === 'rdp') { return normalizeRemoteWheelSpeed(this.rdpWheelSpeed); }
     if (protocol === 'rustdesk') { return normalizeRemoteWheelSpeed(this.rustdeskWheelSpeed); }
-    if (protocol === 'vnc') { return normalizeRemoteWheelSpeed(this.vncWheelSpeed); }
+    if (protocol === 'vnc') { return normalizeRemoteWheelSpeed(this.vncWheelSpeed, 'vnc'); }
     return 100;
   }
 
@@ -21757,7 +21757,9 @@ struct RemoteDesktop {
       return;
     }
     this.lastTouchWheelMs = now;
-    const scaled: RemoteWheelSpeedScale = scaleRemoteWheelTicks(delta, this.wheelSpeedForCurrentProtocol(),
+    // RDP at 100% keeps its established feel: one notch per flush (a batch of 2 used to reach the wire as 1).
+    const baseTicks: number = this.isRdpRemoteSession() ? (delta > 0 ? 1 : -1) : delta;
+    const scaled: RemoteWheelSpeedScale = scaleRemoteWheelTicks(baseTicks, this.wheelSpeedForCurrentProtocol(),
       this.touchWheelSpeedRemainder);
     this.touchWheelSpeedRemainder = scaled.remainder;
     if (scaled.delta === 0) { return; }
@@ -23321,6 +23323,8 @@ struct RemoteDesktop {
         }
       }
 
+      // RDP at 100% keeps its established feel: one notch per event (a continuous batch of 2 reached the wire as 1).
+      if (this.isRdpRemoteSession() && delta !== 0) { delta = delta > 0 ? 1 : -1; }
       const scaledWheel: RemoteWheelSpeedScale = scaleRemoteWheelTicks(delta, this.wheelSpeedForCurrentProtocol(),
         this.physicalWheelSpeedRemainder);
       this.physicalWheelSpeedRemainder = scaledWheel.remainder;

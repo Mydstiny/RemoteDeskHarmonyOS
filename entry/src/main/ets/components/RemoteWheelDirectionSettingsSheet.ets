@@ -6,7 +6,6 @@ import { appUiOnAccentText } from '../common/AppUiColorPolicy';
 import { protocolIcon } from '../services/ProtocolIconPolicy';
 import {
   REMOTE_WHEEL_SPEED_DEFAULT,
-  REMOTE_WHEEL_SPEED_MAX,
   REMOTE_WHEEL_SPEED_MIN,
   REMOTE_WHEEL_SPEED_STEP,
   RemoteWheelPreferencePresence,
@@ -18,6 +17,7 @@ import {
   remoteWheelProtocolSummary,
   remoteWheelSpeed,
   remoteWheelSpeedLabel,
+  remoteWheelSpeedMax,
   withRemoteWheelSpeed
 } from '../services/RemoteWheelPreferencePolicy';
 import { SettingsSavedBadge } from './SettingsSavedBadge';
@@ -43,9 +43,11 @@ function protocolInputs(protocol: RemoteWheelProtocol): string {
 /** What the speed means for each protocol (VNC servers differ the most). */
 function speedNote(protocol: RemoteWheelProtocol): string {
   if (protocol === 'vnc') {
-    return 'VNC 服务器每格滚动的距离差别很大：Windows 上嫌快就调低；macOS 自带的屏幕共享滚得少，可以调到 200%–400%。';
+    return 'VNC 服务器每格滚动的距离差别很大：Windows 上嫌快就调低；macOS 自带的屏幕共享、UltraVNC 滚得少，可以调到 400%–1000%。';
   }
-  if (protocol === 'ssh') { return '终端每次滚动的行数；只影响滚动，不影响 SFTP 文件列表。'; }
+  if (protocol === 'ssh') {
+    return '终端滚动缓冲每次滚动的行数；开启了鼠标的终端应用（如 tmux、vim）按应用自己的设置滚动，SFTP 文件列表不受影响。';
+  }
   if (protocol === 'moonlight') { return '串流游戏或桌面里每格滚动的距离。'; }
   return '每格滚轮、每次双指滑动在远端滚动的距离。';
 }
@@ -79,7 +81,10 @@ export struct RemoteWheelDirectionSettingsSheet {
   @State draftSsh: boolean = false;
   @State draftVnc: boolean = false;
   @State draftMoonlight: boolean = false;
+  /** The saved speeds (what a failed save goes back to). */
   @State speeds: RemoteWheelSpeeds = { rdp: 100, rustdesk: 100, ssh: 100, vnc: 100, moonlight: 100 };
+  /** The speed under the finger while the slider moves (-1: none); it is saved when the finger lets go. */
+  @State dragSpeed: number = -1;
   /** The protocol whose page is open ('' : the list). */
   @State selected: string = '';
   @State savedTick: number = 0;
@@ -91,11 +96,11 @@ export struct RemoteWheelDirectionSettingsSheet {
     this.draftVnc = this.initialVnc;
     this.draftMoonlight = this.initialMoonlight;
     this.speeds = {
-      rdp: normalizeRemoteWheelSpeed(this.initialSpeeds.rdp),
-      rustdesk: normalizeRemoteWheelSpeed(this.initialSpeeds.rustdesk),
-      ssh: normalizeRemoteWheelSpeed(this.initialSpeeds.ssh),
-      vnc: normalizeRemoteWheelSpeed(this.initialSpeeds.vnc),
-      moonlight: normalizeRemoteWheelSpeed(this.initialSpeeds.moonlight)
+      rdp: normalizeRemoteWheelSpeed(this.initialSpeeds.rdp, 'rdp'),
+      rustdesk: normalizeRemoteWheelSpeed(this.initialSpeeds.rustdesk, 'rustdesk'),
+      ssh: normalizeRemoteWheelSpeed(this.initialSpeeds.ssh, 'ssh'),
+      vnc: normalizeRemoteWheelSpeed(this.initialSpeeds.vnc, 'vnc'),
+      moonlight: normalizeRemoteWheelSpeed(this.initialSpeeds.moonlight, 'moonlight')
     };
     if (ALL_PROTOCOLS.indexOf(this.initialProtocol as RemoteWheelProtocol) >= 0) { this.selected = this.initialProtocol; }
   }
@@ -142,6 +147,11 @@ export struct RemoteWheelDirectionSettingsSheet {
 
   private speed(protocol: RemoteWheelProtocol): number { return remoteWheelSpeed(this.speeds, protocol); }
 
+  /** What the page shows: the slider's value while it moves, else the saved speed. */
+  private shownSpeed(protocol: RemoteWheelProtocol): number {
+    return this.dragSpeed >= 0 ? this.dragSpeed : this.speed(protocol);
+  }
+
   /** Every direction change saves at once; if saving fails the switches go back to the saved values. */
   private commit(protocols: RemoteWheelProtocol[], reversed: boolean): boolean {
     const previous: RemoteWheelPreferences = this.draft();
@@ -164,7 +174,8 @@ export struct RemoteWheelDirectionSettingsSheet {
 
   /** A speed saves at once too; a failed save leaves the previous speed shown. */
   private commitSpeed(protocol: RemoteWheelProtocol, value: number): boolean {
-    const next: number = normalizeRemoteWheelSpeed(value);
+    // Compared with the saved speed, never with the slider's live value (that is only shown while dragging).
+    const next: number = normalizeRemoteWheelSpeed(value, protocol);
     if (next === this.speed(protocol)) { return true; }
     const previous: RemoteWheelSpeeds = this.speeds;
     this.speeds = withRemoteWheelSpeed(this.speeds, protocol, next);
@@ -183,6 +194,7 @@ export struct RemoteWheelDirectionSettingsSheet {
   }
 
   private open(protocol: string): void {
+    this.dragSpeed = -1;
     this.getUIContext().animateTo({ duration: 220, curve: Curve.EaseOut }, (): void => { this.selected = protocol; });
   }
 
@@ -293,24 +305,25 @@ export struct RemoteWheelDirectionSettingsSheet {
         Row() {
           Text('滚轮速度').fontSize(this.modern() ? 15 : 14).fontWeight(FontWeight.Medium)
             .fontColor(this.pal().text).fontFamily(AppTheme.fontFamily).layoutWeight(1)
-          Text(remoteWheelSpeedLabel(this.speed(protocol))).fontSize(this.modern() ? 15 : 14)
+          Text(remoteWheelSpeedLabel(this.shownSpeed(protocol))).fontSize(this.modern() ? 15 : 14)
             .fontWeight(FontWeight.Medium).fontColor(this.accentColor).fontFamily(AppTheme.fontFamily)
         }.width('100%')
-        Slider({ value: this.speed(protocol), min: REMOTE_WHEEL_SPEED_MIN, max: REMOTE_WHEEL_SPEED_MAX,
+        Slider({ value: this.shownSpeed(protocol), min: REMOTE_WHEEL_SPEED_MIN, max: remoteWheelSpeedMax(protocol),
           step: REMOTE_WHEEL_SPEED_STEP, style: SliderStyle.OutSet })
           .width('100%').selectedColor(this.accentColor).showSteps(false)
           .accessibilityText(protocolTitle(protocol) + ' 滚轮速度')
           .onChange((value: number, mode: SliderChangeMode): void => {
             // Shown as it moves; saved once the finger lets go (or a tap on the track).
             if (mode === SliderChangeMode.End || mode === SliderChangeMode.Click) {
+              this.dragSpeed = -1;
               this.commitSpeed(protocol, value);
             } else {
-              this.speeds = withRemoteWheelSpeed(this.speeds, protocol, value);
+              this.dragSpeed = normalizeRemoteWheelSpeed(value, protocol);
             }
           })
         Row() {
           Text('25%').fontSize(11).fontColor(this.pal().text3).layoutWeight(1)
-          Text('400%').fontSize(11).fontColor(this.pal().text3)
+          Text(remoteWheelSpeedMax(protocol).toString() + '%').fontSize(11).fontColor(this.pal().text3)
         }.width('100%').margin({ top: -6 })
         Row({ space: 8 }) {
           ForEach(SPEED_PRESETS, (preset: number): void => {

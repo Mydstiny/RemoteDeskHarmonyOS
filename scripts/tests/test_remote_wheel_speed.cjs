@@ -41,6 +41,10 @@ check('a speed is snapped to the 25% grid between 25% and 400%, and labelled', (
   assert.equal(p.normalizeRemoteWheelSpeed(5), 25);
   assert.equal(p.normalizeRemoteWheelSpeed(NaN), 100);
   assert.equal(p.remoteWheelSpeedChoices().length, 16);
+  // VNC reaches 1000%: exactly the speed macOS/UltraVNC servers were tuned to before the calmer default.
+  assert.equal(p.normalizeRemoteWheelSpeed(1000, 'vnc'), 1000);
+  assert.equal(p.normalizeRemoteWheelSpeed(1000, 'rdp'), 400);
+  assert.equal(p.remoteWheelSpeedChoices('vnc').length, 40);
   assert.equal(p.remoteWheelSpeedLabel(100), '100%（默认）');
   assert.equal(p.remoteWheelSpeedKey('vnc'), 'vncWheelSpeed');
   const directions = { rdp: false, rustdesk: false, ssh: false, vnc: true, moonlight: false };
@@ -84,6 +88,10 @@ check('every session path applies the speed; RDP sends one notch per tick', () =
   const rd = read('pages/RemoteDesktop.ets');
   assert.equal((rd.match(/scaleRemoteWheelTicks\(/g) || []).length, 4, 'two-finger, physical, 2D touchpad x and y');
   assert.ok(rd.includes('for (let i = 0; i < count; i++) { this.loader.sendMouseWheel(this.sessionId, x, y, notch); }'));
+  // RDP at 100% keeps its feel: one notch per flush/event before the speed scales it.
+  assert.ok(rd.includes("const baseTicks: number = this.isRdpRemoteSession() ? (delta > 0 ? 1 : -1) : delta;"));
+  assert.ok(rd.includes("if (this.isRdpRemoteSession() && delta !== 0) { delta = delta > 0 ? 1 : -1; }"));
+  assert.ok(rd.includes("return normalizeRemoteWheelSpeed(this.vncWheelSpeed, 'vnc');"));
   assert.equal((rd.match(/this\.loader\.sendMouseWheel\(/g) || []).length, 2, 'all wheel sends go through sendWheelEvents');
   const ml = read('pages/MoonlightStreamPage.ets');
   assert.equal((ml.match(/scaleMoonlightWheelAmount\(/g) || []).length, 2);
@@ -97,8 +105,13 @@ check('设置 › 远程滚轮: protocol first, then direction and speed, each s
   const sheet = read('components/RemoteWheelDirectionSettingsSheet.ets');
   assert.ok(sheet.includes("if (this.selected === '') {\n            this.listPage()"));
   assert.ok(sheet.includes("Text('全部协议')"), 'a way back to the protocol list');
-  assert.ok(sheet.includes('Slider({ value: this.speed(protocol), min: REMOTE_WHEEL_SPEED_MIN'));
+  assert.ok(sheet.includes('Slider({ value: this.shownSpeed(protocol), min: REMOTE_WHEEL_SPEED_MIN'));
   assert.ok(/if \(!this\.onSaveSpeed\(protocol, next\)\) \{\n\s+this\.speeds = previous;/.test(sheet), 'a failed save shows the old speed');
+  // A drag only moves dragSpeed; the saved speeds stay put, so letting go always saves (it compared with itself before).
+  assert.ok(/if \(mode === SliderChangeMode\.End \|\| mode === SliderChangeMode\.Click\) \{\n\s+this\.dragSpeed = -1;\n\s+this\.commitSpeed\(protocol, value\);\n\s+\} else \{\n\s+this\.dragSpeed = normalizeRemoteWheelSpeed\(value, protocol\);/.test(sheet));
+  const commit = sheet.slice(sheet.indexOf('private commitSpeed('), sheet.indexOf('private resetProtocol('));
+  assert.ok(!commit.includes('dragSpeed'), 'commitSpeed compares with the saved speed only');
+  assert.ok(sheet.includes('max: remoteWheelSpeedMax(protocol)'));
   const page = read('pages/HostListPage.ets');
   assert.ok(page.includes("Text('远程滚轮').fontSize(AppTheme.fontSize.body)"));
   assert.ok(page.includes('onSaveSpeed: (protocol: RemoteWheelProtocol, speed: number): boolean =>'));
