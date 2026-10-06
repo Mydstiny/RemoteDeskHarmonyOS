@@ -188,10 +188,11 @@ export function settingsVncSecurityLabel(policy: string): string {
   return '可信网络可明文';
 }
 
-export function settingsVncScalingLabel(mode: string): string {
-  if (mode === 'integer') { return '整数倍'; }
-  if (mode === 'one_to_one') { return '1:1'; }
-  if (mode === 'pan') { return '平移'; }
+/** VNC 显示与画面 as its sheet names the choice (displayScaleMode, not the legacy scalingMode). */
+export function settingsVncDisplayScaleLabel(mode: string, customPercent: number): string {
+  if (mode === '100') { return '100%'; }
+  if (mode === 'integer') { return '整数倍率'; }
+  if (mode === 'custom') { return '自定义 ' + Math.round(customPercent).toString() + '%'; }
   return '适应窗口';
 }
 

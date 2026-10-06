@@ -70,7 +70,7 @@ const ENTRIES: SettingsSearchEntry[] = [
   entry(SETTINGS_SECTION_DISPLAY_INTERACTION, '关闭快捷退出', '返回 退出 误触 防误退'),
   entry(SETTINGS_SECTION_DISPLAY_INTERACTION, '会话侧栏与顶栏', '控制栏 工具栏 侧栏 顶栏 隐藏 显示', 'settings.controlBar'),
   entry(SETTINGS_SECTION_DISPLAY_INTERACTION, '触控板鼠标样式', '虚拟鼠标 光标 圆环 箭头 指针', '', 'touchDevice'),
-  entry(SETTINGS_SECTION_DISPLAY_INTERACTION, '握持手感知对齐', '左手 右手 按钮位置 单手'),
+  entry(SETTINGS_SECTION_DISPLAY_INTERACTION, '握持手感知对齐', '左手 右手 按钮位置 单手', '', 'touchDevice'),
   // 键盘
   entry(SETTINGS_SECTION_VIRTUAL_KEYBOARD, '系统输入法', '输入法 键盘 中文输入', 'settings.keyboard'),
   entry(SETTINGS_SECTION_VIRTUAL_KEYBOARD, '输入行为', '自动弹出 键盘 实体键盘', 'settings.keyboardBehavior'),

@@ -401,4 +401,33 @@ check('inline fields save once confirmed, and the RDP account format fits a phon
   assert.ok(page.includes("private rdpAuthChipWidth(): number { return this.breakpoint === 'sm' ? 52 : 58; }"));
 });
 
+check('batch B review: VNC scale words, phone-only rows, real Moonlight values, typing after Enter', () => {
+  const policy = loadTree('services/SettingsModernPolicy');
+  assert.equal(policy.settingsVncDisplayScaleLabel('fit', 100), '适应窗口');
+  assert.equal(policy.settingsVncDisplayScaleLabel('100', 100), '100%');
+  assert.equal(policy.settingsVncDisplayScaleLabel('integer', 100), '整数倍率');
+  assert.equal(policy.settingsVncDisplayScaleLabel('custom', 135), '自定义 135%');
+  const search = loadTree('services/SettingsSearchCatalog');
+  const grip = search.settingsSearchEntries().find((entry) => entry.title === '握持手感知对齐');
+  assert.equal(grip.requires, 'touchDevice');
+  const page = read('pages/HostListPage.ets');
+  const values = member(page, 'private settingsRowCurrentValue(label: string, _revision: number): string {');
+  const summary = member(page, 'private settingsSectionSummary(section: string, fallback: string, _revision: number): string {');
+  for (const body of [values, summary]) {
+    assert.ok(!body.includes('this.moonlightSettingsService.load()'), 'Moonlight is read through the snapshot');
+    assert.ok(body.includes('this.moonlightSnapshot(this.settingsValuesRevision)'));
+  }
+  assert.ok(values.includes('vnc.displayScaleMode, vnc.customScalePercent'));
+  assert.ok(member(page, 'private moonlightSnapshot(revision: number): MoonlightSettings | null {')
+    .includes('loaded.ok ? loaded.settings : null'));
+  assert.ok(member(page, '@Builder rdpDriveNameRow() {')
+    .includes('if (!this.rdpDriveNameEditing && v !== this.rdpDriveName) { this.rdpDriveNameEditing = true; }'));
+  const hopeless = member(page, 'private remoteDisplayScaleDraftHopeless(): boolean {');
+  assert.ok(hopeless.includes('return value < 50 && value * 10 > 300;'));
+  // 1 → 15 → 150 shows no warning; 31 and 400 do.
+  const isHopeless = (text) => !/^\d+$/.test(text) || Number(text) > 300 || (Number(text) < 50 && Number(text) * 10 > 300);
+  for (const prefix of ['1', '15', '150', '30', '300']) { assert.equal(isHopeless(prefix), false, prefix); }
+  for (const bad of ['31', '400', '1a']) { assert.equal(isHopeless(bad), true, bad); }
+});
+
 console.log('settings overhaul: ' + passed + ' checks passed');

@@ -171,6 +171,7 @@ import {
   MoonlightAddress,
   MoonlightHost,
   MoonlightHostType,
+  MoonlightSettings,
   MOONLIGHT_DEFAULT_HTTPS_PORT,
   moonlightAddressKey
 } from '../model/MoonlightModels';
@@ -220,7 +221,7 @@ import {
   settingsRustDeskQualityLabel,
   settingsSecondsLabel,
   settingsThemeLabel,
-  settingsVncScalingLabel,
+  settingsVncDisplayScaleLabel,
   settingsVncSecurityLabel,
   settingsVncTransportLabel
 } from '../services/SettingsModernPolicy';
@@ -5911,7 +5912,9 @@ struct HostListPage {
           settingsVncSecurityLabel(vnc.securityPolicy);
       }
       if (section === SETTINGS_SECTION_MOONLIGHT) {
-        const video = this.moonlightSettingsService.load().settings.video;
+        const moonlight: MoonlightSettings | null = this.moonlightSnapshot(this.settingsValuesRevision);
+        if (moonlight === null) { return fallback; }
+        const video = moonlight.video;
         return settingsMoonlightVideoLabel(video.resolutionMode, video.customWidth, video.customHeight, video.fps,
           video.bitrateKbps);
       }
@@ -14240,7 +14243,18 @@ struct HostListPage {
     return this.remoteDisplayScaleDraft.trim() !== '' && Number.isInteger(value) && value >= 50 && value <= 300;
   }
 
+  /** The typed text cannot become 50–300 by typing more digits (so 1 on the way to 150 shows no warning). */
+  private remoteDisplayScaleDraftHopeless(): boolean {
+    const text: string = this.remoteDisplayScaleDraft.trim();
+    if (text === '') { return false; }
+    if (!/^\d+$/.test(text)) { return true; }
+    const value: number = Number(text);
+    if (value > 300) { return true; }
+    return value < 50 && value * 10 > 300;
+  }
+
   /** Saves a typed custom scale once it is confirmed; an out-of-range value keeps the saved one and says so. */
+
   private commitRemoteDisplayScaleDraft(): void {
     if (!this.remoteDisplayScaleEditing) { return; }
     const valid: boolean = this.remoteDisplayScaleDraftValid();
@@ -17935,7 +17949,9 @@ struct HostListPage {
     .shadow({ radius: 12, color: 'rgba(0,0,0,0.035)', offsetY: 3 })
     .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
     .accessibilityGroup(true)
-    .accessibilityText(title + '，' + (this.settingsSectionExpanded(section) ? '已展开' : '已收起'))
+    .accessibilityText(title + '，' + (this.settingsModern() ?
+      this.settingsSectionSummary(section, subtitle, this.settingsValuesRevision) : subtitle) + '，' +
+      (this.settingsSectionExpanded(section) ? '已展开' : '已收起'))
     .onClick((): void => {
       const opening: boolean = !this.settingsSectionExpanded(section);
       this.toggleSettingsSection(section);
@@ -21429,6 +21445,26 @@ struct HostListPage {
       .maxLines(this.settingsModern() ? 2 : 1).textOverflow({ overflow: TextOverflow.Ellipsis }).margin({ top: 2 })
   }
 
+  private moonlightSnapshotRevision: number = -1;
+  private moonlightSnapshotValue: MoonlightSettings | null = null;
+
+  /**
+   * 全新视觉: Moonlight's saved settings for the header and rows, read once per settingsValuesRevision. null when
+   * they are not the user's (no account lease yet, a failed read): the rows then keep their descriptions.
+   */
+  private moonlightSnapshot(revision: number): MoonlightSettings | null {
+    if (revision !== this.moonlightSnapshotRevision) {
+      this.moonlightSnapshotRevision = revision;
+      try {
+        const loaded = this.moonlightSettingsService.load();
+        this.moonlightSnapshotValue = loaded.ok ? loaded.settings : null;
+      } catch (_error) {
+        this.moonlightSnapshotValue = null;
+      }
+    }
+    return this.moonlightSnapshotValue;
+  }
+
   /** 全新视觉: what a row that opens a sheet is set to now ('' when the page does not know). */
   private settingsRowCurrentValue(label: string, _revision: number): string {
     try {
@@ -21443,7 +21479,10 @@ struct HostListPage {
             settingsSecondsLabel(vnc.authTimeoutMs) + ' · 首帧 ' + settingsSecondsLabel(vnc.firstFrameTimeoutMs);
         }
         case '安全策略与 TLS': return settingsVncSecurityLabel(this.vncSettings.get().securityPolicy);
-        case '显示与画面': return settingsVncScalingLabel(this.vncSettings.get().scalingMode);
+        case '显示与画面': {
+          const vnc = this.vncSettings.get();
+          return settingsVncDisplayScaleLabel(vnc.displayScaleMode, vnc.customScalePercent);
+        }
         case '输入与光标': {
           const vnc = this.vncSettings.get();
           return settingsControlModeLabel(vnc.controlMode) + (vnc.viewOnly ? ' · 只读' : '');
@@ -21451,24 +21490,33 @@ struct HostListPage {
         case '性能监视看板': return this.vncSettings.get().showDiagnostics ? '连接时显示' : '不显示';
         case '剪贴板': return this.vncSettings.get().clipboardEnabled ? '文本剪贴板已开启' : '文本剪贴板已关闭';
         case '画面': {
-          const video = this.moonlightSettingsService.load().settings.video;
+          const moonlight: MoonlightSettings | null = this.moonlightSnapshot(this.settingsValuesRevision);
+          if (moonlight === null) { return ''; }
+          const video = moonlight.video;
           return settingsMoonlightVideoLabel(video.resolutionMode, video.customWidth, video.customHeight, video.fps,
             video.bitrateKbps) + (video.hdr ? ' · HDR' : '');
         }
         case '音频': {
-          const audio = this.moonlightSettingsService.load().settings.audio;
+          const moonlight: MoonlightSettings | null = this.moonlightSnapshot(this.settingsValuesRevision);
+          if (moonlight === null) { return ''; }
+          const audio = moonlight.audio;
           if (!audio.enabled) { return '已关闭'; }
           return (audio.channels === 'surround71' ? '7.1 声道' : audio.channels === 'surround51' ? '5.1 声道' : '立体声') +
             (audio.playOnHost ? ' · 主机同时播放' : '');
         }
         case '控制与手柄': {
-          const input = this.moonlightSettingsService.load().settings.input;
+          const moonlight: MoonlightSettings | null = this.moonlightSnapshot(this.settingsValuesRevision);
+          if (moonlight === null) { return ''; }
+          const input = moonlight.input;
           const mode: string = input.controlMode === 'keyboardMouse' ? '键鼠' :
             input.controlMode === 'trackpad' ? '触控板' : '自适应';
           return mode + (input.enableRumble ? ' · 手柄震动' : '');
         }
-        case '诊断':
-          return this.moonlightSettingsService.load().settings.diagnostics.showPerformanceHud ? '显示性能浮层' : '不显示性能浮层';
+        case '诊断': {
+          const moonlight: MoonlightSettings | null = this.moonlightSnapshot(this.settingsValuesRevision);
+          if (moonlight === null) { return ''; }
+          return moonlight.diagnostics.showPerformanceHud ? '显示性能浮层' : '不显示性能浮层';
+        }
         case '输入行为':
           return RemoteKeyboardSettingsService.getInstance().loadPreferences(getContext(this) as common.Context)
             .autoOpenOnRemoteClick ? '点按远端输入框时自动弹出键盘' : '手动打开键盘';
@@ -22228,13 +22276,17 @@ struct HostListPage {
               this.remoteDisplayScaleEditing = true;
             })
             .onChange((value: string): void => {
+              // Also after Enter while the field keeps focus: typing again starts a new draft.
+              if (!this.remoteDisplayScaleEditing && value !== this.remoteDisplayCustomScalePercent.toString()) {
+                this.remoteDisplayScaleEditing = true;
+              }
               if (this.remoteDisplayScaleEditing) { this.remoteDisplayScaleDraft = value; }
             })
             .onSubmit((): void => { this.commitRemoteDisplayScaleDraft(); })
             .onBlur((): void => { this.commitRemoteDisplayScaleDraft(); })
           Text('%').fontSize(12).fontColor(this.pal().text3)
         }.width('100%').padding({ left: 16, right: 16, bottom: 10 })
-        if (this.remoteDisplayScaleEditing && !this.remoteDisplayScaleDraftValid()) {
+        if (this.remoteDisplayScaleEditing && this.remoteDisplayScaleDraftHopeless()) {
           Text('请输入 50 到 300 之间的整数').fontSize(12).fontColor(this.pal().danger)
             .width('100%').padding({ left: 16, right: 16, bottom: 10 })
         }
@@ -22620,7 +22672,11 @@ struct HostListPage {
           this.rdpDriveNameDraft = this.rdpDriveName;
           this.rdpDriveNameEditing = true;
         })
-        .onChange((v: string): void => { if (this.rdpDriveNameEditing) { this.rdpDriveNameDraft = v; } })
+        .onChange((v: string): void => {
+          // Also after Enter while the field keeps focus: typing again starts a new draft (onFocus will not fire).
+          if (!this.rdpDriveNameEditing && v !== this.rdpDriveName) { this.rdpDriveNameEditing = true; }
+          if (this.rdpDriveNameEditing) { this.rdpDriveNameDraft = v; }
+        })
         .onSubmit((): void => { this.commitRdpDriveNameDraft(); })
         .onBlur((): void => { this.commitRdpDriveNameDraft(); })
     }.width('100%').height(this.settingsModern() ? 'auto' : 64)
