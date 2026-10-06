@@ -12,6 +12,7 @@ import { ResourceFabPicker } from '../ResourceFabPicker';
 import { QrCodeScanner } from '../../QrCodeScanner';
 import { appUiOnAccentText } from '../../../common/AppUiColorPolicy';
 import { normalizeTotpSecret, totpSecretProblem } from '../../../services/KeyVaultFormPolicy';
+import { beginKeyVaultExternalPicker, endKeyVaultExternalPicker } from '../../../services/KeyVaultPickerGuard';
 
 @Component
 export struct ModernKeyVaultAddFlow {
@@ -186,12 +187,12 @@ export struct ModernKeyVaultAddFlow {
   private async pickTotpFile(): Promise<void> {
     if (this.busy) { return; }
     this.busy = true; this.errorText = '';
-    AppStorage.setOrCreate('keyVaultExternalPickerActive', true);
+    beginKeyVaultExternalPicker();
     let result: TotpImportResult | null = null;
     try {
       result = await this.totpImporter.pickAndParse();
     } finally {
-      AppStorage.setOrCreate('keyVaultExternalPickerActive', false);
+      endKeyVaultExternalPicker();
       this.busy = false;
     }
     if (result === null) { return; }
@@ -200,9 +201,10 @@ export struct ModernKeyVaultAddFlow {
     const valid: TotpEntry[] = [];
     for (let i = 0; i < result.entries.length; i++) {
       const entry = result.entries[i];
-      const duplicate = existing.indexOf(normalizeTotpSecret(entry.secret)) >= 0 ||
-        valid.find((item: TotpEntry): boolean => normalizeTotpSecret(item.secret) === normalizeTotpSecret(entry.secret)) !== undefined;
-      if (!duplicate) { valid.push(entry); }
+      const secret: string = normalizeTotpSecret(entry.secret);
+      const duplicate = existing.indexOf(secret) >= 0 ||
+        valid.find((item: TotpEntry): boolean => normalizeTotpSecret(item.secret) === secret) !== undefined;
+      if (!duplicate && totpSecretProblem(secret, []) === '') { valid.push(entry); }
     }
     this.importEntries = result.entries; this.selectedImportIds = valid.map((entry: TotpEntry): string => entry.id);
     this.importFileName = result.fileName; this.importFormat = result.format; this.step = 'totp-file-preview';
@@ -216,8 +218,14 @@ export struct ModernKeyVaultAddFlow {
   private isExistingSecret(secret: string): boolean {
     return this.existingSecrets().indexOf(normalizeTotpSecret(secret)) >= 0;
   }
+  /** Why a file entry will not be imported, or '' when it can be. */
+  private importSkipReason(entry: TotpEntry): string {
+    if (this.isExistingSecret(entry.secret)) { return '已存在，将跳过'; }
+    if (totpSecretProblem(normalizeTotpSecret(entry.secret), []) !== '') { return '密钥格式无效，将跳过'; }
+    return '';
+  }
   private toggleImport(entry: TotpEntry): void {
-    if (this.isExistingSecret(entry.secret)) { return; }
+    if (this.importSkipReason(entry) !== '') { return; }
     if (this.isImportSelected(entry.id)) {
       this.selectedImportIds = this.selectedImportIds.filter((id: string): boolean => id !== entry.id);
     } else { this.selectedImportIds = this.selectedImportIds.concat([entry.id]); }
@@ -227,8 +235,9 @@ export struct ModernKeyVaultAddFlow {
     const pending: TotpEntry[] = [];
     for (let i = 0; i < this.importEntries.length; i++) {
       const source = this.importEntries[i];
-      if (!this.isImportSelected(source.id) || this.isExistingSecret(source.secret)) { continue; }
+      if (!this.isImportSelected(source.id) || this.importSkipReason(source) !== '') { continue; }
       const entry = TotpEntry.fromJSON(source.toJSON()); entry.id = TotpEntry.generateId();
+      entry.secret = normalizeTotpSecret(entry.secret);
       pending.push(entry);
     }
     if (pending.length === 0) { this.errorText = '没有可保存的账户'; return; }
@@ -420,10 +429,10 @@ export struct ModernKeyVaultAddFlow {
         ForEach(this.importEntries, (entry: TotpEntry) => {
           Row() {
             SymbolGlyph(this.isImportSelected(entry.id) ? $r('sys.symbol.checkmark_circle_fill') : $r('sys.symbol.circle'))
-              .fontSize(20).fontColor([this.isExistingSecret(entry.secret) ? this.pal().text3 : this.accentColor])
+              .fontSize(20).fontColor([this.importSkipReason(entry) !== '' ? this.pal().text3 : this.accentColor])
             Column() {
               Text(entry.issuer).fontSize(14).fontColor(this.pal().text).maxLines(1)
-              Text(this.isExistingSecret(entry.secret) ? '已存在，将跳过' : entry.account)
+              Text(this.importSkipReason(entry) !== '' ? this.importSkipReason(entry) : entry.account)
                 .fontSize(11).fontColor(this.pal().text3).margin({ top: 3 })
             }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 10 })
           }.width('100%').height(58).padding({ left: 12, right: 12 }).borderRadius(11)

@@ -27,6 +27,7 @@ import { SshKeyDataSource, TotpEntryDataSource } from '../datasources/DataSource
 import { resolveFabAddStyle } from '../services/FabAddStylePolicy';
 import { ResourceFabPicker } from '../components/resourceadd/ResourceFabPicker';
 import { ModernKeyVaultAddFlow } from '../components/resourceadd/modern/ModernKeyVaultAddFlow';
+import { beginKeyVaultExternalPicker, endKeyVaultExternalPicker, keyVaultExternalPickerOpen } from '../services/KeyVaultPickerGuard';
 import { appUiOnAccentText } from '../common/AppUiColorPolicy';
 import { TotpImportResult, TotpImportService } from '../services/TotpImportService';
 import {
@@ -140,8 +141,8 @@ export struct KeyVaultPage {
   }
 
   private onAppBackground(): void {
-    // A scan or a file picker sends the app to the background too: those keep the page unlocked.
-    if (this.appInBackground && AppStorage.get<boolean>('keyVaultExternalPickerActive') !== true) {
+    // A scan or a file picker sends the app to the background too: those keep the page unlocked (for a while).
+    if (this.appInBackground && !keyVaultExternalPickerOpen()) {
       this.totpUnlocked = false;
     }
   }
@@ -640,8 +641,8 @@ export struct KeyVaultPage {
           key.fingerprint = '';
           key.privateKeyEncrypted = true;
           key.formatVersion = 1;
-          // Encrypted: the type is read from a PEM header; an OpenSSH key gets its type once its passphrase is
-          // entered in 密钥管理 (that save inspects it again).
+          // Encrypted PEM: the type is read from its header. An encrypted PKCS#8 key hides it until the passphrase
+          // is entered in 密钥管理 (that save inspects it again); the cards show 类型待识别 until then.
           if (key.privateKey.indexOf('BEGIN RSA PRIVATE KEY') >= 0) { key.keyType = SshKeyType.RSA; }
           else if (key.privateKey.indexOf('BEGIN EC PRIVATE KEY') >= 0) { key.keyType = SshKeyType.ECDSA; }
         } else {
@@ -737,12 +738,12 @@ export struct KeyVaultPage {
 
   // TOTP 导入：与全新添加流程同一个解析器（ATSF、TXT、JSON、CSV，按 UTF-8 读取）
   private async importTotpFile(): Promise<void> {
-    AppStorage.setOrCreate('keyVaultExternalPickerActive', true);
+    beginKeyVaultExternalPicker();
     let result: TotpImportResult | null = null;
     try {
       result = await this.totpImporter.pickAndParse();
     } finally {
-      AppStorage.setOrCreate('keyVaultExternalPickerActive', false);
+      endKeyVaultExternalPicker();
     }
     if (result === null) { return; }
     if (!result.ok) {

@@ -7,7 +7,7 @@ import { promptAction } from '@kit.ArkUI';
 import { pasteboard } from '@kit.BasicServicesKit';
 import { showLockGate, lockGateErrorMessage } from './LockGate';
 import { appUiOnAccentText } from '../common/AppUiColorPolicy';
-import { sshPublicKeyMissingHint } from '../services/KeyVaultFormPolicy';
+import { sshKeyTypePending, sshPublicKeyMissingHint } from '../services/KeyVaultFormPolicy';
 
 @Component
 export struct SshKeyCard {
@@ -43,6 +43,10 @@ export struct SshKeyCard {
     const prefix: string = fp.substring(0, 10);
     const suffix: string = fp.substring(fp.length - 8);
     return prefix + '…' + suffix;
+  }
+
+  private typePending(): boolean {
+    return sshKeyTypePending(this.sshKey.privateKey, this.sshKey.publicKey);
   }
 
   /** A key saved with a passphrase before its public key could be derived has none to copy. */
@@ -144,7 +148,7 @@ export struct SshKeyCard {
           .onChange((v: boolean) => { if (this.onCheckChange) { this.onCheckChange(v); } })
       }
       // 密钥类型图标 (sm: 42, md+: 44)
-      Text(this.typeLabel(this.sshKey.keyType))
+      Text(this.typePending() ? 'KEY' : this.typeLabel(this.sshKey.keyType))
         .fontSize(this.breakpoint === 'sm' ? 16 : 18).fontWeight(FontWeight.Bold).fontColor(appUiOnAccentText(this.accentColor))
         .width(this.breakpoint === 'sm' ? 42 : 44)
         .height(this.breakpoint === 'sm' ? 42 : 44)
@@ -183,7 +187,7 @@ export struct SshKeyCard {
 
         // 第三行: 附加信息
         Row() {
-          Text(SshKey.typeLabel(this.sshKey.keyType))
+          Text(this.typePending() ? '类型待识别' : SshKey.typeLabel(this.sshKey.keyType))
             .fontSize(10).fontWeight(FontWeight.Medium)
             .fontColor(this.accentColor)
             .padding({ left: 4, right: 4, top: 1, bottom: 1 })

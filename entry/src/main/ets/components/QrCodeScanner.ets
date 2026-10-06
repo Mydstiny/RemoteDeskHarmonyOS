@@ -8,6 +8,7 @@ import { appUiOnAccentText } from '../common/AppUiColorPolicy';
 import { TotpEngine } from '../services/TotpEngine';
 import { Palette, buildDark, buildLight } from '../common/Theme';
 import { scanBarcode, scanCore } from '@kit.ScanKit';
+import { beginKeyVaultExternalPicker, endKeyVaultExternalPicker } from '../services/KeyVaultPickerGuard';
 
 @Component
 export struct QrCodeScanner {
@@ -27,7 +28,7 @@ export struct QrCodeScanner {
 
   private async startScan(): Promise<void> {
     this.status = '正在启动扫码...';
-    AppStorage.setOrCreate('keyVaultExternalPickerActive', true);
+    beginKeyVaultExternalPicker();
     try {
       const options: scanBarcode.ScanOptions = {
         scanTypes: [scanCore.ScanType.QR_CODE],
@@ -46,7 +47,7 @@ export struct QrCodeScanner {
     } catch (err) {
       this.status = '没有完成扫码（已取消，或这台设备不能扫码）。也可以在下面粘贴 otpauth 配置';
     } finally {
-      AppStorage.setOrCreate('keyVaultExternalPickerActive', false);
+      endKeyVaultExternalPicker();
     }
   }
 

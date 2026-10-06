@@ -15,7 +15,7 @@ import { showLockGate, lockGateErrorMessage } from './LockGate';
 import { ExtensionLoader } from '../services/ExtensionLoader';
 import { GeneratedSshKeyPair, SshPrivateKeyInfo } from '../types/rdpnapi';
 import { appUiOnAccentText } from '../common/AppUiColorPolicy';
-import { sshPublicKeyMissingHint } from '../services/KeyVaultFormPolicy';
+import { sshKeyTypePending, sshPublicKeyMissingHint } from '../services/KeyVaultFormPolicy';
 
 @Component
 export struct SshKeyManagerSheet {
@@ -294,7 +294,8 @@ export struct SshKeyManagerSheet {
 
           // 类型 + 指纹
           Row() {
-            Text(this.sshKey.isLegacyFormat() ? '旧格式' : SshKey.typeLabel(this.sshKey.keyType))
+            Text(this.sshKey.isLegacyFormat() ? '旧格式' :
+              (sshKeyTypePending(this.sshKey.privateKey, this.sshKey.publicKey) ? '类型待识别' : SshKey.typeLabel(this.sshKey.keyType)))
               .fontSize(12).fontWeight(FontWeight.Medium)
               .fontColor(this.sshKey.isLegacyFormat() ? '#FFFFFF' : appUiOnAccentText(this.accentColor))
               .padding({ left: 10, right: 10, top: 4, bottom: 4 })

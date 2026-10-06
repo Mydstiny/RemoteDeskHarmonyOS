@@ -214,11 +214,11 @@ check('classic forms: multi-line private keys, detected types, busy saves; PC of
 
 check('batch 2 review: scans and imports keep the 2FA page unlocked; backups keep algorithm and names', () => {
   const page = read('pages/KeyVaultPage.ets');
-  assert.ok(member(page, 'private onAppBackground(): void {').includes("AppStorage.get<boolean>('keyVaultExternalPickerActive') !== true"));
+  assert.ok(member(page, 'private onAppBackground(): void {').includes('!keyVaultExternalPickerOpen()'));
   for (const file of ['components/QrCodeScanner.ets', 'components/resourceadd/modern/ModernKeyVaultAddFlow.ets', 'pages/KeyVaultPage.ets']) {
     const text = read(file);
-    assert.ok(text.includes("AppStorage.setOrCreate('keyVaultExternalPickerActive', true);") &&
-      text.includes("AppStorage.setOrCreate('keyVaultExternalPickerActive', false);"), file);
+    assert.ok(text.includes('beginKeyVaultExternalPicker();') && text.includes('endKeyVaultExternalPicker();'), file);
+    assert.ok(!text.includes('keyVaultExternalPickerActive'), file);
   }
   const parser = read('services/AtsfTotpImportParser.ets');
   assert.ok(parser.includes('entry.algorithm = algorithmValue as TotpAlgorithm;') && parser.includes('entry.displayName ='));
@@ -228,6 +228,24 @@ check('batch 2 review: scans and imports keep the 2FA page unlocked; backups kee
   const install = read('components/SshKeyInstallSheet.ets');
   assert.ok(install.includes("Button('重新安装并验证')") && install.includes("'已取消验证；公钥已写入这台主机'"));
   assert.ok(install.includes('.enabled(!this.targetEncrypted())'));
+});
+
+check('batch 2 review 2: a picker keeps 2FA open only for a while; an encrypted PKCS#8 key has no guessed type', () => {
+  const policy = load('services/KeyVaultFormPolicy');
+  assert.equal(policy.keyVaultPickerKeepsUnlocked(0, 1000), false, 'no picker open');
+  assert.equal(policy.keyVaultPickerKeepsUnlocked(1000, 1000 + policy.KEY_VAULT_PICKER_GRACE_MS), true);
+  assert.equal(policy.keyVaultPickerKeepsUnlocked(1000, 1001 + policy.KEY_VAULT_PICKER_GRACE_MS), false, 'left open too long');
+  assert.equal(policy.keyVaultPickerKeepsUnlocked(5000, 1000), false, 'clock went back');
+  assert.equal(policy.sshKeyTypePending('BEGIN ENCRYPTED PRIVATE KEY (header text only)', ''), true);
+  assert.equal(policy.sshKeyTypePending('BEGIN ENCRYPTED PRIVATE KEY (header text only)', 'ssh-rsa AAAA'), false);
+  assert.equal(policy.sshKeyTypePending('BEGIN OPENSSH PRIVATE KEY (header text only)', ''), false);
+  const guard = read('services/KeyVaultPickerGuard.ets');
+  assert.ok(guard.includes("AppStorage.setOrCreate<boolean>('totpUnlocked', false);"), 'a long trip relocks on return');
+  assert.ok(read('components/SshKeyCard.ets').includes("this.typePending() ? '类型待识别' :"));
+  assert.ok(read('components/SshKeyManagerSheet.ets').includes("? '类型待识别' :"));
+  const modern = read('components/resourceadd/modern/ModernKeyVaultAddFlow.ets');
+  assert.ok(member(modern, 'private saveImportedTotp(): void {').includes('entry.secret = normalizeTotpSecret(entry.secret);'));
+  assert.ok(modern.includes("'密钥格式无效，将跳过'"));
 });
 
 console.log('three screens: ' + passed + ' checks passed');

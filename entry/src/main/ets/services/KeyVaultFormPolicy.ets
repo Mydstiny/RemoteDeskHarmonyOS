@@ -28,6 +28,22 @@ export function sshPublicKeyMissingHint(): string {
   return '这把密钥设有口令，还没有生成公钥。请在「密钥管理 → 私钥内容」里输入口令后保存。';
 }
 
+/**
+ * An encrypted PKCS#8 key (BEGIN ENCRYPTED PRIVATE KEY) hides its algorithm until the passphrase is given in 密钥管理;
+ * until then the cards do not guess a type.
+ */
+export function sshKeyTypePending(privateKey: string, publicKey: string): boolean {
+  return publicKey === '' && privateKey.indexOf('BEGIN ENCRYPTED PRIVATE KEY') >= 0;
+}
+
+/** How long an open file picker or the scanner explains the app being in the background (the 2FA page stays open). */
+export const KEY_VAULT_PICKER_GRACE_MS: number = 60 * 1000;
+
+/** Whether a picker opened at `since` still keeps the 2FA page unlocked at `now` (0 = no picker open). */
+export function keyVaultPickerKeepsUnlocked(since: number, now: number): boolean {
+  return since > 0 && now >= since && now - since <= KEY_VAULT_PICKER_GRACE_MS;
+}
+
 /** Batch delete wording, with the locked keys called out. */
 export function keyVaultBatchDeleteMessage(count: number, lockedCount: number, ssh: boolean): string {
   const noun: string = ssh ? '把 SSH 密钥' : '个 2FA 账户';
