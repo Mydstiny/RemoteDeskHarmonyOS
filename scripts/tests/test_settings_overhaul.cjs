@@ -603,6 +603,9 @@ check('batch D review round 2: any resolution choice or slider drag ends typing;
     routed.includes('MoonlightSettingsSurface({ closeRequest: this.closeRequest })'));
   assert.ok(page.includes("@Prop @Watch('onCloseRequest') closeRequest: number = 0;"));
   assert.ok(member(page, 'private onCloseRequest(): void {').includes('this.close();'));
+  const close = member(page, 'private close(): void {');
+  assert.ok(close.includes('if (this.closePromptVisible) { return; }') &&
+    close.includes('.catch((_error: Error): void => {'), 'one prompt at a time, and a dismissed prompt is handled');
 
   const vnc = read('components/VncSettingsSheet.ets');
   const gateway = member(vnc, '@Builder private defaultGatewayChoices() {');

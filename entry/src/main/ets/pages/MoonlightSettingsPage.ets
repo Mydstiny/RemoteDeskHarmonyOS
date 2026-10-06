@@ -121,6 +121,8 @@ export struct MoonlightSettingsSurface {
   private editingLease: AccountSessionLease | null = null;
   private surfaceActive: boolean = false;
   private keyboardTargetPromptVisible: boolean = false;
+  /** One 放弃未保存的 Moonlight 设置？ at a time, even when back is pressed twice quickly. */
+  private closePromptVisible: boolean = false;
   onClose: () => void = (): void => {};
   onDirtyChanged: (dirty: boolean) => void = (_dirty: boolean): void => {};
   /** Bumped by the routed page's system back gesture; closes like the back button. */
@@ -634,6 +636,8 @@ export struct MoonlightSettingsSurface {
       return;
     }
     if (!this.unsaved()) { router.back(); return; }
+    if (this.closePromptVisible) { return; }
+    this.closePromptVisible = true;
     promptAction.showDialog({
       title: '放弃未保存的 Moonlight 设置？',
       message: '当前修改只在本页草稿中，尚未写入本地记录。',
@@ -642,8 +646,11 @@ export struct MoonlightSettingsSurface {
         { text: '放弃修改', color: this.pal().danger }
       ]
     }).then((value: Object): void => {
+      this.closePromptVisible = false;
       const decision: Record<string, number> = value as Record<string, number>;
       if (decision['index'] === 1) { router.back(); }
+    }).catch((_error: Error): void => {
+      this.closePromptVisible = false;
     });
   }
 
