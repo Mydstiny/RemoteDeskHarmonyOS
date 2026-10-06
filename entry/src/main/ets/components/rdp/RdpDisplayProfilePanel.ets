@@ -2,6 +2,8 @@ import { display } from '@kit.ArkUI';
 import { appUiOnAccentText } from '../../common/AppUiColorPolicy';
 import { Palette, buildDark, buildLight } from '../../common/Theme';
 import { ProBadge } from '../ProBadge';
+import { AppSheetHeader } from '../AppSheetHeader';
+import { settingsVisualIsModern } from '../../services/SettingsVisualStylePolicy';
 import {
   RemoteResolutionPreset,
   rdpResolutionLabel,
@@ -53,6 +55,8 @@ export struct RdpDisplayProfilePanel {
   @Prop showClose: boolean = false;
   @Prop viewportHeight: number = 0;
   onClose: () => void = (): void => {};
+  /** 设置 → 个性化 → 全新视觉: the shared sheet header when opened from settings (not in a live session). */
+  @StorageProp('settingsVisualStyle') visualStyle: string = 'classic';
   @StorageProp('rdpDesktopResolutionId') @Watch('onResolutionChange') resolutionId: string = 'auto';
   @StorageProp('rdpCustomWidth') @Watch('onCustomChange') customWidth: number = 1920;
   @StorageProp('rdpCustomHeight') @Watch('onCustomChange') customHeight: number = 1080;
@@ -308,16 +312,21 @@ export struct RdpDisplayProfilePanel {
   build() {
     Scroll() {
       Column({ space: 14 }) {
-        Row({ space: 8 }) {
-          Text('远端显示方案').fontSize(20).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
-          ProBadge()
-          if (this.showClose) {
-            Blank()
-            SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor([this.pal().text2])
-              .width(36).height(36).accessibilityText('关闭')
-              .onClick((): void => { this.onClose(); })
-          }
-        }.width('100%')
+        if (this.showClose && !this.forceDark && settingsVisualIsModern(this.visualStyle)) {
+          AppSheetHeader({ title: '远端显示方案', subtitle: this.applyHint, showProBadge: true, horizontalPadding: 0,
+            whiteOnAccent: true, onClose: (): void => { this.onClose(); } })
+        } else {
+          Row({ space: 8 }) {
+            Text('远端显示方案').fontSize(20).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
+            ProBadge()
+            if (this.showClose) {
+              Blank()
+              SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor([this.pal().text2])
+                .width(36).height(36).accessibilityText('关闭')
+                .onClick((): void => { this.onClose(); })
+            }
+          }.width('100%')
+        }
         this.preview()
         this.sizeSection()
         this.scaleSection()

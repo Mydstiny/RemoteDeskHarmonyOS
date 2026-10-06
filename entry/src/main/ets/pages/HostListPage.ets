@@ -204,6 +204,7 @@ import {
   settingsVisualIsModern
 } from '../services/SettingsVisualStylePolicy';
 import { RemoteKeyboardSettingsService } from '../services/RemoteKeyboardSettingsService';
+import { AppSheetHeader } from '../components/AppSheetHeader';
 import {
   SettingsSearchEntry,
   settingsSearchEntries,
@@ -3015,6 +3016,8 @@ struct HostListPage {
     this.openPendingProOrder();
     this.openSharedToAi();
     this.takeSessionAi();
+    // 全新视觉 reads some values from services (VNC, Moonlight); read them again whenever the page comes back.
+    this.settingsValuesRevision++;
     this.cloudConnectionAvailable =
       CloudStore.getInstance().isCloudAvailable();
     this.refreshMoonlightDirectory();
@@ -14254,7 +14257,6 @@ struct HostListPage {
   }
 
   /** Saves a typed custom scale once it is confirmed; an out-of-range value keeps the saved one and says so. */
-
   private commitRemoteDisplayScaleDraft(): void {
     if (!this.remoteDisplayScaleEditing) { return; }
     const valid: boolean = this.remoteDisplayScaleDraftValid();
@@ -15069,6 +15071,7 @@ struct HostListPage {
     .borderRadius(12).margin({ left: 12, right: 12, bottom: 16 })
     .onClick(() => {
       this.showSettingsPanel = false;
+      this.settingsValuesRevision++;
       this.openSheetSafely((): void => { this.showSettingsPanel = true; });
     })
   }
@@ -20952,13 +20955,18 @@ struct HostListPage {
 
   @Builder sshHostKeyManagerSheet() {
     Column() {
-      Row() {
-        Text('SSH 主机指纹').fontSize(20).fontWeight(FontWeight.Bold)
-          .fontColor(this.pal().text).fontFamily(this.font())
-        Blank()
-        SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor([this.pal().text2])
-          .width(36).height(36).onClick((): void => { this.closeSettingsLeafSheetByUser(); })
-      }.width('100%').padding({ left: 24, right: 20, top: 20 }).margin({ bottom: 6 })
+      if (this.settingsModern()) {
+        AppSheetHeader({ title: 'SSH 主机指纹', subtitle: '已信任的服务器指纹；移除后下次连接会重新确认', horizontalPadding: 24, whiteOnAccent: true,
+          onClose: (): void => { this.closeSettingsLeafSheetByUser(); } })
+      } else {
+        Row() {
+          Text('SSH 主机指纹').fontSize(20).fontWeight(FontWeight.Bold)
+            .fontColor(this.pal().text).fontFamily(this.font())
+          Blank()
+          SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor([this.pal().text2])
+            .width(36).height(36).onClick((): void => { this.closeSettingsLeafSheetByUser(); })
+        }.width('100%').padding({ left: 24, right: 20, top: 20 }).margin({ bottom: 6 })
+      }
 
       if (this.sshTrustedHostsView.length === 0) {
         Column() {
@@ -21030,13 +21038,18 @@ struct HostListPage {
 
   @Builder rdpCertificateManagerSheet() {
     Column() {
-      Row() {
-        Text('RDP 证书信任').fontSize(20).fontWeight(FontWeight.Bold)
-          .fontColor(this.pal().text).fontFamily(this.font())
-        Blank()
-        SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor([this.pal().text2])
-          .width(36).height(36).onClick((): void => { this.closeSettingsLeafSheetByUser(); })
-      }.width('100%').padding({ left: 24, right: 20, top: 20 }).margin({ bottom: 6 })
+      if (this.settingsModern()) {
+        AppSheetHeader({ title: 'RDP 证书信任', subtitle: '已信任的 Windows 证书；移除后下次连接会重新确认', horizontalPadding: 24, whiteOnAccent: true,
+          onClose: (): void => { this.closeSettingsLeafSheetByUser(); } })
+      } else {
+        Row() {
+          Text('RDP 证书信任').fontSize(20).fontWeight(FontWeight.Bold)
+            .fontColor(this.pal().text).fontFamily(this.font())
+          Blank()
+          SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor([this.pal().text2])
+            .width(36).height(36).onClick((): void => { this.closeSettingsLeafSheetByUser(); })
+        }.width('100%').padding({ left: 24, right: 20, top: 20 }).margin({ bottom: 6 })
+      }
 
       if (this.rdpTrustedHostsView.length === 0) {
         Column() {
@@ -21129,9 +21142,16 @@ struct HostListPage {
 
   @Builder cryptoSheet() {
     Column() {
-      Text(this.cryptoMode === 0 ? '启用端到端加密' : (this.cryptoMode === 1 ? '解锁加密' : '关闭端到端加密'))
-        .fontSize(19).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
-        .margin({ top: 24, bottom: 16 }).fontFamily(this.font())
+      if (this.settingsModern()) {
+        AppSheetHeader({ title: this.cryptoMode === 0 ? '启用端到端加密' : (this.cryptoMode === 1 ? '解锁加密' : '关闭端到端加密'),
+          horizontalPadding: 0, whiteOnAccent: true, onClose: (): void => {
+            this.dismissSettingsLeafIfNeeded((): void => { this.closeSettingsLeafSheetByUser(); });
+          } }).margin({ top: 8, bottom: 8 })
+      } else {
+        Text(this.cryptoMode === 0 ? '启用端到端加密' : (this.cryptoMode === 1 ? '解锁加密' : '关闭端到端加密'))
+          .fontSize(19).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
+          .margin({ top: 24, bottom: 16 }).fontFamily(this.font())
+      }
 
       // 说明文字
       Column() {
@@ -21247,7 +21267,9 @@ struct HostListPage {
     .padding({ left: 24, right: 24, top: 8, bottom: 40 })
     .borderRadius(this.breakpoint === 'sm' ? { topLeft: 20, topRight: 20, bottomLeft: 0, bottomRight: 0 } : 20)
     .backgroundColor(this.pal().sheetBg).backgroundBlurStyle(BlurStyle.Regular)
-    .shadow({ radius: this.breakpoint === 'sm' ? 0 : 24, color: this.breakpoint === 'sm' ? 'rgba(0,0,0,0)' : 'rgba(0,0,0,0.12)', offsetY: this.breakpoint === 'sm' ? 0 : 6 })
+    .shadow({ radius: this.breakpoint === 'sm' || this.settingsModern() ? 0 : 24,
+      color: this.breakpoint === 'sm' || this.settingsModern() ? 'rgba(0,0,0,0)' : 'rgba(0,0,0,0.12)',
+      offsetY: this.breakpoint === 'sm' || this.settingsModern() ? 0 : 6 })
     .border(this.breakpoint === 'sm'
       ? { width: 0, color: Color.Transparent, style: BorderStyle.Solid }
       : { width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
@@ -22950,7 +22972,7 @@ struct HostListPage {
   }
 
   @Builder colorPickerSheet() {
-    ColorPickerSheet()
+    ColorPickerSheet({ onClose: (): void => { this.closeSettingsLeafSheetByUser(); } })
   }
 
   // ==================== Sheet builder ====================
@@ -23177,14 +23199,19 @@ struct HostListPage {
 
   @Builder rustDeskAuthTrustManagerSheet() {
     Column() {
-      Row() {
-        Column() {
-          Text('RustDesk 认证信任').fontSize(20).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
-          Text('管理各主机默认认证方式；密码内容不会在此显示').fontSize(11).fontColor(this.pal().text3)
-            .margin({ top: 3 })
-        }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-        Text('完成').fontSize(13).fontColor(this.accentColor).onClick((): void => { this.closeSettingsLeafSheetByUser(); })
-      }.width('100%').padding({ left: 22, right: 22, top: 22 }).margin({ bottom: 14 })
+      if (this.settingsModern()) {
+        AppSheetHeader({ title: 'RustDesk 认证信任', subtitle: '管理各主机默认认证方式；密码内容不会在此显示', horizontalPadding: 22, whiteOnAccent: true,
+          onClose: (): void => { this.closeSettingsLeafSheetByUser(); } })
+      } else {
+        Row() {
+          Column() {
+            Text('RustDesk 认证信任').fontSize(20).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
+            Text('管理各主机默认认证方式；密码内容不会在此显示').fontSize(11).fontColor(this.pal().text3)
+              .margin({ top: 3 })
+          }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+          Text('完成').fontSize(13).fontColor(this.accentColor).onClick((): void => { this.closeSettingsLeafSheetByUser(); })
+        }.width('100%').padding({ left: 22, right: 22, top: 22 }).margin({ bottom: 14 })
+      }
       if (this.rustDeskHosts().length === 0) {
         Text('暂无 RustDesk 主机').fontSize(13).fontColor(this.pal().text3)
           .width('100%').textAlign(TextAlign.Center).padding(32)
@@ -23783,7 +23810,9 @@ struct HostListPage {
     .borderRadius(this.breakpoint === 'sm' ? 0 : 20)
     .backgroundColor(this.pal().sheetBg)
     .backgroundBlurStyle(BlurStyle.Regular)
-    .shadow({ radius: this.breakpoint === 'sm' ? 0 : 24, color: this.breakpoint === 'sm' ? 'rgba(0,0,0,0)' : 'rgba(0,0,0,0.12)', offsetY: this.breakpoint === 'sm' ? 0 : 6 })
+    .shadow({ radius: this.breakpoint === 'sm' || this.settingsModern() ? 0 : 24,
+      color: this.breakpoint === 'sm' || this.settingsModern() ? 'rgba(0,0,0,0)' : 'rgba(0,0,0,0.12)',
+      offsetY: this.breakpoint === 'sm' || this.settingsModern() ? 0 : 6 })
     .border(this.breakpoint === 'sm'
       ? { width: 0, color: Color.Transparent, style: BorderStyle.Solid }
       : { width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
@@ -24001,13 +24030,18 @@ struct HostListPage {
 
   @Builder rdpCredentialSheet() {
     Column() {
-      Row() {
-        Text('Windows 凭据').fontSize(19).fontWeight(FontWeight.Bold)
-          .fontColor(this.pal().text).fontFamily(this.font())
-        Blank()
-        Text('完成').fontSize(13).fontColor(this.accentColor).fontWeight(FontWeight.Medium)
-          .fontFamily(this.font()).onClick(() => { this.closeSettingsLeafSheetByUser(); })
-      }.width('100%').padding({ left: 24, right: 24, top: 22 }).margin({ bottom: 14 })
+      if (this.settingsModern()) {
+        AppSheetHeader({ title: 'Windows 凭据', subtitle: this.rdpCredentials.length > 0 ? '已保存 ' + this.rdpCredentials.length + ' 个账户，可在主机里直接选用' : '保存后可在 RDP 主机里直接选用', horizontalPadding: 24, whiteOnAccent: true,
+          onClose: (): void => { this.closeSettingsLeafSheetByUser(); } })
+      } else {
+        Row() {
+          Text('Windows 凭据').fontSize(19).fontWeight(FontWeight.Bold)
+            .fontColor(this.pal().text).fontFamily(this.font())
+          Blank()
+          Text('完成').fontSize(13).fontColor(this.accentColor).fontWeight(FontWeight.Medium)
+            .fontFamily(this.font()).onClick(() => { this.closeSettingsLeafSheetByUser(); })
+        }.width('100%').padding({ left: 24, right: 24, top: 22 }).margin({ bottom: 14 })
+      }
 
       if (this.rdpCredentials.length === 0) {
         Text('还没有保存的 Windows 登录凭据。可以添加邮箱账号、DOMAIN\\user 或本地用户名。')
@@ -24061,10 +24095,10 @@ struct HostListPage {
     .width('100%')
     .backgroundColor(this.pal().sheetBg)
     .backgroundBlurStyle(BlurStyle.Regular)
-    .shadow(this.breakpoint === 'sm'
+    .shadow(this.breakpoint === 'sm' || this.settingsModern()
       ? { radius: 0, color: 'rgba(0,0,0,0)', offsetY: 0 } as ShadowOptions
       : { radius: 24, color: 'rgba(0,0,0,0.12)', offsetY: 6 } as ShadowOptions)
-    .border(this.breakpoint === 'sm'
+    .border(this.breakpoint === 'sm' || this.settingsModern()
       ? { width: 0, color: Color.Transparent, style: BorderStyle.Solid }
       : { width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
     .borderRadius(this.breakpoint === 'sm' ? { topLeft: 20, topRight: 20, bottomLeft: 0, bottomRight: 0 } : 20)
@@ -24073,23 +24107,19 @@ struct HostListPage {
 
   @Builder rdpCredentialEditorSheet() {
     Column() {
-      Row() {
-        Text(this.rdpCredEditId === '' ? '添加凭据' : '编辑凭据')
-          .fontSize(19).fontWeight(FontWeight.Bold).fontColor(this.pal().text).fontFamily(this.font())
-        Blank()
-        Text('取消').fontSize(13).fontColor(this.pal().text2).fontWeight(FontWeight.Medium)
-          .fontFamily(this.font()).onClick((): void => {
-            this.dismissSettingsLeafIfNeeded((): void => {
-              const backToManager: boolean = this.rdpCredentialEditorReturnToManager;
-              this.rdpCredentialEditorReturnToManager = false;
-              if (backToManager) {
-                this.openSettingsLeafSheet(SETTINGS_SHEET_RDP_CREDENTIALS);
-              } else {
-                this.closeSettingsLeafSheetByUser();
-              }
-            });
-          })
-      }.width('100%').padding({ left: 24, right: 24, top: 22 }).margin({ bottom: 14 })
+      if (this.settingsModern()) {
+        AppSheetHeader({ title: this.rdpCredEditId === '' ? '添加凭据' : '编辑凭据',
+          subtitle: '用户名可以是邮箱、DOMAIN\\user 或本地用户名', closeLabel: '取消', whiteOnAccent: true,
+          onClose: (): void => { this.cancelRdpCredentialEditor(); } })
+      } else {
+        Row() {
+          Text(this.rdpCredEditId === '' ? '添加凭据' : '编辑凭据')
+            .fontSize(19).fontWeight(FontWeight.Bold).fontColor(this.pal().text).fontFamily(this.font())
+          Blank()
+          Text('取消').fontSize(13).fontColor(this.pal().text2).fontWeight(FontWeight.Medium)
+            .fontFamily(this.font()).onClick((): void => { this.cancelRdpCredentialEditor(); })
+        }.width('100%').padding({ left: 24, right: 24, top: 22 }).margin({ bottom: 14 })
+      }
 
       Column() {
         this.rdpCredentialFieldRow('名称', '例如：个人 Microsoft 账户', this.rdpCredLabel,
@@ -24130,10 +24160,10 @@ struct HostListPage {
     .width('100%')
     .backgroundColor(this.pal().sheetBg)
     .backgroundBlurStyle(BlurStyle.Regular)
-    .shadow(this.breakpoint === 'sm'
+    .shadow(this.breakpoint === 'sm' || this.settingsModern()
       ? { radius: 0, color: 'rgba(0,0,0,0)', offsetY: 0 } as ShadowOptions
       : { radius: 24, color: 'rgba(0,0,0,0.12)', offsetY: 6 } as ShadowOptions)
-    .border(this.breakpoint === 'sm'
+    .border(this.breakpoint === 'sm' || this.settingsModern()
       ? { width: 0, color: Color.Transparent, style: BorderStyle.Solid }
       : { width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
     .borderRadius(this.breakpoint === 'sm' ? { topLeft: 20, topRight: 20, bottomLeft: 0, bottomRight: 0 } : 20)
@@ -24612,10 +24642,23 @@ struct HostListPage {
 
   @Builder keyVaultSheet() {
     Column() {
-      Text('选择 SSH 密钥').fontSize(18).fontWeight(FontWeight.Bold)
-        .fontColor(this.pal().text).margin({ bottom: 16 }).width('100%')
+      if (this.settingsModern()) {
+        AppSheetHeader({ title: '选择 SSH 密钥', subtitle: '从密钥保险库中选择，私钥不会显示', horizontalPadding: 0, whiteOnAccent: true,
+          onClose: (): void => { this.closeSettingsLeafSheetByUser(); } }).margin({ bottom: 8 })
+      } else {
+        Text('选择 SSH 密钥').fontSize(18).fontWeight(FontWeight.Bold)
+          .fontColor(this.pal().text).margin({ bottom: 16 }).width('100%')
+      }
 
-      if (this.keyVault.getAllSshKeys().length === 0) {
+      if (this.keyVault.getAllSshKeys().length === 0 && this.settingsModern()) {
+        // An empty vault says where keys come from instead of leaving the user stuck.
+        Column({ space: 8 }) {
+          SymbolGlyph($r('sys.symbol.key_fill')).fontSize(32).fontColor([this.pal().text3])
+          Text('密钥库里还没有 SSH 密钥').fontSize(15).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
+          Text('可以关闭后在主机编辑页直接粘贴私钥；或到底部「密钥保险库」页添加，之后在这里选择。')
+            .fontSize(13).fontColor(this.pal().text2).textAlign(TextAlign.Center).lineHeight(19)
+        }.width('100%').padding({ left: 16, right: 16, top: 16, bottom: 16 })
+      } else if (this.keyVault.getAllSshKeys().length === 0) {
         Text('密钥库为空，请先在密钥保险库中添加密钥')
           .fontSize(13).fontColor(this.pal().text3).textAlign(TextAlign.Center)
           .padding({ left: 24, right: 24, top: 20, bottom: 20 })
@@ -24683,10 +24726,10 @@ struct HostListPage {
     .width('100%')
     .backgroundColor(this.pal().sheetBg)
     .backgroundBlurStyle(BlurStyle.Regular)
-    .shadow(this.breakpoint === 'sm'
+    .shadow(this.breakpoint === 'sm' || this.settingsModern()
       ? { radius: 0, color: 'rgba(0,0,0,0)', offsetY: 0 } as ShadowOptions
       : { radius: 24, color: 'rgba(0,0,0,0.12)', offsetY: 6 } as ShadowOptions)
-    .border(this.breakpoint === 'sm'
+    .border(this.breakpoint === 'sm' || this.settingsModern()
       ? { width: 0, color: Color.Transparent, style: BorderStyle.Solid }
       : { width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
     .borderRadius(this.breakpoint === 'sm' ? { topLeft: 20, topRight: 20, bottomLeft: 0, bottomRight: 0 } : 20)
@@ -24696,14 +24739,19 @@ struct HostListPage {
   @Builder haloColorSheet() {
     Column() {
       // 标题 + 预览 (与主题色面板一致)
-      Row() {
-        Text('光晕颜色').fontSize(19).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
-        Blank()
-        Column()
-          .width(36).height(36).borderRadius(12)
-          .backgroundColor(this.haloColor)
-          .border({ width: 2, color: this.pal().cardBorder, style: BorderStyle.Solid })
-      }.width('100%').padding({ left: 24, right: 24, top: 20 }).margin({ bottom: 14 })
+      if (this.settingsModern()) {
+        AppSheetHeader({ title: '光晕颜色', subtitle: '点选即保存；深色和浅色模式分别记住', horizontalPadding: 24, whiteOnAccent: true,
+          onClose: (): void => { this.closeSettingsLeafSheetByUser(); } })
+      } else {
+        Row() {
+          Text('光晕颜色').fontSize(19).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
+          Blank()
+          Column()
+            .width(36).height(36).borderRadius(12)
+            .backgroundColor(this.haloColor)
+            .border({ width: 2, color: this.pal().cardBorder, style: BorderStyle.Solid })
+        }.width('100%').padding({ left: 24, right: 24, top: 20 }).margin({ bottom: 14 })
+      }
 
       Grid() {
         ForEach(this.haloPresets, (hex: string) => {
@@ -24727,14 +24775,19 @@ struct HostListPage {
   // ==================== 终端字体颜色选择 Sheet ====================
   @Builder terminalFgColorSheet() {
     Column() {
-      Row() {
-        Text('终端字体颜色').fontSize(19).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
-        Blank()
-        Column()
-          .width(36).height(36).borderRadius(12)
-          .backgroundColor(this.terminalFgColor)
-          .border({ width: 2, color: this.pal().cardBorder, style: BorderStyle.Solid })
-      }.width('100%').padding({ left: 24, right: 24, top: 20 }).margin({ bottom: 14 })
+      if (this.settingsModern()) {
+        AppSheetHeader({ title: '终端字体颜色', subtitle: '当前 ' + this.terminalFgColor + '，点选即保存', horizontalPadding: 24, whiteOnAccent: true,
+          onClose: (): void => { this.closeSettingsLeafSheetByUser(); } })
+      } else {
+        Row() {
+          Text('终端字体颜色').fontSize(19).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
+          Blank()
+          Column()
+            .width(36).height(36).borderRadius(12)
+            .backgroundColor(this.terminalFgColor)
+            .border({ width: 2, color: this.pal().cardBorder, style: BorderStyle.Solid })
+        }.width('100%').padding({ left: 24, right: 24, top: 20 }).margin({ bottom: 14 })
+      }
 
       Grid() {
         ForEach(this.terminalColorPresets, (hex: string) => {
@@ -24758,12 +24811,17 @@ struct HostListPage {
   // ==================== 终端字体大小选择 Sheet ====================
   @Builder terminalFontSizeSheet() {
     Column() {
-      Row() {
-        Text('终端字体大小').fontSize(19).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
-        Blank()
-        Text(this.terminalFontSize + 'vp').fontSize(16).fontWeight(FontWeight.Bold)
-          .fontColor(this.pal().primary)
-      }.width('100%').padding({ left: 24, right: 24, top: 20 }).margin({ bottom: 14 })
+      if (this.settingsModern()) {
+        AppSheetHeader({ title: '终端字体大小', subtitle: '当前 ' + this.terminalFontSize + 'vp，点选即保存', horizontalPadding: 24, whiteOnAccent: true,
+          onClose: (): void => { this.closeSettingsLeafSheetByUser(); } })
+      } else {
+        Row() {
+          Text('终端字体大小').fontSize(19).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
+          Blank()
+          Text(this.terminalFontSize + 'vp').fontSize(16).fontWeight(FontWeight.Bold)
+            .fontColor(this.pal().primary)
+        }.width('100%').padding({ left: 24, right: 24, top: 20 }).margin({ bottom: 14 })
+      }
 
       Grid() {
         ForEach(this.terminalFontSizes, (sz: number) => {
@@ -24793,12 +24851,17 @@ struct HostListPage {
   // ==================== 终端行距选择 Sheet ====================
   @Builder terminalLineSpacingSheet() {
     Column() {
-      Row() {
-        Text('终端行距').fontSize(19).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
-        Blank()
-        Text(this.terminalLineSpacingLabel()).fontSize(16).fontWeight(FontWeight.Bold)
-          .fontColor(this.pal().primary)
-      }.width('100%').padding({ left: 24, right: 24, top: 20 }).margin({ bottom: 14 })
+      if (this.settingsModern()) {
+        AppSheetHeader({ title: '终端行距', subtitle: '当前 ' + this.terminalLineSpacingLabel() + '，点选即保存', horizontalPadding: 24, whiteOnAccent: true,
+          onClose: (): void => { this.closeSettingsLeafSheetByUser(); } })
+      } else {
+        Row() {
+          Text('终端行距').fontSize(19).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
+          Blank()
+          Text(this.terminalLineSpacingLabel()).fontSize(16).fontWeight(FontWeight.Bold)
+            .fontColor(this.pal().primary)
+        }.width('100%').padding({ left: 24, right: 24, top: 20 }).margin({ bottom: 14 })
+      }
 
       Grid() {
         ForEach(this.terminalLineSpacings, (spacing: number) => {
@@ -24828,8 +24891,13 @@ struct HostListPage {
 
   @Builder wallPicker() {
     Column() {
-      Text('选择壁纸').fontSize(19).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
-        .margin({ bottom: 20 }).width('100%').fontFamily(this.font())
+      if (this.settingsModern()) {
+        AppSheetHeader({ title: '壁纸', subtitle: '选择主机列表的背景色，点选即保存', horizontalPadding: 0, whiteOnAccent: true,
+          onClose: (): void => { this.closeSettingsLeafSheetByUser(); } }).margin({ bottom: 8 })
+      } else {
+        Text('选择壁纸').fontSize(19).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
+          .margin({ bottom: 20 }).width('100%').fontFamily(this.font())
+      }
       Grid() {
         ForEach(this.wallpaperItems, (item: WallpaperItem, idx: number) => {
           GridItem() {
@@ -24859,10 +24927,15 @@ struct HostListPage {
 
   @Builder accountSheet() {
     Column() {
-      Text(this.appCloneLocalOnly ?
-        (this.appCloneIsClone ? '应用分身' : '本地安全模式') : '账号管理')
-        .fontSize(19).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
-        .margin({ top: 24, bottom: 20 }).fontFamily(this.font())
+      if (this.settingsModern()) {
+        AppSheetHeader({ title: this.appCloneLocalOnly ? (this.appCloneIsClone ? '应用分身' : '本地安全模式') : '账号管理', subtitle: '', horizontalPadding: 24, whiteOnAccent: true,
+          onClose: (): void => { this.closeSettingsLeafSheetByUser(); } }).margin({ bottom: 8 })
+      } else {
+        Text(this.appCloneLocalOnly ?
+          (this.appCloneIsClone ? '应用分身' : '本地安全模式') : '账号管理')
+          .fontSize(19).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
+          .margin({ top: 24, bottom: 20 }).fontFamily(this.font())
+      }
       Column() {
         if (this.appCloneLocalOnly) {
           Text(this.appCloneIsClone ? '分' : '本').fontSize(24).fontWeight(FontWeight.Bold)
@@ -25496,6 +25569,19 @@ struct HostListPage {
     this.rdpCredEditorKey++;
     this.rdpCredEditorBaseline = this.rdpCredentialEditorSnapshot();
     this.openRdpCredentialEditorFromManager();
+  }
+
+  /** 取消 in the credential editor: ask about typed changes, then go back to the list it came from. */
+  private cancelRdpCredentialEditor(): void {
+    this.dismissSettingsLeafIfNeeded((): void => {
+      const backToManager: boolean = this.rdpCredentialEditorReturnToManager;
+      this.rdpCredentialEditorReturnToManager = false;
+      if (backToManager) {
+        this.openSettingsLeafSheet(SETTINGS_SHEET_RDP_CREDENTIALS);
+      } else {
+        this.closeSettingsLeafSheetByUser();
+      }
+    });
   }
 
   private saveRdpCredentialFromSettings(): void {

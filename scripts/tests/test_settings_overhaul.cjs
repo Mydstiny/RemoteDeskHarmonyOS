@@ -430,4 +430,79 @@ check('batch B review: VNC scale words, phone-only rows, real Moonlight values, 
   for (const bad of ['31', '400', '1a']) { assert.equal(isHopeless(bad), true, bad); }
 });
 
+// ------------------------------------------------------------------ batch C: settings sheets in 全新视觉
+check('shared sheet chrome: optional white-on-accent text and saved flash, defaults unchanged for the AI pages', () => {
+  const header = read('components/AppSheetHeader.ets');
+  assert.ok(header.includes('@Prop whiteOnAccent: boolean = false;'));
+  assert.ok(header.includes('@Prop savedTick: number = 0;'));
+  assert.ok(header.includes('this.whiteOnAccent ? appUiOnAccentText(this.accent) : appUiButtonText(this.accent)'));
+  const choice = read('components/AppSettingsChoiceButton.ets');
+  assert.ok(choice.includes('@Prop whiteOnAccent: boolean = false;'));
+  // The remote AI pages keep the old contrast choice (they never pass whiteOnAccent).
+  for (const file of ['pages/AiSettingsPage.ets', 'pages/RemoteAiWorkspace.ets', 'components/ai/AiHostInstallPanel.ets']) {
+    assert.ok(!read(file).includes('whiteOnAccent'), file);
+  }
+});
+
+check('settings sheets switch to the shared header only in 全新视觉 and keep their classic header otherwise', () => {
+  const sheets = {
+    'components/RemoteWheelDirectionSettingsSheet.ets': "title: '滚轮方向'",
+    'components/RemotePinchZoomSettingsSheet.ets': "title: '双指缩放'",
+    'components/RemotePortraitDisplaySettingsSheet.ets': "title: '竖屏显示'",
+    'components/RemoteSessionControlBarSettingsSheet.ets': "title: '会话侧栏与顶栏'",
+    'components/SecretVisibilitySettingsSheet.ets': "title: '密码与秘密回显'",
+    'components/ColorPickerSheet.ets': "title: '主题色'",
+    'components/FeedbackSettingsSheet.ets': "title: '反馈'",
+    'components/DiagnosticCaptureSettingsSheet.ets': "title: '日志'",
+    'components/VirtualKeyboardSettingsSheet.ets': 'title: this.pageTitle()'
+  };
+  for (const [file, title] of Object.entries(sheets)) {
+    const source = read(file);
+    assert.ok(source.includes("@StorageProp('settingsVisualStyle') visualStyle: string = 'classic';"), file);
+    const at = source.indexOf('AppSheetHeader({ ' + title);
+    assert.ok(at > 0, file + ' uses the shared header');
+    assert.ok(source.slice(Math.max(0, at - 200), at).includes('this.modern()'), file + ' gates it');
+  }
+  for (const file of ['components/RemoteWheelDirectionSettingsSheet.ets', 'components/RemotePinchZoomSettingsSheet.ets',
+    'components/RemotePortraitDisplaySettingsSheet.ets', 'components/RemoteSessionControlBarSettingsSheet.ets',
+    'components/SecretVisibilitySettingsSheet.ets']) {
+    const source = read(file);
+    assert.ok(source.includes('} else {\n        this.header()\n      }'), file + ' keeps its classic header');
+    assert.ok(source.includes('savedTick: this.savedTick'), file + ' flashes 已保存 in the shared header');
+    // Switches read the sheet's state directly, so a failed save still flips them back.
+    assert.ok(!source.includes('AppSettingsSwitchRow('), file);
+  }
+  const about = read('components/AboutSettingsSheet.ets');
+  for (const title of ['操作引导中心', '关于应用', '隐私政策', '连接前准备']) {
+    assert.ok(about.includes("AppSheetHeader({ title: '" + title + "'"), title);
+  }
+  const skin = read('components/ssh/skin/SshSkinSettingsPanel.ets');
+  assert.ok(skin.includes(".onClick((): void => { this.skinMenu(skin); })"), 'a visible edit button opens the skin menu');
+  assert.ok(skin.includes('.gesture(LongPressGesture({ duration: 450 }).onAction((): void => { this.skinMenu(skin); }))'));
+  for (const [file, gate] of [['components/ProFeatureManagerPanel.ets', 'this.showClose && settingsVisualIsModern(this.visualStyle)'],
+    ['components/ProAppIconPanel.ets', 'this.showClose && settingsVisualIsModern(this.visualStyle)'],
+    ['components/rdp/RdpDisplayProfilePanel.ets', 'this.showClose && !this.forceDark && settingsVisualIsModern(this.visualStyle)']]) {
+    assert.ok(read(file).includes(gate), file);
+  }
+});
+
+check('the host page sheets use the shared header in 全新视觉 and drop the shadow inside a sheet', () => {
+  const page = read('pages/HostListPage.ets');
+  for (const builder of ['@Builder wallPicker() {', '@Builder haloColorSheet() {', '@Builder terminalFgColorSheet() {',
+    '@Builder terminalFontSizeSheet() {', '@Builder terminalLineSpacingSheet() {', '@Builder keyVaultSheet() {',
+    '@Builder sshHostKeyManagerSheet() {', '@Builder rdpCertificateManagerSheet() {',
+    '@Builder rustDeskAuthTrustManagerSheet() {', '@Builder accountSheet() {', '@Builder cryptoSheet() {',
+    '@Builder rdpCredentialSheet() {', '@Builder rdpCredentialEditorSheet() {']) {
+    const body = member(page, builder);
+    assert.ok(body.includes('if (this.settingsModern()) {') && body.includes('AppSheetHeader({'), builder);
+  }
+  assert.ok(member(page, '@Builder terminalFontSizeSheet() {').includes("subtitle: '当前 ' + this.terminalFontSize + 'vp，点选即保存'"));
+  assert.ok(member(page, '@Builder keyVaultSheet() {').includes('密钥库里还没有 SSH 密钥'));
+  for (const builder of ['@Builder rdpCredentialSheet() {', '@Builder rdpCredentialEditorSheet() {']) {
+    assert.ok(member(page, builder).includes(".shadow(this.breakpoint === 'sm' || this.settingsModern()"), builder);
+  }
+  assert.ok(page.includes("ColorPickerSheet({ onClose: (): void => { this.closeSettingsLeafSheetByUser(); } })"));
+  assert.ok(member(page, 'onPageShow(): void {').includes('this.settingsValuesRevision++;'));
+});
+
 console.log('settings overhaul: ' + passed + ' checks passed');

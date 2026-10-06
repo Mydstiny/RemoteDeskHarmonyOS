@@ -1,4 +1,6 @@
 import { ProBadge } from './ProBadge';
+import { AppSheetHeader } from './AppSheetHeader';
+import { settingsVisualIsModern } from '../services/SettingsVisualStylePolicy';
 import { Palette, buildDark, buildLight } from '../common/Theme';
 import { ProAppRuntime } from '../services/pro/ProAppRuntime';
 import { ProAppIcons } from '../services/pro/ProAppIcons';
@@ -20,6 +22,8 @@ export struct ProAppIconPanel {
   /** The settings sheet shows a close button on Pad and PC, where it has no drag bar. */
   @Prop showClose: boolean = false;
   onClose: () => void = (): void => {};
+  /** 设置 → 个性化 → 全新视觉: the shared sheet header when opened from settings. */
+  @StorageProp('settingsVisualStyle') visualStyle: string = 'classic';
   private stopIcons: (() => void) | null = null;
   private stopRuntime: (() => void) | null = null;
 
@@ -95,6 +99,14 @@ export struct ProAppIconPanel {
     }.width('100%')
   }
   @Builder private title() {
+    if (this.showClose && settingsVisualIsModern(this.visualStyle)) {
+      AppSheetHeader({ title: '应用图标', subtitle: '换成预设的桌面图标，可随时恢复默认', showProBadge: true,
+        horizontalPadding: 0, whiteOnAccent: true, onClose: (): void => { this.onClose(); } })
+    } else {
+      this.classicTitle()
+    }
+  }
+  @Builder private classicTitle() {
     Row() {
       Text('应用图标').fontSize(16).fontWeight(FontWeight.Medium).fontColor(this.pal().text).layoutWeight(1)
       ProBadge()

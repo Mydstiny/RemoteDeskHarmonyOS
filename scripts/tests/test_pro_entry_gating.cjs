@@ -79,10 +79,11 @@ for (const [file, text] of sources) {
   assert.equal(found, expected, `${file}: Pro badge count changed; gate and re-register each entry`);
   assert.match(text, gate, `${file}: registered gate is missing`);
 }
-// Header badges only appear on AI workspace sheets, which close when AI access is revoked.
+// Header badges appear on AI workspace sheets (closed when AI access is revoked) and, in 全新视觉, on the Pro
+// settings sheets whose own badge is registered and gated above (they open only from those gated entries).
 for (const [file, text] of sources) {
   if (file === 'components/AppSheetHeader.ets' || !/showProBadge: true/.test(text)) continue;
-  assert.equal(file, 'pages/RemoteAiWorkspace.ets', `${file}: Pro sheet header needs a registered gate`);
+  assert.ok(file === 'pages/RemoteAiWorkspace.ets' || badges.has(file), `${file}: Pro sheet header needs a registered gate`);
 }
 
 // RDP/RustDesk advanced display: every Pro choice follows ProEntries.visible for its own feature.

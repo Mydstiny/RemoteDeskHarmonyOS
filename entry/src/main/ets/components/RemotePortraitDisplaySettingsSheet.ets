@@ -1,4 +1,7 @@
-import { promptAction } from '@kit.ArkUI';
+import { LengthMetrics, promptAction } from '@kit.ArkUI';
+import { AppSheetHeader } from './AppSheetHeader';
+import { AppSettingsChoiceButton } from './AppSettingsChoiceButton';
+import { settingsVisualIsModern } from '../services/SettingsVisualStylePolicy';
 import { AppTheme, Palette, buildDark, buildLight } from '../common/Theme';
 import { appUiOnAccentText } from '../common/AppUiColorPolicy';
 import { protocolIcon } from '../services/ProtocolIconPolicy';
@@ -46,6 +49,8 @@ function touchedFor(protocol: RemotePortraitProtocol | ''): RemotePortraitDispla
 export struct RemotePortraitDisplaySettingsSheet {
   @StorageProp('currentTheme') theme: string = 'light';
   @StorageProp('accentColor') accentColor: string = '#007DFF';
+  /** 设置 → 个性化 → 全新视觉: the shared sheet header, larger rows and full-size switches. */
+  @StorageProp('settingsVisualStyle') visualStyle: string = 'classic';
   @Prop initialPreferences: RemotePortraitDisplayPreferences =
     defaultRemotePortraitDisplayPreferences();
   @Prop initialSidebarHeightMode: RemotePortraitSidebarHeightMode = 'auto';
@@ -65,6 +70,8 @@ export struct RemotePortraitDisplaySettingsSheet {
     this.draftSidebarHeightMode = normalizeRemotePortraitSidebarHeightMode(
       this.initialSidebarHeightMode);
   }
+
+  private modern(): boolean { return settingsVisualIsModern(this.visualStyle); }
 
   private pal(): Palette {
     return this.theme === 'light' ? buildLight(this.accentColor) : buildDark(this.accentColor);
@@ -118,6 +125,16 @@ export struct RemotePortraitDisplaySettingsSheet {
   }
 
   @Builder private sidebarHeightButton(mode: RemotePortraitSidebarHeightMode) {
+    if (this.modern()) {
+      AppSettingsChoiceButton({ label: remotePortraitSidebarHeightLabel(mode),
+        isSelected: this.draftSidebarHeightMode === mode, whiteOnAccent: true,
+        onSelect: (): void => { this.setSidebarHeightMode(mode); } })
+    } else {
+      this.classicSidebarHeightButton(mode)
+    }
+  }
+
+  @Builder private classicSidebarHeightButton(mode: RemotePortraitSidebarHeightMode) {
     Button(remotePortraitSidebarHeightLabel(mode)).height(32).fontSize(11)
       .padding({ left: 14, right: 14 })
       .backgroundColor(this.draftSidebarHeightMode === mode ? this.accentColor : this.pal().surface)
@@ -143,7 +160,14 @@ export struct RemotePortraitDisplaySettingsSheet {
   }
 
   @Builder private modeChooser(protocol: RemotePortraitProtocol) {
-    if (this.preference(protocol).enabled) {
+    if (this.preference(protocol).enabled && this.modern()) {
+      Row({ space: 8 }) {
+        AppSettingsChoiceButton({ label: '默认方向', isSelected: this.preference(protocol).mode === 'default',
+          whiteOnAccent: true, onSelect: (): void => { this.setMode(protocol, 'default'); } })
+        AppSettingsChoiceButton({ label: '竖屏', isSelected: this.preference(protocol).mode === 'portrait',
+          whiteOnAccent: true, onSelect: (): void => { this.setMode(protocol, 'portrait'); } })
+      }.margin({ top: 8 })
+    } else if (this.preference(protocol).enabled) {
       Row({ space: 6 }) {
         Button('默认方向').height(28).fontSize(11).padding({ left: 8, right: 8 })
           .backgroundColor(this.preference(protocol).mode === 'default' ? this.accentColor : this.pal().surface)
@@ -161,25 +185,27 @@ export struct RemotePortraitDisplaySettingsSheet {
 
   @Builder private protocolRow(protocol: RemotePortraitProtocol, title: string, detail: string) {
     Row() {
-      SymbolGlyph(protocolIcon(protocol)).fontSize(21).fontColor([this.pal().text3]).margin({ right: 12 })
+      SymbolGlyph(protocolIcon(protocol)).fontSize(this.modern() ? 22 : 21)
+        .fontColor([this.modern() ? this.pal().text2 : this.pal().text3]).margin({ right: 12 })
       Column() {
         Row() {
-          Text(title).fontSize(14).fontWeight(FontWeight.Medium)
+          Text(title).fontSize(this.modern() ? 15 : 14).fontWeight(FontWeight.Medium)
             .fontColor(this.pal().text).fontFamily(AppTheme.fontFamily).layoutWeight(1)
           Toggle({ type: ToggleType.Switch, isOn: this.preference(protocol).enabled })
-            .selectedColor(this.accentColor).scale({ x: 0.82, y: 0.82 })
+            .selectedColor(this.accentColor).scale({ x: this.modern() ? 1 : 0.82, y: this.modern() ? 1 : 0.82 })
             .accessibilityText(title + ' 竖屏显示')
             .onChange((value: boolean): void => { this.setEnabled(protocol, value); })
         }.width('100%')
-        Text(detail).fontSize(11).fontColor(this.pal().text3)
+        Text(detail).fontSize(this.modern() ? 12 : 11).fontColor(this.modern() ? this.pal().text2 : this.pal().text3)
           .fontFamily(AppTheme.fontFamily).lineHeight(16).margin({ top: 3 })
         this.modeChooser(protocol)
         if (this.preference(protocol).enabled) {
           Text('当前：' + remotePortraitDisplayModeLabel(this.preference(protocol).mode))
-            .fontSize(10).fontColor(this.pal().text3).margin({ top: 3 })
+            .fontSize(this.modern() ? 12 : 10).fontColor(this.modern() ? this.pal().text2 : this.pal().text3).margin({ top: 3 })
         }
       }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-    }.width('100%').padding({ left: 15, right: 12, top: 12, bottom: 12 })
+    }.width('100%').constraintSize({ minHeight: this.modern() ? 56 : 0 })
+      .padding({ left: 15, right: 12, top: 12, bottom: 12 })
   }
 
   @Builder private divider() {
@@ -188,7 +214,12 @@ export struct RemotePortraitDisplaySettingsSheet {
 
   build() {
     Column() {
-      this.header()
+      if (this.modern()) {
+        AppSheetHeader({ title: '竖屏显示', subtitle: '选择允许手机竖屏显示的远程协议，改动会立即保存', savedTick: this.savedTick, whiteOnAccent: true,
+          onClose: (): void => { this.onClose(); } })
+      } else {
+        this.header()
+      }
       Scroll() {
         Column() {
           Text('竖屏时会把远端横向画面按比例缩小并完整放入手机屏幕。建议同时打开“双指缩放”，方便查看细节和移动画面。改动会立即保存。')
@@ -209,19 +240,31 @@ export struct RemotePortraitDisplaySettingsSheet {
             Text('竖屏侧栏高度').fontSize(13).fontWeight(FontWeight.Medium)
               .fontColor(this.pal().text).fontFamily(AppTheme.fontFamily)
             Text('仅在竖屏显示启用时生效；自动保持内容所需高度，其他选项限制侧栏占用的安全区域。')
-              .fontSize(11).fontColor(this.pal().text3).fontFamily(AppTheme.fontFamily)
+              .fontSize(this.modern() ? 12 : 11).fontColor(this.modern() ? this.pal().text2 : this.pal().text3)
+              .fontFamily(AppTheme.fontFamily)
               .lineHeight(16).margin({ top: 4, bottom: 8 })
-            Row({ space: 7 }) {
-              this.sidebarHeightButton(remotePortraitSidebarHeightModes()[0])
-              this.sidebarHeightButton(remotePortraitSidebarHeightModes()[1])
-              this.sidebarHeightButton(remotePortraitSidebarHeightModes()[2])
-              this.sidebarHeightButton(remotePortraitSidebarHeightModes()[3])
-            }.width('100%')
+            if (this.modern()) {
+              // Four 44vp choices wrap on a narrow phone instead of running off the card.
+              Flex({ wrap: FlexWrap.Wrap, space: { main: LengthMetrics.vp(8), cross: LengthMetrics.vp(8) } }) {
+                this.sidebarHeightButton(remotePortraitSidebarHeightModes()[0])
+                this.sidebarHeightButton(remotePortraitSidebarHeightModes()[1])
+                this.sidebarHeightButton(remotePortraitSidebarHeightModes()[2])
+                this.sidebarHeightButton(remotePortraitSidebarHeightModes()[3])
+              }.width('100%')
+            } else {
+              Row({ space: 7 }) {
+                this.sidebarHeightButton(remotePortraitSidebarHeightModes()[0])
+                this.sidebarHeightButton(remotePortraitSidebarHeightModes()[1])
+                this.sidebarHeightButton(remotePortraitSidebarHeightModes()[2])
+                this.sidebarHeightButton(remotePortraitSidebarHeightModes()[3])
+              }.width('100%')
+            }
           }.width('100%').padding(14).margin({ top: 14 })
             .borderRadius(14).backgroundColor(this.pal().card)
             .border({ width: 0.5, color: this.pal().cardBorder })
           Text('SSH 使用终端内的“切换横竖屏”，不会出现在这里，也不会新增本侧栏入口。')
-            .fontSize(11).fontColor(this.pal().text3).fontFamily(AppTheme.fontFamily)
+            .fontSize(this.modern() ? 12 : 11).fontColor(this.modern() ? this.pal().text2 : this.pal().text3)
+            .fontFamily(AppTheme.fontFamily)
             .lineHeight(17).width('100%').margin({ top: 12, bottom: 24 })
         }.width('100%').padding({ left: 22, right: 22 })
       }.layoutWeight(1).scrollBar(BarState.Auto).edgeEffect(EdgeEffect.Spring)

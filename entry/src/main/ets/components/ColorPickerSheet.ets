@@ -4,6 +4,9 @@
 import { COLOR_PRESETS, ColorPreset, Palette, buildDark, buildLight } from '../common/Theme';
 import { preferences } from '@kit.ArkData';
 import { CloudStore } from '../services/CloudStore';
+import { AppSheetHeader } from './AppSheetHeader';
+import { AppSettingsChoiceButton } from './AppSettingsChoiceButton';
+import { settingsVisualIsModern } from '../services/SettingsVisualStylePolicy';
 
 @Component
 export struct ColorPickerSheet {
@@ -19,6 +22,10 @@ export struct ColorPickerSheet {
   private colorPlaneHeight: number = 0;
   private hueTrackWidth: number = 0;
   onColorChange?: (hex: string) => void;
+  /** 设置 → 个性化 → 全新视觉: the shared sheet header with a close button; larger labels and tabs. */
+  @StorageProp('settingsVisualStyle') visualStyle: string = 'classic';
+  onClose: () => void = (): void => {};
+  private modern(): boolean { return settingsVisualIsModern(this.visualStyle); }
 
   aboutToAppear(): void {
     this.selectedHex = this.accentColor;
@@ -165,21 +172,37 @@ export struct ColorPickerSheet {
 
   build() {
     Column() {
-      // 标题 + 预览
-      Row() {
-        Text('主题色').fontSize(19).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
-        Blank()
-        Column()
-          .width(36).height(36).borderRadius(12)
-          .backgroundColor(this.selectedHex)
-          .border({ width: 2, color: this.pal().cardBorder, style: BorderStyle.Solid })
-      }.width('100%').padding({ left: 24, right: 24, top: 20 }).margin({ bottom: 12 })
+      if (this.modern()) {
+        AppSheetHeader({ title: '主题色', subtitle: '拖动时实时预览，松手后保存并同步', whiteOnAccent: true,
+          onClose: (): void => { this.onClose(); } })
+        Row({ space: 12 }) {
+          Column()
+            .width(36).height(36).borderRadius(12)
+            .backgroundColor(this.selectedHex)
+            .border({ width: 2, color: this.pal().cardBorder, style: BorderStyle.Solid })
+          Text(this.selectedHex).fontSize(15).fontFamily('monospace').fontColor(this.pal().text).layoutWeight(1)
+          AppSettingsChoiceButton({ label: '预设色系', isSelected: this.activeTab === 0, whiteOnAccent: true,
+            onSelect: (): void => { this.activeTab = 0; } })
+          AppSettingsChoiceButton({ label: '自定义', isSelected: this.activeTab === 1, whiteOnAccent: true,
+            onSelect: (): void => { this.activeTab = 1; } })
+        }.width('100%').padding({ left: 24, right: 24 }).margin({ bottom: 14 })
+      } else {
+        // 标题 + 预览
+        Row() {
+          Text('主题色').fontSize(19).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
+          Blank()
+          Column()
+            .width(36).height(36).borderRadius(12)
+            .backgroundColor(this.selectedHex)
+            .border({ width: 2, color: this.pal().cardBorder, style: BorderStyle.Solid })
+        }.width('100%').padding({ left: 24, right: 24, top: 20 }).margin({ bottom: 12 })
 
-      // Tab: 预设 / 自定义
-      Row() {
-        this.tabBtn('预设色系', 0)
-        this.tabBtn('自定义', 1)
-      }.width('100%').padding({ left: 24, right: 24 }).margin({ bottom: 14 })
+        // Tab: 预设 / 自定义
+        Row() {
+          this.tabBtn('预设色系', 0)
+          this.tabBtn('自定义', 1)
+        }.width('100%').padding({ left: 24, right: 24 }).margin({ bottom: 14 })
+      }
 
       if (this.activeTab === 0) {
         this.presetGrid()
@@ -208,7 +231,9 @@ export struct ColorPickerSheet {
           Column() {
             Column().width(48).height(48).borderRadius(14).backgroundColor(preset.hex)
               .border({ width: this.selectedHex === preset.hex ? 3 : 0, color: this.pal().text })
-            Text(preset.pantone).fontSize(9).fontColor(this.pal().text3).margin({ top: 4 }).maxLines(1)
+            Text(preset.pantone).fontSize(this.modern() ? 12 : 9)
+              .fontColor(this.modern() ? this.pal().text2 : this.pal().text3).margin({ top: 4 }).maxLines(1)
+              .textOverflow({ overflow: TextOverflow.Ellipsis })
           }.alignItems(HorizontalAlign.Center)
           .onClick(() => { this.selectPreset(preset.hex); })
         }
@@ -325,7 +350,7 @@ export struct ColorPickerSheet {
         Text(this.selectedHex).fontSize(16).fontFamily('monospace').fontColor(this.pal().text)
         Blank()
         Text(`H:${this.hue}° S:${this.sat}% B:${this.bri}%`)
-          .fontSize(11).fontColor(this.pal().text3)
+          .fontSize(this.modern() ? 12 : 11).fontColor(this.modern() ? this.pal().text2 : this.pal().text3)
       }.width('90%').margin({ top: 4 })
     }.width('100%')
   }

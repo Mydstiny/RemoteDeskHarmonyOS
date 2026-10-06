@@ -1,4 +1,6 @@
 import { promptAction } from '@kit.ArkUI';
+import { AppSheetHeader } from './AppSheetHeader';
+import { settingsVisualIsModern } from '../services/SettingsVisualStylePolicy';
 import { appUiOnAccentText } from '../common/AppUiColorPolicy';
 import { common } from '@kit.AbilityKit';
 import { AppConfig, Palette, buildDark, buildLight } from '../common/Theme';
@@ -27,6 +29,9 @@ export struct DiagnosticCaptureSettingsSheet {
   @StorageProp('currentTheme') theme: string = 'light';
   @StorageProp('accentColor') accentColor: string = '#007DFF';
   @StorageProp('currentBreakpoint') breakpoint: string = 'md';
+  /** 设置 → 个性化 → 全新视觉: the shared sheet header (title, subtitle, 44vp close). */
+  @StorageProp('settingsVisualStyle') visualStyle: string = 'classic';
+  private modern(): boolean { return settingsVisualIsModern(this.visualStyle); }
   onClose: () => void = (): void => {};
 
   @State selectedDurationMinutes: number = DIAGNOSTIC_DEFAULT_DURATION_MINUTES;
@@ -267,26 +272,31 @@ export struct DiagnosticCaptureSettingsSheet {
 
   build() {
     Column() {
-      Row() {
+      if (this.modern()) {
+        AppSheetHeader({ title: '日志', subtitle: '手动抓取脱敏诊断事件，保存前可以预览', whiteOnAccent: true,
+          onClose: (): void => { this.onClose(); } })
+      } else {
         Row() {
-          SymbolGlyph($r('sys.symbol.doc_plaintext'))
-            .fontSize(22)
-            .fontColor([this.accentColor])
-        }
-        .width(38).height(38).borderRadius(11)
-        .justifyContent(FlexAlign.Center)
-        .backgroundColor(this.pal().surface)
+          Row() {
+            SymbolGlyph($r('sys.symbol.doc_plaintext'))
+              .fontSize(22)
+              .fontColor([this.accentColor])
+          }
+          .width(38).height(38).borderRadius(11)
+          .justifyContent(FlexAlign.Center)
+          .backgroundColor(this.pal().surface)
 
-        Column() {
-          Text('日志').fontSize(20).fontWeight(FontWeight.Bold)
-            .fontColor(this.pal().text).fontFamily(this.font())
-          Text('手动抓取脱敏诊断事件').fontSize(12).fontColor(this.pal().text3)
-            .fontFamily(this.font()).margin({ top: 2 })
-        }.alignItems(HorizontalAlign.Start).margin({ left: 12 }).layoutWeight(1)
+          Column() {
+            Text('日志').fontSize(20).fontWeight(FontWeight.Bold)
+              .fontColor(this.pal().text).fontFamily(this.font())
+            Text('手动抓取脱敏诊断事件').fontSize(12).fontColor(this.pal().text3)
+              .fontFamily(this.font()).margin({ top: 2 })
+          }.alignItems(HorizontalAlign.Start).margin({ left: 12 }).layoutWeight(1)
 
-        SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor([this.pal().text2])
-          .width(36).height(36).onClick((): void => { this.onClose(); })
-      }.width('100%').padding({ left: 24, right: 20, top: 20, bottom: 12 })
+          SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor([this.pal().text2])
+            .width(36).height(36).onClick((): void => { this.onClose(); })
+        }.width('100%').padding({ left: 24, right: 20, top: 20, bottom: 12 })
+      }
 
       Scroll() {
         Column() {

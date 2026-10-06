@@ -1,7 +1,8 @@
 import { AppConfig, Palette, buildDark, buildLight } from '../common/Theme';
 import { AppUiMetrics } from '../common/AppUiMetrics';
-import { appUiButtonFill, appUiButtonText } from '../common/AppUiColorPolicy';
+import { appUiButtonFill, appUiButtonText, appUiOnAccentText } from '../common/AppUiColorPolicy';
 import { ProBadge } from './ProBadge';
+import { SettingsSavedBadge } from './SettingsSavedBadge';
 
 // Free shared chrome. Uses APIs available on the retained API 23 installation target.
 @Component
@@ -15,6 +16,10 @@ export struct AppSheetHeader {
   @Prop actionEnabled: boolean = true;
   @Prop showProBadge: boolean = false;
   @Prop horizontalPadding: number = 24;
+  /** Settings sheets (全新视觉): white text on the accent unless white is unreadable, like the rest of settings. */
+  @Prop whiteOnAccent: boolean = false;
+  /** Bump after an instant save to flash 已保存 beside the title; 0 never shows it. */
+  @Prop savedTick: number = 0;
   onClose: () => void = (): void => {};
   onAction: () => void = (): void => {};
 
@@ -32,6 +37,9 @@ export struct AppSheetHeader {
             .width('100%')
         }
       }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+      if (this.savedTick > 0) {
+        SettingsSavedBadge({ savedTick: this.savedTick })
+      }
       if (this.showProBadge) {
         ProBadge()
       }
@@ -51,7 +59,8 @@ export struct AppSheetHeader {
           .fontSize(14).fontFamily(AppConfig.fontFamily).fontWeight(FontWeight.Medium)
           .constraintSize({ minWidth: AppUiMetrics.minTouchTarget, minHeight: AppUiMetrics.minTouchTarget })
           .padding({ left: 12, right: 12, top: 10, bottom: 10 }).borderRadius(22)
-          .backgroundColor(appUiButtonFill(this.accent)).fontColor(appUiButtonText(this.accent))
+          .backgroundColor(appUiButtonFill(this.accent))
+          .fontColor(this.whiteOnAccent ? appUiOnAccentText(this.accent) : appUiButtonText(this.accent))
           .enabled(this.actionEnabled).focusable(true)
           .accessibilityText(this.actionLabel + this.title).onClick((): void => {
             if (this.actionEnabled) { this.onAction(); }

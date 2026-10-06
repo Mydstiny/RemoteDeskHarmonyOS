@@ -5,6 +5,8 @@
  * 通过 @StorageLink/@StorageProp 接入主题系统。
  */
 import { common, Want } from '@kit.AbilityKit';
+import { AppSheetHeader } from './AppSheetHeader';
+import { settingsVisualIsModern } from '../services/SettingsVisualStylePolicy';
 import { appUiOnAccentText } from '../common/AppUiColorPolicy';
 import { AppConfig, AppTheme, Palette, buildLight, buildDark } from '../common/Theme';
 import { GUIDE_ALWAYS_VISIBLE_STORAGE_KEY } from '../services/GuideVisibilityPolicy';
@@ -43,6 +45,9 @@ export struct AboutSettingsSheet {
   @StorageLink('currentTheme') theme: string = 'light';
   @StorageLink('accentColor') accentColor: string = '#007DFF';
   @StorageProp('currentBreakpoint') breakpoint: string = 'sm';
+  /** 设置 → 个性化 → 全新视觉: the shared sheet header (title, subtitle, 44vp close). */
+  @StorageProp('settingsVisualStyle') visualStyle: string = 'classic';
+  private modern(): boolean { return settingsVisualIsModern(this.visualStyle); }
   @StorageProp('isDesktopDevice') isDesktopDevice: boolean = false;
   @StorageProp('isPadDevice') isPadDevice: boolean = false;
   @StorageLink(GUIDE_ALWAYS_VISIBLE_STORAGE_KEY) guideAlwaysVisible: boolean = false;
@@ -260,19 +265,24 @@ export struct AboutSettingsSheet {
 
   @Builder handsOnGuideSheet() {
     Column() {
-      Row() {
-        Column() {
-          Text('操作引导中心').fontSize(20).fontWeight(FontWeight.Bold)
-            .fontColor(this.pal().text).fontFamily(this.font())
-          Text('按设备与协议定位，不必从头读完')
-            .fontSize(12).fontColor(this.pal().text3).fontFamily(this.font()).margin({ top: 3 })
-        }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-        Blank()
-        SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor([this.pal().text2])
-          .width(36).height(36).onClick((): void => { this.onClose(); })
-      }.width('100%').padding({
-        left: 24, right: 20, top: this.operationGuideLayout().compact ? 12 : 20
-      }).margin({ bottom: this.operationGuideLayout().compact ? 8 : 12 })
+      if (this.modern()) {
+        AppSheetHeader({ title: '操作引导中心', subtitle: '按设备与协议定位，不必从头读完', whiteOnAccent: true,
+          onClose: (): void => { this.onClose(); } })
+      } else {
+        Row() {
+          Column() {
+            Text('操作引导中心').fontSize(20).fontWeight(FontWeight.Bold)
+              .fontColor(this.pal().text).fontFamily(this.font())
+            Text('按设备与协议定位，不必从头读完')
+              .fontSize(12).fontColor(this.pal().text3).fontFamily(this.font()).margin({ top: 3 })
+          }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+          Blank()
+          SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor([this.pal().text2])
+            .width(36).height(36).onClick((): void => { this.onClose(); })
+        }.width('100%').padding({
+          left: 24, right: 20, top: this.operationGuideLayout().compact ? 12 : 20
+        }).margin({ bottom: this.operationGuideLayout().compact ? 8 : 12 })
+      }
 
       Column() {
         Row() {
@@ -449,13 +459,18 @@ export struct AboutSettingsSheet {
 
   @Builder aboutAppSheet() {
     Column() {
-      Row() {
-        Text('关于应用').fontSize(20).fontWeight(FontWeight.Bold)
-          .fontColor(this.pal().text).fontFamily(this.font())
-        Blank()
-        SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor([this.pal().text2])
-          .width(36).height(36).onClick((): void => { this.onClose(); })
-      }.width('100%').margin({ bottom: 14 })
+      if (this.modern()) {
+        AppSheetHeader({ title: '关于应用', horizontalPadding: 0, whiteOnAccent: true,
+          onClose: (): void => { this.onClose(); } }).margin({ bottom: 8 })
+      } else {
+        Row() {
+          Text('关于应用').fontSize(20).fontWeight(FontWeight.Bold)
+            .fontColor(this.pal().text).fontFamily(this.font())
+          Blank()
+          SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor([this.pal().text2])
+            .width(36).height(36).onClick((): void => { this.onClose(); })
+        }.width('100%').margin({ bottom: 14 })
+      }
 
       Scroll() {
         Column() {
@@ -522,13 +537,17 @@ export struct AboutSettingsSheet {
 
   @Builder privacyPolicySheet() {
     Column() {
-      Row() {
-        Text('隐私政策').fontSize(20).fontWeight(FontWeight.Bold)
-          .fontColor(this.pal().text).fontFamily(this.font())
-        Blank()
-        SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor([this.pal().text2])
-          .width(36).height(36).onClick((): void => { this.onClose(); })
-      }.width('100%').padding({ left: 24, right: 20, top: 20 }).margin({ bottom: 8 })
+      if (this.modern()) {
+        AppSheetHeader({ title: '隐私政策', whiteOnAccent: true, onClose: (): void => { this.onClose(); } })
+      } else {
+        Row() {
+          Text('隐私政策').fontSize(20).fontWeight(FontWeight.Bold)
+            .fontColor(this.pal().text).fontFamily(this.font())
+          Blank()
+          SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor([this.pal().text2])
+            .width(36).height(36).onClick((): void => { this.onClose(); })
+        }.width('100%').padding({ left: 24, right: 20, top: 20 }).margin({ bottom: 8 })
+      }
 
       Scroll() {
         Column() {
@@ -579,13 +598,18 @@ export struct AboutSettingsSheet {
   /** 连接前准备 — 五协议服务端与网络检查 */
   @Builder preRequisiteSheet() {
     Column() {
-      Row() {
-        Text('连接前准备').fontSize(20).fontWeight(FontWeight.Bold)
-          .fontColor(this.pal().text).fontFamily(this.font())
-        Blank()
-        SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor([this.pal().text2])
-          .width(36).height(36).onClick((): void => { this.onClose(); })
-      }.width('100%').margin({ bottom: 8 })
+      if (this.modern()) {
+        AppSheetHeader({ title: '连接前准备', horizontalPadding: 0, whiteOnAccent: true,
+          onClose: (): void => { this.onClose(); } })
+      } else {
+        Row() {
+          Text('连接前准备').fontSize(20).fontWeight(FontWeight.Bold)
+            .fontColor(this.pal().text).fontFamily(this.font())
+          Blank()
+          SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor([this.pal().text2])
+            .width(36).height(36).onClick((): void => { this.onClose(); })
+        }.width('100%').margin({ bottom: 8 })
+      }
 
       Scroll() {
         Column() {

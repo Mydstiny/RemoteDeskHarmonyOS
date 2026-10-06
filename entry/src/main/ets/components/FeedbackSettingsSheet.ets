@@ -2,6 +2,8 @@
  * FeedbackSettingsSheet.ets — 反馈子选项卡：邮箱反馈 / 畅联群聊 / Pro 反馈。
  */
 import { promptAction } from '@kit.ArkUI';
+import { AppSheetHeader } from './AppSheetHeader';
+import { settingsVisualIsModern } from '../services/SettingsVisualStylePolicy';
 import { appUiOnAccentText } from '../common/AppUiColorPolicy';
 import { common, Want } from '@kit.AbilityKit';
 import { image } from '@kit.ImageKit';
@@ -33,6 +35,9 @@ export struct FeedbackSettingsSheet {
   @StorageLink('currentTheme') theme: string = 'light';
   @StorageLink('accentColor') accentColor: string = '#007DFF';
   @StorageProp('currentBreakpoint') breakpoint: string = 'md';
+  /** 设置 → 个性化 → 全新视觉: the shared sheet header (title, subtitle, 44vp close). */
+  @StorageProp('settingsVisualStyle') visualStyle: string = 'classic';
+  private modern(): boolean { return settingsVisualIsModern(this.visualStyle); }
 
   onClose: () => void = (): void => {};
   onOpenMail: () => void = (): void => {};
@@ -401,16 +406,21 @@ export struct FeedbackSettingsSheet {
 
   build() {
     Column() {
-      Row() {
-        Text('反馈').fontSize(20).fontWeight(FontWeight.Bold)
-          .fontColor(this.pal().text).fontFamily(this.font())
-        Blank()
-        SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor([this.pal().text2])
-          .width(36).height(36).onClick((): void => { this.onClose(); })
-      }.width('100%').padding({ left: 24, right: 20, top: 20 }).margin({ bottom: 4 })
+      if (this.modern()) {
+        AppSheetHeader({ title: '反馈', subtitle: '选择一种方式联系作者或加入用户群', horizontalPadding: 0,
+          whiteOnAccent: true, onClose: (): void => { this.onClose(); } }).margin({ top: 10 })
+      } else {
+        Row() {
+          Text('反馈').fontSize(20).fontWeight(FontWeight.Bold)
+            .fontColor(this.pal().text).fontFamily(this.font())
+          Blank()
+          SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor([this.pal().text2])
+            .width(36).height(36).onClick((): void => { this.onClose(); })
+        }.width('100%').padding({ left: 24, right: 20, top: 20 }).margin({ bottom: 4 })
 
-      Text('选择一种方式联系作者或加入用户群').fontSize(13).fontColor(this.pal().text3)
-        .fontFamily(this.font()).width('100%').padding({ left: 24, right: 24 }).margin({ bottom: 8 })
+        Text('选择一种方式联系作者或加入用户群').fontSize(13).fontColor(this.pal().text3)
+          .fontFamily(this.font()).width('100%').padding({ left: 24, right: 24 }).margin({ bottom: 8 })
+      }
 
       HdsTabs({ controller: this.tabsController }) {
         TabContent() { this.emailContent() }

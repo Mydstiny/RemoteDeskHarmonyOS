@@ -1,4 +1,6 @@
 import { common } from '@kit.AbilityKit';
+import { AppSheetHeader } from './AppSheetHeader';
+import { settingsVisualIsModern } from '../services/SettingsVisualStylePolicy';
 import { appUiOnAccentText } from '../common/AppUiColorPolicy';
 import { ProSymbolIcon } from './pro/ProSymbolIcon';
 import { AppConfig, Palette, buildDark, buildLight } from '../common/Theme';
@@ -56,6 +58,8 @@ export struct ProFeatureDetailPanel {
   @Prop showClose: boolean = false;
   @Prop viewportHeight: number = 0;
   onClose: () => void = (): void => {};
+  /** 设置 → 个性化 → 全新视觉: the shared sheet header when opened from settings. */
+  @StorageProp('settingsVisualStyle') visualStyle: string = 'classic';
   @State revision: number = 0;
   @State continuation: ProContinuationSettings = ProContinuationPreferences.getInstance().settings();
   @State collaborationGranted: boolean = true;
@@ -230,7 +234,8 @@ export struct ProFeatureDetailPanel {
       Column({ space: 3 }) {
         Text(title).fontSize(15).fontColor(this.pal().text).fontFamily(AppConfig.fontFamily).width('100%')
         if (detail.length > 0) {
-          Text(detail).fontSize(12).fontColor(this.pal().text3).fontFamily(AppConfig.fontFamily).lineHeight(17).width('100%')
+          Text(detail).fontSize(12).fontColor(settingsVisualIsModern(this.visualStyle) ? this.pal().text2 : this.pal().text3)
+            .fontFamily(AppConfig.fontFamily).lineHeight(17).width('100%')
         }
       }.layoutWeight(1).alignItems(HorizontalAlign.Start)
       Toggle({ type: ToggleType.Switch, isOn }).selectedColor(this.accent).accessibilityText(title).onChange(onChange)
@@ -240,7 +245,9 @@ export struct ProFeatureDetailPanel {
     Column({ space: 2 }) {
       Text(title).fontSize(13).fontColor(this.pal().text2).fontFamily(AppConfig.fontFamily).width('100%')
       if (detail.length > 0) {
-        Text(detail).fontSize(11).fontColor(this.pal().text3).fontFamily(AppConfig.fontFamily).lineHeight(16).width('100%')
+        Text(detail).fontSize(settingsVisualIsModern(this.visualStyle) ? 12 : 11)
+          .fontColor(settingsVisualIsModern(this.visualStyle) ? this.pal().text2 : this.pal().text3)
+          .fontFamily(AppConfig.fontFamily).lineHeight(16).width('100%')
       }
     }.width('100%').padding({ left: 4, right: 4 })
   }
@@ -377,7 +384,10 @@ export struct ProFeatureDetailPanel {
   build() {
     Scroll() {
     Column({ space: 14 }) {
-      if (this.feature(this.revision) !== undefined) {
+      if (this.feature(this.revision) !== undefined && this.showClose && settingsVisualIsModern(this.visualStyle)) {
+        AppSheetHeader({ title: this.feature(this.revision)?.title ?? '', showProBadge: true, horizontalPadding: 0,
+          whiteOnAccent: true, onClose: (): void => { this.onClose(); } })
+      } else if (this.feature(this.revision) !== undefined) {
         Row() {
           Text(this.feature(this.revision)?.title ?? '').fontSize(20).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
             .fontFamily(AppConfig.fontFamily).layoutWeight(1)
@@ -388,15 +398,19 @@ export struct ProFeatureDetailPanel {
               .onClick((): void => { this.onClose(); })
           }
         }.width('100%')
+      }
+      if (this.feature(this.revision) !== undefined) {
         Column({ space: 6 }) {
           Row() {
             Text('状态').fontSize(14).fontColor(this.pal().text2).fontFamily(AppConfig.fontFamily).layoutWeight(1)
             Text(this.status(this.revision)?.label ?? '').fontSize(14)
               .fontColor(this.toneColor(this.status(this.revision))).fontFamily(AppConfig.fontFamily)
           }.width('100%')
-          Text(this.status(this.revision)?.detail ?? '').fontSize(12).fontColor(this.pal().text3)
+          Text(this.status(this.revision)?.detail ?? '').fontSize(12)
+            .fontColor(settingsVisualIsModern(this.visualStyle) ? this.pal().text2 : this.pal().text3)
             .fontFamily(AppConfig.fontFamily).width('100%')
-          Text('适用：' + proFeatureScope(this.feature(this.revision) as ProFeature)).fontSize(12).fontColor(this.pal().text3)
+          Text('适用：' + proFeatureScope(this.feature(this.revision) as ProFeature)).fontSize(12)
+            .fontColor(settingsVisualIsModern(this.visualStyle) ? this.pal().text2 : this.pal().text3)
             .fontFamily(AppConfig.fontFamily).width('100%')
           Text(this.feature(this.revision)?.description ?? '').fontSize(13).fontColor(this.pal().text2)
             .fontFamily(AppConfig.fontFamily).lineHeight(19).width('100%').margin({ top: 4 })
@@ -431,6 +445,8 @@ export struct ProBadgeSettingsPanel {
   @Prop showClose: boolean = false;
   @Prop viewportHeight: number = 0;
   onClose: () => void = (): void => {};
+  /** 设置 → 个性化 → 全新视觉: the shared sheet header when opened from settings. */
+  @StorageProp('settingsVisualStyle') visualStyle: string = 'classic';
   @State badgeStyle: ProBadgeStyle = 'capsule';
   @State badgeMotion: ProBadgeMotion = 'sweep';
   @State palette: string = 'aurora';
@@ -594,18 +610,23 @@ export struct ProBadgeSettingsPanel {
   build() {
     Scroll() {
       Column({ space: 14 }) {
-        Row() {
-          Column({ space: 3 }) {
-            Text('Pro 标识').fontSize(20).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
-              .fontFamily(AppConfig.fontFamily)
-            Text('选择样式、动效和颜色，所有 Pro 入口会统一使用').fontSize(12).fontColor(this.pal().text3)
-          }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-          if (this.showClose) {
-            SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor([this.pal().text2])
-              .width(36).height(36).accessibilityText('关闭')
-              .onClick((): void => { this.onClose(); })
-          }
-        }.width('100%').alignItems(VerticalAlign.Top)
+        if (this.showClose && settingsVisualIsModern(this.visualStyle)) {
+          AppSheetHeader({ title: 'Pro 标识', subtitle: '选择样式、动效和颜色，所有 Pro 入口会统一使用', horizontalPadding: 0,
+            whiteOnAccent: true, onClose: (): void => { this.onClose(); } })
+        } else {
+          Row() {
+            Column({ space: 3 }) {
+              Text('Pro 标识').fontSize(20).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
+                .fontFamily(AppConfig.fontFamily)
+              Text('选择样式、动效和颜色，所有 Pro 入口会统一使用').fontSize(12).fontColor(this.pal().text3)
+            }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+            if (this.showClose) {
+              SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor([this.pal().text2])
+                .width(36).height(36).accessibilityText('关闭')
+                .onClick((): void => { this.onClose(); })
+            }
+          }.width('100%').alignItems(VerticalAlign.Top)
+        }
         Row({ space: 10 }) {
           this.stage(false)
           this.stage(true)

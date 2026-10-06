@@ -3,6 +3,9 @@ import { appUiOnAccentText } from '../../../common/AppUiColorPolicy';
 import { LengthMetrics, promptAction } from '@kit.ArkUI';
 import { AppConfig, Palette, buildDark, buildLight } from '../../../common/Theme';
 import { ProBadge } from '../../ProBadge';
+import { AppSheetHeader } from '../../AppSheetHeader';
+import { AppSettingsChoiceButton } from '../../AppSettingsChoiceButton';
+import { settingsVisualIsModern } from '../../../services/SettingsVisualStylePolicy';
 import { HostSyncService } from '../../../services/HostSyncService';
 import { RemoteHost } from '../../../model/RemoteHost';
 import { SshSkinStore, SSH_SKIN_REVISION_KEY } from '../../../services/ssh/skin/SshSkinStore';
@@ -60,6 +63,8 @@ export struct SshSkinSettingsPanel {
   @StorageProp('currentTheme') theme: string = 'light';
   @StorageProp('accentColor') accent: string = '#007DFF';
   @StorageProp(SSH_SKIN_REVISION_KEY) revision: number = 0;
+  /** 设置 → 个性化 → 全新视觉: shared header and tabs, and a visible edit button on each skin. */
+  @StorageProp('settingsVisualStyle') visualStyle: string = 'classic';
   @State @Watch('reportEditingDirty') editing: SshSkin | null = null;
   @State editingIsNew: boolean = false;
   /** The settings sheet shows a close button on Pad and PC, where it has no drag bar. */
@@ -86,6 +91,7 @@ export struct SshSkinSettingsPanel {
   }
   private previewHeight(): number { return this.columns() >= 4 ? 92 : 86; }
   private pal(): Palette { return this.theme === 'light' ? buildLight(this.accent) : buildDark(this.accent); }
+  private modern(): boolean { return settingsVisualIsModern(this.visualStyle); }
   private settings(_revision: number): SshSkinSettings { return SshSkinStore.getInstance().snapshot(); }
   private allSkins(revision: number): SshSkin[] { return sshBuiltInSkins().concat(this.settings(revision).custom); }
   private sshHosts(): RemoteHost[] {
@@ -271,10 +277,17 @@ export struct SshSkinSettingsPanel {
         Column({ space: 1 }) {
           Text(skin.name).fontSize(12).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
             .fontFamily(AppConfig.fontFamily).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-          Text(sshSkinFont(skin.fontId).label).fontSize(10).fontColor(this.pal().text3).maxLines(1)
+          Text(sshSkinFont(skin.fontId).label).fontSize(this.modern() ? 12 : 10)
+            .fontColor(this.modern() ? this.pal().text2 : this.pal().text3).maxLines(1)
         }.alignItems(HorizontalAlign.Start).layoutWeight(1)
         if (selected) {
           SymbolGlyph($r('sys.symbol.checkmark_circle_fill')).fontSize(18).fontColor([this.accent])
+        }
+        if (this.modern()) {
+          // The long-press menu, reachable with a tap or a mouse click.
+          SymbolGlyph($r('sys.symbol.square_and_pencil')).fontSize(18).fontColor([this.pal().text2])
+            .width(32).height(32).accessibilityText(skin.builtIn ? '复制' + skin.name : '编辑' + skin.name)
+            .onClick((): void => { this.skinMenu(skin); })
         }
       }.width('100%').padding({ left: 2, right: 2 })
     }
@@ -289,7 +302,8 @@ export struct SshSkinSettingsPanel {
     Column({ space: 2 }) {
       Text(title).fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(AppConfig.fontFamily)
       if (detail.length > 0) {
-        Text(detail).fontSize(11).fontColor(this.pal().text3).fontFamily(AppConfig.fontFamily).lineHeight(16)
+        Text(detail).fontSize(this.modern() ? 12 : 11).fontColor(this.modern() ? this.pal().text2 : this.pal().text3)
+          .fontFamily(AppConfig.fontFamily).lineHeight(16)
       }
     }.width('100%').alignItems(HorizontalAlign.Start).margin({ top: 6 })
   }
@@ -297,6 +311,27 @@ export struct SshSkinSettingsPanel {
   // ---------- gallery ----------
   @Builder private gallery() {
     Column({ space: 12 }) {
+      if (this.modern()) {
+        AppSheetHeader({ title: '终端皮肤', subtitle: '字体、配色、功能键栏和顶栏成套切换；点皮肤上的铅笔可复制或编辑',
+          showProBadge: true, horizontalPadding: 0, whiteOnAccent: true, onClose: (): void => { this.onClose(); } })
+        Row({ space: 12 }) {
+          Column({ space: 2 }) {
+            Text('使用终端皮肤').fontSize(15).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
+            Text('关闭后终端恢复默认外观').fontSize(12).fontColor(this.pal().text2)
+          }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+          Toggle({ type: ToggleType.Switch, isOn: this.settings(this.revision).globalSkinId.length > 0 })
+            .selectedColor(this.accent).accessibilityText('使用终端皮肤')
+            .onChange((on: boolean): void => {
+              SshSkinStore.getInstance().setGlobalSkin(this.context(), on ? 'default-dark' : '');
+            })
+        }.width('100%').constraintSize({ minHeight: 56 })
+        Row({ space: 8 }) {
+          ForEach(['皮肤', '字体', '按主机'], (label: string, index: number): void => {
+            AppSettingsChoiceButton({ label: label, isSelected: this.tab === index, whiteOnAccent: true,
+              onSelect: (): void => { this.tab = index; } })
+          }, (label: string): string => label)
+        }.width('100%')
+      } else {
       Row({ space: 10 }) {
         Column({ space: 3 }) {
           Row({ space: 6 }) {
@@ -325,6 +360,7 @@ export struct SshSkinSettingsPanel {
             .onClick((): void => { this.tab = index; })
         }, (label: string): string => label)
       }.width('100%')
+      }
       if (this.tab === 0) {
         Flex({ wrap: FlexWrap.Wrap, space: { main: LengthMetrics.vp(10), cross: LengthMetrics.vp(10) } }) {
           ForEach(this.allSkins(this.revision), (skin: SshSkin): void => {

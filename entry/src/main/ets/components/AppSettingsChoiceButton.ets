@@ -1,6 +1,6 @@
 import { AppConfig, Palette, buildDark, buildLight } from '../common/Theme';
 import { AppUiMetrics } from '../common/AppUiMetrics';
-import { appUiButtonFill, appUiButtonText } from '../common/AppUiColorPolicy';
+import { appUiButtonFill, appUiButtonText, appUiOnAccentText } from '../common/AppUiColorPolicy';
 
 /** Free settings choice; its owner retains the value and persistence callback. */
 @Component
@@ -9,6 +9,8 @@ export struct AppSettingsChoiceButton {
   @StorageProp('accentColor') accent: string = '#007DFF';
   @Prop label: string = '';
   @Prop isSelected: boolean = false;
+  /** Settings sheets (全新视觉): white text on the accent unless white is unreadable, like the rest of settings. */
+  @Prop whiteOnAccent: boolean = false;
   onSelect: () => void = (): void => {};
 
   private pal(): Palette { return this.theme === 'light' ? buildLight(this.accent) : buildDark(this.accent); }
@@ -17,7 +19,8 @@ export struct AppSettingsChoiceButton {
     Button({ type: ButtonType.Normal }) {
       Text(this.label).fontSize(13).fontFamily(AppConfig.fontFamily)
         .fontWeight(this.isSelected ? FontWeight.Medium : FontWeight.Normal)
-        .fontColor(this.isSelected ? appUiButtonText(this.accent) : this.pal().text2)
+        .fontColor(this.isSelected ? (this.whiteOnAccent ? appUiOnAccentText(this.accent) :
+          appUiButtonText(this.accent)) : this.pal().text2)
         .textAlign(TextAlign.Center)
     }
     .constraintSize({ minWidth: AppUiMetrics.minTouchTarget, minHeight: AppUiMetrics.minTouchTarget })

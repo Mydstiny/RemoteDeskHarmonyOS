@@ -1,4 +1,6 @@
 import { promptAction } from '@kit.ArkUI';
+import { AppSheetHeader } from './AppSheetHeader';
+import { settingsVisualIsModern } from '../services/SettingsVisualStylePolicy';
 import { AppTheme, Palette, buildDark, buildLight } from '../common/Theme';
 import { protocolIcon } from '../services/ProtocolIconPolicy';
 import {
@@ -15,6 +17,8 @@ const ALL_PROTOCOLS: ControlBarProtocol[] = ['rdp', 'rustdesk', 'vnc', 'moonligh
 export struct RemoteSessionControlBarSettingsSheet {
   @StorageProp('currentTheme') theme: string = 'light';
   @StorageProp('accentColor') accentColor: string = '#007DFF';
+  /** 设置 → 个性化 → 全新视觉: the shared sheet header, larger rows and full-size switches. */
+  @StorageProp('settingsVisualStyle') visualStyle: string = 'classic';
   @Prop initialRdpHidden: boolean = false;
   @Prop initialRustDeskHidden: boolean = false;
   @Prop initialVncHidden: boolean = false;
@@ -44,6 +48,8 @@ export struct RemoteSessionControlBarSettingsSheet {
     if (!this.quickExitDisabled) { return; }
     this.restore({ rdpHidden: false, rustDeskHidden: false, vncHidden: false, moonlightHidden: false });
   }
+
+  private modern(): boolean { return settingsVisualIsModern(this.visualStyle); }
 
   private pal(): Palette {
     return this.theme === 'light' ? buildLight(this.accentColor) : buildDark(this.accentColor);
@@ -119,22 +125,24 @@ export struct RemoteSessionControlBarSettingsSheet {
 
   @Builder private protocolRow(protocol: ControlBarProtocol, title: string) {
     Row() {
-      SymbolGlyph(protocolIcon(protocol)).fontSize(21).fontColor([this.pal().text3]).margin({ right: 12 })
+      SymbolGlyph(protocolIcon(protocol)).fontSize(this.modern() ? 22 : 21)
+        .fontColor([this.modern() ? this.pal().text2 : this.pal().text3]).margin({ right: 12 })
       Column() {
-        Text(title).fontSize(14).fontWeight(FontWeight.Medium)
+        Text(title).fontSize(this.modern() ? 15 : 14).fontWeight(FontWeight.Medium)
           .fontColor(this.pal().text).fontFamily(AppTheme.fontFamily)
         Text(this.quickExitDisabled ? '关闭快捷退出时必须显示' :
           (this.hidden(protocol) ? '侧栏和顶栏均已隐藏' : '显示会话侧栏与顶栏'))
-          .fontSize(11).fontColor(this.pal().text3)
+          .fontSize(this.modern() ? 12 : 11).fontColor(this.modern() ? this.pal().text2 : this.pal().text3)
           .fontFamily(AppTheme.fontFamily).lineHeight(16).margin({ top: 3 })
       }.alignItems(HorizontalAlign.Start).layoutWeight(1)
       // On = shown. The stored preference still records "hidden".
       Toggle({ type: ToggleType.Switch, isOn: !this.hidden(protocol) })
-        .selectedColor(this.accentColor).scale({ x: 0.88, y: 0.88 })
+        .selectedColor(this.accentColor).scale({ x: this.modern() ? 1 : 0.88, y: this.modern() ? 1 : 0.88 })
         .enabled(!this.quickExitDisabled).opacity(this.quickExitDisabled ? 0.45 : 1)
         .accessibilityText('显示 ' + title + ' 会话控制栏')
         .onChange((shown: boolean): void => { this.commit([protocol], shown); })
-    }.width('100%').padding({ left: 15, right: 12, top: 11, bottom: 11 })
+    }.width('100%').constraintSize({ minHeight: this.modern() ? 56 : 0 })
+      .padding({ left: 15, right: 12, top: 11, bottom: 11 })
   }
 
   @Builder private divider() {
@@ -143,7 +151,12 @@ export struct RemoteSessionControlBarSettingsSheet {
 
   build() {
     Column() {
-      this.header()
+      if (this.modern()) {
+        AppSheetHeader({ title: '会话侧栏与顶栏', subtitle: '按协议选择是否显示会话控制栏，改动会立即保存', savedTick: this.savedTick, whiteOnAccent: true,
+          onClose: (): void => { this.onClose(); } })
+      } else {
+        this.header()
+      }
       Scroll() {
         Column() {
           Text(this.quickExitDisabled ?
@@ -155,11 +168,11 @@ export struct RemoteSessionControlBarSettingsSheet {
             .borderRadius(12).backgroundColor(this.pal().surface).margin({ bottom: 14 })
 
           Row() {
-            Button('全部显示').layoutWeight(1).height(38).borderRadius(10)
-              .backgroundColor(this.pal().surface).fontColor(this.pal().text2).fontSize(12)
+            Button('全部显示').layoutWeight(1).height(this.modern() ? 44 : 38).borderRadius(10)
+              .backgroundColor(this.pal().surface).fontColor(this.pal().text2).fontSize(this.modern() ? 13 : 12)
               .onClick((): void => { this.commit(ALL_PROTOCOLS, true); })
-            Button('全部隐藏').layoutWeight(1).height(38).borderRadius(10)
-              .backgroundColor(this.pal().surface).fontColor(this.pal().text2).fontSize(12)
+            Button('全部隐藏').layoutWeight(1).height(this.modern() ? 44 : 38).borderRadius(10)
+              .backgroundColor(this.pal().surface).fontColor(this.pal().text2).fontSize(this.modern() ? 13 : 12)
               .margin({ left: 8 }).onClick((): void => { this.commit(ALL_PROTOCOLS, false); })
               .enabled(!this.quickExitDisabled).opacity(this.quickExitDisabled ? 0.45 : 1)
           }.width('100%').margin({ bottom: 16 })

@@ -1,4 +1,6 @@
 import { common } from '@kit.AbilityKit';
+import { AppSheetHeader } from './AppSheetHeader';
+import { settingsVisualIsModern } from '../services/SettingsVisualStylePolicy';
 import { appUiOnAccentText } from '../common/AppUiColorPolicy';
 import { LengthMetrics, promptAction } from '@kit.ArkUI';
 import {
@@ -92,11 +94,14 @@ export struct VirtualKeyboardSettingsSheet {
     RemoteKeyboardSettingsService.getInstance();
   onClose: () => void = (): void => {};
   onCustomEditorVisibleChange: (visible: boolean) => void = (_visible: boolean): void => {};
+  /** 设置 → 个性化 → 全新视觉: the shared sheet header and descriptions of at least 12vp. */
+  @StorageProp('settingsVisualStyle') visualStyle: string = 'classic';
   /** A new combo, or changes to the one being edited, that are not saved yet (closing the sheet asks first). */
   onCustomEditorDirtyChange: (dirty: boolean) => void = (_dirty: boolean): void => {};
   private editorStart: string = '';
 
   private dark(): boolean { return this.theme === 'dark'; }
+  private modern(): boolean { return settingsVisualIsModern(this.visualStyle); }
   private bg(): string { return this.dark() ? '#1C1C1F' : '#F4F6F9'; }
   private card(): string { return this.dark() ? 'rgba(255,255,255,0.075)' : '#FFFFFF'; }
   private cardStroke(): string {
@@ -495,7 +500,7 @@ export struct VirtualKeyboardSettingsSheet {
   private sectionTitle(title: string, subtitle: string) {
     Column({ space: 3 }) {
       Text(title).fontSize(15).fontWeight(FontWeight.Bold).fontColor(this.text()).width('100%')
-      Text(subtitle).fontSize(10).fontColor(this.text2()).width('100%')
+      Text(subtitle).fontSize(this.modern() ? 12 : 10).fontColor(this.text2()).width('100%')
     }.width('100%').alignItems(HorizontalAlign.Start)
       .margin({ top: this.contentLayout().sectionTopMargin, bottom: 10 })
   }
@@ -506,7 +511,7 @@ export struct VirtualKeyboardSettingsSheet {
     Row() {
       Column({ space: 3 }) {
         Text(title).fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.text())
-        Text(subtitle).fontSize(10).fontColor(this.text2()).maxLines(2)
+        Text(subtitle).fontSize(this.modern() ? 12 : 10).fontColor(this.text2()).maxLines(2)
       }.alignItems(HorizontalAlign.Start).layoutWeight(1)
       Toggle({ type: ToggleType.Switch, isOn: enabled })
         .selectedColor(this.accentColor).onChange(onChange)
@@ -580,7 +585,7 @@ export struct VirtualKeyboardSettingsSheet {
           }
         }
         Text(method.subtypeSummary.length > 0 ? method.subtypeSummary : method.bundleName)
-          .fontSize(9).fontColor(this.text2()).maxLines(2)
+          .fontSize(this.modern() ? 12 : 9).fontColor(this.text2()).maxLines(2)
       }.alignItems(HorizontalAlign.Start).layoutWeight(1)
       SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(14).fontColor([this.text2()])
     }
@@ -680,12 +685,12 @@ export struct VirtualKeyboardSettingsSheet {
         }.width('100%')
       }
       Text('按键序列 · 依次发送，最多 ' + REMOTE_CUSTOM_SHORTCUT_MAX_STEPS.toString() + ' 步')
-        .fontSize(10).fontColor(this.text2()).width('100%')
+        .fontSize(this.modern() ? 12 : 10).fontColor(this.text2()).width('100%')
       Flex({ wrap: FlexWrap.Wrap, space: { main: LengthMetrics.vp(6), cross: LengthMetrics.vp(6) } }) {
         ForEach(this.stepIndexes(), (index: number): void => { this.stepChip(index) },
           (index: number): string => index.toString() + ':' + this.stepLabel(index) + ':' + this.activeStep.toString())
         if (this.allDraftSteps().length < REMOTE_CUSTOM_SHORTCUT_MAX_STEPS) {
-          Text('＋ 下一步').fontSize(10).fontColor(this.accentColor).height(30)
+          Text(this.modern() ? '添加下一步' : '＋ 下一步').fontSize(this.modern() ? 12 : 10).fontColor(this.accentColor).height(30)
             .padding({ left: 10, right: 10 }).borderRadius(15)
             .border({ width: 1, color: this.accentColor, style: BorderStyle.Dashed })
             .onClick((): void => { this.addStep(); })
@@ -726,7 +731,7 @@ export struct VirtualKeyboardSettingsSheet {
         .onClick((): void => { this.recordModifiers = []; this.recording = !this.recording; })
         .onKeyEvent((event: KeyEvent): void => { if (this.recordKey(event)) { event.stopPropagation(); } })
       Column({ space: 4 }) {
-        Text(this.draftName.trim().length > 0 ? this.draftName.trim() : '预览').fontSize(10).fontColor(this.text2())
+        Text(this.draftName.trim().length > 0 ? this.draftName.trim() : '预览').fontSize(this.modern() ? 12 : 10).fontColor(this.text2())
           .width('100%')
         Text(this.draftLabel().length > 0 ? this.draftLabel() :
           '当前步骤不完整：字母、数字和符号需要至少一个修饰键')
@@ -755,8 +760,8 @@ export struct VirtualKeyboardSettingsSheet {
     Column({ space: 6 }) {
       Row() {
         Text(this.customShortcuts.length.toString() + ' / 32')
-          .fontSize(10).fontColor(this.text2()).layoutWeight(1)
-        Button('＋ 新建').height(34).fontSize(11).borderRadius(9)
+          .fontSize(this.modern() ? 12 : 10).fontColor(this.text2()).layoutWeight(1)
+        Button(this.modern() ? '新建组合键' : '＋ 新建').height(this.modern() ? 44 : 34).fontSize(this.modern() ? 13 : 11).borderRadius(9)
           .backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor))
           .onClick((): void => { this.beginEditor(); })
       }.width('100%')
@@ -774,7 +779,7 @@ export struct VirtualKeyboardSettingsSheet {
                 .textOverflow({ overflow: TextOverflow.Ellipsis })
               if ((shortcut.name ?? '').length > 0 || remoteCustomShortcutSteps(shortcut).length > 1) {
                 Text(remoteCustomShortcutStepsLabel(remoteCustomShortcutSteps(shortcut), this.platform()))
-                  .fontSize(10).fontColor(this.text2()).maxLines(1)
+                  .fontSize(this.modern() ? 12 : 10).fontColor(this.text2()).maxLines(1)
                   .textOverflow({ overflow: TextOverflow.Ellipsis })
               }
             }.alignItems(HorizontalAlign.Start).layoutWeight(1)
@@ -811,25 +816,25 @@ export struct VirtualKeyboardSettingsSheet {
         Text(eyebrow).fontSize(14).fontWeight(FontWeight.Bold).fontColor(this.text())
         if (section === 'behavior') {
           Text(this.simpleKeyboardEnabled ? '精简键盘已开启' : '完整键盘已开启')
-            .fontSize(10).fontColor(this.text2()).maxLines(2)
+            .fontSize(this.modern() ? 12 : 10).fontColor(this.text2()).maxLines(2)
         } else if (section === 'shortcuts') {
           Text(this.platform() === 'macos' ? 'macOS · Cmd / Option' : 'Windows · Ctrl / Alt / Win')
-            .fontSize(10).fontColor(this.text2()).maxLines(2)
+            .fontSize(this.modern() ? 12 : 10).fontColor(this.text2()).maxLines(2)
         } else if (section === 'functions') {
           Text((this.functionKeysVisible ? '完整功能键' : '精简功能键') + ' · ' +
             (this.closeAfterShortcut ? '发送后关闭' : '连续发送'))
-            .fontSize(10).fontColor(this.text2()).maxLines(2)
+            .fontSize(this.modern() ? 12 : 10).fontColor(this.text2()).maxLines(2)
         } else if (section === 'custom') {
           Text(this.customShortcuts.length.toString() + ' 个已保存 · 上限 32 个')
-            .fontSize(10).fontColor(this.text2()).maxLines(2)
+            .fontSize(this.modern() ? 12 : 10).fontColor(this.text2()).maxLines(2)
         } else if (section === 'harmonyShortcuts') {
           Text(this.harmonyShortcutDeviceLabel(this.selectedHarmonyShortcutDevice) + ' · ' +
             this.harmonyShortcutDeviceSubtitle(this.selectedHarmonyShortcutDevice))
-            .fontSize(10).fontColor(this.text2()).maxLines(2)
+            .fontSize(this.modern() ? 12 : 10).fontColor(this.text2()).maxLines(2)
         } else {
           Text(this.systemLoading ? '正在读取系统输入法状态' :
             (this.systemSnapshot.available ? '当前：' + this.systemSnapshot.currentLabel : '由系统统一管理'))
-            .fontSize(10).fontColor(this.text2()).maxLines(2)
+            .fontSize(this.modern() ? 12 : 10).fontColor(this.text2()).maxLines(2)
         }
       }.alignItems(HorizontalAlign.Start).layoutWeight(1)
     }.width('100%').padding(this.contentLayout().heroPadding)
@@ -840,14 +845,14 @@ export struct VirtualKeyboardSettingsSheet {
   @Builder
   private refreshInputMethodsButton() {
     Button(this.systemLoading ? '正在刷新…' : '刷新状态')
-      .width('100%').height(42).fontSize(11).borderRadius(12)
+      .width('100%').height(this.modern() ? 44 : 42).fontSize(this.modern() ? 13 : 11).borderRadius(12)
       .backgroundColor(this.card()).fontColor(this.text())
       .enabled(!this.systemLoading).onClick((): void => { this.refreshSystemInputMethods(); })
   }
 
   @Builder
   private openSystemInputMethodSettingsButton() {
-    Button('系统输入法设置').width('100%').height(42).fontSize(11)
+    Button('系统输入法设置').width('100%').height(this.modern() ? 44 : 42).fontSize(this.modern() ? 13 : 11)
       .borderRadius(12).backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor))
       .onClick((): void => { this.openSystemSettings(); })
   }
@@ -980,7 +985,7 @@ export struct VirtualKeyboardSettingsSheet {
         Text(this.harmonyShortcutProtocolLabel(protocol))
           .fontSize(12).fontWeight(FontWeight.Medium).fontColor(this.text())
         Text(this.harmonyShortcutProtocolStatus(deviceClass, protocol))
-          .fontSize(9).fontColor(this.text2())
+          .fontSize(this.modern() ? 12 : 9).fontColor(this.text2())
       }.alignItems(HorizontalAlign.Start).layoutWeight(1)
       Toggle({
         type: ToggleType.Switch,
@@ -1044,7 +1049,7 @@ export struct VirtualKeyboardSettingsSheet {
     this.harmonyShortcutDeviceCard()
     Text('屏蔽仅在远程会话位于前台时生效。RustDesk 支持音量键，其他协议支持音量和媒体键；' +
       'SSH 没有通用媒体按键通道，因此不显示。')
-      .fontSize(9).fontColor(this.text2()).lineHeight(14).width('100%')
+      .fontSize(this.modern() ? 12 : 9).fontColor(this.text2()).lineHeight(this.modern() ? 18 : 14).width('100%')
       .padding({ left: 4, right: 4, top: 2 })
   }
 
@@ -1074,6 +1079,15 @@ export struct VirtualKeyboardSettingsSheet {
   build() {
     Column() {
       Row() {
+        if (this.modern()) {
+          AppSheetHeader({ title: this.pageTitle(), subtitle: this.pageSubtitle(), horizontalPadding: 0,
+            whiteOnAccent: true, onClose: (): void => { this.onClose(); } })
+            .width('100%').constraintSize({ maxWidth: this.contentLayout().maxContentWidth })
+            .padding({
+              left: this.contentLayout().headerHorizontalPadding,
+              right: this.contentLayout().headerHorizontalPadding
+            })
+        } else {
         Row() {
           Column({ space: 3 }) {
             Text('键盘设置').fontSize(10).fontWeight(FontWeight.Medium)
@@ -1081,7 +1095,7 @@ export struct VirtualKeyboardSettingsSheet {
             Text(this.pageTitle()).fontSize(this.contentLayout().titleFontSize)
               .fontWeight(FontWeight.Bold).fontColor(this.text()).maxLines(1)
               .textOverflow({ overflow: TextOverflow.Ellipsis })
-            Text(this.pageSubtitle()).fontSize(10).fontColor(this.text2()).maxLines(2)
+            Text(this.pageSubtitle()).fontSize(this.modern() ? 12 : 10).fontColor(this.text2()).maxLines(2)
           }.alignItems(HorizontalAlign.Start).layoutWeight(1)
           Button() {
             SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor([this.text()])
@@ -1095,6 +1109,7 @@ export struct VirtualKeyboardSettingsSheet {
             top: this.contentLayout().headerTopPadding,
             bottom: this.contentLayout().headerBottomPadding
           })
+        }
       }.width('100%').justifyContent(FlexAlign.Center)
 
       Scroll() {
