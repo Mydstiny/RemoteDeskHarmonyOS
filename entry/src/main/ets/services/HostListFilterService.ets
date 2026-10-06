@@ -6,7 +6,7 @@ import { searchHosts as searchHostsByWorkspace } from './HostWorkspacePolicy';
 
 /**
  * `relayNames` (relay id → name) also matches RustDesk hosts by the relay they use, which is how 中继 → 查看主机
- * lists a relay's hosts. A locked host is not matched by its relay.
+ * lists a relay's hosts (all of them, as the relay card counts them).
  */
 export function searchHosts(hosts: RemoteHost[], query: string, relayNames?: Map<string, string>): RemoteHost[] {
   const matched: RemoteHost[] = searchHostsByWorkspace(hosts, query);
@@ -14,7 +14,7 @@ export function searchHosts(hosts: RemoteHost[], query: string, relayNames?: Map
   if (relayNames === undefined || normalized === '') { return matched; }
   const matchedIds: Set<string> = new Set<string>(matched.map((host: RemoteHost): string => host.id));
   return hosts.filter((host: RemoteHost): boolean => matchedIds.has(host.id) ||
-    (host.protocol === 'rustdesk' && !host.locked && host.rustdeskRelayId !== '' &&
+    (host.protocol === 'rustdesk' && host.rustdeskRelayId !== '' &&
       (relayNames.get(host.rustdeskRelayId) ?? '').toLowerCase().includes(normalized)));
 }
 

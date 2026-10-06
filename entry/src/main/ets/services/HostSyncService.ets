@@ -1,6 +1,7 @@
 /**
  * HostSyncService.ets — 远程主机配置管理 (CloudStore RDB + 端云自动同步)
  */
+import { relayEndpointSignature } from './RelayDirectoryPolicy';
 import { ConnectionHealth, RemoteHost } from '../model/RemoteHost';
 import { RustDeskRelayConfig } from '../model/RustDeskRelayConfig';
 import { RdpCredential } from '../model/RdpCredential';
@@ -1488,9 +1489,13 @@ export class HostSyncService {
    * A connection test's result. Only the health fields change, merged into the record as it is now, so an edit
    * saved while the test ran (a new key, a removed account) is kept.
    */
-  updateRelayHealth(id: string, status: string, latency: number, checkedAt: number): boolean {
+  updateRelayHealth(id: string, status: string, latency: number, checkedAt: number,
+    testedEndpoints: string = ''): boolean {
     const current: RustDeskRelayConfig | undefined = this.relays.get(id);
     if (current === undefined) { return false; }
+    // An address saved while the test ran: this result is for the old one.
+    if (testedEndpoints !== '' && testedEndpoints !== relayEndpointSignature(current.idServer, current.idServerPort,
+      current.relayServer, current.relayPort)) { return false; }
     const next: RustDeskRelayConfig = RustDeskRelayConfig.fromJSON(current.toJSON());
     next.healthStatus = status;
     next.healthLatency = latency;

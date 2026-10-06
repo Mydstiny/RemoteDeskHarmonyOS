@@ -23,6 +23,7 @@ import {
   relayDeleteMessage,
   relayProbeToast,
   relaySaveStageLabel,
+  relayEndpointSignature,
   summarizeRustDeskRelayProbe,
   vncGatewayCheckMessage,
   vncGatewayDeleteMessage
@@ -193,6 +194,8 @@ export struct RustDeskRelayPage {
   @State proBusy: boolean = false;
   /** Relays being tested; every test entry of a relay is disabled while it is in here. */
   @State testingRelayIds: string[] = [];
+  /** The gateway whose certificate a deep check asked to confirm (shown as 确认证书 on its card). */
+  @State pendingTrustGatewayId: string = '';
   /** Per-endpoint results of this session's tests (the stored record keeps the overall status only). */
   @State relayProbeRevision: number = 0;
   private relayProbeDetails: Map<string, RelayProbeDetail> = new Map<string, RelayProbeDetail>();
@@ -398,6 +401,7 @@ export struct RustDeskRelayPage {
   // ==================== Status helpers ====================
 
   private relayStatusColor(relay: RustDeskRelayConfig): string {
+    if (this.isRelayTesting(relay.id)) { return this.pal().text3; }
     if (relay.healthStatus === 'online') { return this.pal().success; }
     if (relay.healthStatus === 'offline' || relay.healthStatus === 'error') { return this.pal().danger; }
     return this.pal().text3;
@@ -411,9 +415,10 @@ export struct RustDeskRelayPage {
     this.testingRelayIds = next;
   }
 
-  /** This session's per-endpoint result of a relay, or undefined before it was tested here. */
-  private relayProbeDetail(id: string, _revision: number): RelayProbeDetail | undefined {
-    return this.relayProbeDetails.get(id);
+  /** This session's per-endpoint result of a relay, while it is still the record's latest result. */
+  private relayProbeDetail(relay: RustDeskRelayConfig, _revision: number): RelayProbeDetail | undefined {
+    const detail: RelayProbeDetail | undefined = this.relayProbeDetails.get(relay.id);
+    return detail !== undefined && detail.checkedAt === relay.healthCheckedAt ? detail : undefined;
   }
 
   private relayStatusLabel(relay: RustDeskRelayConfig): string {
@@ -474,8 +479,14 @@ export struct RustDeskRelayPage {
 
   /** The certificate of this gateway's last check is waiting to be confirmed. */
   private gatewayAwaitsCertificate(gateway: VncGatewayView): boolean {
-    return this.vncTestResultId === gateway.id && this.vncTestState === 'failed' &&
-      (this.vncTestCode === 'E-VNC-CERT-TRUST-REQUIRED' || this.vncTestCode === 'E-VNC-CERT-CHANGED');
+    return this.pendingTrustGatewayId === gateway.id;
+  }
+
+  private clearPendingTrust(): void {
+    this.pendingVncTrustEndpoint = null;
+    this.pendingVncTrustFingerprint = '';
+    this.pendingVncTrustBinding = null;
+    this.pendingTrustGatewayId = '';
   }
 
   private gatewayHostCount(gatewayId: string): number {
@@ -574,6 +585,7 @@ export struct RustDeskRelayPage {
   }
 
   private closeSheet(): void {
+    if (!this.showSheet) { return; }
     this.relaySheetClosing = true;
     this.showSheet = false;
   }
@@ -723,25 +735,24 @@ export struct RustDeskRelayPage {
         capabilityReady: true,
         message: loginFlow
           ? (count > 0
-            ? 'Pro 已同步 ' + count.toString() + ' 台设备，控制面绑定校验通过'
-            : '登录成功，地址簿为空；控制面绑定校验通过')
+            ? '已登录并同步 ' + count.toString() + ' 台设备，连接时可以使用这个账户'
+            : '已登录，地址簿为空；连接时可以使用这个账户')
           : (count > 0
-            ? 'Pro 已同步 ' + count.toString() + ' 台设备，控制面绑定校验通过'
-            : '同步完成，控制面绑定校验通过')
+            ? '已同步 ' + count.toString() + ' 台设备'
+            : '同步完成')
       };
     }
     if (status !== undefined && !status.requiresAccount) {
       return {
         capabilityReady: false,
-        message: '地址簿同步成功；当前连接配置为' +
-          rustDeskControlPlaneProfileLabel(status.profile) +
-          '，仅使用地址簿 HTTP 会话，不向控制面发送地址簿令牌'
+        message: '地址簿已同步。这个中继的类型是「' + rustDeskControlPlaneProfileLabel(status.profile) +
+          '」，登录只用于同步地址簿，连接时不会使用这个账户'
       };
     }
     return {
       capabilityReady: false,
-      message: '地址簿同步成功；控制面绑定尚未满足，连接不会发送地址簿令牌。' +
-        '请检查账号、API、ID/Relay 端点和服务器 Key 是否属于同一部署'
+      message: '地址簿已同步，但连接时还不能使用这个账户。' +
+        '请检查账号、地址簿地址、ID/中继服务器地址和服务器密钥是否属于同一套服务器'
     };
   }
 
@@ -926,6 +937,7 @@ export struct RustDeskRelayPage {
     const id: string = relay.id;
     if (this.isRelayTesting(id)) { return; }
     this.setRelayTesting(id, true);
+    const tested: string = relayEndpointSignature(relay.idServer, relay.idServerPort, relay.relayServer, relay.relayPort);
     const relayId: string = rustDeskRelayIdFingerprint(id);
     hilog.info(0x0001, 'RustDeskRelay', 'health test start relayId=' + relayId + ' relayEndpoint=configured');
     try {
@@ -937,18 +949,21 @@ export struct RustDeskRelayPage {
       const summary: RelayProbeSummary = summarizeRustDeskRelayProbe(results[0].ok, results[0].lat,
         results[1].ok, results[1].lat);
       const checkedAt: number = Date.now();
-      this.relayProbeDetails.set(id, {
-        idReachable: results[0].ok, idLatency: results[0].lat,
-        relayReachable: results[1].ok, relayLatency: results[1].lat, checkedAt: checkedAt
-      });
-      this.relayProbeRevision++;
-      // Only the health fields are written, into the record as it is now: an edit saved meanwhile is kept.
-      const saved: boolean = this.srv.updateRelayHealth(id, summary.status, summary.latency, checkedAt);
+      // Only the health fields are written, into the record as it is now, and only while it still has the
+      // endpoints that were tested: an edit saved meanwhile is kept, and its new address is not marked.
+      const saved: boolean = this.srv.updateRelayHealth(id, summary.status, summary.latency, checkedAt, tested);
       hilog.info(0x0001, 'RustDeskRelay', 'health test result relayId=' + relayId +
         ' status=' + summary.status + ' latency=' + summary.latency.toString() + ' saved=' + saved.toString());
+      if (saved) {
+        this.relayProbeDetails.set(id, {
+          idReachable: results[0].ok, idLatency: results[0].lat,
+          relayReachable: results[1].ok, relayLatency: results[1].lat, checkedAt: checkedAt
+        });
+        this.relayProbeRevision++;
+      }
       if (this.pageActive) {
         this.load();
-        promptAction.showToast({ message: relayProbeToast(summary), duration: 2000 });
+        promptAction.showToast({ message: saved ? relayProbeToast(summary) : '中继地址刚刚改过，请重新测试', duration: 2000 });
       }
     } finally {
       this.setRelayTesting(id, false);
@@ -1103,9 +1118,7 @@ export struct RustDeskRelayPage {
     this.testingVncGatewayRequestId = 0;
     this.testingVncGatewayId = '';
     this.vncDeepBinding = null;
-    this.pendingVncTrustBinding = null;
-    this.pendingVncTrustEndpoint = null;
-    this.pendingVncTrustFingerprint = '';
+    this.clearPendingTrust();
     this.setVncCheck(binding.gatewayId, 'failed', '', 'E-VNC-GATEWAY-BINDING');
   }
 
@@ -1147,9 +1160,7 @@ export struct RustDeskRelayPage {
       this.setVncCheck(gateway.id, 'failed', '', 'E-VNC-GATEWAY-BINDING');
       return;
     }
-    this.pendingVncTrustEndpoint = null;
-    this.pendingVncTrustFingerprint = '';
-    this.pendingVncTrustBinding = null;
+    this.clearPendingTrust();
     this.vncDeepBinding = binding;
     const attemptGeneration: number = ++this.vncDeepAttemptGeneration;
     this.testingVncGatewayId = gateway.id;
@@ -1172,15 +1183,22 @@ export struct RustDeskRelayPage {
         result.userId !== binding.userId || result.storeIdentityFingerprint !== binding.storeIdentityFingerprint ||
         result.endpointBindingFingerprint !== binding.endpointBindingFingerprint ||
         result.accountGeneration !== binding.accountGeneration) {
+        // Still this check, but its binding changed: say so instead of leaving 正在检查… up.
+        if (this.pageActive && this.vncDeepAttemptGeneration === attemptGeneration &&
+          this.testingVncGatewayRequestId === requestId && this.vncTestResultId === gateway.id) {
+          this.setVncCheck(gateway.id, 'failed', '', 'E-VNC-GATEWAY-BINDING');
+        }
         return;
       }
       if (result.code === 'E-VNC-CERT-TRUST-REQUIRED' || result.code === 'E-VNC-CERT-CHANGED') {
         this.pendingVncTrustEndpoint = trustEndpoint;
         this.pendingVncTrustFingerprint = result.certificateFingerprintSha256;
         this.pendingVncTrustBinding = binding;
+        this.pendingTrustGatewayId = result.certificateFingerprintSha256 === '' ? '' : gateway.id;
         this.setVncCheck(gateway.id, 'failed', result.certificateFingerprintSha256 === '' ?
           '需要确认证书，但没有取到证书指纹，请重新检查' : '', result.code);
-        if (result.certificateFingerprintSha256 !== '') {
+        // Opens by itself only when no other sheet is up; otherwise 确认证书 on the card opens it later.
+        if (result.certificateFingerprintSha256 !== '' && !this.showSheet && !this.relaySheetClosing) {
           this.sheetContent = 11;
           this.showSheet = true;
         }
@@ -1224,9 +1242,7 @@ export struct RustDeskRelayPage {
     const pending = this.pendingVncTrustEndpoint;
     if (binding === null || pending === null || this.pendingVncTrustFingerprint === '') { return false; }
     if (!this.deepBindingStillCurrent(binding)) {
-      this.pendingVncTrustBinding = null;
-      this.pendingVncTrustEndpoint = null;
-      this.pendingVncTrustFingerprint = '';
+      this.clearPendingTrust();
       this.setVncCheck(binding.gatewayId, 'failed', '', 'E-VNC-GATEWAY-BINDING');
       return false;
     }
@@ -1237,9 +1253,7 @@ export struct RustDeskRelayPage {
     if (!endpoint.ok || owner === null || owner.endpointBindingFingerprint !== binding.endpointBindingFingerprint ||
       owner.storeIdentityFingerprint !== pending.storeIdentityFingerprint || owner.userId !== pending.userId ||
       owner.ownerId !== pending.ownerId || owner.ownerType !== pending.ownerType) {
-      this.pendingVncTrustBinding = null;
-      this.pendingVncTrustEndpoint = null;
-      this.pendingVncTrustFingerprint = '';
+      this.clearPendingTrust();
       this.setVncCheck(binding.gatewayId, 'failed', '', 'E-VNC-GATEWAY-BINDING');
       return false;
     }
@@ -1265,10 +1279,14 @@ export struct RustDeskRelayPage {
     this.showSheet = true;
   }
 
-  /** The trust sheet's 重新检查: close it, then run the deep check again on that gateway. */
-  private recheckGatewayAfterTrust(): void {
-    const gatewayId: string = this.pendingVncTrustBinding !== null ? this.pendingVncTrustBinding.gatewayId :
-      this.vncTestResultId;
+  /** The trust sheet's 重新检查 on a gateway's row: close it, then run the deep check again on that gateway. */
+  private recheckGatewayAfterTrust(trust: VncTrustView): void {
+    if (trust.ownerType !== 'gateway') {
+      // A host's certificate is checked when that host connects.
+      promptAction.showToast({ message: '主机的证书会在连接这台主机时重新检查', duration: 2200 });
+      return;
+    }
+    const gatewayId: string = trust.ownerId;
     this.afterSheetDismiss = (): void => {
       const gateway: VncGatewayView | undefined =
         this.vncGateways.find((item: VncGatewayView): boolean => item.id === gatewayId);
@@ -1369,31 +1387,22 @@ export struct RustDeskRelayPage {
       buttons: [{ text: '取消', color: this.pal().text2 }, { text: '删除', color: this.pal().danger }]
     }).then((result: Object): void => {
       const r: Record<string, number> = result as Record<string, number>;
-      if (r['index'] === 1) { void this.removeProAccount(accountId, false); }
+      if (r['index'] === 1) { void this.removeProAccount(accountId); }
     }).catch((): void => {});
   }
 
-  private async removeProAccount(accountId: string, localOnly: boolean): Promise<void> {
+  /** Logs out on the server when it can be reached (offline it is skipped there), then removes the account here. */
+  private async removeProAccount(accountId: string): Promise<void> {
     if (this.proBusy) { return; }
     this.proBusy = true;
     this.formProError = '';
     try {
-      await this.proSync.logout(accountId, localOnly);
+      await this.proSync.logout(accountId);
       this.loadProAccounts();
-      promptAction.showToast({ message: localOnly ? '已从本机删除 Pro 账户' : '已退出并删除 Pro 账户', duration: 1800 });
+      promptAction.showToast({ message: '已删除 Pro 账户', duration: 1800 });
       this.closeSheet();
     } catch (err) {
-      const reason: string = err instanceof Error && err.message !== '' ? err.message : '服务器暂时无法退出登录';
-      this.formProError = reason;
-      if (localOnly) { return; }
-      promptAction.showDialog({
-        title: '服务器上没能退出登录',
-        message: reason + '。可以只从本机删除这个账户；服务器上的登录会在过期后失效。',
-        buttons: [{ text: '取消', color: this.pal().text2 }, { text: '仅从本机删除', color: this.pal().danger }]
-      }).then((choice: Object): void => {
-        const c: Record<string, number> = choice as Record<string, number>;
-        if (c['index'] === 1) { void this.removeProAccount(accountId, true); }
-      }).catch((): void => {});
+      this.formProError = '没有删除：' + (err instanceof Error && err.message !== '' ? err.message : '请重试');
     } finally {
       this.proBusy = false;
     }
@@ -2106,8 +2115,6 @@ export struct RustDeskRelayPage {
                 }.width('100%').padding({ left: 10, right: 10, top: 8, bottom: 8 })
               }
               .width('100%').borderRadius(10).backgroundColor(this.pal().surface).padding(10)
-
-              Blank().layoutWeight(1)
             }.width('50%').padding({ left: 10 })
           }.width('100%').alignItems(VerticalAlign.Top)
 
@@ -2120,7 +2127,7 @@ export struct RustDeskRelayPage {
   /** ID or relay endpoint: this session's own result when tested here, else what the overall status implies. */
   private endpointHealth(relay: RustDeskRelayConfig, idEndpoint: boolean): string {
     if (this.isRelayTesting(relay.id)) { return 'testing'; }
-    const detail: RelayProbeDetail | undefined = this.relayProbeDetail(relay.id, this.relayProbeRevision);
+    const detail: RelayProbeDetail | undefined = this.relayProbeDetail(relay, this.relayProbeRevision);
     if (detail !== undefined) {
       return (idEndpoint ? detail.idReachable : detail.relayReachable) ? 'online' : 'offline';
     }
@@ -2210,7 +2217,7 @@ export struct RustDeskRelayPage {
             .width('100%').margin({ top: 5 })
         }
         if (this.vncTestResultId === gateway.id && this.vncTestResult !== '') {
-          Column() { this.vncCheckResultView(gateway, 11) }.width('100%').margin({ top: 5 })
+          Column() { this.vncCheckResultView(gateway, 10) }.width('100%').margin({ top: 5 })
         }
       }.width('100%').borderRadius(10).backgroundColor(this.pal().surface)
         .padding({ left: 10, right: 10, top: 6, bottom: 6 }).margin({ top: 9 })
@@ -2846,7 +2853,7 @@ export struct RustDeskRelayPage {
       }
       if (this.proAccountId !== '') {
           Button('删除此 Pro 账户').width('100%').height(40).fontSize(14)
-          .backgroundColor(Color.Transparent).fontColor(this.pal().danger).borderRadius(10).margin({ top: 16 })
+          .backgroundColor(Color.Transparent).fontColor(this.pal().danger).borderRadius(10).margin({ top: 8 })
           .enabled(!this.proBusy)
           .onClick(() => { this.doProLogout(this.proAccountId); })
       }
@@ -2893,12 +2900,12 @@ export struct RustDeskRelayPage {
         canConfirmPending: (): boolean => this.canConfirmPendingVncTrust(),
         onClose: (): void => { this.closeSheet(); },
         onConfirmed: (): void => {
-          this.pendingVncTrustEndpoint = null;
-          this.pendingVncTrustFingerprint = '';
-          this.pendingVncTrustBinding = null;
+          const gatewayId: string = this.pendingTrustGatewayId;
+          this.clearPendingTrust();
+          if (gatewayId !== '') { this.setVncCheck(gatewayId, '', '证书已确认，可以重新做深度测试'); }
           this.closeSheet();
         },
-        onRecheck: (_trust: VncTrustView, _hostId: string): void => { this.recheckGatewayAfterTrust(); }
+        onRecheck: (trust: VncTrustView, _hostId: string): void => { this.recheckGatewayAfterTrust(trust); }
       })
     } else if (this.sheetContent === 9) {
       RustDeskRelayConfigPasteSheet({

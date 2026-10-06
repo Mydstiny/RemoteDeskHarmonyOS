@@ -55,6 +55,12 @@ export interface RelayProbeDetail {
   checkedAt: number;
 }
 
+/** The endpoints a relay test probed: its result is written only while the record still has them. */
+export function relayEndpointSignature(idServer: string, idServerPort: number, relayServer: string,
+  relayPort: number): string {
+  return idServer + ':' + idServerPort.toString() + '|' + relayServer + ':' + relayPort.toString();
+}
+
 export function summarizeRustDeskRelayProbe(idReachable: boolean, idLatency: number,
   relayReachable: boolean, relayLatency: number): RelayProbeSummary {
   if (idReachable && relayReachable) {
@@ -147,12 +153,12 @@ export function vncGatewayCheckCodeText(code: string): string {
  */
 export function vncGatewayCheckMessage(code: string, message: string): string {
   const plain: string = message.trim()
-    .replace(/\s*Sheet\s*/g, '弹窗')
-    .replace(/\s*endpoint\s*/g, '地址')
-    .replace(/RFB banner\s*/g, 'VNC 响应')
-    .replace(/Repeater banner\s*/g, '中继响应')
-    .replace(/\s*banner\s*/g, '响应')
-    .replace(/\s*target\s*/g, '目标');
+    .replace(/\s*\bSheet\b\s*/g, '弹窗')
+    .replace(/\s*\bendpoint\b\s*/g, '地址')
+    .replace(/\bRFB banner\b\s*/g, 'VNC 响应')
+    .replace(/\bRepeater banner\b\s*/g, '中继响应')
+    .replace(/\s*\bbanner\b\s*/g, '响应')
+    .replace(/\s*\btarget\b\s*/g, '目标');
   if (plain !== '' && !/^E-VNC-/.test(plain)) { return plain; }
   return vncGatewayCheckCodeText(code);
 }
