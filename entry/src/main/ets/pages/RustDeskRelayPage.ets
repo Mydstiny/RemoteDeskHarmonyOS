@@ -196,6 +196,8 @@ export struct RustDeskRelayPage {
   @State testingRelayIds: string[] = [];
   /** The gateway whose certificate a deep check asked to confirm (shown as 确认证书 on its card). */
   @State pendingTrustGatewayId: string = '';
+  /** From the sheet's appear to its disappear, closing animation included: no other sheet content may open then. */
+  private relaySheetMounted: boolean = false;
   /** Per-endpoint results of this session's tests (the stored record keeps the overall status only). */
   @State relayProbeRevision: number = 0;
   private relayProbeDetails: Map<string, RelayProbeDetail> = new Map<string, RelayProbeDetail>();
@@ -495,6 +497,15 @@ export struct RustDeskRelayPage {
     } catch (_error) {
       return 0;
     }
+  }
+
+  /** Why a test result was not written: the address changed meanwhile, or the record could not be saved. */
+  private unsavedProbeMessage(id: string, tested: string): string {
+    const current: RustDeskRelayConfig | undefined =
+      this.srv.getAllRelays().find((item: RustDeskRelayConfig): boolean => item.id === id);
+    if (current === undefined) { return '这个中继已被删除'; }
+    return relayEndpointSignature(current.idServer, current.idServerPort, current.relayServer, current.relayPort) !== tested ?
+      '中继地址刚刚改过，请重新测试' : '测试结果没有保存，请重试';
   }
 
   /** List keys: a card is rebuilt only when what it shows changed, not on every reload. */
@@ -963,7 +974,8 @@ export struct RustDeskRelayPage {
       }
       if (this.pageActive) {
         this.load();
-        promptAction.showToast({ message: saved ? relayProbeToast(summary) : '中继地址刚刚改过，请重新测试', duration: 2000 });
+        promptAction.showToast({ message: saved ? relayProbeToast(summary) : this.unsavedProbeMessage(id, tested),
+          duration: 2000 });
       }
     } finally {
       this.setRelayTesting(id, false);
@@ -1123,6 +1135,8 @@ export struct RustDeskRelayPage {
   }
 
   private async doDeepTestVncGateway(gateway: VncGatewayView): Promise<void> {
+    // A new check replaces whatever certificate an earlier one was waiting for, even if it stops early.
+    this.clearPendingTrust();
     const availability = vncGatewayAvailability(gateway.transport, gateway.tls,
       gateway.tokenConfigured, gateway.repeaterMode);
     if (!availability.enabled) {
@@ -1198,7 +1212,8 @@ export struct RustDeskRelayPage {
         this.setVncCheck(gateway.id, 'failed', result.certificateFingerprintSha256 === '' ?
           '需要确认证书，但没有取到证书指纹，请重新检查' : '', result.code);
         // Opens by itself only when no other sheet is up; otherwise 确认证书 on the card opens it later.
-        if (result.certificateFingerprintSha256 !== '' && !this.showSheet && !this.relaySheetClosing) {
+        if (result.certificateFingerprintSha256 !== '' && !this.showSheet && !this.relaySheetClosing &&
+          !this.relaySheetMounted) {
           this.sheetContent = 11;
           this.showSheet = true;
         }
@@ -1508,7 +1523,8 @@ export struct RustDeskRelayPage {
       dragBar: false,
       keyboardAvoidMode: this.relaySheetKeyboardAvoidMode(),
       backgroundColor: this.pal().sheetBg, blurStyle: BlurStyle.NONE, showClose: false,
-      onDisappear: () => { this.finishSheetDismiss(); }
+      onAppear: () => { this.relaySheetMounted = true; },
+      onDisappear: () => { this.relaySheetMounted = false; this.finishSheetDismiss(); }
     })
   }
 
