@@ -1196,7 +1196,6 @@ export struct KeyVaultPage {
         removeMode: this.passphraseRemoveMode,
         onDirtyChange: (dirty: boolean): void => { this.passphraseSheetDirty = dirty; },
         onComplete: (newPrivateKey: string, newEncrypted: boolean) => {
-          this.passphraseSheetDirty = false;
           const updated: SshKey = new SshKey();
           updated.id = this.sheetKey.id;
           updated.label = this.sheetKey.label;
@@ -1216,6 +1215,8 @@ export struct KeyVaultPage {
             promptAction.showToast({ message: '密码没有保存，请重试', duration: 2000 });
             return;
           }
+          // Saved: the typed passphrases are no longer at stake.
+          this.passphraseSheetDirty = false;
           this.sheetKey = updated;
           this.sheetMode = 2;
           promptAction.showToast({ message: this.passphraseChangedMessage(updated, newEncrypted), duration: 3200 });

@@ -810,14 +810,13 @@ export struct RustDeskRelayPage {
 
   /** What closing the sheet now would throw away ('' when nothing): typed input that is not saved yet. */
   private relaySheetUnsavedLabel(): string {
-    if (this.sheetContent === 9 && this.pasteConfigDirty) { return '粘贴内容'; }
-    // The relay form keeps what was typed while the paste sheet or the picker is on screen: it is still at stake.
-    if ((this.sheetContent === 1 || this.sheetContent === 5 || this.sheetContent === 9) && !this.relaySaving &&
-      this.relayFormSnapshot() !== this.relayFormBaseline) {
-      return '中继配置';
-    }
+    // The relay form keeps what was typed while the paste sheet, the picker or the VNC flow is on screen.
+    const relayFormTyped: boolean = (this.sheetContent === 1 || this.sheetContent === 5 || this.sheetContent === 9 ||
+      this.sheetContent === 10) && !this.relaySaving && this.relayFormSnapshot() !== this.relayFormBaseline;
+    if (this.sheetContent === 9 && this.pasteConfigDirty) { return relayFormTyped ? '中继配置和粘贴内容' : '粘贴内容'; }
+    if (this.sheetContent === 10 && this.vncGatewayDirty) { return relayFormTyped ? '中继配置' : 'VNC 中继配置'; }
+    if (relayFormTyped) { return '中继配置'; }
     if (this.sheetContent === 3 && !this.proBusy && this.proFormSnapshot() !== this.proFormBaseline) { return '登录信息'; }
-    if (this.sheetContent === 10 && this.vncGatewayDirty) { return 'VNC 中继配置'; }
     return '';
   }
 

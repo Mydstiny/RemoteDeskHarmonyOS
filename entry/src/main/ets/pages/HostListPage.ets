@@ -419,7 +419,17 @@ import { SshWorkspaceCapabilityStore } from
   '../services/ssh/workspace/SshWorkspaceCapabilityStore';
 import { SshProxyProfileV1 } from '../services/SshProxyProfilePolicy';
 import { SshProxyProfileStore } from '../services/SshProxyProfileStore';
-import { SshProxyEditorBuildResult, SshProxyEditorKind, SshProxyEditorValue, applySshProxyProfileToLegacyHost, buildSshProxyProfile, defaultSshProxyEditorValue, defaultSshProxyHop, sshProxyEditorValueFromProfile, sshProxyEditorInputKey } from '../services/SshProxyEditorPolicy';
+import {
+  SshProxyEditorBuildResult,
+  SshProxyEditorKind,
+  SshProxyEditorValue,
+  applySshProxyProfileToLegacyHost,
+  buildSshProxyProfile,
+  defaultSshProxyEditorValue,
+  defaultSshProxyHop,
+  sshProxyEditorValueFromProfile,
+  sshProxyEditorInputKey
+} from '../services/SshProxyEditorPolicy';
 import {
   SshProxyRuntimePlan,
   resolveSshProxyRuntimePlan,
@@ -497,7 +507,16 @@ import {
   searchHosts,
   visibleHostsForHostListMode
 } from '../services/HostListFilterService';
-import { displayConnectionHealth, filterHostsByWorkspace, groupIdsForHosts, hostListBottomSpacerVp, hostListFabLiftVp, hostListFabSizeVp, nextWorkspaceGroupId, moonlightHostMatchesSearch } from '../services/HostWorkspacePolicy';
+import {
+  displayConnectionHealth,
+  filterHostsByWorkspace,
+  groupIdsForHosts,
+  hostListBottomSpacerVp,
+  hostListFabLiftVp,
+  hostListFabSizeVp,
+  nextWorkspaceGroupId,
+  moonlightHostMatchesSearch
+} from '../services/HostWorkspacePolicy';
 import {
   buildHostGroupCards,
   filterHostGroupCardsByProVisibility,
@@ -4669,7 +4688,7 @@ struct HostListPage {
   }
 
   private openExistingMoonlightHost(hostId: string, ownerToken: number): void {
-    if (!shouldAcceptHostAddPostSaveHandoff(
+    if (!this.showAddSheet || !shouldAcceptHostAddPostSaveHandoff(
       this.pageActive,
       this.addSheetClosing,
       this.pendingMoonlightCatalogHandoff,
@@ -4707,7 +4726,7 @@ struct HostListPage {
       }
       return;
     }
-    if (!shouldAcceptHostAddPostSaveHandoff(
+    if (!this.showAddSheet || !shouldAcceptHostAddPostSaveHandoff(
       this.pageActive,
       this.addSheetClosing,
       this.pendingMoonlightCatalogHandoff,
@@ -4945,9 +4964,15 @@ struct HostListPage {
       this.sheetRustdeskDirectEnabled, this.sheetRustdeskDirectHost, this.sheetRustdeskDirectPort, this.sheetPwdMode,
       this.sheetRustdeskTotpEntryId, this.vncHostTransport, this.vncHostGatewayId, this.vncHostViewOnly,
       this.vncHostScalingMode, this.vncHostSecurityPolicy, this.vncHostTls, this.vncHostDisplayOverrideEnabled,
-      this.vncHostClipboardEnabled, sshProxyEditorInputKey(this.sheetSshProxyEditorValue), this.sheetKeyPassphrase,
+      this.vncHostClipboardEnabled, sshProxyEditorInputKey(this.sheetSshProxyEditorValue), this.keyPassphraseInputMarker(),
       this.sheetRustdeskAuthMode, this.sheetRustdeskTargetDevice, this.sheetRustdeskAdaptiveOrientation,
       this.sheetRdpCredentialStorageMode, this.vncHostRepeaterMode]);
+  }
+
+  /** The key passphrase as unsaved-input state, never the secret itself: stored, typed, or empty. */
+  private keyPassphraseInputMarker(): string {
+    if (this.sheetKeyPassphraseFromStoredProjection) { return 'stored'; }
+    return this.sheetKeyPassphrase === '' ? '' : 'typed';
   }
 
   /** Whether closing the add sheet now would throw away input (a Moonlight host already saved is not lost). */
@@ -12744,6 +12769,7 @@ struct HostListPage {
 
   // 编辑主机 (锁定状态需先鉴权)
   private async editHost(host: RemoteHost): Promise<void> {
+    this.classicEditorBaseline = '';
     if (host.protocol === 'ai') {
       if (!AiAccess.getInstance().proVisible()) {
         promptAction.showToast({ message: '退款或撤销后，Pro 远程 AI 已暂停', duration: 2200 });
@@ -25474,6 +25500,8 @@ struct HostListPage {
   }
 
   private resetForm(): void {
+    // A baseline kept for a 2FA round trip that never came back must not judge the next form.
+    this.classicEditorBaseline = '';
     this.clearProConnectionShareDraft();
     this.editingHostId = '';
     this.aiSheetGeneration++; this.aiEditingHost = null;

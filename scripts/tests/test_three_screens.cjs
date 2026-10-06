@@ -585,7 +585,7 @@ check('batch 4 review: a stale question does nothing, kept forms keep their base
     gone.includes("if (!preserveForm) { this.classicEditorBaseline = ''; }"), 'the 2FA binding round trip keeps the baseline');
   assert.ok(page.includes("if (this.classicEditorBaseline === '') { this.classicEditorBaseline = this.classicEditorSnapshot(); }"));
   const snap = member(page, 'private classicEditorSnapshot(): string {');
-  for (const field of ['sshProxyEditorInputKey(this.sheetSshProxyEditorValue)', 'this.sheetKeyPassphrase', 'this.sheetRustdeskAuthMode',
+  for (const field of ['sshProxyEditorInputKey(this.sheetSshProxyEditorValue)', 'this.keyPassphraseInputMarker()', 'this.sheetRustdeskAuthMode',
     'this.sheetRustdeskTargetDevice', 'this.sheetRdpCredentialStorageMode', 'this.vncHostRepeaterMode']) {
     assert.ok(snap.includes(field), field);
   }
@@ -598,8 +598,8 @@ check('batch 4 review: a stale question does nothing, kept forms keep their base
   assert.ok(member(relay, 'private confirmDiscardRelaySheet(proceed: () => void): void {')
     .includes('if (this.relaySheetDismissCount !== dismissCount || !this.showSheet) { return; }'));
   const label = member(relay, 'private relaySheetUnsavedLabel(): string {');
-  assert.ok(label.includes('(this.sheetContent === 1 || this.sheetContent === 5 || this.sheetContent === 9)') &&
-    label.includes("return '粘贴内容';"), 'the form typed before the paste sheet or the picker is still protected');
+  assert.ok(label.includes('(this.sheetContent === 1 || this.sheetContent === 5 || this.sheetContent === 9 ||') &&
+    label.includes("'粘贴内容'"), 'the form typed before the paste sheet or the picker is still protected');
   assert.ok(relay.includes('// Stored on this device already: closing loses nothing typed.'));
 
   const keys = read('pages/KeyVaultPage.ets');
@@ -621,6 +621,24 @@ check('batch 4 review: a stale question does nothing, kept forms keep their base
   const inputKey = proxy.slice(proxy.indexOf('export function sshProxyEditorInputKey('),
     proxy.indexOf('export function defaultSshProxyHop('));
   assert.ok(inputKey.length > 0 && inputKey.indexOf('hop.hopId') < 0 && inputKey.includes('hop.host'), 'a generated hop id is not input');
+});
+
+check('batch 4 review 2: no secret in a baseline, no stale baseline, failed saves keep the question', () => {
+  const page = read('pages/HostListPage.ets');
+  const snap = member(page, 'private classicEditorSnapshot(): string {');
+  assert.ok(snap.includes('this.keyPassphraseInputMarker()') && !snap.includes('this.sheetKeyPassphrase,'),
+    'the passphrase itself never goes into the baseline');
+  assert.ok(member(page, 'private keyPassphraseInputMarker(): string {').includes("return this.sheetKeyPassphrase === '' ? '' : 'typed';"));
+  assert.ok(member(page, 'private resetForm(): void {').includes("this.classicEditorBaseline = '';"));
+  assert.ok(member(page, 'private async editHost(host: RemoteHost): Promise<void> {').includes("this.classicEditorBaseline = '';"));
+  assert.equal((page.match(/if \(!this\.showAddSheet \|\| !shouldAcceptHostAddPostSaveHandoff\(/g) || []).length, 2,
+    'a Moonlight post-save after the sheet went away hands nothing off');
+  const keys = read('pages/KeyVaultPage.ets');
+  const complete = keys.slice(keys.indexOf('onComplete: (newPrivateKey: string, newEncrypted: boolean) => {'));
+  assert.ok(complete.indexOf('this.passphraseSheetDirty = false;') > complete.indexOf("'密码没有保存，请重试'"),
+    'a failed save keeps the typed passphrases protected');
+  const relay = member(read('pages/RustDeskRelayPage.ets'), 'private relaySheetUnsavedLabel(): string {');
+  assert.ok(relay.includes("relayFormTyped ? '中继配置和粘贴内容' : '粘贴内容'") && relay.includes('this.sheetContent === 10) && !this.relaySaving'));
 });
 
 console.log('three screens: ' + passed + ' checks passed');
