@@ -289,8 +289,8 @@ const REFUSALS: string[] = ['不要把', '不用把', '不想把', '别把', '�
 const NEGATABLE_OFF: string[] = ['关闭', '关掉', '关一下', '关下', '关了', '禁用', '停用', '隐藏起来', '隐藏掉', '隐藏'];
 /** Right before an on-word these turn it off (不要打开, 别开启, 不再打开); 要不要打开 asks to turn it on, 不得不打开 must. */
 const NEGATIONS: string[] = ['不需要', '不要', '不用', '无需', '不必', '不再', '别再', '不想', '不准', '不许', '别', '不'];
-/** What may stand between a negation and its verb (不要再打开, 不要让 RDP 显示, 别给我关了). */
-const NEGATION_GAP: string[] = ['给我', '让', '再', '给', '去', '我'];
+/** What may stand between a negation and its verb (不要再打开, 不要让 RDP 显示, 别给我关了, 不要一直开着). */
+const NEGATION_GAP: string[] = ['给我', '一直', '总是', '老是', '始终', '让', '再', '给', '去', '我', '总', '老'];
 /** …and before 显示 / 隐藏 these too (关闭显示本地光标, 取消隐藏); before 打开 they are a verb of their own (关闭开启剪贴板). */
 const SHOW_NEGATIONS: string[] = ['停止', '取消', '关闭', '关掉'];
 /** Words ending in 别 that do not negate (分别打开). */
@@ -313,7 +313,8 @@ const PARTICLES: string[] = ['好不好', '行不行', '就可以', '就好', '�
   '了', '吧', '啊', '呀', '哦', '吗', '呢', '嘛', '掉', '下', '的', '啦', '哈', '咯', '呗', '嘞', '哟', '噢', '喔', '~', '～', '…', '.',
   'ok'];
 /** What a follow-up may say besides its verb to be a plain request (帮我关掉吧, 那就直接关了). */
-const FOLLOW_UP_FILLER: string[] = ['那就', '直接', '先', '再', '就', '那', '它'];
+const FOLLOW_UP_FILLER: string[] = ['那就', '直接', '好了', '再说', '得了', '的话', '没用', '算了', '先', '再', '就', '那', '它', '你',
+  '嗯'];
 /** After 开着 / 关着 these describe a state that goes wrong (剪贴板开着但是复制不了), not ask to keep it. */
 const STATE_BUT: string[] = ['但是', '可是', '还是', '但', '却', '也'];
 /** A sentence with a change in it, ending like these, asks politely for it (关掉 RDP 音频好吗). */
@@ -331,9 +332,11 @@ const QUESTION_WORDS: string[] = ['怎么', '为什么', '为何', '什么', '�
  * A sentence asking about a setting or describing a problem with it proposes nothing (音频打开了吗, H265 和 H264 哪个好,
  * 我打开了音频但是没声音, 关闭隐私模式后黑屏了): it is for the assistant to answer or diagnose.
  */
-const ASKS: string[] = ['为什么', '为何', '哪个', '哪种', '是什么', '什么样', '是否', '怎么不', '怎么没', '怎么还', '怎么会', '怎么就'];
+const ASKS: string[] = ['为什么', '为何', '哪个', '哪种', '是什么', '什么样', '是否', '有什么', '有啥', '会怎样', '会怎么样', '怎么',
+  '如何'];
 const COMPLAINS: string[] = ['但是没', '但没', '还是没', '之后还是', '后还是', '还是有', '失败', '不起作用', '没反应', '不管用', '就不能',
-  '看不到', '用不了', '不能用', '黑屏', '卡住', '会卡', '变卡', '自己打开', '自己关', '打不开', '关不掉', '开不了', '关不了'];
+  '看不到', '用不了', '不能用', '黑屏', '卡住', '会卡', '变卡', '很卡', '好卡', '太卡', '特别卡', '卡顿', '很慢', '杂音', '自己打开',
+  '自己关', '打不开', '关不掉', '开不了', '关不了'];
 /** …and one ending like a question asks, unless it asks for something (能把音频关掉吗, 可以帮我打开剪贴板吗). */
 const MAYBE_ASKS: string[] = ['吗', '没有', '了没', '呢', '?', '？'];
 const REQUESTS: string[] = ['帮我', '帮忙', '麻烦', '能不能', '能否', '可不可以', '可以', '给我', '我想', '我要', '想要', '希望', '要不要',
@@ -824,7 +827,8 @@ function bareClause(clause: string, spans: AiSpan[], protocols: string[]): boole
     rest = rest.slice(0, span.start) + rest.slice(span.end);
   });
   protocols.forEach((protocol: string): void => { rest = rest.split(protocol).join(''); });
-  return onlyFiller(rest, BARE_FILLER);
+  // 帮我把 RDP 音频和剪贴板都打开: a request's opening words still leave a list item.
+  return onlyFiller(rest, BARE_FILLER.concat(REQUESTS));
 }
 
 /** Whether `text` asks for something: a request word not negated (不想要 does not ask). */
@@ -862,7 +866,7 @@ function requestPart(sentence: string): string | null {
     // After a problem what follows is read as it is (黑屏了把隐私模式关了, 一直卡住从现在开始编码用 H264): a description
     // with no change in it proposes nothing anyway. After a question only a plain request counts (为什么这么卡先把色深调到
     // 16 位).
-    if (complained > asked) { return tail.length > 0 ? tail : null; }
+    if (complained > asked) { return onlyFiller(tail, PARTICLES.concat(['？', '?'])) ? null : tail; }
     return hasRequest(tail) || tail.indexOf('先把') >= 0 || tail.indexOf('先给我') >= 0 ? tail : null;
   }
   // 选 H265 还是 H264 好.
@@ -870,7 +874,10 @@ function requestPart(sentence: string): string | null {
   // 关掉 RDP 音频好吗, 把色深改成 16 位行吗: a polite request.
   if (POLITE_ENDINGS.test(sentence) && TURN_ON.concat(TURN_OFF, CHANGE_TO, ['改', '换', '调', '设']).some((word: string): boolean =>
     sentence.indexOf(word) >= 0)) { return sentence; }
-  return MAYBE_ASKS.some((word: string): boolean => sentence.indexOf(word) >= 0) && !hasRequest(sentence) ? null : sentence;
+  // 呢 asks only at the end (然后呢 in the middle of a request goes on).
+  const asks: boolean = MAYBE_ASKS.some((word: string): boolean =>
+    word === '呢' ? /呢[？?]?$/.test(sentence) : sentence.indexOf(word) >= 0);
+  return asks && !hasRequest(sentence) ? null : sentence;
 }
 
 /**
@@ -1038,8 +1045,8 @@ function settingIntents(question: string, gate: boolean): DiagnosticAiSettingPro
   let askedValues: DiagnosticAiSettingProposal[] = [];
   // 温和 is a value, not 温 and 和. A question mark ends a sentence and stays with it. Long input is cut: a request is a
   // sentence or two.
-  // 1. … 2. … : a list marker (not a number in 16 位 or H.265) starts a sentence.
-  const listed: string = question.slice(0, 2000).replace(/(^|[^\d.a-zA-Z])\d{1,2}[.、)）：:](?!\d)/g, '$1\u0002')
+  // 1. … 2. …, （1）… (2)…, [1]…: a list marker starts a sentence; a number said as a value (色深改成 16、, H.265) does not.
+  const listed: string = question.slice(0, 2000).replace(/(^|[^\d.a-zA-Z成到为深])[(（[]?\d{1,2}[.、)）\]：:](?!\d)/g, '$1\u0002')
     .replace(/[①②③④⑤⑥⑦⑧⑨⑩]/g, '\u0002');
   const sentences: string[] = listed.split('温和').join('\u0001').split('？').join('？\u0002')
     .split('?').join('?\u0002').split(/[\u0002，,。；;！!\n]/)
@@ -1053,9 +1060,9 @@ function settingIntents(question: string, gate: boolean): DiagnosticAiSettingPro
     if (asked === null) {
       pending = [];
       // Only a question is something a request after it can be about; a problem described is not (复制失败，不要紧).
-      const question: boolean = lastEnd(whole, ASKS) >= lastEnd(whole, COMPLAINS) ||
+      const isQuestion: boolean = lastEnd(whole, ASKS) >= lastEnd(whole, COMPLAINS) ||
         QUESTION_WORDS.some((word: string): boolean => whole.indexOf(word) >= 0);
-      if (!question) { askedSwitches = []; askedValues = []; return; }
+      if (!isQuestion) { askedSwitches = []; askedValues = []; return; }
       askedSwitches = switchesNamed(whole, protocolContext);
       askedValues = settingIntents(whole, false).filter((proposal: DiagnosticAiSettingProposal): boolean => {
         const spec: AiSettingSpec | undefined = diagnosticAiSettingSpec(proposal.settingId);

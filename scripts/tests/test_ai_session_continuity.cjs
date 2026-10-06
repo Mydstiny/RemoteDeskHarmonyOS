@@ -305,7 +305,22 @@ test('the AI settings catalog has the 远程 AI settings, and plain words pick t
     ['1.RustDesk隐私模式打开 2.RustDesk局域网发现关闭', ['rustdesk.lanDiscovery=false', 'rustdesk.privacyMode=true']],
     ['①RDP音频打开②RDP剪贴板关闭', ['rdp.audioEnabled=true', 'rdp.clipboardEnabled=false']],
     ['RDP 音频、剪贴板、驱动器映射全部关闭', ['rdp.audioEnabled=false', 'rdp.clipboardEnabled=false', 'rdp.driveEnabled=false']],
-    ['RDP音频和剪贴板打开但是驱动器映射关闭', ['rdp.audioEnabled=true', 'rdp.clipboardEnabled=true', 'rdp.driveEnabled=false']]);
+    ['RDP音频和剪贴板打开但是驱动器映射关闭', ['rdp.audioEnabled=true', 'rdp.clipboardEnabled=true', 'rdp.driveEnabled=false']],
+    // An adverb between a negation and its verb; a lag described; how-to questions; 然后呢 mid-request.
+    ['RDP声音不要一直开着', ['rdp.audioEnabled=false']],
+    ['RDP剪贴板别老开着', ['rdp.clipboardEnabled=false']],
+    ['RDP音频开了以后很卡，关了吧', []],
+    ['怎么关RDP音频', []],
+    ['关RDP音频有什么坏处', []],
+    ['把RDP音频打开然后呢把剪贴板关掉', ['rdp.audioEnabled=true', 'rdp.clipboardEnabled=false']],
+    // Bracketed markers; a value said with 、 is not a marker; a request's opening words keep a list.
+    ['（1）别把RDP剪贴板关了 （2）打开RDP音频', ['rdp.audioEnabled=true', 'rdp.clipboardEnabled=true']],
+    ['RDP色深改成16、音频关掉', ['rdp.audioEnabled=false', 'rdp.colorDepth=16']],
+    ['帮我把RDP音频和剪贴板都打开', ['rdp.audioEnabled=true', 'rdp.clipboardEnabled=true']],
+    // Follow-ups after a question.
+    ['RDP音频是干嘛的？你帮我打开一下', ['rdp.audioEnabled=true']],
+    ['RDP驱动器映射有用吗？没用的话关了', ['rdp.driveEnabled=false']],
+    ['为什么RDP剪贴板用不了？帮我打开', ['rdp.clipboardEnabled=true']]);
   for (const [question, expected] of cases) {
     assert.deepEqual(pick(question).sort(), expected.slice().sort(), question);
   }
