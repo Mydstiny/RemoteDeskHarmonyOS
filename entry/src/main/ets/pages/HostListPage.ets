@@ -982,14 +982,14 @@ interface RdpCertificateCredentialParts {
   domain: string;
 }
 
-/** A settings switch row. Passed as one object literal so the row reads live values (a @Builder argument passed
- * by value is frozen at first render, so a switch changed elsewhere, e.g. by the AI, would keep its old look). */
 /** A settings section header's place in the list: its List index and its top in vp. */
 interface SettingsHeaderAnchor {
   index: number;
   y: number;
 }
 
+/** A settings switch row. Passed as one object literal so the row reads live values (a @Builder argument passed
+ * by value is frozen at first render, so a switch changed elsewhere, e.g. by the AI, would keep its old look). */
 interface SettingsSwitchRowArgs {
   icon: Resource;
   label: string;
@@ -1303,6 +1303,8 @@ struct HostListPage {
   @State expandedSettingsSection: string = SETTINGS_SECTION_NONE;
   /** The section closing above a header the user just opened: it closes at once, so the page does not jump. */
   private settingsInstantCollapseSection: string = SETTINGS_SECTION_NONE;
+  /** Bumped by each header tap: a scroll still pending from an earlier tap is dropped. */
+  private settingsScrollGeneration: number = 0;
   @State aboutSheetMode: number = 0; // 0=简单教程 1=关于应用 2=隐私政策 3=连接前准备 4=更新日志 5=操作引导中心
   // 合并 Sheet: 单 bindSheet + mode 切换 (避免 $$ 多 bindSheet 错位)
   @State showPopupSheet: boolean = false;
@@ -5740,6 +5742,7 @@ struct HostListPage {
    * header up under the title while its rows unfold.
    */
   private onSettingsSectionHeaderClick(section: string): void {
+    this.settingsScrollGeneration++;
     const opening: boolean = !this.settingsSectionExpanded(section);
     const previous: string = this.expandedSettingsSection;
     const anchor: SettingsHeaderAnchor | null = opening && previous !== SETTINGS_SECTION_NONE &&
@@ -5774,6 +5777,8 @@ struct HostListPage {
       const index: number = this.settingsListScroller.getItemIndex(x, y);
       if (index < 0) { return null; }
       const rect: RectResult = this.settingsListScroller.getItemRect(index);
+      // The header item starts at the header's top; anything else means the two measures disagree.
+      if (Math.abs(rect.y - (y - 4)) > 2) { return null; }
       return { index: index, y: rect.y };
     } catch (_error) {
       return null;
@@ -19828,8 +19833,11 @@ struct HostListPage {
   private scrollSettingsSectionIntoView(section: string, delayMs: number): void {
     const index: number = settingsModernSectionIndex(section, this.settingsModernVisibility());
     if (index < 0) { return; }
+    const generation: number = this.settingsScrollGeneration;
     setTimeout((): void => {
       if (!this.settingsModern() || this.settingsSearchQuery.trim() !== '') { return; }
+      // A later tap took over, or the section has been closed since.
+      if (generation !== this.settingsScrollGeneration || !this.settingsSectionExpanded(section)) { return; }
       try {
         this.settingsListScroller.scrollToIndex(index, true, ScrollAlign.START,
           { extraOffset: LengthMetrics.vp(-(this.titleTopBarHeight() + 8)) });

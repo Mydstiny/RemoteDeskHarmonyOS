@@ -656,6 +656,12 @@ check('opening a section below the open one keeps the tapped header in place (bo
   assert.ok(member(page, 'private settingsBodyAnimation(section: string): AnimateParam {')
     .includes('this.settingsInstantCollapseSection === section ? 0 : SETTINGS_ACCORDION_ANIMATION_MS'));
   assert.ok(page.includes(".width('100%').layoutWeight(1).id('settingsList')"));
+  assert.ok(member(page, 'private settingsHeaderAnchor(section: string): SettingsHeaderAnchor | null {')
+    .includes('if (Math.abs(rect.y - (y - 4)) > 2) { return null; }'), 'a disagreeing measure falls back');
+  assert.ok(click.indexOf('this.settingsScrollGeneration++;') >= 0);
+  assert.ok(member(page, 'private scrollSettingsSectionIntoView(section: string, delayMs: number): void {').includes(
+    'if (generation !== this.settingsScrollGeneration || !this.settingsSectionExpanded(section)) { return; }'),
+    'a quick second tap does not scroll back to the first section');
 });
 
 console.log('settings overhaul: ' + passed + ' checks passed');
