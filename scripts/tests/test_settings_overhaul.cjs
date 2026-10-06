@@ -618,4 +618,44 @@ check('batch D review round 2: any resolution choice or slider drag ends typing;
   assert.ok(vnc.includes("this.choice(settingsVisualIsModern(this.visualStyle) ? 'Repeater' : 'Repeater mode12',"));
 });
 
+check('opening a section below the open one keeps the tapped header in place (both looks)', () => {
+  const policy = loadTree('services/SettingsModernPolicy');
+  const sections = loadTree('services/SettingsAccordionPolicy');
+  const page = read('pages/HostListPage.ets');
+  // The classic order the anchor relies on is the order settingsContent() renders.
+  const content = member(page, '@Builder settingsContent() {');
+  const classicBranch = content.slice(content.indexOf('} else {\n          this.settingsSectionAppearance()'));
+  const rendered = [];
+  for (const match of classicBranch.matchAll(/this\.(settingsSection[A-Za-z]+)\(\)/g)) {
+    const body = member(page, '@Builder ' + match[1] + '() {');
+    const header = /settingsAccordionHeader\((SETTINGS_SECTION_[A-Z_]+)/.exec(body);
+    if (header) rendered.push(sections[header[1]]);
+  }
+  assert.deepEqual(JSON.parse(JSON.stringify(policy.settingsClassicSectionOrder())), rendered);
+  assert.equal(policy.settingsSectionIsAbove('displayInteraction', 'virtualKeyboard', false), true);
+  assert.equal(policy.settingsSectionIsAbove('virtualKeyboard', 'displayInteraction', false), false);
+  assert.equal(policy.settingsSectionIsAbove('connectionLive', 'displayInteraction', true), true);
+  assert.equal(policy.settingsSectionIsAbove('diagnostics', 'remoteAi', true), true, 'grouped order');
+  assert.equal(policy.settingsSectionIsAbove('diagnostics', 'remoteAi', false), false, 'classic order');
+
+  const header = member(page, '@Builder settingsAccordionHeader(');
+  assert.ok(header.includes(".id('settingsHeader_' + section)") &&
+    header.includes('.onClick((): void => { this.onSettingsSectionHeaderClick(section); })'));
+  assert.equal((page.match(/\.animation\(this\.settingsBodyAnimation\(SETTINGS_SECTION_[A-Z_]+\)\)/g) || []).length, 18,
+    'every section body animates through settingsBodyAnimation');
+  assert.ok(!/translate\(\{ y: this\.settingsSectionExpanded\([A-Z_]+\) \? 0 : -8 \}\)\n\s*\.clip\(true\)\n\s*\.animation\(\{ duration/.test(page));
+  const click = member(page, 'private onSettingsSectionHeaderClick(section: string): void {');
+  assert.ok(click.includes('settingsSectionIsAbove(previous, section, this.settingsModern())'));
+  assert.ok(click.includes('this.settingsInstantCollapseSection = previous;'));
+  assert.ok(click.includes('this.settingsListScroller.scrollToIndex(anchor.index, false, ScrollAlign.START,') &&
+    click.includes('{ extraOffset: LengthMetrics.vp(-anchor.y) }'), 'the header stays where it was tapped');
+  assert.ok(click.includes('this.scrollSettingsSectionIntoView(section, anchor === null ? 0 : 48);'),
+    '全新视觉 moves the header up while the rows unfold, not after');
+  assert.ok(member(page, 'private toggleSettingsSection(section: string): void {')
+    .includes('this.settingsInstantCollapseSection = SETTINGS_SECTION_NONE;'), 'other toggles keep the animation');
+  assert.ok(member(page, 'private settingsBodyAnimation(section: string): AnimateParam {')
+    .includes('this.settingsInstantCollapseSection === section ? 0 : SETTINGS_ACCORDION_ANIMATION_MS'));
+  assert.ok(page.includes(".width('100%').layoutWeight(1).id('settingsList')"));
+});
+
 console.log('settings overhaul: ' + passed + ' checks passed');

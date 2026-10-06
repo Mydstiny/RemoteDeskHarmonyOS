@@ -82,7 +82,7 @@ import { AiSettingsSurface } from './AiSettingsPage';
  * HostListPage v9 — 多端响应式 + 悬浮卡片 sheet + 滑动删除 + 官方图标按钮
  */
 import { router, promptAction, curves } from '@kit.ArkUI';
-import { display, window, LengthMetrics } from '@kit.ArkUI';
+import { display, window, LengthMetrics, componentUtils, UIContext } from '@kit.ArkUI';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { preferences } from '@kit.ArkData';
 import { HdsTabs, HdsTabsController, hdsMaterial, DividerMode } from '@kit.UIDesignKit';
@@ -217,6 +217,7 @@ import {
   settingsModernRowSymbol,
   settingsModernSectionIndex,
   settingsModernSectionSymbol,
+  settingsSectionIsAbove,
   settingsMoonlightVideoLabel,
   settingsRustDeskCodecLabel,
   settingsRustDeskQualityLabel,
@@ -983,6 +984,12 @@ interface RdpCertificateCredentialParts {
 
 /** A settings switch row. Passed as one object literal so the row reads live values (a @Builder argument passed
  * by value is frozen at first render, so a switch changed elsewhere, e.g. by the AI, would keep its old look). */
+/** A settings section header's place in the list: its List index and its top in vp. */
+interface SettingsHeaderAnchor {
+  index: number;
+  y: number;
+}
+
 interface SettingsSwitchRowArgs {
   icon: Resource;
   label: string;
@@ -1294,6 +1301,8 @@ struct HostListPage {
   private settingsLeafClosedByUser: boolean = false;
   @State moonlightSettingsLeafHostId: string = '';
   @State expandedSettingsSection: string = SETTINGS_SECTION_NONE;
+  /** The section closing above a header the user just opened: it closes at once, so the page does not jump. */
+  private settingsInstantCollapseSection: string = SETTINGS_SECTION_NONE;
   @State aboutSheetMode: number = 0; // 0=简单教程 1=关于应用 2=隐私政策 3=连接前准备 4=更新日志 5=操作引导中心
   // 合并 Sheet: 单 bindSheet + mode 切换 (避免 $$ 多 bindSheet 错位)
   @State showPopupSheet: boolean = false;
@@ -5712,9 +5721,63 @@ struct HostListPage {
   }
 
   private toggleSettingsSection(section: string): void {
+    this.settingsInstantCollapseSection = SETTINGS_SECTION_NONE;
     animateTo({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn }, (): void => {
       this.expandedSettingsSection = settingsNextExpandedSection(this.expandedSettingsSection, section);
     });
+  }
+
+  private settingsBodyAnimation(section: string): AnimateParam {
+    return {
+      duration: this.settingsInstantCollapseSection === section ? 0 : SETTINGS_ACCORDION_ANIMATION_MS,
+      curve: Curve.FastOutSlowIn
+    };
+  }
+
+  /**
+   * A tapped section header. Opening a section below the open one closes that one at once and keeps the tapped
+   * header where the finger is, instead of letting the closing rows pull the page up; 全新视觉 then brings the
+   * header up under the title while its rows unfold.
+   */
+  private onSettingsSectionHeaderClick(section: string): void {
+    const opening: boolean = !this.settingsSectionExpanded(section);
+    const previous: string = this.expandedSettingsSection;
+    const anchor: SettingsHeaderAnchor | null = opening && previous !== SETTINGS_SECTION_NONE &&
+      settingsSectionIsAbove(previous, section, this.settingsModern()) ? this.settingsHeaderAnchor(section) : null;
+    if (anchor === null) {
+      this.toggleSettingsSection(section);
+    } else {
+      this.settingsInstantCollapseSection = previous;
+      this.expandedSettingsSection = settingsNextExpandedSection(previous, section);
+      try {
+        this.settingsListScroller.scrollToIndex(anchor.index, false, ScrollAlign.START,
+          { extraOffset: LengthMetrics.vp(-anchor.y) });
+      } catch (_error) { /* the list is not laid out; the section still opens */ }
+    }
+    if (opening && this.settingsModern()) {
+      // Start once the closed section is gone (a frame or two), then once more after the rows have unfolded in
+      // case the end of the list held the header back; the second call does not move an arrived header.
+      this.scrollSettingsSectionIntoView(section, anchor === null ? 0 : 48);
+      this.scrollSettingsSectionIntoView(section, SETTINGS_ACCORDION_ANIMATION_MS + 40);
+    }
+  }
+
+  /** Where the header of `section` sits in the settings list now (its List index and top, in vp). */
+  private settingsHeaderAnchor(section: string): SettingsHeaderAnchor | null {
+    try {
+      const ui: UIContext = this.getUIContext();
+      const header: componentUtils.ComponentInfo = ui.getComponentUtils().getRectangleById('settingsHeader_' + section);
+      const list: componentUtils.ComponentInfo = ui.getComponentUtils().getRectangleById('settingsList');
+      if (header.size.height <= 0 || list.size.height <= 0) { return null; }
+      const x: number = ui.px2vp(header.windowOffset.x - list.windowOffset.x) + 24;
+      const y: number = ui.px2vp(header.windowOffset.y - list.windowOffset.y) + 4;
+      const index: number = this.settingsListScroller.getItemIndex(x, y);
+      if (index < 0) { return null; }
+      const rect: RectResult = this.settingsListScroller.getItemRect(index);
+      return { index: index, y: rect.y };
+    } catch (_error) {
+      return null;
+    }
   }
 
   private openSshHostListFromSettings(): void {
@@ -17955,14 +18018,8 @@ struct HostListPage {
     .accessibilityText(title + '，' + (this.settingsModern() ?
       this.settingsSectionSummary(section, subtitle, this.settingsValuesRevision) : subtitle) + '，' +
       (this.settingsSectionExpanded(section) ? '已展开' : '已收起'))
-    .onClick((): void => {
-      const opening: boolean = !this.settingsSectionExpanded(section);
-      this.toggleSettingsSection(section);
-      // 全新视觉: an opened section comes up under the title, so its rows are on screen.
-      if (opening && this.settingsModern()) {
-        this.scrollSettingsSectionIntoView(section, SETTINGS_ACCORDION_ANIMATION_MS + 40);
-      }
-    })
+    .id('settingsHeader_' + section)
+    .onClick((): void => { this.onSettingsSectionHeaderClick(section); })
   }
 
   @Builder settingsActionHeader(icon: Resource, title: string, subtitle: string, action: () => void,
@@ -18093,7 +18150,7 @@ struct HostListPage {
         // Room above the phone/Pad floating tab bar; the PC settings sheet has no tab bar below it.
         ListItem() { Column().height(this.isDesktopDevice && this.breakpoint === 'xl' ? 24 : 120) }
       }
-      .width('100%').layoutWeight(1)
+      .width('100%').layoutWeight(1).id('settingsList')
       // 全新视觉 on Pad and PC: a readable column instead of rows stretched across the whole window.
       .constraintSize({ maxWidth: this.settingsModern() && this.breakpoint !== 'sm' ? 760 : '100%' })
       .scrollBar(BarState.Off).edgeEffect(EdgeEffect.Spring)
@@ -18285,7 +18342,7 @@ struct HostListPage {
     .scale({ x: 1, y: this.settingsSectionExpanded(SETTINGS_SECTION_APPEARANCE) ? 1 : 0.98 })
     .translate({ y: this.settingsSectionExpanded(SETTINGS_SECTION_APPEARANCE) ? 0 : -8 })
     .clip(true)
-    .animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
+    .animation(this.settingsBodyAnimation(SETTINGS_SECTION_APPEARANCE))
   }
 
   @Builder settingsSectionHome() {
@@ -18355,7 +18412,7 @@ struct HostListPage {
     .scale({ x: 1, y: this.settingsSectionExpanded(SETTINGS_SECTION_HOME) ? 1 : 0.98 })
     .translate({ y: this.settingsSectionExpanded(SETTINGS_SECTION_HOME) ? 0 : -8 })
     .clip(true)
-    .animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
+    .animation(this.settingsBodyAnimation(SETTINGS_SECTION_HOME))
   }
 
   @Builder settingsSectionCloudSync() {
@@ -18461,7 +18518,7 @@ struct HostListPage {
     .scale({ x: 1, y: this.settingsSectionExpanded(SETTINGS_SECTION_CLOUD_SYNC) ? 1 : 0.98 })
     .translate({ y: this.settingsSectionExpanded(SETTINGS_SECTION_CLOUD_SYNC) ? 0 : -8 })
     .clip(true)
-    .animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
+    .animation(this.settingsBodyAnimation(SETTINGS_SECTION_CLOUD_SYNC))
   }
 
   @Builder settingsSectionConnectionLive() {
@@ -18498,7 +18555,7 @@ struct HostListPage {
     .scale({ x: 1, y: this.settingsSectionExpanded(SETTINGS_SECTION_CONNECTION_LIVE) ? 1 : 0.98 })
     .translate({ y: this.settingsSectionExpanded(SETTINGS_SECTION_CONNECTION_LIVE) ? 0 : -8 })
     .clip(true)
-    .animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
+    .animation(this.settingsBodyAnimation(SETTINGS_SECTION_CONNECTION_LIVE))
 
     // --- 实况窗卡片 ---
     ListItem() {
@@ -18539,7 +18596,7 @@ struct HostListPage {
     .scale({ x: 1, y: this.settingsSectionExpanded(SETTINGS_SECTION_CONNECTION_LIVE) ? 1 : 0.98 })
     .translate({ y: this.settingsSectionExpanded(SETTINGS_SECTION_CONNECTION_LIVE) ? 0 : -8 })
     .clip(true)
-    .animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
+    .animation(this.settingsBodyAnimation(SETTINGS_SECTION_CONNECTION_LIVE))
   }
 
   @Builder settingsSectionDisplayInteraction() {
@@ -18615,7 +18672,7 @@ struct HostListPage {
     .scale({ x: 1, y: this.settingsSectionExpanded(SETTINGS_SECTION_DISPLAY_INTERACTION) ? 1 : 0.98 })
     .translate({ y: this.settingsSectionExpanded(SETTINGS_SECTION_DISPLAY_INTERACTION) ? 0 : -8 })
     .clip(true)
-    .animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
+    .animation(this.settingsBodyAnimation(SETTINGS_SECTION_DISPLAY_INTERACTION))
   }
 
   @Builder settingsSectionVirtualKeyboard() {
@@ -18680,7 +18737,7 @@ struct HostListPage {
     .scale({ x: 1, y: this.settingsSectionExpanded(SETTINGS_SECTION_VIRTUAL_KEYBOARD) ? 1 : 0.98 })
     .translate({ y: this.settingsSectionExpanded(SETTINGS_SECTION_VIRTUAL_KEYBOARD) ? 0 : -8 })
     .clip(true)
-    .animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
+    .animation(this.settingsBodyAnimation(SETTINGS_SECTION_VIRTUAL_KEYBOARD))
   }
 
   @Builder settingsSectionRdp() {
@@ -18777,7 +18834,7 @@ struct HostListPage {
     .scale({ x: 1, y: this.settingsSectionExpanded(SETTINGS_SECTION_RDP) ? 1 : 0.98 })
     .translate({ y: this.settingsSectionExpanded(SETTINGS_SECTION_RDP) ? 0 : -8 })
     .clip(true)
-    .animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
+    .animation(this.settingsBodyAnimation(SETTINGS_SECTION_RDP))
   }
 
   @Builder settingsSectionRustDesk() {
@@ -18895,7 +18952,7 @@ struct HostListPage {
     .scale({ x: 1, y: this.settingsSectionExpanded(SETTINGS_SECTION_RUSTDESK) ? 1 : 0.98 })
     .translate({ y: this.settingsSectionExpanded(SETTINGS_SECTION_RUSTDESK) ? 0 : -8 })
     .clip(true)
-    .animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
+    .animation(this.settingsBodyAnimation(SETTINGS_SECTION_RUSTDESK))
   }
 
   @Builder settingsSectionSsh() {
@@ -19059,7 +19116,7 @@ struct HostListPage {
     .scale({ x: 1, y: this.settingsSectionExpanded(SETTINGS_SECTION_SSH) ? 1 : 0.98 })
     .translate({ y: this.settingsSectionExpanded(SETTINGS_SECTION_SSH) ? 0 : -8 })
     .clip(true)
-    .animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
+    .animation(this.settingsBodyAnimation(SETTINGS_SECTION_SSH))
   }
 
   @Builder settingsSectionVnc() {
@@ -19124,7 +19181,7 @@ struct HostListPage {
     .scale({ x: 1, y: this.settingsSectionExpanded(SETTINGS_SECTION_VNC) ? 1 : 0.98 })
     .translate({ y: this.settingsSectionExpanded(SETTINGS_SECTION_VNC) ? 0 : -8 })
     .clip(true)
-    .animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
+    .animation(this.settingsBodyAnimation(SETTINGS_SECTION_VNC))
   }
 
   @Builder settingsSectionMoonlight() {
@@ -19178,7 +19235,7 @@ struct HostListPage {
     .scale({ x: 1, y: this.settingsSectionExpanded(SETTINGS_SECTION_MOONLIGHT) ? 1 : 0.98 })
     .translate({ y: this.settingsSectionExpanded(SETTINGS_SECTION_MOONLIGHT) ? 0 : -8 })
     .clip(true)
-    .animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
+    .animation(this.settingsBodyAnimation(SETTINGS_SECTION_MOONLIGHT))
   }
 
   @Builder settingsSectionRemoteAi() {
@@ -19208,7 +19265,7 @@ struct HostListPage {
       .opacity(this.settingsSectionExpanded(SETTINGS_SECTION_AI) ? 1 : 0)
       .scale({ x: 1, y: this.settingsSectionExpanded(SETTINGS_SECTION_AI) ? 1 : 0.98 })
       .translate({ y: this.settingsSectionExpanded(SETTINGS_SECTION_AI) ? 0 : -8 })
-      .clip(true).animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
+      .clip(true).animation(this.settingsBodyAnimation(SETTINGS_SECTION_AI))
     }
   }
 
@@ -19253,7 +19310,7 @@ struct HostListPage {
     }.constraintSize({ maxHeight: this.settingsSectionExpanded(SETTINGS_SECTION_PRO) ? this.settingsModernCap(1600) : 0 })
       .opacity(this.settingsSectionExpanded(SETTINGS_SECTION_PRO) ? 1 : 0)
       .translate({ y: this.settingsSectionExpanded(SETTINGS_SECTION_PRO) ? 0 : -8 })
-      .clip(true).animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
+      .clip(true).animation(this.settingsBodyAnimation(SETTINGS_SECTION_PRO))
     }
   }
 
@@ -19447,7 +19504,7 @@ struct HostListPage {
     .scale({ x: 1, y: this.settingsSectionExpanded(SETTINGS_SECTION_SECURITY) ? 1 : 0.98 })
     .translate({ y: this.settingsSectionExpanded(SETTINGS_SECTION_SECURITY) ? 0 : -8 })
     .clip(true)
-    .animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
+    .animation(this.settingsBodyAnimation(SETTINGS_SECTION_SECURITY))
   }
 
   @Builder settingsSectionTutorial() {
@@ -19521,7 +19578,7 @@ struct HostListPage {
     .scale({ x: 1, y: this.settingsSectionExpanded(SETTINGS_SECTION_TUTORIAL) ? 1 : 0.98 })
     .translate({ y: this.settingsSectionExpanded(SETTINGS_SECTION_TUTORIAL) ? 0 : -8 })
     .clip(true)
-    .animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
+    .animation(this.settingsBodyAnimation(SETTINGS_SECTION_TUTORIAL))
   }
 
   @Builder settingsSectionAbout() {
@@ -19564,7 +19621,7 @@ struct HostListPage {
     .scale({ x: 1, y: this.settingsSectionExpanded(SETTINGS_SECTION_ABOUT) ? 1 : 0.98 })
     .translate({ y: this.settingsSectionExpanded(SETTINGS_SECTION_ABOUT) ? 0 : -8 })
     .clip(true)
-    .animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
+    .animation(this.settingsBodyAnimation(SETTINGS_SECTION_ABOUT))
   }
 
   @Builder settingsSectionDiagnostics() {
@@ -19611,7 +19668,7 @@ struct HostListPage {
     .scale({ x: 1, y: this.settingsSectionExpanded(SETTINGS_SECTION_DIAGNOSTICS) ? 1 : 0.98 })
     .translate({ y: this.settingsSectionExpanded(SETTINGS_SECTION_DIAGNOSTICS) ? 0 : -8 })
     .clip(true)
-    .animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
+    .animation(this.settingsBodyAnimation(SETTINGS_SECTION_DIAGNOSTICS))
   }
 
   @Builder settingsSectionActions() {
@@ -19767,7 +19824,7 @@ struct HostListPage {
     return { remoteAi: this.aiProVisible, proDebug: DEBUG && !this.proManagerVisible, pro: this.proManagerVisible };
   }
 
-  /** 全新视觉: bring an opened section's header up under the page title, once the accordion has moved. */
+  /** 全新视觉: bring an opened section's header up under the page title (smoothly; a header already there stays). */
   private scrollSettingsSectionIntoView(section: string, delayMs: number): void {
     const index: number = settingsModernSectionIndex(section, this.settingsModernVisibility());
     if (index < 0) { return; }

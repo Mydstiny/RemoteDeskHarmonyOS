@@ -54,6 +54,31 @@ export function settingsModernGroups(): SettingsModernGroup[] {
   ];
 }
 
+/** The classic page's section order (HostListPage.settingsContent()). */
+export function settingsClassicSectionOrder(): string[] {
+  return [SETTINGS_SECTION_APPEARANCE, SETTINGS_SECTION_HOME, SETTINGS_SECTION_CLOUD_SYNC, SETTINGS_SECTION_CONNECTION_LIVE,
+    SETTINGS_SECTION_DISPLAY_INTERACTION, SETTINGS_SECTION_VIRTUAL_KEYBOARD, SETTINGS_SECTION_RDP, SETTINGS_SECTION_RUSTDESK,
+    SETTINGS_SECTION_SSH, SETTINGS_SECTION_VNC, SETTINGS_SECTION_MOONLIGHT, SETTINGS_SECTION_AI, SETTINGS_SECTION_PRO,
+    SETTINGS_SECTION_SECURITY, SETTINGS_SECTION_TUTORIAL, SETTINGS_SECTION_ABOUT, SETTINGS_SECTION_DIAGNOSTICS];
+}
+
+/** Whether `upper` comes before `lower` on the page, in the classic or the grouped order. */
+export function settingsSectionIsAbove(upper: string, lower: string, modern: boolean): boolean {
+  const order: string[] = [];
+  if (modern) {
+    const groups: SettingsModernGroup[] = settingsModernGroups();
+    for (let g = 0; g < groups.length; g++) {
+      for (let s = 0; s < groups[g].sections.length; s++) { order.push(groups[g].sections[s]); }
+    }
+  } else {
+    const classic: string[] = settingsClassicSectionOrder();
+    for (let i = 0; i < classic.length; i++) { order.push(classic[i]); }
+  }
+  const upperIndex: number = order.indexOf(upper);
+  const lowerIndex: number = order.indexOf(lower);
+  return upperIndex >= 0 && lowerIndex >= 0 && upperIndex < lowerIndex;
+}
+
 /** ListItems a section renders: a header and a card, 连接实况窗 has two cards, the end rows are three. */
 export function settingsModernSectionItemCount(section: string, visibility: SettingsModernVisibility): number {
   if (section === SETTINGS_SECTION_AI) { return visibility.remoteAi ? 2 : 0; }
