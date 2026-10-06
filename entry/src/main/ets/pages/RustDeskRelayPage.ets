@@ -127,6 +127,12 @@ interface VncDeepCheckBinding {
   repeaterTarget: string;
 }
 
+
+interface RelayStatItem {
+  label: string;
+  value: string;
+  color: string;
+}
 @Component
 export struct RustDeskRelayPage {
   /** The AI entry, the same on every tab: shown while the account may use the assistant; a tap asks the host page
@@ -1617,14 +1623,23 @@ export struct RustDeskRelayPage {
 
   // ==================== Stats Bar ====================
 
+  private statItems(): RelayStatItem[] {
+    return [
+      { label: '中继', value: this.totalRelayCount().toString(), color: this.pal().text },
+      { label: '在线', value: this.onlineCount().toString(), color: this.pal().success },
+      { label: '异常', value: this.errorCount().toString(), color: this.pal().danger },
+      { label: '账户', value: this.totalAccountCount().toString(), color: this.pal().text },
+      { label: '主机', value: this.totalHostCount().toString(), color: this.pal().text }
+    ];
+  }
+
   @Builder statsBar() {
     Scroll() {
       Row() {
-        this._statChip('中继', this.totalRelayCount().toString(), this.pal().text)
-        this._statChip('在线', this.onlineCount().toString(), this.pal().success)
-        this._statChip('异常', this.errorCount().toString(), this.pal().danger)
-        this._statChip('账户', this.totalAccountCount().toString(), this.pal().text)
-        this._statChip('主机', this.totalHostCount().toString(), this.pal().text)
+        // Rendered from data: a @Builder given plain values does not refresh when the counts change.
+        ForEach(this.statItems(), (item: RelayStatItem): void => {
+          this._statChip(item.label, item.value, item.color)
+        }, (item: RelayStatItem): string => item.label + ':' + item.value + ':' + item.color)
       }
     }
     .scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off)
@@ -1633,7 +1648,7 @@ export struct RustDeskRelayPage {
 
   /** 全新视觉: 44vp card buttons (32 in the classic look). */
   private relayButtonSize(): number {
-    return settingsVisualIsModern(this.visualStyle) ? 44 : 32;
+    return 32;
   }
 
   @Builder _statChip(label: string, value: string, color: string) {
@@ -1891,14 +1906,9 @@ export struct RustDeskRelayPage {
       }.alignItems(HorizontalAlign.Start).layoutWeight(1)
       // ⋯ menu
       Button() {
-        if (settingsVisualIsModern(this.visualStyle)) {
-          SymbolGlyph($r('sys.symbol.more')).fontSize(20).fontColor([this.pal().text])
-        } else {
-          Text('⋯').fontSize(20).fontColor(this.pal().text)
-        }
+        Text('⋯').fontSize(20).fontColor(this.pal().text)
       }
-      .width(settingsVisualIsModern(this.visualStyle) ? 44 : 40).height(settingsVisualIsModern(this.visualStyle) ? 44 : 40)
-      .borderRadius(settingsVisualIsModern(this.visualStyle) ? 22 : 20).padding(0).accessibilityText('更多操作')
+      .width(40).height(40).borderRadius(20).padding(0).accessibilityText('更多操作')
       .backgroundColor(this.pal().surface)
       .bindPopup(this.menuVisibleRelayId === relay.id, {
         builder: this.pcMenuBuilder(relay),
@@ -1940,8 +1950,7 @@ export struct RustDeskRelayPage {
           .margin({ top: 3 })
       }.alignItems(HorizontalAlign.Start).layoutWeight(1)
       Button() { SymbolGlyph($r('sys.symbol.square_and_pencil')).fontSize(16).fontColor([this.pal().text2]) }
-        .width(settingsVisualIsModern(this.visualStyle) ? 44 : 36).height(settingsVisualIsModern(this.visualStyle) ? 44 : 36)
-        .borderRadius(settingsVisualIsModern(this.visualStyle) ? 22 : 18).backgroundColor(this.pal().surface)
+        .width(36).height(36).borderRadius(18).backgroundColor(this.pal().surface)
         .accessibilityText('编辑').onClick((): void => { this.openEditVncGatewaySheet(gateway); })
     }
     .width('100%').padding({ left: 12, right: 8, top: 10, bottom: 10 }).borderRadius(10)
@@ -2460,11 +2469,7 @@ export struct RustDeskRelayPage {
         }
         if (this.breakpoint !== 'sm' || settingsVisualIsModern(this.visualStyle)) {
           Button() {
-            if (settingsVisualIsModern(this.visualStyle)) {
-              SymbolGlyph($r('sys.symbol.more')).fontSize(20).fontColor([this.pal().text])
-            } else {
-              Text('⋯').fontSize(18).fontColor(this.pal().text)
-            }
+            Text('⋯').fontSize(18).fontColor(this.pal().text)
           }
           .width(this.relayButtonSize()).height(this.relayButtonSize()).borderRadius(this.relayButtonSize() / 2)
           .padding(0).backgroundColor(this.pal().surface).accessibilityText('更多操作')
@@ -3045,6 +3050,7 @@ export struct RustDeskRelayPage {
   @Builder _f(l: string, h: string, v: string, cb: (v: string) => void, password: boolean = false) {
     Column() {
       Text(l).fontSize(11).fontColor(this.pal().text2).margin({ bottom: 4 }).fontFamily(this.font())
+        .width('100%').textAlign(TextAlign.Start)
       TextInput({ placeholder: h, text: v }).height(38).backgroundColor(this.pal().surface).borderRadius(8)
         .fontColor(this.pal().text).placeholderColor(this.pal().text3).fontFamily(this.font()).fontSize(13)
         .type(password ? InputType.Password : InputType.Normal).padding({ left: 10, right: 10 }).onChange(cb)

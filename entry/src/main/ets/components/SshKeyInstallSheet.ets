@@ -15,7 +15,7 @@ import { RemoteHost } from '../model/RemoteHost';
 import { SshKey } from '../model/SshKey';
 import { Palette, buildDark, buildLight, AppTheme } from '../common/Theme';
 import { showLockGate, lockGateErrorMessage } from './LockGate';
-import { appUiOnAccentText } from '../common/AppUiColorPolicy';
+import { appUiOnAccentText, appUiTint } from '../common/AppUiColorPolicy';
 import { ExtensionLoader, SshNativeOperationPromise } from '../services/ExtensionLoader';
 import { DataCrypto } from '../services/DataCrypto';
 import { HostSyncService } from '../services/HostSyncService';
@@ -448,7 +448,7 @@ export struct SshKeyInstallSheet {
           if (host.keyConfigured) {
             Text('密钥').fontSize(10).fontColor(this.accentColor)
               .padding({ left: 4, right: 4, top: 1, bottom: 1 })
-              .borderRadius(3).backgroundColor(this.accentColor + '18')
+              .borderRadius(3).backgroundColor(appUiTint(this.accentColor, '18'))
               .margin({ left: 4 })
           }
           if (host.locked) {
@@ -467,7 +467,7 @@ export struct SshKeyInstallSheet {
     }
     .width('100%').padding(12).borderRadius(10)
     .backgroundColor(this.selectedHostId === host.id
-      ? this.accentColor + '12' : this.pal().card)
+      ? appUiTint(this.accentColor, '12') : this.pal().card)
     .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
     .onClick(() => { this.selectedHostId = host.id; })
   }

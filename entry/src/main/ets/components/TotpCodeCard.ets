@@ -1,3 +1,4 @@
+import { appUiAccentTextOnSurface } from '../common/AppUiColorPolicy';
 import { settingsVisualIsModern } from '../services/SettingsVisualStylePolicy';
 /**
  * TotpCodeCard.ets — TOTP 验证码卡片 (v4: 纯展示, 操作由 swipeAction 处理)
@@ -513,7 +514,8 @@ export struct TotpCodeCard {
             this.codeStr.substring(0, this.codeStr.length / 2) + ' ' + this.codeStr.substring(this.codeStr.length / 2) :
             this.codeStr)
             .fontSize(26).fontWeight(FontWeight.Bold)
-            .fontColor(this.accentColor).fontFamily('monospace')
+            // A light accent is too faint for the code on a white card: then the text colour.
+            .fontColor(appUiAccentTextOnSurface(this.accentColor, this.pal().text)).fontFamily('monospace')
             .onClick(() => {
               // In multi-select a tap selects instead of copying.
               if (this.showCheckbox) {
@@ -546,14 +548,9 @@ export struct TotpCodeCard {
       }
       if ((this.isDesktopDevice || settingsVisualIsModern(this.visualStyle)) && !this.showCheckbox && !this.pageLocked) {
         Button() {
-          if (settingsVisualIsModern(this.visualStyle)) {
-            SymbolGlyph($r('sys.symbol.more')).fontSize(20).fontColor([this.pal().text])
-          } else {
-            Text('⋯').fontSize(18).fontColor(this.pal().text)
-          }
+          Text('⋯').fontSize(18).fontColor(this.pal().text)
         }
-        .width(settingsVisualIsModern(this.visualStyle) ? 44 : 36).height(settingsVisualIsModern(this.visualStyle) ? 44 : 36)
-        .borderRadius(settingsVisualIsModern(this.visualStyle) ? 22 : 18)
+        .width(36).height(36).borderRadius(18)
         .backgroundColor(this.pal().surface)
         .margin({ left: 8 })
         .accessibilityText('更多操作')

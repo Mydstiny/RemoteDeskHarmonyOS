@@ -15607,7 +15607,7 @@ struct HostListPage {
   }
 
   private hostGroupSummaryText(card: HostGroupCardModel): string {
-    if (card.hosts.length === 0) { return '暂无主机'; }
+    if (card.hosts.length === 0) { return this.hostSearchOrFilterActive() ? '无匹配' : '暂无主机'; }
     if (card.type === 'ai') { return 'Codex / DSH'; }
     if (card.type === 'rustdesk' && !this.rustdeskPresenceDetectionEnabled) {
       return '';
@@ -16426,14 +16426,9 @@ struct HostListPage {
           }
           if (!this.hostSelectionMode && (this.isDesktopDevice || this.settingsModern())) {
             Button() {
-              if (this.settingsModern()) {
-                SymbolGlyph($r('sys.symbol.more')).fontSize(20).fontColor([this.pal().text])
-              } else {
-                Text('⋯').fontSize(18).fontColor(this.pal().text)
-              }
+              Text('⋯').fontSize(18).fontColor(this.pal().text)
             }
-            .width(this.settingsModern() ? 44 : 36).height(this.settingsModern() ? 44 : 36)
-            .borderRadius(this.settingsModern() ? 22 : 18).padding(0).backgroundColor(this.pal().surface)
+            .width(36).height(36).borderRadius(18).padding(0).backgroundColor(this.pal().surface)
             .accessibilityText('更多操作')
             .bindPopup(this.hostActionPopupId === unifiedMoonlightHostCardKey(view.host.id), {
               builder: this.moonlightActionMenuBuilder(view),
@@ -17081,14 +17076,9 @@ struct HostListPage {
                   .onClick((): void => { void this.probeHostConnectivity(host); })
               }
               Button() {
-                if (this.settingsModern()) {
-                  SymbolGlyph($r('sys.symbol.more')).fontSize(20).fontColor([this.pal().text])
-                } else {
-                  Text('⋯').fontSize(18).fontColor(this.pal().text)
-                }
+                Text('⋯').fontSize(18).fontColor(this.pal().text)
               }
-                .width(this.settingsModern() ? 44 : 36).height(this.settingsModern() ? 44 : 36)
-                .borderRadius(this.settingsModern() ? 22 : 18).padding(0).backgroundColor(this.pal().surface)
+                .width(36).height(36).borderRadius(18).padding(0).backgroundColor(this.pal().surface)
                 .margin({ left: 4 }).accessibilityText('更多操作')
                 .bindPopup(this.hostActionPopupId === remoteHostCardKey(host.id), {
                   builder: this.hostActionMenuBuilder(host), placement: Placement.BottomRight,
@@ -17202,7 +17192,8 @@ struct HostListPage {
 
   /** 全新视觉 on Pad and PC: the host list keeps a readable column instead of stretching across the window. */
   private hostListMaxWidth(): Length {
-    return this.settingsModern() && this.breakpoint !== 'sm' ? 880 : '100%';
+    // Full width on every device: a capped column left a narrow strip with wide empty margins on a landscape Pad.
+    return '100%';
   }
 
   @Builder hostSearchLeadingIcon() {

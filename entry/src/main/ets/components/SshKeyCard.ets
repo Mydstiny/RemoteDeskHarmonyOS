@@ -7,7 +7,7 @@ import { Palette, buildDark, buildLight, AppTheme } from '../common/Theme';
 import { promptAction } from '@kit.ArkUI';
 import { pasteboard } from '@kit.BasicServicesKit';
 import { showLockGate, lockGateErrorMessage } from './LockGate';
-import { appUiOnAccentText } from '../common/AppUiColorPolicy';
+import { appUiOnAccentText, appUiTint, appUiAccentTextOnSurface } from '../common/AppUiColorPolicy';
 import { sshKeyTypePending, sshPublicKeyMissingHint } from '../services/KeyVaultFormPolicy';
 
 @Component
@@ -191,9 +191,9 @@ export struct SshKeyCard {
         Row() {
           Text(this.typePending() ? '类型待识别' : SshKey.typeLabel(this.sshKey.keyType))
             .fontSize(10).fontWeight(FontWeight.Medium)
-            .fontColor(this.accentColor)
+            .fontColor(appUiAccentTextOnSurface(this.accentColor, this.pal().text2))
             .padding({ left: 4, right: 4, top: 1, bottom: 1 })
-            .borderRadius(3).backgroundColor(this.accentColor + '18')
+            .borderRadius(3).backgroundColor(appUiTint(this.accentColor, '18'))
           if (this.sshKey.privateKeyEncrypted) {
             Text('加密')
               .fontSize(10).fontColor(this.pal().text2)
@@ -246,22 +246,17 @@ export struct SshKeyCard {
       })
 
       if (settingsVisualIsModern(this.visualStyle) && !this.showCheckbox) {
-        Button('复制公钥').height(44).fontSize(13).borderRadius(22).padding({ left: 12, right: 12 })
-          .backgroundColor(this.pal().surface).fontColor(this.accentColor).margin({ left: 4 })
-          .onClick((): void => { void this.copyPublicKey(); })
+        Button('复制公钥').height(32).fontSize(12).borderRadius(16).padding({ left: 10, right: 10 })
+          .backgroundColor(this.pal().surface).fontColor(appUiAccentTextOnSurface(this.accentColor, this.pal().text))
+          .margin({ left: 4 }).onClick((): void => { void this.copyPublicKey(); })
       }
 
       // PC/2in1 (and every device in 全新视觉): 省略号按钮 → 弹出操作菜单
       if ((this.isDesktopDevice || settingsVisualIsModern(this.visualStyle)) && !this.showCheckbox) {
         Button() {
-          if (settingsVisualIsModern(this.visualStyle)) {
-            SymbolGlyph($r('sys.symbol.more')).fontSize(20).fontColor([this.pal().text])
-          } else {
-            Text('⋯').fontSize(18).fontColor(this.pal().text)
-          }
+          Text('⋯').fontSize(18).fontColor(this.pal().text)
         }
-        .width(settingsVisualIsModern(this.visualStyle) ? 44 : 36).height(settingsVisualIsModern(this.visualStyle) ? 44 : 36)
-        .borderRadius(settingsVisualIsModern(this.visualStyle) ? 22 : 18)
+        .width(36).height(36).borderRadius(18)
         .accessibilityText('更多操作')
         .backgroundColor(this.pal().surface)
         .margin({ left: 4 })

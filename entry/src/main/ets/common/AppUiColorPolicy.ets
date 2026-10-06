@@ -31,3 +31,16 @@ export function appUiOnAccentText(accent: string): string {
 export function accentSecondaryText(accent: string, whiteTint: string = '#EAF3FF'): string {
   return appUiOnAccentText(accent) === '#FFFFFF' ? whiteTint : '#3D3D3D';
 }
+
+/**
+ * A translucent tint of a #RRGGBB colour. ArkUI reads eight hex digits as #AARRGGBB, so appending the alpha
+ * (colour + '18') turned a light accent into an opaque, unrelated colour (mint → yellow).
+ */
+export function appUiTint(color: string, alpha: string): string {
+  return /^#[0-9a-fA-F]{6}$/.test(color) && /^[0-9a-fA-F]{2}$/.test(alpha) ? '#' + alpha + color.substring(1) : color;
+}
+
+/** Accent-coloured text on a light surface: the accent while it reads there, otherwise the secondary text colour. */
+export function appUiAccentTextOnSurface(accent: string, fallback: string): string {
+  return appUiOnAccentText(accent) === '#FFFFFF' ? accent : fallback;
+}
