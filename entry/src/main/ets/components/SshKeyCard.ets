@@ -1,3 +1,4 @@
+import { settingsVisualIsModern } from '../services/SettingsVisualStylePolicy';
 /**
  * SshKeyCard.ets — SSH 密钥卡片 (v5: 复制公钥需锁验证)
  */
@@ -22,6 +23,7 @@ export struct SshKeyCard {
   @StorageLink('currentTheme') theme: string = 'light';
   @StorageProp('accentColor') accentColor: string = '#007DFF';
   @StorageProp('isDesktopDevice') isDesktopDevice: boolean = false;
+  @StorageProp('settingsVisualStyle') visualStyle: string = 'classic';
   @StorageProp('currentBreakpoint') breakpoint: string = 'sm';
   @State menuVisible: boolean = false;
 
@@ -235,15 +237,31 @@ export struct SshKeyCard {
           if (this.onCheckChange) { this.onCheckChange(!this.checkboxSelected); }
           return;
         }
+        // 全新视觉: a tap opens 密钥管理; copying has its own button. Classic: a tap copies.
+        if (settingsVisualIsModern(this.visualStyle)) {
+          if (this.onEdit) { this.onEdit(); }
+          return;
+        }
         this.copyPublicKey();
       })
 
-      // PC/2in1: 省略号按钮 → 弹出操作菜单
-      if (this.isDesktopDevice && !this.showCheckbox) {
+      if (settingsVisualIsModern(this.visualStyle) && !this.showCheckbox) {
+        Button('复制公钥').height(44).fontSize(13).borderRadius(22).padding({ left: 12, right: 12 })
+          .backgroundColor(this.pal().surface).fontColor(this.accentColor).margin({ left: 4 })
+          .onClick((): void => { void this.copyPublicKey(); })
+      }
+
+      // PC/2in1 (and every device in 全新视觉): 省略号按钮 → 弹出操作菜单
+      if ((this.isDesktopDevice || settingsVisualIsModern(this.visualStyle)) && !this.showCheckbox) {
         Button() {
-          Text('⋯').fontSize(18).fontColor(this.pal().text)
+          if (settingsVisualIsModern(this.visualStyle)) {
+            SymbolGlyph($r('sys.symbol.more')).fontSize(20).fontColor([this.pal().text])
+          } else {
+            Text('⋯').fontSize(18).fontColor(this.pal().text)
+          }
         }
-        .width(36).height(36).borderRadius(18)
+        .width(settingsVisualIsModern(this.visualStyle) ? 44 : 36).height(settingsVisualIsModern(this.visualStyle) ? 44 : 36)
+        .borderRadius(settingsVisualIsModern(this.visualStyle) ? 22 : 18)
         .accessibilityText('更多操作')
         .backgroundColor(this.pal().surface)
         .margin({ left: 4 })

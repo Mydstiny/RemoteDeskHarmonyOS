@@ -164,7 +164,8 @@ check('selection belongs to one list, taps select in multi-select, locked keys s
   assert.ok(card.includes('if (this.showCheckbox) {\n          if (this.onCheckChange) { this.onCheckChange(!this.checkboxSelected); }'));
   assert.ok(card.includes('.selectedColor(this.accentColor)') && card.includes("Text('公钥未生成')"));
   const totp = read('components/TotpCodeCard.ets');
-  assert.ok(totp.includes('if (this.isDesktopDevice && !this.showCheckbox && !this.pageLocked) {'), 'PC can rename and delete one entry');
+  assert.ok(totp.includes('if ((this.isDesktopDevice || settingsVisualIsModern(this.visualStyle)) && !this.showCheckbox && !this.pageLocked) {'),
+    'PC (and 全新视觉) can rename and delete one entry');
   assert.ok(member(totp, 'private async unlockEntry(): Promise<void> {').includes("showLockGate(this.primaryLabel(), 'biometric')"));
   assert.ok(!page.includes('@Builder sshKeyContent()') && !page.includes('@Builder totpContent()') &&
     !page.includes('@Builder selectionDeleteBtn()'), 'dead builders are gone');
@@ -639,6 +640,17 @@ check('batch 4 review 2: no secret in a baseline, no stale baseline, failed save
     'a failed save keeps the typed passphrases protected');
   const relay = member(read('pages/RustDeskRelayPage.ets'), 'private relaySheetUnsavedLabel(): string {');
   assert.ok(relay.includes("relayFormTyped ? '中继配置和粘贴内容' : '粘贴内容'") && relay.includes('this.sheetContent === 10) && !this.relaySaving'));
+});
+
+check('batches 5-7: 全新视觉 extends to the three main pages; the classic look keeps its glyphs and sizes', () => {
+  const page = read('pages/HostListPage.ets');
+  assert.ok(member(page, '@Builder hostSearchClearButton() {').includes("Text('✕')"), 'classic keeps ✕');
+  assert.ok(page.includes('if (this.hostSelectionMode && !this.settingsModern()) {'), 'classic keeps the bar in the list');
+  assert.ok(page.includes('.onClick(() => { this.onFabAddClick(); })') && page.includes('this.onFabAddClick(); })\n              }'));
+  assert.ok(page.includes('if (!this.hostSelectionMode && (this.isDesktopDevice || this.settingsModern())) {'));
+  assert.ok(read('components/SshKeyCard.ets').includes("Button('复制公钥')"));
+  assert.ok(read('components/TotpCodeCard.ets').includes("settingsVisualIsModern(this.visualStyle) && this.codeStr.length >= 6"));
+  assert.ok(read('pages/RustDeskRelayPage.ets').includes("if (this.breakpoint !== 'sm' || settingsVisualIsModern(this.visualStyle)) {"));
 });
 
 console.log('three screens: ' + passed + ' checks passed');

@@ -1,3 +1,4 @@
+import { settingsVisualIsModern } from '../../services/SettingsVisualStylePolicy';
 import { Palette, buildDark, buildLight } from '../../common/Theme';
 import { accentSecondaryText, appUiOnAccentText } from '../../common/AppUiColorPolicy';
 import { MoonlightAddress } from '../../model/MoonlightModels';
@@ -105,6 +106,7 @@ function unavailableLocalSave(): Promise<MoonlightLocalSaveResult> {
 @Component
 export struct MoonlightHostAddFlow {
   @StorageProp('currentTheme') theme: string = 'light';
+  @StorageProp('settingsVisualStyle') visualStyle: string = 'classic';
   @StorageProp('accentColor') accentColor: string = '#007DFF';
   @StorageProp('currentBreakpoint') breakpoint: string = 'sm';
   @Prop ownerToken: number = 0;
@@ -195,6 +197,11 @@ export struct MoonlightHostAddFlow {
   aboutToDisappear(): void {
     this.pauseDiscovery();
     this.cancelActiveOperation();
+  }
+
+  /** 全新视觉: header buttons are 44vp touch targets (36 in the classic look). */
+  private headerButtonSize(): number {
+    return settingsVisualIsModern(this.visualStyle) ? 44 : 36;
   }
 
   private pal(): Palette {
@@ -585,7 +592,7 @@ export struct MoonlightHostAddFlow {
         SymbolGlyph($r('sys.symbol.chevron_left'))
           .fontSize(18).fontColor([this.pal().text2])
       }
-      .width(36).height(36).borderRadius(18).padding(0)
+      .width(this.headerButtonSize()).height(this.headerButtonSize()).borderRadius(this.headerButtonSize() / 2).padding(0)
       .backgroundColor(this.pal().surface)
       .accessibilityText(this.flow.step === 1 ? '返回协议选择' : '返回上一步')
       .onClick((): void => { this.requestBack(); })
@@ -605,7 +612,7 @@ export struct MoonlightHostAddFlow {
         Text(this.stepLabel()).fontSize(12).fontColor(this.pal().text3).margin({ top: 3 })
       }.alignItems(HorizontalAlign.Start).layoutWeight(1)
       Button() { SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor([this.pal().text2]) }
-        .width(36).height(36).borderRadius(18).padding(0).backgroundColor(this.pal().surface)
+        .width(this.headerButtonSize()).height(this.headerButtonSize()).borderRadius(this.headerButtonSize() / 2).padding(0).backgroundColor(this.pal().surface)
         .accessibilityText('关闭').onClick((): void => { this.onClose(); })
     }.width('100%').margin({ bottom: 18 })
   }

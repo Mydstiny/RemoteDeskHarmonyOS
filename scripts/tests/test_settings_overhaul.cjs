@@ -276,7 +276,7 @@ check('全新视觉 is opt-in: stored per account, cloud-synced, and readable an
   assert.ok(page.includes("case 'ui.settingsVisual': this.saveSettingsVisualStyle(value === SETTINGS_VISUAL_STYLE_MODERN)"));
   assert.ok(member(page, '@Builder settingsVisualStyleRow() {').includes("accessibilityText('全新视觉')"));
   const ai = read('services/diagnosticAi/DiagnosticAiSettingsActionPolicy.ets');
-  assert.ok(ai.includes("new AiSettingSpec('ui.settingsVisual', '设置页外观', 'settingsVisualStyle',"));
+  assert.ok(ai.includes("new AiSettingSpec('ui.settingsVisual', '全新视觉外观', 'settingsVisualStyle',"));
   assert.ok(ai.includes("choices([['modern', '全新视觉'], ['classic', '经典']])"));
   const kb = read('services/diagnosticAi/DiagnosticAiKnowledgeBase.ets');
   assert.ok(kb.includes('全新视觉') && kb.includes('ui.settingsVisual'));

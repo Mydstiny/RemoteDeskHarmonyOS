@@ -1,3 +1,4 @@
+import { settingsVisualIsModern } from '../services/SettingsVisualStylePolicy';
 /**
  * TotpCodeCard.ets — TOTP 验证码卡片 (v4: 纯展示, 操作由 swipeAction 处理)
  */
@@ -38,6 +39,7 @@ export struct TotpCodeCard {
   @StorageProp('totpLogoMode') totpLogoMode: string = 'logo';
   @StorageProp('currentBreakpoint') breakpoint: string = 'sm';
   @StorageProp('isDesktopDevice') isDesktopDevice: boolean = false;
+  @StorageProp('settingsVisualStyle') visualStyle: string = 'classic';
   @StorageProp('remoteDesktopBgFlag') @Watch('onCardLifecycleChanged') appInBackground: boolean = false;
   @Prop @Watch('onCardLifecycleChanged') pageLocked: boolean = false;
   @Prop showCheckbox: boolean = false;
@@ -506,7 +508,10 @@ export struct TotpCodeCard {
 
       if (!this.entry.locked && !this.pageLocked && this.secretAvailable()) {
         Column() {
-          Text(this.codeStr)
+          // 全新视觉: the code in groups of three (123 456), easier to read and type.
+          Text(settingsVisualIsModern(this.visualStyle) && this.codeStr.length >= 6 ?
+            this.codeStr.substring(0, this.codeStr.length / 2) + ' ' + this.codeStr.substring(this.codeStr.length / 2) :
+            this.codeStr)
             .fontSize(26).fontWeight(FontWeight.Bold)
             .fontColor(this.accentColor).fontFamily('monospace')
             .onClick(() => {
@@ -539,11 +544,16 @@ export struct TotpCodeCard {
             void this.unlockEntry();
           })
       }
-      if (this.isDesktopDevice && !this.showCheckbox && !this.pageLocked) {
+      if ((this.isDesktopDevice || settingsVisualIsModern(this.visualStyle)) && !this.showCheckbox && !this.pageLocked) {
         Button() {
-          Text('⋯').fontSize(18).fontColor(this.pal().text)
+          if (settingsVisualIsModern(this.visualStyle)) {
+            SymbolGlyph($r('sys.symbol.more')).fontSize(20).fontColor([this.pal().text])
+          } else {
+            Text('⋯').fontSize(18).fontColor(this.pal().text)
+          }
         }
-        .width(36).height(36).borderRadius(18)
+        .width(settingsVisualIsModern(this.visualStyle) ? 44 : 36).height(settingsVisualIsModern(this.visualStyle) ? 44 : 36)
+        .borderRadius(settingsVisualIsModern(this.visualStyle) ? 22 : 18)
         .backgroundColor(this.pal().surface)
         .margin({ left: 8 })
         .accessibilityText('更多操作')

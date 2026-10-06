@@ -1,4 +1,5 @@
 /** Two-step RDP add flow: endpoint first, then an explicit authentication mode. */
+import { settingsVisualIsModern } from '../../services/SettingsVisualStylePolicy';
 import { accentSecondaryText, appUiOnAccentText } from '../../common/AppUiColorPolicy';
 import { RdpCredential } from '../../model/RdpCredential';
 import {
@@ -20,6 +21,7 @@ import {
 @Component
 export struct RdpAddFlow {
   @StorageProp('currentTheme') theme: string = 'light';
+  @StorageProp('settingsVisualStyle') visualStyle: string = 'classic';
   @StorageProp('accentColor') accentColor: string = '#007DFF';
   @Prop @Watch('onCredentialsChanged') credentials: RdpCredential[] = [];
   @Prop lanScanning: boolean = false;
@@ -99,6 +101,11 @@ export struct RdpAddFlow {
 
   aboutToAppear(): void {
     this.draftBaseline = this.draftSnapshot();
+  }
+
+  /** 全新视觉: header buttons are 44vp touch targets (36 in the classic look). */
+  private headerButtonSize(): number {
+    return settingsVisualIsModern(this.visualStyle) ? 44 : 36;
   }
 
   private pal(): Palette {
@@ -430,7 +437,7 @@ export struct RdpAddFlow {
   @Builder private header() {
     Row() {
       Button() { SymbolGlyph($r('sys.symbol.chevron_left')).fontSize(18).fontColor([this.pal().text2]) }
-        .width(36).height(36).borderRadius(18).padding(0).backgroundColor(this.pal().surface)
+        .width(this.headerButtonSize()).height(this.headerButtonSize()).borderRadius(this.headerButtonSize() / 2).padding(0).backgroundColor(this.pal().surface)
         .accessibilityText(this.step === 1 ? '返回协议选择' : '返回上一步')
         .onClick((): void => { if (this.step === 1) { this.onBackToProtocols(); } else { this.step = 1; } })
       Column() {
@@ -440,7 +447,7 @@ export struct RdpAddFlow {
       }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 12 })
       // Closes from any step, as the SSH flow does (a centred sheet has no other way out).
       Button() { SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor([this.pal().text2]) }
-        .width(36).height(36).borderRadius(18).padding(0).backgroundColor(this.pal().surface)
+        .width(this.headerButtonSize()).height(this.headerButtonSize()).borderRadius(this.headerButtonSize() / 2).padding(0).backgroundColor(this.pal().surface)
         .accessibilityText('关闭').onClick((): void => { this.onClose(); })
     }.width('100%').margin({ bottom: 18 })
   }

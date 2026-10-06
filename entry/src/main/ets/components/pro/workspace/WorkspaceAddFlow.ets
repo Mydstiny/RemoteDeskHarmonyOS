@@ -1,3 +1,4 @@
+import { settingsVisualIsModern } from '../../../services/SettingsVisualStylePolicy';
 import { appUiOnAccentText } from '../../../common/AppUiColorPolicy';
 import { buildDark, buildLight, Palette } from '../../../common/Theme';
 import { ProSymbolIcon } from '../ProSymbolIcon';
@@ -26,6 +27,7 @@ function freeName(base: string): string {
 @Component
 export struct WorkspaceAddFlow {
   @StorageProp('currentTheme') theme: string = 'light';
+  @StorageProp('settingsVisualStyle') visualStyle: string = 'classic';
   @StorageProp('accentColor') accentColor: string = '#007DFF';
   /** Hosts the stores cannot list on their own (Moonlight, from the home page). */
   @Prop extraRows: OrgHostRow[] = [];
@@ -63,6 +65,11 @@ export struct WorkspaceAddFlow {
       this.draftDirty = dirty;
       this.onDirtyChange(dirty);
     }
+  }
+
+  /** 全新视觉: header buttons are 44vp touch targets (36 in the classic look). */
+  private headerButtonSize(): number {
+    return settingsVisualIsModern(this.visualStyle) ? 44 : 36;
   }
 
   private pal(): Palette { return this.theme === 'light' ? buildLight(this.accentColor) : buildDark(this.accentColor); }
@@ -104,7 +111,7 @@ export struct WorkspaceAddFlow {
   @Builder private header() {
     Row() {
       Button() { SymbolGlyph($r('sys.symbol.chevron_left')).fontSize(18).fontColor([this.pal().text2]) }
-        .width(36).height(36).borderRadius(18).padding(0).backgroundColor(this.pal().surface)
+        .width(this.headerButtonSize()).height(this.headerButtonSize()).borderRadius(this.headerButtonSize() / 2).padding(0).backgroundColor(this.pal().surface)
         .onClick((): void => { if (this.step === 1) { this.onBackToProtocols(); } else { this.step = 1; } })
       Column() {
         Text('新建工作区').fontSize(20).fontWeight(FontWeight.Bold).fontColor(this.pal().text)

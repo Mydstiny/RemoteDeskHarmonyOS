@@ -1,3 +1,4 @@
+import { settingsVisualIsModern } from '../../services/SettingsVisualStylePolicy';
 import { Palette, buildDark, buildLight } from '../../common/Theme';
 import { ProtocolIconKey, protocolIcon } from '../../services/ProtocolIconPolicy';
 
@@ -8,6 +9,7 @@ export struct ResourceFabPicker {
   @StorageProp('accentColor') accentColor: string = '#007DFF';
   /** PC has no camera scanner: 扫描二维码 is not offered there. */
   @StorageProp('isDesktopDevice') isDesktopDevice: boolean = false;
+  @StorageProp('settingsVisualStyle') visualStyle: string = 'classic';
   @Prop kind: string = 'ssh_key';
   onSelect: (option: string) => void = (_option: string): void => {};
   onClose: () => void = (): void => {};
@@ -62,8 +64,9 @@ export struct ResourceFabPicker {
           Text(this.subtitle()).fontSize(13).fontColor(this.pal().text3).margin({ top: 4 })
         }.alignItems(HorizontalAlign.Start).layoutWeight(1)
         Button() { SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor([this.pal().text2]) }
-          .width(36).height(36).borderRadius(18).padding(0).backgroundColor(this.pal().surface)
-          .onClick((): void => { this.onClose(); })
+          .width(settingsVisualIsModern(this.visualStyle) ? 44 : 36).height(settingsVisualIsModern(this.visualStyle) ? 44 : 36)
+          .borderRadius(settingsVisualIsModern(this.visualStyle) ? 22 : 18).padding(0).backgroundColor(this.pal().surface)
+          .accessibilityText('关闭').onClick((): void => { this.onClose(); })
       }.width('100%').margin({ bottom: 18 })
       if (this.kind === 'ssh_key') {
         this.option('file', '从文件导入', '选择现有 OpenSSH 私钥文件')

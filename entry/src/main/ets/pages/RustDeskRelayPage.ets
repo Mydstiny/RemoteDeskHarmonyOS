@@ -1,3 +1,4 @@
+import { settingsVisualIsModern } from '../services/SettingsVisualStylePolicy';
 import { DiagnosticAiOrb } from '../components/diagnosticAi/DiagnosticAiOrb';
 import { DiagnosticAiOrbState } from '../services/diagnosticAi/DiagnosticAiModels';
 /**
@@ -146,6 +147,7 @@ export struct RustDeskRelayPage {
   onShowRelayHosts: (relayId: string) => void = (_relayId: string): void => {};
   @StorageProp('currentBreakpoint') breakpoint: string = 'sm';
   @StorageProp('isDesktopDevice') isDesktopDevice: boolean = false;
+  @StorageProp('settingsVisualStyle') visualStyle: string = 'classic';
   @StorageProp('topRectHeight') topRectHeight: number = 0;
   @State relays: RustDeskRelayConfig[] = [];
   @State vncGateways: VncGatewayView[] = [];
@@ -1629,10 +1631,16 @@ export struct RustDeskRelayPage {
     .width('100%').padding({ bottom: 14 }).align(Alignment.Start)
   }
 
+  /** 全新视觉: 44vp card buttons (32 in the classic look). */
+  private relayButtonSize(): number {
+    return settingsVisualIsModern(this.visualStyle) ? 44 : 32;
+  }
+
   @Builder _statChip(label: string, value: string, color: string) {
     Row() {
-      Text(label).fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
-      Text(value).fontSize(11).fontWeight(FontWeight.Bold).fontColor(color).fontFamily(this.font()).margin({ left: 3 })
+      Text(label).fontSize(settingsVisualIsModern(this.visualStyle) ? 13 : 11).fontColor(this.pal().text3).fontFamily(this.font())
+      Text(value).fontSize(settingsVisualIsModern(this.visualStyle) ? 13 : 11).fontWeight(FontWeight.Bold).fontColor(color)
+        .fontFamily(this.font()).margin({ left: 3 })
     }
     .padding({ left: 10, right: 10, top: 5, bottom: 5 })
     .borderRadius(10)
@@ -1883,9 +1891,14 @@ export struct RustDeskRelayPage {
       }.alignItems(HorizontalAlign.Start).layoutWeight(1)
       // ⋯ menu
       Button() {
-        Text('⋯').fontSize(20).fontColor(this.pal().text)
+        if (settingsVisualIsModern(this.visualStyle)) {
+          SymbolGlyph($r('sys.symbol.more')).fontSize(20).fontColor([this.pal().text])
+        } else {
+          Text('⋯').fontSize(20).fontColor(this.pal().text)
+        }
       }
-      .width(40).height(40).borderRadius(20)
+      .width(settingsVisualIsModern(this.visualStyle) ? 44 : 40).height(settingsVisualIsModern(this.visualStyle) ? 44 : 40)
+      .borderRadius(settingsVisualIsModern(this.visualStyle) ? 22 : 20).padding(0).accessibilityText('更多操作')
       .backgroundColor(this.pal().surface)
       .bindPopup(this.menuVisibleRelayId === relay.id, {
         builder: this.pcMenuBuilder(relay),
@@ -1927,8 +1940,9 @@ export struct RustDeskRelayPage {
           .margin({ top: 3 })
       }.alignItems(HorizontalAlign.Start).layoutWeight(1)
       Button() { SymbolGlyph($r('sys.symbol.square_and_pencil')).fontSize(16).fontColor([this.pal().text2]) }
-        .width(36).height(36).borderRadius(18).backgroundColor(this.pal().surface)
-        .onClick((): void => { this.openEditVncGatewaySheet(gateway); })
+        .width(settingsVisualIsModern(this.visualStyle) ? 44 : 36).height(settingsVisualIsModern(this.visualStyle) ? 44 : 36)
+        .borderRadius(settingsVisualIsModern(this.visualStyle) ? 22 : 18).backgroundColor(this.pal().surface)
+        .accessibilityText('编辑').onClick((): void => { this.openEditVncGatewaySheet(gateway); })
     }
     .width('100%').padding({ left: 12, right: 8, top: 10, bottom: 10 }).borderRadius(10)
     .backgroundColor(this.selectedPcVncGateway !== null && this.selectedPcVncGateway.id === gateway.id
@@ -2437,19 +2451,23 @@ export struct RustDeskRelayPage {
           Button() {
             SymbolGlyph($r('sys.symbol.bolt_fill')).fontSize(15).fontColor([this.accentColor])
           }
-          .width(32).height(32).borderRadius(16)
+          .width(this.relayButtonSize()).height(this.relayButtonSize()).borderRadius(this.relayButtonSize() / 2)
           .backgroundColor(this.pal().surface)
           .enabled(!this.isRelayTesting(relay.id))
           .accessibilityText(this.isRelayTesting(relay.id) ? '检测中' : '测试连接')
           .onClick(() => { void this.doTestRelay(relay); })
           .margin({ left: 6 })
         }
-        if (this.breakpoint !== 'sm') {
+        if (this.breakpoint !== 'sm' || settingsVisualIsModern(this.visualStyle)) {
           Button() {
-            Text('⋯').fontSize(18).fontColor(this.pal().text)
+            if (settingsVisualIsModern(this.visualStyle)) {
+              SymbolGlyph($r('sys.symbol.more')).fontSize(20).fontColor([this.pal().text])
+            } else {
+              Text('⋯').fontSize(18).fontColor(this.pal().text)
+            }
           }
-          .width(32).height(32).borderRadius(16)
-          .backgroundColor(this.pal().surface)
+          .width(this.relayButtonSize()).height(this.relayButtonSize()).borderRadius(this.relayButtonSize() / 2)
+          .padding(0).backgroundColor(this.pal().surface).accessibilityText('更多操作')
           .bindPopup(this.menuVisibleRelayId === relay.id, {
             builder: this.pcMenuBuilder(relay),
             placement: Placement.BottomRight,
