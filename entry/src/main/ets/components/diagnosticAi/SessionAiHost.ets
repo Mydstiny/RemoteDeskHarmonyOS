@@ -1,4 +1,4 @@
-import { ComponentContent, LevelOrder, promptAction, window } from '@kit.ArkUI';
+import { ComponentContent, promptAction, window } from '@kit.ArkUI';
 import { common } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { AiIslandLayerParams, AiTopLayer } from './AiTopLayer';
@@ -6,6 +6,8 @@ import { AI_VOICE_REQUEST, AiChatMemory, aiChatOwner } from './AiChatView';
 import { DiagnosticAiDeviceClass } from './AiIsland';
 import { AI_APP_ACTION_REQUEST, AI_ORB_LISTEN_REQUEST, AI_ORB_SPEAKING, AI_SESSION_HANDOVER, AI_SESSION_OPEN, AI_SESSION_PANEL_REQUEST } from '../../services/diagnosticAi/AiBridgeKeys';
 import { SessionAiPanelParams, sessionAiPanel } from './SessionAiPanel';
+import { aiChatRefresh } from '../../services/diagnosticAi/AiShareInbox';
+import { buildDark, buildLight } from '../../common/Theme';
 import { AiSessionRouter } from '../../services/diagnosticAi/AiSessionRouter';
 import { AiReadAloud } from '../../services/diagnosticAi/AiSpeech';
 import { AI_VOICE_ENABLED, AiVoiceConfig, AiVoiceSettings } from '../../services/diagnosticAi/AiVoiceSettings';
@@ -167,20 +169,23 @@ export struct SessionAiHost {
       this.closePanel();
       if (wasOpen) { this.closeAi(); } else { this.startAi(); }
     };
+    p.onNewChat = (): void => { this.closePanel(); this.newChat(); };
     p.onClose = (): void => { this.closePanel(); };
     const content: ComponentContent<SessionAiPanelParams> =
       new ComponentContent(this.getUIContext(), wrapBuilder(sessionAiPanel), p);
     this.panel = content;
     this.listenAfterPanel = false;
     hilog.info(0x0000, 'AiChat', 'session AI panel opens');
-    this.getUIContext().getPromptAction().openCustomDialog(content, {
-      isModal: true,
-      autoCancel: true,
-      alignment: DialogAlignment.Center,
-      maskColor: '#66000000',
-      // Above the orb and its chat.
-      levelOrder: LevelOrder.clamp(100000),
-      onDidDisappear: (): void => {
+    const theme: string = AppStorage.get<string>('currentTheme') ?? 'light';
+    const accent: string = AppStorage.get<string>('accentColor') ?? '#007DFF';
+    const sheetBg: string = theme === 'light' ? buildLight(accent).sheetBg : buildDark(accent).sheetBg;
+    // A sheet, as the app's other settings are: half height first, drag up for all of it.
+    this.getUIContext().openBindSheet(content, {
+      detents: [SheetSize.MEDIUM, SheetSize.LARGE],
+      dragBar: true,
+      showClose: false,
+      backgroundColor: sheetBg,
+      onDisappear: (): void => {
         if (this.panel === content) { this.panel = null; }
         content.dispose();
         this.afterPanel();
@@ -191,7 +196,19 @@ export struct SessionAiHost {
   private closePanel(): void {
     const content: ComponentContent<SessionAiPanelParams> | null = this.panel;
     if (content === null) { return; }
-    this.getUIContext().getPromptAction().closeCustomDialog(content).catch((): void => { /* already closed */ });
+    this.getUIContext().closeBindSheet(content).catch((): void => { /* already closed */ });
+  }
+
+  /** 开始新对话 from the panel: the current chat stays in 对话记录, the small chat starts empty. */
+  private newChat(): void {
+    if (!this.island.isOpen() || AiChatMemory.requestId !== '') {
+      if (AiChatMemory.requestId !== '') { this.toast('回答完成后再开始新对话'); }
+      return;
+    }
+    AiChatMemory.clear(aiChatOwner());
+    AiChatMemory.active = true;
+    aiChatRefresh();
+    this.toast('已开始新对话，之前的对话在对话记录里');
   }
 
   private afterPanel(): void {

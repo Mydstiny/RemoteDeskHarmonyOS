@@ -677,7 +677,12 @@ test('AI 控制面板: the AI button opens it (or starts the AI with 点 AI 按�
   assert.match(lift, /if \(this\.listenRequest < 0\) \{ this\.stopOrbVoice\(false\); return; \}/);
   assert.match(lift, /if \(this\.controller\.sessionMode && AiChatMemory\.sessionTalk === 'on'\) \{\s*AiChatMemory\.sessionTalk = '';\s*AiReadAloud\.stop\(\);/);
   const panel = read('components/diagnosticAi/SessionAiPanel.ets');
-  for (const words of ["'语音模式'", "'连续对话'", "'点 AI 按钮直接启动'", "'关闭 AI'", "'启动 AI'"]) { assert.ok(panel.includes(words), words); }
+  for (const words of ["'语音模式'", "'连续对话'", "'点 AI 按钮直接启动'", "'关闭 AI'", "'启动 AI'", "'模型'", "'回答风格'",
+    "'回答长度'", "'联网搜索'", "'朗读语速'", "'AI 风格'", "'悬浮球样式'", "'开始新对话'"]) { assert.ok(panel.includes(words), words); }
+  // A bind sheet (as the app's settings are), not a dialog.
+  assert.match(host, /this\.getUIContext\(\)\.openBindSheet\(content, \{/);
+  assert.match(host, /this\.getUIContext\(\)\.closeBindSheet\(content\)/);
+  assert.doesNotMatch(host, /openCustomDialog/);
   for (const file of ['components/rdp/RdpSessionToolbar.ets', 'components/moonlight/MoonlightSessionToolbar.ets',
     'components/VncSessionToolbar.ets', 'components/RemoteSessionTopBar.ets']) {
     assert.match(read(file), /AppStorage\.setOrCreate\(AI_SESSION_PANEL_REQUEST, Date\.now\(\)\)/, file + ' long press');
