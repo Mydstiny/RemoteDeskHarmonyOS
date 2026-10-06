@@ -7,6 +7,7 @@ import { router, promptAction } from '@kit.ArkUI';
 import { common } from '@kit.AbilityKit';
 import { AppConfig, Palette, buildDark, buildLight } from '../common/Theme';
 import { ProBadge } from '../components/ProBadge';
+import { SettingsSavedBadge } from '../components/SettingsSavedBadge';
 import { ProFeatureGate } from '../components/ProFeatureGate';
 import { AiBackendChoiceCard } from '../components/ai/AiBackendChoiceCard';
 import { AiHostEditor } from '../components/ai/AiHostEditor';
@@ -42,6 +43,8 @@ export struct AiSettingsSurface {
   @State settingsReady: boolean = false;
   @State hosts: AiHost[] = [];
   @State error: string = '';
+  /** Bumped after each successful save to flash 已保存 in the header. */
+  @State savedTick: number = 0;
   @State busy: boolean = false;
   @State showEditor: boolean = false;
   @State editing: AiHost | null = null;
@@ -167,6 +170,7 @@ export struct AiSettingsSurface {
         }
         this.savedSettings = saved; this.savedSettingsAccount = account;
         this.settings = JSON.parse(JSON.stringify(saved)) as AiSettings;
+        this.savedTick++;
       } catch (error) {
         if (this.alive && AiAccess.getInstance().proVisible() && AiAccess.getInstance().current(account)) {
           this.settings = JSON.parse(JSON.stringify(previous)) as AiSettings;
@@ -174,6 +178,19 @@ export struct AiSettingsSurface {
         throw error as Error;
       }
     });
+  }
+  private confirmClearOperations(): void {
+    this.getUIContext().getPromptAction().showDialog({
+      title: '清理已确认的操作记录？',
+      message: '已经确认完成的操作记录会从本机删除；还在等待确认的操作会保留。',
+      buttons: [{ text: '取消', color: this.pal().text2 }, { text: '清理', color: this.pal().danger }]
+    }).then((result): void => {
+      if (result.index !== 1) { return; }
+      void this.run(async (): Promise<void> => {
+        if (this.account !== null) { await AiLocalStore.getInstance().clearCompletedOperations(this.account); }
+        promptAction.showToast({ message: '已清理确认完成的记录，待确认操作已保留' });
+      });
+    }).catch((): void => {});
   }
   private openEditor(host: AiHost | null): void {
     if (this.busy || !this.allowed) { this.error = '远程 AI 需要有效 Pro 权益'; return; }
@@ -220,6 +237,7 @@ export struct AiSettingsSurface {
   }
   @Builder private editor() {
     AiHostEditor({ host: this.editing, modern: resolveFabAddStyle(this.fabAddStyle, this.isDesktopDevice) === 'modern',
+      viewportHeight: this.viewportHeight,
       onClose: (): void => { this.showEditor = false; },
       onSaved: (id: string, connect: boolean): void => {
         if (!this.alive || this.editorAccount === null || !AiAccess.getInstance().current(this.editorAccount)) { return; }
@@ -246,8 +264,17 @@ export struct AiSettingsSurface {
           Text(this.title()).fontSize(20).fontWeight(FontWeight.Bold).fontFamily(AppConfig.fontFamily).fontColor(this.pal().text)
           Text(this.accessText === '' ? 'Pro 远程 AI' : this.accessText).fontSize(12).fontFamily(AppConfig.fontFamily).fontColor(this.pal().text3)
         }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+        SettingsSavedBadge({ savedTick: this.savedTick })
         ProBadge()
       }.width('100%').padding({ left: 12, right: 24, top: 8, bottom: 8 })
+      // Errors show under the title, where they are seen, instead of after the last section.
+      if (this.error !== '') {
+        Row({ space: 8 }) {
+          SymbolGlyph($r('sys.symbol.exclamationmark_circle')).fontSize(16).fontColor([this.pal().danger])
+          Text(this.error).fontSize(13).fontFamily(AppConfig.fontFamily).fontColor(this.pal().danger)
+            .layoutWeight(1)
+        }.width('100%').padding({ left: 24, right: 24, bottom: 8 })
+      }
       if (!this.allowed) {
         Column({ space: 12 }) {
           Text('远程 AI 需要有效 Pro 权益').fontSize(18).fontWeight(FontWeight.Medium)
@@ -329,18 +356,12 @@ export struct AiSettingsSurface {
               });
             } })
           AppSettingsActionRow({ title: '清理已确认操作记录', detail: '待确认操作继续保留，避免重复执行', isEnabled: !this.busy && this.allowed,
-            onAction: (): void => {
-              void this.run(async (): Promise<void> => {
-                if (this.account !== null) { await AiLocalStore.getInstance().clearCompletedOperations(this.account); }
-                promptAction.showToast({ message: '已清理确认完成的记录，待确认操作已保留' });
-              });
-            } })
+            onAction: (): void => { this.confirmClearOperations(); } })
           }
           if (this.sectionVisible('install')) {
           this.sectionTitle('电脑端安装', '生成固定版本安装说明，复制后交给电脑端 Agent。')
           AiHostInstallPanel()
           }
-          if (this.error !== '') { Text(this.error).fontSize(13).fontFamily(AppConfig.fontFamily).fontColor(this.pal().danger).width('100%') }
           }.padding(AppUiMetrics.sheetPadding).width('100%').constraintSize({ maxWidth: 900 })
         }.layoutWeight(this.embedded ? 0 : 1).width('100%')
           .constraintSize({ maxHeight: this.embedded ? this.embeddedSheetMaxHeight() : 10000 })

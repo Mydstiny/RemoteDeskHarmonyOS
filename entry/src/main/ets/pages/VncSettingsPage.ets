@@ -5,6 +5,7 @@
  * usersettings。它只通过 VNC 自己的 service 访问 vncrecordv2 overlay。
  */
 import { router, promptAction } from '@kit.ArkUI';
+import { appUiOnAccentText } from '../common/AppUiColorPolicy';
 import { common } from '@kit.AbilityKit';
 import { VncSettingsService } from '../services/VncSettingsService';
 import { VncHostService, VncHostView } from '../services/VncHostService';
@@ -676,15 +677,15 @@ export struct VncSettingsPage {
     Row() {
       Button('TCP').layoutWeight(1).height(34).fontSize(12).borderRadius(8)
         .backgroundColor(current === 'direct_tcp' ? this.accentColor : this.pal().surface)
-        .fontColor(current === 'direct_tcp' ? Color.White : this.pal().text2)
+        .fontColor(current === 'direct_tcp' ? appUiOnAccentText(this.accentColor) : this.pal().text2)
         .onClick((): void => { onChoose('direct_tcp'); })
       Button('Repeater').layoutWeight(1).height(34).fontSize(12).borderRadius(8).margin({ left: 6 })
         .backgroundColor(current === 'ultravnc_repeater' ? this.accentColor : this.pal().surface)
-        .fontColor(current === 'ultravnc_repeater' ? Color.White : this.pal().text2)
+        .fontColor(current === 'ultravnc_repeater' ? appUiOnAccentText(this.accentColor) : this.pal().text2)
         .onClick((): void => { onChoose('ultravnc_repeater'); })
       Button('WebSocket').layoutWeight(1).height(34).fontSize(12).borderRadius(8).margin({ left: 6 })
         .backgroundColor(current === 'websocket_gateway' ? this.accentColor : this.pal().surface)
-        .fontColor(current === 'websocket_gateway' ? Color.White : this.pal().text2)
+        .fontColor(current === 'websocket_gateway' ? appUiOnAccentText(this.accentColor) : this.pal().text2)
         .onClick((): void => { onChoose('websocket_gateway'); })
     }.width('100%').margin({ bottom: 10 })
   }
@@ -719,7 +720,7 @@ export struct VncSettingsPage {
               Button(gateway.label.trim() === '' ? gateway.host + ':' + gateway.port.toString() : gateway.label)
                 .width('100%').height(36).fontSize(12).borderRadius(8)
                 .backgroundColor(this.defaultGatewayId === gateway.id ? this.accentColor : this.pal().surface)
-                .fontColor(this.defaultGatewayId === gateway.id ? Color.White : this.pal().text2)
+                .fontColor(this.defaultGatewayId === gateway.id ? appUiOnAccentText(this.accentColor) : this.pal().text2)
                 .onClick((): void => { this.defaultGatewayId = gateway.id; });
             }, (gateway: VncGatewayView): string => gateway.id + ':' + this.revision.toString())
           }.width('100%').margin({ bottom: 8 })
@@ -733,19 +734,19 @@ export struct VncSettingsPage {
       Row() {
         Button('适应').layoutWeight(1).height(34).fontSize(12).borderRadius(8)
           .backgroundColor(this.scalingMode === 'fit' ? this.accentColor : this.pal().surface)
-          .fontColor(this.scalingMode === 'fit' ? Color.White : this.pal().text2)
+          .fontColor(this.scalingMode === 'fit' ? appUiOnAccentText(this.accentColor) : this.pal().text2)
           .onClick((): void => { this.scalingMode = 'fit'; })
         Button('整数').layoutWeight(1).height(34).fontSize(12).margin({ left: 6 }).borderRadius(8)
           .backgroundColor(this.scalingMode === 'integer' ? this.accentColor : this.pal().surface)
-          .fontColor(this.scalingMode === 'integer' ? Color.White : this.pal().text2)
+          .fontColor(this.scalingMode === 'integer' ? appUiOnAccentText(this.accentColor) : this.pal().text2)
           .onClick((): void => { this.scalingMode = 'integer'; })
         Button('原始').layoutWeight(1).height(34).fontSize(12).margin({ left: 6 }).borderRadius(8)
           .backgroundColor(this.scalingMode === 'one_to_one' ? this.accentColor : this.pal().surface)
-          .fontColor(this.scalingMode === 'one_to_one' ? Color.White : this.pal().text2)
+          .fontColor(this.scalingMode === 'one_to_one' ? appUiOnAccentText(this.accentColor) : this.pal().text2)
           .onClick((): void => { this.scalingMode = 'one_to_one'; })
         Button('平移').layoutWeight(1).height(34).fontSize(12).margin({ left: 6 }).borderRadius(8)
           .backgroundColor(this.scalingMode === 'pan' ? this.accentColor : this.pal().surface)
-          .fontColor(this.scalingMode === 'pan' ? Color.White : this.pal().text2)
+          .fontColor(this.scalingMode === 'pan' ? appUiOnAccentText(this.accentColor) : this.pal().text2)
           .onClick((): void => { this.scalingMode = 'pan'; })
       }.width('100%').margin({ bottom: 8 })
       this.settingToggle('只读连接', '默认禁止键鼠控制，连接后仍可按会话能力开启', this.viewOnly,
@@ -754,15 +755,15 @@ export struct VncSettingsPage {
       Row() {
         Button('触控板').layoutWeight(1).height(34).fontSize(12).borderRadius(8)
           .backgroundColor(this.controlMode === 0 ? this.accentColor : this.pal().surface)
-          .fontColor(this.controlMode === 0 ? Color.White : this.pal().text2)
+          .fontColor(this.controlMode === 0 ? appUiOnAccentText(this.accentColor) : this.pal().text2)
           .onClick((): void => { this.controlMode = 0; })
         Button('直接触控').layoutWeight(1).height(34).fontSize(12).margin({ left: 6 }).borderRadius(8)
           .backgroundColor(this.controlMode === 1 ? this.accentColor : this.pal().surface)
-          .fontColor(this.controlMode === 1 ? Color.White : this.pal().text2)
+          .fontColor(this.controlMode === 1 ? appUiOnAccentText(this.accentColor) : this.pal().text2)
           .onClick((): void => { this.controlMode = 1; })
         Button('键鼠').layoutWeight(1).height(34).fontSize(12).margin({ left: 6 }).borderRadius(8)
           .backgroundColor(this.controlMode === 2 ? this.accentColor : this.pal().surface)
-          .fontColor(this.controlMode === 2 ? Color.White : this.pal().text2)
+          .fontColor(this.controlMode === 2 ? appUiOnAccentText(this.accentColor) : this.pal().text2)
           .onClick((): void => { this.controlMode = 2; })
       }.width('100%').margin({ bottom: 8 })
       this.settingToggle('连接诊断', '在 VNC 会话中显示帧率、送显和停滞状态', this.showDiagnostics,
@@ -773,11 +774,11 @@ export struct VncSettingsPage {
       Row() {
         Button('仅安全').layoutWeight(1).height(34).fontSize(12).borderRadius(8)
           .backgroundColor(this.securityPolicy === 'secure_only' ? this.accentColor : this.pal().surface)
-          .fontColor(this.securityPolicy === 'secure_only' ? Color.White : this.pal().text2)
+          .fontColor(this.securityPolicy === 'secure_only' ? appUiOnAccentText(this.accentColor) : this.pal().text2)
           .onClick((): void => { this.securityPolicy = 'secure_only'; })
         Button('可信网络').layoutWeight(1).height(34).fontSize(12).margin({ left: 6 }).borderRadius(8)
           .backgroundColor(this.securityPolicy === 'trusted_network' ? this.accentColor : this.pal().surface)
-          .fontColor(this.securityPolicy === 'trusted_network' ? Color.White : this.pal().text2)
+          .fontColor(this.securityPolicy === 'trusted_network' ? appUiOnAccentText(this.accentColor) : this.pal().text2)
           .onClick((): void => { this.securityPolicy = 'trusted_network'; })
         Button('允许明文').layoutWeight(1).height(34).fontSize(12).margin({ left: 6 }).borderRadius(8)
           .backgroundColor(this.securityPolicy === 'allow_plaintext' ? this.pal().danger : this.pal().surface)
@@ -785,7 +786,7 @@ export struct VncSettingsPage {
           .onClick((): void => { this.securityPolicy = 'allow_plaintext'; })
       }.width('100%')
       Button('保存 VNC 设置').width('100%').height(42).margin({ top: 14 }).borderRadius(10)
-        .backgroundColor(this.accentColor).fontColor(Color.White).onClick((): void => { this.saveSettings(); })
+        .backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor)).onClick((): void => { this.saveSettings(); })
     }.width('100%').padding(16).borderRadius(18).backgroundColor(this.pal().card)
       .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
   }
@@ -799,7 +800,7 @@ export struct VncSettingsPage {
         }.alignItems(HorizontalAlign.Start).layoutWeight(1)
         Text(host.passwordConfigured ? '密码已保存' : '未设置密码').fontSize(11)
           .fontColor(host.passwordConfigured ? this.pal().success : this.pal().text3)
-        Button('连接').height(30).fontSize(11).borderRadius(7).backgroundColor(this.accentColor).fontColor(Color.White)
+        Button('连接').height(30).fontSize(11).borderRadius(7).backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor))
           .onClick((): void => { this.connectHost(host); })
         Button('编辑').height(30).fontSize(11).margin({ left: 6 }).borderRadius(7)
           .backgroundColor(this.pal().surface).fontColor(this.pal().text2)
@@ -815,7 +816,7 @@ export struct VncSettingsPage {
       Row() {
         Text('VNC 主机').fontSize(17).fontWeight(FontWeight.Bold).fontColor(this.pal().text).layoutWeight(1)
         Button('添加').height(32).fontSize(12).borderRadius(8)
-          .backgroundColor(this.accentColor).fontColor(Color.White)
+          .backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor))
           .onClick((): void => { this.openHostFlow(); })
       }.width('100%').margin({ bottom: 12 })
       Text('添加和编辑统一使用四步 VNC 流程；密码、显示偏好和连接方式不会与其他协议共用。')
@@ -851,7 +852,7 @@ export struct VncSettingsPage {
       Row() {
         Text('VNC Repeater / Gateway').fontSize(17).fontWeight(FontWeight.Bold).fontColor(this.pal().text).layoutWeight(1)
         Button(this.gatewayFormVisible ? '收起' : '添加').height(32).fontSize(12).borderRadius(8)
-          .backgroundColor(this.accentColor).fontColor(Color.White)
+          .backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor))
           .onClick((): void => { this.gatewayFormVisible = !this.gatewayFormVisible; })
       }.width('100%').margin({ bottom: 12 })
       if (this.gatewayFormVisible) {
@@ -868,7 +869,7 @@ export struct VncSettingsPage {
         this.settingToggle('启用网关', '停用后不参与新的 VNC 连接', this.gatewayEnabled,
           (value: boolean): void => { this.gatewayEnabled = value; })
         Button(this.editingGatewayId === '' ? '保存网关' : '更新网关').width('100%').height(40).borderRadius(9)
-          .backgroundColor(this.accentColor).fontColor(Color.White)
+          .backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor))
           .onClick((): void => { this.saveGateway(); }).margin({ bottom: 10 })
       }
       if (this.gateways.length === 0) {
@@ -889,7 +890,7 @@ export struct VncSettingsPage {
         '当前有 ' + this.gateways.length.toString() + ' 个 VNC Gateway；RustDesk 中继与 VNC Gateway 分属不同 owner。')
         .fontSize(12).fontColor(this.pal().text3).lineHeight(19).width('100%').margin({ bottom: 12 })
       Button('打开第三页中继服务器').width('100%').height(42).borderRadius(10)
-        .backgroundColor(this.accentColor).fontColor(Color.White)
+        .backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor))
         .onClick((): void => { this.openGatewayDirectory(); })
     }.width('100%').padding(16).borderRadius(18).backgroundColor(this.pal().card)
       .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
@@ -926,7 +927,7 @@ export struct VncSettingsPage {
       Text('主机与 Gateway 使用各自的 endpoint-bound 信任记录；云恢复只带候选和元数据，本机 confirmation marker 永不上传。')
         .fontSize(12).fontColor(this.pal().text3).lineHeight(19).width('100%').margin({ bottom: 12 })
       Button('打开 VNC TLS 证书信任管理').width('100%').height(42).borderRadius(10)
-        .backgroundColor(this.accentColor).fontColor(Color.White)
+        .backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor))
         .onClick((): void => { this.openTrustManager(); })
     }.width('100%').padding(16).borderRadius(18).backgroundColor(this.pal().card)
       .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })

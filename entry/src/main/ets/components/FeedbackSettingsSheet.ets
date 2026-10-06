@@ -2,6 +2,7 @@
  * FeedbackSettingsSheet.ets — 反馈子选项卡：邮箱反馈 / 畅联群聊 / Pro 反馈。
  */
 import { promptAction } from '@kit.ArkUI';
+import { appUiOnAccentText } from '../common/AppUiColorPolicy';
 import { common, Want } from '@kit.AbilityKit';
 import { image } from '@kit.ImageKit';
 import { photoAccessHelper } from '@kit.MediaLibraryKit';
@@ -31,7 +32,7 @@ const FEEDBACK_QR_DECODE_EDGE: number = 640;
 export struct FeedbackSettingsSheet {
   @StorageLink('currentTheme') theme: string = 'light';
   @StorageLink('accentColor') accentColor: string = '#007DFF';
-  @StorageProp('breakpoint') breakpoint: string = 'md';
+  @StorageProp('currentBreakpoint') breakpoint: string = 'md';
 
   onClose: () => void = (): void => {};
   onOpenMail: () => void = (): void => {};
@@ -431,7 +432,8 @@ export struct FeedbackSettingsSheet {
     .padding({ left: 24, right: 24, bottom: 24 })
     .width('100%')
     .constraintSize({ maxWidth: 620 })
-    .height(this.breakpoint === 'sm' ? 560 : 600)
+    // The host sheet sets the height (fitted to the window); the tabs scroll inside it.
+    .height('100%')
     .backgroundColor(this.pal().sheetBg)
     .backgroundBlurStyle(BlurStyle.Regular)
     .borderRadius(this.breakpoint === 'sm' ?
@@ -493,7 +495,7 @@ export struct FeedbackSettingsSheet {
           .padding(16).borderRadius(16).backgroundColor(this.pal().surface)
 
         Button('打开邮件编辑器').width('100%').height(46).fontSize(15)
-          .backgroundColor(this.accentColor).fontColor(Color.White).borderRadius(14)
+          .backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor)).borderRadius(14)
           .margin({ top: 18, bottom: 24 }).onClick((): void => { this.onOpenMail(); })
       }.width('100%')
     }.width('100%').layoutWeight(1).scrollBar(BarState.Off)
@@ -517,7 +519,7 @@ export struct FeedbackSettingsSheet {
             Text(this.communityError).fontSize(13).lineHeight(20).textAlign(TextAlign.Center)
               .fontColor(this.pal().text2).fontFamily(this.font()).margin({ top: 8 })
             Button('重新获取').width(150).height(42).fontSize(14)
-              .backgroundColor(this.accentColor).fontColor(Color.White).borderRadius(12)
+              .backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor)).borderRadius(12)
               .margin({ top: 18 }).onClick((): void => { this.refreshCommunityQr(); })
           }.width('100%').height(360).justifyContent(FlexAlign.Center)
             .alignItems(HorizontalAlign.Center)
@@ -546,7 +548,7 @@ export struct FeedbackSettingsSheet {
             }.layoutWeight(1)
             if (this.community.joinUrl !== '') {
               Button('直接打开').height(42).layoutWeight(1).fontSize(14)
-                .backgroundColor(this.accentColor).fontColor(Color.White).borderRadius(12)
+                .backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor)).borderRadius(12)
                 .margin({ left: 10 }).onClick((): void => { this.openJoinLink(); })
             }
           }.width('100%').margin({ top: 16, bottom: 24 })

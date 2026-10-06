@@ -194,6 +194,7 @@ import {
 } from '../services/RustDeskAuthDraftStore';
 import { copyRustDeskPeerTwoFactorRuntime } from '../services/RustDeskPeerTwoFactorBindingStore';
 import { AppConfig, AppTheme, Palette, buildDark, buildLight } from '../common/Theme';
+import { appUiOnAccentText } from '../common/AppUiColorPolicy';
 import { LockGateResult, showLockGate, lockGateErrorMessage } from '../components/LockGate';
 import { ColorPickerSheet } from '../components/ColorPickerSheet';
 import { HostAddWizardSheet } from '../components/hostadd/HostAddWizardSheet';
@@ -623,6 +624,7 @@ import {
   moonlightSettingsLeafSheetHeight,
   moonlightSettingsRouteSpec,
   settingsLeafSheetUsesSystemCloseButton,
+  settingsLeafSheetFitHeight,
   settingsLeafOpenDelayMs,
   virtualKeyboardSettingsLeafSheetHeight,
   virtualKeyboardSettingsLeafUsesBottomSheet,
@@ -948,6 +950,18 @@ interface RdpCertificateCredentialParts {
   domain: string;
 }
 
+/** A settings switch row. Passed as one object literal so the row reads live values (a @Builder argument passed
+ * by value is frozen at first render, so a switch changed elsewhere, e.g. by the AI, would keep its old look). */
+interface SettingsSwitchRowArgs {
+  icon: Resource;
+  label: string;
+  detail: string;
+  isOn: boolean;
+  onToggle: (on: boolean) => void;
+  neutralIcon?: boolean;
+  enabled?: boolean;
+}
+
 const ENV_COLOR_MODE_UNKNOWN = -1;
 const ENV_COLOR_MODE_LIGHT = 0;
 const ENV_COLOR_MODE_DARK = 1;
@@ -1220,6 +1234,19 @@ struct HostListPage {
   @State virtualKeyboardCustomEditorVisible: boolean = false;
   @State vncSettingsLeafDirty: boolean = false;
   @State moonlightSettingsLeafDirty: boolean = false;
+  /** A Switch keeps the position the user tapped until its isOn value changes. When a change is cancelled or
+   * fails, the value stays the same, so bumping this rebuilds the settings Switches at their saved values. */
+  @State settingsSwitchEpoch: number = 0;
+  /** The terminal skin editor holds changes that are not saved yet. */
+  @State sshSkinEditorDirty: boolean = false;
+  /** 远端显示方案 has a typed size or scale that was not applied yet. */
+  @State rdpDisplayDraftDirty: boolean = false;
+  /** The Windows credential editor's fields when it opened, to tell whether anything was typed since. */
+  private rdpCredEditorBaseline: string = '';
+  /** PC: the leaf was opened from the settings panel, so closing it goes back there (not to the host list). */
+  private settingsLeafReturnsToPanel: boolean = false;
+  /** The user closed the leaf (its close button or a swipe); other flows close it to move on elsewhere. */
+  private settingsLeafClosedByUser: boolean = false;
   @State moonlightSettingsLeafHostId: string = '';
   @State expandedSettingsSection: string = SETTINGS_SECTION_NONE;
   @State aboutSheetMode: number = 0; // 0=简单教程 1=关于应用 2=隐私政策 3=连接前准备 4=更新日志 5=操作引导中心
@@ -4951,6 +4978,7 @@ struct HostListPage {
       return;
     }
     const panelWasOpen: boolean = this.showSettingsPanel;
+    this.settingsLeafReturnsToPanel = panelWasOpen;
     if (panelWasOpen) {
       this.lastSheetDismissAtMs = Date.now();
       this.showSettingsPanel = false;
@@ -4990,26 +5018,66 @@ struct HostListPage {
     this.resetSettingsLeafSheetAfterDismiss();
   }
 
+  /** Close the leaf because the user asked to (its close button); on PC it returns to the settings panel. */
+  private closeSettingsLeafSheetByUser(): void {
+    this.settingsLeafClosedByUser = true;
+    this.closeSettingsLeafSheet();
+  }
+
+  /** PC: reopen the settings panel the closed leaf came from, unless the page has moved on meanwhile. */
+  private returnToSettingsPanelAfterLeaf(): void {
+    if (!this.pageActive || !this.isDesktopDevice || this.breakpoint !== 'xl') { return; }
+    this.openSheetSafely((): void => {
+      if (this.pageActive && !this.showSettingsLeafSheet) { this.showSettingsPanel = true; }
+    });
+  }
+
+  private rdpCredentialEditorSnapshot(): string {
+    return JSON.stringify([this.rdpCredLabel, this.rdpCredUsername, this.rdpCredPassword]);
+  }
+
+  /** The open leaf editor that holds changes not saved yet, or '' when nothing would be lost by closing. */
+  private settingsLeafUnsavedLabel(): string {
+    if (this.moonlightSettingsLeafDirty) { return 'Moonlight 设置'; }
+    if (this.vncSettingsLeafDirty) { return 'VNC 设置'; }
+    const mode: number = this.settingsLeafSheetMode;
+    if (mode === SETTINGS_SHEET_SSH_SKIN && this.sshSkinEditorDirty) { return '终端皮肤'; }
+    if (mode === SETTINGS_SHEET_RDP_DISPLAY_PROFILE && this.rdpDisplayDraftDirty) { return '远端显示尺寸'; }
+    if (mode === SETTINGS_SHEET_RDP_CREDENTIAL_EDITOR &&
+      this.rdpCredentialEditorSnapshot() !== this.rdpCredEditorBaseline) { return 'Windows 凭据'; }
+    if (this.isVirtualKeyboardSettingsLeafSheet() && this.virtualKeyboardCustomEditorVisible) { return '组合键'; }
+    if (mode === SETTINGS_SHEET_POPUP && this.popupSheetMode === 0 &&
+      (this.cryptoPwd !== '' || this.cryptoPwdConfirm !== '')) { return '加密密码'; }
+    return '';
+  }
+
   private settingsLeafHasUnsavedChanges(): boolean {
-    return this.vncSettingsLeafDirty || this.moonlightSettingsLeafDirty;
+    return this.settingsLeafUnsavedLabel() !== '';
   }
 
   private dismissSettingsLeafIfNeeded(continueAction: () => void): void {
-    if (!this.settingsLeafHasUnsavedChanges()) {
+    const label: string = this.settingsLeafUnsavedLabel();
+    if (label === '') {
       continueAction();
       return;
     }
-    const moonlightDirty: boolean = this.moonlightSettingsLeafDirty;
+    const crypto: boolean = label === '加密密码';
     promptAction.showDialog({
-      title: moonlightDirty ? '放弃未保存的 Moonlight 设置？' : '放弃未保存的 VNC 设置？',
-      message: moonlightDirty ? '当前修改只在本地草稿中，放弃后不会写入 Moonlight 本地记录。' :
-        '当前叶子设置还有未保存修改。放弃后这些修改不会写入本地或云端。',
-      buttons: [{ text: '继续编辑', color: this.pal().text2 }, { text: '放弃修改', color: this.pal().danger }]
+      title: crypto ? '放弃输入的密码？' : '放弃未保存的' + label + '？',
+      message: label === 'Moonlight 设置' ? '当前修改只在本地草稿中，放弃后不会写入 Moonlight 本地记录。' :
+        crypto ? '输入的主密码不会保存，加密设置保持不变。' : '这些修改还没有保存，放弃后不会写入本机或云端。',
+      buttons: [{ text: '继续编辑', color: this.pal().text2 }, { text: crypto ? '放弃' : '放弃修改', color: this.pal().danger }]
     }).then((result: Object): void => {
       const dialogResult: Record<string, number> = result as Record<string, number>;
       if (dialogResult['index'] === 1) {
         this.vncSettingsLeafDirty = false;
         this.moonlightSettingsLeafDirty = false;
+        this.sshSkinEditorDirty = false;
+        this.rdpDisplayDraftDirty = false;
+        this.rdpCredEditorBaseline = this.rdpCredentialEditorSnapshot();
+        this.virtualKeyboardCustomEditorVisible = false;
+        this.cryptoPwd = '';
+        this.cryptoPwdConfirm = '';
         continueAction();
       }
     });
@@ -5018,10 +5086,14 @@ struct HostListPage {
   private handleSettingsLeafWillDismiss(action: DismissSheetAction): void {
     if (this.settingsLeafSheetMode === SETTINGS_SHEET_PRO || this.settingsLeafSheetMode === SETTINGS_SHEET_APP_ICON) { ProPurchaseLifecycle.dismiss(); }
     if (!this.settingsLeafHasUnsavedChanges()) {
+      this.settingsLeafClosedByUser = true;
       action.dismiss();
       return;
     }
-    this.dismissSettingsLeafIfNeeded((): void => { action.dismiss(); });
+    this.dismissSettingsLeafIfNeeded((): void => {
+      this.settingsLeafClosedByUser = true;
+      action.dismiss();
+    });
   }
 
   private resetSettingsLeafSheetAfterDismiss(): void {
@@ -5054,15 +5126,29 @@ struct HostListPage {
     if (dismissedMode === SETTINGS_SHEET_DIAGNOSTIC_AI) { this.diagnosticAiResumeSessionId = ''; }
     this.vncSettingsLeafDirty = false;
     this.moonlightSettingsLeafDirty = false;
+    this.sshSkinEditorDirty = false;
+    this.rdpDisplayDraftDirty = false;
+    this.virtualKeyboardCustomEditorVisible = false;
     if (moonlightSettingsRouteSpec(dismissedMode) !== null) {
       this.moonlightSettingsLeafHostId = '';
     }
+    const closedByUser: boolean = this.settingsLeafClosedByUser;
+    this.settingsLeafClosedByUser = false;
     if (this.pendingSettingsLeafSheetMode !== SETTINGS_SHEET_NONE) {
+      // Another leaf replaces this one; it keeps the way back to the settings panel.
       this.scheduleSettingsLeafSheetOpen(this.pendingSettingsLeafSheetMode,
         this.pendingSettingsLeafPrepare,
         sheetOpenDelayMsAfterDismiss(Date.now(), this.lastSheetDismissAtMs));
+    } else {
+      const returnToPanel: boolean = closedByUser && this.settingsLeafReturnsToPanel;
+      this.settingsLeafReturnsToPanel = false;
+      if (returnToPanel) { this.returnToSettingsPanelAfterLeaf(); }
     }
     if (dismissedMode === SETTINGS_SHEET_POPUP && dismissedPopupMode === 0) {
+      // A swipe or a tap outside closes the crypto sheet too; never keep a typed master password around.
+      this.cryptoPwd = '';
+      this.cryptoPwdConfirm = '';
+      this.cryptoResetCountdown = 0;
       this.refreshCryptoStatus();
     }
   }
@@ -5677,6 +5763,17 @@ struct HostListPage {
     }
     this.updateHostFilter();
     this.relayVncAddTrigger++;
+  }
+
+  private confirmResetSshTerminalAppearance(): void {
+    promptAction.showDialog({
+      title: '恢复终端默认显示？',
+      message: 'SSH 终端的文字颜色、字号和行距会回到默认值，终端皮肤和主机设置不受影响。',
+      buttons: [{ text: '取消', color: this.pal().text2 }, { text: '恢复默认', color: this.pal().danger }]
+    }).then((result: Object): void => {
+      const value: Record<string, number> = result as Record<string, number>;
+      if (value['index'] === 1) { this.resetSshTerminalAppearance(); }
+    }).catch((_err: Error): void => { });
   }
 
   private resetSshTerminalAppearance(): void {
@@ -12558,6 +12655,22 @@ struct HostListPage {
     });
   }
 
+  /** Reads loginRefreshKey so the account sheet's buttons follow a login or logout. */
+  private accountLoggedIn(): boolean {
+    return this.loginRefreshKey >= 0 && this.auth.isLoggedIn();
+  }
+
+  private confirmLogout(): void {
+    promptAction.showDialog({
+      title: '退出华为账号？',
+      message: '退出后会结束进行中的连接并回到登录页。账号下的主机和设置不会删除，重新登录后可继续使用。',
+      buttons: [{ text: '取消', color: this.pal().text2 }, { text: '退出登录', color: this.pal().danger }]
+    }).then((result: Object): void => {
+      const value: Record<string, number> = result as Record<string, number>;
+      if (value['index'] === 1) { void this.doLogout(); }
+    }).catch((_err: Error): void => { });
+  }
+
   private async doLogout(): Promise<void> {
     if (this.appCloneLocalOnly) {
       promptAction.showToast({
@@ -13853,10 +13966,10 @@ struct HostListPage {
       ]
     }).then((result: Object): void => {
       const value: Record<string, number> = result as Record<string, number>;
-      if (value['index'] !== 1) { return; }
+      if (value['index'] !== 1) { this.settingsSwitchEpoch++; return; }
       this.rdpSkipCertificatePreflight = true;
       this.persistPref('rdpSkipCertificatePreflight', true);
-    }).catch((_err: Error): void => { });
+    }).catch((_err: Error): void => { this.settingsSwitchEpoch++; });
   }
 
   private saveRdpTlsWithoutNla(on: boolean): void {
@@ -13874,15 +13987,16 @@ struct HostListPage {
       ]
     }).then((result: Object): void => {
       const value: Record<string, number> = result as Record<string, number>;
-      if (value['index'] !== 1) { return; }
+      if (value['index'] !== 1) { this.settingsSwitchEpoch++; return; }
       this.rdpTlsWithoutNla = true;
       this.persistPref('rdpTlsWithoutNla', true);
-    }).catch((_err: Error): void => { });
+    }).catch((_err: Error): void => { this.settingsSwitchEpoch++; });
   }
 
   private saveRdpDriveEnabled(on: boolean): void {
     if (on && !RDP_DRIVE_REDIRECTION_ENABLED) {
       this.rdpDriveEnabled = false;
+      this.settingsSwitchEpoch++;
       this.persistPref('rdpDriveEnabled', false);
       promptAction.showToast({
         message: 'RDP 文件共享盘暂时停用，优先保证连接稳定',
@@ -14624,7 +14738,7 @@ struct HostListPage {
       }
     })
     .bindSheet($$this.showSettingsPanel, this.settingsContent(), {
-      height: this.breakpoint === 'xl' ? 760 : SheetSize.FIT_CONTENT,
+      height: this.breakpoint === 'xl' ? settingsLeafSheetFitHeight(760, this.pageViewportHeight) : SheetSize.FIT_CONTENT,
       preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
       dragBar: false,
       backgroundColor: this.pal().sheetBg,
@@ -17275,6 +17389,9 @@ struct HostListPage {
       return Math.min(900, Math.max(360, this.pageViewportHeight - 48));
     }
     if (this.settingsLeafSheetMode === SETTINGS_SHEET_PRO) { return Math.min(820, Math.max(320, this.pageViewportHeight - 48)); }
+    if (this.settingsLeafSheetMode === SETTINGS_SHEET_FEEDBACK) {
+      return settingsLeafSheetFitHeight(this.breakpoint === 'sm' ? 560 : 600, this.pageViewportHeight);
+    }
     if (this.settingsLeafSheetMode === SETTINGS_SHEET_APP_ICON ||
       this.settingsLeafSheetMode === SETTINGS_SHEET_PRO_FEATURE ||
       this.settingsLeafSheetMode === SETTINGS_SHEET_PRO_BADGE ||
@@ -17295,7 +17412,7 @@ struct HostListPage {
         this.virtualKeyboardCustomEditorVisible);
     }
     const diagnosticHeight: number = diagnosticLogSettingsLeafSheetHeight(this.settingsLeafSheetMode);
-    if (diagnosticHeight > 0) { return diagnosticHeight; }
+    if (diagnosticHeight > 0) { return settingsLeafSheetFitHeight(diagnosticHeight, this.pageViewportHeight); }
     const diagnosticAiHeight: number = diagnosticAiSettingsLeafSheetHeight(this.settingsLeafSheetMode);
     if (diagnosticAiHeight > 0) {
       // The three AI leaves have different density. The policy clamps each
@@ -17306,21 +17423,27 @@ struct HostListPage {
     }
     const secretVisibilityHeight: number =
       secretVisibilitySettingsLeafSheetHeight(this.settingsLeafSheetMode);
-    if (secretVisibilityHeight > 0) { return secretVisibilityHeight; }
+    if (secretVisibilityHeight > 0) {
+      return settingsLeafSheetFitHeight(secretVisibilityHeight, this.pageViewportHeight);
+    }
     const wheelDirectionHeight: number =
       remoteWheelDirectionSettingsLeafSheetHeight(this.settingsLeafSheetMode);
-    if (wheelDirectionHeight > 0) { return wheelDirectionHeight; }
+    if (wheelDirectionHeight > 0) {
+      return settingsLeafSheetFitHeight(wheelDirectionHeight, this.pageViewportHeight);
+    }
     const pinchZoomHeight: number =
       remotePinchZoomSettingsLeafSheetHeight(this.settingsLeafSheetMode);
-    if (pinchZoomHeight > 0) { return pinchZoomHeight; }
+    if (pinchZoomHeight > 0) { return settingsLeafSheetFitHeight(pinchZoomHeight, this.pageViewportHeight); }
     const portraitDisplayHeight: number =
       remotePortraitDisplaySettingsLeafSheetHeight(this.settingsLeafSheetMode);
-    if (portraitDisplayHeight > 0) { return portraitDisplayHeight; }
+    if (portraitDisplayHeight > 0) {
+      return settingsLeafSheetFitHeight(portraitDisplayHeight, this.pageViewportHeight);
+    }
     const controlBarHeight: number =
       sessionControlBarSettingsLeafSheetHeight(this.settingsLeafSheetMode);
-    if (controlBarHeight > 0) { return controlBarHeight; }
+    if (controlBarHeight > 0) { return settingsLeafSheetFitHeight(controlBarHeight, this.pageViewportHeight); }
     const moonlightHeight: number = moonlightSettingsLeafSheetHeight(this.settingsLeafSheetMode);
-    if (moonlightHeight > 0) { return moonlightHeight; }
+    if (moonlightHeight > 0) { return settingsLeafSheetFitHeight(moonlightHeight, this.pageViewportHeight); }
     const aiHeight: number = aiSettingsLeafSheetHeight(this.settingsLeafSheetMode);
     if (aiHeight > 0) {
       // AI settings surface measures short sections intrinsically and caps
@@ -17328,7 +17451,7 @@ struct HostListPage {
       return SheetSize.FIT_CONTENT;
     }
     const vncHeight: number = vncSettingsLeafSheetHeight(this.settingsLeafSheetMode);
-    return vncHeight > 0 ? vncHeight : SheetSize.FIT_CONTENT;
+    return vncHeight > 0 ? settingsLeafSheetFitHeight(vncHeight, this.pageViewportHeight) : SheetSize.FIT_CONTENT;
   }
 
   private settingsLeafUsesBottomSheet(): boolean {
@@ -17347,16 +17470,37 @@ struct HostListPage {
 
   @Builder settingsLeafSheet() {
     if (this.settingsLeafSheetMode === SETTINGS_SHEET_PRO) {
-      ProPurchaseSheet({ onClose: (): void => { this.closeSettingsLeafSheet(); } })
+      ProPurchaseSheet({ onClose: (): void => { this.closeSettingsLeafSheetByUser(); } })
     } else if (this.settingsLeafSheetMode === SETTINGS_SHEET_PRO_FEATURE) {
-      ProFeatureDetailPanel({ featureId: this.selectedProFeatureId })
+      ProFeatureDetailPanel({
+        featureId: this.selectedProFeatureId,
+        showClose: true,
+        viewportHeight: this.pageViewportHeight,
+        onClose: (): void => { this.closeSettingsLeafSheetByUser(); }
+      })
     } else if (this.settingsLeafSheetMode === SETTINGS_SHEET_SSH_SKIN) {
-      SshSkinSettingsPanel()
+      SshSkinSettingsPanel({
+        showClose: true,
+        onClose: (): void => {
+          this.dismissSettingsLeafIfNeeded((): void => { this.closeSettingsLeafSheetByUser(); });
+        },
+        onEditingDirtyChange: (dirty: boolean): void => { this.sshSkinEditorDirty = dirty; }
+      })
     } else if (this.settingsLeafSheetMode === SETTINGS_SHEET_PRO_BADGE) {
-      ProBadgeSettingsPanel()
+      ProBadgeSettingsPanel({
+        showClose: true,
+        viewportHeight: this.pageViewportHeight,
+        onClose: (): void => { this.closeSettingsLeafSheetByUser(); }
+      })
     } else if (this.settingsLeafSheetMode === SETTINGS_SHEET_RDP_DISPLAY_PROFILE) {
       RdpDisplayProfilePanel({
         isDesktopDevice: this.isDesktopDevice,
+        showClose: true,
+        viewportHeight: this.pageViewportHeight,
+        onClose: (): void => {
+          this.dismissSettingsLeafIfNeeded((): void => { this.closeSettingsLeafSheetByUser(); });
+        },
+        onDraftDirtyChange: (dirty: boolean): void => { this.rdpDisplayDraftDirty = dirty; },
         applyHint: '保存后用于下次连接',
         onResolution: (id: string): void => { this.saveRdpDesktopResolutionId(id); },
         onCustomResolution: (width: string, height: string): void => { this.saveRdpCustomResolution(width, height); },
@@ -17364,8 +17508,12 @@ struct HostListPage {
         onDesktopScalePercent: (value: string): void => { this.saveRdpDesktopScalePercent(value); }
       })
     } else if (this.settingsLeafSheetMode === SETTINGS_SHEET_APP_ICON) {
-      ProAppIconPanel({ isOpen: (): boolean => this.showSettingsLeafSheet &&
-        this.settingsLeafSheetMode === SETTINGS_SHEET_APP_ICON })
+      ProAppIconPanel({
+        isOpen: (): boolean => this.showSettingsLeafSheet &&
+          this.settingsLeafSheetMode === SETTINGS_SHEET_APP_ICON,
+        showClose: true,
+        onClose: (): void => { this.closeSettingsLeafSheetByUser(); }
+      })
     } else if (this.settingsLeafSheetMode === SETTINGS_SHEET_ACCOUNT) {
       this.accountSheet()
     } else if (this.settingsLeafSheetMode === SETTINGS_SHEET_ACCENT_COLOR) {
@@ -17391,7 +17539,7 @@ struct HostListPage {
     } else if (this.settingsLeafSheetMode === SETTINGS_SHEET_SECRET_VISIBILITY) {
       SecretVisibilitySettingsSheet({
         initialPolicyJson: this.secretPresentationPolicyJson,
-        onClose: (): void => { this.closeSettingsLeafSheet(); },
+        onClose: (): void => { this.closeSettingsLeafSheetByUser(); },
         onSave: (policy: SecretPresentationPolicy): boolean =>
           this.saveSecretPresentationPolicy(policy)
       })
@@ -17402,7 +17550,7 @@ struct HostListPage {
         initialSsh: this.sshReverseWheel,
         initialVnc: this.vncReverseWheel,
         initialMoonlight: this.moonlightReverseWheel,
-        onClose: (): void => { this.closeSettingsLeafSheet(); },
+        onClose: (): void => { this.closeSettingsLeafSheetByUser(); },
         onSave: (update: RemoteWheelPreferenceUpdate): boolean =>
           this.saveRemoteWheelPreferenceUpdate(update)
       })
@@ -17413,7 +17561,7 @@ struct HostListPage {
         initialSsh: this.sshPinchZoomEnabled,
         initialVnc: this.vncPinchZoomEnabled,
         initialMoonlight: this.moonlightPinchZoomEnabled,
-        onClose: (): void => { this.closeSettingsLeafSheet(); },
+        onClose: (): void => { this.closeSettingsLeafSheetByUser(); },
         onSave: (update: RemotePinchZoomPreferenceUpdate): boolean =>
           this.saveRemotePinchZoomPreferenceUpdate(update)
       })
@@ -17421,7 +17569,7 @@ struct HostListPage {
       RemotePortraitDisplaySettingsSheet({
         initialPreferences: this.remotePortraitDisplayPreferences(),
         initialSidebarHeightMode: this.remotePortraitSidebarHeightMode,
-        onClose: (): void => { this.closeSettingsLeafSheet(); },
+        onClose: (): void => { this.closeSettingsLeafSheetByUser(); },
         onSave: (update: RemotePortraitDisplayPreferenceUpdate,
           heightMode: RemotePortraitSidebarHeightMode): boolean => {
           if (!this.saveRemotePortraitDisplayPreferenceUpdate(update)) { return false; }
@@ -17435,7 +17583,7 @@ struct HostListPage {
         initialVncHidden: this.sessionControlBarHiddenVnc,
         initialMoonlightHidden: this.sessionControlBarHiddenMoonlight,
         quickExitDisabled: this.remoteSessionQuickExitDisabled,
-        onClose: (): void => { this.closeSettingsLeafSheet(); },
+        onClose: (): void => { this.closeSettingsLeafSheetByUser(); },
         onSave: (update: RemoteSessionControlBarPreferenceUpdate): boolean =>
           this.saveSessionControlBarPreferenceUpdate(update)
       })
@@ -17443,23 +17591,25 @@ struct HostListPage {
       DiagnosticAiSettingsSheet({
         section: this.diagnosticAiSection,
         initialResumeSessionId: this.diagnosticAiResumeSessionId,
-        onClose: (): void => { this.closeSettingsLeafSheet(); },
+        onClose: (): void => { this.closeSettingsLeafSheetByUser(); },
         onOpenSession: (sessionId: string): void => { this.openDiagnosticAiSession(sessionId); },
         onAppAction: (action: DiagnosticAiAppActionId): void => { this.runAssistantAppAction(action); }
       })
     } else if (this.settingsLeafSheetMode === SETTINGS_SHEET_DIAGNOSTIC_LOG) {
       DiagnosticCaptureSettingsSheet({
-        onClose: (): void => { this.closeSettingsLeafSheet(); }
+        onClose: (): void => { this.closeSettingsLeafSheetByUser(); }
       })
     } else if (this.settingsLeafSheetMode === SETTINGS_SHEET_FEEDBACK) {
       FeedbackSettingsSheet({
-        onClose: (): void => { this.closeSettingsLeafSheet(); },
+        onClose: (): void => { this.closeSettingsLeafSheetByUser(); },
         onOpenMail: (): void => { this.openFeedbackEmail(); }
       })
     } else if (this.isVirtualKeyboardSettingsLeafSheet()) {
       VirtualKeyboardSettingsSheet({
         requestedSection: this.virtualKeyboardSettingsSectionForLeaf(),
-        onClose: (): void => { this.closeSettingsLeafSheet(); },
+        onClose: (): void => {
+          this.dismissSettingsLeafIfNeeded((): void => { this.closeSettingsLeafSheetByUser(); });
+        },
         onCustomEditorVisibleChange: (visible: boolean): void => {
           this.virtualKeyboardCustomEditorVisible = visible;
         }
@@ -17470,7 +17620,7 @@ struct HostListPage {
         requestedSection: this.moonlightSettingsSectionForLeaf(),
         requestedHostId: this.moonlightSettingsLeafHostId,
         onClose: (): void => {
-          this.dismissSettingsLeafIfNeeded((): void => { this.closeSettingsLeafSheet(); });
+          this.dismissSettingsLeafIfNeeded((): void => { this.closeSettingsLeafSheetByUser(); });
         },
         onDirtyChanged: (dirty: boolean): void => { this.moonlightSettingsLeafDirty = dirty; }
       })
@@ -17479,14 +17629,14 @@ struct HostListPage {
         requestedSection: this.aiSettingsSectionForLeaf(),
         embedded: true,
         viewportHeight: this.pageViewportHeight,
-        onClose: (): void => { this.closeSettingsLeafSheet(); }
+        onClose: (): void => { this.closeSettingsLeafSheetByUser(); }
       })
     } else if (this.settingsLeafSheetMode >= SETTINGS_SHEET_VNC_CONNECTION &&
       this.settingsLeafSheetMode <= SETTINGS_SHEET_VNC_CLIPBOARD) {
       VncSettingsSheet({
         mode: this.settingsLeafSheetMode,
         onClose: (): void => {
-          this.dismissSettingsLeafIfNeeded((): void => { this.closeSettingsLeafSheet(); });
+          this.dismissSettingsLeafIfNeeded((): void => { this.closeSettingsLeafSheetByUser(); });
         },
         onOpenHostManager: (): void => { this.openVncHostManagerFromSettings(); },
         onOpenGatewayManager: (): void => { this.openVncGatewayManagerFromSettings(); },
@@ -17651,7 +17801,7 @@ struct HostListPage {
             // 左侧头像
             if (this.appCloneLocalOnly) {
               Text(this.appCloneIsClone ? '分' : '本').fontSize(18).fontWeight(FontWeight.Bold)
-                .fontColor(Color.White).textAlign(TextAlign.Center)
+                .fontColor(appUiOnAccentText(this.accentColor)).textAlign(TextAlign.Center)
                 .width(40).height(40).borderRadius(20)
                 .backgroundColor(this.accentColor).padding({ top: 8 })
             } else if (this.accountAvatarUrl !== '') {
@@ -17856,10 +18006,13 @@ struct HostListPage {
             Text('主页与主机列表').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text3)
               .fontFamily(this.font()).padding({ left: 8, bottom: 8 })
             Column() {
-              this.rustdeskSwitchRow($r('app.media.icon_laptop'), 'RustDesk 在线检测',
-                this.rustdeskPresenceDetectionEnabled ? '打开主页时自动检测非直连主机；卡片仍可手动检测' : '已关闭自动检测，可在主机卡片上手动检测',
-                this.rustdeskPresenceDetectionEnabled,
-                (on: boolean): void => { this.saveRustDeskPresenceDetection(on); })
+              this.rustdeskSwitchRow({
+                icon: $r('app.media.icon_laptop'),
+                label: 'RustDesk 在线检测',
+                detail: this.rustdeskPresenceDetectionEnabled ? '打开主页时自动检测非直连主机；卡片仍可手动检测' : '已关闭自动检测，可在主机卡片上手动检测',
+                isOn: this.rustdeskPresenceDetectionEnabled,
+                onToggle: (on: boolean): void => { this.saveRustDeskPresenceDetection(on); }
+              })
               this.cardDivider()
               Column() {
                 Row() {
@@ -17874,11 +18027,11 @@ struct HostListPage {
                 }.width('100%').padding({ left: 16, right: 16, top: 12, bottom: 8 })
                 Row() {
                   Button('全新模式').layoutWeight(1).height(36).fontSize(13)
-                    .fontColor(this.fabAddStyle === 'modern' ? Color.White : this.pal().text2)
+                    .fontColor(this.fabAddStyle === 'modern' ? appUiOnAccentText(this.accentColor) : this.pal().text2)
                     .backgroundColor(this.fabAddStyle === 'modern' ? this.accentColor : this.pal().surface)
                     .borderRadius(10).onClick((): void => { this.saveFabAddStyle('modern'); })
                   Button('经典模式').layoutWeight(1).height(36).fontSize(13).margin({ left: 8 })
-                    .fontColor(this.fabAddStyle === 'classic' ? Color.White : this.pal().text2)
+                    .fontColor(this.fabAddStyle === 'classic' ? appUiOnAccentText(this.accentColor) : this.pal().text2)
                     .backgroundColor(this.fabAddStyle === 'classic' ? this.accentColor : this.pal().surface)
                     .borderRadius(10).onClick((): void => { this.saveFabAddStyle('classic'); })
                 }.width('100%').padding({ left: 16, right: 16, bottom: 12 })
@@ -18043,13 +18196,17 @@ struct HostListPage {
               .fontFamily(this.font()).padding({ left: 8, bottom: 8 })
             Column() {
               // 总开关
-              this.rustdeskSwitchRow($r('app.media.icon_desktop'), '后台连接展示',
-                '应用退到后台时保持远程连接，并显示系统允许的状态入口',
-                this.liveViewEnabled,
-                (on: boolean): void => {
+              this.rustdeskSwitchRow({
+                icon: $r('app.media.icon_desktop'),
+                label: '后台连接展示',
+                detail: '应用退到后台时保持远程连接，并显示系统允许的状态入口',
+                isOn: this.liveViewEnabled,
+                onToggle: (on: boolean): void => {
                   this.liveViewEnabled = on;
                   this.persistPref('liveViewEnabled', on);
-                }, true)
+                },
+                neutralIcon: true
+              })
               this.cardDivider()
               // 模式选择: AVSession
               this.liveViewModeRow('画中画模式',
@@ -18109,11 +18266,11 @@ struct HostListPage {
                   }.width('100%').padding({ left: 16, right: 16, top: 12, bottom: 8 })
                   Row() {
                     Button('圆环').layoutWeight(1).height(36).fontSize(13)
-                      .fontColor(this.virtualMouseStyle === 'circle' ? Color.White : this.pal().text2)
+                      .fontColor(this.virtualMouseStyle === 'circle' ? appUiOnAccentText(this.accentColor) : this.pal().text2)
                       .backgroundColor(this.virtualMouseStyle === 'circle' ? this.accentColor : this.pal().surface)
                       .borderRadius(10).onClick((): void => { this.saveVirtualMouseStyle('circle'); })
                     Button('官方远端鼠标').layoutWeight(1).height(36).fontSize(13).margin({ left: 8 })
-                      .fontColor(this.virtualMouseStyle === 'arrow' ? Color.White : this.pal().text2)
+                      .fontColor(this.virtualMouseStyle === 'arrow' ? appUiOnAccentText(this.accentColor) : this.pal().text2)
                       .backgroundColor(this.virtualMouseStyle === 'arrow' ? this.accentColor : this.pal().surface)
                       .borderRadius(10).onClick((): void => { this.saveVirtualMouseStyle('arrow'); })
                   }.width('100%').padding({ left: 16, right: 16, bottom: 12 })
@@ -18231,32 +18388,59 @@ struct HostListPage {
               this.cardDivider()
               this.rdpAuthIdentityModeRow()
               this.cardDivider()
-              this.rustdeskSwitchRow($r('app.media.icon_info'), '跳过连接前证书预检',
-                '仅直连 RDP；连接时仍核验证书，未知或异常证书需返回信任管理确认',
-                this.rdpSkipCertificatePreflight,
-                (on: boolean): void => { this.saveRdpSkipCertificatePreflight(on); }, true)
+              this.rustdeskSwitchRow({
+                icon: $r('app.media.icon_info'),
+                label: '跳过连接前证书预检',
+                detail: '仅直连 RDP；连接时仍核验证书，未知或异常证书需返回信任管理确认',
+                isOn: this.rdpSkipCertificatePreflight,
+                onToggle: (on: boolean): void => { this.saveRdpSkipCertificatePreflight(on); },
+                neutralIcon: true
+              })
               this.cardDivider()
-              this.rustdeskSwitchRow($r('app.media.icon_info'), 'TLS 兼容登录',
-                '仅用于已取消强制 NLA 的 Windows；直连密码登录，安全性低于 NLA',
-                this.rdpTlsWithoutNla,
-                (on: boolean): void => { this.saveRdpTlsWithoutNla(on); }, true)
+              this.rustdeskSwitchRow({
+                icon: $r('app.media.icon_info'),
+                label: 'TLS 兼容登录',
+                detail: '仅用于已取消强制 NLA 的 Windows；直连密码登录，安全性低于 NLA',
+                isOn: this.rdpTlsWithoutNla,
+                onToggle: (on: boolean): void => { this.saveRdpTlsWithoutNla(on); },
+                neutralIcon: true
+              })
               this.cardDivider()
-              this.rustdeskSwitchRow($r('app.media.icon_audio'), '远端音频',
-                '播放 Windows 远端会话声音', this.rdpAudioEnabled,
-                (on: boolean): void => { this.saveRdpAudioEnabled(on); }, true)
+              this.rustdeskSwitchRow({
+                icon: $r('app.media.icon_audio'),
+                label: '远端音频',
+                detail: '播放 Windows 远端会话声音',
+                isOn: this.rdpAudioEnabled,
+                onToggle: (on: boolean): void => { this.saveRdpAudioEnabled(on); },
+                neutralIcon: true
+              })
               this.cardDivider()
-              this.rustdeskSwitchRow($r('app.media.icon_desktop'), '剪贴板同步',
-                '连接时启用文本剪贴板通道', this.rdpClipboardEnabled,
-                (on: boolean): void => { this.saveRdpClipboardEnabled(on); }, true)
+              this.rustdeskSwitchRow({
+                icon: $r('app.media.icon_desktop'),
+                label: '剪贴板同步',
+                detail: '连接时启用文本剪贴板通道',
+                isOn: this.rdpClipboardEnabled,
+                onToggle: (on: boolean): void => { this.saveRdpClipboardEnabled(on); },
+                neutralIcon: true
+              })
               this.cardDivider()
-              this.rustdeskSwitchRow($r('app.media.icon_info'), '性能监视与诊断日志',
-                '连接后显示送显、队列和 GFX 指标，并写入 hilog', this.rdpShowDiagnostics,
-                (on: boolean): void => { this.saveRdpShowDiagnostics(on); }, true)
+              this.rustdeskSwitchRow({
+                icon: $r('app.media.icon_info'),
+                label: '性能监视与诊断日志',
+                detail: '连接后显示送显、队列和 GFX 指标，并写入 hilog',
+                isOn: this.rdpShowDiagnostics,
+                onToggle: (on: boolean): void => { this.saveRdpShowDiagnostics(on); },
+                neutralIcon: true
+              })
               this.cardDivider()
-              this.rustdeskSwitchRow($r('app.media.icon_folder'), '文件共享盘',
-                RDP_DRIVE_REDIRECTION_ENABLED ? '连接时挂载 \\\\tsclient\\' + this.rdpDriveName : '暂时停用，避免影响 Pad/手机连接',
-                this.rdpDriveEnabled,
-                (on: boolean): void => { this.saveRdpDriveEnabled(on); }, true)
+              this.rustdeskSwitchRow({
+                icon: $r('app.media.icon_folder'),
+                label: '文件共享盘',
+                detail: RDP_DRIVE_REDIRECTION_ENABLED ? '连接时挂载 \\\\tsclient\\' + this.rdpDriveName : '暂时停用，避免影响 Pad/手机连接',
+                isOn: this.rdpDriveEnabled,
+                onToggle: (on: boolean): void => { this.saveRdpDriveEnabled(on); },
+                neutralIcon: true
+              })
               this.cardDivider()
               this.rdpDriveNameRow()
               this.cardDivider()
@@ -18304,7 +18488,7 @@ struct HostListPage {
                 }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
                 Button(this.lanScanning ? '扫描中' : '扫描')
                   .fontSize(12).fontWeight(FontWeight.Medium)
-                  .backgroundColor(this.accentColor).fontColor('#FFFFFF')
+                  .backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor))
                   .borderRadius(16).height(30).padding({ left: 12, right: 12 })
                   .enabled(!this.lanScanning)
                   .onClick(() => { this.startLanScan(); })
@@ -18323,7 +18507,7 @@ struct HostListPage {
                         }.margin({ top: 2 })
                       }.alignItems(HorizontalAlign.Start).layoutWeight(1)
                       Button('添加').fontSize(11).fontWeight(FontWeight.Medium)
-                        .backgroundColor(this.accentColor).fontColor('#FFFFFF')
+                        .backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor))
                         .borderRadius(14).height(26).padding({ left: 10, right: 10 })
                         .onClick(() => { this.addLanPeer(peer); })
                     }.width('100%').padding({ left: 8, right: 8, top: 6, bottom: 6 })
@@ -18332,26 +18516,49 @@ struct HostListPage {
                 }.width('100%').padding({ left: 16, right: 16, bottom: 8 })
               }
               this.cardDivider()
-              this.rustdeskSwitchRow($r('app.media.icon_lock'), '允许隐私模式',
-                '连接时可请求隐藏远端屏幕', this.rustdeskPrivacyMode,
-                (on: boolean): void => { this.saveRustDeskPrivacyMode(on); })
+              this.rustdeskSwitchRow({
+                icon: $r('app.media.icon_lock'),
+                label: '允许隐私模式',
+                detail: '连接时可请求隐藏远端屏幕',
+                isOn: this.rustdeskPrivacyMode,
+                onToggle: (on: boolean): void => { this.saveRustDeskPrivacyMode(on); }
+              })
               this.cardDivider()
-              this.rustdeskSwitchRow($r('app.media.icon_audio'), '远端音频',
-                '接收并播放远端设备声音', this.rustdeskAudioEnabled,
-                (on: boolean): void => { this.saveRustDeskAudioEnabled(on); }, true)
+              this.rustdeskSwitchRow({
+                icon: $r('app.media.icon_audio'),
+                label: '远端音频',
+                detail: '接收并播放远端设备声音',
+                isOn: this.rustdeskAudioEnabled,
+                onToggle: (on: boolean): void => { this.saveRustDeskAudioEnabled(on); },
+                neutralIcon: true
+              })
               this.cardDivider()
-              this.rustdeskSwitchRow($r('app.media.icon_desktop'), '远端应用双指缩放',
-                '将双指事件发送到 RustDesk 被控端应用；启用后取代本地画布缩放',
-                this.rustdeskRemoteAppTouchScaleEnabled,
-                (on: boolean): void => { this.saveRustDeskRemoteAppTouchScaleEnabled(on); }, true)
+              this.rustdeskSwitchRow({
+                icon: $r('app.media.icon_desktop'),
+                label: '远端应用双指缩放',
+                detail: '将双指事件发送到 RustDesk 被控端应用；启用后取代本地画布缩放',
+                isOn: this.rustdeskRemoteAppTouchScaleEnabled,
+                onToggle: (on: boolean): void => { this.saveRustDeskRemoteAppTouchScaleEnabled(on); },
+                neutralIcon: true
+              })
               this.cardDivider()
-              this.rustdeskSwitchRow($r('app.media.icon_desktop'), '显示连接诊断信息',
-                '连接时显示延迟、帧率、码率、分辨率和编码信息', this.rustdeskShowDiagnostics,
-                (on: boolean): void => { this.saveRustDeskShowDiagnostics(on); }, true)
+              this.rustdeskSwitchRow({
+                icon: $r('app.media.icon_desktop'),
+                label: '显示连接诊断信息',
+                detail: '连接时显示延迟、帧率、码率、分辨率和编码信息',
+                isOn: this.rustdeskShowDiagnostics,
+                onToggle: (on: boolean): void => { this.saveRustDeskShowDiagnostics(on); },
+                neutralIcon: true
+              })
               this.cardDivider()
-              this.rustdeskSwitchRow($r('app.media.icon_desktop'), '专业性能数据（Pro）',
-                '进一步显示解码、队列和本机 CPU、内存、GPU 负载', this.rustdeskShowProDiagnostics,
-                (on: boolean): void => { this.saveRustDeskShowProDiagnostics(on); }, true)
+              this.rustdeskSwitchRow({
+                icon: $r('app.media.icon_desktop'),
+                label: '专业性能数据（Pro）',
+                detail: '进一步显示解码、队列和本机 CPU、内存、GPU 负载',
+                isOn: this.rustdeskShowProDiagnostics,
+                onToggle: (on: boolean): void => { this.saveRustDeskShowProDiagnostics(on); },
+                neutralIcon: true
+              })
             }.borderRadius(24).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
             .shadow({ radius: 16, color: 'rgba(0,0,0,0.04)', offsetY: 4 })
             .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
@@ -18454,7 +18661,7 @@ struct HostListPage {
                 Button(this.sshSystemNotificationsEnabled ? '已开启' :
                   (this.sshNotificationAuthorizationPending ? '请求中' : '开启'))
                   .height(32).fontSize(12).borderRadius(8)
-                  .fontColor(this.sshSystemNotificationsEnabled ? this.pal().text3 : '#FFFFFF')
+                  .fontColor(this.sshSystemNotificationsEnabled ? this.pal().text3 : appUiOnAccentText(this.accentColor))
                   .backgroundColor(this.sshSystemNotificationsEnabled ? this.pal().surface : this.accentColor)
                   .enabled(!this.sshSystemNotificationsEnabled && !this.sshNotificationAuthorizationPending)
                   .onClick((): void => { this.requestSshNotificationAuthorization(); })
@@ -18494,15 +18701,15 @@ struct HostListPage {
               this.cardDivider()
               Row() {
                 Column() {
-                  Text('主机指纹').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
+                  Text('终端显示').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
                     .fontColor(this.pal().text).fontFamily(this.font())
-                  Text('继续在“数据安全”中管理，暂不迁移 trust 入口')
+                  Text('文字颜色、字号和行距恢复为默认值')
                     .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
                     .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
                 }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 16 })
                 Button('恢复默认').height(32).fontSize(12).backgroundColor(this.pal().surface)
                   .fontColor(this.pal().text2).borderRadius(8)
-                  .onClick((): void => { this.resetSshTerminalAppearance(); })
+                  .onClick((): void => { this.confirmResetSshTerminalAppearance(); })
               }.width('100%').height(62).padding({ left: 0, right: 16 })
             }.borderRadius(24).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
               .shadow({ radius: 16, color: 'rgba(0,0,0,0.04)', offsetY: 4 })
@@ -18755,7 +18962,7 @@ struct HostListPage {
                   }
                 } else {
                   Button('启用').height(32).fontSize(12)
-                    .backgroundColor(this.accentColor).fontColor('#FFFFFF').borderRadius(8)
+                    .backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor)).borderRadius(8)
                     .onClick(() => {
                       this.openSettingsLeafSheet(SETTINGS_SHEET_POPUP, (): void => {
                         this.cryptoMode = 0;
@@ -18789,32 +18996,37 @@ struct HostListPage {
                     .fontSize(10).fontColor(this.pal().text3).fontFamily(this.font())
                     .margin({ top: 3 })
                 }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
-                Toggle({ type: ToggleType.Switch, isOn: this.totpPageLocked })
-                  .selectedColor(this.accentColor)
-                  .scale({ x: 0.88, y: 0.88 })
-                  .onChange(async (on: boolean) => {
-                    if (on) {
-                      const r = await showLockGate('开启 TOTP 隐私保护，请验证系统身份', 'biometric');
-                      if (r.ok) {
-                        this.totpPageLocked = true;
-                        this.saveTotpLock(true);
-                        promptAction.showToast({ message: '2FA 已锁定', duration: 1500 });
+                // Rebuilt at the saved value when verification fails (see settingsSwitchEpoch).
+                ForEach([this.settingsSwitchEpoch], (_epoch: number): void => {
+                  Toggle({ type: ToggleType.Switch, isOn: this.totpPageLocked })
+                    .selectedColor(this.accentColor)
+                    .scale({ x: 0.88, y: 0.88 })
+                    .onChange(async (on: boolean) => {
+                      if (on) {
+                        const r = await showLockGate('开启 TOTP 隐私保护，请验证系统身份', 'biometric');
+                        if (r.ok) {
+                          this.totpPageLocked = true;
+                          this.saveTotpLock(true);
+                          promptAction.showToast({ message: '2FA 已锁定', duration: 1500 });
+                        } else {
+                          promptAction.showToast({ message: lockGateErrorMessage(r) || '验证未通过', duration: 2000 });
+                          this.totpPageLocked = false;
+                          this.settingsSwitchEpoch++;
+                        }
                       } else {
-                        promptAction.showToast({ message: lockGateErrorMessage(r) || '验证未通过', duration: 2000 });
-                        this.totpPageLocked = false;
+                        const r = await showLockGate('关闭 TOTP 隐私保护，请验证系统身份', 'biometric');
+                        if (r.ok) {
+                          this.totpPageLocked = false;
+                          AppStorage.setOrCreate('totpUnlocked', false);
+                          this.saveTotpLock(false);
+                          promptAction.showToast({ message: '2FA 已解锁', duration: 1500 });
+                        } else {
+                          promptAction.showToast({ message: lockGateErrorMessage(r) || '验证未通过', duration: 2000 });
+                          this.settingsSwitchEpoch++;
+                        }
                       }
-                    } else {
-                      const r = await showLockGate('关闭 TOTP 隐私保护，请验证系统身份', 'biometric');
-                      if (r.ok) {
-                        this.totpPageLocked = false;
-                        AppStorage.setOrCreate('totpUnlocked', false);
-                        this.saveTotpLock(false);
-                        promptAction.showToast({ message: '2FA 已解锁', duration: 1500 });
-                      } else {
-                        promptAction.showToast({ message: lockGateErrorMessage(r) || '验证未通过', duration: 2000 });
-                      }
-                    }
-                  })
+                    })
+                }, (epoch: number): string => 'totp-lock-' + epoch.toString())
               }.width('100%').height(60).padding({ left: 16, right: 16 })
 
               this.cardDivider()
@@ -18832,11 +19044,11 @@ struct HostListPage {
                 }.width('100%').padding({ left: 16, right: 16, top: 12, bottom: 8 })
                 Row() {
                   Button('真实 Logo').layoutWeight(1).height(36).fontSize(13)
-                    .fontColor(this.totpLogoMode === 'logo' ? Color.White : this.pal().text2)
+                    .fontColor(this.totpLogoMode === 'logo' ? appUiOnAccentText(this.accentColor) : this.pal().text2)
                     .backgroundColor(this.totpLogoMode === 'logo' ? this.accentColor : this.pal().surface)
                     .borderRadius(10).onClick((): void => { this.saveTotpLogoMode('logo'); })
                   Button('首字母').layoutWeight(1).height(36).fontSize(13).margin({ left: 8 })
-                    .fontColor(this.totpLogoMode === 'initials' ? Color.White : this.pal().text2)
+                    .fontColor(this.totpLogoMode === 'initials' ? appUiOnAccentText(this.accentColor) : this.pal().text2)
                     .backgroundColor(this.totpLogoMode === 'initials' ? this.accentColor : this.pal().surface)
                     .borderRadius(10).onClick((): void => { this.saveTotpLogoMode('initials'); })
                 }.width('100%').padding({ left: 16, right: 16, bottom: 12 })
@@ -18895,16 +19107,20 @@ struct HostListPage {
             Text('教程').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text3)
               .fontFamily(this.font()).padding({ left: 8, bottom: 8 })
             Column() {
-              this.cardActionRow($r('app.media.icon_info'), '本版本更新日志',
-                currentReleasePageCount() > 0 ? CURRENT_RELEASE_VERSION + ' · 查看全部 ' +
-                  currentReleasePageCount().toString() + ' 项功能与修复' : CURRENT_RELEASE_VERSION + ' · 更新说明待发布',
-                (): void => {
-                  if (currentReleasePageCount() === 0) { return; }
-                  this.openSettingsLeafSheet(SETTINGS_SHEET_POPUP, (): void => {
-                    this.aboutSheetMode = 4;
-                    this.popupSheetMode = 1;
-                  });
-                })
+              if (currentReleasePageCount() > 0) {
+                this.cardActionRow($r('app.media.icon_info'), '本版本更新日志',
+                  CURRENT_RELEASE_VERSION + ' · 查看全部 ' + currentReleasePageCount().toString() + ' 项功能与修复',
+                  (): void => {
+                    this.openSettingsLeafSheet(SETTINGS_SHEET_POPUP, (): void => {
+                      this.aboutSheetMode = 4;
+                      this.popupSheetMode = 1;
+                    });
+                  })
+              } else {
+                // Nothing to open yet: shown dimmed with the reason instead of a row that does nothing.
+                this.cardDisabledRow($r('app.media.icon_info'), '本版本更新日志',
+                  CURRENT_RELEASE_VERSION + ' 的更新说明还没有发布')
+              }
               this.cardDivider()
               this.cardActionRow($r('app.media.icon_info'), '快速认识应用',
                 '用 ' + settingsUsageGuidePages().length.toString() + ' 页了解协议、主页、设备、安全与数据',
@@ -19056,7 +19272,8 @@ struct HostListPage {
             (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_PRO); }, true, true)
         }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 20 })
 
-        ListItem() { Column().height(120) }
+        // Room above the phone/Pad floating tab bar; the PC settings sheet has no tab bar below it.
+        ListItem() { Column().height(this.isDesktopDevice && this.breakpoint === 'xl' ? 24 : 120) }
       }
       .width('100%').layoutWeight(1)
       .scrollBar(BarState.Off).edgeEffect(EdgeEffect.Spring)
@@ -19881,7 +20098,7 @@ struct HostListPage {
       this.rustDeskAuthTrustManagerSheet()
     } else if (this.popupSheetMode === POPUP_SHEET_VNC_CERTIFICATES) {
       VncCertificateTrustManagerSheet({
-        onClose: (): void => { this.closeSettingsLeafSheet(); },
+        onClose: (): void => { this.closeSettingsLeafSheetByUser(); },
         onRecheck: (trust: VncTrustView, hostId: string): void => { this.recheckVncTrust(trust, hostId); }
       })
     } else if (this.popupSheetMode === 3) {
@@ -19890,7 +20107,7 @@ struct HostListPage {
       AboutSettingsSheet({
         aboutSheetMode: this.aboutSheetMode,
         guideViewportHeight: this.pageViewportHeight,
-        onClose: (): void => { this.closeSettingsLeafSheet(); },
+        onClose: (): void => { this.closeSettingsLeafSheetByUser(); },
         onOrderPro: (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_PRO); }
       })
     }
@@ -19914,7 +20131,7 @@ struct HostListPage {
           .fontFamily(this.font()).layoutWeight(1).textAlign(TextAlign.Center)
         if (this.currentCloudSyncSheetSpec().canDismiss) {
           SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor([this.pal().text2]).width(44).height(36)
-            .onClick((): void => { this.closeSettingsLeafSheet(); })
+            .onClick((): void => { this.closeSettingsLeafSheetByUser(); })
         } else {
           Blank().width(44)
         }
@@ -20027,7 +20244,7 @@ struct HostListPage {
               if (this.moonlightRestoreActivationState === 'pending') {
                 Button('核对云端并允许恢复数据上传')
                   .fontSize(12).fontWeight(FontWeight.Medium)
-                  .fontColor(Color.White).backgroundColor(this.accentColor)
+                  .fontColor(appUiOnAccentText(this.accentColor)).backgroundColor(this.accentColor)
                   .height(38).borderRadius(12).width('100%')
                   .margin({ top: 10 })
                   .onClick((): void => {
@@ -20108,8 +20325,8 @@ struct HostListPage {
               .fontSize(12).fontColor(this.pal().text3).fontFamily(this.font()).lineHeight(21).margin({ top: 8 })
           }.width('100%').padding(14).borderRadius(14).backgroundColor(this.pal().surface).margin({ top: 20 })
           Button(this.currentCloudSyncSheetSpec().primaryLabel).width('100%').height(46).fontSize(15).fontWeight(FontWeight.Medium)
-            .backgroundColor(this.accentColor).fontColor('#FFFFFF').borderRadius(14).margin({ top: 22 })
-            .onClick((): void => { this.closeSettingsLeafSheet(); })
+            .backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor)).borderRadius(14).margin({ top: 22 })
+            .onClick((): void => { this.closeSettingsLeafSheetByUser(); })
         }.width('100%').padding({ left: 24, right: 24, top: 24, bottom: 30 }).alignItems(HorizontalAlign.Start)
       } else if (this.cloudSyncStep === CLOUD_SYNC_SHEET_UPLOADING || this.cloudSyncStep === CLOUD_SYNC_SHEET_DOWNLOADING) {
         Column() {
@@ -20209,7 +20426,7 @@ struct HostListPage {
           .fontColor(this.pal().text).fontFamily(this.font())
         Blank()
         SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor([this.pal().text2])
-          .width(36).height(36).onClick((): void => { this.closeSettingsLeafSheet(); })
+          .width(36).height(36).onClick((): void => { this.closeSettingsLeafSheetByUser(); })
       }.width('100%').padding({ left: 24, right: 20, top: 20 }).margin({ bottom: 6 })
 
       if (this.sshTrustedHostsView.length === 0) {
@@ -20287,7 +20504,7 @@ struct HostListPage {
           .fontColor(this.pal().text).fontFamily(this.font())
         Blank()
         SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor([this.pal().text2])
-          .width(36).height(36).onClick((): void => { this.closeSettingsLeafSheet(); })
+          .width(36).height(36).onClick((): void => { this.closeSettingsLeafSheetByUser(); })
       }.width('100%').padding({ left: 24, right: 20, top: 20 }).margin({ bottom: 6 })
 
       if (this.rdpTrustedHostsView.length === 0) {
@@ -20410,10 +20627,10 @@ struct HostListPage {
         Row() {
           Button('取消').layoutWeight(1).height(44).fontSize(14)
             .backgroundColor(this.pal().surface).fontColor(this.pal().text2).borderRadius(12)
-            .onClick(() => { this.closeSettingsLeafSheet(); this.cryptoPwd = ''; this.cryptoMode = 0; this.cryptoResetCountdown = 0; })
+            .onClick(() => { this.closeSettingsLeafSheetByUser(); this.cryptoPwd = ''; this.cryptoMode = 0; this.cryptoResetCountdown = 0; })
           Blank().width(12)
           Button('解锁').layoutWeight(1).height(44).fontSize(14)
-            .backgroundColor(this.accentColor).fontColor('#FFFFFF').borderRadius(12)
+            .backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor)).borderRadius(12)
             .enabled(this.cryptoPwd.length > 0 && !this.cryptoLoading)
             .onClick(async () => { await this.handleUnlock(); })
         }.width('100%').margin({ bottom: 8 })
@@ -20436,7 +20653,7 @@ struct HostListPage {
         Row() {
           Button('取消').layoutWeight(1).height(44).fontSize(14)
             .backgroundColor(this.pal().surface).fontColor(this.pal().text2).borderRadius(12)
-            .onClick(() => { this.closeSettingsLeafSheet(); this.cryptoPwd = ''; this.cryptoMode = 0; this.cryptoResetCountdown = 0; })
+            .onClick(() => { this.closeSettingsLeafSheetByUser(); this.cryptoPwd = ''; this.cryptoMode = 0; this.cryptoResetCountdown = 0; })
           Blank().width(12)
           Button(this.cryptoResetCountdown > 0 ? '确认关闭 (' + this.cryptoResetCountdown + 's)' : '确认关闭')
             .layoutWeight(1).height(44).fontSize(14)
@@ -20457,7 +20674,7 @@ struct HostListPage {
         Row() {
           Button('取消').layoutWeight(1).height(44).fontSize(14)
             .backgroundColor(this.pal().surface).fontColor(this.pal().text2).borderRadius(12)
-            .onClick(() => { this.closeSettingsLeafSheet(); this.cryptoMode = 0; this.cryptoResetCountdown = 0; })
+            .onClick(() => { this.closeSettingsLeafSheetByUser(); this.cryptoMode = 0; this.cryptoResetCountdown = 0; })
           Blank().width(12)
           Button(this.cryptoResetCountdown > 0 ? '确认重置 (' + this.cryptoResetCountdown + 's)' : '确认重置')
             .layoutWeight(1).height(44).fontSize(14)
@@ -20486,10 +20703,10 @@ struct HostListPage {
         Row() {
           Button('取消').layoutWeight(1).height(44).fontSize(14)
             .backgroundColor(this.pal().surface).fontColor(this.pal().text2).borderRadius(12)
-            .onClick(() => { this.closeSettingsLeafSheet(); this.cryptoPwd = ''; this.cryptoPwdConfirm = ''; })
+            .onClick(() => { this.closeSettingsLeafSheetByUser(); this.cryptoPwd = ''; this.cryptoPwdConfirm = ''; })
           Blank().width(12)
           Button('启用加密').layoutWeight(1).height(44).fontSize(14)
-            .backgroundColor(this.accentColor).fontColor('#FFFFFF').borderRadius(12)
+            .backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor)).borderRadius(12)
             .enabled(masterPasswordSetupError(this.cryptoPwd, this.cryptoPwdConfirm) === '' && !this.cryptoLoading)
             .onClick(async () => { await this.handleEnable(); })
         }.width('100%')
@@ -20672,6 +20889,21 @@ struct HostListPage {
     }
     .width('100%').height(62).padding({ left: 16, right: 16 })
     .onClick(action)
+  }
+
+  @Builder cardDisabledRow(icon: Resource, label: string, reason: string) {
+    Row() {
+      Row() { Image(icon).width(22).height(22).fillColor(this.pal().text3) }
+        .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
+      Column() {
+        Text(label).fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
+          .fontColor(this.pal().text).fontFamily(this.font())
+        Text(reason).fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
+          .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis }).margin({ top: 2 })
+      }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
+    }
+    .width('100%').height(62).padding({ left: 16, right: 16 }).opacity(0.55)
+    .accessibilityText(label + '，' + reason)
   }
 
   @Builder protocolActionRow(icon: Resource, label: string, value: string, action: () => void) {
@@ -21382,7 +21614,7 @@ struct HostListPage {
 
   @Builder remoteDisplayScaleChip(label: string, mode: string) {
     Text(label).fontSize(11)
-      .fontColor(this.remoteDisplayScaleMode === mode ? '#FFFFFF' : this.pal().text2)
+      .fontColor(this.remoteDisplayScaleMode === mode ? appUiOnAccentText(this.accentColor) : this.pal().text2)
       .fontWeight(this.remoteDisplayScaleMode === mode ? FontWeight.Medium : FontWeight.Normal)
       .padding({ left: 10, right: 10, top: 7, bottom: 7 })
       .backgroundColor(this.remoteDisplayScaleMode === mode ? this.accentColor : this.pal().surface)
@@ -21447,14 +21679,18 @@ struct HostListPage {
           .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
           .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis }).margin({ top: 2 })
       }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
-      Toggle({ type: ToggleType.Switch, isOn: this.remoteSessionQuickExitDisabled })
-        .selectedColor(this.accentColor).scale({ x: 0.88, y: 0.88 })
-        .accessibilityText('关闭快捷退出')
-        .onChange((on: boolean): void => {
-          if (!this.saveRemoteSessionQuickExitDisabled(on)) {
-            promptAction.showToast({ message: '快捷退出设置保存失败，已保留原状态', duration: 2200 });
-          }
-        })
+      // Rebuilt at the saved value when saving fails (see settingsSwitchEpoch).
+      ForEach([this.settingsSwitchEpoch], (_epoch: number): void => {
+        Toggle({ type: ToggleType.Switch, isOn: this.remoteSessionQuickExitDisabled })
+          .selectedColor(this.accentColor).scale({ x: 0.88, y: 0.88 })
+          .accessibilityText('关闭快捷退出')
+          .onChange((on: boolean): void => {
+            if (!this.saveRemoteSessionQuickExitDisabled(on)) {
+              promptAction.showToast({ message: '快捷退出设置保存失败，已保留原状态', duration: 2200 });
+              this.settingsSwitchEpoch++;
+            }
+          })
+      }, (epoch: number): string => 'quick-exit-' + epoch.toString())
     }.width('100%').height(68).padding({ left: 16, right: 16 })
   }
 
@@ -21891,26 +22127,30 @@ struct HostListPage {
         .onClick((): void => { this.saveRustDeskControlMode(mode); })
     }.width(72).justifyContent(FlexAlign.Center)
   }
-  @Builder rustdeskSwitchRow(icon: Resource, label: string, detail: string, isOn: boolean,
-    onToggle: (on: boolean) => void, neutralIcon: boolean = false, enabled: boolean = true) {
+  @Builder rustdeskSwitchRow(row: SettingsSwitchRowArgs) {
     Row() {
-      Row() { Image(icon).width(22).height(22).fillColor(neutralIcon ? this.pal().text3 : (isOn ? this.accentColor : this.pal().text3)) }
-        .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
+      Row() {
+        Image(row.icon).width(22).height(22)
+          .fillColor(row.neutralIcon === true ? this.pal().text3 : (row.isOn ? this.accentColor : this.pal().text3))
+      }.width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
       Column() {
-        Text(label).fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
+        Text(row.label).fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
           .fontColor(this.pal().text).fontFamily(this.font())
-        Text(detail).fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
+        Text(row.detail).fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
           .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
       }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
-      Toggle({ type: ToggleType.Switch, isOn: isOn })
-        .selectedColor(this.accentColor)
-        .scale({ x: 0.88, y: 0.88 })
-        .enabled(enabled)
-        .onChange((on: boolean) => {
-          animateTo({ duration: 250, curve: Curve.FastOutSlowIn }, () => {
-            onToggle(on);
+      // Rebuilt when settingsSwitchEpoch changes, so a cancelled change shows the saved value again.
+      ForEach([this.settingsSwitchEpoch], (_epoch: number): void => {
+        Toggle({ type: ToggleType.Switch, isOn: row.isOn })
+          .selectedColor(this.accentColor)
+          .scale({ x: 0.88, y: 0.88 })
+          .enabled(row.enabled !== false)
+          .onChange((on: boolean) => {
+            animateTo({ duration: 250, curve: Curve.FastOutSlowIn }, () => {
+              row.onToggle(on);
+            })
           })
-        })
+      }, (epoch: number): string => 'switch-' + epoch.toString())
     }.width('100%').height(64).padding({ left: 16, right: 16 })
   }
 
@@ -22019,6 +22259,7 @@ struct HostListPage {
       })
     } else if (this.activeHostAddProtocol() === 'ai') {
       AiHostEditor({ host: this.aiEditingHost, modern: resolveFabAddStyle(this.fabAddStyle, this.isDesktopDevice) === 'modern',
+        viewportHeight: this.pageViewportHeight,
         canReturnToProtocols: this.aiEditingHost === null && resolveFabAddStyle(this.fabAddStyle, this.isDesktopDevice) === 'modern',
         onBackToProtocols: (): void => { this.modernAddProtocol = ''; this.addSheetShowsModernPicker = true; },
         onClose: (): void => { this.requestAddSheetClose(); },
@@ -22200,7 +22441,7 @@ struct HostListPage {
           Text('管理各主机默认认证方式；密码内容不会在此显示').fontSize(11).fontColor(this.pal().text3)
             .margin({ top: 3 })
         }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-        Text('完成').fontSize(13).fontColor(this.accentColor).onClick((): void => { this.closeSettingsLeafSheet(); })
+        Text('完成').fontSize(13).fontColor(this.accentColor).onClick((): void => { this.closeSettingsLeafSheetByUser(); })
       }.width('100%').padding({ left: 22, right: 22, top: 22 }).margin({ bottom: 14 })
       if (this.rustDeskHosts().length === 0) {
         Text('暂无 RustDesk 主机').fontSize(13).fontColor(this.pal().text3)
@@ -23023,7 +23264,7 @@ struct HostListPage {
           .fontColor(this.pal().text).fontFamily(this.font())
         Blank()
         Text('完成').fontSize(13).fontColor(this.accentColor).fontWeight(FontWeight.Medium)
-          .fontFamily(this.font()).onClick(() => { this.closeSettingsLeafSheet(); })
+          .fontFamily(this.font()).onClick(() => { this.closeSettingsLeafSheetByUser(); })
       }.width('100%').padding({ left: 24, right: 24, top: 22 }).margin({ bottom: 14 })
 
       if (this.rdpCredentials.length === 0) {
@@ -23067,7 +23308,7 @@ struct HostListPage {
       Column() {
         Button('添加 Windows 凭据')
           .height(40).width('100%').fontSize(13).fontWeight(FontWeight.Medium)
-          .backgroundColor(this.accentColor).fontColor('#FFFFFF').borderRadius(10)
+          .backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor)).borderRadius(10)
           .onClick((): void => {
             this.resetRdpCredentialEditor();
             this.rdpCredentialEditorReturnToManager = true;
@@ -23096,8 +23337,15 @@ struct HostListPage {
         Blank()
         Text('取消').fontSize(13).fontColor(this.pal().text2).fontWeight(FontWeight.Medium)
           .fontFamily(this.font()).onClick((): void => {
-            this.closeSettingsLeafSheet();
-            this.rdpCredentialEditorReturnToManager = false;
+            this.dismissSettingsLeafIfNeeded((): void => {
+              const backToManager: boolean = this.rdpCredentialEditorReturnToManager;
+              this.rdpCredentialEditorReturnToManager = false;
+              if (backToManager) {
+                this.openSettingsLeafSheet(SETTINGS_SHEET_RDP_CREDENTIALS);
+              } else {
+                this.closeSettingsLeafSheetByUser();
+              }
+            });
           })
       }.width('100%').padding({ left: 24, right: 24, top: 22 }).margin({ bottom: 14 })
 
@@ -23127,7 +23375,7 @@ struct HostListPage {
         Row() {
           Button(this.rdpCredEditId === '' ? '保存凭据' : '更新凭据')
             .height(40).layoutWeight(1).fontSize(13).fontWeight(FontWeight.Medium)
-            .backgroundColor(this.accentColor).fontColor('#FFFFFF').borderRadius(10)
+            .backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor)).borderRadius(10)
             .onClick((): void => { this.saveRdpCredentialFromSettings(); })
           Button('清空')
             .height(40).width(82).fontSize(13).backgroundColor(this.pal().surface)
@@ -23637,7 +23885,7 @@ struct HostListPage {
             ListItem() {
               Row() {
                 Text(SshKey.typeLabel(key.keyType))
-                  .fontSize(11).fontWeight(FontWeight.Bold).fontColor('#FFFFFF')
+                  .fontSize(11).fontWeight(FontWeight.Bold).fontColor(appUiOnAccentText(this.accentColor))
                   .width(36).height(36).borderRadius(10).backgroundColor(this.accentColor)
                   .textAlign(TextAlign.Center)
                 Column() {
@@ -23782,7 +24030,7 @@ struct HostListPage {
               Text(sz.toString())
                 .fontSize(sz > 20 ? 10 : sz > 16 ? 11 : 12)
                 .fontColor(this.terminalFontSize === sz ? '#FFFFFF' : this.pal().text)
-              Text('vp').fontSize(9).fontColor(this.terminalFontSize === sz ? '#FFFFFF' : this.pal().text3)
+              Text('vp').fontSize(9).fontColor(this.terminalFontSize === sz ? appUiOnAccentText(this.accentColor) : this.pal().text3)
             }
             .width(56).height(48).borderRadius(12).justifyContent(FlexAlign.Center)
             .backgroundColor(this.terminalFontSize === sz ? this.accentColor : this.pal().card)
@@ -23848,9 +24096,16 @@ struct HostListPage {
               .onClick(() => { this.wallpaperIdx = idx; this.syncWallpaperColor(); this.persistPref('wallpaperIdx', idx); })
           }
         })
-      }.columnsTemplate('1fr 1fr 1fr').rowsGap(12).columnsGap(12).width('100%').height(200)
+      }.columnsTemplate('1fr 1fr 1fr').rowsGap(12).columnsGap(12).width('100%').height(this.wallpaperGridHeight())
     }.padding({ left: 24, right: 24, top: 24, bottom: 40 }).width('100%')
       .backgroundColor(this.pal().sheetBg).borderRadius(this.breakpoint === 'sm' ? { topLeft: 20, topRight: 20, bottomLeft: 0, bottomRight: 0 } : 20)
+  }
+
+  /** Every row of swatches fits (a fixed 200vp cut the third row); a long list scrolls within the window. */
+  private wallpaperGridHeight(): number {
+    const rows: number = Math.max(1, Math.ceil(this.wallpaperItems.length / 3));
+    const natural: number = rows * 80 + (rows - 1) * 12;
+    return Math.min(natural, Math.max(172, this.pageViewportHeight - 200));
   }
 
   @Builder statItem(label: string, count: number, color: string) {
@@ -23869,7 +24124,7 @@ struct HostListPage {
       Column() {
         if (this.appCloneLocalOnly) {
           Text(this.appCloneIsClone ? '分' : '本').fontSize(24).fontWeight(FontWeight.Bold)
-            .fontColor(Color.White).textAlign(TextAlign.Center)
+            .fontColor(appUiOnAccentText(this.accentColor)).textAlign(TextAlign.Center)
             .width(64).height(64).borderRadius(32)
             .backgroundColor(this.accentColor).padding({ top: 14 })
             .margin({ bottom: 8 })
@@ -23901,18 +24156,19 @@ struct HostListPage {
       }.width('90%').justifyContent(FlexAlign.SpaceEvenly).margin({ bottom: 24 })
       if (this.appCloneLocalOnly) {
         Button('完成').width('86%').height(46).fontSize(14)
-          .backgroundColor(this.accentColor).fontColor('#FFFFFF').borderRadius(12)
-          .onClick((): void => { this.closeSettingsLeafSheet(); })
+          .backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor)).borderRadius(12)
+          .onClick((): void => { this.closeSettingsLeafSheetByUser(); })
+      } else if (this.accountLoggedIn()) {
+        Button('退出登录').width('86%').height(44).fontSize(14)
+          .backgroundColor(this.pal().surface).fontColor(this.pal().danger).borderRadius(12)
+          .onClick(() => { this.confirmLogout(); })
       } else {
         Button('华为账号登录').width('86%').height(46).fontSize(13).fontWeight(FontWeight.Normal)
-          .backgroundColor(this.accentColor).fontColor('#FFFFFF').borderRadius(12).margin({ bottom: 10 })
+          .backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor)).borderRadius(12)
           .onClick(() => {
             this.closeSettingsLeafSheet();
             this.triggerSystemLogin();
           })
-        Button('退出登录').width('86%').height(44).fontSize(14)
-          .backgroundColor(this.pal().surface).fontColor(this.pal().danger).borderRadius(12)
-          .onClick(() => { this.doLogout(); })
       }
       Blank().height(32)
     }.width('100%')
@@ -24468,6 +24724,7 @@ struct HostListPage {
     this.rdpCredPasswordProjectionBinding = [];
     this.rdpCredSecretProjectionInvalidated = false;
     this.rdpCredEditorKey++;
+    this.rdpCredEditorBaseline = this.rdpCredentialEditorSnapshot();
   }
 
   private openRdpCredentialManager(): void {
@@ -24495,6 +24752,7 @@ struct HostListPage {
     this.rdpCredPasswordProjectionBinding = this.rdpCredentialBindingParts(credential);
     this.rdpCredSecretProjectionInvalidated = false;
     this.rdpCredEditorKey++;
+    this.rdpCredEditorBaseline = this.rdpCredentialEditorSnapshot();
     this.openRdpCredentialEditorFromManager();
   }
 
@@ -24554,9 +24812,15 @@ struct HostListPage {
       promptAction.showToast({ message: 'Windows 凭据已更新', duration: 1500 });
     }
     this.rdpCredentials = this.srv.getAllRdpCredentials();
-    this.closeSettingsLeafSheet();
-    this.resetRdpCredentialEditor();
+    const backToManager: boolean = this.rdpCredentialEditorReturnToManager;
     this.rdpCredentialEditorReturnToManager = false;
+    this.resetRdpCredentialEditor();
+    if (backToManager) {
+      // Opened from the credential list: show the list again with the saved entry.
+      this.openSettingsLeafSheet(SETTINGS_SHEET_RDP_CREDENTIALS);
+    } else {
+      this.closeSettingsLeafSheet();
+    }
   }
 
   private confirmDeleteRdpCredential(credential: RdpCredential): void {

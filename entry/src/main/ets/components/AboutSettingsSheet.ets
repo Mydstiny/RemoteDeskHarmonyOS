@@ -5,6 +5,7 @@
  * 通过 @StorageLink/@StorageProp 接入主题系统。
  */
 import { common, Want } from '@kit.AbilityKit';
+import { appUiOnAccentText } from '../common/AppUiColorPolicy';
 import { AppConfig, AppTheme, Palette, buildLight, buildDark } from '../common/Theme';
 import { GUIDE_ALWAYS_VISIBLE_STORAGE_KEY } from '../services/GuideVisibilityPolicy';
 import { GuideVisibilityService } from '../services/GuideVisibilityService';
@@ -174,7 +175,13 @@ export struct AboutSettingsSheet {
     Column() {
       if (this.releaseNotesItems.length === 0) {
         Column({ space: 10 }) {
-          Text('本版本更新日志').fontSize(20).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
+          Row() {
+            Text('本版本更新日志').fontSize(20).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
+              .layoutWeight(1)
+            SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor([this.pal().text2])
+              .width(36).height(36).accessibilityText('关闭')
+              .onClick((): void => { this.onClose(); })
+          }.width('100%')
           Text(CURRENT_RELEASE_VERSION + ' 的更新说明正在整理，发布后会显示在这里。').fontSize(14)
             .fontColor(this.pal().text2).textAlign(TextAlign.Center)
         }.width('100%').padding(32)
@@ -305,7 +312,7 @@ export struct AboutSettingsSheet {
         Button(this.guideAlwaysVisible ? '始终显示：开' : '始终显示')
           .height(34).fontSize(11).borderRadius(10).margin({ left: 12 })
           .backgroundColor(this.guideAlwaysVisible ? this.accentColor : this.pal().card)
-          .fontColor(this.guideAlwaysVisible ? Color.White : this.accentColor)
+          .fontColor(this.guideAlwaysVisible ? appUiOnAccentText(this.accentColor) : this.accentColor)
           .onClick((): void => { this.toggleGuideAlwaysVisible(); })
           .accessibilityText(this.guideAlwaysVisible ? '关闭始终显示引导' : '开启始终显示引导')
       }
@@ -355,7 +362,7 @@ export struct AboutSettingsSheet {
   @Builder guideDeviceChip(device: GuideDevice) {
     Text(device === 'phone' ? '手机' : (device === 'tablet' ? 'Pad' : 'PC'))
       .fontSize(12).fontWeight(this.guideDevice === device ? FontWeight.Medium : FontWeight.Normal)
-      .fontColor(this.guideDevice === device ? Color.White : this.pal().text2)
+      .fontColor(this.guideDevice === device ? appUiOnAccentText(this.accentColor) : this.pal().text2)
       .textAlign(TextAlign.Center).layoutWeight(1)
       .padding({ top: 8, bottom: 8 })
       .backgroundColor(this.guideDevice === device ? this.accentColor : this.pal().card)
@@ -415,7 +422,7 @@ export struct AboutSettingsSheet {
           ForEach(lesson.steps, (step: string, index: number): void => {
             Row() {
               Text((index + 1).toString())
-                .fontSize(11).fontWeight(FontWeight.Bold).fontColor(Color.White)
+                .fontSize(11).fontWeight(FontWeight.Bold).fontColor(appUiOnAccentText(this.accentColor))
                 .width(22).height(22).textAlign(TextAlign.Center)
                 .backgroundColor(this.accentColor).borderRadius(11)
               Text(step).fontSize(13).fontColor(this.pal().text2).lineHeight(20)
@@ -500,7 +507,7 @@ export struct AboutSettingsSheet {
       }.height(this.breakpoint === 'sm' ? 220 : 280)
 
       Button('我知道了').width('100%').height(44).fontSize(14)
-        .backgroundColor(this.accentColor).fontColor('#FFFFFF').borderRadius(12)
+        .backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor)).borderRadius(12)
         .margin({ top: 18 })
         .onClick((): void => { this.onClose(); })
     }
@@ -648,7 +655,7 @@ export struct AboutSettingsSheet {
       }.layoutWeight(1).scrollBar(BarState.Auto)
 
       Button('我知道了').width('100%').height(44).fontSize(14)
-        .backgroundColor(this.accentColor).fontColor('#FFFFFF').borderRadius(12)
+        .backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor)).borderRadius(12)
         .margin({ top: 18 })
         .onClick((): void => { this.onClose(); })
     }

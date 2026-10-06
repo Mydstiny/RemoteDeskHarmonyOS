@@ -1,4 +1,5 @@
 import { Binding, promptAction, UIUtils } from '@kit.ArkUI';
+import { appUiOnAccentText } from '../common/AppUiColorPolicy';
 import { common } from '@kit.AbilityKit';
 import { DataCrypto } from '../services/DataCrypto';
 import { VncSettingsService } from '../services/VncSettingsService';
@@ -252,11 +253,11 @@ export struct VncSettingsSheet {
         buttons: [{ text: '取消', color: this.pal().text2 }, { text: '确认保存', color: this.needsDangerousConfirmation(needsPlaintextConfirmation) ? this.pal().danger : this.accentColor }]
       }).then((result: Object): void => {
         const dialogResult: Record<string, number> = result as Record<string, number>;
+        // 取消 keeps every edit in the draft so the user can change the risky one and save again.
         if (dialogResult['index'] === 1) {
           void this.persistSettings();
         }
-        else { this.load(); }
-      });
+      }).catch((_err: Error): void => { });
       return;
     }
     void this.persistSettings();
@@ -325,21 +326,38 @@ export struct VncSettingsSheet {
     return 'VNC Gateway 与 RustDesk 中继分属不同 owner';
   }
 
-  @Builder private field(label: string, placeholder: string, value: string, onChange: (value: string) => void) {
+  /** `problem` is read while rendering, so its hint follows the typed text. */
+  @Builder private field(label: string, placeholder: string, value: string, onChange: (value: string) => void,
+    numeric: boolean = false, problem: () => string = (): string => '') {
     Column() {
       Text(label).fontSize(12).fontColor(this.pal().text2).margin({ bottom: 5 })
       TextInput({ placeholder, text: value }).height(40).fontSize(13)
+        .type(numeric ? InputType.Number : InputType.Normal)
         .backgroundColor(this.pal().surface).fontColor(this.pal().text)
         .placeholderColor(this.pal().text3).borderRadius(9).padding({ left: 11, right: 11 })
         .onChange(onChange)
+      if (problem() !== '') {
+        Text(problem()).fontSize(11).fontColor(this.pal().danger).margin({ top: 4 }).width('100%')
+      }
     }.width('100%').margin({ bottom: 10 })
+  }
+
+  private portProblem(): string {
+    const value: number = Number(this.defaultPortText);
+    return this.defaultPortText.trim() === '' || !Number.isInteger(value) || value < 1 || value > 65535 ?
+      '端口需在 1–65535 之间' : '';
+  }
+
+  private timeoutProblem(text: string): string {
+    const value: number = Number(text);
+    return text.trim() === '' || !Number.isFinite(value) || value < 1000 ? '不能小于 1000 毫秒' : '';
   }
 
   @Builder private choice(title: string, selected: Binding<boolean>, onClick: () => void,
     marginLeft: number = 0) {
     Button(title).layoutWeight(1).height(36).fontSize(12).borderRadius(9)
       .backgroundColor(selected.value ? this.accentColor : this.pal().surface)
-      .fontColor(selected.value ? Color.White : this.pal().text2)
+      .fontColor(selected.value ? appUiOnAccentText(this.accentColor) : this.pal().text2)
       .margin({ left: marginLeft }).onClick(onClick)
   }
 
@@ -369,7 +387,7 @@ export struct VncSettingsSheet {
       }.width('100%').margin({ bottom: 12 })
       this.field('默认端口', '5900', this.defaultPortText, (value: string): void => {
         this.defaultPortText = value; this.markDirty();
-      })
+      }, true, (): string => this.portProblem())
       if (this.defaultTransport === 'ultravnc_repeater') {
         this.defaultGatewayChoices()
       }
@@ -415,13 +433,13 @@ export struct VncSettingsSheet {
     Column() {
       this.field('连接超时（ms）', '10000', this.connectTimeoutText, (value: string): void => {
         this.connectTimeoutText = value; this.markDirty();
-      })
+      }, true, (): string => this.timeoutProblem(this.connectTimeoutText))
       this.field('认证超时（ms）', '15000', this.authTimeoutText, (value: string): void => {
         this.authTimeoutText = value; this.markDirty();
-      })
+      }, true, (): string => this.timeoutProblem(this.authTimeoutText))
       this.field('首帧超时（ms）', '15000', this.firstFrameTimeoutText, (value: string): void => {
         this.firstFrameTimeoutText = value; this.markDirty();
-      })
+      }, true, (): string => this.timeoutProblem(this.firstFrameTimeoutText))
       Text('最小值为 1000ms。连接失败只结束当前 VNC 会话，不改变其他协议的重试策略。')
         .fontSize(11).fontColor(this.pal().text3).lineHeight(18).margin({ bottom: 12 })
     }.width('100%')
@@ -690,7 +708,7 @@ export struct VncSettingsSheet {
       Text('VNC TLS 证书信任由“数据安全”中的统一管理器维护。云恢复记录不会自动转为本机信任。')
         .fontSize(12).fontColor(this.pal().text3).lineHeight(19).width('100%').margin({ bottom: 12 })
       Button('打开 VNC TLS 证书信任管理').width('100%').height(42).borderRadius(10)
-        .backgroundColor(this.accentColor).fontColor(Color.White)
+        .backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor))
         .onClick((): void => { this.onOpenTrustManager(); })
       Text('同一管理器也可从主设置“数据安全”进入；不会创建第二份可变 trust 列表。')
         .fontSize(11).fontColor(this.pal().text3).lineHeight(18).width('100%').margin({ top: 10 })
@@ -703,7 +721,7 @@ export struct VncSettingsSheet {
         'Gateway 编辑、删除和连通性测试统一放在第三页中继服务器目录。')
         .fontSize(13).fontColor(this.pal().text2).lineHeight(20).width('100%').margin({ bottom: 14 })
       Button(hosts ? '打开 VNC 主机目录' : '打开中继服务器目录').width('100%').height(44)
-        .borderRadius(11).backgroundColor(this.accentColor).fontColor(Color.White)
+        .borderRadius(11).backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor))
         .onClick((): void => { if (hosts) { this.onOpenHostManager(); } else { this.onOpenGatewayManager(); } })
       Text(hosts ? '不会写入 remotehosts' : '不会写入 rustdeskrelays；卡片会标出 VNC Gateway')
         .fontSize(11).fontColor(this.pal().text3).margin({ top: 10 })
@@ -754,7 +772,7 @@ export struct VncSettingsSheet {
     Button(this.saving ? '保存中…' : '保存')
       .width('100%').height(44).borderRadius(11)
       .backgroundColor(this.dirty && !this.saving ? this.accentColor : this.pal().surface)
-      .fontColor(this.dirty && !this.saving ? Color.White : this.pal().text3)
+      .fontColor(this.dirty && !this.saving ? appUiOnAccentText(this.accentColor) : this.pal().text3)
       .enabled(this.dirty && !this.saving)
       .onClick((): void => { this.save(); })
   }

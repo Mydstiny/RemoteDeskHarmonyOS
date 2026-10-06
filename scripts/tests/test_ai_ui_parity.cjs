@@ -383,7 +383,10 @@ const cases = [
     const editor = read('entry/src/main/ets/components/ai/AiHostEditor.ets');
     assert.ok(editor.includes('ProBadge().alignSelf(ItemAlign.Center).margin({ right: 8 })'));
     assert.ok(editor.includes('@StorageProp(\'currentBreakpoint\') breakpoint: string = \'sm\';'));
-    assert.ok(editor.includes('Scroll() {') && editor.includes('constraintSize({ maxHeight: this.breakpoint === \'sm\' ? 520 : 560 })'));
+    // The form keeps its 520/560 preference and fits the live window (the page passes its viewport height).
+    assert.ok(editor.includes('Scroll() {') && editor.includes('constraintSize({ maxHeight: this.formMaxHeight() })'));
+    assert.ok(editor.includes("const preferred: number = this.breakpoint === 'sm' ? 520 : 560;"));
+    assert.ok(editor.includes('Math.min(preferred, this.viewportHeight - 220)'));
     const backendCard = read('entry/src/main/ets/components/ai/AiBackendChoiceCard.ets');
     assert.ok(backendCard.includes('.height(68)') && backendCard.includes('.borderRadius(16)'));
     const routeCard = read('entry/src/main/ets/components/ai/AiConnectionPathCard.ets');

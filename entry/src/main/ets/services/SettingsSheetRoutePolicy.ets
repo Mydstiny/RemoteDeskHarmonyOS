@@ -153,20 +153,31 @@ export function secretVisibilitySettingsLeafSheetHeight(mode: number): number {
   return mode === SETTINGS_SHEET_SECRET_VISIBILITY ? 760 : 0;
 }
 
+// These four save each change at once, so they no longer reserve room for a 取消/保存 row.
 export function remoteWheelDirectionSettingsLeafSheetHeight(mode: number): number {
-  return mode === SETTINGS_SHEET_REMOTE_WHEEL_DIRECTION ? 680 : 0;
+  return mode === SETTINGS_SHEET_REMOTE_WHEEL_DIRECTION ? 620 : 0;
 }
 
 export function remotePinchZoomSettingsLeafSheetHeight(mode: number): number {
-  return mode === SETTINGS_SHEET_REMOTE_PINCH_ZOOM ? 700 : 0;
+  return mode === SETTINGS_SHEET_REMOTE_PINCH_ZOOM ? 640 : 0;
 }
 
 export function remotePortraitDisplaySettingsLeafSheetHeight(mode: number): number {
-  return mode === SETTINGS_SHEET_REMOTE_PORTRAIT_DISPLAY ? 720 : 0;
+  return mode === SETTINGS_SHEET_REMOTE_PORTRAIT_DISPLAY ? 680 : 0;
 }
 
 export function sessionControlBarSettingsLeafSheetHeight(mode: number): number {
-  return mode === SETTINGS_SHEET_SESSION_CONTROL_BAR ? 620 : 0;
+  return mode === SETTINGS_SHEET_SESSION_CONTROL_BAR ? 560 : 0;
+}
+
+/**
+ * Fit a leaf sheet's preferred height into the live window: split screen, a small PC window or a landscape
+ * phone would otherwise push the sheet's header or bottom off screen. The sheets scroll their own content.
+ */
+export function settingsLeafSheetFitHeight(preferredHeight: number, viewportHeight: number): number {
+  if (!Number.isFinite(viewportHeight) || viewportHeight <= 0) { return preferredHeight; }
+  const verticalInset: number = viewportHeight < 520 ? 12 : 40;
+  return Math.max(1, Math.min(preferredHeight, viewportHeight - verticalInset));
 }
 
 export function aiSettingsLeafSheetHeight(mode: number): number {
@@ -237,9 +248,7 @@ export function virtualKeyboardSettingsLeafSheetHeight(mode: number,
   if (spec === null) { return 0; }
   const preferredHeight: number = mode === SETTINGS_SHEET_VIRTUAL_KEYBOARD_CUSTOM &&
     customEditorVisible ? 820 : spec.height;
-  if (!Number.isFinite(viewportHeight) || viewportHeight <= 0) { return preferredHeight; }
-  const verticalInset: number = viewportHeight < 520 ? 12 : 40;
-  return Math.max(1, Math.min(preferredHeight, viewportHeight - verticalInset));
+  return settingsLeafSheetFitHeight(preferredHeight, viewportHeight);
 }
 
 export function virtualKeyboardSettingsLeafUsesBottomSheet(mode: number,

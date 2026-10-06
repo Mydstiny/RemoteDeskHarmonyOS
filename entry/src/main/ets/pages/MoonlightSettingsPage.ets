@@ -1,4 +1,6 @@
 import { display, promptAction, router } from '@kit.ArkUI';
+import { appUiOnAccentText } from '../common/AppUiColorPolicy';
+import { moonlightStatusText } from '../services/MoonlightStatusTextPolicy';
 import { wifiManager } from '@kit.ConnectivityKit';
 import { AppTheme, Palette, buildDark, buildLight } from '../common/Theme';
 import { MoonlightBrandIcon } from '../components/moonlight/MoonlightBrandIcon';
@@ -654,7 +656,7 @@ export struct MoonlightSettingsSurface {
         if (this.section !== 'data') {
           Button('保存').height(40).fontSize(13).borderRadius(12)
             .backgroundColor(this.dirty && this.editingLease !== null ? this.accentColor : this.pal().surface)
-            .fontColor(this.dirty && this.editingLease !== null ? Color.White : this.pal().text3)
+            .fontColor(this.dirty && this.editingLease !== null ? appUiOnAccentText(this.accentColor) : this.pal().text3)
             .enabled(this.dirty && this.editingLease !== null)
             .onClick((): void => { this.save(); })
         } else if (this.dataBusy) {
@@ -975,15 +977,15 @@ export struct MoonlightSettingsSurface {
     Row({ space: 7 }) {
       Button(first).height(36).layoutWeight(1).fontSize(11).borderRadius(10)
         .backgroundColor(current === firstValue ? this.accentColor : this.pal().surface)
-        .fontColor(current === firstValue ? Color.White : this.pal().text2)
+        .fontColor(current === firstValue ? appUiOnAccentText(this.accentColor) : this.pal().text2)
         .onClick((): void => { onChoose(firstValue); })
       Button(second).height(36).layoutWeight(1).fontSize(11).borderRadius(10)
         .backgroundColor(current === secondValue ? this.accentColor : this.pal().surface)
-        .fontColor(current === secondValue ? Color.White : this.pal().text2)
+        .fontColor(current === secondValue ? appUiOnAccentText(this.accentColor) : this.pal().text2)
         .onClick((): void => { onChoose(secondValue); })
       Button(third).height(36).layoutWeight(1).fontSize(11).borderRadius(10)
         .backgroundColor(current === thirdValue ? this.accentColor : this.pal().surface)
-        .fontColor(current === thirdValue ? Color.White : this.pal().text2)
+        .fontColor(current === thirdValue ? appUiOnAccentText(this.accentColor) : this.pal().text2)
         .enabled(thirdEnabled).opacity(thirdEnabled ? 1 : 0.55)
         .onClick((): void => { onChoose(thirdValue); })
     }.width('100%')
@@ -995,11 +997,11 @@ export struct MoonlightSettingsSurface {
     Row({ space: 7 }) {
       Button(first).height(36).layoutWeight(1).fontSize(11).borderRadius(10)
         .backgroundColor(current === firstValue ? this.accentColor : this.pal().surface)
-        .fontColor(current === firstValue ? Color.White : this.pal().text2)
+        .fontColor(current === firstValue ? appUiOnAccentText(this.accentColor) : this.pal().text2)
         .onClick((): void => { onChoose(firstValue); })
       Button(second).height(36).layoutWeight(1).fontSize(11).borderRadius(10)
         .backgroundColor(current === secondValue ? this.accentColor : this.pal().surface)
-        .fontColor(current === secondValue ? Color.White : this.pal().text2)
+        .fontColor(current === secondValue ? appUiOnAccentText(this.accentColor) : this.pal().text2)
         .onClick((): void => { onChoose(secondValue); })
     }.width('100%')
   }
@@ -1008,7 +1010,7 @@ export struct MoonlightSettingsSurface {
     enabled: boolean, onChoose: (value: string) => void) {
     Button(label).height(36).layoutWeight(1).fontSize(11).borderRadius(10)
       .backgroundColor(current === value ? this.accentColor : this.pal().surface)
-      .fontColor(current === value ? Color.White : this.pal().text2)
+      .fontColor(current === value ? appUiOnAccentText(this.accentColor) : this.pal().text2)
       .enabled(enabled).opacity(enabled ? 1 : 0.45)
       .onClick((): void => { if (enabled) { onChoose(value); } })
   }
@@ -1017,7 +1019,7 @@ export struct MoonlightSettingsSurface {
     enabled: boolean) {
     Button(label).height(36).layoutWeight(1).fontSize(11).borderRadius(10)
       .backgroundColor(this.videoCodecDraft === value ? this.accentColor : this.pal().surface)
-      .fontColor(this.videoCodecDraft === value ? Color.White : this.pal().text2)
+      .fontColor(this.videoCodecDraft === value ? appUiOnAccentText(this.accentColor) : this.pal().text2)
       .enabled(enabled).opacity(enabled ? 1 : 0.45)
       .onClick((): void => { if (enabled) { this.selectVideoCodec(value); } })
   }
@@ -1026,7 +1028,7 @@ export struct MoonlightSettingsSurface {
     enabled: boolean = true) {
     Button(label).height(36).layoutWeight(1).fontSize(11).borderRadius(10)
       .backgroundColor(this.videoResolutionDraft === value ? this.accentColor : this.pal().surface)
-      .fontColor(this.videoResolutionDraft === value ? Color.White : this.pal().text2)
+      .fontColor(this.videoResolutionDraft === value ? appUiOnAccentText(this.accentColor) : this.pal().text2)
       .enabled(enabled).opacity(enabled ? 1 : 0.45)
       .onClick((): void => { if (enabled) { this.selectResolution(value); } })
   }
@@ -1035,7 +1037,7 @@ export struct MoonlightSettingsSurface {
     value: MoonlightInputControlMode) {
     Button(label).height(36).layoutWeight(1).fontSize(11).borderRadius(10)
       .backgroundColor(this.inputControlModeDraft === value ? this.accentColor : this.pal().surface)
-      .fontColor(this.inputControlModeDraft === value ? Color.White : this.pal().text2)
+      .fontColor(this.inputControlModeDraft === value ? appUiOnAccentText(this.accentColor) : this.pal().text2)
       .onClick((): void => { this.selectInputControlMode(value); })
   }
 
@@ -1046,7 +1048,7 @@ export struct MoonlightSettingsSurface {
       Row({ space: 8 }) {
         Button('省流').layoutWeight(1).height(42).borderRadius(12).fontSize(12)
           .backgroundColor(this.settings.video.bitrateKbps <= 20000 ? this.accentColor : this.pal().surface)
-          .fontColor(this.settings.video.bitrateKbps <= 20000 ? Color.White : this.pal().text2)
+          .fontColor(this.settings.video.bitrateKbps <= 20000 ? appUiOnAccentText(this.accentColor) : this.pal().text2)
           .onClick((): void => { this.update((next: MoonlightSettings): void => {
             next.video.fps = Math.min(60, this.maximumVideoFpsFor(next.video.codecPreference));
             next.video.bitrateKbps = 20000;
@@ -1062,7 +1064,7 @@ export struct MoonlightSettingsSurface {
           }); })
         Button('画质优先').layoutWeight(1).height(42).borderRadius(12).fontSize(12)
           .backgroundColor(this.settings.video.bitrateKbps >= 50000 ? this.accentColor : this.pal().surface)
-          .fontColor(this.settings.video.bitrateKbps >= 50000 ? Color.White : this.pal().text2)
+          .fontColor(this.settings.video.bitrateKbps >= 50000 ? appUiOnAccentText(this.accentColor) : this.pal().text2)
           .onClick((): void => { this.update((next: MoonlightSettings): void => {
             next.video.fps = Math.min(60, this.maximumVideoFpsFor(next.video.codecPreference));
             next.video.bitrateKbps = 50000;
@@ -1328,7 +1330,7 @@ export struct MoonlightSettingsSurface {
     Column() {
       this.cardTitle('此设备上的 Moonlight 数据',
         this.dataStatusCode === '' ? '影响数量来自当前账号的实时预览' :
-          '当前无法生成完整预览：' + this.dataStatusCode)
+          '当前无法生成完整预览：' + moonlightStatusText(this.dataStatusCode))
       Row({ space: 8 }) {
         Column() {
           Text(this.dataLocalRows.toString()).fontSize(22).fontWeight(FontWeight.Bold)
@@ -1406,7 +1408,7 @@ export struct MoonlightSettingsSurface {
     Column() {
       this.header()
       if (this.saveCode !== '' && this.saveCode !== 'default' && this.saveCode !== 'ok') {
-        Text('本地设置状态：' + this.saveCode).fontSize(10).fontColor(this.pal().editColor)
+        Text('本地设置：' + moonlightStatusText(this.saveCode)).fontSize(10).fontColor(this.pal().editColor)
           .width('100%').padding({ left: 22, right: 22, bottom: 6 })
       }
       if (this.embedded) {

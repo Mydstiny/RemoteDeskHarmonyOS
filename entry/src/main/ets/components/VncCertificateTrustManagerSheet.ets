@@ -1,4 +1,5 @@
 import { promptAction } from '@kit.ArkUI';
+import { appUiOnAccentText } from '../common/AppUiColorPolicy';
 import { common } from '@kit.AbilityKit';
 import { VncTrustEndpoint, VncTrustService, VncTrustView } from '../services/VncTrustService';
 import { VncGatewayService } from '../services/VncGatewayService';
@@ -243,7 +244,7 @@ export struct VncCertificateTrustManagerSheet {
           Text('SHA-256 ' + this.pendingFingerprintSha256).fontSize(10).fontFamily('monospace')
             .fontColor(this.pal().text2).width('100%').lineHeight(16).margin({ top: 6 })
           Button('确认此证书').height(34).fontSize(12).padding({ left: 12, right: 12 })
-            .backgroundColor(this.accentColor).fontColor(Color.White).borderRadius(8)
+            .backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor)).borderRadius(8)
             .margin({ top: 10 }).onClick((): void => { void this.confirmPendingTrust(); })
         }.width('100%').padding(12).borderRadius(10).backgroundColor(this.pal().surface)
           .margin({ bottom: 10 })

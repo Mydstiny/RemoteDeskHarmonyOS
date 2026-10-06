@@ -1,4 +1,5 @@
 import { display } from '@kit.ArkUI';
+import { appUiOnAccentText } from '../../common/AppUiColorPolicy';
 import { Palette, buildDark, buildLight } from '../../common/Theme';
 import { ProBadge } from '../ProBadge';
 import {
@@ -48,21 +49,27 @@ export struct RdpDisplayProfilePanel {
   @Prop isDesktopDevice: boolean = false;
   /** Shown under the title: when changes take effect. */
   @Prop applyHint: string = '保存后用于下次连接';
+  /** The settings sheet shows a close button (Pad and PC sheets have no drag bar) and fits the live window. */
+  @Prop showClose: boolean = false;
+  @Prop viewportHeight: number = 0;
+  onClose: () => void = (): void => {};
   @StorageProp('rdpDesktopResolutionId') @Watch('onResolutionChange') resolutionId: string = 'auto';
   @StorageProp('rdpCustomWidth') @Watch('onCustomChange') customWidth: number = 1920;
   @StorageProp('rdpCustomHeight') @Watch('onCustomChange') customHeight: number = 1080;
   @StorageProp('rdpDesktopScaleMode') scaleMode: string = 'auto';
   @StorageProp('rdpDesktopScalePercent') scalePercent: number = 100;
   /** 自适应 / 预设 / 自定义; switching tabs does not apply anything by itself except 自适应. */
-  @State sizeTab: string = 'auto';
-  @State widthDraft: string = '1920';
-  @State heightDraft: string = '1080';
-  @State scaleDraft: string = '';
+  @State @Watch('reportDraftDirty') sizeTab: string = 'auto';
+  @State @Watch('reportDraftDirty') widthDraft: string = '1920';
+  @State @Watch('reportDraftDirty') heightDraft: string = '1080';
+  @State @Watch('reportDraftDirty') scaleDraft: string = '';
   private groups: RdpPresetGroup[] = presetGroups();
   onResolution: (id: string) => void = (_id: string): void => {};
   onCustomResolution: (width: string, height: string) => void = (_width: string, _height: string): void => {};
   onRemoteUiScale: (value: string) => void = (_value: string): void => {};
   onDesktopScalePercent: (value: string) => void = (_value: string): void => {};
+  /** Typed size or scale values that were not applied yet, so the settings sheet asks before closing. */
+  onDraftDirtyChange: (dirty: boolean) => void = (_dirty: boolean): void => {};
 
   aboutToAppear(): void {
     this.onResolutionChange();
@@ -83,6 +90,7 @@ export struct RdpDisplayProfilePanel {
   }
 
   private maxPanelHeight(): number {
+    if (this.viewportHeight > 0) { return Math.max(320, this.viewportHeight - 48); }
     try {
       const screen: display.Display = display.getDefaultDisplaySync();
       return Math.max(360, Math.round(screen.height / Math.max(1, screen.densityPixels) * 0.82));
@@ -103,6 +111,12 @@ export struct RdpDisplayProfilePanel {
     if (percent === 0) { this.onRemoteUiScale('auto'); return; }
     if (isRdpFreeDesktopScale(percent)) { this.onRemoteUiScale(percent.toString()); return; }
     this.onDesktopScalePercent(percent.toString());
+  }
+
+  private reportDraftDirty(): void {
+    const sizeTyped: boolean = this.sizeTab === 'custom' &&
+      (this.widthDraft !== this.customWidth.toString() || this.heightDraft !== this.customHeight.toString());
+    this.onDraftDirtyChange(sizeTyped || this.scaleDraft.length > 0);
   }
 
   private customDirty(): boolean {
@@ -169,7 +183,7 @@ export struct RdpDisplayProfilePanel {
 
   @Builder private tab(label: string, id: string) {
     Text(label).fontSize(13).layoutWeight(1).textAlign(TextAlign.Center).height(32)
-      .fontColor(this.sizeTab === id ? '#FFFFFF' : this.pal().text2)
+      .fontColor(this.sizeTab === id ? appUiOnAccentText(this.accent) : this.pal().text2)
       .fontWeight(this.sizeTab === id ? FontWeight.Medium : FontWeight.Normal)
       .backgroundColor(this.sizeTab === id ? this.accent : Color.Transparent)
       .borderRadius(9)
@@ -182,7 +196,7 @@ export struct RdpDisplayProfilePanel {
 
   @Builder private presetChip(preset: RemoteResolutionPreset) {
     Text(preset.label).fontSize(12).maxLines(1)
-      .fontColor(this.resolutionId === preset.id ? '#FFFFFF' : this.pal().text)
+      .fontColor(this.resolutionId === preset.id ? appUiOnAccentText(this.accent) : this.pal().text)
       .fontWeight(this.resolutionId === preset.id ? FontWeight.Medium : FontWeight.Normal)
       .padding({ left: 12, right: 12, top: 8, bottom: 8 }).margin({ right: 8, bottom: 8 })
       .backgroundColor(this.resolutionId === preset.id ? this.accent : this.pal().surface)
@@ -237,7 +251,7 @@ export struct RdpDisplayProfilePanel {
                 ' · 200–8192，宽度为偶数' : '宽高 200–8192，宽度为偶数')
               .fontSize(11).fontColor(this.pal().text3).layoutWeight(1)
             Button('应用尺寸').height(34).fontSize(13).padding({ left: 16, right: 16 })
-              .fontColor(this.customDirty() ? '#FFFFFF' : this.pal().text3)
+              .fontColor(this.customDirty() ? appUiOnAccentText(this.accent) : this.pal().text3)
               .backgroundColor(this.customDirty() ? this.accent : this.pal().surface)
               .enabled(this.customDirty())
               .onClick((): void => { this.onCustomResolution(this.widthDraft, this.heightDraft); })
@@ -279,7 +293,7 @@ export struct RdpDisplayProfilePanel {
         Text('%').fontSize(13).fontColor(this.pal().text3)
         Blank()
         Button('应用').height(34).fontSize(13).padding({ left: 16, right: 16 })
-          .fontColor(this.scaleDraftUsable() ? '#FFFFFF' : this.pal().text3)
+          .fontColor(this.scaleDraftUsable() ? appUiOnAccentText(this.accent) : this.pal().text3)
           .backgroundColor(this.scaleDraftUsable() ? this.accent : this.pal().surface)
           .enabled(this.scaleDraftUsable())
           .onClick((): void => { this.onDesktopScalePercent(this.scaleDraft); this.scaleDraft = ''; })
@@ -294,6 +308,12 @@ export struct RdpDisplayProfilePanel {
         Row({ space: 8 }) {
           Text('远端显示方案').fontSize(20).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
           ProBadge()
+          if (this.showClose) {
+            Blank()
+            SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor([this.pal().text2])
+              .width(36).height(36).accessibilityText('关闭')
+              .onClick((): void => { this.onClose(); })
+          }
         }.width('100%')
         this.preview()
         this.sizeSection()

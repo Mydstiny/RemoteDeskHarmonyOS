@@ -1,4 +1,6 @@
 import { promptAction } from '@kit.ArkUI';
+import { SettingsSavedBadge } from './SettingsSavedBadge';
+import { appUiOnAccentText } from '../common/AppUiColorPolicy';
 import { AppTheme, Palette, buildDark, buildLight } from '../common/Theme';
 import {
   EditableSecretKind,
@@ -22,6 +24,7 @@ export struct SecretVisibilitySettingsSheet {
     (_policy: SecretPresentationPolicy): boolean => false;
 
   @State policyJson: string = '';
+  @State savedTick: number = 0;
   private readonly store: SecretPresentationStore = SecretPresentationStore.getInstance();
   private storeUnsubscribe: (() => void) | null = null;
 
@@ -52,10 +55,13 @@ export struct SecretVisibilitySettingsSheet {
   private persist(policy: SecretPresentationPolicy): void {
     if (!this.onSave(policy)) {
       promptAction.showToast({ message: '本机密码回显设置保存失败，已保留原设置', duration: 2400 });
+      // Same text as before the tap: change it once so the tapped Switch re-renders at the saved value.
+      this.policyJson = '';
       this.policyJson = this.store.getJson();
       return;
     }
     this.policyJson = serializeSecretPresentationPolicy(policy);
+    this.savedTick++;
   }
 
   private toggle(kind: EditableSecretKind, hidden: boolean): void {
@@ -71,6 +77,7 @@ export struct SecretVisibilitySettingsSheet {
           .fontSize(11).fontColor(this.pal().text3).fontFamily(AppTheme.fontFamily)
           .margin({ top: 3 })
       }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+      SettingsSavedBadge({ savedTick: this.savedTick }).margin({ right: 10 })
       Text('完成').fontSize(13).fontColor(this.accentColor)
         .fontFamily(AppTheme.fontFamily).onClick((): void => { this.onClose(); })
     }.width('100%').padding({ left: 22, right: 22, top: 22, bottom: 14 })
@@ -125,7 +132,7 @@ export struct SecretVisibilitySettingsSheet {
 
           Row() {
             Button('全部隐藏').layoutWeight(1).height(38).borderRadius(10)
-              .backgroundColor(this.accentColor).fontColor(Color.White).fontSize(12)
+              .backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor)).fontSize(12)
               .onClick((): void => { this.persist(allHiddenSecretPresentationPolicy()); })
             Button('恢复兼容默认').layoutWeight(1).height(38).borderRadius(10)
               .backgroundColor(this.pal().surface).fontColor(this.pal().text2).fontSize(12)

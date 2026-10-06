@@ -1,4 +1,5 @@
 import { common } from '@kit.AbilityKit';
+import { appUiOnAccentText } from '../../common/AppUiColorPolicy';
 import { curves } from '@kit.ArkUI';
 import { fileIo, picker } from '@kit.CoreFileKit';
 import { util } from '@kit.ArkTS';
@@ -70,6 +71,18 @@ export struct AiSkillsSettingsPanel {
     this.flash('已安装「' + skill.name + '」，聊天里可以直接点它');
   }
 
+  /** A built-in skill can be installed again from the library; deleting your own skill cannot be undone. */
+  private confirmUninstall(skill: AiSkill): void {
+    if (skill.source === 'builtin') { this.uninstall(skill); return; }
+    this.getUIContext().getPromptAction().showDialog({
+      title: '删除技能「' + skill.name + '」？',
+      message: '这个技能会从本机删除，无法恢复。',
+      buttons: [{ text: '取消', color: this.pal().text2 }, { text: '删除', color: this.pal().danger }]
+    }).then((result): void => {
+      if (result.index === 1) { this.uninstall(skill); }
+    }).catch((): void => {});
+  }
+
   private uninstall(skill: AiSkill): void {
     this.store.uninstall(skill.id);
     this.getUIContext().animateTo({ curve: curves.springMotion(0.42, 0.86) }, (): void => { this.reload(); });
@@ -136,7 +149,7 @@ export struct AiSkillsSettingsPanel {
   }
 
   @Builder private pill(label: string, primary: boolean, action: () => void) {
-    Text(label).fontSize(13).fontWeight(FontWeight.Medium).fontColor(primary ? Color.White : this.accent)
+    Text(label).fontSize(13).fontWeight(FontWeight.Medium).fontColor(primary ? appUiOnAccentText(this.accent) : this.accent)
       .height(32).padding({ left: 14, right: 14 }).borderRadius(16)
       .backgroundColor(primary ? this.accent : this.pal().surface)
       .onClick(action)
@@ -191,7 +204,7 @@ export struct AiSkillsSettingsPanel {
             Text('编辑').fontSize(13).fontColor(this.accent).onClick((): void => { this.openForm(skill); })
           }
           Text(skill.source === 'builtin' ? '移除' : '删除').fontSize(13).fontColor(this.pal().danger)
-            .onClick((): void => { this.uninstall(skill); })
+            .onClick((): void => { this.confirmUninstall(skill); })
         }.alignItems(HorizontalAlign.End)
       }
     }.width('100%').padding({ top: 12, bottom: 12 })
@@ -223,7 +236,7 @@ export struct AiSkillsSettingsPanel {
           .onClick((): void => {
             this.getUIContext().animateTo({ curve: curves.springMotion(0.42, 0.86) }, (): void => { this.formOpen = false; });
           })
-        Button('保存').height(40).layoutWeight(1).borderRadius(20).backgroundColor(this.accent).fontColor(Color.White)
+        Button('保存').height(40).layoutWeight(1).borderRadius(20).backgroundColor(this.accent).fontColor(appUiOnAccentText(this.accent))
           .onClick((): void => { this.saveForm(); })
       }.width('100%')
     }.width('100%').padding(14).borderRadius(18).backgroundColor(this.pal().card)

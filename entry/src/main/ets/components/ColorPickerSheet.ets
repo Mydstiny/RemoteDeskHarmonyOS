@@ -88,18 +88,18 @@ export struct ColorPickerSheet {
     CloudStore.getInstance().upsertUserSetting('accentColor', hex);
   }
 
-  private applyHsvColor(h: number, s: number, b: number): void {
+  /** While a finger drags, the color previews live; it is saved (and cloud-synced) once, on release. */
+  private applyHsvColor(h: number, s: number, b: number, persist: boolean = true): void {
     this.hue = h; this.sat = s; this.bri = b;
     const rgb: number[] = this.hsvToRgb(h, s, b);
     this.selectedHex = this.rgbToHex(rgb[0], rgb[1], rgb[2]);
     this.gray = Math.round((rgb[0] + rgb[1] + rgb[2]) / 3);
     this.accentColor = this.selectedHex;
     AppStorage.setOrCreate('accentColor', this.selectedHex);
-    this.persistAccent(this.selectedHex);
-    if (this.onColorChange) { this.onColorChange(this.selectedHex); }
+    if (persist) { this.commitAccent(); }
   }
 
-  private applyGray(): void {
+  private applyGray(persist: boolean = true): void {
     const hex: string = this.rgbToHex(this.gray, this.gray, this.gray);
     this.selectedHex = hex;
     const rgb: number[] = this.hexToRgb(hex);
@@ -107,8 +107,12 @@ export struct ColorPickerSheet {
     this.hue = hsv[0]; this.sat = hsv[1]; this.bri = hsv[2];
     this.accentColor = hex;
     AppStorage.setOrCreate('accentColor', hex);
-    this.persistAccent(hex);
-    if (this.onColorChange) { this.onColorChange(hex); }
+    if (persist) { this.commitAccent(); }
+  }
+
+  private commitAccent(): void {
+    this.persistAccent(this.selectedHex);
+    if (this.onColorChange) { this.onColorChange(this.selectedHex); }
   }
 
   private selectPreset(hex: string): void {
@@ -129,31 +133,31 @@ export struct ColorPickerSheet {
   }
 
   // 点击 2D 色板计算位置对应颜色
-  private onSatBriTap(x: number, y: number, w: number, h: number): void {
+  private onSatBriTap(x: number, y: number, w: number, h: number, persist: boolean): void {
     if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(w) ||
       !Number.isFinite(h) || w <= 0 || h <= 0) { return; }
     const s: number = Math.round(Math.max(0, Math.min(100, (x / w) * 100)));
     const b: number = Math.round(Math.max(0, Math.min(100, 100 - (y / h) * 100)));
-    this.applyHsvColor(this.hue, s, b);
+    this.applyHsvColor(this.hue, s, b, persist);
   }
 
-  private onColorPlaneGesture(event: GestureEvent): void {
+  private onColorPlaneGesture(event: GestureEvent, persist: boolean = true): void {
     for (let index: number = 0; index < event.fingerList.length; index++) {
       const finger: FingerInfo | undefined = event.fingerList[index];
       if (finger !== undefined && finger !== null) {
-        this.onSatBriTap(finger.localX, finger.localY, this.colorPlaneWidth, this.colorPlaneHeight);
+        this.onSatBriTap(finger.localX, finger.localY, this.colorPlaneWidth, this.colorPlaneHeight, persist);
         return;
       }
     }
   }
 
-  private onHueGesture(event: GestureEvent): void {
+  private onHueGesture(event: GestureEvent, persist: boolean = true): void {
     if (!Number.isFinite(this.hueTrackWidth) || this.hueTrackWidth <= 0) { return; }
     for (let index: number = 0; index < event.fingerList.length; index++) {
       const finger: FingerInfo | undefined = event.fingerList[index];
       if (finger !== undefined && finger !== null && Number.isFinite(finger.localX)) {
         const ratio: number = Math.max(0, Math.min(1, finger.localX / this.hueTrackWidth));
-        this.applyHsvColor(Math.round(ratio * 360), this.sat, this.bri);
+        this.applyHsvColor(Math.round(ratio * 360), this.sat, this.bri, persist);
         return;
       }
     }
@@ -252,11 +256,13 @@ export struct ColorPickerSheet {
         GestureGroup(GestureMode.Parallel,
           PanGesture({ direction: PanDirection.All, distance: 5 })
             .onActionStart((event: GestureEvent) => {
-              this.onColorPlaneGesture(event);
+              this.onColorPlaneGesture(event, false);
             })
             .onActionUpdate((event: GestureEvent) => {
-              this.onColorPlaneGesture(event);
-            }),
+              this.onColorPlaneGesture(event, false);
+            })
+            .onActionEnd((): void => { this.commitAccent(); })
+            .onActionCancel((): void => { this.commitAccent(); }),
           TapGesture({ count: 1 })
             .onAction((event: GestureEvent) => {
               this.onColorPlaneGesture(event);
@@ -285,11 +291,13 @@ export struct ColorPickerSheet {
             GestureGroup(GestureMode.Parallel,
               PanGesture({ direction: PanDirection.Horizontal, distance: 5 })
                 .onActionStart((event: GestureEvent) => {
-                  this.onHueGesture(event);
+                  this.onHueGesture(event, false);
                 })
                 .onActionUpdate((event: GestureEvent) => {
-                  this.onHueGesture(event);
-                }),
+                  this.onHueGesture(event, false);
+                })
+                .onActionEnd((): void => { this.commitAccent(); })
+                .onActionCancel((): void => { this.commitAccent(); }),
               TapGesture({ count: 1 })
                 .onAction((event: GestureEvent) => {
                   this.onHueGesture(event);
@@ -306,7 +314,10 @@ export struct ColorPickerSheet {
           .trackColor('#E0E0E0')
           .selectedColor(this.selectedHex)
           .showSteps(false)
-          .onChange((value: number) => { this.gray = value; this.applyGray(); })
+          .onChange((value: number, mode: SliderChangeMode) => {
+            this.gray = value;
+            this.applyGray(mode === SliderChangeMode.End || mode === SliderChangeMode.Click);
+          })
       }.width('90%').height(36).margin({ bottom: 14 })
 
       // 色值显示

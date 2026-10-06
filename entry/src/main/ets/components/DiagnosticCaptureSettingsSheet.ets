@@ -1,4 +1,5 @@
 import { promptAction } from '@kit.ArkUI';
+import { appUiOnAccentText } from '../common/AppUiColorPolicy';
 import { common } from '@kit.AbilityKit';
 import { AppConfig, Palette, buildDark, buildLight } from '../common/Theme';
 import {
@@ -25,7 +26,7 @@ import {
 export struct DiagnosticCaptureSettingsSheet {
   @StorageProp('currentTheme') theme: string = 'light';
   @StorageProp('accentColor') accentColor: string = '#007DFF';
-  @StorageProp('breakpoint') breakpoint: string = 'md';
+  @StorageProp('currentBreakpoint') breakpoint: string = 'md';
   onClose: () => void = (): void => {};
 
   @State selectedDurationMinutes: number = DIAGNOSTIC_DEFAULT_DURATION_MINUTES;
@@ -409,7 +410,7 @@ export struct DiagnosticCaptureSettingsSheet {
             Button(this.primaryButtonText())
               .height(46).borderRadius(14)
               .layoutWeight(this.phase === 'idle' ? 1 : 2)
-              .fontSize(15).fontWeight(FontWeight.Medium).fontColor(Color.White)
+              .fontSize(15).fontWeight(FontWeight.Medium).fontColor(appUiOnAccentText(this.accentColor))
               .backgroundColor(this.accentColor)
               .margin({ left: this.phase === 'idle' ? 0 : 10 })
               .enabled(this.phase !== 'saving')
@@ -422,7 +423,8 @@ export struct DiagnosticCaptureSettingsSheet {
     }
     .width('100%')
     .constraintSize({ maxWidth: 620 })
-    .height(this.breakpoint === 'sm' ? 680 : 740)
+    // The host sheet sets the height (fitted to the window); the body scrolls inside it.
+    .height('100%')
     .backgroundColor(this.pal().sheetBg)
     .backgroundBlurStyle(BlurStyle.Regular)
     .borderRadius(this.breakpoint === 'sm' ?

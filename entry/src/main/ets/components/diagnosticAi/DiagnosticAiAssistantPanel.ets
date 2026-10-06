@@ -267,7 +267,7 @@ function aiSuggestionsFor(text: string): AiSuggestion[] {
 export struct DiagnosticAiAssistantPanel {
   @StorageProp('currentTheme') theme: string = 'light';
   @StorageProp('accentColor') accent: string = '#007DFF';
-  @StorageProp('breakpoint') breakpoint: string = 'md';
+  @StorageProp('currentBreakpoint') breakpoint: string = 'md';
   /** Inside the 启动 AI 辅助 sub-setting sheet, which already shows the title and close button. */
   @Prop embedded: boolean = false;
   /** Inside the dark AI island the panel always uses the dark palette. */

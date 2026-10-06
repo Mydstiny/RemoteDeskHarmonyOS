@@ -26,6 +26,8 @@ export struct AiHostEditor {
   @Prop host: AiHost | null = null;
   @Prop modern: boolean = true;
   @Prop canReturnToProtocols: boolean = false;
+  /** Live window height from the hosting page; the form scrolls instead of pushing its buttons off screen. */
+  @Prop viewportHeight: number = 0;
   onBackToProtocols: () => void = (): void => {};
   @StorageProp('remoteDesktopBgFlag') @Watch('onBackgroundChanged') inBackground: boolean = false;
   @State step: number = 1;
@@ -436,6 +438,13 @@ export struct AiHostEditor {
       }.width('100%')
     }
   }
+  /** Room for the form between the title and the buttons (about 220vp together) in the live window. */
+  private formMaxHeight(): number {
+    const preferred: number = this.breakpoint === 'sm' ? 520 : 560;
+    if (!Number.isFinite(this.viewportHeight) || this.viewportHeight <= 0) { return preferred; }
+    return Math.max(160, Math.min(preferred, this.viewportHeight - 220));
+  }
+
   build() {
     Column() {
       Row() {
@@ -477,7 +486,7 @@ export struct AiHostEditor {
           }
         }.width('100%')
       }.width('100%')
-        .constraintSize({ maxHeight: this.breakpoint === 'sm' ? 520 : 560 })
+        .constraintSize({ maxHeight: this.formMaxHeight() })
         .scrollBar(BarState.Auto).edgeEffect(EdgeEffect.Spring)
       this.actions()
     }.width('100%').padding({ left: AppUiMetrics.sheetPadding, right: AppUiMetrics.sheetPadding,

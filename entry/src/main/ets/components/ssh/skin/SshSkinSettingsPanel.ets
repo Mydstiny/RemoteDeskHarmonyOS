@@ -1,4 +1,5 @@
 import { common } from '@kit.AbilityKit';
+import { appUiOnAccentText } from '../../../common/AppUiColorPolicy';
 import { LengthMetrics, promptAction } from '@kit.ArkUI';
 import { AppConfig, Palette, buildDark, buildLight } from '../../../common/Theme';
 import { ProBadge } from '../../ProBadge';
@@ -59,8 +60,14 @@ export struct SshSkinSettingsPanel {
   @StorageProp('currentTheme') theme: string = 'light';
   @StorageProp('accentColor') accent: string = '#007DFF';
   @StorageProp(SSH_SKIN_REVISION_KEY) revision: number = 0;
-  @State editing: SshSkin | null = null;
+  @State @Watch('reportEditingDirty') editing: SshSkin | null = null;
   @State editingIsNew: boolean = false;
+  /** The settings sheet shows a close button on Pad and PC, where it has no drag bar. */
+  @Prop showClose: boolean = false;
+  onClose: () => void = (): void => {};
+  /** Tells the sheet host when the skin editor holds unsaved changes, so closing asks first. */
+  onEditingDirtyChange: (dirty: boolean) => void = (_dirty: boolean): void => {};
+  private editingStart: string = '';
   @State colorTarget: SkinColorTarget = 'background';
   @State paletteIndex: number = 0;
   @State hexDraft: string = '';
@@ -90,22 +97,29 @@ export struct SshSkinSettingsPanel {
     SshSkinStore.getInstance().setGlobalSkin(this.context(), skin.id);
   }
   private newId(): string { return 'custom-' + Date.now().toString(36) + '-' + (++this.sequence).toString(); }
+  private reportEditingDirty(): void {
+    this.onEditingDirtyChange(this.editing !== null && JSON.stringify(this.editing) !== this.editingStart);
+  }
   private beginCopy(skin: SshSkin): void {
     if (this.settings(this.revision).custom.length >= SSH_SKIN_CUSTOM_MAX) {
       promptAction.showToast({ message: '最多保存 ' + SSH_SKIN_CUSTOM_MAX.toString() + ' 个自定义皮肤', duration: 2000 });
       return;
     }
     const name: string = (skin.builtIn ? skin.name : skin.name + ' 副本').slice(0, SSH_SKIN_NAME_MAX);
-    this.editing = sshSkinCopy(skin, this.newId(), skin.builtIn ? name + ' · 自定义' : name);
+    const copy: SshSkin = sshSkinCopy(skin, this.newId(), skin.builtIn ? name + ' · 自定义' : name);
+    this.editingStart = JSON.stringify(copy);
+    this.editing = copy;
     this.editingIsNew = true;
     this.colorTarget = 'background';
-    this.hexDraft = this.editing.terminal.background;
+    this.hexDraft = copy.terminal.background;
   }
   private beginEdit(skin: SshSkin): void {
-    this.editing = sshSkinCopy(skin, skin.id, skin.name);
+    const copy: SshSkin = sshSkinCopy(skin, skin.id, skin.name);
+    this.editingStart = JSON.stringify(copy);
+    this.editing = copy;
     this.editingIsNew = false;
     this.colorTarget = 'background';
-    this.hexDraft = this.editing.terminal.background;
+    this.hexDraft = copy.terminal.background;
   }
   private saveEditing(): void {
     const skin: SshSkin | null = this.editing;
@@ -297,10 +311,15 @@ export struct SshSkinSettingsPanel {
           .onChange((on: boolean): void => {
             SshSkinStore.getInstance().setGlobalSkin(this.context(), on ? 'default-dark' : '');
           })
+        if (this.showClose) {
+          SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor([this.pal().text2])
+            .width(36).height(36).accessibilityText('关闭')
+            .onClick((): void => { this.onClose(); })
+        }
       }.width('100%')
       Row({ space: 8 }) {
         ForEach(['皮肤', '字体', '按主机'], (label: string, index: number): void => {
-          Text(label).fontSize(13).fontColor(this.tab === index ? Color.White : this.pal().text2)
+          Text(label).fontSize(13).fontColor(this.tab === index ? appUiOnAccentText(this.accent) : this.pal().text2)
             .padding({ left: 14, right: 14, top: 7, bottom: 7 }).borderRadius(16)
             .backgroundColor(this.tab === index ? this.accent : this.pal().card)
             .onClick((): void => { this.tab = index; })
@@ -415,7 +434,7 @@ export struct SshSkinSettingsPanel {
           .onClick((): void => { this.editing = null; })
         Text(this.editingIsNew ? '新建皮肤' : '编辑皮肤').fontSize(16).fontWeight(FontWeight.Bold)
           .fontColor(this.pal().text).layoutWeight(1).textAlign(TextAlign.Center)
-        Button('保存').fontSize(13).fontColor(Color.White).backgroundColor(this.accent).height(32)
+        Button('保存').fontSize(13).fontColor(appUiOnAccentText(this.accent)).backgroundColor(this.accent).height(32)
           .onClick((): void => { this.saveEditing(); })
       }.width('100%')
       if (this.columns() >= 4) {
@@ -493,7 +512,7 @@ export struct SshSkinSettingsPanel {
       this.sectionTitle('字体', '')
       Flex({ wrap: FlexWrap.Wrap, space: { main: LengthMetrics.vp(8), cross: LengthMetrics.vp(8) } }) {
         ForEach(SSH_SKIN_FONTS, (font: SshSkinFont): void => {
-          Text(font.label).fontSize(12).fontColor(skin.fontId === font.id ? Color.White : this.pal().text2)
+          Text(font.label).fontSize(12).fontColor(skin.fontId === font.id ? appUiOnAccentText(this.accent) : this.pal().text2)
             .padding({ left: 12, right: 12, top: 7, bottom: 7 }).borderRadius(16)
             .backgroundColor(skin.fontId === font.id ? this.accent : this.pal().card)
             .onClick((): void => { this.setFont(font.id); })

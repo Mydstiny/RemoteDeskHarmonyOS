@@ -1,4 +1,5 @@
 import { common } from '@kit.AbilityKit';
+import { appUiOnAccentText } from '../../common/AppUiColorPolicy';
 import { curves } from '@kit.ArkUI';
 import { Palette, buildDark, buildLight } from '../../common/Theme';
 import { AiSegmented } from './AiSegmented';
@@ -90,6 +91,16 @@ export struct AiVoiceSettingsPanel {
     this.flash('已保存，密钥只存在本机的安全存储里');
   }
 
+  private confirmRemoveKey(): void {
+    this.getUIContext().getPromptAction().showDialog({
+      title: '删除语音 API Key？',
+      message: '本机保存的密钥会被删除，朗读改用系统语音；以后要用云端音色需要重新粘贴。',
+      buttons: [{ text: '取消', color: this.pal().text2 }, { text: '删除', color: this.pal().danger }]
+    }).then((result): void => {
+      if (result.index === 1) { this.removeKey(); }
+    }).catch((): void => {});
+  }
+
   private removeKey(): void {
     this.settings.removeKey(this.config.provider);
     this.reload();
@@ -145,7 +156,7 @@ export struct AiVoiceSettingsPanel {
   @Builder private chips(options: string[][], current: string, pick: (id: string) => void) {
     Flex({ wrap: FlexWrap.Wrap }) {
       ForEach(options, (option: string[]): void => {
-        Text(option[1]).fontSize(12).fontColor(option[0] === current ? Color.White : this.pal().text)
+        Text(option[1]).fontSize(12).fontColor(option[0] === current ? appUiOnAccentText(this.accent) : this.pal().text)
           .padding({ left: 10, right: 10, top: 6, bottom: 6 }).margin({ right: 6, bottom: 6 }).borderRadius(14)
           .backgroundColor(option[0] === current ? this.accent : this.pal().surface)
           .onClick((): void => { pick(option[0]); })
@@ -207,7 +218,7 @@ export struct AiVoiceSettingsPanel {
             if (this.keyPrint !== '') {
               Text('已保存 ••••' + this.keyPrint.slice(-4)).fontSize(12).fontColor(this.pal().text3)
               Text('删除').fontSize(12).fontColor(this.pal().danger).margin({ left: 10 })
-                .onClick((): void => { this.removeKey(); })
+                .onClick((): void => { this.confirmRemoveKey(); })
             }
           }.width('100%')
           Row({ space: 8 }) {
@@ -215,7 +226,7 @@ export struct AiVoiceSettingsPanel {
               .type(InputType.Password).fontSize(14).height(40).borderRadius(12).layoutWeight(1)
               .backgroundColor(this.pal().surface)
               .onChange((text: string): void => { this.keyDraft = text; })
-            Text('保存').fontSize(13).fontWeight(FontWeight.Medium).fontColor(Color.White).height(36)
+            Text('保存').fontSize(13).fontWeight(FontWeight.Medium).fontColor(appUiOnAccentText(this.accent)).height(36)
               .padding({ left: 14, right: 14 }).borderRadius(18).backgroundColor(this.accent)
               .opacity(this.keyDraft.trim() === '' ? 0.5 : 1)
               .onClick((): void => { this.saveKey(); })
@@ -280,7 +291,7 @@ export struct AiVoiceSettingsPanel {
                   .type(InputType.Password).fontSize(14).height(40).borderRadius(12).layoutWeight(1)
                   .backgroundColor(this.pal().surface)
                   .onChange((text: string): void => { this.asrKeyDraft = text; })
-                Text('保存').fontSize(13).fontWeight(FontWeight.Medium).fontColor(Color.White).height(36)
+                Text('保存').fontSize(13).fontWeight(FontWeight.Medium).fontColor(appUiOnAccentText(this.accent)).height(36)
                   .padding({ left: 14, right: 14 }).borderRadius(18).backgroundColor(this.accent)
                   .opacity(this.asrKeyDraft.trim() === '' ? 0.5 : 1)
                   .onClick((): void => { this.saveAsrKey(); })
@@ -348,8 +359,8 @@ export struct AiVoiceSettingsPanel {
                 onPick: (rate: string): void => { this.settings.setRate(rate); this.reload(); } })
               Row({ space: 8 }) {
                 SymbolGlyph($r(this.sampling ? 'sys.symbol.stop_circle_fill' : 'sys.symbol.play_fill')).fontSize(14)
-                  .fontColor([Color.White])
-                Text(this.sampling ? '停止试听' : '试听').fontSize(14).fontWeight(FontWeight.Medium).fontColor(Color.White)
+                  .fontColor([appUiOnAccentText(this.accent)])
+                Text(this.sampling ? '停止试听' : '试听').fontSize(14).fontWeight(FontWeight.Medium).fontColor(appUiOnAccentText(this.accent))
               }.height(38).padding({ left: 16, right: 16 }).borderRadius(19).backgroundColor(this.accent)
               .onClick((): void => { this.sample(); })
             }.width('100%').padding({ top: 12, bottom: 14 }).alignItems(HorizontalAlign.Start)

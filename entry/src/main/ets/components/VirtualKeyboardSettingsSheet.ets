@@ -1,4 +1,5 @@
 import { common } from '@kit.AbilityKit';
+import { appUiOnAccentText } from '../common/AppUiColorPolicy';
 import { LengthMetrics, promptAction } from '@kit.ArkUI';
 import {
   RemoteCustomShortcut,
@@ -555,7 +556,7 @@ export struct VirtualKeyboardSettingsSheet {
         Row({ space: 6 }) {
           Text(method.label).fontSize(12).fontWeight(FontWeight.Medium).fontColor(this.text())
           if (method.current) {
-            Text('当前').fontSize(8).fontColor('#FFFFFF')
+            Text('当前').fontSize(8).fontColor(appUiOnAccentText(this.accentColor))
               .padding({ left: 6, right: 6, top: 2, bottom: 2 })
               .borderRadius(5).backgroundColor(this.accentColor)
           }
@@ -578,7 +579,7 @@ export struct VirtualKeyboardSettingsSheet {
   @Builder
   private modifierChoice(label: string, keyCode: number) {
     Button(label).height(34).layoutWeight(1).fontSize(10).borderRadius(8)
-      .fontColor(this.modifierActive(keyCode) ? '#FFFFFF' : this.text2())
+      .fontColor(this.modifierActive(keyCode) ? appUiOnAccentText(this.accentColor) : this.text2())
       .backgroundColor(this.modifierActive(keyCode) ? this.accentColor : this.card())
       .onClick((): void => { this.toggleModifier(keyCode); })
   }
@@ -587,7 +588,7 @@ export struct VirtualKeyboardSettingsSheet {
   private groupChoice(group: RemoteCustomShortcutKeyGroup) {
     Text(this.groupLabel(group)).height(30).layoutWeight(1).fontSize(9)
       .textAlign(TextAlign.Center).borderRadius(8)
-      .fontColor(this.actionGroup === group ? '#FFFFFF' : this.text2())
+      .fontColor(this.actionGroup === group ? appUiOnAccentText(this.accentColor) : this.text2())
       .backgroundColor(this.actionGroup === group ? this.accentColor : this.card())
       .onClick((): void => {
         this.actionGroup = group;
@@ -602,7 +603,7 @@ export struct VirtualKeyboardSettingsSheet {
     Text(option.label).height(this.customEditorLayout().itemHeight).width('100%')
       .fontSize(9).textAlign(TextAlign.Center)
       .borderRadius(7)
-      .fontColor(this.actionKeyCode === option.keyCode ? '#FFFFFF' : this.text2())
+      .fontColor(this.actionKeyCode === option.keyCode ? appUiOnAccentText(this.accentColor) : this.text2())
       .backgroundColor(this.actionKeyCode === option.keyCode ? this.accentColor : this.card())
       .onClick((): void => { this.actionKeyCode = option.keyCode; })
   }
@@ -719,7 +720,7 @@ export struct VirtualKeyboardSettingsSheet {
       }.width('100%').padding(10).borderRadius(10).backgroundColor(this.accentSoft())
       Button('保存').width('100%').height(40).fontSize(13).borderRadius(12)
         .backgroundColor(this.draftLabel().length > 0 ? this.accentColor : this.card())
-        .fontColor(this.draftLabel().length > 0 ? '#FFFFFF' : this.text2())
+        .fontColor(this.draftLabel().length > 0 ? appUiOnAccentText(this.accentColor) : this.text2())
         .enabled(this.draftLabel().length > 0)
         .onClick((): void => { this.saveCustomShortcut(); })
     }.width('100%').padding(this.customEditorLayout().cardPadding)
@@ -741,7 +742,7 @@ export struct VirtualKeyboardSettingsSheet {
         Text(this.customShortcuts.length.toString() + ' / 32')
           .fontSize(10).fontColor(this.text2()).layoutWeight(1)
         Button('＋ 新建').height(34).fontSize(11).borderRadius(9)
-          .backgroundColor(this.accentColor).fontColor('#FFFFFF')
+          .backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor))
           .onClick((): void => { this.beginEditor(); })
       }.width('100%')
       if (this.visibleCustomShortcuts().length === 0) {
@@ -832,7 +833,7 @@ export struct VirtualKeyboardSettingsSheet {
   @Builder
   private openSystemInputMethodSettingsButton() {
     Button('系统输入法设置').width('100%').height(42).fontSize(11)
-      .borderRadius(12).backgroundColor(this.accentColor).fontColor('#FFFFFF')
+      .borderRadius(12).backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor))
       .onClick((): void => { this.openSystemSettings(); })
   }
 

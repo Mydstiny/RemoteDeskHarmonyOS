@@ -1,4 +1,5 @@
 import { common } from '@kit.AbilityKit';
+import { appUiOnAccentText } from '../common/AppUiColorPolicy';
 import { ProSymbolIcon } from './pro/ProSymbolIcon';
 import { AppConfig, Palette, buildDark, buildLight } from '../common/Theme';
 import {
@@ -51,6 +52,10 @@ export struct ProFeatureDetailPanel {
   @StorageProp('isPadDevice') isPadDevice: boolean = false;
   @StorageProp(WORKSPACE_PHONE_ENABLED_KEY) workspacePhoneEnabled: boolean = false;
   @Prop featureId: string = '';
+  /** The settings sheet shows a close button (Pad and PC sheets have no drag bar) and fits the live window. */
+  @Prop showClose: boolean = false;
+  @Prop viewportHeight: number = 0;
+  onClose: () => void = (): void => {};
   @State revision: number = 0;
   @State continuation: ProContinuationSettings = ProContinuationPreferences.getInstance().settings();
   @State collaborationGranted: boolean = true;
@@ -149,7 +154,7 @@ export struct ProFeatureDetailPanel {
     Row({ space: 12 }) {
       Stack() {
         SymbolGlyph(icon).fontSize(18)
-          .fontColor([this.continuation.credentialMode === mode ? Color.White : this.accent])
+          .fontColor([this.continuation.credentialMode === mode ? appUiOnAccentText(this.accent) : this.accent])
       }.width(36).height(36).borderRadius(18)
       .backgroundColor(this.continuation.credentialMode === mode ? this.accent : this.accentTint('1F'))
       Column({ space: 3 }) {
@@ -179,7 +184,7 @@ export struct ProFeatureDetailPanel {
             Text('需要“多设备协同”权限').fontSize(15).fontColor(this.pal().text).fontFamily(AppConfig.fontFamily).width('100%')
             Text('未授予时不会出现接续图标').fontSize(12).fontColor(this.pal().text3).fontFamily(AppConfig.fontFamily).width('100%')
           }.layoutWeight(1).alignItems(HorizontalAlign.Start)
-          Button('授予').fontSize(13).height(32).backgroundColor(this.accent).fontColor(Color.White)
+          Button('授予').fontSize(13).height(32).backgroundColor(this.accent).fontColor(appUiOnAccentText(this.accent))
             .onClick((): void => { void this.syncCollaboration(true); })
         }.width('100%').padding(16)
       }
@@ -335,7 +340,7 @@ export struct ProFeatureDetailPanel {
                     TextInput({ text: this.workspaceNameDraft, placeholder: '工作区名称' }).height(38).layoutWeight(1)
                       .maxLength(48).backgroundColor(this.pal().surface).borderRadius(10)
                       .onChange((value: string): void => { this.workspaceNameDraft = value; })
-                    Button('保存名称').height(36).fontSize(12).backgroundColor(this.accent).fontColor(Color.White)
+                    Button('保存名称').height(36).fontSize(12).backgroundColor(this.accent).fontColor(appUiOnAccentText(this.accent))
                       .enabled(this.workspaceNameDraft.trim().length > 0 && this.workspaceNameDraft.trim() !== workspace.name)
                       .onClick((): void => { this.renameWorkspace(workspace); })
                   }.width('100%')
@@ -359,6 +364,16 @@ export struct ProFeatureDetailPanel {
     }.width('100%')
   }
 
+  private maxPanelHeight(): number {
+    if (this.viewportHeight > 0) { return Math.max(320, this.viewportHeight - 48); }
+    try {
+      const screen: display.Display = display.getDefaultDisplaySync();
+      return Math.max(360, Math.round(screen.height / Math.max(1, screen.densityPixels) * 0.82));
+    } catch (_error) {
+      return 560;
+    }
+  }
+
   build() {
     Scroll() {
     Column({ space: 14 }) {
@@ -367,6 +382,11 @@ export struct ProFeatureDetailPanel {
           Text(this.feature(this.revision)?.title ?? '').fontSize(20).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
             .fontFamily(AppConfig.fontFamily).layoutWeight(1)
           ProBadge()
+          if (this.showClose) {
+            SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor([this.pal().text2])
+              .width(36).height(36).margin({ left: 6 }).accessibilityText('关闭')
+              .onClick((): void => { this.onClose(); })
+          }
         }.width('100%')
         Column({ space: 6 }) {
           Row() {
@@ -396,6 +416,8 @@ export struct ProFeatureDetailPanel {
       }
     }.width('100%').padding({ left: 20, right: 20, top: 20, bottom: 28 })
     }.width('100%').scrollBar(BarState.Off).edgeEffect(EdgeEffect.Spring, { alwaysEnabled: false })
+    // Long options (workspaces, phone passkey) scroll instead of running past a small window.
+    .constraintSize({ maxHeight: this.maxPanelHeight() })
   }
 }
 
@@ -405,6 +427,10 @@ export struct ProBadgeSettingsPanel {
   @StorageProp('currentTheme') theme: string = 'light';
   @StorageProp('accentColor') accent: string = '#007DFF';
   @StorageProp('proBadgeVisible') visible: boolean = true;
+  /** The settings sheet shows a close button (Pad and PC sheets have no drag bar) and fits the live window. */
+  @Prop showClose: boolean = false;
+  @Prop viewportHeight: number = 0;
+  onClose: () => void = (): void => {};
   @State badgeStyle: ProBadgeStyle = 'capsule';
   @State badgeMotion: ProBadgeMotion = 'sweep';
   @State palette: string = 'aurora';
@@ -439,6 +465,7 @@ export struct ProBadgeSettingsPanel {
   private pal(): Palette { return this.theme === 'light' ? buildLight(this.accent) : buildDark(this.accent); }
   private colorsJson(): string { return JSON.stringify(this.colors); }
   private maxPanelHeight(): number {
+    if (this.viewportHeight > 0) { return Math.max(320, this.viewportHeight - 48); }
     try {
       const screen: display.Display = display.getDefaultDisplaySync();
       return Math.max(360, Math.round(screen.height / Math.max(1, screen.densityPixels) * 0.82));
@@ -567,11 +594,18 @@ export struct ProBadgeSettingsPanel {
   build() {
     Scroll() {
       Column({ space: 14 }) {
-        Column({ space: 3 }) {
-          Text('Pro 标识').fontSize(20).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
-            .fontFamily(AppConfig.fontFamily)
-          Text('选择样式、动效和颜色，所有 Pro 入口会统一使用').fontSize(12).fontColor(this.pal().text3)
-        }.alignItems(HorizontalAlign.Start).width('100%')
+        Row() {
+          Column({ space: 3 }) {
+            Text('Pro 标识').fontSize(20).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
+              .fontFamily(AppConfig.fontFamily)
+            Text('选择样式、动效和颜色，所有 Pro 入口会统一使用').fontSize(12).fontColor(this.pal().text3)
+          }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+          if (this.showClose) {
+            SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor([this.pal().text2])
+              .width(36).height(36).accessibilityText('关闭')
+              .onClick((): void => { this.onClose(); })
+          }
+        }.width('100%').alignItems(VerticalAlign.Top)
         Row({ space: 10 }) {
           this.stage(false)
           this.stage(true)

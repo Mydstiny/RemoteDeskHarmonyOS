@@ -17,6 +17,9 @@ export struct ProAppIconPanel {
   @State entitled: boolean = ProEntries.visible('pro.personalization.appIcon');
   private live: boolean = false;
   isOpen: () => boolean = (): boolean => true;
+  /** The settings sheet shows a close button on Pad and PC, where it has no drag bar. */
+  @Prop showClose: boolean = false;
+  onClose: () => void = (): void => {};
   private stopIcons: (() => void) | null = null;
   private stopRuntime: (() => void) | null = null;
 
@@ -91,13 +94,21 @@ export struct ProAppIconPanel {
       }, (row: AppIconPreset[]): string => row.map((preset: AppIconPreset): string => preset.name).join('|'))
     }.width('100%')
   }
+  @Builder private title() {
+    Row() {
+      Text('应用图标').fontSize(16).fontWeight(FontWeight.Medium).fontColor(this.pal().text).layoutWeight(1)
+      ProBadge()
+      if (this.showClose) {
+        SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor([this.pal().text2])
+          .width(36).height(36).margin({ left: 6 }).accessibilityText('关闭')
+          .onClick((): void => { this.onClose(); })
+      }
+    }.width('100%')
+  }
   build() {
     if (this.state.supported) {
       Column({ space: 12 }) {
-        Row() {
-          Text('应用图标').fontSize(16).fontWeight(FontWeight.Medium).fontColor(this.pal().text).layoutWeight(1)
-          ProBadge()
-        }.width('100%')
+        this.title()
         Text('当前：' + this.name()).fontSize(13).fontColor(this.pal().text2).width('100%')
         ProFeatureGate({ featureId: 'pro.personalization.appIcon', content: (): void => { this.presets(); } })
         if (!this.entitled) {
@@ -118,6 +129,13 @@ export struct ProAppIconPanel {
         } else if (this.state.message.length > 0) {
           Text(this.state.message).fontSize(12).fontColor(this.pal().text2).width('100%')
         }
+      }.width('100%').padding(16).backgroundColor(this.pal().card).borderRadius(20)
+    } else {
+      // Say why instead of opening an empty sheet.
+      Column({ space: 12 }) {
+        this.title()
+        Text('这台设备暂不支持更换应用图标，桌面图标保持默认。').fontSize(13).fontColor(this.pal().text2)
+          .lineHeight(19).width('100%')
       }.width('100%').padding(16).backgroundColor(this.pal().card).borderRadius(20)
     }
   }

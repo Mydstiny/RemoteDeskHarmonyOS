@@ -1,4 +1,5 @@
 import { AiMotionSettingsPanel } from './AiMotionSettingsPanel';
+import { appUiOnAccentText } from '../../common/AppUiColorPolicy';
 import { common } from '@kit.AbilityKit';
 import { deviceInfo } from '@kit.BasicServicesKit';
 import { AppConfig, Palette, buildDark, buildLight } from '../../common/Theme';
@@ -147,7 +148,7 @@ class AiSessionGroup {
 export struct DiagnosticAiSettingsSheet {
   @StorageProp('currentTheme') theme: string = 'light';
   @StorageProp('accentColor') accent: string = '#007DFF';
-  @StorageProp('breakpoint') breakpoint: string = 'md';
+  @StorageProp('currentBreakpoint') breakpoint: string = 'md';
   onClose: () => void = (): void => {};
   onAppAction: (action: DiagnosticAiAppActionId) => void = (_action: DiagnosticAiAppActionId): void => {};
   /** Replace the current native settings sheet with the assistant sheet for a saved session. */
@@ -180,10 +181,8 @@ export struct DiagnosticAiSettingsSheet {
   /** 用量监控 time range: today, 7d, 30d or all. */
   @State usageRange: string = '7d';
   @State pricingExpanded: boolean = false;
-  @State usageClearArmed: boolean = false;
-  /** 对话记录: search text and the two-tap clear. */
+  /** 对话记录: search text. */
   @State sessionQuery: string = '';
-  @State sessionsClearArmed: boolean = false;
   /** AI 对话记录: 助理 sessions and 聊天 sessions are listed apart. */
   @State sessionKind: string = 'assistant';
   /** 辅助 AI 配置: which kind of service is being set up (按量 API, Coding Plan or a model on this device). */
@@ -712,13 +711,23 @@ export struct DiagnosticAiSettingsSheet {
     return price !== undefined && price.inputCnyPerMillion >= 0 && price.outputCnyPerMillion >= 0;
   }
 
+  /** Ask before anything that deletes or clears; `run` happens only after the danger button. */
+  private confirmDanger(title: string, message: string, action: string, run: () => void): void {
+    this.getUIContext().getPromptAction().showDialog({
+      title: title,
+      message: message,
+      buttons: [{ text: '取消', color: this.pal().text2 }, { text: action, color: this.pal().danger }]
+    }).then((result): void => {
+      if (result.index === 1) { run(); }
+    }).catch((): void => {});
+  }
+
+  private confirmClearUsage(): void {
+    this.confirmDanger('清空用量统计？', '所有服务的 Token 和费用统计会清零，对话记录不受影响。', '清空',
+      (): void => { this.clearUsage(); });
+  }
+
   private clearUsage(): void {
-    if (!this.usageClearArmed) {
-      this.usageClearArmed = true;
-      setTimeout((): void => { this.usageClearArmed = false; }, 3000);
-      return;
-    }
-    this.usageClearArmed = false;
     if (this.conversationStore.clearUsage()) {
       this.usageSnapshot = this.conversationStore.usage();
       this.usageProviderFilter = '';
@@ -782,13 +791,18 @@ export struct DiagnosticAiSettingsSheet {
     }
   }
 
+  private confirmDeleteSession(session: DiagnosticAiConversationSession): void {
+    this.confirmDanger('删除这个对话？', '「' + session.title + '」会从对话记录中删除，无法恢复。', '删除',
+      (): void => { this.deleteSession(session); });
+  }
+
+  private confirmClearSessions(): void {
+    const count: number = this.kindSessions().length;
+    this.confirmDanger(this.sessionKind === 'chat' ? '清空全部聊天记录？' : '清空全部助理对话？',
+      '会删除这里的 ' + count.toString() + ' 个对话，无法恢复。', '清空', (): void => { this.clearSessions(); });
+  }
+
   private clearSessions(): void {
-    if (!this.sessionsClearArmed) {
-      this.sessionsClearArmed = true;
-      setTimeout((): void => { this.sessionsClearArmed = false; }, 3000);
-      return;
-    }
-    this.sessionsClearArmed = false;
     if (this.conversationStore.clearSessions(this.sessionKind === 'chat' ? 'chat' : 'assistant')) {
       this.getUIContext().animateTo({ duration: 220, curve: Curve.EaseOut }, (): void => {
         this.sessions = this.conversationStore.listSessions();
@@ -982,7 +996,7 @@ export struct DiagnosticAiSettingsSheet {
 
   @Builder private authModeChip(mode: DiagnosticAiAuthMode) {
     Text(this.authModeLabel(mode)).fontSize(12)
-      .fontColor(this.authModeDraft === mode ? Color.White : this.pal().text)
+      .fontColor(this.authModeDraft === mode ? appUiOnAccentText(this.accent) : this.pal().text)
       .padding({ left: 10, right: 10, top: 7, bottom: 7 }).margin({ right: 7, bottom: 6 }).borderRadius(14)
       .backgroundColor(this.authModeDraft === mode ? this.accent : this.pal().surface)
       .onClick((): void => { this.selectAuthMode(mode); })
@@ -998,7 +1012,7 @@ export struct DiagnosticAiSettingsSheet {
 
   @Builder private usageFilterChip(key: string, label: string) {
     Text(label).fontSize(12).fontWeight(FontWeight.Medium)
-      .fontColor(this.usageProviderFilter === key ? Color.White : this.pal().text2)
+      .fontColor(this.usageProviderFilter === key ? appUiOnAccentText(this.accent) : this.pal().text2)
       .height(30).padding({ left: 12, right: 12 }).borderRadius(15)
       .backgroundColor(this.usageProviderFilter === key ? this.accent : this.pal().surface)
       .onClick((): void => {
@@ -1184,8 +1198,8 @@ export struct DiagnosticAiSettingsSheet {
         ' 次请求的服务没有返回用量，Token 为本机按实际发送内容估算。' : '') +
         '费用按模型价格表估算，不是服务商账单；价格待确认的模型按 ¥0.30/百万 Token 粗估。统计只保存在本机当前账号下。')
         .fontSize(11).lineHeight(16).fontColor(this.pal().text3).width('100%')
-      Text(this.usageClearArmed ? '再点一次清空统计' : '清空用量统计').fontSize(13).fontColor('#FF453A')
-        .padding({ top: 4, bottom: 8 }).onClick((): void => { this.clearUsage(); })
+      Text('清空用量统计').fontSize(13).fontColor('#FF453A')
+        .padding({ top: 4, bottom: 8 }).onClick((): void => { this.confirmClearUsage(); })
     }.width('100%')
   }
 
@@ -1225,6 +1239,10 @@ export struct DiagnosticAiSettingsSheet {
             .padding({ left: 8, right: 8, top: 2, bottom: 2 }).borderRadius(8).backgroundColor(this.pal().surface)
         }
         Blank()
+        // Visible delete for PC and Pad mice; swiping left still deletes at once.
+        SymbolGlyph($r('sys.symbol.trash')).fontSize(16).fontColor([this.pal().text3])
+          .padding(6).margin({ right: 6 }).accessibilityText('删除对话')
+          .onClick((): void => { this.confirmDeleteSession(session); })
         Text('继续').fontSize(12).fontColor(this.accent)
         SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(14).fontColor([this.accent])
       }.width('100%')
@@ -1239,7 +1257,7 @@ export struct DiagnosticAiSettingsSheet {
       AiSegmented({ options: [['assistant', '助理'], ['chat', '聊天']], current: this.sessionKind, trackColor: this.pal().surface, thumbColor: this.pal().card, textColor: this.pal().text, mutedColor: this.pal().text3,
         onPick: (id: string): void => {
           this.getUIContext().animateTo({ duration: 200, curve: Curve.EaseOut }, (): void => {
-            this.sessionKind = id; this.sessionsClearArmed = false;
+            this.sessionKind = id;
           });
         } })
       Search({ value: this.sessionQuery, placeholder: '搜索对话内容' })
@@ -1256,10 +1274,10 @@ export struct DiagnosticAiSettingsSheet {
         }.width('100%').padding({ top: 48, bottom: 48 })
       } else {
         Row() {
-          Text('共 ' + this.kindSessions().length.toString() + ' 个对话 · 左滑可删除').fontSize(12).fontColor(this.pal().text3)
+          Text('共 ' + this.kindSessions().length.toString() + ' 个对话').fontSize(12).fontColor(this.pal().text3)
             .layoutWeight(1)
-          Text(this.sessionsClearArmed ? '再点一次清空' : '清空全部').fontSize(12).fontColor('#FF453A')
-            .onClick((): void => { this.clearSessions(); })
+          Text('清空全部').fontSize(12).fontColor('#FF453A')
+            .onClick((): void => { this.confirmClearSessions(); })
         }.width('100%')
         if (this.sessionGroups().length === 0) {
           Text('没有找到匹配的对话').fontSize(13).fontColor(this.pal().text3).width('100%').textAlign(TextAlign.Center)
@@ -1312,7 +1330,7 @@ export struct DiagnosticAiSettingsSheet {
       Column({ space: 10 }) {
         Row({ space: 10 }) {
           Text((this.assistantNameDraft.trim() === '' ? 'R' : this.assistantNameDraft.trim().charAt(0)).toUpperCase())
-            .fontSize(16).fontWeight(FontWeight.Bold).fontColor(Color.White).width(36).height(36)
+            .fontSize(16).fontWeight(FontWeight.Bold).fontColor(appUiOnAccentText(this.accent)).width(36).height(36)
             .textAlign(TextAlign.Center).borderRadius(18).backgroundColor(this.accent)
           TextInput({ placeholder: '助手名称', text: this.assistantNameDraft }).height(38).fontSize(15).layoutWeight(1)
             .fontWeight(FontWeight.Medium).backgroundColor(this.pal().surface).borderRadius(12).maxLength(32)
@@ -1399,7 +1417,10 @@ export struct DiagnosticAiSettingsSheet {
             .textOverflow({ overflow: TextOverflow.Ellipsis })
           if (this.memoryDraft.trim() !== '') {
             Text('清除我补充的偏好').fontSize(13).fontColor('#FF453A')
-              .onClick((): void => { this.memoryDraft = ''; this.saveAssistantNow(); })
+              .onClick((): void => {
+                this.confirmDanger('清除你补充的偏好？', 'AI 不再记住这段偏好，自动生成的对话摘要不受影响。', '清除',
+                  (): void => { this.memoryDraft = ''; this.saveAssistantNow(); });
+              })
           }
         }
       }.width('100%').padding(14).borderRadius(18).backgroundColor(this.pal().card)
@@ -1479,7 +1500,7 @@ export struct DiagnosticAiSettingsSheet {
       Flex({ wrap: FlexWrap.Wrap }) {
         ForEach(this.availableModels, (item: DiagnosticAiModelInfo): void => {
           Text(item.displayName.length > 0 ? item.displayName : item.id).fontSize(12).maxLines(1)
-            .fontColor(this.model === item.id ? Color.White : this.pal().text)
+            .fontColor(this.model === item.id ? appUiOnAccentText(this.accent) : this.pal().text)
             .padding({ left: 10, right: 10, top: 6, bottom: 6 }).margin({ right: 6, bottom: 6 }).borderRadius(10)
             .backgroundColor(this.model === item.id ? this.accent : this.pal().surface)
             .onClick((): void => { this.selectModel(item.id); })
@@ -1553,7 +1574,11 @@ export struct DiagnosticAiSettingsSheet {
                     this.configTab = this.tabForSelection();
                   })
                 Text('删除').fontSize(12).fontColor(this.pal().danger).padding(6)
-                  .onClick((): void => { this.revokeProfile(profile); })
+                  .onClick((): void => {
+                    this.confirmDanger('删除「' + profile.displayName + '」？',
+                      '会删除本机保存的这项服务配置和它的 API Key，之后需要重新填写。', '删除',
+                      (): void => { this.revokeProfile(profile); });
+                  })
               }.width('100%').padding({ top: 10, bottom: 10 })
               .border({ width: { bottom: index < this.profiles.length - 1 ? 0.5 : 0 }, color: this.pal().divider })
             }, (profile: DiagnosticAiProviderProfile): string => profile.id + profile.modelId)
@@ -1574,7 +1599,7 @@ export struct DiagnosticAiSettingsSheet {
     if (!(this.configTab === 'coding' && !this.tabManifests('coding').some(
       (m: DiagnosticAiProviderManifest): boolean => this.providerAvailable(m)))) {
       Button(this.busy ? '处理中…' : '保存并使用').width('100%').height(48).fontSize(16).fontWeight(FontWeight.Medium)
-        .fontColor(Color.White).backgroundColor(this.accent).borderRadius(24).margin({ top: 10 })
+        .fontColor(appUiOnAccentText(this.accent)).backgroundColor(this.accent).borderRadius(24).margin({ top: 10 })
         .enabled(!this.busy).onClick((): void => { void this.saveProvider(); })
     }
   }
