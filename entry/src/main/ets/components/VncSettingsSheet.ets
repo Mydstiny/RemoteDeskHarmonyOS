@@ -654,7 +654,7 @@ export struct VncSettingsSheet {
           this.touchpadSpeed = Math.round(value); this.markDirty();
         })
         .width('100%').margin({ bottom: 8 })
-      this.toggle('反转滚轮方向', '与“显示与交互 > 远程滚轮方向”中的 VNC 共用', this.reverseWheel,
+      this.toggle('反转滚轮方向', '与“显示与交互 > 远程滚轮”中的 VNC 共用；滚轮速度也在那里调', this.reverseWheel,
         (value: boolean): void => { this.reverseWheel = value; this.markDirty(); })
       this.toggle('交换左右键', '左键与右键互换，只作用于 VNC', this.swapMouseButtons,
         (value: boolean): void => { this.swapMouseButtons = value; this.markDirty(); })

@@ -373,6 +373,8 @@ export struct SshXtermSurface {
   @Prop profileCopyOnSelect: boolean = false;
   /** Reverse only remote-terminal wheel input; touch dragging remains natural. */
   @Prop @Watch('onAppearanceChange') reverseWheel: boolean = false;
+  /** 设置 › 远程滚轮 › SSH 速度 (percent): xterm's rows per wheel notch. */
+  @Prop @Watch('onAppearanceChange') wheelSpeed: number = 100;
   @StorageProp('sshTerminalForegroundColor') @Watch('onAppearanceChange') terminalFgColor: string = '#33FF33';
   /** Low-frequency lifecycle wake; live output is delivered by outputBuffer. */
   @Prop @Watch('onOutputSequenceChange') outputSequence: number = 0;
@@ -890,6 +892,7 @@ export struct SshXtermSurface {
       scrollback: this.profileEnabled ? this.profileScrollback : 10000,
       bellStyle: this.profileEnabled ? this.profileBellStyle : 'none',
       reverseWheel: this.reverseWheel,
+      wheelSpeed: Math.max(0.25, Math.min(4, this.wheelSpeed / 100)),
       bottomAlignSparseContent: this.bottomAlignSparseContent,
       bottomAlignSafeRows: Math.max(0, Math.min(6, Math.floor(this.bottomAlignSafeRows))),
       bottomInsetPx: Math.max(0, Math.min(20, Math.floor(this.bottomInsetPx)))

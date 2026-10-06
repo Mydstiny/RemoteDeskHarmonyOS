@@ -102,7 +102,7 @@ const RULES: ActionRule[] = [
   new ActionRule('settings.harmonyShortcut', '打开鸿蒙快捷方式设置', [['鸿蒙', '系统快捷方式', '快捷方式']]),
   new ActionRule('settings.secretVisibility', '打开敏感信息显示设置', [['敏感信息', '密钥显示', '密码显示']], 'execute', true),
   new ActionRule('settings.remotePortrait', '打开竖屏显示设置', [['竖屏', '旋转', '纵向显示']]),
-  new ActionRule('settings.remoteWheel', '打开滚轮方向设置', [['滚轮', '滚动方向']]),
+  new ActionRule('settings.remoteWheel', '打开远程滚轮设置（方向与速度）', [['滚轮', '滚动方向', '滚动速度', '滚轮速度']]),
   new ActionRule('settings.remotePinch', '打开双指缩放设置', [['双指', '捏合', '缩放']]),
   new ActionRule('settings.controlBar', '打开会话控制栏设置', [['控制栏', '会话栏', '工具栏显示']]),
   new ActionRule('settings.rdpDisplay', '打开 RDP 显示设置', [['RDP'], ['分辨率', '显示缩放', '显示设置']]),

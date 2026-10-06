@@ -2,6 +2,7 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 import { recordDiagnosticEvent } from '../DiagnosticCaptureRuntime';
 import { DiagnosticAiSettingProposal } from './DiagnosticAiModels';
 import { AI_SESSION_REPLY_MODES } from './AiSessionVoicePolicy';
+import { remoteWheelSpeedChoices, remoteWheelSpeedLabel } from '../RemoteWheelPreferencePolicy';
 
 /** One value a setting can take: what is stored and what the user reads. */
 export class AiSettingChoice {
@@ -47,6 +48,12 @@ function toggle(id: string, label: string, key: string, note: string = ''): AiSe
 }
 
 const CONTROL_MODES: string[][] = [['0', '触控板'], ['1', '触控'], ['2', '键鼠']];
+/** 远程滚轮 › 速度: 25%–400% in 25% steps (100% is each protocol's tuned default). */
+const WHEEL_SPEEDS: string[][] = remoteWheelSpeedChoices().map((v: number): string[] => [v.toString(), remoteWheelSpeedLabel(v)]);
+function wheelSpeed(protocol: string, name: string): AiSettingSpec {
+  return new AiSettingSpec('remote.' + protocol + 'WheelSpeed', name + ' 滚轮速度', protocol + 'WheelSpeed', choices(WHEEL_SPEEDS),
+    '每格滚轮、每次双指滑动在远端滚动的距离；嫌快调低、嫌慢调高，100% 为默认');
+}
 
 const SETTINGS: AiSettingSpec[] = [
   // 外观与主机列表
@@ -109,6 +116,11 @@ const SETTINGS: AiSettingSpec[] = [
   toggle('remote.sshReverseWheel', 'SSH 反向滚轮', 'sshReverseWheel'),
   toggle('remote.vncReverseWheel', 'VNC 反向滚轮', 'vncReverseWheel'),
   toggle('remote.moonlightReverseWheel', 'Moonlight 反向滚轮', 'moonlightReverseWheel'),
+  wheelSpeed('rdp', 'RDP'),
+  wheelSpeed('rustdesk', 'RustDesk'),
+  wheelSpeed('ssh', 'SSH'),
+  wheelSpeed('vnc', 'VNC'),
+  wheelSpeed('moonlight', 'Moonlight'),
   // 远程 AI (Codex, DSH, Claude Agent on the user's computer): kept per account by the host page's bridge.
   new AiSettingSpec('remoteAi.uiStyle', '远程 AI 界面风格', 'remoteAi.uiStyle',
     choices([['claude', 'Claude 风格'], ['codex', 'Codex 风格']]),
@@ -425,6 +437,7 @@ function settingWords(id: string): string[] {
   }
   if (id.indexOf('PinchZoom') > 0) { return ['双指缩放', '捏合缩放']; }
   if (id.indexOf('ReverseWheel') > 0) { return ['反向滚轮', '滚轮方向', '滚轮反向']; }
+  if (id.indexOf('WheelSpeed') > 0) { return ['滚轮速度', '滚动速度', '滚轮灵敏度']; }
   return [];
 }
 

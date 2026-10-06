@@ -326,6 +326,7 @@
           scrollback: 10000,
           bellStyle: 'none',
           reverseWheel: false,
+          wheelSpeed: 1,
           bottomAlignSparseContent: false,
           bottomAlignSafeRows: 0,
           bottomInsetPx: 10
@@ -653,6 +654,11 @@
           : '100%';
       }
 
+      function wheelSensitivity() {
+        var speed = Number(state.config.wheelSpeed);
+        return isFinite(speed) && speed > 0 ? Math.max(0.25, Math.min(4, speed)) : 1;
+      }
+
       function applyConfig(config) {
         if (config) {
           Object.keys(config).forEach(function (key) {
@@ -726,6 +732,8 @@
           terminal.options.scrollback = Math.max(1000, Math.min(100000,
             Math.floor(Number(state.config.scrollback) || 10000)));
           terminal.options.bellStyle = state.config.bellStyle || 'none';
+          // 设置 › 远程滚轮 › SSH 速度: rows per wheel notch / scroll stroke.
+          terminal.options.scrollSensitivity = wheelSensitivity();
           terminal.options.theme = terminalTheme;
         } catch (_) {}
         applyBottomSafeInset();
@@ -806,6 +814,7 @@
             fontSize: Number(state.config.fontSize) || 18,
             fontFamily: state.config.fontFamily || 'monospace',
             fontWeight: state.config.fontWeight === 'bold' ? 'bold' : 'normal',
+            scrollSensitivity: wheelSensitivity(),
             lineHeight: Number(state.config.lineHeight) || 1.12,
             cursorBlink: state.config.cursorBlink !== false,
             cursorStyle: state.config.cursorStyle || 'bar',

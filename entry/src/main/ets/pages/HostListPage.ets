@@ -682,8 +682,17 @@ import {
   RemoteWheelPreferences,
   applyRemoteWheelPreferenceUpdate,
   migrateRemoteWheelPreferences,
-  remoteWheelSelectionSummary,
-  withRemoteWheelPreference
+  withRemoteWheelPreference,
+  RDP_WHEEL_SPEED_KEY,
+  RUSTDESK_WHEEL_SPEED_KEY,
+  SSH_WHEEL_SPEED_KEY,
+  VNC_WHEEL_SPEED_KEY,
+  MOONLIGHT_WHEEL_SPEED_KEY,
+  RemoteWheelProtocol,
+  RemoteWheelSpeeds,
+  normalizeRemoteWheelSpeed,
+  remoteWheelSettingsSummary,
+  remoteWheelSpeedKey
 } from '../services/RemoteWheelPreferencePolicy';
 import {
   MOONLIGHT_PINCH_ZOOM_ENABLED_KEY,
@@ -1589,6 +1598,12 @@ struct HostListPage {
   @StorageLink(SSH_REVERSE_WHEEL_KEY) sshReverseWheel: boolean = false;
   @StorageLink(VNC_REVERSE_WHEEL_KEY) vncReverseWheel: boolean = false;
   @StorageLink(MOONLIGHT_REVERSE_WHEEL_KEY) moonlightReverseWheel: boolean = false;
+  /** 远程滚轮 › 速度 per protocol (percent of its tuned default). */
+  @StorageLink(RDP_WHEEL_SPEED_KEY) rdpWheelSpeed: number = 100;
+  @StorageLink(RUSTDESK_WHEEL_SPEED_KEY) rustdeskWheelSpeed: number = 100;
+  @StorageLink(SSH_WHEEL_SPEED_KEY) sshWheelSpeed: number = 100;
+  @StorageLink(VNC_WHEEL_SPEED_KEY) vncWheelSpeed: number = 100;
+  @StorageLink(MOONLIGHT_WHEEL_SPEED_KEY) moonlightWheelSpeed: number = 100;
   @StorageLink('rustdeskSwapMouseButtons') rustdeskSwapMouseButtons: boolean = false;
   @StorageLink('rustdeskTouchpadSpeed') rustdeskTouchpadSpeed: number = 1.0;
   @StorageLink('rustdeskControlMode') rustdeskControlMode: number = 0; // 0=触控板, 1=直接触控, 2=键鼠
@@ -2550,6 +2565,11 @@ struct HostListPage {
       case 'remote.sshReverseWheel': return this.saveAssistantReverseWheel('ssh', on);
       case 'remote.vncReverseWheel': return this.saveAssistantReverseWheel('vnc', on);
       case 'remote.moonlightReverseWheel': return this.saveAssistantReverseWheel('moonlight', on);
+      case 'remote.rdpWheelSpeed': return this.saveRemoteWheelSpeed('rdp', num);
+      case 'remote.rustdeskWheelSpeed': return this.saveRemoteWheelSpeed('rustdesk', num);
+      case 'remote.sshWheelSpeed': return this.saveRemoteWheelSpeed('ssh', num);
+      case 'remote.vncWheelSpeed': return this.saveRemoteWheelSpeed('vnc', num);
+      case 'remote.moonlightWheelSpeed': return this.saveRemoteWheelSpeed('moonlight', num);
       default:
         if (id.indexOf('remoteAi.') === 0) {
           return AiHostService.getInstance().applyRemoteSetting(id, value, (): void => {
@@ -2701,6 +2721,12 @@ struct HostListPage {
         this.isDesktopDevice);
       const savedRemoteWheelPreferences: RemoteWheelPreferences =
         this.restoreRemoteWheelPreferences(prefs);
+      const savedWheelSpeed = (key: string): number => normalizeRemoteWheelSpeed(prefs.getSync(key, 100) as number);
+      const savedRemoteWheelSpeeds: RemoteWheelSpeeds = {
+        rdp: savedWheelSpeed(RDP_WHEEL_SPEED_KEY), rustdesk: savedWheelSpeed(RUSTDESK_WHEEL_SPEED_KEY),
+        ssh: savedWheelSpeed(SSH_WHEEL_SPEED_KEY), vnc: savedWheelSpeed(VNC_WHEEL_SPEED_KEY),
+        moonlight: savedWheelSpeed(MOONLIGHT_WHEEL_SPEED_KEY)
+      };
       // 核心外观设置
       const savedTheme: string = prefs.getSync('currentTheme', '') as string;
       const savedAccent: string = prefs.getSync('accentColor', '') as string;
@@ -2946,6 +2972,11 @@ struct HostListPage {
       this.sshReverseWheel = savedRemoteWheelPreferences.ssh;
       this.vncReverseWheel = savedRemoteWheelPreferences.vnc;
       this.moonlightReverseWheel = savedRemoteWheelPreferences.moonlight;
+      this.rdpWheelSpeed = savedRemoteWheelSpeeds.rdp;
+      this.rustdeskWheelSpeed = savedRemoteWheelSpeeds.rustdesk;
+      this.sshWheelSpeed = savedRemoteWheelSpeeds.ssh;
+      this.vncWheelSpeed = savedRemoteWheelSpeeds.vnc;
+      this.moonlightWheelSpeed = savedRemoteWheelSpeeds.moonlight;
       this.rdpPinchZoomEnabled = savedRemotePinchZoomPreferences.rdp;
       this.rustdeskPinchZoomEnabled = savedRemotePinchZoomPreferences.rustdesk;
       this.sshPinchZoomEnabled = savedRemotePinchZoomPreferences.ssh;
@@ -3033,6 +3064,11 @@ struct HostListPage {
       AppStorage.setOrCreate(SSH_REVERSE_WHEEL_KEY, this.sshReverseWheel);
       AppStorage.setOrCreate(VNC_REVERSE_WHEEL_KEY, this.vncReverseWheel);
       AppStorage.setOrCreate(MOONLIGHT_REVERSE_WHEEL_KEY, this.moonlightReverseWheel);
+      AppStorage.setOrCreate(RDP_WHEEL_SPEED_KEY, this.rdpWheelSpeed);
+      AppStorage.setOrCreate(RUSTDESK_WHEEL_SPEED_KEY, this.rustdeskWheelSpeed);
+      AppStorage.setOrCreate(SSH_WHEEL_SPEED_KEY, this.sshWheelSpeed);
+      AppStorage.setOrCreate(VNC_WHEEL_SPEED_KEY, this.vncWheelSpeed);
+      AppStorage.setOrCreate(MOONLIGHT_WHEEL_SPEED_KEY, this.moonlightWheelSpeed);
       AppStorage.setOrCreate(RDP_PINCH_ZOOM_ENABLED_KEY, this.rdpPinchZoomEnabled);
       AppStorage.setOrCreate(RUSTDESK_PINCH_ZOOM_ENABLED_KEY, this.rustdeskPinchZoomEnabled);
       AppStorage.setOrCreate(SSH_PINCH_ZOOM_ENABLED_KEY, this.sshPinchZoomEnabled);
@@ -13605,6 +13641,25 @@ struct HostListPage {
     return true;
   }
 
+  private remoteWheelSpeeds(): RemoteWheelSpeeds {
+    return { rdp: this.rdpWheelSpeed, rustdesk: this.rustdeskWheelSpeed, ssh: this.sshWheelSpeed,
+      vnc: this.vncWheelSpeed, moonlight: this.moonlightWheelSpeed };
+  }
+
+  /** 远程滚轮 › 速度: kept on this device like the direction (input feel depends on the device); sessions read it live. */
+  private saveRemoteWheelSpeed(protocol: RemoteWheelProtocol, speed: number): boolean {
+    const value: number = normalizeRemoteWheelSpeed(speed);
+    const key: string = remoteWheelSpeedKey(protocol);
+    if (!this.persistPreferenceValue(key, value)) { return false; }
+    if (protocol === 'rdp') { this.rdpWheelSpeed = value; }
+    else if (protocol === 'rustdesk') { this.rustdeskWheelSpeed = value; }
+    else if (protocol === 'ssh') { this.sshWheelSpeed = value; }
+    else if (protocol === 'vnc') { this.vncWheelSpeed = value; }
+    else { this.moonlightWheelSpeed = value; }
+    AppStorage.setOrCreate(key, value);
+    return true;
+  }
+
   private restoreRemoteWheelPreferenceValue(
     prefs: preferences.Preferences,
     key: string,
@@ -18356,9 +18411,12 @@ struct HostListPage {
         initialSsh: this.sshReverseWheel,
         initialVnc: this.vncReverseWheel,
         initialMoonlight: this.moonlightReverseWheel,
+        initialSpeeds: this.remoteWheelSpeeds(),
         onClose: (): void => { this.closeSettingsLeafSheetByUser(); },
         onSave: (update: RemoteWheelPreferenceUpdate): boolean =>
-          this.saveRemoteWheelPreferenceUpdate(update)
+          this.saveRemoteWheelPreferenceUpdate(update),
+        onSaveSpeed: (protocol: RemoteWheelProtocol, speed: number): boolean =>
+          this.saveRemoteWheelSpeed(protocol, speed)
       })
     } else if (this.settingsLeafSheetMode === SETTINGS_SHEET_REMOTE_PINCH_ZOOM) {
       RemotePinchZoomSettingsSheet({
@@ -19146,7 +19204,7 @@ struct HostListPage {
   @Builder settingsSectionDisplayInteraction() {
     ListItem() {
       this.settingsAccordionHeader(SETTINGS_SECTION_DISPLAY_INTERACTION, $r('sys.symbol.desktop_fill'),
-        '显示与交互', '本地缩放、滚轮方向、退出保护与会话控制栏')
+        '显示与交互', '本地缩放、远程滚轮方向与速度、退出保护与会话控制栏')
     }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 10 })
 
     ListItem() {
@@ -22949,18 +23007,21 @@ struct HostListPage {
       Row() { Image($r('app.media.icon_desktop')).width(22).height(22).fillColor(this.pal().text3) }
         .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
       Column() {
-        Text('远程滚轮方向').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
+        Text('远程滚轮').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
           .fontColor(this.pal().text).fontFamily(this.font())
-        Text(remoteWheelSelectionSummary(this.remoteWheelPreferences()))
+        Text(remoteWheelSettingsSummary(this.remoteWheelPreferences(), this.remoteWheelSpeeds()))
           .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
           .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).margin({ top: 2 })
       }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
-      Button('编辑').height(34).padding({ left: 12, right: 12 }).fontSize(12)
+      Button('选择协议').height(34).padding({ left: 12, right: 12 }).fontSize(12)
         .fontColor(this.accentColor).backgroundColor(this.pal().surface).borderRadius(8)
         .onClick((): void => {
           this.openSettingsLeafSheet(SETTINGS_SHEET_REMOTE_WHEEL_DIRECTION);
         })
     }.width('100%').height(62).padding({ left: 16, right: 16 })
+      .onClick((): void => {
+        this.openSettingsLeafSheet(SETTINGS_SHEET_REMOTE_WHEEL_DIRECTION);
+      })
   }
 
   @Builder sessionControlBarVisibilityRow() {

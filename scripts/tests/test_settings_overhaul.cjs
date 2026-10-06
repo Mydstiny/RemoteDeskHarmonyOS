@@ -332,7 +332,8 @@ check('settings search finds rows by name or everyday words and opens them like 
   const entries = search.settingsSearchEntries();
   assert.ok(entries.length >= 90);
   const top = (query) => (search.settingsSearchMatches(query, entries, 5)[0] || { title: '' }).title;
-  assert.equal(top('滚轮'), '远程滚轮方向');
+  assert.equal(top('滚轮'), '远程滚轮');
+  assert.equal(top('滚轮速度'), '远程滚轮');
   assert.equal(top('深色'), '深色模式');
   assert.equal(top('暗色'), '深色模式');
   assert.equal(top('h265'), 'RustDesk 编码');
@@ -450,7 +451,7 @@ check('shared sheet chrome: optional white-on-accent text and saved flash, defau
 
 check('settings sheets switch to the shared header only in 全新视觉 and keep their classic header otherwise', () => {
   const sheets = {
-    'components/RemoteWheelDirectionSettingsSheet.ets': "title: '滚轮方向'",
+    'components/RemoteWheelDirectionSettingsSheet.ets': 'title: this.title()',
     'components/RemotePinchZoomSettingsSheet.ets': "title: '双指缩放'",
     'components/RemotePortraitDisplaySettingsSheet.ets': "title: '竖屏显示'",
     'components/RemoteSessionControlBarSettingsSheet.ets': "title: '会话侧栏与顶栏'",

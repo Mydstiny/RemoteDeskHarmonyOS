@@ -64,7 +64,7 @@ const ENTRIES: SettingsSearchEntry[] = [
   entry(SETTINGS_SECTION_CONNECTION_LIVE, '后台连接展示', '后台 保持连接 实况窗 状态栏 灵动岛'),
   // 显示与交互
   entry(SETTINGS_SECTION_DISPLAY_INTERACTION, '本地缩放', '缩放 显示比例 画面大小'),
-  entry(SETTINGS_SECTION_DISPLAY_INTERACTION, '远程滚轮方向', '滚轮 反转 滚动方向 自然滚动 鼠标', 'settings.remoteWheel'),
+  entry(SETTINGS_SECTION_DISPLAY_INTERACTION, '远程滚轮', '滚轮 反转 滚动方向 自然滚动 鼠标 滚轮速度 滚动速度 太快 太慢', 'settings.remoteWheel'),
   entry(SETTINGS_SECTION_DISPLAY_INTERACTION, '双指缩放', '捏合 放大 缩小 手势', 'settings.remotePinch'),
   entry(SETTINGS_SECTION_DISPLAY_INTERACTION, '竖屏显示', '竖屏 旋转 方向 横屏', 'settings.remotePortrait'),
   entry(SETTINGS_SECTION_DISPLAY_INTERACTION, '关闭快捷退出', '返回 退出 误触 防误退'),

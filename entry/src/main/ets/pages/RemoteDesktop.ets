@@ -799,6 +799,9 @@ import {
   accumulateContinuousRemoteWheel,
   applyRemoteWheelDirection,
   discreteRemoteWheelDelta,
+  rdpWheelEventCount,
+  RemoteWheelSpeedScale,
+  scaleRemoteWheelTicks,
   shouldForwardContinuousRemoteWheelSample
 } from '../services/RemoteWheelPolicy';
 import {
@@ -807,7 +810,11 @@ import {
   RUSTDESK_WHEEL_DIRECTION_FOLLOWS_KEYBOARD_KEY,
   defaultRustDeskWheelDirectionFollowsKeyboard,
   rustDeskWheelReversedForKeyboardLayout,
-  VNC_REVERSE_WHEEL_KEY
+  VNC_REVERSE_WHEEL_KEY,
+  RDP_WHEEL_SPEED_KEY,
+  RUSTDESK_WHEEL_SPEED_KEY,
+  VNC_WHEEL_SPEED_KEY,
+  normalizeRemoteWheelSpeed
 } from '../services/RemoteWheelPreferencePolicy';
 import {
   RDP_PINCH_ZOOM_ENABLED_KEY,
@@ -1279,6 +1286,10 @@ struct RemoteDesktop {
   rustdeskWheelDirectionFollowsKeyboard: boolean = true;
   @StorageLink(VNC_REVERSE_WHEEL_KEY) @Watch('onRemoteWheelPreferenceChange')
   vncReverseWheel: boolean = false;
+  /** 设置 › 显示与交互 › 远程滚轮 › 速度 (percent of each protocol's tuned default). */
+  @StorageProp(RDP_WHEEL_SPEED_KEY) rdpWheelSpeed: number = 100;
+  @StorageProp(RUSTDESK_WHEEL_SPEED_KEY) rustdeskWheelSpeed: number = 100;
+  @StorageProp(VNC_WHEEL_SPEED_KEY) vncWheelSpeed: number = 100;
   @StorageLink('rustdeskSwapMouseButtons') rustdeskSwapMouseButtons: boolean = false;
   @StorageLink('rustdeskTouchpadSpeed') rustdeskTouchpadSpeed: number = 1.0;
   @StorageLink('virtualMouseStyle') virtualMouseStyle: string = 'arrow';
@@ -1789,6 +1800,11 @@ struct RemoteDesktop {
   private touchDragCursorX: number = 0;  // 双指开始时的光标 X (用于防漂移)
   private touchDragCursorY: number = 0;  // 双指开始时的光标 Y
   private touchWheelRemainder: number = 0;
+  /** Fractions of a tick the user's wheel speed left over (two-finger, physical, 2D touchpad x/y). */
+  private touchWheelSpeedRemainder: number = 0;
+  private physicalWheelSpeedRemainder: number = 0;
+  private touchpad2dSpeedRemainderX: number = 0;
+  private touchpad2dSpeedRemainderY: number = 0;
   private lastTouchWheelMs: number = 0;
   private touchWheelSendCount: number = 0;
   private touchLeftDown: boolean = false; // 直接模式用: 左键是否按下
@@ -4752,6 +4768,26 @@ struct RemoteDesktop {
       hilog.warn(RD_DOMAIN, RD_TAG,
         'harmony-system-key forward failed=' + JSON.stringify(error));
     }
+  }
+
+  /** 远程滚轮 › 速度 for this session's protocol, in percent. */
+  private wheelSpeedForCurrentProtocol(): number {
+    const protocol: string = this.isVncSession() ? 'vnc' : this.currentProtocolName();
+    if (protocol === 'rdp') { return normalizeRemoteWheelSpeed(this.rdpWheelSpeed); }
+    if (protocol === 'rustdesk') { return normalizeRemoteWheelSpeed(this.rustdeskWheelSpeed); }
+    if (protocol === 'vnc') { return normalizeRemoteWheelSpeed(this.vncWheelSpeed); }
+    return 100;
+  }
+
+  /** RDP carries one notch per wheel event, so n ticks go as n events; the others take the delta whole. */
+  private sendWheelEvents(x: number, y: number, delta: number): void {
+    if (this.isRdpRemoteSession()) {
+      const count: number = rdpWheelEventCount(delta);
+      const notch: number = delta > 0 ? 1 : -1;
+      for (let i = 0; i < count; i++) { this.loader.sendMouseWheel(this.sessionId, x, y, notch); }
+      return;
+    }
+    this.loader.sendMouseWheel(this.sessionId, x, y, delta);
   }
 
   private reverseWheelForCurrentProtocol(): boolean {
@@ -21721,12 +21757,16 @@ struct RemoteDesktop {
       return;
     }
     this.lastTouchWheelMs = now;
+    const scaled: RemoteWheelSpeedScale = scaleRemoteWheelTicks(delta, this.wheelSpeedForCurrentProtocol(),
+      this.touchWheelSpeedRemainder);
+    this.touchWheelSpeedRemainder = scaled.remainder;
+    if (scaled.delta === 0) { return; }
     const src = this.toSourceSpace(this.remoteCursorX, this.remoteCursorY);
     const reverseWheel: boolean = this.reverseWheelForCurrentProtocol();
-    const directedDelta: number = applyRemoteWheelDirection(delta, reverseWheel);
+    const directedDelta: number = applyRemoteWheelDirection(scaled.delta, reverseWheel);
     const sendDelta: number = wheelProtocol === 'vnc' ?
       amplifyVncWheelOutputDelta(directedDelta) : directedDelta;
-    this.loader.sendMouseWheel(this.sessionId, src['x'], src['y'], sendDelta);
+    this.sendWheelEvents(src['x'], src['y'], sendDelta);
     const sendIndex: number = ++this.touchWheelSendCount;
     if (sendIndex <= 12 || sendIndex % 50 === 0) {
       hilog.info(RD_DOMAIN, RD_TAG,
@@ -23158,16 +23198,21 @@ struct RemoteDesktop {
       rawHorizontal, rawVertical, this.physicalTouchpadWheelState, speed,
       this.rustdeskReverseWheel);
     this.physicalTouchpadWheelState = wheel.state;
-    if (wheel.x !== 0 || wheel.y !== 0) {
+    const wheelSpeed: number = this.wheelSpeedForCurrentProtocol();
+    const scaledX: RemoteWheelSpeedScale = scaleRemoteWheelTicks(wheel.x, wheelSpeed, this.touchpad2dSpeedRemainderX);
+    const scaledY: RemoteWheelSpeedScale = scaleRemoteWheelTicks(wheel.y, wheelSpeed, this.touchpad2dSpeedRemainderY);
+    this.touchpad2dSpeedRemainderX = scaledX.remainder;
+    this.touchpad2dSpeedRemainderY = scaledY.remainder;
+    if (scaledX.delta !== 0 || scaledY.delta !== 0) {
       const accepted: boolean = this.loader.sendRustDeskTouchpadWheel(
-        this.sessionId, wheel.x, wheel.y);
+        this.sessionId, scaledX.delta, scaledY.delta);
       if (accepted) {
         const sendIndex: number = ++this.physicalWheelSendCount;
         if (sendIndex <= 12 || sendIndex % 50 === 0) {
           hilog.info(RD_DOMAIN, RD_TAG, 'physical-touchpad-wheel count=' +
             sendIndex.toString() + ' raw=' + rawHorizontal.toString() + ',' +
-            rawVertical.toString() + ' delta=' + wheel.x.toString() + ',' +
-            wheel.y.toString() + ' reverse=' +
+            rawVertical.toString() + ' delta=' + scaledX.delta.toString() + ',' +
+            scaledY.delta.toString() + ' speed=' + wheelSpeed.toString() + ' reverse=' +
             (this.rustdeskReverseWheel ? '1' : '0'));
         }
       }
@@ -23276,6 +23321,16 @@ struct RemoteDesktop {
         }
       }
 
+      const scaledWheel: RemoteWheelSpeedScale = scaleRemoteWheelTicks(delta, this.wheelSpeedForCurrentProtocol(),
+        this.physicalWheelSpeedRemainder);
+      this.physicalWheelSpeedRemainder = scaledWheel.remainder;
+      if (scaledWheel.delta === 0) {
+        if (endsVncContinuous) {
+          this.vncPhysicalWheelState = resetVncPhysicalWheelState();
+        }
+        return;
+      }
+      delta = scaledWheel.delta;
       this.queueMouseMove(mapped.x, mapped.y);
       this.flushMouseMove();
       const src: Record<string, number> = this.toSourceSpace(mapped.x, mapped.y);
@@ -23283,7 +23338,7 @@ struct RemoteDesktop {
       const directedDelta: number = applyRemoteWheelDirection(delta, reverseWheel);
       const sendDelta: number = vncSession ?
         amplifyVncWheelOutputDelta(directedDelta) : directedDelta;
-      this.loader.sendMouseWheel(this.sessionId, src['x'], src['y'], sendDelta);
+      this.sendWheelEvents(src['x'], src['y'], sendDelta);
       const sendIndex: number = ++this.physicalWheelSendCount;
       if (sendIndex <= 12 || sendIndex % 50 === 0) {
         hilog.info(RD_DOMAIN, RD_TAG, 'physical-wheel count=' + sendIndex.toString() +

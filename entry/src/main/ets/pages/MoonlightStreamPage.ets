@@ -124,8 +124,8 @@ import {
   TouchpadPointerCurveState,
   touchpadPointerCurve
 } from '../services/TouchpadPointerCurvePolicy';
-import { applyRemoteWheelDirection, moonlightAxisScrollAmount } from '../services/RemoteWheelPolicy';
-import { MOONLIGHT_REVERSE_WHEEL_KEY } from '../services/RemoteWheelPreferencePolicy';
+import { applyRemoteWheelDirection, moonlightAxisScrollAmount, scaleMoonlightWheelAmount } from '../services/RemoteWheelPolicy';
+import { MOONLIGHT_REVERSE_WHEEL_KEY, MOONLIGHT_WHEEL_SPEED_KEY, normalizeRemoteWheelSpeed } from '../services/RemoteWheelPreferencePolicy';
 import { MOONLIGHT_PINCH_ZOOM_ENABLED_KEY } from
   '../services/RemotePinchZoomPreferencePolicy';
 import { REMOTE_KEYBOARD_AUTO_OPEN_ON_REMOTE_CLICK_KEY } from
@@ -400,6 +400,8 @@ struct MoonlightStreamPage {
   @StorageProp('liveViewEnabled') liveViewEnabled: boolean = true;
   @StorageProp('liveViewMode') liveViewMode: number = 1;
   @StorageLink(MOONLIGHT_REVERSE_WHEEL_KEY) moonlightReverseWheel: boolean = false;
+  /** 设置 › 显示与交互 › 远程滚轮 › Moonlight 速度 (percent). */
+  @StorageProp(MOONLIGHT_WHEEL_SPEED_KEY) moonlightWheelSpeed: number = 100;
   @StorageLink(MOONLIGHT_PINCH_ZOOM_ENABLED_KEY) @Watch('onMoonlightPinchZoomSettingChange')
   moonlightPinchZoomEnabled: boolean = false;
   @StorageLink(MOONLIGHT_PORTRAIT_DISPLAY_ENABLED_KEY)
@@ -4289,8 +4291,8 @@ struct MoonlightStreamPage {
     const horizontal: boolean = Math.abs(deltaX) > Math.abs(deltaY);
     const raw: number = horizontal ? deltaX : deltaY;
     if (!Number.isFinite(raw) || Math.abs(raw) < 0.35) { return true; }
-    const baseAmount: number = Math.max(-32768, Math.min(32767,
-      Math.round(-raw * 4)));
+    const baseAmount: number = scaleMoonlightWheelAmount(Math.max(-32768, Math.min(32767,
+      Math.round(-raw * 4))), normalizeRemoteWheelSpeed(this.moonlightWheelSpeed));
     const amount: number = applyRemoteWheelDirection(baseAmount, this.moonlightReverseWheel);
     return this.recordTrackpadDispatch(this.sendMoonlightPointer({
       launchKey: this.launchKey,
@@ -5422,8 +5424,8 @@ struct MoonlightStreamPage {
     const horizontal: number = event.getHorizontalAxisValue();
     const raw: number = Math.abs(vertical) >= Math.abs(horizontal) ? vertical : horizontal;
     if (!Number.isFinite(raw) || raw === 0) { return; }
-    const baseAmount: number = moonlightAxisScrollAmount(
-      raw, event.sourceTool === SourceTool.TOUCHPAD);
+    const baseAmount: number = scaleMoonlightWheelAmount(moonlightAxisScrollAmount(
+      raw, event.sourceTool === SourceTool.TOUCHPAD), normalizeRemoteWheelSpeed(this.moonlightWheelSpeed));
     const amount: number = applyRemoteWheelDirection(baseAmount, this.moonlightReverseWheel);
     if (amount === 0) { return; }
     const request: MoonlightPointerInputRequest = {

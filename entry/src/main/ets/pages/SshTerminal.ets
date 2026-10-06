@@ -119,7 +119,7 @@ import {
 } from '../services/SessionContextualGuidePolicy';
 import { GUIDE_ALWAYS_VISIBLE_STORAGE_KEY } from '../services/GuideVisibilityPolicy';
 import { GuideVisibilityService } from '../services/GuideVisibilityService';
-import { SSH_REVERSE_WHEEL_KEY } from '../services/RemoteWheelPreferencePolicy';
+import { SSH_REVERSE_WHEEL_KEY, SSH_WHEEL_SPEED_KEY, normalizeRemoteWheelSpeed } from '../services/RemoteWheelPreferencePolicy';
 import { SSH_PINCH_ZOOM_ENABLED_KEY } from '../services/RemotePinchZoomPreferencePolicy';
 import {
   REMOTE_SESSION_QUICK_EXIT_DISABLED_KEY,
@@ -789,6 +789,7 @@ struct SshTerminal {
   @StorageProp('remoteDesktopBgFlag') @Watch('onSshAbilityBackgroundChange')
   appBackgroundSignal: boolean = false;
   @StorageLink(SSH_REVERSE_WHEEL_KEY) sshReverseWheel: boolean = false;
+  @StorageProp(SSH_WHEEL_SPEED_KEY) sshWheelSpeed: number = 100;
   @StorageLink(SSH_PINCH_ZOOM_ENABLED_KEY) @Watch('onSshPinchZoomSettingChange')
   sshPinchZoomEnabled: boolean = true;
   @LocalStorageLink('sessionWindowBackground') @Watch('onSshAbilityBackgroundChange')
@@ -5748,6 +5749,7 @@ struct SshTerminal {
       profileBellStyle: profile.bellStyle,
       profileCopyOnSelect: profile.copyOnSelect,
       reverseWheel: this.sshReverseWheel,
+      wheelSpeed: normalizeRemoteWheelSpeed(this.sshWheelSpeed),
       viewportHeight: this.sshWorkspaceViewportHeightForTab(tab.tabId, viewportHeight),
       outputBuffer: this.xtermOutputBufferForHost(tab.hostId),
       outputSequence: this.termOutputSequence,
