@@ -1,3 +1,4 @@
+import { appUiOnAccentText } from '../../../common/AppUiColorPolicy';
 import { AppConfig, buildDark, buildLight, Palette } from '../../../common/Theme';
 import {
   connectingRunIndex, nextQueuedRunIndex, WorkspaceRun, WorkspaceRunItem, workspaceRunFinished, workspaceRunSummary
@@ -92,7 +93,7 @@ export struct WorkspaceRunPanel {
         }.width('100%').constraintSize({ maxHeight: 260 })
         if (nextQueuedRunIndex(this.run) >= 0 && connectingRunIndex(this.run) < 0) {
           Button(this.nextLabel()).width('100%').height(38).fontSize(13).backgroundColor(this.run.color)
-            .fontColor(Color.White).onClick((): void => { this.onNext(); })
+            .fontColor(appUiOnAccentText(this.run.color)).onClick((): void => { this.onNext(); })
         }
       }
     }

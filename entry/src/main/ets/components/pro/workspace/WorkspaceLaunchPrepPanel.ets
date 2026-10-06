@@ -1,3 +1,4 @@
+import { appUiOnAccentText } from '../../../common/AppUiColorPolicy';
 import { AppConfig, buildDark, buildLight, Palette } from '../../../common/Theme';
 import { orgProtocolLabel } from '../../../services/pro/org/HostOrganizationDirectory';
 
@@ -109,7 +110,7 @@ export struct WorkspaceLaunchPrepPanel {
       Row({ space: 10 }) {
         Button('取消').layoutWeight(1).height(42).fontSize(15).fontColor(this.pal().text)
           .backgroundColor(this.pal().surface).onClick((): void => { this.onCancel(); })
-        Button('开始连接').layoutWeight(2).height(42).fontSize(15).fontColor(Color.White)
+        Button('开始连接').layoutWeight(2).height(42).fontSize(15).fontColor(appUiOnAccentText(this.accent))
           .backgroundColor(this.accent).onClick((): void => { this.start(); })
       }.width('100%')
       Text('账号和密码只在这次打开期间保存在内存中，用完即清除，不会保存或同步。').fontSize(11)

@@ -1,3 +1,4 @@
+import { appUiOnAccentText } from '../../../common/AppUiColorPolicy';
 import { display } from '@kit.ArkUI';
 import { AppConfig, buildDark, buildLight, Palette } from '../../../common/Theme';
 import { ProSymbolIcon } from '../ProSymbolIcon';
@@ -58,6 +59,8 @@ function batchView(host: RemoteHost): HostBatchHost {
 export struct HostBatchActions {
   @StorageProp('currentTheme') theme: string = 'light';
   @StorageProp('accentColor') accent: string = '#007DFF';
+  /** PC: horizontal strips show a scrollbar (a mouse wheel does not scroll them sideways). */
+  @StorageProp('isDesktopDevice') isDesktopDevice: boolean = false;
   @Prop selectedRefs: string[] = [];
   @Prop rows: OrgHostRow[] = [];
   @Prop probing: boolean = false;
@@ -294,7 +297,7 @@ export struct HostBatchActions {
           TextInput({ text: this.newGroupName, placeholder: '新分组名称' }).height(38).layoutWeight(1).maxLength(32)
             .backgroundColor(this.pal().surface).borderRadius(10)
             .onChange((value: string): void => { this.newGroupName = value; })
-          Button('新建并移入').height(36).fontSize(12).backgroundColor(this.accent).fontColor(Color.White)
+          Button('新建并移入').height(36).fontSize(12).backgroundColor(this.accent).fontColor(appUiOnAccentText(this.accent))
             .onClick((): void => { this.createAndMove(); })
         }.width('100%').padding(14)
       }.width('100%').backgroundColor(this.pal().card).borderRadius(16)
@@ -326,7 +329,7 @@ export struct HostBatchActions {
           .backgroundColor(this.pal().surface).borderRadius(10)
           .onChange((value: string): void => { this.newTag = value; })
           .onSubmit((): void => { this.addNewTag(); })
-        Button('添加').height(36).fontSize(12).backgroundColor(this.accent).fontColor(Color.White)
+        Button('添加').height(36).fontSize(12).backgroundColor(this.accent).fontColor(appUiOnAccentText(this.accent))
           .enabled(normalizeHostTag(this.newTag).length > 0).onClick((): void => { this.addNewTag(); })
       }.width('100%')
     }.width('100%').padding(16).backgroundColor(this.pal().card).borderRadius(16)
@@ -434,7 +437,7 @@ export struct HostBatchActions {
           .onClick((): void => { this.previewing = true; this.resultText = ''; })
       } else {
         Button('应用到 ' + batchDiffCounts(this.diffs())[0].toString() + ' 项').width('100%').height(44).fontSize(15)
-          .backgroundColor(this.accent).fontColor(Color.White)
+          .backgroundColor(this.accent).fontColor(appUiOnAccentText(this.accent))
           .enabled(batchDiffCounts(this.diffs())[0] > 0)
           .onClick((): void => { this.applyEdits(); })
       }
@@ -478,7 +481,7 @@ export struct HostBatchActions {
             if (this.count() > 0) { this.onDelete(); }
           })
         }.padding({ left: 8, right: 8 })
-      }.scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off).layoutWeight(1)
+      }.scrollable(ScrollDirection.Horizontal).scrollBar(this.isDesktopDevice ? BarState.Auto : BarState.Off).layoutWeight(1)
     }
     .height(66).borderRadius(24).backgroundColor(this.pal().floatBg)
     .backgroundBlurStyle(BlurStyle.Thick)

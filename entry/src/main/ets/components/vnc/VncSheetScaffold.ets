@@ -16,6 +16,8 @@ export struct VncSheetScaffold {
   @Prop subtitle: string = '';
   @Prop stepText: string = '';
   @Prop leadingBack: boolean = false;
+  /** With leadingBack: a close button at the end as well (an add flow can then be left from any step). */
+  @Prop trailingClose: boolean = false;
   @Prop showFooter: boolean = true;
   @Prop fitContent: boolean = false;
   @Prop bottomSafePadding: number = 18;
@@ -23,6 +25,7 @@ export struct VncSheetScaffold {
   /** 设置 → 个性化 → 全新视觉: 44vp header buttons and readable (12vp, text2) descriptions. */
   @StorageProp('settingsVisualStyle') visualStyle: string = 'classic';
   onLeadingAction: () => void = (): void => {};
+  onTrailingClose: () => void = (): void => {};
 
   @Builder
   defaultContent() {
@@ -94,6 +97,15 @@ export struct VncSheetScaffold {
         .borderRadius(this.headerButtonSize() / 2).padding(0).backgroundColor(this.pal().surface)
         .accessibilityText('关闭' + this.title)
         .onClick((): void => { this.onLeadingAction(); })
+      } else if (this.trailingClose) {
+        Button() {
+          SymbolGlyph($r('sys.symbol.xmark'))
+            .fontSize(this.compactHeight() ? 16 : 18).fontColor([this.pal().text2])
+        }
+        .width(this.headerButtonSize()).height(this.headerButtonSize())
+        .borderRadius(this.headerButtonSize() / 2).padding(0).backgroundColor(this.pal().surface)
+        .accessibilityText('关闭' + this.title)
+        .onClick((): void => { this.onTrailingClose(); })
       }
     }.width('100%').padding({
       left: 20,

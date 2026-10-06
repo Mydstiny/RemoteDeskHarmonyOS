@@ -248,4 +248,143 @@ check('batch 2 review 2: a picker keeps 2FA open only for a while; an encrypted 
   assert.ok(modern.includes("'密钥格式无效，将跳过'"));
 });
 
+// ------------------------------------------------------------------ batch 3: 远程主机, both looks
+function loadWith(file, deps) {
+  const output = ts.transpileModule(read(file + '.ets'), {
+    compilerOptions: { target: ts.ScriptTarget.ES2021, module: ts.ModuleKind.CommonJS } }).outputText;
+  const module = { exports: {} };
+  vm.runInNewContext(output, { module, exports: module.exports, require: (spec) => deps[spec] || {}, Math, Number,
+    String, JSON, Set, Map }, { filename: file });
+  return module.exports;
+}
+function hostRecord(fields) {
+  return Object.assign({ id: 'h', label: '', host: '', username: '', protocol: 'rdp', groupId: '', customHostname: '',
+    rustdeskProPeerId: '', locked: false }, fields);
+}
+
+check('host search: RustDesk IDs, Chinese group names, locked hosts only by their card name', () => {
+  const privacy = load('services/HostCardPrivacyPolicy');
+  const policy = loadWith('services/HostWorkspacePolicy', { './HostCardPrivacyPolicy': privacy });
+  assert.equal(policy.normalizeGroupId(' 办公室 A '), '办公室-a');
+  assert.notEqual(policy.normalizeGroupId('研发部'), policy.normalizeGroupId('办公室'), 'Chinese names no longer collapse to one');
+  const rd = hostRecord({ id: 'rd', label: 'Studio', protocol: 'rustdesk', customHostname: '123456789', rustdeskProPeerId: 'peer-42' });
+  assert.equal(policy.searchHosts([rd], '1234').length, 1);
+  assert.equal(policy.searchHosts([rd], 'PEER-42').length, 1);
+  const office = hostRecord({ id: 'o', label: 'PC', groupId: '办公室' });
+  assert.equal(policy.searchHosts([office], '办公').length, 1, 'a raw Chinese group id matches');
+  const locked = hostRecord({ id: 'l', label: 'Vault', host: '10.0.0.8', username: 'admin', locked: true });
+  assert.equal(policy.searchHosts([locked], '10.0.0').length, 0, 'a locked host hides its address');
+  assert.equal(policy.searchHosts([locked], 'admin').length, 0);
+  assert.equal(policy.searchHosts([locked], 'vault').length, 1);
+  const lockedId = hostRecord({ id: 'li', label: '987654321', protocol: 'rustdesk', customHostname: '987654321', locked: true });
+  assert.equal(policy.searchHosts([lockedId], '9876').length, 0, 'an ID used as the name stays hidden too');
+});
+
+check('batches act on visible hosts, confirm first and verify once; single deletes and locks use the card name', () => {
+  const page = read('pages/HostListPage.ets');
+  const refresh = member(page, 'private refreshFilteredHostView(): void {');
+  assert.ok(refresh.includes('new Set<string>(this.selectionKeysForCurrentView())'), 'hidden hosts leave the selection');
+  const batch = member(page, 'private async doHostBatchDelete(): Promise<void> {');
+  assert.ok(batch.indexOf('await promptAction.showDialog(') < batch.indexOf('await showLockGate('), 'confirm, then verify');
+  assert.equal(batch.split('showLockGate(').length - 1, 1, 'one verification for all locked hosts');
+  assert.ok(batch.includes('hostBatchDeleteNameList(names)'));
+  assert.ok(batch.includes("(moonlightPreviews.length > 0 ? 'Moonlight 主机还会清理"), 'Moonlight only when selected');
+  const single = member(page, 'private async doDeleteHost(host: RemoteHost): Promise<void> {');
+  assert.ok(single.includes('hostCardDisplayLabel(') && single.indexOf('showDialog(') < single.indexOf('showLockGate('));
+  assert.ok(single.includes("'已删除「' + name + '」'"));
+  const lock = member(page, 'private async toggleLock(cardHost: RemoteHost): Promise<void> {');
+  assert.ok(lock.includes('this.srv.getHost(cardHost.id) ?? cardHost') && lock.includes('hostCardDisplayLabel('));
+  assert.ok(page.includes('if (!this.hostSelectionMode && this.isDesktopDevice) { return {}; }'), 'PC drag sorts only in sort mode');
+});
+
+check('saves are announced and a host hidden by a search is brought into view; empty states say why', () => {
+  const page = read('pages/HostListPage.ets');
+  for (const sig of ['private saveHostFromAddFlow(', 'private saveSshHostFromAddFlow(', 'private saveVncHostFromAddFlow(']) {
+    const body = member(page, sig);
+    assert.ok(body.includes('this.announceSavedHost('), sig);
+    assert.ok(!body.includes('promptAction.showToast('), sig + ' reports failures through addFlowSaveFailed');
+  }
+  assert.ok(member(page, 'private announceSavedHost(hostId: string, message: string): void {').includes('this.clearHostSearchAndFilters()'));
+  assert.ok(page.includes("this.hostSearchOrFilterActive() ? '没有找到匹配的主机' : '还没有远程主机'"));
+  assert.ok(page.includes("Button('清除搜索和筛选')"));
+  assert.ok(page.includes("(this.hostSearchOrFilterActive() ? '没有匹配的 ' : '暂无 ') + hostGroupTitle(card.type)"));
+  assert.ok(!/点击底部/.test(page) && !/到底部「/.test(page), 'no "bottom" in the hints');
+});
+
+check('add flows: a close button everywhere, typed names kept, plain summaries, failures in the form', () => {
+  const page = read('pages/HostListPage.ets');
+  const sheet = member(page, '@Builder hostAddSheetContent() {');
+  for (const flow of ['RdpAddFlow({', 'RustDeskAddFlow({', 'MoonlightHostAddFlow({', 'SshAddFlow({', 'VncAddFlow({']) {
+    const start = sheet.indexOf(flow);
+    const end = sheet.indexOf('\n      })', start);
+    const call = sheet.slice(start, end);
+    assert.ok(call.includes('onClose: (): void => { this.requestAddSheetClose(); }'), flow);
+    if (flow !== 'MoonlightHostAddFlow({') {
+      assert.ok(call.includes('saveError: this.addFlowSaveError') && call.includes('saveErrorRevision: this.addFlowSaveErrorRevision'), flow);
+    }
+  }
+  assert.ok(read('pages/VncSettingsPage.ets').includes('onClose: (): void => { this.hostFlowVisible = false; },'));
+  for (const file of ['RdpAddFlow', 'RustDeskAddFlow', 'MoonlightHostAddFlow', 'SshAddFlow']) {
+    const text = read('components/hostadd/' + file + '.ets');
+    assert.ok(text.includes("SymbolGlyph($r('sys.symbol.xmark'))") && text.includes(".accessibilityText('关闭')"), file);
+    assert.ok(!/Color\.White|'#EAF3FF'|'#DDEEFF'/.test(text), file + ' reads on any accent');
+  }
+  const scaffold = read('components/vnc/VncSheetScaffold.ets');
+  assert.ok(scaffold.includes('} else if (this.trailingClose) {'));
+  const vnc = read('components/hostadd/VncAddFlow.ets');
+  assert.ok(vnc.includes('trailingClose: true,') && read('components/resourceadd/VncGatewayAddFlow.ets').includes('trailingClose: true,'));
+  assert.ok(!/Color\.White|'#EAF3FF'|'#DDEEFF'/.test(vnc));
+  assert.ok(vnc.includes("vncSecurityPolicyLabel(this.securityPolicy)") && vnc.includes('vncScalingModeLabel(this.scalingMode)'));
+  assert.ok(!/reviewRow\('(?:target ID|Gateway|Gateway 端点|TLS \/ 策略)'/.test(vnc), 'summary labels in words');
+  assert.ok(vnc.indexOf('function vncSecurityPolicyLabel') > vnc.lastIndexOf("from '../vnc/VncSheetScaffold';"), 'helpers after the imports');
+  for (const file of ['RdpAddFlow', 'RustDeskAddFlow']) {
+    const text = read('components/hostadd/' + file + '.ets');
+    assert.ok(text.includes("if (this.label.trim() === '' || this.label === this.lanAutoLabel) {"), file + ' keeps a typed name');
+  }
+  assert.ok(read('components/hostadd/RdpAddFlow.ets').includes('if (this.credentials.length === 0) { this.onAddCredential(); return; }'));
+  const ssh = read('components/hostadd/SshAddFlow.ets');
+  assert.ok(!ssh.includes("'请完整填写名称、地址和用户名'") && !ssh.includes("'请完整填写基础信息和有效端口'"));
+  assert.ok(ssh.includes("this.errorText = '请填写主机地址'"));
+  for (const file of ['RdpAddFlow', 'RustDeskAddFlow', 'SshAddFlow', 'VncAddFlow']) {
+    const text = read('components/hostadd/' + file + '.ets');
+    assert.ok(text.includes("@Prop @Watch('onSaveError') saveErrorRevision: number = 0;") &&
+      text.includes('if (this.saveError !== \'\') { this.errorText = this.saveError; }'), file);
+  }
+  const colors = read('common/AppUiColorPolicy.ets');
+  assert.ok(colors.indexOf('export function accentSecondaryText') > colors.indexOf('export function appUiOnAccentText'));
+});
+
+check('classic editor: clearable numeric ports checked on save, a close button, AI only with Pro, even spacing', () => {
+  const page = read('pages/HostListPage.ets');
+  assert.ok(page.includes("this.sshPortVal = v.trim() === '' || isNaN(n) ? 0 : n;") &&
+    page.includes("this.rdpPortVal = v.trim() === '' || isNaN(n) ? 0 : n;"));
+  assert.ok(page.includes('TextInput({ placeholder: h, text: v }).type(numeric ? InputType.Number : InputType.Normal)'));
+  assert.ok(member(page, 'private doAdd(): void {').includes("this.sheetErr = '请输入 1–65535 之间的端口';"));
+  assert.ok(member(page, '@Builder private classicHostEditorTitle() {').includes('this.requestAddSheetClose();'));
+  assert.ok(page.includes("if (this.aiProVisible) {\n              this.protoBtn('AI · Pro', 'ai', 9443)"));
+  assert.ok(page.includes(".margin({ left: protoVal === 'rdp' ? 0 : 8 })"));
+});
+
+check('PC and accessibility: right-click menus, scrollbars, labels, the open-lock icon', () => {
+  const page = read('pages/HostListPage.ets');
+  assert.ok(page.includes('.bindContextMenu(this.hostContextMenuBuilder(host), ResponseType.RightClick)'));
+  assert.ok(page.includes('.bindContextMenu(this.moonlightContextMenuBuilder(view), ResponseType.RightClick)'));
+  const menu = member(page, '@Builder hostContextMenuBuilder(host: RemoteHost) {');
+  assert.ok(menu.includes("'取消选择' : '选择'") && menu.includes("MenuItem({ content: '删除' })"));
+  const swipe = member(page, '@Builder hostEditLockRow(host: RemoteHost) {');
+  assert.ok(swipe.includes("host.locked ? $r('sys.symbol.lock_open') : $r('sys.symbol.ohos_lock')"));
+  assert.ok(swipe.includes(".accessibilityText(host.locked ? '解锁' : '上锁')") && swipe.includes(".accessibilityText('部署公钥')"));
+  assert.ok(page.includes(".accessibilityText('添加')") && page.includes(".accessibilityText('清除搜索')"));
+  for (const label of ['远程主机', '密钥保险库', '中继', '设置']) {
+    assert.ok(page.includes(".accessibilityGroup(true).accessibilityText('" + label + "')"), label);
+  }
+  for (const file of ['components/pro/org/HostGroupBar.ets', 'components/pro/workspace/WorkspaceStrip.ets', 'components/pro/org/HostBatchActions.ets']) {
+    assert.ok(read(file).includes('.scrollBar(this.isDesktopDevice ? BarState.Auto : BarState.Off)'), file);
+  }
+  for (const file of ['org/HostBatchActions', 'org/HostImportPanel', 'org/HostOrganizationManager', 'workspace/WorkspaceAddFlow',
+    'workspace/WorkspaceLaunchPrepPanel', 'workspace/WorkspaceRunPanel', 'workspace/WorkspaceStrip']) {
+    assert.ok(!/fontColor\(\[?Color\.White\]?\)/.test(read('components/pro/' + file + '.ets')), file);
+  }
+});
+
 console.log('three screens: ' + passed + ' checks passed');

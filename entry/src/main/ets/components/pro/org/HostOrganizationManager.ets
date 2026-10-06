@@ -1,3 +1,4 @@
+import { appUiOnAccentText } from '../../../common/AppUiColorPolicy';
 import { common } from '@kit.AbilityKit';
 import { ProSymbolIcon } from '../ProSymbolIcon';
 import { AppConfig, buildDark, buildLight, Palette } from '../../../common/Theme';
@@ -217,7 +218,7 @@ export struct HostOrganizationManager {
           .backgroundColor(this.pal().surface).borderRadius(10)
           .onChange((value: string): void => { this.nameDraft = value; })
           .onSubmit((): void => { HostOrganizationStore.getInstance().renameGroup(group.id, this.nameDraft); })
-        Button('改名').height(36).fontSize(12).backgroundColor(this.accent).fontColor(Color.White)
+        Button('改名').height(36).fontSize(12).backgroundColor(this.accent).fontColor(appUiOnAccentText(this.accent))
           .enabled(this.nameDraft.trim().length > 0 && this.nameDraft.trim() !== group.name)
           .onClick((): void => { HostOrganizationStore.getInstance().renameGroup(group.id, this.nameDraft); })
       }.width('100%')
@@ -291,7 +292,7 @@ export struct HostOrganizationManager {
             .maxLength(32).backgroundColor(this.pal().surface).borderRadius(10)
             .onChange((value: string): void => { this.newGroupName = value; })
             .onSubmit((): void => { this.createGroup(); })
-          Button('＋ 新建').height(36).fontSize(12).backgroundColor(this.accent).fontColor(Color.White)
+          Button('＋ 新建').height(36).fontSize(12).backgroundColor(this.accent).fontColor(appUiOnAccentText(this.accent))
             .onClick((): void => { this.createGroup(); })
         }.width('100%').padding(14)
       }.width('100%').backgroundColor(this.pal().card).borderRadius(16)
@@ -304,7 +305,7 @@ export struct HostOrganizationManager {
         TextInput({ text: this.tagDraft, placeholder: '标签名称' }).height(38).layoutWeight(1).maxLength(32)
           .backgroundColor(this.pal().surface).borderRadius(10)
           .onChange((value: string): void => { this.tagDraft = value; })
-        Button('改名').height(36).fontSize(12).backgroundColor(this.accent).fontColor(Color.White)
+        Button('改名').height(36).fontSize(12).backgroundColor(this.accent).fontColor(appUiOnAccentText(this.accent))
           .enabled(normalizeHostTag(this.tagDraft).length > 0 && normalizeHostTag(this.tagDraft) !== tag)
           .onClick((): void => { this.renameTag(tag); })
       }.width('100%')
@@ -355,7 +356,7 @@ export struct HostOrganizationManager {
             .maxLength(32).backgroundColor(this.pal().surface).borderRadius(10)
             .onChange((value: string): void => { this.newTag = value; })
             .onSubmit((): void => { this.startTag(); })
-          Button('＋ 新建').height(36).fontSize(12).backgroundColor(this.accent).fontColor(Color.White)
+          Button('＋ 新建').height(36).fontSize(12).backgroundColor(this.accent).fontColor(appUiOnAccentText(this.accent))
             .enabled(normalizeHostTag(this.newTag).length > 0).onClick((): void => { this.startTag(); })
         }.width('100%').padding(14)
       }.width('100%').backgroundColor(this.pal().card).borderRadius(16)

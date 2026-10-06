@@ -1007,6 +1007,13 @@ const DYNAMIC_LAN_ADDRESS_FRESHNESS_MS: number = 5 * 60 * 1000;
 const DYNAMIC_LAN_SWEEP_COOLDOWN_MS: number = 30 * 1000;
 const RDP_DRIVE_REDIRECTION_ENABLED = true;
 const SETTINGS_ACCORDION_ANIMATION_MS = 280;
+
+/** 「：A、B、C 等 7 台」 for a batch delete confirmation. */
+function hostBatchDeleteNameList(names: string[]): string {
+  if (names.length === 0) { return ''; }
+  const shown: string[] = names.slice(0, 5);
+  return '（' + shown.join('、') + (names.length > shown.length ? ' 等 ' + names.length.toString() + ' 台' : '') + '）';
+}
 // A native Sheet can finish its dismiss animation before ArkUI has completed
 // the pointer-up dispatch that closed it. Keep the host list covered for one
 // short release window so that pointer-up cannot activate the card underneath.
@@ -1210,6 +1217,9 @@ struct HostListPage {
   @State showAddSheet: boolean = false;
   @State addSheetShowsModernPicker: boolean = false;
   @State modernAddProtocol: string = '';
+  /** The reason the open add flow could not save (shown in the form); the revision repeats the same message. */
+  @State addFlowSaveError: string = '';
+  @State addFlowSaveErrorRevision: number = 0;
   @State moonlightAddOwnerToken: number = 1;
   @State moonlightLanCandidates: MoonlightHostAddCandidate[] = [];
   @State moonlightDiscoveryRunning: boolean = false;
@@ -3393,6 +3403,13 @@ struct HostListPage {
       this.sshPreflightHostId === host.id;
   }
 
+  /** A host add flow could not save: the reason shows in the open form and as a toast. */
+  private addFlowSaveFailed(message: string, duration: number): void {
+    this.addFlowSaveError = message;
+    this.addFlowSaveErrorRevision++;
+    promptAction.showToast({ message: message, duration: duration });
+  }
+
   private saveHostFromAddFlow(host: RemoteHost, connectNow: boolean, restrictedAdminHash: string = ''): void {
     if (!shouldAcceptHostAddSave(this.addSheetClosing, this.pendingAddSheetConnectHostId)) {
       hilog.info(0x0001, 'HostList', 'ignored repeated add-host save while Sheet is closing');
@@ -3402,7 +3419,7 @@ struct HostListPage {
       host.rdpAuthMode === 'restricted_admin' &&
       host.rdpRestrictedAdminSecretSource === 'ntlm_hash';
     if (!this.srv.prepareHostNetworkEndpoints(host)) {
-      promptAction.showToast({ message: '主机地址无效，未保存凭据', duration: 2200 });
+      this.addFlowSaveFailed('主机地址无效，未保存凭据', 2200);
       return;
     }
     const rustDeskTotpEntryId: string = host.protocol === 'rustdesk' ?
@@ -3411,14 +3428,14 @@ struct HostListPage {
       host.rustdeskTotpAutoSubmit && rustDeskTotpEntryId !== '';
     if (requiresLocalRestrictedAdminHash &&
       !CloudStore.getInstance().saveRdpRestrictedAdminHash(host, restrictedAdminHash)) {
-      promptAction.showToast({ message: '无法加密保存 NTLM Hash，请先解锁本地凭据存储后重试', duration: 2600 });
+      this.addFlowSaveFailed('无法加密保存 NTLM Hash，请先解锁本地凭据存储后重试', 2600);
       return;
     }
     if (!this.srv.addHost(host)) {
       if (requiresLocalRestrictedAdminHash) {
         CloudStore.getInstance().clearRdpRestrictedAdminHash(host.id);
       }
-      promptAction.showToast({ message: '保存主机失败，请稍后重试', duration: 1800 });
+      this.addFlowSaveFailed('保存主机失败，请稍后重试', 1800);
       return;
     }
     if (host.protocol === 'rustdesk') {
@@ -3429,10 +3446,7 @@ struct HostListPage {
         rustDeskDirectEndpointReadbackError(host, this.srv.readBackHost(host.id));
       if (readbackError !== '') {
         const rolledBack: boolean = this.srv.removeHost(host.id);
-        promptAction.showToast({
-          message: rolledBack ? readbackError : readbackError + '；回滚未完成，请返回列表检查',
-          duration: 3000
-        });
+        this.addFlowSaveFailed(rolledBack ? readbackError : readbackError + '；回滚未完成，请返回列表检查', 3000);
         return;
       }
     }
@@ -3440,15 +3454,13 @@ struct HostListPage {
       !this.srv.setRustDeskPeerTwoFactorBinding(
         host.id, rustDeskTotpEntryId, rustDeskTotpAutoSubmit)) {
       const rolledBack: boolean = this.srv.removeHost(host.id);
-      promptAction.showToast({
-        message: rolledBack ?
-          'RustDesk 2FA 绑定保存失败，主机新增已撤销，请重试' :
-          'RustDesk 2FA 绑定保存失败，且主机回滚未完成；请返回列表检查',
-        duration: 3000
-      });
+      this.addFlowSaveFailed(rolledBack ?
+        'RustDesk 2FA 绑定保存失败，主机新增已撤销，请重试' :
+        'RustDesk 2FA 绑定保存失败，且主机回滚未完成；请返回列表检查', 3000);
       return;
     }
     this.refreshHostSnapshotAfterMutation();
+    this.announceSavedHost(host.id, '已添加「' + host.label + '」' + (connectNow ? '，正在连接' : ''));
     this.pendingAddSheetConnectHostId = pendingHostIdForHostAddSave(connectNow, host.id);
     this.requestAddSheetClose();
   }
@@ -3458,7 +3470,7 @@ struct HostListPage {
     const sharedId = this.proConnectionShareDraftId;
     const shared = ProConnectionShareReceiver.getInstance();
     if (sharedId !== '' && !shared.draftCurrent(sharedId)) {
-      promptAction.showToast({ message: '分享已过期或账号已变化，请重新接收连接信息', duration: 2400 }); return;
+      this.addFlowSaveFailed('分享已过期或账号已变化，请重新接收连接信息', 2400); return;
     }
     if (!shouldAcceptHostAddSave(this.addSheetClosing, this.pendingAddSheetConnectHostId)) {
       hilog.info(0x0001, 'HostList', 'ignored repeated SSH add-host save while Sheet is closing');
@@ -3466,15 +3478,16 @@ struct HostListPage {
     }
     if (host.protocol !== 'ssh' || proxyProfile.hostId !== host.id ||
       !this.sshProxyProfiles.upsert(proxyProfile)) {
-      promptAction.showToast({ message: 'SSH 连接方式保存失败，未写入主机', duration: 2200 });
+      this.addFlowSaveFailed('SSH 连接方式保存失败，未写入主机', 2200);
       return;
     }
     if (!this.srv.addHost(host)) {
       this.sshProxyProfiles.remove(host.id);
-      promptAction.showToast({ message: '保存主机失败，请稍后重试', duration: 1800 });
+      this.addFlowSaveFailed('保存主机失败，请稍后重试', 1800);
       return;
     }
     this.refreshHostSnapshotAfterMutation();
+    this.announceSavedHost(host.id, '已添加「' + host.label + '」' + (connectNow ? '，正在连接' : ''));
     this.pendingAddSheetConnectHostId = pendingHostIdForHostAddSave(connectNow, host.id);
     if (sharedId !== '') {
       const bound = connectNow && shared.bindSaved(sharedId, host, getContext(this) as common.Context);
@@ -3527,13 +3540,13 @@ struct HostListPage {
       return;
     }
     if (!this.vncHosts.isReady()) {
-      promptAction.showToast({ message: 'VNC 服务尚未完成云同步初始化，请稍后重试', duration: 2200 });
+      this.addFlowSaveFailed('VNC 主机列表还在同步，请稍后重试', 2200);
       return;
     }
     const result = this.vncHosts.save(values, '', password, plainStorageConfirmed,
       passwordMutation);
     if (!result.ok) {
-      promptAction.showToast({ message: result.message || '保存 VNC 主机失败', duration: 2200 });
+      this.addFlowSaveFailed(result.message || '保存 VNC 主机失败', 2200);
       return;
     }
     this.refreshHostSnapshotAfterMutation();
@@ -3543,10 +3556,7 @@ struct HostListPage {
     if (connectNow && !values.rememberPassword && password.length > 0) {
       VncSessionCredentialHandoff.getInstance().put(currentUserId, result.id, password);
     }
-    promptAction.showToast({
-      message: connectNow ? 'VNC 主机已保存，正在准备连接' : 'VNC 主机已保存',
-      duration: 1800
-    });
+    this.announceSavedHost(result.id, connectNow ? 'VNC 主机已保存，正在准备连接' : 'VNC 主机已保存');
     this.requestAddSheetClose();
   }
 
@@ -4757,6 +4767,7 @@ struct HostListPage {
       this.clearMoonlightVerificationState();
     }
     this.moonlightAddCommitted = false;
+    this.addFlowSaveError = '';
     this.noteSheetDismissed();
     this.addSheetClosing = false;
     this.addSheetShowsModernPicker = false;
@@ -6786,6 +6797,12 @@ struct HostListPage {
     }
     this.hostDataSource.replaceAll(this.filteredHosts);
     this.hostViewRevision += 1;
+    // A batch acts only on hosts the user can see: a search or filter drops hidden ones from the selection.
+    if (this.hostSelectionMode && this.hostSelectedIds.size > 0) {
+      const visible: Set<string> = new Set<string>(this.selectionKeysForCurrentView());
+      const kept: string[] = Array.from(this.hostSelectedIds).filter((key: string): boolean => visible.has(key));
+      if (kept.length !== this.hostSelectedIds.size) { this.hostSelectedIds = new Set<string>(kept); }
+    }
   }
 
   /** 根据本地保存的手动排序顺序重排主机列表。已排序的主机按保存顺序排列，新主机追加到末尾。 */
@@ -7574,25 +7591,16 @@ struct HostListPage {
         if (view !== undefined && view.host !== null) { moonlightViews.push(view); }
       }
     }
-    for (let index: number = 0; index < remoteHosts.length; index++) {
-      if (!remoteHosts[index].locked) { continue; }
-      const gate: LockGateResult = await showLockGate(remoteHosts[index].label, 'biometric');
-      if (!gate.ok) {
-        const message: string = lockGateErrorMessage(gate);
-        if (message !== '') { promptAction.showToast({ message: message, duration: 2000 }); }
-        return;
-      }
-    }
-    for (let index: number = 0; index < moonlightViews.length; index++) {
-      const host: MoonlightHost = moonlightViews[index].host as MoonlightHost;
-      if (host.locked !== true) { continue; }
-      const gate: LockGateResult = await showLockGate(host.displayName, 'biometric');
-      if (!gate.ok) {
-        const message: string = lockGateErrorMessage(gate);
-        if (message !== '') { promptAction.showToast({ message: message, duration: 2000 }); }
-        return;
-      }
-    }
+    // Locked hosts are verified once, after the confirmation (not one prompt each before it).
+    const lockedCount: number = remoteHosts.filter((host: RemoteHost): boolean => host.locked).length +
+      moonlightViews.filter((view: MoonlightHostLocalView): boolean =>
+        view.host !== null && (view.host as MoonlightHost).locked === true).length;
+    const names: string[] = remoteHosts.map((host: RemoteHost): string => hostCardDisplayLabel(
+      shouldHideHostCardSensitiveInfo(this.hostCardSensitiveInfoHidden, host.locked),
+      host.protocol, host.label, host.rustdeskProPeerId, host.customHostname));
+    moonlightViews.forEach((view: MoonlightHostLocalView): void => {
+      if (view.host !== null) { names.push((view.host as MoonlightHost).displayName); }
+    });
     const moonlightLease: AccountSessionLease | null = moonlightViews.length === 0
       ? null : this.moonlightDeletionRuntime.currentLease();
     const moonlightPreviews: MoonlightDeletionPreview[] = [];
@@ -7629,8 +7637,10 @@ struct HostListPage {
         ' 个主机状态已变化，将保留选择。' : '';
     const dialogResult: Object = await promptAction.showDialog({
       title: '批量删除',
-      message: '确定要删除当前可处理的 ' + actionableCount.toString() +
-        ' 个主机吗？Moonlight 主机还会清理配对信任、应用配置和目录缓存。' +
+      message: '确定要删除当前可处理的 ' + actionableCount.toString() + ' 个主机吗？' +
+        hostBatchDeleteNameList(names) +
+        (moonlightPreviews.length > 0 ? 'Moonlight 主机还会清理配对信任、应用配置和目录缓存。' : '') +
+        (lockedCount > 0 ? '其中 ' + lockedCount.toString() + ' 台已锁定，删除前需要验证身份。' : '') +
         isolatedFailureText,
       buttons: [
         { text: '取消', color: this.pal().text2 },
@@ -7639,6 +7649,15 @@ struct HostListPage {
     });
     const selected: Record<string, number> = dialogResult as Record<string, number>;
     if (selected['index'] !== 1 || !this.pageActive) { return; }
+    if (lockedCount > 0) {
+      const gate: LockGateResult = await showLockGate('删除 ' + lockedCount.toString() + ' 台已锁定的主机', 'biometric');
+      if (!gate.ok) {
+        const message: string = lockGateErrorMessage(gate);
+        if (message !== '') { promptAction.showToast({ message: message, duration: 2000 }); }
+        return;
+      }
+      if (!this.pageActive) { return; }
+    }
     let moonlightLeaseValid: boolean = moonlightPreviews.length === 0;
     if (moonlightLease !== null && moonlightPreviews.length > 0) {
       const currentLease: AccountSessionLease | null = this.moonlightDeletionRuntime.currentLease();
@@ -7811,7 +7830,45 @@ struct HostListPage {
     if (this.searchTimer !== -1) { clearTimeout(this.searchTimer); }
     this.searchTimer = setTimeout(() => {
       this.refreshFilteredHostView();
+      this.openGroupWithSearchMatches();
     }, 300);
+  }
+
+  /** Categorized page: a search opens a category that has matches, so the results are not hidden in a closed one. */
+  private openGroupWithSearchMatches(): void {
+    if (!this.groupedHostCardsActive() || this.searchText.trim() === '') { return; }
+    const cards: HostGroupCardModel[] = this.hostGroupCardsSnapshot();
+    const open: HostGroupCardModel | undefined =
+      cards.find((card: HostGroupCardModel): boolean => card.type === this.expandedHostGroup);
+    if (open !== undefined && open.hosts.length > 0) { return; }
+    const first: HostGroupCardModel | undefined =
+      cards.find((card: HostGroupCardModel): boolean => card.hosts.length > 0);
+    if (first !== undefined) { this.expandedHostGroup = first.type; }
+  }
+
+  /** A search or filter narrows the list (an empty list then means no matches, not no hosts). */
+  private hostSearchOrFilterActive(): boolean {
+    return this.searchText.trim() !== '' || this.workspaceGroupId !== '' ||
+      (this.proOrgVisible && this.hostOrgFilterKey !== '' && this.hostOrgFilterKey !== 'all');
+  }
+
+  /** After an add or edit: say so, and when a search or filter hides the host, clear them so it is in view. */
+  private announceSavedHost(hostId: string, message: string): void {
+    const visible: boolean = this.filteredHosts.some((host: RemoteHost): boolean =>
+      host.id === hostId || this.vncRecordIdForHost(host) === hostId);
+    if (!visible && this.hostSearchOrFilterActive()) {
+      this.clearHostSearchAndFilters();
+      promptAction.showToast({ message: message + '；已清除搜索和筛选，方便看到它', duration: 2400 });
+      return;
+    }
+    promptAction.showToast({ message: message, duration: 1600 });
+  }
+
+  private clearHostSearchAndFilters(): void {
+    this.searchText = '';
+    this.workspaceGroupId = '';
+    if (this.proOrgVisible) { this.hostOrgFilterKey = 'all'; }
+    this.refreshFilteredHostView();
   }
 
   private beginConnectionAttempt(hostId: string): number {
@@ -11584,9 +11641,13 @@ struct HostListPage {
     this.vncPlaintextHandoff.clear(userId, 'vnc-cert:' + normalizedHostId);
   }
 
-  private async toggleLock(host: RemoteHost): Promise<void> {
-    if (host.protocol === 'ai') { return; }
-    const r = await showLockGate(host.label, 'biometric');
+  private async toggleLock(cardHost: RemoteHost): Promise<void> {
+    if (cardHost.protocol === 'ai') { return; }
+    // The card's copy can be stale (an edit synced meanwhile): lock the host as stored now.
+    const host: RemoteHost = this.srv.getHost(cardHost.id) ?? cardHost;
+    const r = await showLockGate(hostCardDisplayLabel(
+      shouldHideHostCardSensitiveInfo(this.hostCardSensitiveInfoHidden, host.locked),
+      host.protocol, host.label, host.rustdeskProPeerId, host.customHostname), 'biometric');
     if (!r.ok) {
       const msg: string = lockGateErrorMessage(r);
       if (msg !== '') { promptAction.showToast({ message: msg, duration: 2000 }); }
@@ -12844,24 +12905,27 @@ struct HostListPage {
 
   // PC大屏模式 + 滑动删除共用: 锁验证 + 确认弹窗 + 动画移除
   private async doDeleteHost(host: RemoteHost): Promise<void> {
-    if (host.locked) {
-      const r = await showLockGate(host.label, 'biometric');
-      if (!r.ok) {
-        const msg: string = lockGateErrorMessage(r);
-        if (msg !== '') { promptAction.showToast({ message: msg, duration: 2000 }); }
-        return;
-      }
-    }
+    const name: string = hostCardDisplayLabel(
+      shouldHideHostCardSensitiveInfo(this.hostCardSensitiveInfoHidden, host.locked),
+      host.protocol, host.label, host.rustdeskProPeerId, host.customHostname);
     promptAction.showDialog({
       title: '确认删除',
-      message: '确定要删除主机 "' + host.label + '" 吗？此操作不可恢复。',
+      message: '确定要删除主机「' + name + '」吗？此操作不可恢复。' + (host.locked ? '这台主机已锁定，删除前需要验证身份。' : ''),
       buttons: [
         { text: '取消', color: this.pal().text2 },
         { text: '删除', color: this.pal().danger }
       ]
-    }).then((result: Object): void => {
+    }).then(async (result: Object): Promise<void> => {
       const r: Record<string, number> = result as Record<string, number>;
       if (r['index'] === 1) {
+        if (host.locked) {
+          const gate: LockGateResult = await showLockGate(name, 'biometric');
+          if (!gate.ok) {
+            const msg: string = lockGateErrorMessage(gate);
+            if (msg !== '') { promptAction.showToast({ message: msg, duration: 2000 }); }
+            return;
+          }
+        }
         if (host.protocol === 'ai') { void this.removeAiHost(host); return; }
         const vncHostId: string = this.vncRecordIdForHost(host);
         const removed: boolean = vncHostId !== ''
@@ -12873,13 +12937,14 @@ struct HostListPage {
             (stored: string): boolean => stored !== key && stored !== host.id);
           this.persistHostManualOrder();
           this.refreshHostSnapshotAfterMutation();
+          promptAction.showToast({ message: '已删除「' + name + '」', duration: 1600 });
         } else {
           promptAction.showToast({
             message: this.mutationFailureMessage('删除主机失败，请稍后重试'), duration: 2400
           });
         }
       }
-    });
+    }).catch((): void => {});
   }
 
   /** Reads loginRefreshKey so the account sheet's buttons follow a login or logout. */
@@ -14909,12 +14974,13 @@ struct HostListPage {
         Button() {
           SymbolGlyph($r('sys.symbol.plus'))
             .fontSize(28)
-            .fontColor([Color.White])
+            .fontColor([appUiOnAccentText(this.accentColor)])
         }
         .width(hostListFabSizeVp(this.breakpoint))
         .height(hostListFabSizeVp(this.breakpoint))
         .borderRadius(hostListFabSizeVp(this.breakpoint) / 2).padding(0)
         .backgroundColor(this.accentColor)
+        .accessibilityText('添加')
         .onClick(() => {
           if (this.isDesktopDevice && this.breakpoint === 'xl') {
             // PC 全屏侧边栏: 所有主机协议共用同一添加 Sheet 宿主。
@@ -15045,7 +15111,7 @@ struct HostListPage {
         Text('远程主机').fontSize(11).fontColor(this.curTab === 0 ? this.accentColor : this.pal().text3)
           .margin({ top: 4 })
       }
-    }.alignItems(HorizontalAlign.Center)
+    }.alignItems(HorizontalAlign.Center).accessibilityGroup(true).accessibilityText('远程主机')
   }
   @Builder tabKeyVaultIcon() {
     Column() {
@@ -15056,7 +15122,7 @@ struct HostListPage {
         Text('密钥保险库').fontSize(11).fontColor(this.curTab === 1 ? this.accentColor : this.pal().text3)
           .margin({ top: 4 })
       }
-    }.alignItems(HorizontalAlign.Center)
+    }.alignItems(HorizontalAlign.Center).accessibilityGroup(true).accessibilityText('密钥保险库')
   }
   @Builder tabRelayIcon() {
     Column() {
@@ -15066,7 +15132,7 @@ struct HostListPage {
       if (this.breakpoint === 'xl') {
         Text('中继').fontSize(11).fontColor(this.curTab === 2 ? this.accentColor : this.pal().text3).margin({ top: 4 })
       }
-    }.alignItems(HorizontalAlign.Center)
+    }.alignItems(HorizontalAlign.Center).accessibilityGroup(true).accessibilityText('中继')
   }
   @Builder tabSettingsIcon() {
     Column() {
@@ -15077,7 +15143,7 @@ struct HostListPage {
         Text('设置').fontSize(11).fontColor(this.curTab === 3 ? this.accentColor : this.pal().text3)
           .margin({ top: 4 })
       }
-    }.alignItems(HorizontalAlign.Center)
+    }.alignItems(HorizontalAlign.Center).accessibilityGroup(true).accessibilityText('设置')
   }
 
   // ==================== 主机列表 ====================
@@ -15186,21 +15252,33 @@ struct HostListPage {
   }
 
   @Builder HostWorkspaceFilterBar() {
-    Column() {
-      Row() {
-        ForEach(groupIdsForHosts(this.hosts), (groupId: string): void => {
-          Text(groupId).fontSize(12)
-            .fontColor(this.workspaceGroupId === groupId ? this.accentColor : this.pal().text2)
-            .margin({ right: 12 })
+    if (groupIdsForHosts(this.hosts).length > 0) {
+      Scroll() {
+        Row() {
+          Text('全部').fontSize(12)
+            .fontColor(this.workspaceGroupId === '' ? this.accentColor : this.pal().text2)
+            .padding({ top: 8, bottom: 8 }).margin({ right: 14 })
             .onClick((): void => {
-              this.workspaceGroupId = nextWorkspaceGroupId(this.workspaceGroupId, groupId);
+              this.workspaceGroupId = '';
               this.refreshWorkspaceView();
             })
-        }, (groupId: string): string => groupId)
+          ForEach(groupIdsForHosts(this.hosts), (groupId: string): void => {
+            Text(groupId).fontSize(12)
+              .fontColor(this.workspaceGroupId === groupId ? this.accentColor : this.pal().text2)
+              .padding({ top: 8, bottom: 8 }).margin({ right: 14 })
+              .onClick((): void => {
+                this.workspaceGroupId = nextWorkspaceGroupId(this.workspaceGroupId, groupId);
+                this.refreshWorkspaceView();
+              })
+          }, (groupId: string): string => groupId)
+        }
+        .padding({ left: 4, right: 4 })
       }
-      .width('100%').padding({ left: 4, right: 4 })
+      .scrollable(ScrollDirection.Horizontal)
+      .scrollBar(this.isDesktopDevice ? BarState.Auto : BarState.Off)
+      .width('100%').padding({ left: 16, right: 16, top: 0, bottom: 2 })
+      .align(Alignment.Start)
     }
-    .width('100%').padding({ left: 16, right: 16, top: 4, bottom: 6 })
   }
 
   @Builder HostGroupChip(host: RemoteHost) {
@@ -15668,7 +15746,11 @@ struct HostListPage {
             SymbolGlyph($r('sys.symbol.square_and_pencil')).fontSize(16).fontColor([this.pal().text2])
           }
           .width(36).height(36).borderRadius(18).padding(0).backgroundColor(this.pal().surface)
-          .accessibilityText('编辑').onClick((): void => { void this.editHost(host); })
+          .accessibilityText('编辑').onClick((): void => {
+            if (this.hostSelectionMode) { this.toggleHostSelect(remoteHostCardKey(host.id),
+              !this.hostSelectedIds.has(remoteHostCardKey(host.id))); return; }
+            void this.editHost(host);
+          })
           Button() {
             SymbolGlyph(host.locked ? $r('sys.symbol.lock_open') : $r('sys.symbol.ohos_lock'))
               .fontSize(16).fontColor([this.pal().text2])
@@ -15676,14 +15758,22 @@ struct HostListPage {
           .width(36).height(36).borderRadius(18).padding(0).backgroundColor(this.pal().surface)
           .margin({ left: 8 }).accessibilityText(host.locked ? '解锁' : '上锁')
           .visibility(host.protocol === 'ai' ? Visibility.None : Visibility.Visible)
-          .onClick((): void => { void this.toggleLock(host); })
+          .onClick((): void => {
+            if (this.hostSelectionMode) { this.toggleHostSelect(remoteHostCardKey(host.id),
+              !this.hostSelectedIds.has(remoteHostCardKey(host.id))); return; }
+            void this.toggleLock(host);
+          })
           Button() {
             SymbolGlyph($r('sys.symbol.ohos_trash')).fontSize(16).fontColor([this.pal().danger])
           }
           .width(36).height(36).borderRadius(18).padding(0).backgroundColor(this.pal().surface)
           .margin({ left: 8 }).accessibilityText('删除')
-          .onClick((): void => { void this.doDeleteHost(host); })
-        }.margin({ top: 7 })
+          .onClick((): void => {
+            if (this.hostSelectionMode) { this.toggleHostSelect(remoteHostCardKey(host.id),
+              !this.hostSelectedIds.has(remoteHostCardKey(host.id))); return; }
+            void this.doDeleteHost(host);
+          })
+        }.margin({ top: 7 }).opacity(this.hostSelectionMode ? 0.4 : 1)
       }.alignItems(HorizontalAlign.End).margin({ left: 10 })
     }
     .width('100%').height(this.hostGroupHostCardHeight()).padding(6)
@@ -15735,10 +15825,14 @@ struct HostListPage {
       if (card.hosts.length === 0) {
         Column() {
           SymbolGlyph(protocolIcon(card.type)).fontSize(32).fontColor([this.pal().text3])
-          Text('暂无 ' + hostGroupTitle(card.type) + ' 主机').fontSize(13).fontColor(this.pal().text2)
+          // While searching, an empty group means no match, not no hosts.
+          Text((this.hostSearchOrFilterActive() ? '没有匹配的 ' : '暂无 ') + hostGroupTitle(card.type) + ' 主机')
+            .fontSize(13).fontColor(this.pal().text2)
             .fontFamily(this.font()).margin({ top: 10 })
-          Text('点击底部按钮添加主机').fontSize(11).fontColor(this.pal().text3)
-            .fontFamily(this.font()).margin({ top: 4 })
+          if (!this.hostSearchOrFilterActive()) {
+            Text('点击「+」添加主机').fontSize(11).fontColor(this.pal().text3)
+              .fontFamily(this.font()).margin({ top: 4 })
+          }
         }.width('100%').height(this.breakpoint === 'sm' ? 92 : 100)
           .justifyContent(FlexAlign.Center).alignItems(HorizontalAlign.Center)
       } else {
@@ -15883,10 +15977,13 @@ struct HostListPage {
       if (this.visibleMoonlightHosts().length === 0) {
         Column() {
           MoonlightBrandIcon({ iconSize: 32, tint: this.pal().text3 })
-          Text('暂无 Moonlight 主机').fontSize(13).fontColor(this.pal().text2)
+          Text(this.hostSearchOrFilterActive() ? '没有匹配的 Moonlight 主机' : '暂无 Moonlight 主机')
+            .fontSize(13).fontColor(this.pal().text2)
             .fontFamily(this.font()).margin({ top: 10 })
-          Text('点击底部按钮添加主机').fontSize(11).fontColor(this.pal().text3)
-            .fontFamily(this.font()).margin({ top: 4 })
+          if (!this.hostSearchOrFilterActive()) {
+            Text('点击「+」添加主机').fontSize(11).fontColor(this.pal().text3)
+              .fontFamily(this.font()).margin({ top: 4 })
+          }
         }.width('100%').height(this.breakpoint === 'sm' ? 92 : 100)
           .justifyContent(FlexAlign.Center).alignItems(HorizontalAlign.Center)
       } else {
@@ -16138,6 +16235,7 @@ struct HostListPage {
               Text('⋯').fontSize(18).fontColor(this.pal().text)
             }
             .width(36).height(36).borderRadius(18).backgroundColor(this.pal().surface)
+            .accessibilityText('更多操作')
             .bindPopup(this.hostActionPopupId === unifiedMoonlightHostCardKey(view.host.id), {
               builder: this.moonlightActionMenuBuilder(view),
               placement: Placement.BottomRight,
@@ -16160,6 +16258,7 @@ struct HostListPage {
       .padding(this.breakpoint === 'sm' ? { left: 12, right: 14, top: 12, bottom: 12 } : 14)
       .borderRadius(14).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
       .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
+      .bindContextMenu(this.moonlightContextMenuBuilder(view), ResponseType.RightClick)
     }
   }
 
@@ -16318,7 +16417,8 @@ struct HostListPage {
         .accessibilityText('编辑')
         .onClick((): void => { void this.openMoonlightEditSheet(view); })
         Button() {
-          SymbolGlyph($r('sys.symbol.ohos_lock')).fontSize(17).fontColor([Color.White])
+          SymbolGlyph(view.host.locked === true ? $r('sys.symbol.lock_open') : $r('sys.symbol.ohos_lock')).fontSize(17)
+            .fontColor([view.host.locked === true ? Color.White : appUiOnAccentText(this.accentColor)])
         }
         .width(48).height(48).borderRadius(12)
         .backgroundColor(view.host.locked === true ? this.pal().success : this.accentColor)
@@ -16637,7 +16737,7 @@ struct HostListPage {
               Text(this.moonlightDirectoryCode === 'ok' || this.moonlightDirectoryCode === 'cache_read_failed'
                 ? '还没有 Moonlight 主机' : '本地主机数据暂不可用')
                 .fontSize(17).fontWeight(FontWeight.Medium).fontColor(this.pal().text).margin({ top: 16 })
-              Text('点击底部 + 添加主机，自动发现局域网中的 Sunshine / GameStream')
+              Text('点击「+」添加主机，可自动发现局域网中的 Sunshine / GameStream 主机')
                 .fontSize(12).fontColor(this.pal().text3).margin({ top: 7 }).textAlign(TextAlign.Center)
             }.width('100%').height(360).justifyContent(FlexAlign.Center)
           }
@@ -16775,7 +16875,7 @@ struct HostListPage {
               }
               Button() { Text('⋯').fontSize(18).fontColor(this.pal().text) }
                 .width(36).height(36).borderRadius(18).backgroundColor(this.pal().surface)
-                .margin({ left: 4 })
+                .margin({ left: 4 }).accessibilityText('更多操作')
                 .bindPopup(this.hostActionPopupId === remoteHostCardKey(host.id), {
                   builder: this.hostActionMenuBuilder(host), placement: Placement.BottomRight,
                   enableArrow: true, popupColor: this.pal().card, width: this.hostActionPopupWidth(host),
@@ -16797,6 +16897,8 @@ struct HostListPage {
       .padding(this.breakpoint === 'sm' ? { left: 12, right: 14, top: 12, bottom: 12 } : 14)
       .borderRadius(14).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
       .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
+      // A mouse right-click offers the ⋯ actions (or select / deselect while selecting).
+      .bindContextMenu(this.hostContextMenuBuilder(host), ResponseType.RightClick)
     }
     .swipeAction((this.hostSelectionMode || (this.isDesktopDevice && this.breakpoint === 'xl')) ? {
       start: { builder: () => {} }, end: { builder: () => {} }, edgeEffect: SwipeEdgeEffect.Spring
@@ -16812,6 +16914,7 @@ struct HostListPage {
     ))
     .onDragStart((_event: DragEvent): DragItemInfo => {
       const key: string = remoteHostCardKey(host.id);
+      if (!this.hostSelectionMode && this.isDesktopDevice) { return {}; }
       if (!this.hostSelectionMode) {
         // Let the platform's native drag recognizer own the initial long
         // press. Entering selection here keeps that same pointer sequence
@@ -16852,6 +16955,7 @@ struct HostListPage {
         ))
         .onDragStart((_event: DragEvent): DragItemInfo => {
           const key: string = unifiedMoonlightHostCardKey(view.host?.id || '');
+          if (!this.hostSelectionMode && this.isDesktopDevice) { return {}; }
           if (!this.hostSelectionMode) {
             this.beginHostSelection(key, true, true);
           } else if (!this.hostReorderEnabled) {
@@ -16936,7 +17040,8 @@ struct HostListPage {
                   })
                 Text('已选 ' + this.hostSelectedIds.size).fontSize(13).fontColor(this.pal().text2)
                   .margin({ left: 12, right: 12 })
-                if (this.hostSelectedIds.size > 0) {
+                // The Pro batch bar below has its own 删除: no second one here.
+                if (this.hostSelectedIds.size > 0 && !(this.proOrgVisible && !this.hostReorderEnabled)) {
                   Button('删除(' + this.hostSelectedIds.size + ')').fontSize(12)
                     .height(32).borderRadius(8)
                     .backgroundColor(this.pal().danger).fontColor('#FFFFFF')
@@ -16945,7 +17050,7 @@ struct HostListPage {
                 }
                 if (this.hostReorderEnabled) {
                   Button('完成').fontSize(12).height(32).borderRadius(8)
-                    .backgroundColor(this.accentColor).fontColor('#FFFFFF')
+                    .backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor))
                     .margin({ right: 6 })
                     .onClick(() => { this.commitHostReorder(); })
                 }
@@ -16977,7 +17082,8 @@ struct HostListPage {
                   Text('已选 ' + this.hostSelectedIds.size).fontSize(13).fontColor(this.pal().text2)
                 }
                 Blank()
-                if (this.hostSelectedIds.size > 0) {
+                // The Pro batch bar below has its own 删除: no second one here.
+                if (this.hostSelectedIds.size > 0 && !(this.proOrgVisible && !this.hostReorderEnabled)) {
                   Button('删除(' + this.hostSelectedIds.size + ')').fontSize(12)
                     .height(32).borderRadius(8)
                     .backgroundColor(this.pal().danger).fontColor('#FFFFFF')
@@ -16986,7 +17092,7 @@ struct HostListPage {
                 }
                 if (this.hostReorderEnabled) {
                   Button('完成').fontSize(12).height(32).borderRadius(8)
-                    .backgroundColor(this.accentColor).fontColor('#FFFFFF')
+                    .backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor))
                     .margin({ right: 6 })
                     .onClick(() => { this.commitHostReorder(); })
                 }
@@ -17022,14 +17128,19 @@ struct HostListPage {
         } else if (this.flatHostCardRefs().length === 0) {
           ListItem() {
             Column() {
-              SymbolGlyph($r('sys.symbol.desktop_fill'))
+              SymbolGlyph(this.hostSearchOrFilterActive() ? $r('sys.symbol.magnifyingglass') : $r('sys.symbol.desktop_fill'))
                 .fontSize(48).fontColor([this.pal().text3])
-              Text('还没有远程主机')
+              Text(this.hostSearchOrFilterActive() ? '没有找到匹配的主机' : '还没有远程主机')
                 .fontSize(17).fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
                 .margin({ top: 16 })
-              Text('点击底部 + 添加远程主机')
+              Text(this.hostSearchOrFilterActive() ? '换个关键词，或清除搜索和筛选' : '点击 + 添加远程主机')
                 .fontSize(13).fontColor(this.pal().text3).fontFamily(this.font())
                 .margin({ top: 6 }).lineHeight(20)
+              if (this.hostSearchOrFilterActive()) {
+                Button('清除搜索和筛选').height(40).fontSize(14).borderRadius(10).margin({ top: 16 })
+                  .backgroundColor(this.pal().surface).fontColor(this.accentColor)
+                  .onClick((): void => { this.clearHostSearchAndFilters(); })
+              }
             }.width('100%').constraintSize({ minHeight: 400 }).justifyContent(FlexAlign.Center)
               .alignItems(HorizontalAlign.Center)
           }
@@ -17092,6 +17203,7 @@ struct HostListPage {
                   .onChange((v: string) => { this.onSearchChange(v); })
                 if (this.searchText !== '') {
                   Text('✕').fontSize(14).fontColor(this.pal().text3).margin({ right: 14 })
+                    .accessibilityText('清除搜索')
                     .onClick(() => {
                       this.searchText = '';
                       this.refreshFilteredHostView();
@@ -17126,6 +17238,7 @@ struct HostListPage {
                   .onChange((v: string) => { this.onSearchChange(v); })
                 if (this.searchText !== '') {
                   Text('✕').fontSize(14).fontColor(this.pal().text3).margin({ right: 14 })
+                    .accessibilityText('清除搜索')
                     .onClick(() => {
                       this.searchText = '';
                       this.refreshFilteredHostView();
@@ -17484,6 +17597,49 @@ struct HostListPage {
     return Math.ceil(longestTextVp + 64);
   }
 
+  @Builder hostContextMenuBuilder(host: RemoteHost) {
+    Menu() {
+      if (this.hostSelectionMode) {
+        MenuItem({ content: this.hostSelectedIds.has(remoteHostCardKey(host.id)) ? '取消选择' : '选择' })
+          .onClick((): void => {
+            const key: string = remoteHostCardKey(host.id);
+            this.toggleHostSelect(key, !this.hostSelectedIds.has(key));
+          })
+      } else {
+        MenuItem({ content: '编辑' }).onClick((): void => { this.editHost(host); })
+        if (host.protocol === 'ssh') {
+          MenuItem({ content: '部署公钥' }).onClick((): void => { void this.openSshPublicKeyInstall(host); })
+        }
+        if (host.protocol !== 'ai') {
+          MenuItem({ content: host.locked ? '解锁' : '上锁' }).onClick((): void => { this.toggleLock(host); })
+        }
+        MenuItem({ content: '多选 / 排序' })
+          .onClick((): void => { this.beginHostSelection('', !this.groupedHostCardsActive()); })
+        MenuItem({ content: '删除' }).contentFontColor(this.pal().danger)
+          .onClick((): void => { this.doDeleteHost(host); })
+      }
+    }
+  }
+
+  @Builder moonlightContextMenuBuilder(view: MoonlightHostLocalView) {
+    Menu() {
+      if (this.hostSelectionMode) {
+        MenuItem({ content: this.hostSelectedIds.has(unifiedMoonlightHostCardKey(view.host?.id || '')) ? '取消选择' : '选择' })
+          .onClick((): void => {
+            const key: string = unifiedMoonlightHostCardKey(view.host?.id || '');
+            this.toggleHostSelect(key, !this.hostSelectedIds.has(key));
+          })
+      } else {
+        MenuItem({ content: '编辑' }).onClick((): void => { void this.openMoonlightEditSheet(view); })
+        MenuItem({ content: view.host?.locked === true ? '解锁' : '上锁' })
+          .onClick((): void => { void this.toggleMoonlightLock(view); })
+        MenuItem({ content: '多选 / 排序' }).onClick((): void => { this.beginHostSelection('', true); })
+        MenuItem({ content: '删除' }).contentFontColor(this.pal().danger)
+          .onClick((): void => { void this.doDeleteMoonlightHost(view); })
+      }
+    }
+  }
+
   @Builder hostActionMenuBuilder(host: RemoteHost) {
     Column() {
       Row() {
@@ -17561,27 +17717,29 @@ struct HostListPage {
       }
       .width(48).height(48).borderRadius(12)
       .backgroundColor(this.pal().editColor)
+      .accessibilityText('编辑')
       .onClick(() => { this.editHost(host); })
 
       Button() {
-        SymbolGlyph(host.locked ? $r('sys.symbol.ohos_lock') : $r('sys.symbol.ohos_lock'))
+        SymbolGlyph(host.locked ? $r('sys.symbol.lock_open') : $r('sys.symbol.ohos_lock'))
           .fontSize(17)
-          .fontColor([Color.White])
+          .fontColor([host.locked ? Color.White : appUiOnAccentText(this.accentColor)])
       }
       .width(48).height(48).borderRadius(12)
       .backgroundColor(host.locked ? this.pal().success : this.accentColor)
       .margin({ left: 4 })
+      .accessibilityText(host.locked ? '解锁' : '上锁')
       .visibility(host.protocol === 'ai' ? Visibility.None : Visibility.Visible)
       .onClick(() => { this.toggleLock(host); })
 
       if (host.protocol === 'rustdesk' && !host.rustdeskDirectEnabled) {
         Button() {
           if (this.hostPresenceProbeBusyIds.has(host.id)) {
-            LoadingProgress().width(22).height(22).color(Color.White)
+            LoadingProgress().width(22).height(22).color(appUiOnAccentText(this.accentColor))
           } else {
             SymbolGlyph($r('sys.symbol.bolt_fill'))
               .fontSize(18)
-              .fontColor([Color.White])
+              .fontColor([appUiOnAccentText(this.accentColor)])
           }
         }
         .width(48).height(48).borderRadius(12)
@@ -17596,11 +17754,12 @@ struct HostListPage {
         Button() {
           SymbolGlyph($r('sys.symbol.key_fill'))
             .fontSize(17)
-            .fontColor([Color.White])
+            .fontColor([appUiOnAccentText(this.accentColor)])
         }
         .width(48).height(48).borderRadius(12)
         .backgroundColor(this.accentColor)
         .margin({ left: 4 })
+        .accessibilityText('部署公钥')
         .onClick(() => { void this.openSshPublicKeyInstall(host); })
       }
     }
@@ -23132,11 +23291,14 @@ struct HostListPage {
     } else if (this.modernAddProtocol === 'rdp') {
       RdpAddFlow({
         credentials: this.rdpCredentials,
+        saveError: this.addFlowSaveError,
+        saveErrorRevision: this.addFlowSaveErrorRevision,
         lanScanning: this.rdpLanScanning,
         lanHosts: this.rdpLanScanResults,
         lanStatusText: this.rdpLanStatusText,
         onBackToProtocols: (): void => { this.modernAddProtocol = ''; this.addSheetShowsModernPicker = true; },
         onAddCredential: (): void => { this.openRdpCredentialManager(); },
+        onClose: (): void => { this.requestAddSheetClose(); },
         onStartLanScan: (port: number): void => { this.startRdpLanScan(port); },
         onSave: (host: RemoteHost, connectNow: boolean, restrictedAdminHash: string): void => {
           this.saveHostFromAddFlow(host, connectNow, restrictedAdminHash);
@@ -23145,6 +23307,8 @@ struct HostListPage {
     } else if (this.modernAddProtocol === 'rustdesk') {
       RustDeskAddFlow({
         relays: this.srv.getAllRelays(),
+        saveError: this.addFlowSaveError,
+        saveErrorRevision: this.addFlowSaveErrorRevision,
         lanScanning: this.lanScanning,
         lanPeers: this.lanScanResults,
         defaultDirectPort: this.rustdeskDirectPort,
@@ -23152,6 +23316,7 @@ struct HostListPage {
         initialDraftRevision:
           this.rustDeskAddResumeRevision,
         onBackToProtocols: (): void => { this.modernAddProtocol = ''; this.addSheetShowsModernPicker = true; },
+        onClose: (): void => { this.requestAddSheetClose(); },
         onStartLanScan: (): void => { this.startLanScan(); },
         onManageRelays: (
           draft: RustDeskHostAddDraft): void => {
@@ -23238,6 +23403,8 @@ struct HostListPage {
         },
         onDiscardTemporaryState: (): Promise<void> =>
           this.revokeMoonlightTemporaryPairing(),
+        // Closing revokes an unsaved temporary pairing in the sheet's dismissal, as a swipe-down does.
+        onClose: (): void => { this.requestAddSheetClose(); },
         onSaved: (hostId: string, openCatalog: boolean, ownerToken: number): void => {
           this.handleMoonlightHostSaved(hostId, openCatalog, ownerToken);
         }
@@ -23256,6 +23423,8 @@ struct HostListPage {
     } else if (this.modernAddProtocol === 'ssh') {
       SshAddFlow({
         keys: this.keyVault.getAllSshKeys(),
+        saveError: this.addFlowSaveError,
+        saveErrorRevision: this.addFlowSaveErrorRevision,
         initialBasicFields: this.proConnectionShareBasicFields,
         onBackToProtocols: (): void => {
           this.clearProConnectionShareDraft(); this.modernAddProtocol = ''; this.addSheetShowsModernPicker = true;
@@ -23268,6 +23437,8 @@ struct HostListPage {
     } else if (this.modernAddProtocol === 'vnc') {
       VncAddFlow({
         gateways: this.vncGateways.list(),
+        saveError: this.addFlowSaveError,
+        saveErrorRevision: this.addFlowSaveErrorRevision,
         fitContent: resolveHostAddSheetContentMode(
           this.activeHostAddProtocol(), this.breakpoint) === 'fitContent',
         onBackToProtocols: (): void => {
@@ -23279,6 +23450,7 @@ struct HostListPage {
           this.pendingVncGatewayDirectoryOpen = true;
           this.requestAddSheetClose();
         },
+        onClose: (): void => { this.requestAddSheetClose(); },
         onSave: (values: VncHostValues, password: string, connectNow: boolean,
           plainStorageConfirmed: boolean, passwordMutation: SecretEditMutationKind): void => {
           this.saveVncHostFromAddFlow(values, password, connectNow, plainStorageConfirmed,
@@ -23560,7 +23732,9 @@ struct HostListPage {
             this.protoBtn('RustDesk', 'rustdesk', 21116)
             this.protoBtn('VNC', 'vnc', 5900)
             this.protoBtn('SSH', 'ssh', 22)
-            this.protoBtn('AI · Pro', 'ai', 9443)
+            if (this.aiProVisible) {
+              this.protoBtn('AI · Pro', 'ai', 9443)
+            }
           }.width('100%').margin({ bottom: 12 })
 
           // 名称
@@ -23578,17 +23752,18 @@ struct HostListPage {
               Row() {
                 Column() {
                   if (this.proto === 'ssh') {
-                    this.fieldRow('端口', '22', this.sshPortVal.toString(), (v: string): void => {
+                    // An emptied port stays empty (0) until saved; the save says what is wrong.
+                    this.fieldRow('端口', '22', this.sshPortVal > 0 ? this.sshPortVal.toString() : '', (v: string): void => {
                       const n: number = parseInt(v);
-                      this.sshPortVal = isNaN(n) ? RemoteHost.getDefaultPort('ssh') : n;
+                      this.sshPortVal = v.trim() === '' || isNaN(n) ? 0 : n;
                       this.portVal = this.sshPortVal;
-                    })
+                    }, true, true)
                   } else {
-                    this.fieldRow('端口', '3389', this.rdpPortVal.toString(), (v: string): void => {
+                    this.fieldRow('端口', '3389', this.rdpPortVal > 0 ? this.rdpPortVal.toString() : '', (v: string): void => {
                       const n: number = parseInt(v);
-                      this.rdpPortVal = isNaN(n) ? RemoteHost.getDefaultPort('rdp') : n;
+                      this.rdpPortVal = v.trim() === '' || isNaN(n) ? 0 : n;
                       this.portVal = this.rdpPortVal;
-                    })
+                    }, true, true)
                   }
                 }.width('30%')
                 Column() {
@@ -23713,7 +23888,7 @@ struct HostListPage {
                 Text('还没有 RustDesk 中继').fontSize(13).fontColor(this.pal().text).fontFamily(this.font()).margin({ top: 6 })
                 Text('先添加中继配置后再绑定主机').fontSize(11).fontColor(this.pal().text3).fontFamily(this.font()).margin({ top: 2 })
                 Button('去添加中继').fontSize(12).height(32)
-                  .backgroundColor(this.accentColor).fontColor('#FFFFFF').borderRadius(16)
+                  .backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor)).borderRadius(16)
                   .margin({ top: 10 }).padding({ left: 16, right: 16 })
                   .onClick(() => {
                     this.pendingRustDeskRelayDirectoryOpen = true;
@@ -23851,7 +24026,7 @@ struct HostListPage {
           }
           if (this.proto !== 'vnc') {
             Button(this.editingHostId === '' ? '添加' : '保存').width('100%').height(40).fontSize(14)
-              .fontWeight(FontWeight.Medium).backgroundColor(this.accentColor).fontColor('#FFFFFF')
+              .fontWeight(FontWeight.Medium).backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor))
               .borderRadius(10).margin({ top: 16 })
               .onClick((): void => { this.doAdd(); })
           }
@@ -23859,18 +24034,23 @@ struct HostListPage {
   }
 
   @Builder private classicHostEditorTitle() {
-    Text(this.editingHostId !== '' ? '编辑主机' :
-      (this.proto === 'ssh' ? '添加 SSH 终端' :
-        (this.proto === 'rustdesk' ? '添加 RustDesk 主机' :
-          (this.proto === 'vnc' ? '添加 VNC 主机' : '添加 RDP 主机'))))
-      .fontSize(16).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
-      .width('100%').margin({ bottom: 12 }).fontFamily(this.font())
+    Row() {
+      Text(this.editingHostId !== '' ? '编辑主机' :
+        (this.proto === 'ssh' ? '添加 SSH 终端' :
+          (this.proto === 'rustdesk' ? '添加 RustDesk 主机' :
+            (this.proto === 'vnc' ? '添加 VNC 主机' : '添加 RDP 主机'))))
+        .fontSize(16).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
+        .layoutWeight(1).fontFamily(this.font())
+      Button() { SymbolGlyph($r('sys.symbol.xmark')).fontSize(16).fontColor([this.pal().text2]) }
+        .width(32).height(32).borderRadius(16).padding(0).backgroundColor(this.pal().surface)
+        .accessibilityText('关闭').onClick((): void => { this.requestAddSheetClose(); })
+    }.width('100%').margin({ bottom: 12 })
   }
 
   @Builder private classicVncEditorFooter() {
     Row() {
       Button(this.editingHostId === '' ? '添加' : '保存').width('100%').height(40).fontSize(14)
-        .fontWeight(FontWeight.Medium).backgroundColor(this.accentColor).fontColor('#FFFFFF')
+        .fontWeight(FontWeight.Medium).backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor))
         .borderRadius(10).onClick((): void => { this.doAdd(); })
     }.width('100%').margin({ top: 12 })
   }
@@ -23913,11 +24093,11 @@ struct HostListPage {
     Button(label).layoutWeight(1).height(36).fontSize(12)
       .fontWeight(this.proto === protoVal ? FontWeight.Medium : FontWeight.Normal)
       .backgroundColor(this.proto === protoVal ? this.accentColor : this.pal().surface)
-      .fontColor(this.proto === protoVal ? '#FFFFFF' : this.pal().text).borderRadius(10)
+      .fontColor(this.proto === protoVal ? appUiOnAccentText(this.accentColor) : this.pal().text).borderRadius(10)
       .shadow(this.proto === protoVal
         ? { radius: 8, color: this.pal().fabGlow, offsetY: 2 }
         : { radius: 0, color: 'rgba(0,0,0,0)', offsetY: 0 })
-      .margin({ right: label !== 'SSH' ? 8 : 0 })
+      .margin({ left: protoVal === 'rdp' ? 0 : 8 })
       .enabled(this.editingHostId === '')
       .opacity(this.editingHostId === '' || this.proto === protoVal ? 1.0 : 0.4)
       .onClick(() => {
@@ -23930,10 +24110,12 @@ struct HostListPage {
       })
   }
 
-  @Builder fieldRow(l: string, h: string, v: string, cb: (v: string) => void, enabled: boolean = true) {
+  @Builder fieldRow(l: string, h: string, v: string, cb: (v: string) => void, enabled: boolean = true,
+    numeric: boolean = false) {
     Column() {
       Text(l).fontSize(11).fontColor(this.pal().text2).fontFamily(this.font()).margin({ bottom: 4 })
-      TextInput({ placeholder: h, text: v }).height(38).backgroundColor(this.pal().surface).borderRadius(8)
+      TextInput({ placeholder: h, text: v }).type(numeric ? InputType.Number : InputType.Normal)
+        .height(38).backgroundColor(this.pal().surface).borderRadius(8)
         .fontColor(this.pal().text).placeholderColor(this.pal().text3).fontFamily(this.font())
         .fontSize(13).padding({ left: 10, right: 10 }).enabled(enabled)
         .opacity(enabled ? 1.0 : 0.55)
@@ -23969,7 +24151,7 @@ struct HostListPage {
   @Builder rdpAuthModeButton(label: string, mode: RdpAuthMode, marginLeft: number = 0) {
     Button(label).layoutWeight(1).height(34).borderRadius(8).margin({ left: marginLeft })
       .backgroundColor(this.sheetRdpAuthMode === mode ? this.accentColor : this.pal().surface)
-      .fontColor(this.sheetRdpAuthMode === mode ? '#FFFFFF' : this.pal().text2)
+      .fontColor(this.sheetRdpAuthMode === mode ? appUiOnAccentText(this.accentColor) : this.pal().text2)
       .fontSize(11)
       .onClick((): void => {
         this.sheetRdpAuthMode = mode;
@@ -24747,7 +24929,7 @@ struct HostListPage {
         Column({ space: 8 }) {
           SymbolGlyph($r('sys.symbol.key_fill')).fontSize(32).fontColor([this.pal().text3])
           Text('密钥库里还没有 SSH 密钥').fontSize(15).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
-          Text('可以关闭后在主机编辑页直接粘贴私钥；或到底部「密钥保险库」页添加，之后在这里选择。')
+          Text('可以关闭后在主机编辑页直接粘贴私钥；或到「密钥保险库」页添加，之后在这里选择。')
             .fontSize(13).fontColor(this.pal().text2).textAlign(TextAlign.Center).lineHeight(19)
         }.width('100%').padding({ left: 16, right: 16, top: 16, bottom: 16 })
       } else if (this.keyVault.getAllSshKeys().length === 0) {
@@ -25181,7 +25363,7 @@ struct HostListPage {
       return;
     }
     this.refreshHostSnapshotAfterMutation();
-    promptAction.showToast({ message: recordId === '' ? 'VNC 主机已保存' : 'VNC 主机已更新', duration: 1800 });
+    this.announceSavedHost(result.id, recordId === '' ? 'VNC 主机已保存' : 'VNC 主机已更新');
     this.requestAddSheetClose();
   }
 
@@ -25329,6 +25511,10 @@ struct HostListPage {
     } else {
       h.host = this.hostAddr;
       h.port = this.proto === 'rdp' ? this.rdpPortVal : this.sshPortVal;
+      if (!Number.isInteger(h.port) || h.port < 1 || h.port > 65535) {
+        this.sheetErr = '请输入 1–65535 之间的端口';
+        return;
+      }
       this.portVal = h.port;
       h.customHostname = this.chn;
       if (this.proto === 'rdp') {
@@ -25587,6 +25773,7 @@ struct HostListPage {
       (h.protocol === 'rustdesk' && h.rustdeskDirectEnabled
         ? ' direct=' + maskHost(h.rustdeskDirectHost) + ':' + h.rustdeskDirectPort : '') +
       ' rdpCredentialHash=' + hashForLog(h.rdpCredentialId));
+    this.announceSavedHost(h.id, (editingId !== '' ? '已保存「' : '已添加「') + h.label + '」');
     this.requestAddSheetClose();
     this.rdpCredentials = this.srv.getAllRdpCredentials();
   }

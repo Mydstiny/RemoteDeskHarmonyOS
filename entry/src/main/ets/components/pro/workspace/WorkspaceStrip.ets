@@ -1,3 +1,4 @@
+import { appUiOnAccentText } from '../../../common/AppUiColorPolicy';
 import { display } from '@kit.ArkUI';
 import { ProSymbolIcon } from '../ProSymbolIcon';
 import { AppConfig, buildDark, buildLight, Palette } from '../../../common/Theme';
@@ -19,6 +20,8 @@ import {
 export struct WorkspaceStrip {
   @StorageProp('currentTheme') theme: string = 'light';
   @StorageProp('accentColor') accent: string = '#007DFF';
+  /** PC: horizontal strips show a scrollbar (a mouse wheel does not scroll them sideways). */
+  @StorageProp('isDesktopDevice') isDesktopDevice: boolean = false;
   @Prop rows: OrgHostRow[] = [];
   @Prop activeRefs: string[] = [];
   @Prop runningId: string = '';
@@ -68,7 +71,7 @@ export struct WorkspaceStrip {
       }.alignItems(HorizontalAlign.Start).layoutWeight(1)
       Row() {
         SymbolGlyph($r('sys.symbol.arrowshape_right_fill')).fontSize(14)
-          .fontColor([workspace.entries.length === 0 ? this.pal().text3 : Color.White])
+          .fontColor([workspace.entries.length === 0 ? this.pal().text3 : appUiOnAccentText(workspace.color)])
       }.width(32).height(32).borderRadius(16).justifyContent(FlexAlign.Center)
       .backgroundColor(workspace.entries.length === 0 ? this.pal().surface : workspace.color)
       .accessibilityText('打开 ' + workspace.name)
@@ -138,7 +141,7 @@ export struct WorkspaceStrip {
                 this.smallAction($r('sys.symbol.rectangle_on_rectangle'), '保存当前', (): void => { this.saveCurrent(); })
               }
             }.padding({ left: 16, right: 8 })
-          }.scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off).align(Alignment.Start).width('100%')
+          }.scrollable(ScrollDirection.Horizontal).scrollBar(this.isDesktopDevice ? BarState.Auto : BarState.Off).align(Alignment.Start).width('100%')
         }
       }
     }

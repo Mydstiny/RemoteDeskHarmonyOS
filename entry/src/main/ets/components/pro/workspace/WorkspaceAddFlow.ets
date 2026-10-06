@@ -1,3 +1,4 @@
+import { appUiOnAccentText } from '../../../common/AppUiColorPolicy';
 import { buildDark, buildLight, Palette } from '../../../common/Theme';
 import { ProSymbolIcon } from '../ProSymbolIcon';
 import {
@@ -128,7 +129,7 @@ export struct WorkspaceAddFlow {
           .onClick((): void => { this.icon = icon; })
         }, (icon: string): string => icon)
       }.width('100%').margin({ bottom: 16 })
-      Button('下一步').width('100%').height(44).borderRadius(12).backgroundColor(this.accentColor).fontColor(Color.White)
+      Button('下一步').width('100%').height(44).borderRadius(12).backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor))
         .onClick((): void => {
           if (this.name.trim().length === 0) { this.errorText = '请填写工作区名称'; return; }
           this.errorText = ''; this.step = 2;
@@ -158,7 +159,7 @@ export struct WorkspaceAddFlow {
                 Text(orgRowDetail(row)).fontSize(11).fontColor(this.pal().text3).maxLines(1)
               }.alignItems(HorizontalAlign.Start).layoutWeight(1)
               if (this.picked.indexOf(row.ref) >= 0) {
-                Text((this.picked.indexOf(row.ref) + 1).toString()).fontSize(11).fontColor(Color.White)
+                Text((this.picked.indexOf(row.ref) + 1).toString()).fontSize(11).fontColor(appUiOnAccentText(this.color))
                   .width(20).height(20).textAlign(TextAlign.Center).borderRadius(10).backgroundColor(this.color)
               }
               Checkbox().select(this.picked.indexOf(row.ref) >= 0).selectedColor(this.accentColor)
@@ -171,7 +172,7 @@ export struct WorkspaceAddFlow {
         Button('创建').layoutWeight(1).height(44).borderRadius(12).backgroundColor(this.pal().surface)
           .fontColor(this.accentColor).onClick((): void => { this.create(false); })
         Button('创建并打开').layoutWeight(1).height(44).borderRadius(12).margin({ left: 8 })
-          .backgroundColor(this.accentColor).fontColor(Color.White).enabled(this.picked.length > 0)
+          .backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor)).enabled(this.picked.length > 0)
           .onClick((): void => { this.create(true); })
       }.width('100%').margin({ top: 16 })
     }.width('100%')

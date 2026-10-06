@@ -626,6 +626,7 @@ export struct VncSettingsPage {
       initialHost: this.hostFlowHost,
       editingId: this.hostFlowEditingId,
       onBackToProtocols: (): void => { this.hostFlowVisible = false; },
+      onClose: (): void => { this.hostFlowVisible = false; },
       onOpenSettings: (): void => {
         this.hostFlowVisible = false;
         this.pendingHostFlowGatewayDirectory = true;

@@ -1,3 +1,4 @@
+import { appUiOnAccentText } from '../../../common/AppUiColorPolicy';
 import { AppConfig, buildDark, buildLight, Palette } from '../../../common/Theme';
 import {
   HostExportDocument, HostExportRecord, hostImportKey, hostImportSupported
@@ -69,7 +70,7 @@ export struct HostImportPanel {
         .fontSize(12).fontColor(this.pal().text3).lineHeight(17).width('100%')
       if (this.withOrganization().length > 0) {
         Button(this.applied ? '已应用，可再次应用' : '把分组与标签应用到 ' + this.withOrganization().length.toString() + ' 台已存在的主机')
-          .width('100%').height(42).fontSize(14).backgroundColor(this.accent).fontColor(Color.White)
+          .width('100%').height(42).fontSize(14).backgroundColor(this.accent).fontColor(appUiOnAccentText(this.accent))
           .onClick((): void => { this.applyOrganization(); })
       }
       Column() {

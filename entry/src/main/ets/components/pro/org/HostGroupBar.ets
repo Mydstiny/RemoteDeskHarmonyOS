@@ -29,6 +29,8 @@ function sheetBodyMaxHeight(): number {
 export struct HostGroupBar {
   @StorageProp('currentTheme') theme: string = 'light';
   @StorageProp('accentColor') accent: string = '#007DFF';
+  /** PC: horizontal strips show a scrollbar (a mouse wheel does not scroll them sideways). */
+  @StorageProp('isDesktopDevice') isDesktopDevice: boolean = false;
   @StorageProp(HOST_SMART_FILTER_REVISION_KEY) smartRevision: number = 0;
   @Prop rows: OrgHostRow[] = [];
   @Prop onlineRefs: string[] = [];
@@ -139,7 +141,7 @@ export struct HostGroupBar {
           .accessibilityText('新建分组')
           .onClick((): void => { this.openManager('groups'); })
         }.padding({ left: 16, right: 8 })
-      }.scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off).align(Alignment.Start).layoutWeight(1)
+      }.scrollable(ScrollDirection.Horizontal).scrollBar(this.isDesktopDevice ? BarState.Auto : BarState.Off).align(Alignment.Start).layoutWeight(1)
       Row() {
         SymbolGlyph($r('sys.symbol.slider_horizontal_2')).fontSize(16).fontColor([this.pal().text2])
       }.width(36).height(32).justifyContent(FlexAlign.Center).margin({ right: 12 })

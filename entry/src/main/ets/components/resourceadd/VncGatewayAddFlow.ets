@@ -295,8 +295,10 @@ export struct VncGatewayAddFlow {
       stepText: (this.step + 1).toString() + '/' + VNC_GATEWAY_ADD_STEP_COUNT.toString() +
         '  ' + this.stepTitle(),
       leadingBack: true,
+      trailingClose: true,
       fitContent: this.fitContent,
       onLeadingAction: (): void => { this.back(); },
+      onTrailingClose: (): void => { this.onClose(); },
       contentBuilder: (): void => { this.flowBody(); },
       footerBuilder: (): void => { this.actionBar(); }
     })

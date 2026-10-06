@@ -6,6 +6,7 @@
  * username field is exposed because the current native viewer uses VNC
  * password authentication.
  */
+import { accentSecondaryText, appUiOnAccentText } from '../../common/AppUiColorPolicy';
 import { promptAction } from '@kit.ArkUI';
 import { Palette, buildDark, buildLight } from '../../common/Theme';
 import { DataCrypto } from '../../services/DataCrypto';
@@ -40,6 +41,20 @@ import {
 } from '../../services/VncHostFlowPolicy';
 import { VncSheetScaffold } from '../vnc/VncSheetScaffold';
 
+/** The VNC host summary in the words of the buttons the user picked, not the stored values. */
+function vncSecurityPolicyLabel(policy: string): string {
+  if (policy === 'secure_only') { return '仅 TLS'; }
+  if (policy === 'allow_plaintext') { return '允许明文'; }
+  return '可信网络';
+}
+
+function vncScalingModeLabel(mode: string): string {
+  if (mode === 'integer') { return '整数'; }
+  if (mode === 'one_to_one') { return '1:1'; }
+  if (mode === 'pan') { return '平移'; }
+  return '适应';
+}
+
 @Component
 export struct VncAddFlow {
   @StorageProp('currentTheme') theme: string = 'light';
@@ -51,6 +66,7 @@ export struct VncAddFlow {
   @Prop editingId: string = '';
   @Prop fitContent: boolean = false;
   onBackToProtocols: () => void = (): void => {};
+  onClose: () => void = (): void => {};
   onOpenSettings: () => void = (): void => {};
   onSave: (values: VncHostValues, password: string, connectNow: boolean,
     plainStorageConfirmed: boolean, passwordMutation: SecretEditMutationKind) => void =
@@ -79,11 +95,18 @@ export struct VncAddFlow {
   @State clipboardEnabled: boolean = false;
   @State securityPolicy: VncSecurityPolicy = 'secure_only';
   @State errorText: string = '';
+  /** A save the page could not complete: its reason shows in the form as well as in the toast. */
+  @Prop @Watch('onSaveError') saveError: string = '';
+  @Prop @Watch('onSaveError') saveErrorRevision: number = 0;
   private readonly settings: VncSettingsService = VncSettingsService.getInstance();
   private readonly hosts: VncHostService = VncHostService.getInstance();
   private readonly secretPresentation: SecretPresentationStore = SecretPresentationStore.getInstance();
   private cryptoStateUnsubscribe: (() => void) | null = null;
   private secretPresentationUnsubscribe: (() => void) | null = null;
+
+  private onSaveError(): void {
+    if (this.saveError !== '') { this.errorText = this.saveError; }
+  }
 
   private pal(): Palette {
     return this.theme === 'light' ? buildLight(this.accentColor) : buildDark(this.accentColor);
@@ -326,11 +349,11 @@ export struct VncAddFlow {
     if (this.transport === 'ultravnc_repeater') {
       const gateway: VncGatewayView | undefined = this.selectedGateway();
       if (gateway === undefined || !this.gatewaySelectable(gateway)) {
-        this.errorText = '请选择已启用的 VNC Repeater Gateway';
+        this.errorText = '请选择一个已启用的 VNC 中继';
         return false;
       }
       if (gateway.repeaterMode !== 'mode12') {
-        this.errorText = '当前 HarmonyOS viewer 仅支持 UltraVNC Repeater mode12';
+        this.errorText = '这个中继的模式暂不支持：目前只支持 UltraVNC 中继的 mode12';
         return false;
       }
     }
@@ -476,11 +499,11 @@ export struct VncAddFlow {
   @Builder private transportButton(title: string, subtitle: string, value: VncTransport) {
     Column() {
       SymbolGlyph(protocolIcon(value === 'direct_tcp' ? 'vnc' : 'vnc_gateway')).fontSize(22)
-        .fontColor([this.transport === value ? Color.White : this.pal().text2])
+        .fontColor([this.transport === value ? appUiOnAccentText(this.accentColor) : this.pal().text2])
       Text(title).fontSize(14).fontWeight(FontWeight.Medium)
-        .fontColor(this.transport === value ? Color.White : this.pal().text).margin({ top: 6 })
+        .fontColor(this.transport === value ? appUiOnAccentText(this.accentColor) : this.pal().text).margin({ top: 6 })
       Text(subtitle).fontSize(10)
-        .fontColor(this.transport === value ? '#DDEEFF' : this.pal().text3)
+        .fontColor(this.transport === value ? accentSecondaryText(this.accentColor) : this.pal().text3)
         .margin({ top: 3 })
     }.alignItems(HorizontalAlign.Start).layoutWeight(1).padding(12).borderRadius(12)
       .backgroundColor(this.transport === value ? this.accentColor : this.pal().surface)
@@ -492,7 +515,7 @@ export struct VncAddFlow {
     Button(title).layoutWeight(1).height(36).borderRadius(9)
       .backgroundColor(this.securityPolicy === value
         ? (danger ? this.pal().danger : this.accentColor) : this.pal().surface)
-      .fontColor(this.securityPolicy === value ? Color.White : this.pal().text2)
+      .fontColor(this.securityPolicy === value ? appUiOnAccentText(this.accentColor) : this.pal().text2)
       .fontSize(11).margin({ left: marginLeft })
       .onClick((): void => { this.securityPolicy = value; this.errorText = ''; })
   }
@@ -599,7 +622,7 @@ export struct VncAddFlow {
         this.securityButton('可信网络', 'trusted_network', false, 6)
         this.securityButton('允许明文', 'allow_plaintext', true, 6)
       }.width('100%').margin({ bottom: 10 })
-      Text('密码只进入独立 VNC secret 记录；不会写入 RDP、RustDesk、SSH 或普通 remotehosts。')
+      Text('密码单独加密保存，只用于这台 VNC 主机。')
         .fontSize(11).fontColor(this.pal().text3).lineHeight(17).width('100%')
     }.width('100%')
   }
@@ -629,19 +652,19 @@ export struct VncAddFlow {
         Row() {
           Button('适应').layoutWeight(1).height(36).borderRadius(9)
             .backgroundColor(this.scalingMode === 'fit' ? this.accentColor : this.pal().surface)
-            .fontColor(this.scalingMode === 'fit' ? Color.White : this.pal().text2)
+            .fontColor(this.scalingMode === 'fit' ? appUiOnAccentText(this.accentColor) : this.pal().text2)
             .onClick((): void => { this.scalingMode = 'fit'; })
           Button('整数').layoutWeight(1).height(36).borderRadius(9).margin({ left: 6 })
             .backgroundColor(this.scalingMode === 'integer' ? this.accentColor : this.pal().surface)
-            .fontColor(this.scalingMode === 'integer' ? Color.White : this.pal().text2)
+            .fontColor(this.scalingMode === 'integer' ? appUiOnAccentText(this.accentColor) : this.pal().text2)
             .onClick((): void => { this.scalingMode = 'integer'; })
           Button('1:1').layoutWeight(1).height(36).borderRadius(9).margin({ left: 6 })
             .backgroundColor(this.scalingMode === 'one_to_one' ? this.accentColor : this.pal().surface)
-            .fontColor(this.scalingMode === 'one_to_one' ? Color.White : this.pal().text2)
+            .fontColor(this.scalingMode === 'one_to_one' ? appUiOnAccentText(this.accentColor) : this.pal().text2)
             .onClick((): void => { this.scalingMode = 'one_to_one'; })
           Button('平移').layoutWeight(1).height(36).borderRadius(9).margin({ left: 6 })
             .backgroundColor(this.scalingMode === 'pan' ? this.accentColor : this.pal().surface)
-            .fontColor(this.scalingMode === 'pan' ? Color.White : this.pal().text2)
+            .fontColor(this.scalingMode === 'pan' ? appUiOnAccentText(this.accentColor) : this.pal().text2)
             .onClick((): void => { this.scalingMode = 'pan'; })
         }.width('100%').margin({ bottom: 12 })
       }
@@ -667,21 +690,21 @@ export struct VncAddFlow {
   @Builder private reviewStep() {
     Column() {
       Column() {
-        this.reviewRow('连接方式', this.transport === 'direct_tcp' ? 'TCP 直连' : 'UltraVNC Repeater mode12')
+        this.reviewRow('连接方式', this.transport === 'direct_tcp' ? 'TCP 直连' : 'UltraVNC 中继')
         this.reviewRow('名称', this.label.trim())
         if (this.transport === 'direct_tcp') {
           this.reviewRow('服务器', this.redactedValue(this.endpointAddress()))
           this.reviewRow('端口', this.portText)
         } else {
-          this.reviewRow('Gateway', this.selectedGateway() === undefined ? '未选择' :
+          this.reviewRow('网关', this.selectedGateway() === undefined ? '未选择' :
             (this.selectedGateway() as VncGatewayView).label)
-          this.reviewRow('Gateway 端点', this.selectedGateway() === undefined ? '未选择' :
+          this.reviewRow('网关地址', this.selectedGateway() === undefined ? '未选择' :
             this.redactedValue((this.selectedGateway() as VncGatewayView).host) + ':' + this.portText)
-          this.reviewRow('target ID', this.redactedValue(this.endpointAddress()))
+          this.reviewRow('目标 ID', this.redactedValue(this.endpointAddress()))
         }
-        this.reviewRow('TLS / 策略', (this.tls ? 'TLS' : '明文') + ' · ' + this.securityPolicy)
+        this.reviewRow('安全', (this.tls ? 'TLS 加密' : '不加密') + ' · 策略：' + vncSecurityPolicyLabel(this.securityPolicy))
         this.reviewRow('交互', (this.viewOnly ? '只读' : '可控制') + ' · ' +
-          (this.displayOverrideEnabled ? this.scalingMode : '跟随全局显示') +
+          (this.displayOverrideEnabled ? vncScalingModeLabel(this.scalingMode) : '跟随全局显示') +
           (this.clipboardEnabled ? ' · 剪贴板' : ' · 无剪贴板'))
       }.width('100%').padding(12).borderRadius(12).backgroundColor(this.pal().surface)
       Text(this.securityStorageHint())
@@ -695,13 +718,13 @@ export struct VncAddFlow {
         .backgroundColor(this.pal().surface).fontColor(this.pal().text2).onClick((): void => { this.back(); })
       if (this.step < VNC_HOST_ADD_STEP_COUNT - 1) {
         Button('下一步').layoutWeight(1).height(44).borderRadius(12).margin({ left: 8 })
-          .backgroundColor(this.accentColor).fontColor(Color.White).onClick((): void => { this.next(); })
+          .backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor)).onClick((): void => { this.next(); })
       } else {
         Button(this.editingId.trim() === '' ? '保存' : '更新').layoutWeight(1).height(44).borderRadius(12).margin({ left: 8 })
           .backgroundColor(this.pal().surface).fontColor(this.accentColor).onClick((): void => { this.save(false); })
         Button(this.editingId.trim() === '' ? '保存并连接' : '更新并连接')
           .layoutWeight(1).height(44).borderRadius(12).margin({ left: 8 })
-          .backgroundColor(this.accentColor).fontColor(Color.White).onClick((): void => { this.save(true); })
+          .backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor)).onClick((): void => { this.save(true); })
       }
     }.width('100%')
   }
@@ -736,8 +759,10 @@ export struct VncAddFlow {
       subtitle: this.stepDetail(),
       stepText: (this.step + 1).toString() + '/' + VNC_HOST_ADD_STEP_COUNT.toString() + '  ' + this.stepTitle(),
       leadingBack: true,
+      trailingClose: true,
       fitContent: this.fitContent,
       onLeadingAction: (): void => { this.back(); },
+      onTrailingClose: (): void => { this.onClose(); },
       contentBuilder: (): void => { this.flowBody(); },
       footerBuilder: (): void => { this.actionBar(); }
     })

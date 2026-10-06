@@ -23,3 +23,8 @@ export function appUiOnAccentText(accent: string): string {
   const luminance = relativeLuminance(appUiButtonFill(accent));
   return 1.05 / (luminance + 0.05) >= 3 ? '#FFFFFF' : '#000000';
 }
+
+/** The softer second line on an accent fill: the old light tint over white text, a dark grey over black text. */
+export function accentSecondaryText(accent: string): string {
+  return appUiOnAccentText(accent) === '#FFFFFF' ? '#EAF3FF' : '#3D3D3D';
+}
