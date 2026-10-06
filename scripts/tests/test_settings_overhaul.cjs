@@ -88,7 +88,12 @@ check('Moonlight shows status words instead of raw codes', () => {
     assert.ok(/[一-龥]/.test(text(code)), code);
   }
   assert.ok(text('something_new').includes('something_new'));
+  for (const harmless of ['', 'ok', 'default', 'unchanged']) { assert.equal(text(harmless), '', harmless); }
+  for (const code of ['invalid_owner', 'conflict', 'quarantined', 'local_write_failed']) {
+    assert.ok(!text(code).includes(code), code);
+  }
   const page = read('pages/MoonlightSettingsPage.ets');
+  assert.ok(page.includes("if (moonlightStatusText(this.saveCode) !== '') {"));
   assert.ok(page.includes("'本地设置：' + moonlightStatusText(this.saveCode)"));
   assert.ok(page.includes("'当前无法生成完整预览：' + moonlightStatusText(this.dataStatusCode)"));
   assert.ok(!page.includes("'本地设置状态：' + this.saveCode"));
@@ -133,6 +138,8 @@ check('settings switches show the saved value after a cancelled or failed change
   assert.ok(page.includes("}, (epoch: number): string => 'quick-exit-' + epoch.toString())"));
   const quickExit = member(page, '@Builder remoteSessionQuickExitRow() {');
   assert.ok(quickExit.includes('this.settingsSwitchEpoch++;'));
+  assert.ok(member(page, 'private saveRustDeskRemoteAppTouchScaleEnabled(on: boolean): void {')
+    .includes('this.settingsSwitchEpoch++;'));
 });
 
 check('closing an editor with unsaved changes asks first', () => {
@@ -148,10 +155,20 @@ check('closing an editor with unsaved changes asks first', () => {
     const start = page.indexOf(host);
     assert.ok(page.slice(start, start + 600).includes('this.dismissSettingsLeafIfNeeded('), host);
   }
+  // The combo editor counts as unsaved only after something changed, not merely because it is open.
+  assert.ok(label.includes("this.virtualKeyboardCustomEditorDirty) { return '组合键'; }"));
+  const keyboard = read('components/VirtualKeyboardSettingsSheet.ets');
+  assert.equal((keyboard.match(/@Watch\('reportEditorDirty'\)/g) || []).length, 6);
+  assert.ok(member(keyboard, 'private beginEditor(').includes('this.editorStart = this.editorSnapshot();'));
   const skin = read('components/ssh/skin/SshSkinSettingsPanel.ets');
   assert.ok(skin.includes("@State @Watch('reportEditingDirty') editing"));
   const display = read('components/rdp/RdpDisplayProfilePanel.ets');
   assert.ok(display.includes("@State @Watch('reportDraftDirty') widthDraft"));
+  // Applying a typed size re-checks against the saved values, so the flag does not stay set.
+  assert.ok(member(display, 'onCustomChange(): void {').includes('this.reportDraftDirty();'));
+  // The portrait sheet saves one thing per change, so a failure never leaves half of it stored.
+  const portraitHost = page.slice(page.indexOf('RemotePortraitDisplaySettingsSheet({'));
+  assert.ok(portraitHost.slice(0, 1600).includes('=== this.remotePortraitSidebarHeightMode'));
   // The credential editor goes back to the list it was opened from.
   const save = member(page, 'private saveRdpCredentialFromSettings(): void {');
   assert.ok(save.includes('this.openSettingsLeafSheet(SETTINGS_SHEET_RDP_CREDENTIALS);'));
@@ -169,6 +186,10 @@ check('PC: a leaf the user closes goes back to the settings panel it came from',
   assert.ok(disappear.includes('const returnToPanel: boolean = closedByUser && this.settingsLeafReturnsToPanel;'));
   const back = member(page, 'private returnToSettingsPanelAfterLeaf(): void {');
   assert.ok(back.includes("this.breakpoint !== 'xl'") && back.includes('!this.pageActive'));
+  const blocked = member(page, 'private settingsPanelReturnBlocked(): boolean {');
+  for (const sheet of ['showAddSheet', 'showWorkspaceEditor', 'showRemoteHostSheet', 'aiIslandShown']) {
+    assert.ok(blocked.includes('this.' + sheet), sheet);
+  }
   const leaf = member(page, '@Builder settingsLeafSheet() {');
   assert.ok(!leaf.includes('onClose: (): void => { this.closeSettingsLeafSheet(); }'), 'leaf close buttons are user closes');
   // The PC sheet does not keep the phone tab bar's spacer.

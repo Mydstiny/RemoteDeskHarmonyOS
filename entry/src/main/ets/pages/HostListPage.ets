@@ -1232,6 +1232,8 @@ struct HostListPage {
   private aiShareRefusedTimer: number = -1;
   @State settingsLeafSheetMode: number = SETTINGS_SHEET_NONE;
   @State virtualKeyboardCustomEditorVisible: boolean = false;
+  /** The combo key editor holds a new or changed combo that is not saved yet. */
+  private virtualKeyboardCustomEditorDirty: boolean = false;
   @State vncSettingsLeafDirty: boolean = false;
   @State moonlightSettingsLeafDirty: boolean = false;
   /** A Switch keeps the position the user tapped until its isOn value changes. When a change is cancelled or
@@ -4915,6 +4917,7 @@ struct HostListPage {
     }
     this.closeLegacySettingsSheetFlags();
     this.virtualKeyboardCustomEditorVisible = false;
+    this.virtualKeyboardCustomEditorDirty = false;
     this.settingsLeafSheetMode = mode;
     this.showSettingsLeafSheet = true;
   }
@@ -5028,8 +5031,14 @@ struct HostListPage {
   private returnToSettingsPanelAfterLeaf(): void {
     if (!this.pageActive || !this.isDesktopDevice || this.breakpoint !== 'xl') { return; }
     this.openSheetSafely((): void => {
-      if (this.pageActive && !this.showSettingsLeafSheet) { this.showSettingsPanel = true; }
+      if (this.pageActive && !this.settingsPanelReturnBlocked()) { this.showSettingsPanel = true; }
     });
+  }
+
+  /** Something else opened meanwhile (another sheet, the AI island): leave it on top instead of the settings. */
+  private settingsPanelReturnBlocked(): boolean {
+    return this.showSettingsLeafSheet || this.showAddSheet || this.addSheetClosing || this.showWorkspaceEditor ||
+      this.showWorkspacePrep || this.showRemoteHostSheet || this.aiIslandShown;
   }
 
   private rdpCredentialEditorSnapshot(): string {
@@ -5045,7 +5054,7 @@ struct HostListPage {
     if (mode === SETTINGS_SHEET_RDP_DISPLAY_PROFILE && this.rdpDisplayDraftDirty) { return '远端显示尺寸'; }
     if (mode === SETTINGS_SHEET_RDP_CREDENTIAL_EDITOR &&
       this.rdpCredentialEditorSnapshot() !== this.rdpCredEditorBaseline) { return 'Windows 凭据'; }
-    if (this.isVirtualKeyboardSettingsLeafSheet() && this.virtualKeyboardCustomEditorVisible) { return '组合键'; }
+    if (this.isVirtualKeyboardSettingsLeafSheet() && this.virtualKeyboardCustomEditorDirty) { return '组合键'; }
     if (mode === SETTINGS_SHEET_POPUP && this.popupSheetMode === 0 &&
       (this.cryptoPwd !== '' || this.cryptoPwdConfirm !== '')) { return '加密密码'; }
     return '';
@@ -5076,6 +5085,7 @@ struct HostListPage {
         this.rdpDisplayDraftDirty = false;
         this.rdpCredEditorBaseline = this.rdpCredentialEditorSnapshot();
         this.virtualKeyboardCustomEditorVisible = false;
+        this.virtualKeyboardCustomEditorDirty = false;
         this.cryptoPwd = '';
         this.cryptoPwdConfirm = '';
         continueAction();
@@ -5129,6 +5139,7 @@ struct HostListPage {
     this.sshSkinEditorDirty = false;
     this.rdpDisplayDraftDirty = false;
     this.virtualKeyboardCustomEditorVisible = false;
+    this.virtualKeyboardCustomEditorDirty = false;
     if (moonlightSettingsRouteSpec(dismissedMode) !== null) {
       this.moonlightSettingsLeafHostId = '';
     }
@@ -13776,6 +13787,7 @@ struct HostListPage {
       this.remotePinchZoomPreferences();
     if (!this.saveRemotePinchZoomPreferences(values, on)) {
       promptAction.showToast({ message: 'RustDesk 触控缩放设置保存失败，请重试', duration: 2200 });
+      this.settingsSwitchEpoch++;
     }
   }
 
@@ -17572,7 +17584,15 @@ struct HostListPage {
         onClose: (): void => { this.closeSettingsLeafSheetByUser(); },
         onSave: (update: RemotePortraitDisplayPreferenceUpdate,
           heightMode: RemotePortraitSidebarHeightMode): boolean => {
-          if (!this.saveRemotePortraitDisplayPreferenceUpdate(update)) { return false; }
+          // The sheet saves one change at a time (a protocol or the sidebar height), so each save is one write and
+          // a failure never leaves half of it stored.
+          const touched = update.touched;
+          if ((touched.rdpEnabled || touched.rdpMode || touched.rustdeskEnabled || touched.rustdeskMode ||
+            touched.vncEnabled || touched.vncMode || touched.moonlightEnabled || touched.moonlightMode) &&
+            !this.saveRemotePortraitDisplayPreferenceUpdate(update)) { return false; }
+          if (normalizeRemotePortraitSidebarHeightMode(heightMode) === this.remotePortraitSidebarHeightMode) {
+            return true;
+          }
           return this.saveRemotePortraitSidebarHeightMode(heightMode);
         }
       })
@@ -17612,7 +17632,8 @@ struct HostListPage {
         },
         onCustomEditorVisibleChange: (visible: boolean): void => {
           this.virtualKeyboardCustomEditorVisible = visible;
-        }
+        },
+        onCustomEditorDirtyChange: (dirty: boolean): void => { this.virtualKeyboardCustomEditorDirty = dirty; }
       })
     } else if (this.isMoonlightSettingsLeafSheet()) {
       MoonlightSettingsSurface({
@@ -24029,7 +24050,7 @@ struct HostListPage {
             Column() {
               Text(sz.toString())
                 .fontSize(sz > 20 ? 10 : sz > 16 ? 11 : 12)
-                .fontColor(this.terminalFontSize === sz ? '#FFFFFF' : this.pal().text)
+                .fontColor(this.terminalFontSize === sz ? appUiOnAccentText(this.accentColor) : this.pal().text)
               Text('vp').fontSize(9).fontColor(this.terminalFontSize === sz ? appUiOnAccentText(this.accentColor) : this.pal().text3)
             }
             .width(56).height(48).borderRadius(12).justifyContent(FlexAlign.Center)

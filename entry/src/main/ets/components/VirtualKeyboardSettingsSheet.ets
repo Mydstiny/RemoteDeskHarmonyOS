@@ -68,15 +68,15 @@ export struct VirtualKeyboardSettingsSheet {
   };
   @State private systemLoading: boolean = false;
   @State private customShortcuts: Array<RemoteCustomShortcut> = [];
-  @State private editorVisible: boolean = false;
+  @State @Watch('reportEditorDirty') private editorVisible: boolean = false;
   @State private editingId: string = '';
-  @State private modifierCodes: Array<number> = [];
+  @State @Watch('reportEditorDirty') private modifierCodes: Array<number> = [];
   @State private actionGroup: RemoteCustomShortcutKeyGroup = 'letters';
-  @State private actionKeyCode: number = 2017;
+  @State @Watch('reportEditorDirty') private actionKeyCode: number = 2017;
   // Completed steps of the sequence being edited; the modifier/key pickers edit step `activeStep`.
-  @State private draftSteps: Array<Array<number>> = [];
-  @State private activeStep: number = 0;
-  @State private draftName: string = '';
+  @State @Watch('reportEditorDirty') private draftSteps: Array<Array<number>> = [];
+  @State @Watch('reportEditorDirty') private activeStep: number = 0;
+  @State @Watch('reportEditorDirty') private draftName: string = '';
   @State private recording: boolean = false;
   private recordModifiers: Array<number> = [];
   @State private viewportWidth: number = 360;
@@ -92,6 +92,9 @@ export struct VirtualKeyboardSettingsSheet {
     RemoteKeyboardSettingsService.getInstance();
   onClose: () => void = (): void => {};
   onCustomEditorVisibleChange: (visible: boolean) => void = (_visible: boolean): void => {};
+  /** A new combo, or changes to the one being edited, that are not saved yet (closing the sheet asks first). */
+  onCustomEditorDirtyChange: (dirty: boolean) => void = (_dirty: boolean): void => {};
+  private editorStart: string = '';
 
   private dark(): boolean { return this.theme === 'dark'; }
   private bg(): string { return this.dark() ? '#1C1C1F' : '#F4F6F9'; }
@@ -354,7 +357,16 @@ export struct VirtualKeyboardSettingsSheet {
     this.actionGroup = remoteCustomShortcutKeyGroupForKeyCode(this.actionKeyCode);
   }
 
+  private editorSnapshot(): string {
+    return JSON.stringify([this.draftName, this.allDraftSteps()]);
+  }
+
+  private reportEditorDirty(): void {
+    this.onCustomEditorDirtyChange(this.editorVisible && this.editorSnapshot() !== this.editorStart);
+  }
+
   private beginEditor(shortcut: RemoteCustomShortcut | null = null): void {
+    this.editorStart = '';
     this.editorVisible = true;
     this.onCustomEditorVisibleChange(true);
     this.editingId = shortcut === null ? '' : shortcut.id;
@@ -364,6 +376,9 @@ export struct VirtualKeyboardSettingsSheet {
     this.activeStep = 0;
     this.recording = false;
     this.loadPicker(steps[0]);
+    // Opening the editor changes nothing yet; only edits after this point count as unsaved.
+    this.editorStart = this.editorSnapshot();
+    this.reportEditorDirty();
   }
 
   /** Switch the picker to another step, keeping the edits of the current one. */

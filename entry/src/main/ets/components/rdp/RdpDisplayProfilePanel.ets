@@ -78,11 +78,14 @@ export struct RdpDisplayProfilePanel {
 
   onResolutionChange(): void {
     this.sizeTab = this.resolutionId === 'auto' ? 'auto' : this.resolutionId === 'custom' ? 'custom' : 'preset';
+    this.reportDraftDirty();
   }
 
   onCustomChange(): void {
     this.widthDraft = this.customWidth.toString();
     this.heightDraft = this.customHeight.toString();
+    // An applied size can equal the typed text, which fires no draft @Watch; re-check against the saved values.
+    this.reportDraftDirty();
   }
 
   private pal(): Palette {

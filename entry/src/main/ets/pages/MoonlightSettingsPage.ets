@@ -1407,7 +1407,7 @@ export struct MoonlightSettingsSurface {
   build() {
     Column() {
       this.header()
-      if (this.saveCode !== '' && this.saveCode !== 'default' && this.saveCode !== 'ok') {
+      if (moonlightStatusText(this.saveCode) !== '') {
         Text('本地设置：' + moonlightStatusText(this.saveCode)).fontSize(10).fontColor(this.pal().editColor)
           .width('100%').padding({ left: 22, right: 22, bottom: 6 })
       }
