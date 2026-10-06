@@ -81,6 +81,9 @@ export struct MoonlightSettingsSurface {
   @State customWidthEditing: boolean = false;
   @State customHeightText: string = '';
   @State customHeightEditing: boolean = false;
+  /** The width / height when typing started; if the slider or a resolution choice changes it, the typing is dropped. */
+  private customWidthBase: number = 0;
+  private customHeightBase: number = 0;
   @Prop embedded: boolean = false;
   @Prop requestedSection: MoonlightSettingsSection = 'video';
   @Prop requestedHostId: string = '';
@@ -165,6 +168,8 @@ export struct MoonlightSettingsSurface {
   }
 
   private loadCurrentSettings(): void {
+    this.customWidthEditing = false;
+    this.customHeightEditing = false;
     const store: CloudStore = CloudStore.getInstance();
     const before: AccountSessionLease | null = store.currentAccountLease();
     const loaded: MoonlightLocalSettingsResult = this.service.load();
@@ -202,7 +207,7 @@ export struct MoonlightSettingsSurface {
     this.syncVideoSliderDrafts(next);
     this.syncInputControlModeDraft(next);
     this.dirty = JSON.stringify(next) !== this.savedSettingsCanonical;
-    this.onDirtyChanged(this.dirty);
+    this.onDirtyChanged(this.unsaved());
     this.saveCode = '';
   }
 
@@ -407,6 +412,8 @@ export struct MoonlightSettingsSurface {
   }
 
   private save(): void {
+    this.commitCustomSize(true);
+    this.commitCustomSize(false);
     const editingLease: AccountSessionLease | null = this.editingLease;
     if (editingLease === null) {
       this.loadCurrentSettings();
@@ -502,7 +509,7 @@ export struct MoonlightSettingsSurface {
 
   private requestDataCommand(command: MoonlightDeletionCommandType): void {
     if (this.dataBusy) { return; }
-    if (this.dirty) {
+    if (this.unsaved()) {
       promptAction.showToast({ message: '请先保存或放弃当前设置草稿，再管理数据', duration: 2400 });
       return;
     }
@@ -603,11 +610,13 @@ export struct MoonlightSettingsSurface {
   }
 
   private close(): void {
+    this.commitCustomSize(true);
+    this.commitCustomSize(false);
     if (this.embedded) {
       this.onClose();
       return;
     }
-    if (!this.dirty) { router.back(); return; }
+    if (!this.unsaved()) { router.back(); return; }
     promptAction.showDialog({
       title: '放弃未保存的 Moonlight 设置？',
       message: '当前修改只在本页草稿中，尚未写入本地记录。',
@@ -633,7 +642,7 @@ export struct MoonlightSettingsSurface {
             '修改立即预览，保存后用于下一次连接').fontSize(this.modern() ? 12 : 11)
             .fontColor(this.modern() ? this.pal().text2 : this.pal().text3).margin({ top: 4 })
         }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 12 })
-        if (this.dirty) {
+        if (this.unsaved()) {
           Text('未保存').fontSize(10).fontColor(this.pal().editColor)
             .padding({ left: 8, right: 8, top: 4, bottom: 4 })
             .backgroundColor(this.pal().editColor + '16').borderRadius(10).margin({ right: 8 })
@@ -658,16 +667,16 @@ export struct MoonlightSettingsSurface {
           Text('当前账号全局默认 · 安全身份始终仅限本机').fontSize(this.modern() ? 12 : 10)
             .fontColor(this.modern() ? this.pal().text2 : this.pal().text3).margin({ top: 2 })
         }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 10 })
-        if (this.dirty) {
+        if (this.unsaved()) {
           Text('未保存').fontSize(10).fontColor(this.pal().editColor)
             .padding({ left: 8, right: 8, top: 4, bottom: 4 })
             .backgroundColor(this.pal().editColor + '16').borderRadius(10).margin({ right: 8 })
         }
         if (this.section !== 'data') {
           Button('保存').height(40).fontSize(13).borderRadius(12)
-            .backgroundColor(this.dirty && this.editingLease !== null ? this.accentColor : this.pal().surface)
-            .fontColor(this.dirty && this.editingLease !== null ? appUiOnAccentText(this.accentColor) : this.pal().text3)
-            .enabled(this.dirty && this.editingLease !== null)
+            .backgroundColor(this.unsaved() && this.editingLease !== null ? this.accentColor : this.pal().surface)
+            .fontColor(this.unsaved() && this.editingLease !== null ? appUiOnAccentText(this.accentColor) : this.pal().text3)
+            .enabled(this.unsaved() && this.editingLease !== null)
             .onClick((): void => { this.save(); })
         } else if (this.dataBusy) {
           Text('处理中').fontSize(11).fontColor(this.accentColor)
@@ -832,8 +841,8 @@ export struct MoonlightSettingsSurface {
       Row() {
         Text('当前连接预览').fontSize(13).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
           .layoutWeight(1)
-        Text(this.dirty ? '有未保存更改' : '已保存').fontSize(10)
-          .fontColor(this.dirty ? this.pal().editColor : this.pal().success)
+        Text(this.unsaved() ? '有未保存更改' : '已保存').fontSize(10)
+          .fontColor(this.unsaved() ? this.pal().editColor : this.pal().success)
       }.width('100%')
       Row({ space: 8 }) {
         this.previewItem('画面', this.resolutionPreview() + ' · ' +
@@ -862,7 +871,8 @@ export struct MoonlightSettingsSurface {
       Toggle({ type: ToggleType.Switch, isOn: checked }).selectedColor(this.accentColor)
         .enabled(enabled).opacity(enabled ? 1 : 0.55).onChange(onChange)
         .scale({ x: this.modern() ? 1 : 0.86, y: this.modern() ? 1 : 0.86 })
-    }.width('100%').height(62).padding({ top: 6, bottom: 6 })
+    }.width('100%').height(this.modern() ? 'auto' : 62).constraintSize({ minHeight: this.modern() ? 62 : 0 })
+      .padding({ top: 6, bottom: 6 })
   }
 
   @Builder private videoFpsSlider() {
@@ -904,43 +914,75 @@ export struct MoonlightSettingsSurface {
   }
 
   /**
-   * 全新视觉: type the custom width or height; it is saved on Enter or blur and clamped like the slider
-   * (320–7680 × 240–4320, even numbers).
+   * 全新视觉: type the custom width or height; it is applied on Enter, on blur, and before saving or closing, and
+   * clamped like the slider (320–7680 × 240–4320, even numbers). Typing not applied yet counts as unsaved.
    */
   @Builder private customSizeField(width: boolean) {
     Row({ space: 4 }) {
-      TextInput({ text: width ?
-        (this.customWidthEditing ? this.customWidthText : this.videoWidthDraft.toString()) :
-        (this.customHeightEditing ? this.customHeightText : this.videoHeightDraft.toString()) })
+      TextInput({ text: this.customSizeText(width) })
         .type(InputType.Number).width(92).height(44).fontSize(14).textAlign(TextAlign.End)
         .fontColor(this.pal().text).backgroundColor(this.pal().surface).borderRadius(10)
         .accessibilityText(width ? '自定义宽度' : '自定义高度')
         .onFocus((): void => {
-          if (width) { this.customWidthText = this.videoWidthDraft.toString(); this.customWidthEditing = true; }
-          else { this.customHeightText = this.videoHeightDraft.toString(); this.customHeightEditing = true; }
-        })
-        .onChange((value: string): void => {
           if (width) {
-            if (!this.customWidthEditing && value !== this.videoWidthDraft.toString()) { this.customWidthEditing = true; }
-            if (this.customWidthEditing) { this.customWidthText = value; }
+            this.customWidthBase = this.videoWidthDraft;
+            this.customWidthText = this.videoWidthDraft.toString();
+            this.customWidthEditing = true;
           } else {
-            if (!this.customHeightEditing && value !== this.videoHeightDraft.toString()) { this.customHeightEditing = true; }
-            if (this.customHeightEditing) { this.customHeightText = value; }
+            this.customHeightBase = this.videoHeightDraft;
+            this.customHeightText = this.videoHeightDraft.toString();
+            this.customHeightEditing = true;
           }
         })
+        .onChange((value: string): void => { this.typeCustomSize(width, value); })
         .onSubmit((): void => { this.commitCustomSize(width); })
         .onBlur((): void => { this.commitCustomSize(width); })
       Text('px').fontSize(12).fontColor(this.pal().text2)
     }
   }
 
+  /** The draft or a typed value counts as unsaved. */
+  private unsaved(): boolean {
+    return this.dirty || this.customSizePending(true) || this.customSizePending(false);
+  }
+
+  /** Typing still applies only while the value it started from is unchanged. */
+  private customSizeTyping(width: boolean): boolean {
+    return width ? this.customWidthEditing && this.customWidthBase === this.videoWidthDraft :
+      this.customHeightEditing && this.customHeightBase === this.videoHeightDraft;
+  }
+
+  private customSizePending(width: boolean): boolean {
+    if (!this.customSizeTyping(width)) { return false; }
+    return width ? this.customWidthText.trim() !== this.videoWidthDraft.toString() :
+      this.customHeightText.trim() !== this.videoHeightDraft.toString();
+  }
+
+  private customSizeText(width: boolean): string {
+    if (width) { return this.customSizeTyping(true) ? this.customWidthText : this.videoWidthDraft.toString(); }
+    return this.customSizeTyping(false) ? this.customHeightText : this.videoHeightDraft.toString();
+  }
+
+  private typeCustomSize(width: boolean, value: string): void {
+    if (!this.customSizeTyping(width)) {
+      // The field showing a value set elsewhere is not typing; a different value starts a new edit.
+      const draft: number = width ? this.videoWidthDraft : this.videoHeightDraft;
+      if (width) { this.customWidthEditing = value !== draft.toString(); this.customWidthBase = draft; }
+      else { this.customHeightEditing = value !== draft.toString(); this.customHeightBase = draft; }
+    }
+    if (width) { this.customWidthText = value; } else { this.customHeightText = value; }
+    this.onDirtyChanged(this.unsaved());
+  }
+
   private commitCustomSize(width: boolean): void {
-    const editing: boolean = width ? this.customWidthEditing : this.customHeightEditing;
-    if (!editing) { return; }
+    const typing: boolean = this.customSizeTyping(width);
     const text: string = (width ? this.customWidthText : this.customHeightText).trim();
     if (width) { this.customWidthEditing = false; } else { this.customHeightEditing = false; }
     const value: number = Number(text);
-    if (text === '' || !Number.isFinite(value)) { return; }
+    if (!typing || text === '' || !Number.isFinite(value)) {
+      this.onDirtyChanged(this.unsaved());
+      return;
+    }
     if (width) { this.setVideoWidth(value); } else { this.setVideoHeight(value); }
   }
 
@@ -1117,7 +1159,7 @@ export struct MoonlightSettingsSurface {
           .backgroundColor(this.settings.video.bitrateKbps > 20000 &&
             this.settings.video.bitrateKbps < 50000 ? this.accentColor : this.pal().surface)
           .fontColor(this.settings.video.bitrateKbps > 20000 &&
-            this.settings.video.bitrateKbps < 50000 ? Color.White : this.pal().text2)
+            this.settings.video.bitrateKbps < 50000 ? appUiOnAccentText(this.accentColor) : this.pal().text2)
           .onClick((): void => { this.update((next: MoonlightSettings): void => {
             next.video.fps = Math.min(60, this.maximumVideoFpsFor(next.video.codecPreference));
             next.video.bitrateKbps = 30000;
@@ -1364,7 +1406,7 @@ export struct MoonlightSettingsSurface {
       Button(label).height(this.modern() ? 44 : 36).fontSize(this.modern() ? 13 : 11).borderRadius(11)
         .backgroundColor(enabled ?
           (dangerous ? this.pal().danger : this.accentColor) : this.pal().surface)
-        .fontColor(enabled ? Color.White : this.pal().text3)
+        .fontColor(enabled ? (dangerous ? Color.White : appUiOnAccentText(this.accentColor)) : this.pal().text3)
         .enabled(enabled).onClick(action)
     }.width('100%').padding({ top: 10, bottom: 10 })
   }
@@ -1454,12 +1496,12 @@ export struct MoonlightSettingsSurface {
     if (this.section !== 'data') {
       Column() {
         Divider().color(this.pal().divider).margin({ bottom: 12 })
-        Button(this.dirty ? '保存更改' : '设置已保存').width('100%').height(44)
+        Button(this.unsaved() ? '保存更改' : '设置已保存').width('100%').height(44)
           .fontSize(13).borderRadius(11)
-          .backgroundColor(this.dirty && this.editingLease !== null ?
+          .backgroundColor(this.unsaved() && this.editingLease !== null ?
             this.accentColor : this.pal().surface)
-          .fontColor(this.dirty && this.editingLease !== null ? Color.White : this.pal().text3)
-          .enabled(this.dirty && this.editingLease !== null)
+          .fontColor(this.unsaved() && this.editingLease !== null ? appUiOnAccentText(this.accentColor) : this.pal().text3)
+          .enabled(this.unsaved() && this.editingLease !== null)
           .onClick((): void => { this.save(); })
       }.width('100%').padding({ left: 20, right: 20, bottom: 18 })
     }

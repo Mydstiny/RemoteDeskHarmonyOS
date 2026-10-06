@@ -545,4 +545,39 @@ check('remote AI and AI 助理 settings use the shared header and palette colors
   assert.ok(!/\.fontColor\('#FF453A'\)/.test(ai), 'every red label is gated');
 });
 
+check('batch D review: typed Moonlight sizes count as unsaved, rows grow, plain VNC words, no white on light accents', () => {
+  const page = read('pages/MoonlightSettingsPage.ets');
+  const save = member(page, 'private save(): void {');
+  assert.ok(save.indexOf('this.commitCustomSize(false);') >= 0 &&
+    save.indexOf('this.commitCustomSize(false);') < save.indexOf('const editingLease'), 'saving applies typed sizes first');
+  const close = member(page, 'private close(): void {');
+  assert.ok(close.indexOf('this.commitCustomSize(false);') >= 0 &&
+    close.indexOf('this.commitCustomSize(false);') < close.indexOf('if (this.embedded)'), 'closing applies typed sizes first');
+  assert.ok(member(page, 'private update(change: (next: MoonlightSettings) => void): void {')
+    .includes('this.onDirtyChanged(this.unsaved());'));
+  assert.ok(member(page, 'private unsaved(): boolean {').includes('this.customSizePending(true)'));
+  assert.ok(member(page, 'private customSizeTyping(width: boolean): boolean {').includes('this.customWidthBase === this.videoWidthDraft'),
+    'a slider or resolution change drops the typing');
+  const footer = member(page, '@Builder private embeddedFooter() {');
+  assert.ok(footer.includes('.enabled(this.unsaved() && this.editingLease !== null)'));
+  assert.ok(!/Color\.White/.test(footer), 'the save button text follows the accent');
+  assert.ok(member(page, '@Builder private toggleRow(').includes(
+    ".height(this.modern() ? 'auto' : 62).constraintSize({ minHeight: this.modern() ? 62 : 0 })"));
+  assert.ok(member(page, 'private loadCurrentSettings(): void {').includes('this.customWidthEditing = false;'));
+
+  const vnc = read('components/VncSettingsSheet.ets');
+  assert.ok(vnc.includes("settingsVisualIsModern(this.visualStyle) ? '当前账号还没有可用的中继网关，请先添加并启用。' :"));
+  assert.ok(vnc.includes("settingsVisualIsModern(this.visualStyle) ? '也可以从设置里的“数据安全”打开同一个管理器。' :"));
+
+  const about = read('components/AboutSettingsSheet.ets');
+  const chip = member(about, '@Builder guideProtocolChip(option: GuideProtocolOption) {');
+  assert.ok(!/Color\.White/.test(chip) && chip.includes('appUiOnAccentText(this.accentColor)'));
+  assert.ok(read('components/DiagnosticCaptureSettingsSheet.ets')
+    .includes('.fontColor(this.selectedDurationMinutes === minutes ? appUiOnAccentText(this.accentColor) : this.pal().text2)'));
+  const host = read('pages/HostListPage.ets');
+  assert.ok(member(host, '@Builder proDebugModeChip(label: string, mode: string) {').includes('appUiOnAccentText(this.accentColor)'));
+  assert.ok(member(host, '@Builder cloudSyncSheet() {').includes(
+    ".fontColor(this.currentCloudSyncSheetSpec().primaryDestructive ? '#FFFFFF' : appUiOnAccentText(this.accentColor))"));
+});
+
 console.log('settings overhaul: ' + passed + ' checks passed');

@@ -331,7 +331,7 @@ export struct DiagnosticCaptureSettingsSheet {
               Button(minutes.toString() + ' 分钟')
                 .height(36).padding({ left: 14, right: 14 })
                 .fontSize(13).fontFamily(this.font())
-                .fontColor(this.selectedDurationMinutes === minutes ? Color.White : this.pal().text2)
+                .fontColor(this.selectedDurationMinutes === minutes ? appUiOnAccentText(this.accentColor) : this.pal().text2)
                 .backgroundColor(this.selectedDurationMinutes === minutes ?
                   this.accentColor : this.pal().surface)
                 .borderRadius(12).margin({ right: 8, bottom: 8 })

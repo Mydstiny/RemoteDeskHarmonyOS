@@ -387,10 +387,11 @@ export struct AboutSettingsSheet {
     Column() {
       Text(option.label)
         .fontSize(13).fontWeight(FontWeight.Medium)
-        .fontColor(this.guideProtocol === option.id ? Color.White : this.pal().text)
+        .fontColor(this.guideProtocol === option.id ? appUiOnAccentText(this.accentColor) : this.pal().text)
         .fontFamily(this.font())
       Text(option.summary)
-        .fontSize(10).fontColor(this.guideProtocol === option.id ? '#EAF3FF' : this.pal().text3)
+        .fontSize(10).fontColor(this.guideProtocol === option.id ?
+          (appUiOnAccentText(this.accentColor) === '#FFFFFF' ? '#EAF3FF' : '#3D3D3D') : this.pal().text3)
         .fontFamily(this.font()).margin({ top: 2 })
     }
     .constraintSize({ minWidth: option.id === 'ssh' || option.id === 'moonlight' ? 112 : 92 })

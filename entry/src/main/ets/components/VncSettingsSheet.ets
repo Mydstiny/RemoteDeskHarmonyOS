@@ -424,8 +424,10 @@ export struct VncSettingsSheet {
     Column() {
       Text('默认 Gateway').fontSize(12).fontColor(this.pal().text3).margin({ top: 2, bottom: 7 })
       if (this.selectableGateways().length === 0) {
-        Text('当前账号没有可用的 mode12 Gateway；请先添加并启用 Gateway。')
-          .fontSize(11).fontColor(this.pal().danger).lineHeight(17).margin({ bottom: 8 })
+        Text(settingsVisualIsModern(this.visualStyle) ? '当前账号还没有可用的中继网关，请先添加并启用。' :
+          '当前账号没有可用的 mode12 Gateway；请先添加并启用 Gateway。')
+          .fontSize(settingsVisualIsModern(this.visualStyle) ? 12 : 11).fontColor(this.pal().danger).lineHeight(17)
+          .margin({ bottom: 8 })
         Button('打开 Gateway 管理').width('100%').height(settingsVisualIsModern(this.visualStyle) ? 44 : 38).borderRadius(9)
           .backgroundColor(this.pal().surface).fontColor(this.accentColor)
           .onClick((): void => { this.onOpenGatewayManager(); })
@@ -739,7 +741,8 @@ export struct VncSettingsSheet {
       Button('打开 VNC TLS 证书信任管理').width('100%').height(42).borderRadius(10)
         .backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor))
         .onClick((): void => { this.onOpenTrustManager(); })
-      Text('同一管理器也可从主设置“数据安全”进入；不会创建第二份可变 trust 列表。')
+      Text(settingsVisualIsModern(this.visualStyle) ? '也可以从设置里的“数据安全”打开同一个管理器。' :
+        '同一管理器也可从主设置“数据安全”进入；不会创建第二份可变 trust 列表。')
         .fontSize(settingsVisualIsModern(this.visualStyle) ? 12 : 11).fontColor(settingsVisualIsModern(this.visualStyle) ? this.pal().text2 : this.pal().text3).lineHeight(18).width('100%').margin({ top: 10 })
     }.width('100%')
   }
@@ -756,7 +759,7 @@ export struct VncSettingsSheet {
         .onClick((): void => { if (hosts) { this.onOpenHostManager(); } else { this.onOpenGatewayManager(); } })
       if (!settingsVisualIsModern(this.visualStyle)) {
         Text(hosts ? '不会写入 remotehosts' : '不会写入 rustdeskrelays；卡片会标出 VNC Gateway')
-          .fontSize(settingsVisualIsModern(this.visualStyle) ? 12 : 11).fontColor(settingsVisualIsModern(this.visualStyle) ? this.pal().text2 : this.pal().text3).margin({ top: 10 })
+          .fontSize(11).fontColor(this.pal().text3).margin({ top: 10 })
       }
     }.width('100%')
   }

@@ -13948,7 +13948,7 @@ struct HostListPage {
 
   @Builder proDebugModeChip(label: string, mode: string) {
     Text(label).fontSize(12).maxLines(1).textAlign(TextAlign.Center)
-      .fontColor(this.proDebugMode === mode ? '#FFFFFF' : this.pal().text2)
+      .fontColor(this.proDebugMode === mode ? appUiOnAccentText(this.accentColor) : this.pal().text2)
       .fontWeight(this.proDebugMode === mode ? FontWeight.Medium : FontWeight.Normal)
       .padding({ left: 10, right: 10, top: 7, bottom: 7 })
       .backgroundColor(this.proDebugMode === mode ? this.accentColor : Color.Transparent)
@@ -20934,7 +20934,8 @@ struct HostListPage {
             Button(this.currentCloudSyncSheetSpec().primaryLabel).layoutWeight(1).height(46).fontSize(15).fontWeight(FontWeight.Medium)
               .backgroundColor(this.currentCloudSyncSheetSpec().primaryDestructive
                 ? this.pal().danger : this.accentColor)
-              .fontColor('#FFFFFF').borderRadius(14).margin({ left: 12 })
+              .fontColor(this.currentCloudSyncSheetSpec().primaryDestructive ? '#FFFFFF' : appUiOnAccentText(this.accentColor))
+              .borderRadius(14).margin({ left: 12 })
               .onClick(async (): Promise<void> => {
                 if (this.cloudSyncStep === CLOUD_SYNC_SHEET_UPLOAD_CONFIRM) {
                   await this.confirmCloudSyncUpload();
