@@ -27,7 +27,7 @@ import { SshKeyDataSource, TotpEntryDataSource } from '../datasources/DataSource
 import { resolveFabAddStyle } from '../services/FabAddStylePolicy';
 import { ResourceFabPicker } from '../components/resourceadd/ResourceFabPicker';
 import { ModernKeyVaultAddFlow } from '../components/resourceadd/modern/ModernKeyVaultAddFlow';
-import { beginKeyVaultExternalPicker, endKeyVaultExternalPicker, keyVaultExternalPickerOpen } from '../services/KeyVaultPickerGuard';
+import { beginKeyVaultExternalPicker, endKeyVaultExternalPicker, keyVaultPickerExplainsBackground } from '../services/KeyVaultPickerGuard';
 import { appUiOnAccentText } from '../common/AppUiColorPolicy';
 import { TotpImportResult, TotpImportService } from '../services/TotpImportService';
 import {
@@ -142,7 +142,7 @@ export struct KeyVaultPage {
 
   private onAppBackground(): void {
     // A scan or a file picker sends the app to the background too: those keep the page unlocked (for a while).
-    if (this.appInBackground && !keyVaultExternalPickerOpen()) {
+    if (this.appInBackground && !keyVaultPickerExplainsBackground()) {
       this.totpUnlocked = false;
     }
   }

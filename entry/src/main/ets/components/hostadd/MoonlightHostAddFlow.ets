@@ -605,7 +605,7 @@ export struct MoonlightHostAddFlow {
         .fontColor(this.modeIsSelected(automatic) ? appUiOnAccentText(this.accentColor) :
           (enabled ? this.pal().text : this.pal().text3))
       Text(subtitle).fontSize(11)
-        .fontColor(this.modeIsSelected(automatic) ? accentSecondaryText(this.accentColor) : this.pal().text3).margin({ top: 4 })
+        .fontColor(this.modeIsSelected(automatic) ? accentSecondaryText(this.accentColor, '#DDEEFF') : this.pal().text3).margin({ top: 4 })
     }.alignItems(HorizontalAlign.Start).layoutWeight(1).padding(14).borderRadius(12)
       .backgroundColor(this.modeIsSelected(automatic) ? this.accentColor : this.pal().surface)
       .opacity(enabled ? 1 : 0.58)

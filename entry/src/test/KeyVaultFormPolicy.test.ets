@@ -33,7 +33,8 @@ export default function keyVaultFormPolicyTest(): void {
 
     it('does_not_guess_the_type_of_an_encrypted_pkcs8_key', 0, (): void => {
       expect(sshKeyTypePending('BEGIN ENCRYPTED PRIVATE KEY (header text only)', '')).assertTrue();
-      expect(sshKeyTypePending('BEGIN OPENSSH PRIVATE KEY (header text only)', '')).assertFalse();
+      expect(sshKeyTypePending('BEGIN OPENSSH PRIVATE KEY (header text only)', '')).assertTrue();
+      expect(sshKeyTypePending('BEGIN OPENSSH PRIVATE KEY (header text only)', 'ssh-ed25519 AAAA')).assertFalse();
     });
   });
 }

@@ -503,7 +503,7 @@ export struct VncAddFlow {
       Text(title).fontSize(14).fontWeight(FontWeight.Medium)
         .fontColor(this.transport === value ? appUiOnAccentText(this.accentColor) : this.pal().text).margin({ top: 6 })
       Text(subtitle).fontSize(10)
-        .fontColor(this.transport === value ? accentSecondaryText(this.accentColor) : this.pal().text3)
+        .fontColor(this.transport === value ? accentSecondaryText(this.accentColor, '#DDEEFF') : this.pal().text3)
         .margin({ top: 3 })
     }.alignItems(HorizontalAlign.Start).layoutWeight(1).padding(12).borderRadius(12)
       .backgroundColor(this.transport === value ? this.accentColor : this.pal().surface)
@@ -515,7 +515,8 @@ export struct VncAddFlow {
     Button(title).layoutWeight(1).height(36).borderRadius(9)
       .backgroundColor(this.securityPolicy === value
         ? (danger ? this.pal().danger : this.accentColor) : this.pal().surface)
-      .fontColor(this.securityPolicy === value ? appUiOnAccentText(this.accentColor) : this.pal().text2)
+      // White on the danger fill; on the accent fill the colour that reads on that accent.
+      .fontColor(this.securityPolicy === value ? (danger ? '#FFFFFF' : appUiOnAccentText(this.accentColor)) : this.pal().text2)
       .fontSize(11).margin({ left: marginLeft })
       .onClick((): void => { this.securityPolicy = value; this.errorText = ''; })
   }

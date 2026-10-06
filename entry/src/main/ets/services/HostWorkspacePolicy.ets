@@ -25,6 +25,16 @@ export function normalizeGroupId(value: string): string {
   return value.trim().toLowerCase().replace(/[\s!-\/:-@\[-`{-~]+/g, '-').replace(/^-+|-+$/g, '');
 }
 
+/** A Moonlight host by its name, server ID or addresses; a locked one only by its name (its card hides the rest). */
+export function moonlightHostMatchesSearch(displayName: string, serverUuid: string, addresses: string[], locked: boolean,
+  query: string): boolean {
+  const normalized: string = query.trim().toLowerCase();
+  if (normalized === '' || displayName.toLowerCase().includes(normalized)) { return true; }
+  if (locked) { return false; }
+  return serverUuid.toLowerCase().includes(normalized) ||
+    addresses.some((address: string): boolean => address.toLowerCase().includes(normalized));
+}
+
 export function groupIdsForHosts(hosts: RemoteHost[]): string[] {
   const unique = new Set<string>();
   hosts.forEach((host: RemoteHost): void => {

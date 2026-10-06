@@ -6,6 +6,7 @@ import {
   hostListBottomSpacerVp,
   hostListFabLiftVp,
   hostListFabSizeVp,
+  moonlightHostMatchesSearch,
   nextWorkspaceGroupId,
   normalizeGroupId,
   searchHosts
@@ -68,6 +69,12 @@ export default function hostWorkspacePolicyTest(): void {
       locked.locked = true;
       expect(searchHosts([locked], 'locked.example').length).assertEqual(0);
       expect(searchHosts([locked], 'vault').length).assertEqual(1);
+    });
+
+    it('a_locked_moonlight_host_is_found_only_by_its_name', 0, (): void => {
+      expect(moonlightHostMatchesSearch('Gaming PC', 'uuid-1', ['192.168.1.20'], false, '192.168')).assertTrue();
+      expect(moonlightHostMatchesSearch('Gaming PC', 'uuid-1', ['192.168.1.20'], true, '192.168')).assertFalse();
+      expect(moonlightHostMatchesSearch('Gaming PC', 'uuid-1', ['192.168.1.20'], true, 'gaming')).assertTrue();
     });
 
     it('excellent_health_should_show_normal_connection_and_latency', 0, (): void => {

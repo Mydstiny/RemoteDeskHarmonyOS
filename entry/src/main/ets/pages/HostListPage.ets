@@ -196,6 +196,7 @@ import {
 import { copyRustDeskPeerTwoFactorRuntime } from '../services/RustDeskPeerTwoFactorBindingStore';
 import { AppConfig, AppTheme, Palette, buildDark, buildLight } from '../common/Theme';
 import { appUiOnAccentText } from '../common/AppUiColorPolicy';
+import { sshKeyTypePending, sshKeyTypeText } from '../services/KeyVaultFormPolicy';
 import {
   SETTINGS_VISUAL_STYLE_CLASSIC,
   SETTINGS_VISUAL_STYLE_KEY,
@@ -505,15 +506,7 @@ import {
   searchHosts,
   visibleHostsForHostListMode
 } from '../services/HostListFilterService';
-import {
-  displayConnectionHealth,
-  filterHostsByWorkspace,
-  groupIdsForHosts,
-  hostListBottomSpacerVp,
-  hostListFabLiftVp,
-  hostListFabSizeVp,
-  nextWorkspaceGroupId
-} from '../services/HostWorkspacePolicy';
+import { displayConnectionHealth, filterHostsByWorkspace, groupIdsForHosts, hostListBottomSpacerVp, hostListFabLiftVp, hostListFabSizeVp, nextWorkspaceGroupId, moonlightHostMatchesSearch } from '../services/HostWorkspacePolicy';
 import {
   buildHostGroupCards,
   filterHostGroupCardsByProVisibility,
@@ -1160,6 +1153,8 @@ struct HostListPage {
   @State pageActive: boolean = false;
   @State searchText: string = '';
   @State workspaceGroupId: string = '';
+  /** The relay name 中继 → 查看主机 searched for (see relaySearchIncludesLocked). */
+  private relaySearchFromRelayPage: string = '';
   @State isLoading: boolean = true;
   @StorageLink('currentTheme') @Watch('onThemeChange') theme: string = 'light';
   @StorageLink('accentColor') accentColor: string = '#007DFF';
@@ -1856,7 +1851,7 @@ struct HostListPage {
             this.closeHostPassphraseSheet('');
           })
         Button('确定').fontSize(14).height(38).layoutWeight(1)
-          .backgroundColor(this.accentColor).fontColor('#FFFFFF').borderRadius(8).margin({ left: 12 })
+          .backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor)).borderRadius(8).margin({ left: 12 })
           .onClick(() => {
             this.closeHostPassphraseSheet(this.hlPassphraseInput);
           })
@@ -3604,12 +3599,8 @@ struct HostListPage {
     return organized.filter((view: MoonlightHostLocalView): boolean => {
       const host: MoonlightHost | null = view.host;
       if (host === null) { return false; }
-      if (host.displayName.toLowerCase().indexOf(query) >= 0 ||
-          host.serverUuid.toLowerCase().indexOf(query) >= 0) { return true; }
-      for (let index: number = 0; index < host.addresses.length; index++) {
-        if (host.addresses[index].host.toLowerCase().indexOf(query) >= 0) { return true; }
-      }
-      return false;
+      return moonlightHostMatchesSearch(host.displayName, host.serverUuid,
+        host.addresses.map((address: MoonlightAddress): string => address.host), host.locked === true, query);
     });
   }
 
@@ -6830,7 +6821,8 @@ struct HostListPage {
 
   private visibleHostsForCurrentMode(): RemoteHost[] {
     if (this.groupedHostCardsActive()) {
-      return this.orgFilterHosts(searchHosts(this.hosts, this.searchText, this.relayNamesForSearch()));
+      return this.orgFilterHosts(searchHosts(this.hosts, this.searchText, this.relayNamesForSearch(),
+        this.relaySearchIncludesLocked()));
     }
     let visible = visibleHostsForHostListMode(
       this.hosts,
@@ -6839,7 +6831,8 @@ struct HostListPage {
       this.breakpoint,
       this.activeFilterProto,
       this.curTab,
-      this.relayNamesForSearch()
+      this.relayNamesForSearch(),
+      this.relaySearchIncludesLocked()
     );
     if (this.proOrgVisible) { return this.orgFilterHosts(visible); }
     return filterHostsByWorkspace(visible, this.workspaceGroupId);
@@ -6847,6 +6840,14 @@ struct HostListPage {
 
   private pal(): Palette {
     return this.theme === 'light' ? buildLight(this.accentColor) : buildDark(this.accentColor);
+  }
+
+  /**
+   * 中继 → 查看主机 lists every host on the relay, locked ones too (the relay card counts them). A search the user types
+   * does not: a locked host is found only by its card name.
+   */
+  private relaySearchIncludesLocked(): boolean {
+    return this.relaySearchFromRelayPage !== '' && this.searchText === this.relaySearchFromRelayPage;
   }
 
   /** Relay names, so a search for a relay finds the RustDesk hosts that use it. */
@@ -6862,6 +6863,7 @@ struct HostListPage {
       this.srv.getAllRelays().find((item: RustDeskRelayConfig): boolean => item.id === relayId);
     if (relay === undefined) { return; }
     this.searchText = relay.displayName();
+    this.relaySearchFromRelayPage = this.searchText;
     if (this.isDesktopDevice && this.breakpoint === 'xl') {
       this.curTab = 1;
       this.hostPageTitle = 'RustDesk 远程主机';
@@ -6947,8 +6949,19 @@ struct HostListPage {
   private selectHostsByRefs(refs: string[]): void {
     const keys: string[] = refs.map((ref: string): string => ref.startsWith('moonlight:') ?
       unifiedMoonlightHostCardKey(ref.substring('moonlight:'.length)) : remoteHostCardKey(ref));
+    // A search or group filter would hide some of them, and a batch must act only on hosts in view: clear them first.
+    this.searchText = '';
+    this.relaySearchFromRelayPage = '';
+    this.workspaceGroupId = '';
     this.hostOrgFilterKey = 'all';
     this.refreshFilteredHostView();
+    const inView: Set<string> = new Set<string>(this.selectionKeysForCurrentView());
+    const shown: string[] = keys.filter((key: string): boolean => inView.has(key));
+    if (shown.length < keys.length) {
+      promptAction.showToast({
+        message: '另有 ' + (keys.length - shown.length).toString() + ' 台不在当前页面，没有选中', duration: 2200
+      });
+    }
     // On the categorized page the selected hosts sit inside a category; open it so the selection is visible.
     const first: OrgHostRow | undefined = this.orgRows(this.hostViewRevision)
       .find((row: OrgHostRow): boolean => refs.indexOf(row.ref) >= 0);
@@ -6956,7 +6969,7 @@ struct HostListPage {
       if (this.groupedHostCardsActive() && first !== undefined) { this.expandedHostGroup = first.protocol; }
       this.hostSelectionMode = true;
       this.hostReorderEnabled = false;
-      this.hostSelectedIds = new Set<string>(keys);
+      this.hostSelectedIds = new Set<string>(shown);
       this.hostViewRevision += 1;
     });
   }
@@ -7569,7 +7582,9 @@ struct HostListPage {
   }
 
   private async doHostBatchDelete(): Promise<void> {
-    const selectedKeys: string[] = Array.from(this.hostSelectedIds);
+    // Only hosts on screen now (a search typed a moment ago may not have trimmed the selection yet).
+    const inView: Set<string> = new Set<string>(this.selectionKeysForCurrentView());
+    const selectedKeys: string[] = Array.from(this.hostSelectedIds).filter((key: string): boolean => inView.has(key));
     if (selectedKeys.length === 0) { return; }
     let aiLease: AiAccountLease | null = null;
     try { aiLease = AiAccess.getInstance().capture(); } catch (_error) {}
@@ -7591,16 +7606,6 @@ struct HostListPage {
         if (view !== undefined && view.host !== null) { moonlightViews.push(view); }
       }
     }
-    // Locked hosts are verified once, after the confirmation (not one prompt each before it).
-    const lockedCount: number = remoteHosts.filter((host: RemoteHost): boolean => host.locked).length +
-      moonlightViews.filter((view: MoonlightHostLocalView): boolean =>
-        view.host !== null && (view.host as MoonlightHost).locked === true).length;
-    const names: string[] = remoteHosts.map((host: RemoteHost): string => hostCardDisplayLabel(
-      shouldHideHostCardSensitiveInfo(this.hostCardSensitiveInfoHidden, host.locked),
-      host.protocol, host.label, host.rustdeskProPeerId, host.customHostname));
-    moonlightViews.forEach((view: MoonlightHostLocalView): void => {
-      if (view.host !== null) { names.push((view.host as MoonlightHost).displayName); }
-    });
     const moonlightLease: AccountSessionLease | null = moonlightViews.length === 0
       ? null : this.moonlightDeletionRuntime.currentLease();
     const moonlightPreviews: MoonlightDeletionPreview[] = [];
@@ -7623,6 +7628,18 @@ struct HostListPage {
         moonlightPreviews.push(preview);
       }
     }
+    // The dialog names and counts only what will be deleted (a Moonlight host that failed its check stays).
+    const actionableMoonlight: MoonlightHost[] = moonlightViews
+      .filter((view: MoonlightHostLocalView): boolean => view.host !== null &&
+        !preflightFailedKeys.has(unifiedMoonlightHostCardKey((view.host as MoonlightHost).id)))
+      .map((view: MoonlightHostLocalView): MoonlightHost => view.host as MoonlightHost);
+    // Locked hosts are verified once, after the confirmation (not one prompt each before it).
+    const lockedCount: number = remoteHosts.filter((host: RemoteHost): boolean => host.locked).length +
+      actionableMoonlight.filter((host: MoonlightHost): boolean => host.locked === true).length;
+    const names: string[] = remoteHosts.map((host: RemoteHost): string => hostCardDisplayLabel(
+      shouldHideHostCardSensitiveInfo(this.hostCardSensitiveInfoHidden, host.locked),
+      host.protocol, host.label, host.rustdeskProPeerId, host.customHostname));
+    actionableMoonlight.forEach((host: MoonlightHost): void => { names.push(host.displayName); });
     const actionableCount: number = remoteHosts.length +
       moonlightPreviews.length;
     if (actionableCount === 0) {
@@ -7826,6 +7843,8 @@ struct HostListPage {
   }
 
   private onSearchChange(value: string): void {
+    // Typing replaces 中继 → 查看主机's search (the echo of that search keeps it).
+    if (value !== this.relaySearchFromRelayPage) { this.relaySearchFromRelayPage = ''; }
     this.searchText = value;
     if (this.searchTimer !== -1) { clearTimeout(this.searchTimer); }
     this.searchTimer = setTimeout(() => {
@@ -7838,24 +7857,47 @@ struct HostListPage {
   private openGroupWithSearchMatches(): void {
     if (!this.groupedHostCardsActive() || this.searchText.trim() === '') { return; }
     const cards: HostGroupCardModel[] = this.hostGroupCardsSnapshot();
-    const open: HostGroupCardModel | undefined =
-      cards.find((card: HostGroupCardModel): boolean => card.type === this.expandedHostGroup);
-    if (open !== undefined && open.hosts.length > 0) { return; }
-    const first: HostGroupCardModel | undefined =
-      cards.find((card: HostGroupCardModel): boolean => card.hosts.length > 0);
-    if (first !== undefined) { this.expandedHostGroup = first.type; }
+    const moonlightMatches: boolean = this.visibleMoonlightHosts().length > 0;
+    const hasMatches = (type: string): boolean => type === 'moonlight' ? moonlightMatches :
+      cards.some((card: HostGroupCardModel): boolean => card.type === type && card.hosts.length > 0);
+    if (this.expandedHostGroup !== '' && hasMatches(this.expandedHostGroup)) { return; }
+    // In the order the groups are shown: RDP, RustDesk, SSH, VNC, Moonlight, then the rest (远程 AI).
+    const shown: string[] = ['rdp', 'rustdesk', 'ssh', 'vnc', 'moonlight'];
+    const order: string[] = shown.concat(cards.map((card: HostGroupCardModel): string => card.type)
+      .filter((type: string): boolean => shown.indexOf(type) < 0));
+    const first: string | undefined = order.find((type: string): boolean => hasMatches(type));
+    if (first !== undefined) { this.expandedHostGroup = first; }
   }
 
   /** A search or filter narrows the list (an empty list then means no matches, not no hosts). */
   private hostSearchOrFilterActive(): boolean {
-    return this.searchText.trim() !== '' || this.workspaceGroupId !== '' ||
+    // The group strip filters only the flat list without Pro (see visibleHostsForCurrentMode).
+    const workspaceFilterApplied: boolean =
+      this.workspaceGroupId !== '' && !this.groupedHostCardsActive() && !this.proOrgVisible;
+    return this.searchText.trim() !== '' || workspaceFilterApplied ||
       (this.proOrgVisible && this.hostOrgFilterKey !== '' && this.hostOrgFilterKey !== 'all');
+  }
+
+  /** PC protocol tabs: the protocol the current tab lists ('' when it lists every protocol). */
+  private desktopTabProtocol(): string {
+    if (!this.isDesktopDevice || this.breakpoint !== 'xl' || this.groupedHostCardsActive()) { return ''; }
+    return this.activeFilterProto !== '' ? this.activeFilterProto : hostListProtocolForTab(this.curTab);
   }
 
   /** After an add or edit: say so, and when a search or filter hides the host, clear them so it is in view. */
   private announceSavedHost(hostId: string, message: string): void {
     const visible: boolean = this.filteredHosts.some((host: RemoteHost): boolean =>
       host.id === hostId || this.vncRecordIdForHost(host) === hostId);
+    const saved: RemoteHost | undefined = this.hosts.find((host: RemoteHost): boolean =>
+      host.id === hostId || this.vncRecordIdForHost(host) === hostId);
+    const tabProtocol: string = this.desktopTabProtocol();
+    if (!visible && saved !== undefined && tabProtocol !== '' && saved.protocol !== tabProtocol) {
+      // On another protocol's tab: clearing the search would not bring it into view, so say where it is.
+      const group: HostGroupType | null = hostGroupTypeForHost(saved);
+      const where: string = group !== null ? hostGroupTitle(group) : saved.protocol.toUpperCase();
+      promptAction.showToast({ message: message + '（在「' + where + '」页）', duration: 2400 });
+      return;
+    }
     if (!visible && this.hostSearchOrFilterActive()) {
       this.clearHostSearchAndFilters();
       promptAction.showToast({ message: message + '；已清除搜索和筛选，方便看到它', duration: 2400 });
@@ -7866,6 +7908,7 @@ struct HostListPage {
 
   private clearHostSearchAndFilters(): void {
     this.searchText = '';
+    this.relaySearchFromRelayPage = '';
     this.workspaceGroupId = '';
     if (this.proOrgVisible) { this.hostOrgFilterKey = 'all'; }
     this.refreshFilteredHostView();
@@ -11645,6 +11688,8 @@ struct HostListPage {
     if (cardHost.protocol === 'ai') { return; }
     // The card's copy can be stale (an edit synced meanwhile): lock the host as stored now.
     const host: RemoteHost = this.srv.getHost(cardHost.id) ?? cardHost;
+    // What the user asked for, decided before the verification (a sync during it does not flip the request).
+    const nextLocked: boolean = !host.locked;
     const r = await showLockGate(hostCardDisplayLabel(
       shouldHideHostCardSensitiveInfo(this.hostCardSensitiveInfoHidden, host.locked),
       host.protocol, host.label, host.rustdeskProPeerId, host.customHostname), 'biometric');
@@ -11655,7 +11700,6 @@ struct HostListPage {
     }
     const vncHostId: string = this.vncRecordIdForHost(host);
     if (vncHostId !== '') {
-      const nextLocked: boolean = !host.locked;
       if (!this.vncHosts.updateLock(vncHostId, nextLocked,
         nextLocked ? LockType.BIOMETRIC : LockType.NONE)) {
         promptAction.showToast({ message: '保存 VNC 主机状态失败', duration: 2000 });
@@ -11665,8 +11709,9 @@ struct HostListPage {
       promptAction.showToast({ message: nextLocked ? '已锁定' : '已解锁', duration: 1500 });
       return;
     }
-    const updated: RemoteHost = host.runtimeClone();
-    updated.locked = !host.locked;
+    // The host as stored after the verification: changes synced meanwhile are kept, only the lock changes.
+    const updated: RemoteHost = (this.srv.getHost(host.id) ?? host).runtimeClone();
+    updated.locked = nextLocked;
     updated.lockType = updated.locked ? LockType.BIOMETRIC : LockType.NONE;
     if (!this.srv.updateHost(updated)) {
       promptAction.showToast({ message: '保存主机状态失败', duration: 2000 });
@@ -12835,7 +12880,7 @@ struct HostListPage {
         Button('控制电脑').layoutWeight(1).height(34).fontSize(11).borderRadius(8)
           .backgroundColor(this.effectiveSheetRustDeskTargetDevice() === 'computer' ?
             this.accentColor : this.pal().surface)
-          .fontColor(this.effectiveSheetRustDeskTargetDevice() === 'computer' ? Color.White : this.pal().text2)
+          .fontColor(this.effectiveSheetRustDeskTargetDevice() === 'computer' ? appUiOnAccentText(this.accentColor) : this.pal().text2)
           .onClick((): void => {
             this.sheetRustdeskTargetDevice = 'computer';
             this.sheetRustdeskPhoneChoiceVersion = 0;
@@ -12844,7 +12889,7 @@ struct HostListPage {
         Button('控制手机').layoutWeight(1).height(34).fontSize(11).borderRadius(8).margin({ left: 6 })
           .backgroundColor(this.effectiveSheetRustDeskTargetDevice() === 'phone' ?
             this.accentColor : this.pal().surface)
-          .fontColor(this.effectiveSheetRustDeskTargetDevice() === 'phone' ? Color.White : this.pal().text2)
+          .fontColor(this.effectiveSheetRustDeskTargetDevice() === 'phone' ? appUiOnAccentText(this.accentColor) : this.pal().text2)
           .onClick((): void => {
             this.sheetRustdeskTargetDevice = 'phone';
             this.sheetRustdeskPhoneChoiceVersion = 1;
@@ -12904,6 +12949,16 @@ struct HostListPage {
   }
 
   // PC大屏模式 + 滑动删除共用: 锁验证 + 确认弹窗 + 动画移除
+  /** Whether the host is locked as stored now (the card's copy may be older). */
+  private hostStoredLocked(host: RemoteHost): boolean {
+    const vncHostId: string = this.vncRecordIdForHost(host);
+    if (vncHostId !== '') {
+      const vnc: VncHostView | null = this.vncHosts.find(vncHostId);
+      return vnc !== null ? vnc.locked : host.locked;
+    }
+    return (this.srv.getHost(host.id) ?? host).locked;
+  }
+
   private async doDeleteHost(host: RemoteHost): Promise<void> {
     const name: string = hostCardDisplayLabel(
       shouldHideHostCardSensitiveInfo(this.hostCardSensitiveInfoHidden, host.locked),
@@ -12918,13 +12973,16 @@ struct HostListPage {
     }).then(async (result: Object): Promise<void> => {
       const r: Record<string, number> = result as Record<string, number>;
       if (r['index'] === 1) {
-        if (host.locked) {
+        if (!this.pageActive) { return; }
+        // A sync may have locked it while the dialog was open: the stored state decides.
+        if (this.hostStoredLocked(host) || host.locked) {
           const gate: LockGateResult = await showLockGate(name, 'biometric');
           if (!gate.ok) {
             const msg: string = lockGateErrorMessage(gate);
             if (msg !== '') { promptAction.showToast({ message: msg, duration: 2000 }); }
             return;
           }
+          if (!this.pageActive) { return; }
         }
         if (host.protocol === 'ai') { void this.removeAiHost(host); return; }
         const vncHostId: string = this.vncRecordIdForHost(host);
@@ -15252,12 +15310,13 @@ struct HostListPage {
   }
 
   @Builder HostWorkspaceFilterBar() {
+    // The strip keeps its classic size and spacing; it gained 全部 and scrolls sideways when the groups overflow.
     if (groupIdsForHosts(this.hosts).length > 0) {
       Scroll() {
         Row() {
           Text('全部').fontSize(12)
             .fontColor(this.workspaceGroupId === '' ? this.accentColor : this.pal().text2)
-            .padding({ top: 8, bottom: 8 }).margin({ right: 14 })
+            .margin({ right: 12 })
             .onClick((): void => {
               this.workspaceGroupId = '';
               this.refreshWorkspaceView();
@@ -15265,7 +15324,7 @@ struct HostListPage {
           ForEach(groupIdsForHosts(this.hosts), (groupId: string): void => {
             Text(groupId).fontSize(12)
               .fontColor(this.workspaceGroupId === groupId ? this.accentColor : this.pal().text2)
-              .padding({ top: 8, bottom: 8 }).margin({ right: 14 })
+              .margin({ right: 12 })
               .onClick((): void => {
                 this.workspaceGroupId = nextWorkspaceGroupId(this.workspaceGroupId, groupId);
                 this.refreshWorkspaceView();
@@ -15276,8 +15335,10 @@ struct HostListPage {
       }
       .scrollable(ScrollDirection.Horizontal)
       .scrollBar(this.isDesktopDevice ? BarState.Auto : BarState.Off)
-      .width('100%').padding({ left: 16, right: 16, top: 0, bottom: 2 })
+      .width('100%').padding({ left: 16, right: 16, top: 4, bottom: 6 })
       .align(Alignment.Start)
+    } else {
+      Column().width('100%').height(10)
     }
   }
 
@@ -15734,7 +15795,13 @@ struct HostListPage {
             .height(this.breakpoint === 'sm' ? 38 : 40).borderRadius(19).padding(0)
             .backgroundColor(this.pal().surface).accessibilityText('检测在线状态')
             .enabled(!this.hostPresenceProbeBusyIds.has(host.id))
-            .onClick((): void => { void this.probeHostConnectivity(host); })
+            // While selecting, the card's buttons select it (like the edit, lock and delete buttons below).
+            .opacity(this.hostSelectionMode ? 0.4 : 1)
+            .onClick((): void => {
+              if (this.hostSelectionMode) { this.toggleHostSelect(remoteHostCardKey(host.id),
+                !this.hostSelectedIds.has(remoteHostCardKey(host.id))); return; }
+              void this.probeHostConnectivity(host);
+            })
           } else {
             Blank()
               .width(this.breakpoint === 'sm' ? 38 : 40)
@@ -15779,6 +15846,7 @@ struct HostListPage {
     .width('100%').height(this.hostGroupHostCardHeight()).padding(6)
     .borderRadius(12).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
     .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
+    .bindContextMenu(this.hostContextMenuBuilder(host), ResponseType.RightClick)
     // Grouped cards intentionally have no swipe actions. Long press remains
     // the explicit entry point for multi-select.
     .priorityGesture(LongPressGesture({ duration: 450 }).onAction((): void => {
@@ -16353,6 +16421,7 @@ struct HostListPage {
       .width('100%').height(this.hostGroupHostCardHeight()).padding(6)
       .borderRadius(12).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
       .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
+      .bindContextMenu(this.moonlightContextMenuBuilder(view), ResponseType.RightClick)
       .priorityGesture(LongPressGesture({ duration: 450 }).onAction((): void => {
         if (!this.hostSelectionMode) {
           this.beginHostSelection(unifiedMoonlightHostCardKey(view.host?.id || ''), false);
@@ -16464,7 +16533,7 @@ struct HostListPage {
         Text('Moonlight 主机已不存在').fontSize(16).fontWeight(FontWeight.Medium)
           .fontColor(this.pal().text)
         Button('关闭').width('100%').height(42).margin({ top: 16 }).borderRadius(11)
-          .backgroundColor(this.accentColor).fontColor(Color.White)
+          .backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor))
           .onClick((): void => { this.closeMoonlightHostSheet(); })
       }.width('100%').padding(22).backgroundColor(this.pal().sheetBg)
     } else {
@@ -16524,7 +16593,7 @@ struct HostListPage {
 
       Row({ space: 8 }) {
         Button('应用目录').layoutWeight(1).height(42).borderRadius(11)
-          .backgroundColor(this.accentColor).fontColor(Color.White)
+          .backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor))
           .onClick((): void => { this.closeMoonlightHostSheet(true, false); })
         Button('设置').layoutWeight(1).height(42).borderRadius(11)
           .backgroundColor(this.pal().surface).fontColor(this.pal().text2)
@@ -16630,12 +16699,12 @@ struct HostListPage {
             Button('Sunshine').layoutWeight(1).height(38).borderRadius(10)
               .backgroundColor(this.moonlightEditHostType === 'sunshine' ?
                 this.accentColor : this.pal().surface)
-              .fontColor(this.moonlightEditHostType === 'sunshine' ? Color.White : this.pal().text2)
+              .fontColor(this.moonlightEditHostType === 'sunshine' ? appUiOnAccentText(this.accentColor) : this.pal().text2)
               .onClick((): void => { this.moonlightEditHostType = 'sunshine'; })
             Button('GameStream').layoutWeight(1).height(38).borderRadius(10)
               .backgroundColor(this.moonlightEditHostType === 'gamestream' ?
                 this.accentColor : this.pal().surface)
-              .fontColor(this.moonlightEditHostType === 'gamestream' ? Color.White : this.pal().text2)
+              .fontColor(this.moonlightEditHostType === 'gamestream' ? appUiOnAccentText(this.accentColor) : this.pal().text2)
               .onClick((): void => { this.moonlightEditHostType = 'gamestream'; })
           }.width('100%')
 
@@ -16687,7 +16756,7 @@ struct HostListPage {
             this.showRemoteHostSheet = false;
           })
         Button('保存').layoutWeight(1).height(42).borderRadius(11)
-          .backgroundColor(this.accentColor).fontColor(Color.White)
+          .backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor))
           .enabled(this.moonlightEditName.trim().length > 0 &&
             this.moonlightEditName.trim().length <= 128 && this.moonlightEditAddress.trim().length > 0)
           .onClick((): void => { this.saveMoonlightEdit(); })
@@ -17533,7 +17602,8 @@ struct HostListPage {
               ? $r('sys.symbol.checkmark_circle_fill') : $r('sys.symbol.circle'))
               .fontSize(20).fontColor([key.id === this.sshPublicKeyInstallKeyId ? this.accentColor : this.pal().text3])
             Column() {
-              Text(key.label !== '' ? key.label : SshKey.typeLabel(key.keyType)).fontSize(14).fontColor(this.pal().text)
+              Text(key.label !== '' ? key.label : sshKeyTypeText(key.privateKey, key.publicKey, SshKey.typeLabel(key.keyType)))
+                .fontSize(14).fontColor(this.pal().text)
               Text(key.fingerprint !== '' ? key.fingerprint : '未生成指纹').fontSize(10).fontColor(this.pal().text3)
                 .maxLines(1).margin({ top: 3 })
             }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 10 })
@@ -17573,7 +17643,8 @@ struct HostListPage {
           .padding(10).backgroundColor(this.pal().surface).borderRadius(9).margin({ bottom: 10 })
       }
       Button(this.sshPublicKeyInstallBusy ? '部署中…' : '部署公钥').width('100%').height(44).borderRadius(11)
-        .backgroundColor(this.sshPublicKeyInstallBusy ? this.pal().text3 : this.accentColor).fontColor(Color.White)
+        .backgroundColor(this.sshPublicKeyInstallBusy ? this.pal().text3 : this.accentColor)
+        .fontColor(this.sshPublicKeyInstallBusy ? Color.White : appUiOnAccentText(this.accentColor))
         .enabled(!this.sshPublicKeyInstallBusy && this.keyVault.getAllSshKeys().length > 0)
         .onClick((): void => { void this.doSshPublicKeyInstall(); })
     }.width('100%').padding({ left: 20, right: 20, top: 20, bottom: 24 }).backgroundColor(this.pal().card)
@@ -23571,12 +23642,12 @@ struct HostListPage {
       Row() {
         Button('TCP 直连').layoutWeight(1).height(34).fontSize(11).borderRadius(8)
           .backgroundColor(this.vncHostTransport === 'direct_tcp' ? this.accentColor : this.pal().surface)
-          .fontColor(this.vncHostTransport === 'direct_tcp' ? Color.White : this.pal().text2)
+          .fontColor(this.vncHostTransport === 'direct_tcp' ? appUiOnAccentText(this.accentColor) : this.pal().text2)
           .onClick((): void => { this.selectClassicVncTransport('direct_tcp'); })
         Button('UltraVNC Repeater').layoutWeight(1).height(34).fontSize(11).borderRadius(8)
           .margin({ left: 6 })
           .backgroundColor(this.vncHostTransport === 'ultravnc_repeater' ? this.accentColor : this.pal().surface)
-          .fontColor(this.vncHostTransport === 'ultravnc_repeater' ? Color.White : this.pal().text2)
+          .fontColor(this.vncHostTransport === 'ultravnc_repeater' ? appUiOnAccentText(this.accentColor) : this.pal().text2)
           .onClick((): void => { this.selectClassicVncTransport('ultravnc_repeater'); })
       }.width('100%').margin({ bottom: 8 })
 
@@ -23665,19 +23736,19 @@ struct HostListPage {
         Row() {
           Button('自适应').layoutWeight(1).height(32).fontSize(10).borderRadius(8)
             .backgroundColor(this.vncHostScalingMode === 'fit' ? this.accentColor : this.pal().surface)
-            .fontColor(this.vncHostScalingMode === 'fit' ? Color.White : this.pal().text2)
+            .fontColor(this.vncHostScalingMode === 'fit' ? appUiOnAccentText(this.accentColor) : this.pal().text2)
             .onClick((): void => { this.vncHostScalingMode = 'fit'; })
           Button('整数').layoutWeight(1).height(32).fontSize(10).borderRadius(8).margin({ left: 5 })
             .backgroundColor(this.vncHostScalingMode === 'integer' ? this.accentColor : this.pal().surface)
-            .fontColor(this.vncHostScalingMode === 'integer' ? Color.White : this.pal().text2)
+            .fontColor(this.vncHostScalingMode === 'integer' ? appUiOnAccentText(this.accentColor) : this.pal().text2)
             .onClick((): void => { this.vncHostScalingMode = 'integer'; })
           Button('1:1').layoutWeight(1).height(32).fontSize(10).borderRadius(8).margin({ left: 5 })
             .backgroundColor(this.vncHostScalingMode === 'one_to_one' ? this.accentColor : this.pal().surface)
-            .fontColor(this.vncHostScalingMode === 'one_to_one' ? Color.White : this.pal().text2)
+            .fontColor(this.vncHostScalingMode === 'one_to_one' ? appUiOnAccentText(this.accentColor) : this.pal().text2)
             .onClick((): void => { this.vncHostScalingMode = 'one_to_one'; })
           Button('平移').layoutWeight(1).height(32).fontSize(10).borderRadius(8).margin({ left: 5 })
             .backgroundColor(this.vncHostScalingMode === 'pan' ? this.accentColor : this.pal().surface)
-            .fontColor(this.vncHostScalingMode === 'pan' ? Color.White : this.pal().text2)
+            .fontColor(this.vncHostScalingMode === 'pan' ? appUiOnAccentText(this.accentColor) : this.pal().text2)
             .onClick((): void => { this.vncHostScalingMode = 'pan'; })
         }.width('100%').margin({ bottom: 8 })
       }
@@ -23686,11 +23757,11 @@ struct HostListPage {
       Row() {
         Button('仅 TLS').layoutWeight(1).height(32).fontSize(10).borderRadius(8)
           .backgroundColor(this.vncHostSecurityPolicy === 'secure_only' ? this.accentColor : this.pal().surface)
-          .fontColor(this.vncHostSecurityPolicy === 'secure_only' ? Color.White : this.pal().text2)
+          .fontColor(this.vncHostSecurityPolicy === 'secure_only' ? appUiOnAccentText(this.accentColor) : this.pal().text2)
           .onClick((): void => { this.vncHostSecurityPolicy = 'secure_only'; this.vncHostTls = true; })
         Button('可信网络').layoutWeight(1).height(32).fontSize(10).borderRadius(8).margin({ left: 5 })
           .backgroundColor(this.vncHostSecurityPolicy === 'trusted_network' ? this.accentColor : this.pal().surface)
-          .fontColor(this.vncHostSecurityPolicy === 'trusted_network' ? Color.White : this.pal().text2)
+          .fontColor(this.vncHostSecurityPolicy === 'trusted_network' ? appUiOnAccentText(this.accentColor) : this.pal().text2)
           .onClick((): void => { this.vncHostSecurityPolicy = 'trusted_network'; })
         Button('允许明文').layoutWeight(1).height(32).fontSize(10).borderRadius(8).margin({ left: 5 })
           .backgroundColor(this.vncHostSecurityPolicy === 'allow_plaintext' ? this.pal().danger : this.pal().surface)
@@ -24695,7 +24766,7 @@ struct HostListPage {
                       .backgroundColor(this.rustDeskProTwoFactorSelectedEntryId === option.id
                         ? this.accentColor : this.pal().surface)
                       .fontColor(this.rustDeskProTwoFactorSelectedEntryId === option.id
-                        ? Color.White : this.pal().text2)
+                        ? appUiOnAccentText(this.accentColor) : this.pal().text2)
                       .enabled(!this.rustDeskProTwoFactorSubmitting)
                       .onClick((): void => {
                         this.rustDeskProTwoFactorSelectedEntryId = option.id;
@@ -24707,7 +24778,7 @@ struct HostListPage {
             }.width('100%')
           }.width('100%').height(126)
           Button('填入所选验证码').width('100%').height(38).fontSize(12)
-            .backgroundColor(this.accentColor).fontColor(Color.White).borderRadius(9)
+            .backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor)).borderRadius(9)
             .enabled(!this.rustDeskProTwoFactorSubmitting &&
               this.rustDeskProTwoFactorSelectedEntryId.length > 0)
             .onClick((): void => {
@@ -24737,7 +24808,7 @@ struct HostListPage {
             .onClick((): void => { this.cancelRustDeskProTwoFactor(); })
           Button(this.rustDeskProTwoFactorSubmitting ? '等待中' : '验证')
             .layoutWeight(1).height(42).fontSize(13).fontWeight(FontWeight.Medium)
-            .backgroundColor(this.accentColor).fontColor(Color.White).borderRadius(10)
+            .backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor)).borderRadius(10)
             .enabled(!this.rustDeskProTwoFactorSubmitting)
             .onClick((): void => { this.submitRustDeskProTwoFactor(); })
         }.width('100%')
@@ -24745,7 +24816,7 @@ struct HostListPage {
       Row({ space: 8 }) {
         Button('设备密码')
           .backgroundColor(this.rustDeskProAuthMode === 'password' ? this.accentColor : this.pal().surface)
-          .fontColor(this.rustDeskProAuthMode === 'password' ? Color.White : this.pal().text)
+          .fontColor(this.rustDeskProAuthMode === 'password' ? appUiOnAccentText(this.accentColor) : this.pal().text)
           .enabled(this.rustDeskProPreflightState !== RustDeskProPreflightState.CONNECTING)
           .onClick((): void => {
             this.rustDeskProAuthMode = 'password';
@@ -24755,7 +24826,7 @@ struct HostListPage {
         if (!this.isCurrentRustDeskPreflightDirect()) {
           Button('请求远端批准')
             .backgroundColor(this.rustDeskProAuthMode === 'request_approval' ? this.accentColor : this.pal().surface)
-            .fontColor(this.rustDeskProAuthMode === 'request_approval' ? Color.White : this.pal().text)
+            .fontColor(this.rustDeskProAuthMode === 'request_approval' ? appUiOnAccentText(this.accentColor) : this.pal().text)
             .enabled(this.rustDeskProPreflightState !== RustDeskProPreflightState.CONNECTING)
             .onClick((): void => {
               this.rustDeskProAuthMode = 'request_approval';
@@ -24792,7 +24863,7 @@ struct HostListPage {
         Row({ space: 8 }) {
           Button('一次性密码').layoutWeight(1).height(36).fontSize(12)
             .backgroundColor(this.rustDeskProPasswordMode === 0 ? this.accentColor : this.pal().surface)
-            .fontColor(this.rustDeskProPasswordMode === 0 ? Color.White : this.pal().text2)
+            .fontColor(this.rustDeskProPasswordMode === 0 ? appUiOnAccentText(this.accentColor) : this.pal().text2)
             .enabled(this.rustDeskProPreflightState !== RustDeskProPreflightState.CONNECTING)
             .onClick((): void => {
               if (this.rustDeskProPasswordMode !== 0) {
@@ -24806,7 +24877,7 @@ struct HostListPage {
             })
           Button('永久密码').layoutWeight(1).height(36).fontSize(12)
             .backgroundColor(this.rustDeskProPasswordMode === 1 ? this.accentColor : this.pal().surface)
-            .fontColor(this.rustDeskProPasswordMode === 1 ? Color.White : this.pal().text2)
+            .fontColor(this.rustDeskProPasswordMode === 1 ? appUiOnAccentText(this.accentColor) : this.pal().text2)
             .enabled(this.rustDeskProPreflightState !== RustDeskProPreflightState.CONNECTING)
             .onClick((): void => {
               if (this.rustDeskProPasswordMode !== 1) {
@@ -24850,7 +24921,7 @@ struct HostListPage {
         }.width('100%')
       }
       Button(this.rustDeskProPreflightState === RustDeskProPreflightState.ERROR ? '重新连接' : '连接')
-        .width('100%').height(46).backgroundColor(this.accentColor).fontColor(Color.White)
+        .width('100%').height(46).backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor))
         .enabled(this.rustDeskProPreflightState !== RustDeskProPreflightState.CONNECTING)
         .onClick((): void => { this.confirmRustDeskProPreflight(); })
     }
@@ -24943,7 +25014,7 @@ struct HostListPage {
           ForEach(this.keyVault.getAllSshKeys(), (key: SshKey) => {
             ListItem() {
               Row() {
-                Text(SshKey.typeLabel(key.keyType))
+                Text(sshKeyTypePending(key.privateKey, key.publicKey) ? 'KEY' : SshKey.typeLabel(key.keyType))
                   .fontSize(11).fontWeight(FontWeight.Bold).fontColor(appUiOnAccentText(this.accentColor))
                   .width(36).height(36).borderRadius(10).backgroundColor(this.accentColor)
                   .textAlign(TextAlign.Center)
@@ -24954,7 +25025,7 @@ struct HostListPage {
                     Text(key.comment).fontSize(11).fontColor(this.pal().text2).maxLines(1)
                   }
                 }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 10 })
-                Text(SshKey.typeLabel(key.keyType))
+                Text(sshKeyTypeText(key.privateKey, key.publicKey, SshKey.typeLabel(key.keyType)))
                   .fontSize(10).fontColor(this.accentColor).fontWeight(FontWeight.Medium)
                   .padding({ left: 6, right: 6, top: 2, bottom: 2 }).borderRadius(4)
                   .backgroundColor(this.pal().surface)
@@ -25276,10 +25347,13 @@ struct HostListPage {
   private switchHostProtocol(protocol: string, defaultPort: number): void {
     this.rememberCurrentHostPort();
     this.proto = protocol;
+    // A port left empty on the other protocol comes back as its default rather than an empty field.
     if (protocol === 'rdp') {
-      this.portVal = this.rdpPortVal > 0 ? this.rdpPortVal : defaultPort;
+      if (this.rdpPortVal <= 0) { this.rdpPortVal = defaultPort; }
+      this.portVal = this.rdpPortVal;
     } else if (protocol === 'ssh') {
-      this.portVal = this.sshPortVal > 0 ? this.sshPortVal : defaultPort;
+      if (this.sshPortVal <= 0) { this.sshPortVal = defaultPort; }
+      this.portVal = this.sshPortVal;
     } else {
       // RustDesk 的主机端点由中继/直连配置决定，通用端口只作为表单过渡值。
       this.portVal = defaultPort;

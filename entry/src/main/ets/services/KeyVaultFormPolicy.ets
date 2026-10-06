@@ -29,11 +29,18 @@ export function sshPublicKeyMissingHint(): string {
 }
 
 /**
- * An encrypted PKCS#8 key (BEGIN ENCRYPTED PRIVATE KEY) hides its algorithm until the passphrase is given in 密钥管理;
- * until then the cards do not guess a type.
+ * A key whose type is not known yet: an encrypted PKCS#8 key (BEGIN ENCRYPTED PRIVATE KEY) hides its algorithm until
+ * the passphrase is given in 密钥管理, and an OpenSSH key saved without a public key could not be read when it was
+ * saved. Until then no list guesses a type.
  */
 export function sshKeyTypePending(privateKey: string, publicKey: string): boolean {
-  return publicKey === '' && privateKey.indexOf('BEGIN ENCRYPTED PRIVATE KEY') >= 0;
+  if (publicKey !== '') { return false; }
+  return privateKey.indexOf('BEGIN ENCRYPTED PRIVATE KEY') >= 0 || privateKey.indexOf('BEGIN OPENSSH PRIVATE KEY') >= 0;
+}
+
+/** The type a list shows for a key: its label, or 类型待识别 while it is pending. */
+export function sshKeyTypeText(privateKey: string, publicKey: string, typeLabel: string): string {
+  return sshKeyTypePending(privateKey, publicKey) ? '类型待识别' : typeLabel;
 }
 
 /** How long an open file picker or the scanner explains the app being in the background (the 2FA page stays open). */

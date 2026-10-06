@@ -214,7 +214,7 @@ check('classic forms: multi-line private keys, detected types, busy saves; PC of
 
 check('batch 2 review: scans and imports keep the 2FA page unlocked; backups keep algorithm and names', () => {
   const page = read('pages/KeyVaultPage.ets');
-  assert.ok(member(page, 'private onAppBackground(): void {').includes('!keyVaultExternalPickerOpen()'));
+  assert.ok(member(page, 'private onAppBackground(): void {').includes('!keyVaultPickerExplainsBackground()'));
   for (const file of ['components/QrCodeScanner.ets', 'components/resourceadd/modern/ModernKeyVaultAddFlow.ets', 'pages/KeyVaultPage.ets']) {
     const text = read(file);
     assert.ok(text.includes('beginKeyVaultExternalPicker();') && text.includes('endKeyVaultExternalPicker();'), file);
@@ -238,7 +238,10 @@ check('batch 2 review 2: a picker keeps 2FA open only for a while; an encrypted 
   assert.equal(policy.keyVaultPickerKeepsUnlocked(5000, 1000), false, 'clock went back');
   assert.equal(policy.sshKeyTypePending('BEGIN ENCRYPTED PRIVATE KEY (header text only)', ''), true);
   assert.equal(policy.sshKeyTypePending('BEGIN ENCRYPTED PRIVATE KEY (header text only)', 'ssh-rsa AAAA'), false);
-  assert.equal(policy.sshKeyTypePending('BEGIN OPENSSH PRIVATE KEY (header text only)', ''), false);
+  assert.equal(policy.sshKeyTypePending('BEGIN OPENSSH PRIVATE KEY (header text only)', ''), true, 'unreadable when saved');
+  assert.equal(policy.sshKeyTypePending('BEGIN OPENSSH PRIVATE KEY (header text only)', 'ssh-ed25519 AAAA'), false);
+  assert.equal(policy.sshKeyTypeText('BEGIN ENCRYPTED PRIVATE KEY (header text only)', '', 'RSA'), '类型待识别');
+  assert.equal(policy.sshKeyTypeText('x', 'ssh-rsa AAAA', 'RSA'), 'RSA');
   const guard = read('services/KeyVaultPickerGuard.ets');
   assert.ok(guard.includes("AppStorage.setOrCreate<boolean>('totpUnlocked', false);"), 'a long trip relocks on return');
   assert.ok(read('components/SshKeyCard.ets').includes("this.typePending() ? '类型待识别' :"));
@@ -327,13 +330,13 @@ check('add flows: a close button everywhere, typed names kept, plain summaries, 
   for (const file of ['RdpAddFlow', 'RustDeskAddFlow', 'MoonlightHostAddFlow', 'SshAddFlow']) {
     const text = read('components/hostadd/' + file + '.ets');
     assert.ok(text.includes("SymbolGlyph($r('sys.symbol.xmark'))") && text.includes(".accessibilityText('关闭')"), file);
-    assert.ok(!/Color\.White|'#EAF3FF'|'#DDEEFF'/.test(text), file + ' reads on any accent');
+    assert.ok(!/Color\.White|\? '#EAF3FF' :|\? '#DDEEFF' :/.test(text), file + ' reads on any accent');
   }
   const scaffold = read('components/vnc/VncSheetScaffold.ets');
   assert.ok(scaffold.includes('} else if (this.trailingClose) {'));
   const vnc = read('components/hostadd/VncAddFlow.ets');
   assert.ok(vnc.includes('trailingClose: true,') && read('components/resourceadd/VncGatewayAddFlow.ets').includes('trailingClose: true,'));
-  assert.ok(!/Color\.White|'#EAF3FF'|'#DDEEFF'/.test(vnc));
+  assert.ok(!/\? Color\.White :|\.fontColor\(Color\.White\)|\? '#EAF3FF' :|\? '#DDEEFF' :/.test(vnc));
   assert.ok(vnc.includes("vncSecurityPolicyLabel(this.securityPolicy)") && vnc.includes('vncScalingModeLabel(this.scalingMode)'));
   assert.ok(!/reviewRow\('(?:target ID|Gateway|Gateway 端点|TLS \/ 策略)'/.test(vnc), 'summary labels in words');
   assert.ok(vnc.indexOf('function vncSecurityPolicyLabel') > vnc.lastIndexOf("from '../vnc/VncSheetScaffold';"), 'helpers after the imports');
@@ -385,6 +388,85 @@ check('PC and accessibility: right-click menus, scrollbars, labels, the open-loc
     'workspace/WorkspaceLaunchPrepPanel', 'workspace/WorkspaceRunPanel', 'workspace/WorkspaceStrip']) {
     assert.ok(!/fontColor\(\[?Color\.White\]?\)/.test(read('components/pro/' + file + '.ets')), file);
   }
+});
+
+check('batch 3 review: locked Moonlight hosts, 在列表中选中, relay search, classic strip, actionable dialogs', () => {
+  const privacy = load('services/HostCardPrivacyPolicy');
+  const policy = loadWith('services/HostWorkspacePolicy', { './HostCardPrivacyPolicy': privacy });
+  assert.equal(policy.moonlightHostMatchesSearch('Gaming PC', 'uuid-1', ['192.168.1.20'], false, '192.168'), true);
+  assert.equal(policy.moonlightHostMatchesSearch('Gaming PC', 'uuid-1', ['192.168.1.20'], true, '192.168'), false,
+    'a locked card hides its address');
+  assert.equal(policy.moonlightHostMatchesSearch('Gaming PC', 'uuid-1', ['192.168.1.20'], true, 'uuid'), false);
+  assert.equal(policy.moonlightHostMatchesSearch('Gaming PC', 'uuid-1', ['192.168.1.20'], true, 'gaming'), true);
+  const filter = loadWith('services/HostListFilterService', { './HostWorkspacePolicy': policy });
+  const relays = new Map([['r1', 'relay.example.com']]);
+  const lockedRd = hostRecord({ id: 'lr', label: 'Box', protocol: 'rustdesk', rustdeskRelayId: 'r1', locked: true });
+  const openRd = hostRecord({ id: 'or', label: 'Desk', protocol: 'rustdesk', rustdeskRelayId: 'r1' });
+  assert.deepEqual(filter.searchHosts([lockedRd, openRd], 'relay.example', relays).map((h) => h.id), ['or'],
+    'a typed relay address does not find a locked host');
+  assert.deepEqual(filter.searchHosts([lockedRd, openRd], 'relay.example', relays, true).map((h) => h.id), ['lr', 'or'],
+    '中继 → 查看主机 lists every host on the relay');
+  const page = read('pages/HostListPage.ets');
+  assert.ok(member(page, 'private visibleMoonlightHosts(): MoonlightHostLocalView[] {').includes('moonlightHostMatchesSearch('));
+  const select = member(page, 'private selectHostsByRefs(refs: string[]): void {');
+  assert.ok(select.indexOf("this.searchText = '';") < select.indexOf('this.refreshFilteredHostView();'));
+  assert.ok(select.includes('this.hostSelectedIds = new Set<string>(shown);') && select.includes("没有选中"));
+  assert.ok(member(page, 'private onSearchChange(value: string): void {')
+    .includes("if (value !== this.relaySearchFromRelayPage) { this.relaySearchFromRelayPage = ''; }"));
+  assert.ok(member(page, 'private showRelayHostsFromRelayPage(relayId: string): void {')
+    .includes('this.relaySearchFromRelayPage = this.searchText;'));
+  const strip = member(page, '@Builder HostWorkspaceFilterBar() {');
+  assert.ok(strip.includes(".padding({ left: 16, right: 16, top: 4, bottom: 6 })") && strip.includes("Column().width('100%').height(10)"),
+    'the classic strip keeps its size, with or without groups');
+  assert.ok(!strip.includes('padding({ top: 8, bottom: 8 })') && strip.includes('.margin({ right: 12 })'));
+  const colors = read('common/AppUiColorPolicy.ets');
+  assert.ok(colors.includes("export function accentSecondaryText(accent: string, whiteTint: string = '#EAF3FF'): string {"));
+  assert.ok(read('components/hostadd/MoonlightHostAddFlow.ets').includes("accentSecondaryText(this.accentColor, '#DDEEFF')"));
+  assert.equal((read('components/hostadd/RustDeskAddFlow.ets').match(/accentSecondaryText\(this\.accentColor, '#DDEEFF'\)/g) || []).length, 2);
+  assert.ok(read('components/hostadd/VncAddFlow.ets').includes("accentSecondaryText(this.accentColor, '#DDEEFF')"));
+  const batch = member(page, 'private async doHostBatchDelete(): Promise<void> {');
+  assert.ok(batch.includes('filter((key: string): boolean => inView.has(key))'), 'acts on hosts on screen now');
+  assert.ok(batch.indexOf('const actionableMoonlight') > batch.indexOf('moonlightPreviews.push(preview);') &&
+    batch.includes('actionableMoonlight.filter((host: MoonlightHost): boolean => host.locked === true)'));
+  const single = member(page, 'private async doDeleteHost(host: RemoteHost): Promise<void> {');
+  assert.ok(single.includes('this.hostStoredLocked(host) || host.locked') &&
+    (single.match(/if \(!this\.pageActive\) \{ return; \}/g) || []).length === 2);
+  const lock = member(page, 'private async toggleLock(cardHost: RemoteHost): Promise<void> {');
+  assert.ok(lock.indexOf('const nextLocked: boolean = !host.locked;') < lock.indexOf('await showLockGate(') &&
+    lock.includes('(this.srv.getHost(host.id) ?? host).runtimeClone()'));
+  const open = member(page, 'private openGroupWithSearchMatches(): void {');
+  assert.ok(open.includes("type === 'moonlight' ? moonlightMatches :") && open.includes("'vnc', 'moonlight'"));
+  assert.ok(member(page, 'private hostSearchOrFilterActive(): boolean {')
+    .includes("this.workspaceGroupId !== '' && !this.groupedHostCardsActive() && !this.proOrgVisible"));
+  assert.ok(member(page, 'private announceSavedHost(hostId: string, message: string): void {').includes('this.desktopTabProtocol()'));
+});
+
+check('batch 3 review nits: accent text, danger fills, grouped cards, ports, key types, pickers, duplicate imports', () => {
+  const page = read('pages/HostListPage.ets');
+  const vncClassic = page.slice(page.indexOf("Button('TCP 直连').layoutWeight(1).height(34)"), page.indexOf("Button('允许明文').layoutWeight(1).height(32)"));
+  assert.ok(vncClassic.length > 0 && !/Color\.White/.test(vncClassic), 'classic VNC editor choices');
+  assert.ok(page.includes(".fontColor(this.vncHostSecurityPolicy === 'allow_plaintext' ? Color.White : this.pal().text2)"),
+    'white stays on the danger fill');
+  assert.ok(page.includes(".fontColor(this.sshPublicKeyInstallBusy ? Color.White : appUiOnAccentText(this.accentColor))"));
+  assert.ok(page.includes(".fontColor(this.moonlightEditHostType === 'sunshine' ? appUiOnAccentText(this.accentColor) : this.pal().text2)"));
+  assert.ok(read('components/hostadd/VncAddFlow.ets').includes("(danger ? '#FFFFFF' : appUiOnAccentText(this.accentColor))"));
+  const grouped = member(page, '@Builder hostGroupedHostCard(host: RemoteHost) {');
+  assert.ok(grouped.includes('void this.probeHostConnectivity(host);') &&
+    grouped.indexOf('if (this.hostSelectionMode) { this.toggleHostSelect(') < grouped.indexOf('void this.probeHostConnectivity(host);'));
+  assert.ok(grouped.includes('.bindContextMenu(this.hostContextMenuBuilder(host), ResponseType.RightClick)'));
+  assert.ok(member(page, '@Builder moonlightGroupedHostCard(view: MoonlightHostLocalView) {')
+    .includes('.bindContextMenu(this.moonlightContextMenuBuilder(view), ResponseType.RightClick)'));
+  const sw = member(page, 'private switchHostProtocol(protocol: string, defaultPort: number): void {');
+  assert.ok(sw.includes('if (this.rdpPortVal <= 0) { this.rdpPortVal = defaultPort; }') &&
+    sw.includes('if (this.sshPortVal <= 0) { this.sshPortVal = defaultPort; }'));
+  assert.ok(page.includes('sshKeyTypeText(key.privateKey, key.publicKey, SshKey.typeLabel(key.keyType))'));
+  assert.ok(read('components/hostadd/SshAddFlow.ets').includes('sshKeyTypeText(key.privateKey, key.publicKey, SshKey.typeLabel(key.keyType))'));
+  const guard = read('services/KeyVaultPickerGuard.ets');
+  assert.ok(guard.includes('if (since > 0 && skipped && !keyVaultPickerKeepsUnlocked(since, Date.now())) {'),
+    'only a real trip to the background relocks');
+  assert.ok(member(guard, 'export function keyVaultPickerExplainsBackground(): boolean {')
+    .includes('AppStorage.setOrCreate<boolean>(PICKER_SKIPPED_BACKGROUND_KEY, true);'));
+  assert.ok(read('components/resourceadd/modern/ModernKeyVaultAddFlow.ets').includes("'与文件中前一条重复，将跳过'"));
 });
 
 console.log('three screens: ' + passed + ' checks passed');

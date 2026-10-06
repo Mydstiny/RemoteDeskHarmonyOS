@@ -24,7 +24,10 @@ export function appUiOnAccentText(accent: string): string {
   return 1.05 / (luminance + 0.05) >= 3 ? '#FFFFFF' : '#000000';
 }
 
-/** The softer second line on an accent fill: the old light tint over white text, a dark grey over black text. */
-export function accentSecondaryText(accent: string): string {
-  return appUiOnAccentText(accent) === '#FFFFFF' ? '#EAF3FF' : '#3D3D3D';
+/**
+ * The softer second line on an accent fill: the call site's own light tint over white text (unchanged on the default
+ * blue), a dark grey over black text.
+ */
+export function accentSecondaryText(accent: string, whiteTint: string = '#EAF3FF'): string {
+  return appUiOnAccentText(accent) === '#FFFFFF' ? whiteTint : '#3D3D3D';
 }

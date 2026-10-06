@@ -224,7 +224,7 @@ export struct RustDeskAddFlow {
       Text(title).fontSize(15).fontWeight(FontWeight.Medium)
         .fontColor(this.direct === directMode ? appUiOnAccentText(this.accentColor) : this.pal().text)
       Text(subtitle).fontSize(11)
-        .fontColor(this.direct === directMode ? accentSecondaryText(this.accentColor) : this.pal().text3).margin({ top: 4 })
+        .fontColor(this.direct === directMode ? accentSecondaryText(this.accentColor, '#DDEEFF') : this.pal().text3).margin({ top: 4 })
     }.alignItems(HorizontalAlign.Start).layoutWeight(1).padding(14).borderRadius(12)
     .backgroundColor(this.direct === directMode ? this.accentColor : this.pal().surface)
     .onClick((): void => { this.direct = directMode; })
@@ -235,7 +235,7 @@ export struct RustDeskAddFlow {
       Text(title).fontSize(14).fontWeight(FontWeight.Medium)
         .fontColor(this.targetDevice === target ? appUiOnAccentText(this.accentColor) : this.pal().text)
       Text(subtitle).fontSize(11)
-        .fontColor(this.targetDevice === target ? accentSecondaryText(this.accentColor) : this.pal().text3).margin({ top: 4 })
+        .fontColor(this.targetDevice === target ? accentSecondaryText(this.accentColor, '#DDEEFF') : this.pal().text3).margin({ top: 4 })
     }.alignItems(HorizontalAlign.Start).layoutWeight(1).padding(12).borderRadius(10)
       .backgroundColor(this.targetDevice === target ? this.accentColor : this.pal().surface)
       .onClick((): void => {

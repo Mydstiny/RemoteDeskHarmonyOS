@@ -221,7 +221,12 @@ export struct ModernKeyVaultAddFlow {
   /** Why a file entry will not be imported, or '' when it can be. */
   private importSkipReason(entry: TotpEntry): string {
     if (this.isExistingSecret(entry.secret)) { return '已存在，将跳过'; }
-    if (totpSecretProblem(normalizeTotpSecret(entry.secret), []) !== '') { return '密钥格式无效，将跳过'; }
+    const secret: string = normalizeTotpSecret(entry.secret);
+    if (totpSecretProblem(secret, []) !== '') { return '密钥格式无效，将跳过'; }
+    // The same account twice in one file: the first copy is imported.
+    const first: TotpEntry | undefined = this.importEntries.find((item: TotpEntry): boolean =>
+      normalizeTotpSecret(item.secret) === secret);
+    if (first !== undefined && first.id !== entry.id) { return '与文件中前一条重复，将跳过'; }
     return '';
   }
   private toggleImport(entry: TotpEntry): void {

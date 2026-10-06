@@ -1,4 +1,5 @@
 import { Palette, buildDark, buildLight } from '../../common/Theme';
+import { sshKeyTypeText } from '../../services/KeyVaultFormPolicy';
 import { appUiOnAccentText } from '../../common/AppUiColorPolicy';
 import { RemoteHost } from '../../model/RemoteHost';
 import { SshAddBasicFields } from '../../common/SshAddBasicFields';
@@ -211,9 +212,11 @@ export struct SshAddFlow {
                   ForEach(this.availableKeys(), (key: SshKey) => {
                     Row() {
                       Column() {
-                        Text(key.label !== '' ? key.label : SshKey.typeLabel(key.keyType))
+                        Text(key.label !== '' ? key.label :
+                          sshKeyTypeText(key.privateKey, key.publicKey, SshKey.typeLabel(key.keyType)))
                           .fontSize(14).fontColor(this.pal().text)
-                        Text(key.fingerprint !== '' ? key.fingerprint : SshKey.typeLabel(key.keyType))
+                        Text(key.fingerprint !== '' ? key.fingerprint :
+                          sshKeyTypeText(key.privateKey, key.publicKey, SshKey.typeLabel(key.keyType)))
                           .fontSize(10).fontColor(this.pal().text3).maxLines(1)
                       }.alignItems(HorizontalAlign.Start).layoutWeight(1)
                       if (this.keyId === key.id) {
