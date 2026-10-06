@@ -124,4 +124,83 @@ check('sheets scroll inside the window; the bound-host link opens the host list;
   assert.ok(page.includes('(relay: RustDeskRelayConfig): string => this.relayCardKey(relay))'), 'cards rebuild only on change');
 });
 
+// ------------------------------------------------------------------ batch 2: 密钥保险库, both looks
+check('2FA secrets and imports follow one rule in both add flows', () => {
+  const policy = load('services/KeyVaultFormPolicy');
+  assert.equal(policy.normalizeTotpSecret(' abcd efgh '), 'ABCDEFGH');
+  assert.equal(policy.totpSecretProblem('ABC1', []), '密钥（Secret）只能包含字母 A–Z 和数字 2–7');
+  assert.equal(policy.totpSecretProblem('ABCDEFGH', ['ABCDEFGH']), '这个 2FA 账户已经添加过了');
+  assert.equal(policy.totpImportSummary(2, 1), '已导入 2 个，跳过 1 个已存在或无效的账户');
+  const page = read('pages/KeyVaultPage.ets');
+  const add = member(page, 'private doAddTotp(): void {');
+  assert.ok(add.includes('totpSecretProblem(secret, this.existingTotpSecrets())') &&
+    add.includes('entry.algorithm = this.formAlgorithm as TotpAlgorithm;'), 'keeps SHA256/512 from a parsed URI');
+  assert.ok(member(page, 'private parseOtpAuthInput(): void {').includes('this.formAlgorithm = parsed.algorithm;'));
+  const imp = member(page, 'private async importTotpFile(): Promise<void> {');
+  assert.ok(imp.includes('this.totpImporter.pickAndParse()') && !imp.includes('fromCharCode'), 'UTF-8 and every format');
+  const scan = member(page, 'private onQrScanned(entry: TotpEntry): void {');
+  assert.ok(scan.includes('this.showSheet = false;') && scan.includes('totpSecretProblem('), 'the form closes too');
+  assert.ok(!/\[CC-SSHKEY-|\[importTotp\]/.test(page + read('components/SshKeyManagerSheet.ets') +
+    read('components/SshKeyInstallSheet.ets')), 'no internal codes in messages');
+});
+
+check('selection belongs to one list, taps select in multi-select, locked keys stay protected in batches', () => {
+  const page = read('pages/KeyVaultPage.ets');
+  assert.ok(page.includes("@Link @Watch('onInnerTabChange') keyVaultInnerTab: number;"));
+  assert.ok(member(page, 'private onInnerTabChange(): void {').includes('this.selectionMode = false;'));
+  const batch = member(page, 'private doBatchDelete(): void {');
+  assert.ok(batch.indexOf('promptAction.showDialog({') < batch.indexOf('showLockGate('), 'confirm first, then verify once');
+  assert.ok(batch.includes('keyVaultBatchDeleteMessage(ids.length, locked.length, ssh)') && batch.includes("'已删除 '"));
+  const lock = member(page, 'private async toggleSshLock(key: SshKey): Promise<void> {');
+  assert.ok(lock.indexOf('if (key.locked) {') < lock.indexOf('showLockGate('), 'only unlocking asks for verification');
+  const card = read('components/SshKeyCard.ets');
+  assert.ok(card.includes('if (this.showCheckbox) {\n          if (this.onCheckChange) { this.onCheckChange(!this.checkboxSelected); }'));
+  assert.ok(card.includes('.selectedColor(this.accentColor)') && card.includes("Text('公钥未生成')"));
+  const totp = read('components/TotpCodeCard.ets');
+  assert.ok(totp.includes('if (this.isDesktopDevice && !this.showCheckbox && !this.pageLocked) {'), 'PC can rename and delete one entry');
+  assert.ok(member(totp, 'private async unlockEntry(): Promise<void> {').includes("showLockGate(this.primaryLabel(), 'biometric')"));
+  assert.ok(!page.includes('@Builder sshKeyContent()') && !page.includes('@Builder totpContent()') &&
+    !page.includes('@Builder selectionDeleteBtn()'), 'dead builders are gone');
+});
+
+check('2FA relocks in the background; turning protection on starts locked', () => {
+  const page = read('pages/KeyVaultPage.ets');
+  assert.ok(page.includes("@StorageLink('totpUnlocked') totpUnlocked: boolean = false;"));
+  assert.ok(member(page, 'private onAppBackground(): void {').includes('this.totpUnlocked = false;'));
+  assert.ok(read('pages/HostListPage.ets').includes("// Protection starts locked: an earlier unlock of the 2FA page does not carry over.\n                      AppStorage.setOrCreate('totpUnlocked', false);"));
+});
+
+check('key sheets report real results, a removal is its own step, installs never dead-end', () => {
+  const page = read('pages/KeyVaultPage.ets');
+  assert.ok(member(page, 'private onKeyManagerChange(updated: SshKey): boolean {').includes('if (!this.kvs.updateSshKey(updated)) { return false; }'));
+  const manager = read('components/SshKeyManagerSheet.ets');
+  assert.ok(manager.includes("const saved: boolean = this.onChange ? this.onChange(updated) : false;"));
+  assert.ok(manager.includes("SshKey.typeLabel(this.sshKey.keyType)") && manager.includes('Flex({ wrap: FlexWrap.Wrap })'));
+  assert.ok(manager.includes("title: '移除私钥密码？'") && manager.includes('this.onManagePassphrase(this.sshKey, true)'));
+  assert.ok(manager.includes('if (this.viewportHeight > 0) {'), 'fits the window, not the screen');
+  const sub = member(manager, 'private submit(): void {');
+  assert.ok(sub.includes("if (!this.removeMode && this.newPass === '') {"), 'changing needs a new password');
+  const install = read('components/SshKeyInstallSheet.ets');
+  assert.ok(install.includes("Button('重试')") && install.includes("Button('返回')") && install.includes("Button('取消')"));
+  assert.ok(install.includes('if (result[\'ok\'] && targetKey.privateKeyEncrypted) {'), 'keys with a passphrase skip verification');
+  assert.ok(member(install, 'private backToHostChoice(): void {').includes('this.installGeneration++;'));
+  assert.ok(install.indexOf("Text('安装成功后，这台主机改用新密钥登录')") < install.indexOf("Button('安装公钥')"));
+  assert.ok(page.includes('removeMode: this.passphraseRemoveMode,'));
+});
+
+check('classic forms: multi-line private keys, detected types, busy saves; PC offers no camera scan', () => {
+  const page = read('pages/KeyVaultPage.ets');
+  assert.ok(page.includes("TextArea({ placeholder: '粘贴 OpenSSH 格式私钥...', text: this.formPasteKey })"));
+  assert.ok(page.includes("key.keyType = sshKeyTypeFromName(info['keyType'], key.keyType);"));
+  assert.ok(member(page, 'private async doAddSshKey(): Promise<void> {').includes('if (this.savingKey) { return; }'));
+  assert.ok(page.includes("      if (!this.isDesktopDevice) {\n        Button() {"), 'the classic form hides the scanner on PC');
+  assert.ok(read('components/resourceadd/ResourceFabPicker.ets').includes("if (!this.isDesktopDevice) {\n          this.option('scan'"));
+  const modern = read('components/resourceadd/modern/ModernKeyVaultAddFlow.ets');
+  assert.ok(modern.includes("this.errorText = '两次输入的密钥密码不一致'") && modern.includes("Button(this.busy ? '生成中…' : '生成密钥')"));
+  assert.ok(modern.includes('// File imports report on this step: there is no other step to show their errors.'));
+  assert.ok(modern.includes(".constraintSize({ maxHeight: this.stepMaxHeight() })"));
+  assert.ok(!/Color\.White/.test(modern));
+  assert.ok(read('components/QrCodeScanner.ets').includes('if (this.showTitle) {'));
+});
+
 console.log('three screens: ' + passed + ' checks passed');

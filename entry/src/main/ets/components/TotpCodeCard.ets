@@ -5,6 +5,7 @@ import { TotpEntry, TotpCode } from '../model/TotpEntry';
 import { TotpEngine } from '../services/TotpEngine';
 import { Palette, buildDark, buildLight, AppTheme } from '../common/Theme';
 import { promptAction } from '@kit.ArkUI';
+import { showLockGate, lockGateErrorMessage } from './LockGate';
 import { pasteboard } from '@kit.BasicServicesKit';
 import { common } from '@kit.AbilityKit';
 import { image } from '@kit.ImageKit';
@@ -36,11 +37,19 @@ export struct TotpCodeCard {
   @StorageProp('accentColor') accentColor: string = '#007DFF';
   @StorageProp('totpLogoMode') totpLogoMode: string = 'logo';
   @StorageProp('currentBreakpoint') breakpoint: string = 'sm';
+  @StorageProp('isDesktopDevice') isDesktopDevice: boolean = false;
   @StorageProp('remoteDesktopBgFlag') @Watch('onCardLifecycleChanged') appInBackground: boolean = false;
   @Prop @Watch('onCardLifecycleChanged') pageLocked: boolean = false;
   @Prop showCheckbox: boolean = false;
   @Prop checkboxSelected: boolean = false;
   onCheckChange?: (checked: boolean) => void;
+  /** An entry locked on its own (it can arrive locked through sync): verified, then unlocked by the page. */
+  onUnlock?: () => void;
+  /** PC has no swipe: the ⋯ menu offers what the swipe actions do on a phone. */
+  onRename?: () => void;
+  onSelect?: () => void;
+  onDelete?: () => void;
+  @State menuVisible: boolean = false;
   @State codeStr: string = '------';
   @State remaining: number = 30;
   @State brandReady: boolean = false;
@@ -138,6 +147,40 @@ export struct TotpCodeCard {
     const tc: TotpCode = TotpEngine.generateCode(this.entry);
     this.codeStr = tc.code;
     this.remaining = tc.remaining;
+  }
+
+  /** A locked entry: verify, then let the page unlock it. */
+  private async unlockEntry(): Promise<void> {
+    if (this.pageLocked || !this.entry.locked || this.showCheckbox) { return; }
+    const r = await showLockGate(this.primaryLabel(), 'biometric');
+    if (!r.ok) {
+      const message: string = lockGateErrorMessage(r);
+      if (message !== '') { promptAction.showToast({ message: message, duration: 2000 }); }
+      return;
+    }
+    if (this.onUnlock) { this.onUnlock(); }
+  }
+
+  @Builder totpMenuRow(icon: Resource, label: string, danger: boolean, action: () => void) {
+    Row() {
+      SymbolGlyph(icon).fontSize(16).fontColor([danger ? this.pal().danger : this.pal().text])
+      Text(label).fontSize(13).fontColor(danger ? this.pal().danger : this.pal().text).margin({ left: 8 })
+    }
+    .width('100%').padding({ left: 12, right: 12, top: 10, bottom: 10 })
+    .onClick(() => { this.menuVisible = false; action(); })
+  }
+
+  @Builder totpMenuBuilder() {
+    Column() {
+      this.totpMenuRow($r('sys.symbol.square_and_pencil'), '重命名', false,
+        (): void => { if (this.onRename) { this.onRename(); } })
+      Divider().strokeWidth(0.5).color(this.pal().cardBorder).width('100%')
+      this.totpMenuRow($r('sys.symbol.list_bullet'), '多选', false,
+        (): void => { if (this.onSelect) { this.onSelect(); } })
+      Divider().strokeWidth(0.5).color(this.pal().cardBorder).width('100%')
+      this.totpMenuRow($r('sys.symbol.ohos_trash'), '删除', true,
+        (): void => { if (this.onDelete) { this.onDelete(); } })
+    }.width('100%').padding({ top: 2, bottom: 2 }).borderRadius(12)
   }
 
   private copyCode(): void {
@@ -273,7 +316,7 @@ export struct TotpCodeCard {
   private primaryLabel(): string {
     const customName: string = this.entry.displayName.trim();
     if (customName !== '') { return customName; }
-    return this.entry.issuer || this.entry.account || 'Unknown';
+    return this.entry.issuer || this.entry.account || '未命名';
   }
 
   private secondaryLabel(): string {
@@ -421,7 +464,7 @@ export struct TotpCodeCard {
       if (this.showCheckbox) {
         Checkbox()
           .select(this.checkboxSelected)
-          .selectedColor('#007DFF')
+          .selectedColor(this.accentColor)
           .margin({ right: 8 })
           .onChange((v: boolean) => { if (this.onCheckChange) { this.onCheckChange(v); } })
       }
@@ -466,7 +509,14 @@ export struct TotpCodeCard {
           Text(this.codeStr)
             .fontSize(26).fontWeight(FontWeight.Bold)
             .fontColor(this.accentColor).fontFamily('monospace')
-            .onClick(() => { this.copyCode(); })
+            .onClick(() => {
+              // In multi-select a tap selects instead of copying.
+              if (this.showCheckbox) {
+                if (this.onCheckChange) { this.onCheckChange(!this.checkboxSelected); }
+                return;
+              }
+              this.copyCode();
+            })
           Row() {
             Progress({ value: this.remaining, total: this.entry.period, type: ProgressType.Linear })
               .width(60).height(3).color(this.accentColor)
@@ -480,6 +530,29 @@ export struct TotpCodeCard {
         SymbolGlyph($r('sys.symbol.ohos_lock'))
           .fontSize(24)
           .fontColor([this.pal().text3])
+          .accessibilityText(this.entry.locked && !this.pageLocked ? '解锁这个 2FA 账户' : '已锁定')
+          .onClick((): void => { this.unlockEntry(); })
+      }
+      if (this.isDesktopDevice && !this.showCheckbox && !this.pageLocked) {
+        Button() {
+          Text('⋯').fontSize(18).fontColor(this.pal().text)
+        }
+        .width(36).height(36).borderRadius(18)
+        .backgroundColor(this.pal().surface)
+        .margin({ left: 8 })
+        .accessibilityText('更多操作')
+        .bindPopup(this.menuVisible, {
+          builder: this.totpMenuBuilder(),
+          placement: Placement.BottomRight,
+          enableArrow: true,
+          popupColor: this.pal().card,
+          width: 128,
+          onStateChange: (e: Object) => {
+            const ev: Record<string, boolean> = e as Record<string, boolean>;
+            if (!ev['isVisible']) { this.menuVisible = false; }
+          }
+        })
+        .onClick(() => { this.menuVisible = !this.menuVisible; })
       }
     }
     .width('100%')

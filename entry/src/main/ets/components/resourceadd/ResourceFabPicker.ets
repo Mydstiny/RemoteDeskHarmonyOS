@@ -6,6 +6,8 @@ import { ProtocolIconKey, protocolIcon } from '../../services/ProtocolIconPolicy
 export struct ResourceFabPicker {
   @StorageProp('currentTheme') theme: string = 'light';
   @StorageProp('accentColor') accentColor: string = '#007DFF';
+  /** PC has no camera scanner: 扫描二维码 is not offered there. */
+  @StorageProp('isDesktopDevice') isDesktopDevice: boolean = false;
   @Prop kind: string = 'ssh_key';
   onSelect: (option: string) => void = (_option: string): void => {};
   onClose: () => void = (): void => {};
@@ -68,7 +70,9 @@ export struct ResourceFabPicker {
         this.option('generate', '生成新密钥', '创建 ED25519 或 RSA 密钥对')
         this.option('paste', '粘贴私钥', '粘贴已有私钥文本并检查')
       } else if (this.kind === 'totp') {
-        this.option('scan', '扫描二维码', '使用相机读取 TOTP 配置')
+        if (!this.isDesktopDevice) {
+          this.option('scan', '扫描二维码', '使用相机读取 TOTP 配置')
+        }
         this.option('file', '从文件导入', '支持 ATSF、TXT、JSON 和 CSV')
         this.option('uri', '导入 otpauth 配置', '粘贴 otpauth:// URI 后解析')
         this.option('manual', '手动输入', '填写发行方、账户和 Secret')

@@ -6,6 +6,8 @@ import { Palette, buildDark, buildLight, AppTheme } from '../common/Theme';
 import { promptAction } from '@kit.ArkUI';
 import { pasteboard } from '@kit.BasicServicesKit';
 import { showLockGate, lockGateErrorMessage } from './LockGate';
+import { appUiOnAccentText } from '../common/AppUiColorPolicy';
+import { sshPublicKeyMissingHint } from '../services/KeyVaultFormPolicy';
 
 @Component
 export struct SshKeyCard {
@@ -43,7 +45,16 @@ export struct SshKeyCard {
     return prefix + '…' + suffix;
   }
 
+  /** A key saved with a passphrase before its public key could be derived has none to copy. */
+  private publicKeyMissing(): boolean {
+    return this.sshKey.publicKey === '' && this.sshKey.privateKey !== '' && !this.sshKey.isLegacyFormat();
+  }
+
   private async copyPublicKey(): Promise<void> {
+    if (this.publicKeyMissing()) {
+      promptAction.showToast({ message: sshPublicKeyMissingHint(), duration: 3200 });
+      return;
+    }
     // 锁定状态需先验证身份
     if (this.sshKey.locked) {
       const r = await showLockGate(this.sshKey.label, 'biometric');
@@ -128,13 +139,13 @@ export struct SshKeyCard {
       if (this.showCheckbox) {
         Checkbox()
           .select(this.checkboxSelected)
-          .selectedColor('#007DFF')
+          .selectedColor(this.accentColor)
           .margin({ right: 8 })
           .onChange((v: boolean) => { if (this.onCheckChange) { this.onCheckChange(v); } })
       }
       // 密钥类型图标 (sm: 42, md+: 44)
       Text(this.typeLabel(this.sshKey.keyType))
-        .fontSize(this.breakpoint === 'sm' ? 16 : 18).fontWeight(FontWeight.Bold).fontColor('#FFFFFF')
+        .fontSize(this.breakpoint === 'sm' ? 16 : 18).fontWeight(FontWeight.Bold).fontColor(appUiOnAccentText(this.accentColor))
         .width(this.breakpoint === 'sm' ? 42 : 44)
         .height(this.breakpoint === 'sm' ? 42 : 44)
         .borderRadius(this.breakpoint === 'sm' ? 21 : 22).backgroundColor(this.accentColor)
@@ -186,6 +197,13 @@ export struct SshKeyCard {
           }
           // Empty while the master password is locked, or after a forgotten-
           // password reset cleared it (re-import the private key).
+          if (this.publicKeyMissing()) {
+            Text('公钥未生成')
+              .fontSize(10).fontColor('#B66A00')
+              .padding({ left: 4, right: 4, top: 1, bottom: 1 })
+              .borderRadius(3).backgroundColor('#B66A00' + '15')
+              .margin({ left: 4 })
+          }
           if (this.sshKey.privateKey.length === 0) {
             Text('私钥不可用')
               .fontSize(10).fontColor('#B66A00')
@@ -207,7 +225,14 @@ export struct SshKeyCard {
         }.width('100%').margin({ top: 2 })
       }
       .alignItems(HorizontalAlign.Start).layoutWeight(1)
-      .onClick(() => { this.copyPublicKey(); })
+      .onClick(() => {
+        // In multi-select a tap selects; it does not copy or ask for verification.
+        if (this.showCheckbox) {
+          if (this.onCheckChange) { this.onCheckChange(!this.checkboxSelected); }
+          return;
+        }
+        this.copyPublicKey();
+      })
 
       // PC/2in1: 省略号按钮 → 弹出操作菜单
       if (this.isDesktopDevice && !this.showCheckbox) {
@@ -215,6 +240,7 @@ export struct SshKeyCard {
           Text('⋯').fontSize(18).fontColor(this.pal().text)
         }
         .width(36).height(36).borderRadius(18)
+        .accessibilityText('更多操作')
         .backgroundColor(this.pal().surface)
         .margin({ left: 4 })
         .bindPopup(this.menuVisible, {

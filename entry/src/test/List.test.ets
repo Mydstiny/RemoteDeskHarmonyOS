@@ -284,6 +284,7 @@ import cloudSyncResetPauseTest from './CloudSyncResetPause.test';
 import breakpointUtilTest from './BreakpointUtil.test';
 import rdpDnsFallbackPolicyTest from './RdpDnsFallbackPolicy.test';
 import relayDirectoryPolicyTest from './RelayDirectoryPolicy.test';
+import keyVaultFormPolicyTest from './KeyVaultFormPolicy.test';
 import sshAuthPromptOwnerPolicyTest from './SshAuthPromptOwnerPolicy.test';
 import sshXtermTabSurfacePolicyTest from './SshXtermTabSurfacePolicy.test';
 import vncDisplaySwitchPolicyTest from './VncDisplaySwitchPolicy.test';
@@ -578,6 +579,7 @@ export default function testsuite() {
   breakpointUtilTest();
   rdpDnsFallbackPolicyTest();
   relayDirectoryPolicyTest();
+  keyVaultFormPolicyTest();
   sshAuthPromptOwnerPolicyTest();
   sshXtermTabSurfacePolicyTest();
   vncDisplaySwitchPolicyTest();

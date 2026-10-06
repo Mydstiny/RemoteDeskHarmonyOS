@@ -10,6 +10,7 @@ import { GeneratedSshKeyPair, SshPrivateKeyInfo } from '../../../types/rdpnapi';
 import { Palette, buildDark, buildLight, AppTheme } from '../../../common/Theme';
 import { ResourceFabPicker } from '../ResourceFabPicker';
 import { QrCodeScanner } from '../../QrCodeScanner';
+import { appUiOnAccentText } from '../../../common/AppUiColorPolicy';
 
 @Component
 export struct ModernKeyVaultAddFlow {
@@ -30,6 +31,10 @@ export struct ModernKeyVaultAddFlow {
   @State keyType: number = SshKeyType.ED25519;
   @State rsaBits: number = 4096;
   @State passphrase: string = '';
+  /** A new key's passphrase is typed twice: a typo would leave a key nobody can unlock. */
+  @State passphraseConfirm: string = '';
+  /** The window's height (from the page), so a long step scrolls instead of hiding its button. */
+  @Prop viewportHeight: number = 0;
   @State generatedKey: SshKey | null = null;
   @State issuer: string = '';
   @State account: string = '';
@@ -116,8 +121,21 @@ export struct ModernKeyVaultAddFlow {
     this.finish(key.id, 'SSH 密钥已保存');
   }
 
-  private generateKey(): void {
+  private async generateKey(): Promise<void> {
+    if (this.busy) { return; }
     if (this.label.trim().length === 0) { this.errorText = '请输入密钥名称'; return; }
+    if (this.passphrase !== this.passphraseConfirm) { this.errorText = '两次输入的密钥密码不一致'; return; }
+    this.busy = true; this.errorText = '';
+    // Let 生成中… draw before the generation (RSA-4096 takes a moment).
+    await new Promise<void>((resolve: () => void): void => { setTimeout(resolve, 32); });
+    try {
+      this.generateKeyNow();
+    } finally {
+      this.busy = false;
+    }
+  }
+
+  private generateKeyNow(): void {
     const kind = this.keyType === SshKeyType.RSA ? 'rsa' : 'ed25519';
     const bits = this.keyType === SshKeyType.RSA ? this.rsaBits : 256;
     const result: GeneratedSshKeyPair = this.loader.generateSshKeyPair(kind, bits, this.comment.trim(), this.passphrase);
@@ -210,6 +228,10 @@ export struct ModernKeyVaultAddFlow {
     this.finish(result.savedIds[0], '已导入 ' + result.savedIds.length.toString() + ' 个 2FA 账户' + detail);
   }
 
+  private stepMaxHeight(): number {
+    return this.viewportHeight > 0 ? Math.max(260, Math.round(this.viewportHeight * 0.88) - 40) : 640;
+  }
+
   private finish(id: string, message: string): void {
     promptAction.showToast({ message, duration: 1600 });
     this.onSaved(id); this.onClose(); this.reset();
@@ -257,7 +279,7 @@ export struct ModernKeyVaultAddFlow {
       .margin({ bottom: 11 })
     this.error()
     Button('检查私钥').width('100%').height(42).borderRadius(10).backgroundColor(this.accentColor)
-      .fontColor(Color.White).onClick((): void => { this.inspectPastedKey(); })
+      .fontColor(appUiOnAccentText(this.accentColor)).onClick((): void => { this.inspectPastedKey(); })
   }
 
   @Builder private sshPreview() {
@@ -275,12 +297,12 @@ export struct ModernKeyVaultAddFlow {
     this.field('密钥名称', '例如：生产服务器', this.label, (value: string): void => { this.label = value; })
     this.field('备注（可选）', 'user@example.com', this.comment, (value: string): void => { this.comment = value; })
     if (this.importedKey !== null && (this.importedKey as SshKey).privateKeyEncrypted) {
-      this.field('密钥密码（用于验证，可留空）', '不会保存密码', this.passphrase,
+      this.field('密钥密码（填写后才能生成公钥，可留空）', '不会保存密码', this.passphrase,
         (value: string): void => { this.passphrase = value; }, true)
     }
     this.error()
     Button('导入并保存').width('100%').height(42).borderRadius(10).backgroundColor(this.accentColor)
-      .fontColor(Color.White).onClick((): void => { this.saveImportedKey(); })
+      .fontColor(appUiOnAccentText(this.accentColor)).onClick((): void => { this.saveImportedKey(); })
   }
 
   @Builder private sshGenerate() {
@@ -289,31 +311,36 @@ export struct ModernKeyVaultAddFlow {
     Row() {
       Button('ED25519').layoutWeight(1).height(38).borderRadius(9)
         .backgroundColor(this.keyType === SshKeyType.ED25519 ? this.accentColor : this.pal().surface)
-        .fontColor(this.keyType === SshKeyType.ED25519 ? Color.White : this.pal().text2)
+        .fontColor(this.keyType === SshKeyType.ED25519 ? appUiOnAccentText(this.accentColor) : this.pal().text2)
         .onClick((): void => { this.keyType = SshKeyType.ED25519; })
       Button('RSA').layoutWeight(1).height(38).borderRadius(9).margin({ left: 8 })
         .backgroundColor(this.keyType === SshKeyType.RSA ? this.accentColor : this.pal().surface)
-        .fontColor(this.keyType === SshKeyType.RSA ? Color.White : this.pal().text2)
+        .fontColor(this.keyType === SshKeyType.RSA ? appUiOnAccentText(this.accentColor) : this.pal().text2)
         .onClick((): void => { this.keyType = SshKeyType.RSA; })
     }.width('100%').margin({ bottom: 11 })
     if (this.keyType === SshKeyType.RSA) {
       Row() {
         Button('3072 位').layoutWeight(1).height(36).borderRadius(9)
           .backgroundColor(this.rsaBits === 3072 ? this.accentColor : this.pal().surface)
-          .fontColor(this.rsaBits === 3072 ? Color.White : this.pal().text2)
+          .fontColor(this.rsaBits === 3072 ? appUiOnAccentText(this.accentColor) : this.pal().text2)
           .onClick((): void => { this.rsaBits = 3072; })
         Button('4096 位').layoutWeight(1).height(36).borderRadius(9).margin({ left: 8 })
           .backgroundColor(this.rsaBits === 4096 ? this.accentColor : this.pal().surface)
-          .fontColor(this.rsaBits === 4096 ? Color.White : this.pal().text2)
+          .fontColor(this.rsaBits === 4096 ? appUiOnAccentText(this.accentColor) : this.pal().text2)
           .onClick((): void => { this.rsaBits = 4096; })
       }.width('100%').margin({ bottom: 11 })
     }
     this.field('备注（可选）', 'user@example.com', this.comment, (value: string): void => { this.comment = value; })
     this.field('密钥密码（可选）', '用于保护生成的私钥', this.passphrase,
       (value: string): void => { this.passphrase = value; }, true)
+    if (this.passphrase.length > 0) {
+      this.field('再次输入密钥密码', '与上面相同', this.passphraseConfirm,
+        (value: string): void => { this.passphraseConfirm = value; }, true)
+    }
     this.error()
-    Button('生成密钥').width('100%').height(42).borderRadius(10).backgroundColor(this.accentColor)
-      .fontColor(Color.White).onClick((): void => { this.generateKey(); })
+    Button(this.busy ? '生成中…' : '生成密钥').width('100%').height(42).borderRadius(10).backgroundColor(this.accentColor)
+      .fontColor(appUiOnAccentText(this.accentColor)).enabled(!this.busy)
+      .onClick((): void => { void this.generateKey(); })
   }
 
   @Builder private sshGeneratePreview() {
@@ -328,7 +355,7 @@ export struct ModernKeyVaultAddFlow {
     }
     this.error()
     Button('保存到密钥保险库').width('100%').height(42).borderRadius(10).backgroundColor(this.accentColor)
-      .fontColor(Color.White).margin({ top: 14 }).onClick((): void => { this.saveGeneratedKey(); })
+      .fontColor(appUiOnAccentText(this.accentColor)).margin({ top: 14 }).onClick((): void => { this.saveGeneratedKey(); })
   }
 
   @Builder private totpUri() {
@@ -338,7 +365,7 @@ export struct ModernKeyVaultAddFlow {
       .padding(12).onChange((value: string): void => { this.otpUri = value; }).margin({ bottom: 11 })
     this.error()
     Button('解析并继续').width('100%').height(42).borderRadius(10).backgroundColor(this.accentColor)
-      .fontColor(Color.White).onClick((): void => { this.parseOtpUri(); })
+      .fontColor(appUiOnAccentText(this.accentColor)).onClick((): void => { this.parseOtpUri(); })
   }
 
   @Builder private totpManual() {
@@ -349,22 +376,30 @@ export struct ModernKeyVaultAddFlow {
     Row() {
       Button('6 位').layoutWeight(1).height(36).borderRadius(9)
         .backgroundColor(this.digits === 6 ? this.accentColor : this.pal().surface)
-        .fontColor(this.digits === 6 ? Color.White : this.pal().text2).onClick((): void => { this.digits = 6; })
+        .fontColor(this.digits === 6 ? appUiOnAccentText(this.accentColor) : this.pal().text2).onClick((): void => { this.digits = 6; })
       Button('8 位').layoutWeight(1).height(36).borderRadius(9).margin({ left: 8 })
         .backgroundColor(this.digits === 8 ? this.accentColor : this.pal().surface)
-        .fontColor(this.digits === 8 ? Color.White : this.pal().text2).onClick((): void => { this.digits = 8; })
-      Button(this.period.toString() + ' 秒').layoutWeight(1).height(36).borderRadius(9).margin({ left: 8 })
-        .backgroundColor(this.pal().surface).fontColor(this.pal().text2)
-        .onClick((): void => { this.period = this.period === 30 ? 60 : 30; })
+        .fontColor(this.digits === 8 ? appUiOnAccentText(this.accentColor) : this.pal().text2).onClick((): void => { this.digits = 8; })
+    }.width('100%').margin({ bottom: 8 })
+    // The period is a choice of two, not a button that silently cycles.
+    Row() {
+      Button('30 秒').layoutWeight(1).height(36).borderRadius(9)
+        .backgroundColor(this.period === 30 ? this.accentColor : this.pal().surface)
+        .fontColor(this.period === 30 ? appUiOnAccentText(this.accentColor) : this.pal().text2)
+        .onClick((): void => { this.period = 30; })
+      Button('60 秒').layoutWeight(1).height(36).borderRadius(9).margin({ left: 8 })
+        .backgroundColor(this.period === 60 ? this.accentColor : this.pal().surface)
+        .fontColor(this.period === 60 ? appUiOnAccentText(this.accentColor) : this.pal().text2)
+        .onClick((): void => { this.period = 60; })
     }.width('100%').margin({ bottom: 11 })
     this.error()
     Button('保存 2FA 账户').width('100%').height(42).borderRadius(10).backgroundColor(this.accentColor)
-      .fontColor(Color.White).onClick((): void => { this.saveTotp(); })
+      .fontColor(appUiOnAccentText(this.accentColor)).onClick((): void => { this.saveTotp(); })
   }
 
   @Builder private totpScan() {
     this.header('扫描二维码', '读取后会先进入确认步骤')
-    QrCodeScanner({ onScanned: (entry: TotpEntry): void => { this.onQrScanned(entry); } })
+    QrCodeScanner({ showTitle: false, parseLabel: '解析', onScanned: (entry: TotpEntry): void => { this.onQrScanned(entry); } })
     this.error()
   }
 
@@ -389,7 +424,7 @@ export struct ModernKeyVaultAddFlow {
     }.constraintSize({ maxHeight: 300 }).scrollBar(BarState.Auto).edgeEffect(EdgeEffect.Spring)
     this.error()
     Button('导入选中账户（' + this.selectedImportIds.length.toString() + '）').width('100%').height(42)
-      .borderRadius(10).backgroundColor(this.accentColor).fontColor(Color.White).margin({ top: 8 })
+      .borderRadius(10).backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor)).margin({ top: 8 })
       .onClick((): void => { this.saveImportedTotp(); })
   }
 
@@ -398,7 +433,15 @@ export struct ModernKeyVaultAddFlow {
       if (this.step === 'method') {
         ResourceFabPicker({ kind: this.resourceKind, onSelect: (option: string): void => { this.selectMethod(option); },
           onClose: (): void => { this.onClose(); this.reset(); } })
+        // File imports report on this step: there is no other step to show their errors.
+        if (this.busy || this.errorText.length > 0) {
+          Column() {
+            if (this.busy) { LoadingProgress().width(24).height(24).color(this.accentColor) }
+            this.error()
+          }.width('100%').padding({ left: 20, right: 20, bottom: 16 })
+        }
       } else {
+        Scroll() {
         Column() {
           if (this.step === 'ssh-paste') { this.sshPaste() }
           else if (this.step === 'ssh-preview') { this.sshPreview() }
@@ -409,6 +452,8 @@ export struct ModernKeyVaultAddFlow {
           else if (this.step === 'totp-scan') { this.totpScan() }
           else if (this.step === 'totp-file-preview') { this.totpFilePreview() }
         }.width('100%').padding({ left: 20, right: 20, top: 20, bottom: 28 })
+        }.width('100%').constraintSize({ maxHeight: this.stepMaxHeight() })
+          .scrollBar(BarState.Auto).edgeEffect(EdgeEffect.Spring).align(Alignment.Top)
       }
     }.width('100%').constraintSize({ maxWidth: 760 }).backgroundColor(this.pal().sheetBg)
       .borderRadius(this.resourceKind === 'ssh_key' || this.resourceKind === 'totp' ? 0 : 20)

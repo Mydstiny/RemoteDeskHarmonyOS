@@ -19444,6 +19444,8 @@ struct HostListPage {
                     const r = await showLockGate('开启 TOTP 隐私保护，请验证系统身份', 'biometric');
                     if (r.ok) {
                       this.totpPageLocked = true;
+                      // Protection starts locked: an earlier unlock of the 2FA page does not carry over.
+                      AppStorage.setOrCreate('totpUnlocked', false);
                       this.saveTotpLock(true);
                       promptAction.showToast({ message: '2FA 已锁定', duration: 1500 });
                     } else {

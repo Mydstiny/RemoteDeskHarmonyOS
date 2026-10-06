@@ -4,6 +4,7 @@
  * 使用 @kit.ScanKit 系统扫码界面 + 手动 URI 粘贴回退。
  */
 import { TotpEntry } from '../model/TotpEntry';
+import { appUiOnAccentText } from '../common/AppUiColorPolicy';
 import { TotpEngine } from '../services/TotpEngine';
 import { Palette, buildDark, buildLight } from '../common/Theme';
 import { scanBarcode, scanCore } from '@kit.ScanKit';
@@ -12,6 +13,10 @@ import { scanBarcode, scanCore } from '@kit.ScanKit';
 export struct QrCodeScanner {
   @StorageLink('currentTheme') theme: string = 'light';
   @StorageProp('accentColor') accentColor: string = '#007DFF';
+  /** The host sheet has its own title. */
+  @Prop showTitle: boolean = true;
+  /** 解析并添加 adds at once; a flow that confirms first says 解析. */
+  @Prop parseLabel: string = '解析并添加';
   @State otpUri: string = '';
   @State status: string = '';
   onScanned?: (entry: TotpEntry) => void;
@@ -38,7 +43,7 @@ export struct QrCodeScanner {
         this.status = '未识别到二维码';
       }
     } catch (err) {
-      this.status = '扫码取消或不可用';
+      this.status = '没有完成扫码（已取消，或这台设备不能扫码）。也可以在下面粘贴 otpauth 配置';
     }
   }
 
@@ -54,13 +59,15 @@ export struct QrCodeScanner {
 
   build() {
     Column() {
-      Text('添加 2FA 验证器').fontSize(16).fontWeight(FontWeight.Bold)
-        .fontColor(this.pal().text).margin({ bottom: 12 })
+      if (this.showTitle) {
+        Text('添加 2FA 验证器').fontSize(16).fontWeight(FontWeight.Bold)
+          .fontColor(this.pal().text).margin({ bottom: 12 })
+      }
 
       // 扫码按钮
       Button('扫描二维码').width('100%').height(44).fontSize(14)
         .fontWeight(FontWeight.Medium)
-        .backgroundColor(this.accentColor).fontColor('#FFFFFF').borderRadius(10)
+        .backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor)).borderRadius(10)
         .margin({ bottom: 14 })
         .onClick(() => { this.startScan(); })
 
@@ -84,12 +91,12 @@ export struct QrCodeScanner {
 
       if (this.status !== '') {
         Text(this.status).fontSize(12)
-          .fontColor(this.status.includes('成功') ? '#51CF66' : this.pal().text2)
+          .fontColor(this.status.includes('成功') ? this.pal().success : this.pal().text2)
           .margin({ bottom: 10 })
       }
 
-      Button('解析并添加').width('100%').height(40).fontSize(14).fontWeight(FontWeight.Medium)
-        .backgroundColor(this.accentColor).fontColor('#FFFFFF').borderRadius(10)
+      Button(this.parseLabel).width('100%').height(40).fontSize(14).fontWeight(FontWeight.Medium)
+        .backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor)).borderRadius(10)
         .enabled(this.otpUri.trim() !== '')
         .onClick(() => { this.parseUri(); })
     }
