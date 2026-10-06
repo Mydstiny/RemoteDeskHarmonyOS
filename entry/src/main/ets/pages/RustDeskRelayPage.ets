@@ -128,6 +128,14 @@ interface VncDeepCheckBinding {
 }
 
 
+interface RelayFormFieldArgs {
+  label: string;
+  hint: string;
+  value: string;
+  onChange: (v: string) => void;
+  password?: boolean;
+}
+
 interface RelayStatItem {
   label: string;
   value: string;
@@ -2688,11 +2696,8 @@ export struct RustDeskRelayPage {
             .width('100%').height(32).fontSize(12).backgroundColor(this.pal().surface)
             .fontColor(this.pal().text2).borderRadius(8).enabled(!this.importingRelayConfig)
             .margin({ bottom: 10 }).onClick((): void => { void this.importRelayConfig(); })
-          this._f('服务器地址', 'hbbs.example.com', this.formIdServer,
-            (v: string): void => { this.formIdServer = v; })
-          this._f(this.formKeyMode === 'shared_access_key' ? '共享密钥' : '服务器公钥',
-            this.formKeyMode === 'shared_access_key' ? '与服务器启动参数 -k 的值完全一致' : '服务商提供的公钥（一串 Base64 字符）',
-            this.formKey, (v: string) => { this.formKey = v; }, this.formKeyMode === 'shared_access_key')
+          this._f({ label: '服务器地址', hint: 'hbbs.example.com', value: this.formIdServer, onChange: (v: string): void => { this.formIdServer = v; } })
+          this._f({ label: this.formKeyMode === 'shared_access_key' ? '共享密钥' : '服务器公钥', hint: this.formKeyMode === 'shared_access_key' ? '与服务器启动参数 -k 的值完全一致' : '服务商提供的公钥（一串 Base64 字符）', value: this.formKey, onChange: (v: string) => { this.formKey = v; }, password: this.formKeyMode === 'shared_access_key' })
           Text(this.formKeyMode === 'shared_access_key' ?
             '按原样发送，不会去掉空格或 =；这种方式无法验证服务器身份。' :
             '请填写服务商提供的服务器公钥；留空仅适用于使用 RustDesk 默认公钥的服务器。')
@@ -2708,14 +2713,10 @@ export struct RustDeskRelayPage {
             Column() {
               Text('连接端点').fontSize(11).fontWeight(FontWeight.Medium)
                 .fontColor(this.pal().text2).width('100%').margin({ bottom: 8 })
-              this._f('ID 服务器端口', '21116', this.formIdPortText,
-                (v: string): void => { this.formIdPortText = v; })
-              this._f('独立中继服务器地址（留空则同上）', 'hbbr.example.com', this.formRelayServer,
-                (v: string): void => { this.formRelayServer = v; })
-              this._f('中继端口', '21117', this.formRelayPortText,
-                (v: string): void => { this.formRelayPortText = v; })
-              this._f('地址簿 / Server Pro API 地址（可选）', 'https://api.example.com',
-                this.formApiServer, (v: string): void => { this.formApiServer = v; })
+              this._f({ label: 'ID 服务器端口', hint: '21116', value: this.formIdPortText, onChange: (v: string): void => { this.formIdPortText = v; } })
+              this._f({ label: '独立中继服务器地址（留空则同上）', hint: 'hbbr.example.com', value: this.formRelayServer, onChange: (v: string): void => { this.formRelayServer = v; } })
+              this._f({ label: '中继端口', hint: '21117', value: this.formRelayPortText, onChange: (v: string): void => { this.formRelayPortText = v; } })
+              this._f({ label: '地址簿 / Server Pro API 地址（可选）', hint: 'https://api.example.com', value: this.formApiServer, onChange: (v: string): void => { this.formApiServer = v; } })
 
               Text('密钥类型').fontSize(11).fontColor(this.pal().text2).margin({ bottom: 4 })
               Row() {
@@ -2949,9 +2950,9 @@ export struct RustDeskRelayPage {
           Text('地址簿地址独立于中继配置；修改地址后请重新登录并同步。登录凭证只保存在本机，不参与华为云同步。')
             .fontSize(12).fontColor(this.pal().text3).fontFamily(this.font()).lineHeight(18)
             .width('100%').margin({ bottom: 14 })
-          this._f('Server Pro 地址簿地址', 'http://pro.example.com:21114', this.formProServer, (v: string) => { this.formProServer = v; })
-          this._f('用户名', 'user@example.com', this.formProUser, (v: string) => { this.formProUser = v; })
-          this._f('密码', '不会保存密码', this.formProPwd, (v: string) => { this.formProPwd = v; }, true)
+          this._f({ label: 'Server Pro 地址簿地址', hint: 'http://pro.example.com:21114', value: this.formProServer, onChange: (v: string) => { this.formProServer = v; } })
+          this._f({ label: '用户名', hint: 'user@example.com', value: this.formProUser, onChange: (v: string) => { this.formProUser = v; } })
+          this._f({ label: '密码', hint: '不会保存密码', value: this.formProPwd, onChange: (v: string) => { this.formProPwd = v; }, password: true })
           if (this.formProError !== '') {
             Text(this.formProError).fontSize(12).fontColor(this.pal().danger).fontFamily(this.font())
               .width('100%').margin({ top: 2, bottom: 4 })
@@ -3047,13 +3048,15 @@ export struct RustDeskRelayPage {
     }
   }
 
-  @Builder _f(l: string, h: string, v: string, cb: (v: string) => void, password: boolean = false) {
+  /** One object argument: a @Builder refreshes it when the value changes in code (a pasted config fills the form). */
+  @Builder _f(args: RelayFormFieldArgs) {
     Column() {
-      Text(l).fontSize(11).fontColor(this.pal().text2).margin({ bottom: 4 }).fontFamily(this.font())
+      Text(args.label).fontSize(11).fontColor(this.pal().text2).margin({ bottom: 4 }).fontFamily(this.font())
         .width('100%').textAlign(TextAlign.Start)
-      TextInput({ placeholder: h, text: v }).height(38).backgroundColor(this.pal().surface).borderRadius(8)
+      TextInput({ placeholder: args.hint, text: args.value }).height(38).backgroundColor(this.pal().surface).borderRadius(8)
         .fontColor(this.pal().text).placeholderColor(this.pal().text3).fontFamily(this.font()).fontSize(13)
-        .type(password ? InputType.Password : InputType.Normal).padding({ left: 10, right: 10 }).onChange(cb)
+        .type(args.password === true ? InputType.Password : InputType.Normal).padding({ left: 10, right: 10 })
+        .onChange(args.onChange)
     }.width('100%').margin({ bottom: 10 })
   }
 }

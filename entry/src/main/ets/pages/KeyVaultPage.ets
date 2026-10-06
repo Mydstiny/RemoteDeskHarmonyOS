@@ -42,6 +42,13 @@ import {
   totpSecretProblem
 } from '../services/KeyVaultFormPolicy';
 
+
+interface KvFormFieldArgs {
+  label: string;
+  hint: string;
+  value: string;
+  onChange: (v: string) => void;
+}
 @Component
 export struct KeyVaultPage {
   /** The AI entry, the same on every tab: shown while the account may use the assistant; a tap asks the host page
@@ -1243,8 +1250,7 @@ export struct KeyVaultPage {
           .fontFamily(this.font()).onClick(() => { this.closeKeyVaultSheetByUser(); })
       }.width('100%').margin({ bottom: 14 })
 
-      this._f('显示名称（可选）', '例如：公司 GitHub', this.editingTotpName,
-        (v: string) => { this.editingTotpName = v; })
+      this._f({ label: '显示名称（可选）', hint: '例如：公司 GitHub', value: this.editingTotpName, onChange: (v: string) => { this.editingTotpName = v; } })
 
       Column() {
         if (this.editingTotpEntry.issuer !== '') {
@@ -1360,8 +1366,7 @@ export struct KeyVaultPage {
         }.margin({ bottom: 14 })
       }
 
-      this._f('名称', '如 myserver-key', this.formLabel,
-        (v: string) => { this.formLabel = v; })
+      this._f({ label: '名称', hint: '如 myserver-key', value: this.formLabel, onChange: (v: string) => { this.formLabel = v; } })
 
       // 密钥类型: chosen when generating; a pasted key's type is read from the key itself
       if (this.formMode === 1 && this.editingSshKey.id === '') {
@@ -1427,8 +1432,7 @@ export struct KeyVaultPage {
         }.width('100%').margin({ bottom: 10 })
       }
 
-      this._f('备注', '如 server@example.com', this.formComment,
-        (v: string) => { this.formComment = v; })
+      this._f({ label: '备注', hint: '如 server@example.com', value: this.formComment, onChange: (v: string) => { this.formComment = v; } })
 
       Button(this.savingKey ? (this.formMode === 1 && this.editingSshKey.id === '' ? '生成中…' : '保存中…') :
         (this.editingSshKey.id !== '' ? '保存修改' : '保存')).width('100%').height(40).fontSize(14).fontWeight(FontWeight.Medium)
@@ -1474,18 +1478,14 @@ export struct KeyVaultPage {
       Text('— 或手动输入 —').fontSize(11).fontColor(this.pal().text3)
         .width('100%').textAlign(TextAlign.Center).margin({ bottom: 12 })
 
-      this._f('otpauth URI（可选）', 'otpauth://totp/…', this.formOtpAuthUri,
-        (v: string) => { this.formOtpAuthUri = v; })
+      this._f({ label: 'otpauth URI（可选）', hint: 'otpauth://totp/…', value: this.formOtpAuthUri, onChange: (v: string) => { this.formOtpAuthUri = v; } })
       Button('解析 otpauth URI').width('100%').height(36).fontSize(12)
         .backgroundColor(this.pal().surface).fontColor(this.accentColor).borderRadius(8)
         .margin({ bottom: 12 }).onClick(() => { this.parseOtpAuthInput(); })
 
-      this._f('发行方 (Issuer)', '如 GitHub', this.formIssuer,
-        (v: string) => { this.formIssuer = v; this.formError = ''; })
-      this._f('账户名 (可选)', '如 user@example.com', this.formAccount,
-        (v: string) => { this.formAccount = v; })
-      this._f('密钥 (Secret)', 'Base32 字符串', this.formSecret,
-        (v: string) => { this.formSecret = v; this.formError = ''; })
+      this._f({ label: '发行方 (Issuer)', hint: '如 GitHub', value: this.formIssuer, onChange: (v: string) => { this.formIssuer = v; this.formError = ''; } })
+      this._f({ label: '账户名 (可选)', hint: '如 user@example.com', value: this.formAccount, onChange: (v: string) => { this.formAccount = v; } })
+      this._f({ label: '密钥 (Secret)', hint: 'Base32 字符串', value: this.formSecret, onChange: (v: string) => { this.formSecret = v; this.formError = ''; } })
 
       Row() {
         Column() {
@@ -1622,12 +1622,13 @@ export struct KeyVaultPage {
       .onClick(() => { this.formMode = mode; })
   }
 
-  @Builder _f(l: string, h: string, v: string, cb: (v: string) => void) {
+  /** One object argument: a @Builder refreshes it when the value changes in code (plain values do not). */
+  @Builder _f(args: KvFormFieldArgs) {
     Column() {
-      Text(l).fontSize(11).fontColor(this.pal().text2).margin({ bottom: 4 }).fontFamily(this.font())
-      TextInput({ placeholder: h, text: v }).height(38).backgroundColor(this.pal().surface).borderRadius(8)
+      Text(args.label).fontSize(11).fontColor(this.pal().text2).margin({ bottom: 4 }).fontFamily(this.font())
+      TextInput({ placeholder: args.hint, text: args.value }).height(38).backgroundColor(this.pal().surface).borderRadius(8)
         .fontColor(this.pal().text).placeholderColor(this.pal().text3).fontFamily(this.font())
-        .fontSize(13).padding({ left: 10, right: 10 }).onChange(cb)
+        .fontSize(13).padding({ left: 10, right: 10 }).onChange(args.onChange)
     }.width('100%').margin({ bottom: 10 })
   }
 }

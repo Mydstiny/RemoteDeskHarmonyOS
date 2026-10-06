@@ -68,7 +68,7 @@ check('a relay test writes only the health fields, into the current record, and 
 check('Pro accounts: masked password, partial login explained in the sheet, sync busy, logout confirmed', () => {
   const page = read('pages/RustDeskRelayPage.ets');
   const sheet = member(page, '@Builder proAccountEditSheet() {');
-  assert.ok(sheet.includes("this._f('密码', '不会保存密码', this.formProPwd, (v: string) => { this.formProPwd = v; }, true)"));
+  assert.ok(sheet.includes("this._f({ label: '密码', hint: '不会保存密码', value: this.formProPwd, onChange: (v: string) => { this.formProPwd = v; }, password: true })"));
   assert.ok(sheet.includes("SymbolGlyph($r('sys.symbol.xmark'))"), 'the sheet can be closed');
   assert.ok(member(page, 'private async doProLogin(): Promise<void> {').includes('this.formProNotice = toast.message;'));
   assert.ok(member(page, 'private async doProSync(accountId: string): Promise<void> {').includes('this.proSyncingIds.indexOf(accountId) >= 0'));
@@ -651,6 +651,13 @@ check('batches 5-7: 全新视觉 extends to the three main pages; the classic lo
   assert.ok(read('components/SshKeyCard.ets').includes("Text('复制公钥')") && !read('components/SshKeyCard.ets').includes("Button('复制公钥')"));
   assert.ok(read('components/TotpCodeCard.ets').includes("settingsVisualIsModern(this.visualStyle) && this.codeStr.length >= 6"));
   assert.ok(read('pages/RustDeskRelayPage.ets').includes("if (this.breakpoint !== 'sm' || settingsVisualIsModern(this.visualStyle)) {"));
+});
+
+check('form fields take one object so values filled in code show (otpauth parse, pasted relay config)', () => {
+  for (const file of ['pages/KeyVaultPage.ets', 'pages/RustDeskRelayPage.ets']) {
+    const text = read(file);
+    assert.ok(!text.includes("this._f('") && text.includes('this._f({ label:'), file);
+  }
 });
 
 console.log('three screens: ' + passed + ' checks passed');
