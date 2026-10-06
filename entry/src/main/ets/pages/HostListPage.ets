@@ -6813,7 +6813,7 @@ struct HostListPage {
 
   private visibleHostsForCurrentMode(): RemoteHost[] {
     if (this.groupedHostCardsActive()) {
-      return this.orgFilterHosts(searchHosts(this.hosts, this.searchText));
+      return this.orgFilterHosts(searchHosts(this.hosts, this.searchText, this.relayNamesForSearch()));
     }
     let visible = visibleHostsForHostListMode(
       this.hosts,
@@ -6821,7 +6821,8 @@ struct HostListPage {
       this.isDesktopDevice,
       this.breakpoint,
       this.activeFilterProto,
-      this.curTab
+      this.curTab,
+      this.relayNamesForSearch()
     );
     if (this.proOrgVisible) { return this.orgFilterHosts(visible); }
     return filterHostsByWorkspace(visible, this.workspaceGroupId);
@@ -6829,6 +6830,30 @@ struct HostListPage {
 
   private pal(): Palette {
     return this.theme === 'light' ? buildLight(this.accentColor) : buildDark(this.accentColor);
+  }
+
+  /** Relay names, so a search for a relay finds the RustDesk hosts that use it. */
+  private relayNamesForSearch(): Map<string, string> {
+    const names: Map<string, string> = new Map<string, string>();
+    this.srv.getAllRelays().forEach((relay: RustDeskRelayConfig): void => { names.set(relay.id, relay.displayName()); });
+    return names;
+  }
+
+  /** 中继 → 绑定主机 → 查看主机: the host list, searched for that relay. */
+  private showRelayHostsFromRelayPage(relayId: string): void {
+    const relay: RustDeskRelayConfig | undefined =
+      this.srv.getAllRelays().find((item: RustDeskRelayConfig): boolean => item.id === relayId);
+    if (relay === undefined) { return; }
+    this.searchText = relay.displayName();
+    if (this.isDesktopDevice && this.breakpoint === 'xl') {
+      this.curTab = 1;
+      this.hostPageTitle = 'RustDesk 远程主机';
+      this.updateHostFilter();
+      return;
+    }
+    this.curTab = 0;
+    this.tabsCtrl.changeIndex(0);
+    this.refreshFilteredHostView();
   }
 
   // ---------- Pro 高级主机管理 ----------
@@ -24698,6 +24723,7 @@ struct HostListPage {
       rustDeskAddTrigger: this.relayRustDeskAddTrigger, vncAddTrigger: this.relayVncAddTrigger,
       hideTabBar: this.isDesktopDevice && this.breakpoint === 'xl',
       returnToHostAdd: this.rustDeskRelayReturnToHostAdd,
+      onShowRelayHosts: (relayId: string): void => { this.showRelayHostsFromRelayPage(relayId); },
       onReturnToHostAdd: (relayId: string): void => {
         this.resumeRustDeskHostAddFromRelayDirectory(
           relayId);

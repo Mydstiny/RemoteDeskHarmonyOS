@@ -1484,6 +1484,20 @@ export class HostSyncService {
     return result.ok;
   }
 
+  /**
+   * A connection test's result. Only the health fields change, merged into the record as it is now, so an edit
+   * saved while the test ran (a new key, a removed account) is kept.
+   */
+  updateRelayHealth(id: string, status: string, latency: number, checkedAt: number): boolean {
+    const current: RustDeskRelayConfig | undefined = this.relays.get(id);
+    if (current === undefined) { return false; }
+    const next: RustDeskRelayConfig = RustDeskRelayConfig.fromJSON(current.toJSON());
+    next.healthStatus = status;
+    next.healthLatency = latency;
+    next.healthCheckedAt = checkedAt;
+    return this.updateRelay(next);
+  }
+
   async updateRelayResultAsync(
     relay: RustDeskRelayConfig,
     attemptId: string = '',

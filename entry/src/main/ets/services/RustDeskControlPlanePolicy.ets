@@ -78,12 +78,12 @@ export function rustDeskControlPlaneProfileLabel(
   profile: RustDeskControlPlaneProfile
 ): string {
   switch (normalizeRustDeskControlPlaneProfile(profile)) {
-    case 'oss_shared_access_key': return 'OSS 共享 -k';
+    case 'oss_shared_access_key': return '开源版 · 共享密钥';
     case 'official_server_pro_token': return '官方 Server Pro';
-    case 'third_party_api_only': return '第三方地址簿 API';
-    case 'third_party_control_plane': return '第三方控制面';
-    case 'direct_ip': return 'Direct IP';
-    default: return 'OSS 服务器公钥';
+    case 'third_party_api_only': return '第三方地址簿';
+    case 'third_party_control_plane': return '第三方服务';
+    case 'direct_ip': return 'IP 直连';
+    default: return '开源版 · 服务器公钥';
   }
 }
 
@@ -92,17 +92,17 @@ export function rustDeskControlPlaneProfileDescription(
 ): string {
   switch (normalizeRustDeskControlPlaneProfile(profile)) {
     case 'oss_shared_access_key':
-      return '仅向 hbbs/hbbr licence_key 发送共享 -k，不发送地址簿令牌。';
+      return '连接时只发送共享密钥（服务器 -k 参数的值），不发送地址簿登录凭证。';
     case 'official_server_pro_token':
-      return '仅把同一中继下的官方 Server Pro 会话令牌发送到 rendezvous 控制面。';
+      return '连接时使用这个中继下官方 Server Pro 账户的登录凭证。';
     case 'third_party_api_only':
-      return '令牌只用于第三方地址簿 HTTP API；连接按 OSS Key 模式执行。';
+      return '登录凭证只用于同步第三方地址簿；连接按开源版方式进行。';
     case 'third_party_control_plane':
-      return '只有本机完成协议能力验证后才允许向第三方 rendezvous 发送令牌。';
+      return '只有本机确认第三方服务支持后，连接时才会使用登录凭证。';
     case 'direct_ip':
-      return '直接连接目标 IP，不使用地址簿或控制面令牌。';
+      return '直接连接目标 IP，不使用地址簿或登录凭证。';
     default:
-      return '使用 Ed25519 服务器公钥验证身份，不发送地址簿令牌。';
+      return '用服务器公钥验证服务器身份，不发送地址簿登录凭证。';
   }
 }
 

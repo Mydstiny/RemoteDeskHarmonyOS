@@ -489,12 +489,16 @@ export class RustDeskProSyncService {
     return true;
   }
 
-  async logout(accountId: string): Promise<void> {
+  /**
+   * Logs the account out on the server, then removes it here. `localOnly` skips the server (offline, or the server
+   * is gone): the account is removed from this device, while a session the server still holds is left to expire.
+   */
+  async logout(accountId: string, localOnly: boolean = false): Promise<void> {
     const operation: RustDeskProOperation = this.beginOperation();
     const account = this.credentials.get(accountId);
     try {
       if (!account) { return; }
-      await this.api.logout(account);
+      if (!localOnly) { await this.api.logout(account); }
       this.requireCurrentOperation(operation);
       if (!this.credentials.clear(accountId)) {
         throw new RustDeskProApiError(
