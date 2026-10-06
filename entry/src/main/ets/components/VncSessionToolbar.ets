@@ -1,3 +1,4 @@
+import { AI_SESSION_OPEN } from '../services/diagnosticAi/AiBridgeKeys';
 import { curves } from '@kit.ArkUI';
 import { OverlayPlacement, emptyOverlayPlacement } from '../services/RemoteOverlayViewportPolicy';
 import {
@@ -42,6 +43,7 @@ export interface VncSessionToolbarPlacementActions {
 @Component
 export struct VncSessionToolbar {
   @StorageProp('accentColor') accentColor: string = '#007DFF';
+  @StorageProp(AI_SESSION_OPEN) sessionAiOpen: boolean = false;
   @Prop deviceClass: 'pc' | 'pad' | 'phone' = 'pc';
   @Prop viewOnly: boolean = false;
   @Prop keyboardOpen: boolean = false;
@@ -118,13 +120,13 @@ export struct VncSessionToolbar {
         (): void => { this.actions.onCycleDisplayScale(); })
     } else if (actionId === 'portrait') {
       this.actionButton($r('sys.symbol.rectangle_rotate'),
-        this.portraitDisplayActive ? '恢复横屏' : '竖屏显示', this.portraitDisplayActive,
+        '竖屏显示', this.portraitDisplayActive,
         (): void => { this.actions.onTogglePortraitDisplay(); })
     } else if (actionId === 'diagnostics') {
       this.actionButton($r('sys.symbol.list_bullet'), '性能', this.diagnosticsEnabled,
         (): void => { this.actions.onToggleDiagnostics(); })
     } else if (actionId === 'ai') {
-      this.actionButton($r('sys.symbol.wand_and_stars'), 'AI 助理', false,
+      this.actionButton($r('sys.symbol.wand_and_stars'), 'AI 助理', this.sessionAiOpen,
         (): void => { this.actions.onOpenAi(); })
     } else {
       this.actionButton($r('sys.symbol.xmark'), '断开', false,

@@ -1,3 +1,4 @@
+import { AI_SESSION_OPEN, AI_SESSION_RAIL_EXPANDED } from '../../services/diagnosticAi/AiBridgeKeys';
 import { curves } from '@kit.ArkUI';
 import { Palette, buildDark } from '../../common/Theme';
 import {
@@ -50,7 +51,9 @@ export struct RdpSessionToolbar {
   /** Pro AI 助理: its button sits right after RDP 控制. */
   @Prop aiVisible: boolean = false;
   @Prop @Watch('onAvailableHeightChange') availableHeight: number = 640;
-  @State private expanded: boolean = false;
+  @State @Watch('publishRail') private expanded: boolean = false;
+  /** The session AI is up: its button shows it on (a tap there closes it). */
+  @StorageProp(AI_SESSION_OPEN) sessionAiOpen: boolean = false;
   @State private pinned: boolean = false;
   @State private railSwipeX: number = 0;
   private hideTimer: number = -1;
@@ -78,7 +81,7 @@ export struct RdpSessionToolbar {
     }
     if (this.portraitDisplayEnabled) {
       items.splice(items.length - 1, 0, {
-        action: 'portrait', label: this.portraitDisplayActive ? '恢复横屏' : '竖屏显示', dangerous: false
+        action: 'portrait', label: '竖屏显示', dangerous: false
       });
     }
     if (this.canvasResetAvailable) {
@@ -114,7 +117,13 @@ export struct RdpSessionToolbar {
     if (action === 'shortcuts') { return this.shortcutsOpen; }
     if (action === 'resetCanvas') { return this.canvasResetAvailable; }
     if (action === 'portrait') { return this.portraitDisplayActive; }
+    if (action === 'ai') { return this.sessionAiOpen; }
     return action === 'diagnostics' && this.diagnosticsVisible;
+  }
+
+  /** The AI orb keeps clear of the rail while it is open, and may use the edge while it is only the handle. */
+  private publishRail(): void {
+    AppStorage.setOrCreate<boolean>(AI_SESSION_RAIL_EXPANDED, this.expanded);
   }
 
   private clearTimer(): void {
@@ -200,7 +209,8 @@ export struct RdpSessionToolbar {
     });
   }
 
-  aboutToAppear(): void { this.scheduleHide(); }
+  aboutToAppear(): void {
+    this.publishRail(); this.scheduleHide(); }
 
   aboutToDisappear(): void { this.clearTimer(); }
 

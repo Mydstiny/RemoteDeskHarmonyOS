@@ -1,4 +1,5 @@
 import { recordVncFailure } from '../services/VncDiagnosticEvents';
+import { AI_SESSION_RAIL_EXPANDED } from '../services/diagnosticAi/AiBridgeKeys';
 import { recordRustDeskFailure, recordRustDeskFirstFrame, recordRustDeskQualityRequest,
   recordRustDeskQualityResult } from '../services/RustDeskDiagnosticEvents';
 import {
@@ -1862,7 +1863,7 @@ struct RemoteDesktop {
   @State vncDiagnosticsDockExpanded: boolean = false;
   @State vncDiagnosticsDockSide: string = 'right';
   @State vncDiagnosticsDockY: number = 360;
-  @State vncToolbarCollapsed: boolean = false;
+  @State @Watch('publishVncRail') vncToolbarCollapsed: boolean = false;
   @State vncToolbarPlacement: OverlayPlacement = emptyOverlayPlacement('vnc-toolbar', 0);
   private vncToolbarPlacementGeneration: number = 0;
   private vncToolbarPreferenceScope: string = '';
@@ -4514,6 +4515,9 @@ struct RemoteDesktop {
   }
 
   private remotePortraitSidebarPlacement(): RemotePortraitSidebarPlacement {
+    // Read in build: the bar's 竖屏显示 switch follows a change at once.
+    const revision: number = this.remotePortraitDisplayRevision;
+    hilog.debug(0x0001, 'RemoteDesktop', 'portrait placement revision %{public}d', revision);
     return remotePortraitSidebarPlacement(this.remotePortraitDisplayPreferences(),
       this.currentProtocolName(), this.isDesktopDevice, this.isPadDevice);
   }
@@ -4553,7 +4557,7 @@ struct RemoteDesktop {
       promptAction.showToast({ message: '竖屏显示状态保存失败，请重试', duration: 1800 });
       return;
     }
-    promptAction.showToast({ message: nextMode === 'portrait' ? '竖屏显示' : '恢复横屏', duration: 1200 });
+    promptAction.showToast({ message: nextMode === 'portrait' ? '竖屏显示已开启' : '竖屏显示已关闭，恢复横屏', duration: 1400 });
   }
 
   private onRemotePortraitDisplayPreferenceChange(): void {
@@ -6292,6 +6296,13 @@ struct RemoteDesktop {
   }
 
   private openSessionAi(): void { this.aiSessionOpenRequest = Date.now(); }
+
+  /** VNC's toolbar folds into a handle: the AI orb may then rest at the real edge. */
+  private publishVncRail(): void {
+    if (this.currentProtocolName() === 'vnc') {
+      AppStorage.setOrCreate<boolean>(AI_SESSION_RAIL_EXPANDED, !this.vncToolbarCollapsed);
+    }
+  }
 
   /** The AI's session actions (session.*), through the same handlers as this session's toolbar. */
   private runSessionAiAction(action: DiagnosticAiAppActionId): boolean {

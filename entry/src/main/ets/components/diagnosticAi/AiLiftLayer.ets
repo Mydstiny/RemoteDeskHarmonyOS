@@ -1,4 +1,5 @@
 import { curves, window } from '@kit.ArkUI';
+import { AI_SESSION_RAIL_EXPANDED } from '../../services/diagnosticAi/AiBridgeKeys';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { DiagnosticAiAssistantPanel } from './DiagnosticAiAssistantPanel';
 import { AI_FLOAT_ORB } from './AiIslandChrome';
@@ -67,8 +68,9 @@ export class AiLiftController {
   startX: number = -1;
   startY: number = -1;
   /**
-   * In a remote session: a tap leaves the AI (onExit), a double tap starts voice mode (onVoice), a press only drags,
-   * and the orb keeps clear of the session's side bar (on `avoidSide`, `avoidWidth` wide).
+   * In a remote session: a tap folds the small chat away or brings it back, a double tap makes the orb listen, a press
+   * only drags, and the orb keeps clear of the session's side bar (on `avoidSide`, `avoidWidth` wide while the rail is
+   * expanded). The side bar's AI button closes it.
    */
   sessionMode: boolean = false;
   onExit: () => void = (): void => {};
@@ -100,6 +102,8 @@ struct AiLiftLayer {
   @StorageProp('aiVoice.holdToTalk') holdToTalk: boolean = false;
   @StorageProp(AI_VOICE_ENABLED) voiceEnabled: boolean = false;
   @StorageProp(AI_STYLE) aiStyle: string = 'siri';
+  /** In a session: its side rail collapses to a thin handle, and the orb may then rest at the real edge. */
+  @StorageProp(AI_SESSION_RAIL_EXPANDED) @Watch('onRailChange') railExpanded: boolean = true;
   /** The chat beside the orb is waiting for an answer: the orb itself turns (its ring thinks). */
   @State private chatBusy: boolean = false;
   /**
@@ -116,7 +120,7 @@ struct AiLiftLayer {
   }
 
   private startOrbVoice(held: boolean): void {
-    if (this.phase !== 2 || this.controller.sessionMode || this.orbListening || this.dragging) { return; }
+    if (this.phase !== 2 || this.orbListening || this.dragging) { return; }
     if (!this.voiceEnabled) { this.toast('AI 语音还没打开，可以在「设置 → AI 语音」里开启'); return; }
     this.hintShown = false;
     if (!this.chatShown) { this.unread = false; this.setChatShown(true); }
@@ -339,7 +343,13 @@ struct AiLiftLayer {
     if (this.phase !== 2) { return; }
     // Listening: a tap means "that's all" — what was heard is sent.
     if (this.orbListening) { this.stopOrbVoice(true); return; }
-    if (this.controller.sessionMode) { this.controller.onExit(); return; }
+    // In a session: the small chat folds away (or comes back); the orb stays. The side bar's AI button closes it.
+    if (this.controller.sessionMode) {
+      this.hintShown = false;
+      if (!this.chatShown) { this.unread = false; }
+      this.setChatShown(!this.chatShown);
+      return;
+    }
     this.controller.onOrbTap(this.boxX, this.boxY + this.originY);
   }
 
@@ -347,7 +357,8 @@ struct AiLiftLayer {
   private orbDoubleTapped(): void {
     if (this.phase !== 2) { return; }
     if (this.orbListening) { this.stopOrbVoice(false); return; }
-    if (this.controller.sessionMode) { this.hintShown = false; this.controller.onVoice(); return; }
+    // In a session: the orb itself listens (what it hears goes into its small chat), as a long press does at home.
+    if (this.controller.sessionMode) { this.hintShown = false; this.startOrbVoice(this.holdToTalk); return; }
     this.hintShown = false;
     if (!this.chatShown) { this.unread = false; }
     this.setChatShown(!this.chatShown);
@@ -472,8 +483,21 @@ struct AiLiftLayer {
   private edgeX(right: boolean): number {
     // A session's side bar takes its edge: the orb rests just inside it.
     const avoid: number = this.controller.sessionMode && this.controller.avoidSide === (right ? 'right' : 'left') ?
-      Math.max(0, this.controller.avoidWidth) : 0;
+      (this.railExpanded ? Math.max(0, this.controller.avoidWidth) : 0) : 0;
     return right ? this.layerW - AI_FLOAT_ORB - AI_EDGE - avoid : AI_EDGE + avoid;
+  }
+
+  /** The side rail opened or folded: an orb resting on that side moves to the new edge. */
+  private onRailChange(): void {
+    if (!this.controller.sessionMode || this.phase !== 2 || this.dragging) { return; }
+    const right: boolean = this.orbOnRight();
+    if (this.controller.avoidSide !== (right ? 'right' : 'left')) { return; }
+    this.toFull();
+    this.getUIContext().animateTo({ curve: curves.springMotion(0.42, 0.86) }, (): void => {
+      this.boxX = this.edgeX(right);
+      this.syncChatSides(false);
+    });
+    this.restSoon(600);
   }
 
   private hintText(): string {
@@ -626,6 +650,31 @@ struct AiLiftLayer {
     this.restSoon(900);
   }
 
+  /** A drag on the orb, or on its chat (the chat moves with it, and the session under it gets no touch). */
+  private dragBegin(): void {
+    // Listening, the orb stays where it is (a finger drifting while it is held is not a drag).
+    if (this.phase !== 2 || this.orbListening) { return; }
+    // The orb may now travel anywhere: the layer covers the window again until it settles.
+    this.toFull();
+    this.dragging = true;
+    this.dragStartX = this.boxX; this.dragStartY = this.boxY;
+    this.getUIContext().animateTo({ curve: curves.springMotion(0.3, 0.8) }, (): void => { this.boxScale = 1.08; });
+  }
+
+  private dragMove(event: GestureEvent): void {
+    if (this.phase !== 2 || !this.dragging) { return; }
+    // Exactly under the finger, every frame: no animation, no fitting while the finger is down.
+    this.boxX = Math.max(4, Math.min(this.layerW - AI_FLOAT_ORB - 4, this.dragStartX + event.offsetX));
+    this.boxY = Math.max(this.topLimit(), Math.min(this.bottomLimit() - AI_FLOAT_ORB, this.dragStartY + event.offsetY));
+    this.syncChatSides(true);
+  }
+
+  private dragEnd(velocityX: number, velocityY: number): void {
+    if (this.phase !== 2 || !this.dragging) { return; }
+    this.dragging = false;
+    this.settle(velocityX, velocityY);
+  }
+
   /** An answer arrived (or went): the chat grows, and the orb moves only if the two no longer fit. */
   private chatResized(height: number): void {
     if (height <= 0 || Math.abs(height - this.chatH) < 1) { return; }
@@ -676,7 +725,7 @@ struct AiLiftLayer {
         }, true)
         .accessibilityText(this.phase !== 2 ? this.controller.label : this.orbListening ? 'AI 正在听，单击发送，双击取消' :
           this.controller.sessionMode ?
-          'AI 助手，单击退出，双击进入语音模式，按住可拖动' :
+          'AI 助手，单击' + (this.chatShown ? '收起' : '展开') + '对话框，双击说话，按住可拖动；在侧栏的 AI 按钮关闭' :
           (this.chatMode() ? 'AI 聊天' : 'AI 助手') + '，单击展开主对话，双击' + (this.chatShown ? '收起' : '启动') +
           '小对话框' + (this.voiceEnabled ? '，长按语音' : '') + '，按住可拖动')
         // A finger on the orb: it gives a little at once, before a tap or a double tap is known.
@@ -694,7 +743,7 @@ struct AiLiftLayer {
           // while held and sends when let go; otherwise it stops by itself when the user does (or at a tap).
           LongPressGesture({ duration: 450 })
             .onAction((): void => {
-              // In a session a press only drags (voice mode is a double tap there).
+              // In a session a press only drags (a double tap makes the orb listen there).
               if (this.phase !== 2 || this.dragging || this.controller.sessionMode) { return; }
               this.startOrbVoice(this.holdToTalk);
             })
@@ -703,32 +752,10 @@ struct AiLiftLayer {
           TapGesture({ count: 2 }).onAction((): void => { this.orbDoubleTapped(); }),
           TapGesture({ count: 1 }).onAction((): void => { this.orbTapped(); })))
         .parallelGesture(PanGesture({ distance: 4 })
-          .onActionStart((): void => {
-            // Listening, the orb stays where it is (a finger drifting while it is held is not a drag).
-            if (this.phase !== 2 || this.orbListening) { return; }
-            // The orb may now travel anywhere: the layer covers the window again until it settles.
-            this.toFull();
-            this.dragging = true;
-            this.dragStartX = this.boxX; this.dragStartY = this.boxY;
-            this.getUIContext().animateTo({ curve: curves.springMotion(0.3, 0.8) }, (): void => { this.boxScale = 1.08; });
-          })
-          .onActionUpdate((event: GestureEvent): void => {
-            if (this.phase !== 2 || !this.dragging) { return; }
-            // Exactly under the finger, every frame: no animation, no fitting while the finger is down.
-            this.boxX = Math.max(4, Math.min(this.layerW - AI_FLOAT_ORB - 4, this.dragStartX + event.offsetX));
-            this.boxY = Math.max(this.topLimit(), Math.min(this.bottomLimit() - AI_FLOAT_ORB, this.dragStartY + event.offsetY));
-            this.syncChatSides(true);
-          })
-          .onActionEnd((event: GestureEvent): void => {
-            if (this.phase !== 2 || !this.dragging) { return; }
-            this.dragging = false;
-            this.settle(event.velocityX, event.velocityY);
-          })
-          .onActionCancel((): void => {
-            if (!this.dragging) { return; }
-            this.dragging = false;
-            this.settle(0, 0);
-          }))
+          .onActionStart((): void => { this.dragBegin(); })
+          .onActionUpdate((event: GestureEvent): void => { this.dragMove(event); })
+          .onActionEnd((event: GestureEvent): void => { this.dragEnd(event.velocityX, event.velocityY); })
+          .onActionCancel((): void => { this.dragEnd(0, 0); }))
       }
       if (this.phase === 2 && this.unread && !this.chatShown) {
         Circle().width(12).height(12).fill('#FF453A').stroke('#FFFFFF').strokeWidth(1.5)
@@ -756,6 +783,12 @@ struct AiLiftLayer {
           .width(this.chatWidth())
           .position({ x: this.chatX() - this.offsetX(), y: this.chatY() - this.offsetY() })
           .translate({ x: this.chatShiftX, y: this.chatShiftY })
+          // Dragging the chat moves it with the orb, and keeps the touch from the screen underneath (a remote session).
+          .gesture(PanGesture({ distance: 8 })
+            .onActionStart((): void => { this.dragBegin(); })
+            .onActionUpdate((event: GestureEvent): void => { this.dragMove(event); })
+            .onActionEnd((event: GestureEvent): void => { this.dragEnd(event.velocityX, event.velocityY); })
+            .onActionCancel((): void => { this.dragEnd(0, 0); }))
           .transition(TransitionEffect.OPACITY.combine(TransitionEffect.scale({ x: 0.6, y: 0.6 }))
             .animation({ curve: curves.springMotion(0.5, 0.78) }))
       } else if (this.chatShown) {
@@ -767,6 +800,12 @@ struct AiLiftLayer {
           .width(this.chatWidth())
           .position({ x: this.chatX() - this.offsetX(), y: this.chatY() - this.offsetY() })
           .translate({ x: this.chatShiftX, y: this.chatShiftY })
+          // Dragging the chat moves it with the orb, and keeps the touch from the screen underneath (a remote session).
+          .gesture(PanGesture({ distance: 8 })
+            .onActionStart((): void => { this.dragBegin(); })
+            .onActionUpdate((event: GestureEvent): void => { this.dragMove(event); })
+            .onActionEnd((event: GestureEvent): void => { this.dragEnd(event.velocityX, event.velocityY); })
+            .onActionCancel((): void => { this.dragEnd(0, 0); }))
           .transition(TransitionEffect.OPACITY.combine(TransitionEffect.scale({ x: 0.6, y: 0.6 }))
             .animation({ curve: curves.springMotion(0.5, 0.78) }))
       }

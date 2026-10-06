@@ -164,7 +164,7 @@ const RULES: ActionRule[] = [
   new ActionRule('session.filePaste', '切换文件粘贴', [['文件粘贴', '粘贴文件']], 'inline'),
   new ActionRule('session.resetCanvas', '重置画面位置', [['重置画面', '恢复画布', '画面位置']], 'inline'),
   new ActionRule('session.rotate', '旋转远程画面', [['旋转画面', '画面旋转']], 'inline'),
-  new ActionRule('session.portrait', '切换竖屏显示', [['竖屏显示', '纵向显示']], 'inline'),
+  new ActionRule('session.portrait', '开关竖屏显示（亮起为开启，关闭即恢复横屏）', [['竖屏显示', '纵向显示', '恢复横屏', '横竖屏']], 'inline'),
   new ActionRule('session.display', '打开远程显示选择', [['远程显示器', '显示器选择', '分辨率']], 'inline'),
   new ActionRule('session.quality', '打开画质设置', [['画质', '清晰度', '流畅度']], 'inline'),
   new ActionRule('session.codec', '打开编码设置', [['编码', 'H.264', 'H.265', 'AV1']], 'inline'),

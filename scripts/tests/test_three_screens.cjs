@@ -660,4 +660,18 @@ check('form fields take one object so values filled in code show (otpauth parse,
   }
 });
 
+check('session AI: tap folds the chat, double tap listens in the orb, the side bar button closes it, the edge follows the rail', () => {
+  const lift = read('components/diagnosticAi/AiLiftLayer.ets');
+  assert.ok(member(lift, 'private orbTapped(): void {').includes('this.setChatShown(!this.chatShown);'));
+  assert.ok(member(lift, 'private orbDoubleTapped(): void {').includes('this.startOrbVoice(this.holdToTalk);'));
+  assert.ok(!member(lift, 'private startOrbVoice(held: boolean): void {').includes('this.controller.sessionMode ||'));
+  assert.ok(lift.includes('(this.railExpanded ? Math.max(0, this.controller.avoidWidth) : 0)'));
+  assert.equal((lift.match(/\.onActionStart\(\(\): void => \{ this\.dragBegin\(\); \}\)/g) || []).length, 3, 'orb and both chats drag');
+  const host = read('components/diagnosticAi/SessionAiHost.ets');
+  assert.ok(member(host, 'private onOpenRequest(): void {').includes('this.closeAi();'));
+  const rdp = read('components/rdp/RdpSessionToolbar.ets');
+  assert.ok(rdp.includes("action: 'portrait', label: '竖屏显示'") && rdp.includes("if (action === 'ai') { return this.sessionAiOpen; }"));
+  assert.ok(read('services/MoonlightUiPolicy.ets').includes("toolbarItem('portrait', '竖屏显示')"));
+});
+
 console.log('three screens: ' + passed + ' checks passed');

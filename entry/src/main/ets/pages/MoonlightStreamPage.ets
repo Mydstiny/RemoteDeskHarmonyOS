@@ -1138,6 +1138,9 @@ struct MoonlightStreamPage {
   }
 
   private moonlightPortraitDisplayActive(): boolean {
+    // Read in build: the bar's 竖屏显示 switch follows a change at once.
+    const revision: number = this.moonlightPortraitDisplayRevision;
+    hilog.debug(0x0001, 'MoonlightStream', 'portrait active revision %{public}d', revision);
     return remotePortraitDisplayActive(this.moonlightPortraitDisplayPreferences(),
       'moonlight', this.isDesktopDevice, this.isPadDevice);
   }
@@ -1165,7 +1168,7 @@ struct MoonlightStreamPage {
       promptAction.showToast({ message: '竖屏显示状态保存失败，请重试', duration: 1800 });
       return;
     }
-    promptAction.showToast({ message: nextMode === 'portrait' ? '竖屏显示' : '恢复横屏', duration: 1200 });
+    promptAction.showToast({ message: nextMode === 'portrait' ? '竖屏显示已开启' : '竖屏显示已关闭，恢复横屏', duration: 1400 });
   }
 
   private onMoonlightPortraitDisplayPreferenceChange(): void {

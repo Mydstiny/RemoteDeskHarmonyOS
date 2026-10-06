@@ -3,7 +3,7 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 import { AiIslandLayerParams, AiTopLayer, AiVoiceLayerParams } from './AiTopLayer';
 import { AI_VOICE_REQUEST, AiChatMemory, aiChatOwner } from './AiChatView';
 import { DiagnosticAiDeviceClass } from './AiIsland';
-import { AI_APP_ACTION_REQUEST, AI_SESSION_HANDOVER } from '../../services/diagnosticAi/AiBridgeKeys';
+import { AI_APP_ACTION_REQUEST, AI_SESSION_HANDOVER, AI_SESSION_OPEN } from '../../services/diagnosticAi/AiBridgeKeys';
 import { AiSessionRouter } from '../../services/diagnosticAi/AiSessionRouter';
 import { AI_VOICE_ENABLED } from '../../services/diagnosticAi/AiVoiceSettings';
 import { DiagnosticAiAppActionId, diagnosticAiAppActionId } from '../../services/diagnosticAi/DiagnosticAiAppActionPolicy';
@@ -12,9 +12,10 @@ let sessionHostCount: number = 0;
 
 /**
  * The AI inside a remote session (RDP, RustDesk, VNC, Moonlight, SSH). The session's own button (in its side bar, or
- * SSH's 「更多」) bumps `openRequest`: the AI appears as the floating orb with its small text chat beside it, above the
- * session, keeping clear of the side bar on whichever edge it is. On that orb a tap leaves the AI, a double tap starts
- * voice mode (in this window), and a drag moves it. While this AI is up, voice and app-action requests come here
+ * SSH's 「更多」) bumps `openRequest`: the first press opens the AI as the floating orb with its small text chat beside
+ * it, above the session, keeping clear of the side bar on whichever edge it is; the next press closes it. On that orb a
+ * tap folds the chat away or brings it back, a double tap makes the orb listen (the words go into its chat), and a drag
+ * (on the orb or its chat) moves it. While this AI is up, voice and app-action requests come here
  * rather than to the host list that may still be alive under the session (AiSessionRouter). It works for the signed-in
  * account (its AI 配置 and chats), stays up while the connection drops or reconnects, and when the session page goes
  * away with the AI up, the host list carries it on (AI_SESSION_HANDOVER).
@@ -72,6 +73,7 @@ export struct SessionAiHost {
     }
     this.island.close();
     this.voice.close();
+    AppStorage.setOrCreate<boolean>(AI_SESSION_OPEN, false);
     AiSessionRouter.release(this.hostId);
     if (handover) {
       // The conversation (and an answer still on its way) is in AiChatMemory: the host list's orb picks it up.
@@ -90,10 +92,28 @@ export struct SessionAiHost {
     try { promptAction.showToast({ message: message, duration: 2200 }); } catch (_error) { /* no toast */ }
   }
 
+  /** The side bar's AI button: opens the AI, or closes it when it is up. */
   private onOpenRequest(): void {
     if (this.openRequest <= 0) { return; }
-    if (this.island.isOpen() || this.voice.isOpen()) { return; }
+    if (this.island.isOpen() || this.voice.isOpen() || this.reopenTimer >= 0) {
+      this.closeAi();
+      return;
+    }
     this.openOrb();
+  }
+
+  /** Closed from the side bar (or by the AI's own exit): the orb, its chat and any voice mode go. */
+  private closeAi(): void {
+    if (this.reopenTimer >= 0) { clearTimeout(this.reopenTimer); this.reopenTimer = -1; }
+    AiChatMemory.voiceResume = false;
+    this.island.close();
+    this.voice.close();
+    this.publishOpen();
+    AiSessionRouter.release(this.hostId);
+  }
+
+  private publishOpen(): void {
+    AppStorage.setOrCreate<boolean>(AI_SESSION_OPEN, this.island.isOpen() || this.voice.isOpen() || this.reopenTimer >= 0);
   }
 
   /** The orb with its small text chat (text mode is the default in a session). */
@@ -118,10 +138,12 @@ export struct SessionAiHost {
     p.onDismissed = (): void => {
       this.island.close();
       this.releaseIfIdle();
+      this.publishOpen();
     };
     p.onAppAction = (action: DiagnosticAiAppActionId): void => { this.runAction(action); };
     hilog.info(0x0000, 'AiChat', 'session AI opens as the orb');
     this.island.openIsland(this.getUIContext(), p);
+    this.publishOpen();
   }
 
   private onVoiceRequest(): void {

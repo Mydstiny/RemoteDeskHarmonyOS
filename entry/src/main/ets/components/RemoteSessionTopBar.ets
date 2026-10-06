@@ -1271,7 +1271,7 @@ export struct RemoteSessionTopBar {
       this.iconButton($r('sys.symbol.rectangle_rotate'),
         this.portraitDisplayActive ? '#2A9D8F' : this.accentColor,
         (): void => { this.actions.onTogglePortraitDisplay(); }, 18,
-        this.portraitDisplayActive ? '恢复横屏' : '竖屏显示')
+        this.portraitDisplayActive ? '竖屏显示，已开启' : '竖屏显示，已关闭')
     } else if (actionId === 'keyboardMouse') {
       this.iconButton($r('sys.symbol.mouse'), this.accentColor,
         (): void => { this.toggleMenu('keyboardMouse'); }, 18, '打开鼠标与触控设置')

@@ -5,6 +5,10 @@
 export const AI_SESSION_HANDOVER: string = 'aiSession.handover';
 /** How long a handover waits for the host list to be in front again (a session that replaced the page keeps it out). */
 export const AI_SESSION_HANDOVER_TTL_MS: number = 15000;
+/** AppStorage: a session's side rail is expanded (true) or collapsed to its handle (false); the AI orb keeps clear. */
+export const AI_SESSION_RAIL_EXPANDED: string = 'aiSession.railExpanded';
+/** AppStorage: the AI is up in the session (its side-bar button shows it on, and a tap there closes it). */
+export const AI_SESSION_OPEN: string = 'aiSession.open';
 /** AppStorage: the AI (chat, voice) asks the host page to open an app screen ('<action id>@<time>'). */
 export const AI_APP_ACTION_REQUEST: string = 'aiAppActionRequest';
 /** AppStorage: a question handed to 助理 ('<time>|<question>'); the panel switches to 助理 and asks it. */

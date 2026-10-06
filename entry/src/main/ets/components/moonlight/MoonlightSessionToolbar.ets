@@ -1,3 +1,4 @@
+import { AI_SESSION_OPEN, AI_SESSION_RAIL_EXPANDED } from '../../services/diagnosticAi/AiBridgeKeys';
 import { curves } from '@kit.ArkUI';
 import { Palette, buildDark } from '../../common/Theme';
 import {
@@ -47,7 +48,8 @@ export struct MoonlightSessionToolbar {
   @Prop qualityLabel: string = '良好';
   @Prop viewportWidth: number = 0;
   @Prop @Watch('onAvailableHeightChange') availableHeight: number = 640;
-  @State private expanded: boolean = false;
+  @State @Watch('publishRail') private expanded: boolean = false;
+  @StorageProp(AI_SESSION_OPEN) sessionAiOpen: boolean = false;
   @State private pinned: boolean = false;
   @State private railSwipeX: number = 0;
   private hideTimer: number = -1;
@@ -210,7 +212,13 @@ export struct MoonlightSessionToolbar {
     if (item.action === 'modifiers') { return this.modifiersOpen; }
     if (item.action === 'resetCanvas') { return this.canvasResetAvailable; }
     if (item.action === 'portrait') { return this.portraitDisplayActive; }
+    if (item.action === 'ai') { return this.sessionAiOpen; }
     return item.action === 'diagnostics' && this.diagnosticsVisible;
+  }
+
+  /** The AI orb keeps clear of the rail while it is open, and may use the edge while it is only the handle. */
+  private publishRail(): void {
+    AppStorage.setOrCreate<boolean>(AI_SESSION_RAIL_EXPANDED, this.expanded);
   }
 
   private sessionPrimary(): string { return '#5B8FF9'; }
@@ -246,6 +254,7 @@ export struct MoonlightSessionToolbar {
   }
 
   aboutToAppear(): void {
+    this.publishRail();
     this.expanded = false;
     this.pinned = false;
     this.onPointerRegionChange(false, false);

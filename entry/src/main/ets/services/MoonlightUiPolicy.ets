@@ -766,7 +766,7 @@ export function moonlightToolbarItems(
     keyboard, toolbarItem('modifiers', '组合键')
   ];
   if (portraitEnabled) {
-    items.push(toolbarItem('portrait', portraitActive ? '恢复横屏' : '竖屏显示'));
+    items.push(toolbarItem('portrait', '竖屏显示'));
   }
   const limit: number = maxVisibleItems > 0 ? maxVisibleItems :
     (normalized === 'sm' ? 7 : 8);
