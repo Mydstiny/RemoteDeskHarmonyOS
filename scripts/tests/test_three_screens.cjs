@@ -139,7 +139,7 @@ check('2FA secrets and imports follow one rule in both add flows', () => {
   const imp = member(page, 'private async importTotpFile(): Promise<void> {');
   assert.ok(imp.includes('this.totpImporter.pickAndParse()') && !imp.includes('fromCharCode'), 'UTF-8 and every format');
   const scan = member(page, 'private onQrScanned(entry: TotpEntry): void {');
-  assert.ok(scan.includes('this.showSheet = false;') && scan.includes('totpSecretProblem('), 'the form closes too');
+  assert.ok(scan.includes('this.closeKeyVaultSheet();') && scan.includes('totpSecretProblem('), 'the form closes too');
   assert.ok(!/\[CC-SSHKEY-|\[importTotp\]/.test(page + read('components/SshKeyManagerSheet.ets') +
     read('components/SshKeyInstallSheet.ets')), 'no internal codes in messages');
 });
@@ -321,7 +321,7 @@ check('add flows: a close button everywhere, typed names kept, plain summaries, 
     const start = sheet.indexOf(flow);
     const end = sheet.indexOf('\n      })', start);
     const call = sheet.slice(start, end);
-    assert.ok(call.includes('onClose: (): void => { this.requestAddSheetClose(); }'), flow);
+    assert.ok(call.includes('onClose: (): void => { this.requestAddSheetCloseByUser(); }'), flow);
     if (flow !== 'MoonlightHostAddFlow({') {
       assert.ok(call.includes('saveError: this.addFlowSaveError') && call.includes('saveErrorRevision: this.addFlowSaveErrorRevision'), flow);
     }
@@ -363,7 +363,7 @@ check('classic editor: clearable numeric ports checked on save, a close button, 
     page.includes("this.rdpPortVal = v.trim() === '' || isNaN(n) ? 0 : n;"));
   assert.ok(page.includes('TextInput({ placeholder: h, text: v }).type(numeric ? InputType.Number : InputType.Normal)'));
   assert.ok(member(page, 'private doAdd(): void {').includes("this.sheetErr = '请输入 1–65535 之间的端口';"));
-  assert.ok(member(page, '@Builder private classicHostEditorTitle() {').includes('this.requestAddSheetClose();'));
+  assert.ok(member(page, '@Builder private classicHostEditorTitle() {').includes('this.requestAddSheetCloseByUser();'));
   assert.ok(page.includes("if (this.aiProVisible) {\n              this.protoBtn('AI · Pro', 'ai', 9443)"));
   assert.ok(page.includes(".margin({ left: protoVal === 'rdp' ? 0 : 8 })"));
 });
@@ -467,6 +467,111 @@ check('batch 3 review nits: accent text, danger fills, grouped cards, ports, key
   assert.ok(member(guard, 'export function keyVaultPickerExplainsBackground(): boolean {')
     .includes('AppStorage.setOrCreate<boolean>(PICKER_SKIPPED_BACKGROUND_KEY, true);'));
   assert.ok(read('components/resourceadd/modern/ModernKeyVaultAddFlow.ets').includes("'与文件中前一条重复，将跳过'"));
+});
+
+// ------------------------------------------------------------------ batch 4: unsaved input is not lost silently
+check('relay sheets ask before throwing away typed input (✕, 取消, swipe-down), saves close straight away', () => {
+  const page = read('pages/RustDeskRelayPage.ets');
+  const label = member(page, 'private relaySheetUnsavedLabel(): string {');
+  assert.ok(label.includes('this.relayFormSnapshot() !== this.relayFormBaseline') &&
+    label.includes('this.proFormSnapshot() !== this.proFormBaseline') && label.includes('this.pasteConfigDirty') &&
+    label.includes('this.vncGatewayDirty'));
+  assert.ok(member(page, 'private resetRelayForm(): void {').includes('this.relayFormBaseline = this.relayFormSnapshot();'));
+  assert.ok(member(page, 'private openEditRelaySheet(relay: RustDeskRelayConfig): void {')
+    .includes('this.relayFormBaseline = this.relayFormSnapshot();'), 'an edit starts clean');
+  assert.equal((page.match(/this\.proFormBaseline = this\.proFormSnapshot\(\);/g) || []).length, 4,
+    'both Pro openers, the sign-in and a discard reset the baseline');
+  assert.ok(page.includes(".enabled(!this.relaySaving).onClick((): void => { this.closeSheetByUser(); })"), '取消 asks');
+  assert.ok(page.includes(".enabled(!this.proBusy).accessibilityText('关闭')\n          .onClick((): void => { this.closeSheetByUser(); })"));
+  assert.ok(page.includes('if (this.relaySheetClosing || this.relaySheetUnsavedLabel() === \'\') {'), 'a programmatic close is not asked about');
+  assert.ok(page.includes("if (!this.relaySheetClosing && this.relaySheetUnsavedLabel() !== '') { action.springBack(); }"));
+  const paste = read('components/resourceadd/modern/RustDeskRelayConfigPasteSheet.ets');
+  assert.ok(paste.includes("title: '放弃粘贴的配置？'") && paste.includes(".accessibilityText('关闭').onClick((): void => { this.onClose(); })"));
+  assert.ok(paste.includes("this.onDirtyChange(value.trim() !== '');") && !/Color\.White/.test(paste));
+});
+
+check('the VNC relay flow reports unsaved input; back to the picker asks too', () => {
+  const flow = read('components/resourceadd/VncGatewayAddFlow.ets');
+  assert.ok(flow.includes("@State @Watch('reportDirty') label: string = '';") &&
+    flow.includes("@State @Watch('reportDirty') accessToken: string = '';"));
+  assert.ok(member(flow, 'aboutToAppear(): void {').includes('this.draftBaseline = this.draftSnapshot();'),
+    'an edit starts clean, after its values are loaded');
+  assert.ok(member(flow, 'private reportDirty(): void {').includes("if (this.draftBaseline === '') { return; }"));
+  const page = read('pages/RustDeskRelayPage.ets');
+  assert.ok(page.includes('onDirtyChange: (dirty: boolean): void => { this.vncGatewayDirty = dirty; },'));
+  assert.ok(page.includes("onClose: (): void => { this.closeSheetByUser(); },\n        onDirtyChange"));
+  assert.ok(page.includes('this.confirmDiscardRelaySheet((): void => {\n            this.vncGatewayFromPicker = false;'));
+});
+
+check('host add flows report unsaved input; ✕, back to the picker and swipe-down ask; saves close straight away', () => {
+  const flows = {
+    RdpAddFlow: "@State @Watch('reportDirty') hostAddress: string = '';",
+    RustDeskAddFlow: "@State @Watch('reportDirty') controlId: string = '';",
+    SshAddFlow: "@State @Watch('reportDirty') address: string = '';",
+    VncAddFlow: "@State @Watch('reportDirty') passwordChanged: boolean = false;",
+  };
+  for (const [file, field] of Object.entries(flows)) {
+    const text = read('components/hostadd/' + file + '.ets');
+    assert.ok(text.includes('onDirtyChange: (dirty: boolean) => void') && text.includes(field), file);
+    assert.ok(member(text, 'private reportDirty(): void {').includes("if (this.draftBaseline === '') { return; }"), file);
+  }
+  const rd = member(read('components/hostadd/RustDeskAddFlow.ets'), 'aboutToAppear(): void {');
+  assert.ok(rd.indexOf('this.draftBaseline = this.draftSnapshot();') < rd.indexOf('this.applyDraft(this.initialDraft);'),
+    'a resumed draft is still unsaved');
+  const ssh = member(read('components/hostadd/SshAddFlow.ets'), 'aboutToAppear(): void {');
+  assert.ok(ssh.indexOf('this.draftBaseline = this.draftSnapshot();') < ssh.indexOf('const fields = this.initialBasicFields;'));
+  const vnc = member(read('components/hostadd/VncAddFlow.ets'), 'aboutToAppear(): void {');
+  assert.ok(vnc.trim().endsWith('this.draftBaseline = this.draftSnapshot();\n  }'), 'an edit starts clean');
+  const moon = read('components/hostadd/MoonlightHostAddFlow.ets');
+  assert.ok(moon.includes("@State @Watch('reportDirty') flow: MoonlightHostAddState") &&
+    member(moon, 'private reportDirty(): void {').includes('moonlightHostAddDraftIsDirty(this.flow)'));
+  assert.ok(moon.includes(".accessibilityText('关闭').onClick((): void => { this.onClose(); })"), 'the page may keep it open');
+  assert.ok(read('components/ai/AiHostEditor.ets').includes("@State @Watch('reportDirty') invite: string = '';"));
+  assert.ok(read('components/pro/workspace/WorkspaceAddFlow.ets').includes("@State @Watch('reportDirty') picked: string[] = [];"));
+
+  const page = read('pages/HostListPage.ets');
+  const unsaved = member(page, 'private hostAddHasUnsavedInput(): boolean {');
+  assert.ok(unsaved.includes("this.modernAddProtocol === 'moonlight' && this.moonlightAddCommitted") &&
+    unsaved.includes('return this.hostAddFlowDirty;') && unsaved.includes('this.classicEditorSnapshot() !== this.classicEditorBaseline'));
+  assert.ok(member(page, 'private confirmDiscardHostAdd(proceed: () => void): void {').includes("title: '放弃未保存的内容？'"));
+  const sheet = member(page, '@Builder hostAddSheetContent() {');
+  assert.equal((sheet.match(/onClose: \(\): void => \{ this\.requestAddSheetCloseByUser\(\); \}/g) || []).length, 7,
+    'RDP, RustDesk, Moonlight, SSH, VNC, 远程 AI and 工作区 ask before closing');
+  assert.equal((sheet.match(/this\.backToHostAddPicker\(/g) || []).length, 6, 'back to the picker asks (Moonlight asks itself)');
+  assert.equal((sheet.match(/onDirtyChange: \(dirty: boolean\): void => \{ this\.hostAddFlowDirty = dirty; \}/g) || []).length, 7);
+  assert.equal((sheet.match(/onClose: \(\): void => \{ this\.requestAddSheetClose\(\); \}/g) || []).length, 1,
+    'only the protocol picker (nothing to lose there) closes directly');
+  assert.ok(member(page, '@Builder private classicHostEditorTitle() {').includes('this.requestAddSheetCloseByUser();'));
+  assert.ok(page.includes("if (this.addSheetClosing || !this.hostAddHasUnsavedInput()) {\n              action.dismiss();"),
+    'a programmatic close is not asked about');
+  assert.ok(page.includes('if (!this.addSheetClosing && this.hostAddHasUnsavedInput()) { action.springBack(); }'));
+  assert.ok(page.includes('this.classicEditorBaseline = this.classicEditorSnapshot();\n          },\n          onWillDismiss'));
+  assert.ok(page.includes('if (untouched) { this.classicEditorBaseline = this.classicEditorSnapshot(); }'),
+    'switching the protocol of an untouched classic form is not input');
+  const gone = member(page, 'private handleAddSheetDisappear(): void {');
+  assert.ok(gone.includes('this.hostAddFlowDirty = false;') && gone.includes("this.classicEditorBaseline = '';"));
+});
+
+check('key vault sheets ask before throwing away input; saves and transitions close straight away', () => {
+  const page = read('pages/KeyVaultPage.ets');
+  assert.ok(!/this\.showSheet = false/.test(page.replace("    this.keyVaultSheetClosing = true;\n    this.showSheet = false;", '')),
+    'every close goes through closeKeyVaultSheet or closeKeyVaultSheetByUser');
+  assert.ok(member(page, 'private closeKeyVaultSheet(): void {').includes('if (!this.showSheet) { return; }'));
+  const label = member(page, 'private keyVaultSheetUnsavedLabel(): string {');
+  assert.ok(label.includes('this.sheetMode === 6 && this.modernFlowDirty') &&
+    label.includes('this.editingTotpName.trim() !== this.editingTotpEntry.displayName.trim()'));
+  assert.equal((page.match(/this\.closeKeyVaultSheetByUser\(\)/g) || []).length, 4, 'flow ✕, both pickers, rename 取消');
+  assert.ok(page.includes('onSaved: (_resourceId: string): void => { this.modernFlowDirty = false; this.load(); }'));
+  assert.ok(page.includes("if (this.keyVaultSheetClosing || this.keyVaultSheetUnsavedLabel() === '') {"));
+  assert.ok(page.includes("if (!this.keyVaultSheetClosing && this.keyVaultSheetUnsavedLabel() !== '') { action.springBack(); }"));
+  const modern = read('components/resourceadd/modern/ModernKeyVaultAddFlow.ets');
+  assert.ok(modern.includes("@State @Watch('reportDirty') privateKeyText: string = '';") && !modern.includes('this.onClose(); this.reset(); })'),
+    'closing does not clear what the page may keep');
+  assert.ok(member(page, 'private onAppBackground(): void {').includes('} else if (keyVaultPickerStaleOnReturn()) {'));
+  assert.ok(modern.includes('this.importFirstIdBySecret.get(secret)'));
+  const host = read('pages/HostListPage.ets');
+  assert.ok(host.includes("'选中的主机已不在当前列表中'") &&
+    host.includes('.enabled(this.hostSelectionMode || !this.hostPresenceProbeBusyIds.has(host.id))'));
 });
 
 console.log('three screens: ' + passed + ' checks passed');

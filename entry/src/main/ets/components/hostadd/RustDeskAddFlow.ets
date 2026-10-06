@@ -29,6 +29,8 @@ export struct RustDeskAddFlow {
   initialDraftRevision: number = 0;
   onBackToProtocols: () => void = (): void => {};
   onClose: () => void = (): void => {};
+  /** Whether anything differs from how the flow opened. */
+  onDirtyChange: (dirty: boolean) => void = (_dirty: boolean): void => {};
   onStartLanScan: () => void = (): void => {};
   onManageRelays: (draft: RustDeskHostAddDraft) => void =
     (_draft: RustDeskHostAddDraft): void => {};
@@ -37,20 +39,20 @@ export struct RustDeskAddFlow {
   onSave: (host: RemoteHost, connectNow: boolean) => void =
     (_host: RemoteHost, _connectNow: boolean): void => {};
   @State step: number = 1;
-  @State direct: boolean = false;
+  @State @Watch('reportDirty') direct: boolean = false;
   @State useLan: boolean = false;
-  @State selectedLanPeerId: string = '';
+  @State @Watch('reportDirty') selectedLanPeerId: string = '';
   @State lanAddressMode: string = '';
-  @State label: string = '';
+  @State @Watch('reportDirty') label: string = '';
   /** The name the last LAN pick filled in (a typed name is not overwritten by the next pick). */
   private lanAutoLabel: string = '';
-  @State controlId: string = '';
-  @State directHost: string = '';
-  @State directPortText: string = '21118';
-  @State relayId: string = '';
-  @State password: string = '';
-  @State passwordMode: number = 0;
-  @State totpEntryId: string = '';
+  @State @Watch('reportDirty') controlId: string = '';
+  @State @Watch('reportDirty') directHost: string = '';
+  @State @Watch('reportDirty') directPortText: string = '21118';
+  @State @Watch('reportDirty') relayId: string = '';
+  @State @Watch('reportDirty') password: string = '';
+  @State @Watch('reportDirty') passwordMode: number = 0;
+  @State @Watch('reportDirty') totpEntryId: string = '';
   @State totpAutoSubmit: boolean = false;
   @State errorText: string = '';
   /** A save the page could not complete: its reason shows in the form as well as in the toast. */
@@ -61,14 +63,33 @@ export struct RustDeskAddFlow {
   @State adaptiveOrientation: boolean = false;
 
   aboutToAppear(): void {
-    if (this.initialDraft === null) {
-      this.directPortText = this.defaultDirectPort.toString();
-    } else {
+    this.directPortText = this.defaultDirectPort.toString();
+    // A draft resumed after 管理中继 is still unsaved: compare with the empty form, not with the draft.
+    this.draftBaseline = this.draftSnapshot();
+    if (this.initialDraft !== null) {
       this.applyDraft(this.initialDraft);
     }
   }
+
+  private draftSnapshot(): string {
+    return JSON.stringify([this.direct, this.selectedLanPeerId, this.label, this.controlId, this.directHost,
+      this.directPortText, this.relayId, this.password, this.passwordMode, this.totpEntryId]);
+  }
   private onSaveError(): void {
     if (this.saveError !== '') { this.errorText = this.saveError; }
+  }
+
+  /** The empty form; a difference is unsaved input (the page asks before throwing it away). */
+  private draftBaseline: string = '';
+  private draftDirty: boolean = false;
+
+  private reportDirty(): void {
+    if (this.draftBaseline === '') { return; }
+    const dirty: boolean = this.draftSnapshot() !== this.draftBaseline;
+    if (dirty !== this.draftDirty) {
+      this.draftDirty = dirty;
+      this.onDirtyChange(dirty);
+    }
   }
 
   private pal(): Palette { return this.theme === 'light' ? buildLight(this.accentColor) : buildDark(this.accentColor); }

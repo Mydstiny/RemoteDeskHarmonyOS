@@ -25,27 +25,27 @@ export struct ModernKeyVaultAddFlow {
   @State step: string = 'method';
   @State busy: boolean = false;
   @State errorText: string = '';
-  @State label: string = '';
-  @State comment: string = '';
-  @State privateKeyText: string = '';
-  @State importedFileName: string = '';
+  @State @Watch('reportDirty') label: string = '';
+  @State @Watch('reportDirty') comment: string = '';
+  @State @Watch('reportDirty') privateKeyText: string = '';
+  @State @Watch('reportDirty') importedFileName: string = '';
   @State importedKey: SshKey | null = null;
   @State keyType: number = SshKeyType.ED25519;
   @State rsaBits: number = 4096;
-  @State passphrase: string = '';
+  @State @Watch('reportDirty') passphrase: string = '';
   /** A new key's passphrase is typed twice: a typo would leave a key nobody can unlock. */
   @State passphraseConfirm: string = '';
   /** The window's height (from the page), so a long step scrolls instead of hiding its button. */
   @Prop viewportHeight: number = 0;
-  @State generatedKey: SshKey | null = null;
-  @State issuer: string = '';
-  @State account: string = '';
-  @State secret: string = '';
-  @State otpUri: string = '';
+  @State @Watch('reportDirty') generatedKey: SshKey | null = null;
+  @State @Watch('reportDirty') issuer: string = '';
+  @State @Watch('reportDirty') account: string = '';
+  @State @Watch('reportDirty') secret: string = '';
+  @State @Watch('reportDirty') otpUri: string = '';
   @State digits: number = 6;
   @State period: number = 30;
   @State algorithm: number = TotpAlgorithm.SHA1;
-  @State importEntries: TotpEntry[] = [];
+  @State @Watch('reportDirty') importEntries: TotpEntry[] = [];
   @State selectedImportIds: string[] = [];
   @State importFileName: string = '';
   @State importFormat: string = '';
@@ -58,7 +58,31 @@ export struct ModernKeyVaultAddFlow {
   private pal(): Palette { return this.theme === 'light' ? buildLight(this.accentColor) : buildDark(this.accentColor); }
   private font(): string { return AppTheme.fontFamily; }
 
-  aboutToAppear(): void { this.reset(); }
+  /** Whether anything was entered (the page asks before throwing it away). */
+  onDirtyChange: (dirty: boolean) => void = (_dirty: boolean): void => {};
+  private draftBaseline: string = '';
+  private draftDirty: boolean = false;
+  /** An import file's first entry per secret: later copies of the same account are skipped. */
+  private importFirstIdBySecret: Map<string, string> = new Map<string, string>();
+
+  aboutToAppear(): void {
+    this.reset();
+    this.draftBaseline = this.draftSnapshot();
+  }
+
+  private draftSnapshot(): string {
+    return JSON.stringify([this.label, this.comment, this.privateKeyText, this.importedFileName, this.passphrase,
+      this.generatedKey !== null, this.issuer, this.account, this.secret, this.otpUri, this.importEntries.length]);
+  }
+
+  private reportDirty(): void {
+    if (this.draftBaseline === '') { return; }
+    const dirty: boolean = this.draftSnapshot() !== this.draftBaseline;
+    if (dirty !== this.draftDirty) {
+      this.draftDirty = dirty;
+      this.onDirtyChange(dirty);
+    }
+  }
 
   private reset(): void {
     this.step = 'method'; this.busy = false; this.errorText = '';
@@ -68,6 +92,7 @@ export struct ModernKeyVaultAddFlow {
     this.issuer = ''; this.account = ''; this.secret = ''; this.otpUri = '';
     this.digits = 6; this.period = 30; this.algorithm = TotpAlgorithm.SHA1;
     this.importEntries = []; this.selectedImportIds = []; this.importFileName = ''; this.importFormat = '';
+    this.importFirstIdBySecret = new Map<string, string>();
   }
 
   private goBack(): void {
@@ -206,6 +231,12 @@ export struct ModernKeyVaultAddFlow {
         valid.find((item: TotpEntry): boolean => normalizeTotpSecret(item.secret) === secret) !== undefined;
       if (!duplicate && totpSecretProblem(secret, []) === '') { valid.push(entry); }
     }
+    const firstIds: Map<string, string> = new Map<string, string>();
+    result.entries.forEach((entry: TotpEntry): void => {
+      const secret: string = normalizeTotpSecret(entry.secret);
+      if (!firstIds.has(secret)) { firstIds.set(secret, entry.id); }
+    });
+    this.importFirstIdBySecret = firstIds;
     this.importEntries = result.entries; this.selectedImportIds = valid.map((entry: TotpEntry): string => entry.id);
     this.importFileName = result.fileName; this.importFormat = result.format; this.step = 'totp-file-preview';
     if (valid.length === 0) { this.errorText = '文件中的账户均已存在或无效'; }
@@ -224,9 +255,8 @@ export struct ModernKeyVaultAddFlow {
     const secret: string = normalizeTotpSecret(entry.secret);
     if (totpSecretProblem(secret, []) !== '') { return '密钥格式无效，将跳过'; }
     // The same account twice in one file: the first copy is imported.
-    const first: TotpEntry | undefined = this.importEntries.find((item: TotpEntry): boolean =>
-      normalizeTotpSecret(item.secret) === secret);
-    if (first !== undefined && first.id !== entry.id) { return '与文件中前一条重复，将跳过'; }
+    const firstId: string | undefined = this.importFirstIdBySecret.get(secret);
+    if (firstId !== undefined && firstId !== entry.id) { return '与文件中前一条重复，将跳过'; }
     return '';
   }
   private toggleImport(entry: TotpEntry): void {
@@ -272,7 +302,8 @@ export struct ModernKeyVaultAddFlow {
       }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 12 })
       Button() { SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor([this.pal().text2]) }
         .width(36).height(36).borderRadius(18).padding(0).backgroundColor(this.pal().surface)
-        .onClick((): void => { this.onClose(); this.reset(); })
+        // The page may ask first and keep the flow open, so nothing is cleared here (a new flow starts empty).
+        .accessibilityText('关闭').onClick((): void => { this.onClose(); })
     }.width('100%').margin({ bottom: 18 })
   }
 
@@ -456,7 +487,7 @@ export struct ModernKeyVaultAddFlow {
     Column() {
       if (this.step === 'method') {
         ResourceFabPicker({ kind: this.resourceKind, onSelect: (option: string): void => { this.selectMethod(option); },
-          onClose: (): void => { this.onClose(); this.reset(); } })
+          onClose: (): void => { this.onClose(); } })
         // File imports report on this step: there is no other step to show their errors.
         if (this.busy || this.errorText.length > 0) {
           Column() {

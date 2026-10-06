@@ -24,6 +24,16 @@ export function endKeyVaultExternalPicker(): void {
   }
 }
 
+/**
+ * The app is back in the foreground while a picker has not returned yet: true when the app went to the background
+ * during it and the grace period has passed (the picker may never return), so the 2FA page should lock now.
+ */
+export function keyVaultPickerStaleOnReturn(): boolean {
+  const since: number = AppStorage.get<number>(PICKER_SINCE_KEY) ?? 0;
+  const skipped: boolean = AppStorage.get<boolean>(PICKER_SKIPPED_BACKGROUND_KEY) === true;
+  return since > 0 && skipped && !keyVaultPickerKeepsUnlocked(since, Date.now());
+}
+
 /** The app went to the background: true when an open picker explains it (the 2FA page then stays unlocked). */
 export function keyVaultPickerExplainsBackground(): boolean {
   if (!keyVaultPickerKeepsUnlocked(AppStorage.get<number>(PICKER_SINCE_KEY) ?? 0, Date.now())) { return false; }

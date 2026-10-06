@@ -32,12 +32,17 @@ export struct AiHostEditor {
   @StorageProp('remoteDesktopBgFlag') @Watch('onBackgroundChanged') inBackground: boolean = false;
   @State step: number = 1;
   onClose: () => void = (): void => {};
+  /** Whether anything differs from how the flow opened (the page asks before throwing it away). */
+  onDirtyChange: (dirty: boolean) => void = (_dirty: boolean): void => {};
+  /** The fields as the editor opened (the port follows the backend, so it is not compared). */
+  private draftBaseline: string = '';
+  private draftDirty: boolean = false;
   onSaved: (id: string, connect: boolean) => void = (_id: string, _connect: boolean): void => {};
-  @State label: string = '';
-  @State address: string = '';
-  @State groupId: string = '';
+  @State @Watch('reportDirty') label: string = '';
+  @State @Watch('reportDirty') address: string = '';
+  @State @Watch('reportDirty') groupId: string = '';
   @State port: string = '9443';
-  @State serverName: string = '';
+  @State @Watch('reportDirty') serverName: string = '';
   @State backend: AiBackend = 'codex';
   @State transport: 'lan' | 'rustdesk' = 'lan';
   @State relayHostId: string = '';
@@ -45,7 +50,7 @@ export struct AiHostEditor {
   @State lanScanning: boolean = false;
   @State lanAgents: DiscoveredAiAgent[] = [];
   @State lanStatus: AiLanScanStatus = 'idle';
-  @State invite: string = '';
+  @State @Watch('reportDirty') invite: string = '';
   @State inviteStatus: string = '';
   @State paired: boolean = false;
   @State error: string = '';
@@ -70,6 +75,7 @@ export struct AiHostEditor {
       this.transport = this.draft.transport === 'rustdesk' ? 'rustdesk' : 'lan';
       this.relayHostId = this.draft.relayHostId || '';
       this.relays = HostSyncService.getInstance().getAllRelays();
+      this.draftBaseline = this.draftSnapshot();
       void this.loadPairingState();
     } catch (error) { this.error = aiErrorText((error as Error).message); }
     this.unsubscribe = AiAccess.getInstance().subscribe((): void => {
@@ -126,6 +132,19 @@ export struct AiHostEditor {
     next.transport = this.transport; next.relayHostId = this.transport === 'rustdesk' ? this.relayHostId : '';
     return next;
   }
+  private draftSnapshot(): string {
+    return JSON.stringify([this.label, this.address, this.groupId, this.serverName, this.invite]);
+  }
+
+  private reportDirty(): void {
+    if (this.draftBaseline === '') { return; }
+    const dirty: boolean = this.draftSnapshot() !== this.draftBaseline;
+    if (dirty !== this.draftDirty) {
+      this.draftDirty = dirty;
+      this.onDirtyChange(dirty);
+    }
+  }
+
   private nextStep(): void {
     if (this.busy || this.defaultsPending || this.inBackground) { return; }
     if (!this.allowed || !AiAccess.getInstance().proVisible()) {

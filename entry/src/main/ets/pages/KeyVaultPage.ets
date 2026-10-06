@@ -27,7 +27,12 @@ import { SshKeyDataSource, TotpEntryDataSource } from '../datasources/DataSource
 import { resolveFabAddStyle } from '../services/FabAddStylePolicy';
 import { ResourceFabPicker } from '../components/resourceadd/ResourceFabPicker';
 import { ModernKeyVaultAddFlow } from '../components/resourceadd/modern/ModernKeyVaultAddFlow';
-import { beginKeyVaultExternalPicker, endKeyVaultExternalPicker, keyVaultPickerExplainsBackground } from '../services/KeyVaultPickerGuard';
+import {
+  beginKeyVaultExternalPicker,
+  endKeyVaultExternalPicker,
+  keyVaultPickerExplainsBackground,
+  keyVaultPickerStaleOnReturn
+} from '../services/KeyVaultPickerGuard';
 import { appUiOnAccentText } from '../common/AppUiColorPolicy';
 import { TotpImportResult, TotpImportService } from '../services/TotpImportService';
 import {
@@ -59,6 +64,10 @@ export struct KeyVaultPage {
   @StorageLink('totpUnlocked') @Watch('onTotpLockChange') totpUnlocked: boolean = false;
   /** The 2FA page locks again as soon as the app goes to the background. */
   @StorageProp('remoteDesktopBgFlag') @Watch('onAppBackground') appInBackground: boolean = false;
+  /** A save or a confirmed close is closing the sheet (onWillDismiss lets it through). */
+  private keyVaultSheetClosing: boolean = false;
+  /** The modern add flow holds unsaved input (it reports it). */
+  private modernFlowDirty: boolean = false;
   @State selectionMode: boolean = false;
   // 统一 Sheet: 单 bindSheet + mode 切换内容 (KeyVaultPage 非 @Entry, 限 1 个 bindSheet)
   @State showSheet: boolean = false;
@@ -141,10 +150,58 @@ export struct KeyVaultPage {
   }
 
   private onAppBackground(): void {
-    // A scan or a file picker sends the app to the background too: those keep the page unlocked (for a while).
-    if (this.appInBackground && !keyVaultPickerExplainsBackground()) {
+    if (this.appInBackground) {
+      // A scan or a file picker sends the app to the background too: those keep the page unlocked (for a while).
+      if (!keyVaultPickerExplainsBackground()) { this.totpUnlocked = false; }
+    } else if (keyVaultPickerStaleOnReturn()) {
+      // Back with a picker that has been gone longer than the grace period: lock now, it may never return.
       this.totpUnlocked = false;
     }
+  }
+
+  /** Closes the sheet after a save or a confirmed question (onWillDismiss lets it through). */
+  private closeKeyVaultSheet(): void {
+    if (!this.showSheet) { return; }
+    this.keyVaultSheetClosing = true;
+    this.showSheet = false;
+  }
+
+  /** What closing the sheet now would throw away ('' when nothing). */
+  private keyVaultSheetUnsavedLabel(): string {
+    if (!this.showSheet || this.keyVaultSheetClosing) { return ''; }
+    if (this.sheetMode === 0) {
+      const ssh: boolean = this.formLabel.trim() !== '' || this.formComment.trim() !== '' ||
+        this.formPasteKey.trim() !== '' || this.formFileName !== '';
+      const totp: boolean = this.formIssuer.trim() !== '' || this.formAccount.trim() !== '' ||
+        this.formSecret.trim() !== '' || this.formOtpAuthUri.trim() !== '';
+      if (ssh) { return '密钥'; }
+      if (totp) { return '2FA 账户'; }
+      return '';
+    }
+    if (this.sheetMode === 6 && this.modernFlowDirty) { return '内容'; }
+    if (this.sheetMode === 7 && this.editingTotpName.trim() !== this.editingTotpEntry.displayName.trim()) { return '名称'; }
+    return '';
+  }
+
+  /** Asks before throwing away unsaved input; `proceed` runs when nothing is lost or the user agrees. */
+  private confirmDiscardKeyVaultSheet(proceed: () => void): void {
+    const label: string = this.keyVaultSheetUnsavedLabel();
+    if (label === '') { proceed(); return; }
+    promptAction.showDialog({
+      title: '放弃未保存的' + label + '？',
+      message: '填写的内容还没有保存，放弃后不会保留。',
+      buttons: [{ text: '继续编辑', color: this.pal().text2 }, { text: '放弃', color: this.pal().danger }]
+    }).then((result: Object): void => {
+      const value: Record<string, number> = result as Record<string, number>;
+      if (value['index'] !== 1) { return; }
+      this.modernFlowDirty = false;
+      proceed();
+    }).catch((): void => {});
+  }
+
+  /** ✕ / 取消: the same question as a swipe-down. */
+  private closeKeyVaultSheetByUser(): void {
+    this.confirmDiscardKeyVaultSheet((): void => { this.closeKeyVaultSheet(); });
   }
 
   /** The 2FA page locked again (background, or protection turned on): a selection made while unlocked ends. */
@@ -183,12 +240,14 @@ export struct KeyVaultPage {
         this.showAddTab = 1;
         this.modernResourceKind = 'totp';
         this.sheetMode = modern ? 6 : 0;
+        this.keyVaultSheetClosing = false;
         this.showSheet = true;
       } else {
         this.resetSshForm();
         this.showAddTab = 0;
         this.modernResourceKind = 'ssh_key';
         this.sheetMode = modern ? 6 : 0;
+        this.keyVaultSheetClosing = false;
         this.showSheet = true;
       }
     }
@@ -230,6 +289,7 @@ export struct KeyVaultPage {
     // 打开管理 Sheet (统一Sheet模式)
     this.sheetKey = key;
     this.sheetMode = 2;
+    this.keyVaultSheetClosing = false;
     this.showSheet = true;
   }
 
@@ -242,6 +302,7 @@ export struct KeyVaultPage {
     this.editingTotpEntry = TotpEntry.fromJSON(entry.toJSON());
     this.editingTotpName = entry.displayName;
     this.sheetMode = 7;
+    this.keyVaultSheetClosing = false;
     this.showSheet = true;
   }
 
@@ -252,7 +313,7 @@ export struct KeyVaultPage {
       promptAction.showToast({ message: '2FA 名称保存失败', duration: 1800 });
       return;
     }
-    this.showSheet = false;
+    this.closeKeyVaultSheet();
     this.editingTotpEntry = new TotpEntry();
     this.editingTotpName = '';
     this.load();
@@ -270,7 +331,7 @@ export struct KeyVaultPage {
 
   // SshKeyManagerSheet 回调: 删除
   private onKeyManagerDelete(keyId: string): void {
-    this.showSheet = false;
+    this.closeKeyVaultSheet();
     this.reportDeleted(this.kvs.removeSshKey(keyId), '已删除密钥');
   }
 
@@ -283,6 +344,7 @@ export struct KeyVaultPage {
   private onKeyManagerInstall(key: SshKey): void {
     this.sheetKey = key;
     this.sheetMode = 3;
+    this.keyVaultSheetClosing = false;
     this.showSheet = true;
   }
 
@@ -290,6 +352,7 @@ export struct KeyVaultPage {
     this.sheetKey = key;
     this.passphraseRemoveMode = remove;
     this.sheetMode = 4;
+    this.keyVaultSheetClosing = false;
     this.showSheet = true;
   }
 
@@ -688,7 +751,7 @@ export struct KeyVaultPage {
       promptAction.showToast({ message: '密钥没有保存，请重试', duration: 2000 });
       return;
     }
-    this.showSheet = false;
+    this.closeKeyVaultSheet();
     this.editingSshKey = new SshKey();
     this.resetSshForm();
     this.load();
@@ -730,7 +793,7 @@ export struct KeyVaultPage {
       this.formError = '2FA 没有保存，请重试';
       return;
     }
-    this.showSheet = false;
+    this.closeKeyVaultSheet();
     this.resetTotpForm();
     this.load();
     promptAction.showToast({ message: '2FA 已添加', duration: 1500 });
@@ -764,7 +827,7 @@ export struct KeyVaultPage {
     }
     this.load();
     promptAction.showToast({ message: totpImportSummary(imported, result.entries.length - imported), duration: 2200 });
-    if (imported > 0) { this.showSheet = false; }
+    if (imported > 0) { this.closeKeyVaultSheet(); }
   }
 
   private onQrScanned(entry: TotpEntry): void {
@@ -781,7 +844,7 @@ export struct KeyVaultPage {
       return;
     }
     // The form the scan was started from is done too.
-    this.showSheet = false;
+    this.closeKeyVaultSheet();
     this.resetTotpForm();
     this.load();
     promptAction.showToast({ message: '2FA 已添加', duration: 1500 });
@@ -974,7 +1037,22 @@ export struct KeyVaultPage {
       preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
       dragBar: this.sheetMode !== 1 && this.sheetMode !== 5 && this.sheetMode !== 6,
       backgroundColor: this.pal().sheetBg, blurStyle: BlurStyle.NONE, showClose: false,
+      onWillDismiss: (action: DismissSheetAction): void => {
+        // closeKeyVaultSheet (a save, or a close already confirmed) also arrives here: it goes straight through.
+        if (this.keyVaultSheetClosing || this.keyVaultSheetUnsavedLabel() === '') {
+          this.keyVaultSheetClosing = true;
+          action.dismiss();
+          return;
+        }
+        this.confirmDiscardKeyVaultSheet((): void => { this.keyVaultSheetClosing = true; action.dismiss(); });
+      },
+      onWillSpringBackWhenDismiss: (action: SpringBackAction): void => {
+        // Stay up while the question is asked; otherwise no bounce before the one exit animation.
+        if (!this.keyVaultSheetClosing && this.keyVaultSheetUnsavedLabel() !== '') { action.springBack(); }
+      },
       onDisappear: () => {
+        this.keyVaultSheetClosing = false;
+        this.modernFlowDirty = false;
         if (this.sheetMode === 0) { this.resetSshForm(); this.resetTotpForm(); }
         else { this.load(); }
       }
@@ -999,8 +1077,10 @@ export struct KeyVaultPage {
       ModernKeyVaultAddFlow({
         resourceKind: this.modernResourceKind,
         viewportHeight: this.pageViewportHeight,
-        onClose: (): void => { this.showSheet = false; },
-        onSaved: (_resourceId: string): void => { this.load(); }
+        onClose: (): void => { this.closeKeyVaultSheetByUser(); },
+        onDirtyChange: (dirty: boolean): void => { this.modernFlowDirty = dirty; },
+        // Saved: the flow closes right after, with nothing left to lose.
+        onSaved: (_resourceId: string): void => { this.modernFlowDirty = false; this.load(); }
       })
     } else if (this.sheetMode === 7) {
       this.totpNameEditWrapper()
@@ -1039,7 +1119,7 @@ export struct KeyVaultPage {
           if (option === 'file') { void this.importSshKeyFile(); }
         }
       },
-      onClose: (): void => { this.showSheet = false; }
+      onClose: (): void => { this.closeKeyVaultSheetByUser(); }
     })
   }
 
@@ -1064,10 +1144,10 @@ export struct KeyVaultPage {
       kind: 'totp',
       onSelect: (option: string): void => {
         this.resetTotpForm(); this.showAddTab = 1;
-        if (option === 'scan') { this.showSheet = false; this.showQrScan = true; }
+        if (option === 'scan') { this.closeKeyVaultSheet(); this.showQrScan = true; }
         else { this.sheetMode = 0; }
       },
-      onClose: (): void => { this.showSheet = false; }
+      onClose: (): void => { this.closeKeyVaultSheetByUser(); }
     })
   }
 
@@ -1144,7 +1224,7 @@ export struct KeyVaultPage {
           .fontColor(this.pal().text).fontFamily(this.font())
           .layoutWeight(1)
         Text('取消').fontSize(13).fontColor(this.accentColor)
-          .fontFamily(this.font()).onClick(() => { this.showSheet = false; })
+          .fontFamily(this.font()).onClick(() => { this.closeKeyVaultSheetByUser(); })
       }.width('100%').margin({ bottom: 14 })
 
       this._f('显示名称（可选）', '例如：公司 GitHub', this.editingTotpName,
@@ -1214,7 +1294,7 @@ export struct KeyVaultPage {
                     .fontColor(this.keyVaultInnerTab === 0 ? appUiOnAccentText(this.accentColor) : this.pal().text2)
                     .fontWeight(this.keyVaultInnerTab === 0 ? FontWeight.Medium : FontWeight.Normal)
                 }.width(80).height(32).borderRadius(16).justifyContent(FlexAlign.Center)
-                .onClick(() => { this.showSheet = false; this.keyVaultInnerTab = 0; })
+                .onClick(() => { this.closeKeyVaultSheet(); this.keyVaultInnerTab = 0; })
                 Blank().width(2)
                 Column() {
                   Text('2FA 验证器').fontSize(13)
@@ -1224,14 +1304,14 @@ export struct KeyVaultPage {
                 .onClick(async () => {
                   if (this.totpPageLocked && !this.totpUnlocked) {
                     const r = await showLockGate('TOTP 隐私保护已开启，请验证系统身份', 'biometric');
-                    if (r.ok) { this.showSheet = false; this.totpUnlocked = true; this.keyVaultInnerTab = 1; }
+                    if (r.ok) { this.closeKeyVaultSheet(); this.totpUnlocked = true; this.keyVaultInnerTab = 1; }
                     else {
                       const msg: string = lockGateErrorMessage(r);
                       if (msg !== '') { promptAction.showToast({ message: msg, duration: 2000 }); }
                       this.keyVaultInnerTab = 0;
                     }
                   } else {
-                    this.showSheet = false; this.keyVaultInnerTab = 1;
+                    this.closeKeyVaultSheet(); this.keyVaultInnerTab = 1;
                   }
                 })
               }
@@ -1476,7 +1556,7 @@ export struct KeyVaultPage {
         .margin({ bottom: 14 }).width('100%')
       SshKeyInstallSheet({
         targetKeyId: this.sheetKey.id,
-        onComplete: () => { this.showSheet = false; this.load(); }
+        onComplete: () => { this.closeKeyVaultSheet(); this.load(); }
       })
     }
     .padding({ left: 24, right: 24, top: 24, bottom: 40 }).width('100%')

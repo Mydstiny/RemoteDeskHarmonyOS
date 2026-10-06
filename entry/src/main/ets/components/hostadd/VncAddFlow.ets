@@ -67,6 +67,8 @@ export struct VncAddFlow {
   @Prop fitContent: boolean = false;
   onBackToProtocols: () => void = (): void => {};
   onClose: () => void = (): void => {};
+  /** Whether anything differs from how the flow opened. */
+  onDirtyChange: (dirty: boolean) => void = (_dirty: boolean): void => {};
   onOpenSettings: () => void = (): void => {};
   onSave: (values: VncHostValues, password: string, connectNow: boolean,
     plainStorageConfirmed: boolean, passwordMutation: SecretEditMutationKind) => void =
@@ -74,26 +76,26 @@ export struct VncAddFlow {
       _plainStorageConfirmed: boolean, _passwordMutation: SecretEditMutationKind): void => {};
 
   @State step: number = 0;
-  @State transport: VncTransport = 'direct_tcp';
+  @State @Watch('reportDirty') transport: VncTransport = 'direct_tcp';
   @State repeaterMode: VncRepeaterMode = 'mode12';
-  @State label: string = '';
-  @State directAddress: string = '';
-  @State repeaterTargetId: string = '';
-  @State portText: string = '5900';
+  @State @Watch('reportDirty') label: string = '';
+  @State @Watch('reportDirty') directAddress: string = '';
+  @State @Watch('reportDirty') repeaterTargetId: string = '';
+  @State @Watch('reportDirty') portText: string = '5900';
   @State password: string = '';
   @State passwordConfigured: boolean = false;
-  @State passwordChanged: boolean = false;
+  @State @Watch('reportDirty') passwordChanged: boolean = false;
   private passwordFromStoredProjection: boolean = false;
   private passwordProjectionBinding: string[] = [];
   private passwordProjectionInvalidated: boolean = false;
-  @State rememberPassword: boolean = true;
-  @State gatewayId: string = '';
-  @State tls: boolean = true;
-  @State viewOnly: boolean = false;
-  @State displayOverrideEnabled: boolean = false;
-  @State scalingMode: VncScalingMode = 'fit';
-  @State clipboardEnabled: boolean = false;
-  @State securityPolicy: VncSecurityPolicy = 'secure_only';
+  @State @Watch('reportDirty') rememberPassword: boolean = true;
+  @State @Watch('reportDirty') gatewayId: string = '';
+  @State @Watch('reportDirty') tls: boolean = true;
+  @State @Watch('reportDirty') viewOnly: boolean = false;
+  @State @Watch('reportDirty') displayOverrideEnabled: boolean = false;
+  @State @Watch('reportDirty') scalingMode: VncScalingMode = 'fit';
+  @State @Watch('reportDirty') clipboardEnabled: boolean = false;
+  @State @Watch('reportDirty') securityPolicy: VncSecurityPolicy = 'secure_only';
   @State errorText: string = '';
   /** A save the page could not complete: its reason shows in the form as well as in the toast. */
   @Prop @Watch('onSaveError') saveError: string = '';
@@ -106,6 +108,26 @@ export struct VncAddFlow {
 
   private onSaveError(): void {
     if (this.saveError !== '') { this.errorText = this.saveError; }
+  }
+
+  /** The fields as the flow opened; a difference is unsaved input (the page asks before throwing it away). */
+  private draftBaseline: string = '';
+  private draftDirty: boolean = false;
+
+  private reportDirty(): void {
+    if (this.draftBaseline === '') { return; }
+    const dirty: boolean = this.draftSnapshot() !== this.draftBaseline;
+    if (dirty !== this.draftDirty) {
+      this.draftDirty = dirty;
+      this.onDirtyChange(dirty);
+    }
+  }
+
+  /** The typed password counts through passwordChanged: a remembered one restored later is not an edit. */
+  private draftSnapshot(): string {
+    return JSON.stringify([this.transport, this.label, this.directAddress, this.repeaterTargetId, this.portText,
+      this.passwordChanged, this.rememberPassword, this.gatewayId, this.tls, this.viewOnly,
+      this.displayOverrideEnabled, this.scalingMode, this.clipboardEnabled, this.securityPolicy]);
   }
 
   private pal(): Palette {
@@ -186,6 +208,7 @@ export struct VncAddFlow {
         this.portText = gateway.port.toString();
       }
     }
+    this.draftBaseline = this.draftSnapshot();
   }
 
   aboutToDisappear(): void {

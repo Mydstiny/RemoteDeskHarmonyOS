@@ -28,32 +28,34 @@ export struct RdpAddFlow {
   onBackToProtocols: () => void = (): void => {};
   onAddCredential: () => void = (): void => {};
   onClose: () => void = (): void => {};
+  /** Whether anything differs from how the flow opened. */
+  onDirtyChange: (dirty: boolean) => void = (_dirty: boolean): void => {};
   onStartLanScan: (port: number) => void = (_port: number): void => {};
   onSave: (host: RemoteHost, connectNow: boolean, restrictedAdminHash: string) => void =
     (_host: RemoteHost, _connectNow: boolean, _restrictedAdminHash: string): void => {};
   @State step: number = 1;
-  @State label: string = '';
+  @State @Watch('reportDirty') label: string = '';
   /** The name the last LAN pick filled in (a typed name is not overwritten by the next pick). */
   private lanAutoLabel: string = '';
-  @State hostAddress: string = '';
-  @State portText: string = '3389';
-  @State targetServerName: string = '';
-  @State clientHostname: string = '';
-  @State username: string = '';
-  @State password: string = '';
-  @State credentialId: string = '';
+  @State @Watch('reportDirty') hostAddress: string = '';
+  @State @Watch('reportDirty') portText: string = '3389';
+  @State @Watch('reportDirty') targetServerName: string = '';
+  @State @Watch('reportDirty') clientHostname: string = '';
+  @State @Watch('reportDirty') username: string = '';
+  @State @Watch('reportDirty') password: string = '';
+  @State @Watch('reportDirty') credentialId: string = '';
   @State authMode: RdpAuthMode = 'password';
   @State credentialStorageMode: RdpCredentialStorageMode = 'saved';
   @State blankPasswordConfirmed: boolean = false;
   @State restrictedAdminSource: RdpRestrictedAdminSecretSource = 'ntlm_hash';
-  @State restrictedAdminHash: string = '';
+  @State @Watch('reportDirty') restrictedAdminHash: string = '';
   @State errorText: string = '';
   /** A save the page could not complete: its reason shows in the form as well as in the toast. */
   @Prop @Watch('onSaveError') saveError: string = '';
   @Prop @Watch('onSaveError') saveErrorRevision: number = 0;
   @State credentialsViewRevision: number = 0;
   @State useLanSearch: boolean = false;
-  @State selectedLanStableId: string = '';
+  @State @Watch('reportDirty') selectedLanStableId: string = '';
   @State selectedLanDynamicCapable: boolean = false;
   @State lanAddressMode: string = '';
   private awaitingNewCredential: boolean = false;
@@ -74,6 +76,28 @@ export struct RdpAddFlow {
 
   private onSaveError(): void {
     if (this.saveError !== '') { this.errorText = this.saveError; }
+  }
+
+  /** The fields as the flow opened; a difference is unsaved input (the page asks before throwing it away). */
+  private draftBaseline: string = '';
+  private draftDirty: boolean = false;
+
+  private reportDirty(): void {
+    if (this.draftBaseline === '') { return; }
+    const dirty: boolean = this.draftSnapshot() !== this.draftBaseline;
+    if (dirty !== this.draftDirty) {
+      this.draftDirty = dirty;
+      this.onDirtyChange(dirty);
+    }
+  }
+
+  private draftSnapshot(): string {
+    return JSON.stringify([this.label, this.hostAddress, this.portText, this.targetServerName, this.clientHostname,
+      this.username, this.password, this.credentialId, this.restrictedAdminHash, this.selectedLanStableId]);
+  }
+
+  aboutToAppear(): void {
+    this.draftBaseline = this.draftSnapshot();
   }
 
   private pal(): Palette {

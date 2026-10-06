@@ -30,18 +30,20 @@ export struct SshAddFlow {
   @Prop initialBasicFields: SshAddBasicFields | null = null;
   onBackToProtocols: () => void = (): void => {};
   onClose: () => void = (): void => {};
+  /** Whether anything differs from how the flow opened. */
+  onDirtyChange: (dirty: boolean) => void = (_dirty: boolean): void => {};
   onSave: (host: RemoteHost, connectNow: boolean, proxyProfile: SshProxyProfileV1) => void =
     (_host: RemoteHost, _connectNow: boolean, _proxyProfile: SshProxyProfileV1): void => {};
   @State step: number = 1;
-  @State label: string = '';
-  @State address: string = '';
-  @State portText: string = '22';
-  @State username: string = '';
-  @State useKey: boolean = false;
-  @State password: string = '';
-  @State keyId: string = '';
-  @State passphrase: string = '';
-  @State proxyEditorValue: SshProxyEditorValue = defaultSshProxyEditorValue();
+  @State @Watch('reportDirty') label: string = '';
+  @State @Watch('reportDirty') address: string = '';
+  @State @Watch('reportDirty') portText: string = '22';
+  @State @Watch('reportDirty') username: string = '';
+  @State @Watch('reportDirty') useKey: boolean = false;
+  @State @Watch('reportDirty') password: string = '';
+  @State @Watch('reportDirty') keyId: string = '';
+  @State @Watch('reportDirty') passphrase: string = '';
+  @State @Watch('reportDirty') proxyEditorValue: SshProxyEditorValue = defaultSshProxyEditorValue();
   @State addingKey: boolean = false;
   @State newlyAddedKeys: SshKey[] = [];
   @State errorText: string = '';
@@ -53,6 +55,8 @@ export struct SshAddFlow {
   private pendingProxyProfile: SshProxyProfileV1 | null = null;
 
   aboutToAppear(): void {
+    // Fields received from a Pro share are unsaved as well: closing would drop them.
+    this.draftBaseline = this.draftSnapshot();
     const fields = this.initialBasicFields;
     if (fields !== null) {
       this.label = fields.label; this.address = fields.address;
@@ -66,6 +70,24 @@ export struct SshAddFlow {
 
   private onSaveError(): void {
     if (this.saveError !== '') { this.errorText = this.saveError; }
+  }
+
+  /** The fields as the flow opened; a difference is unsaved input (the page asks before throwing it away). */
+  private draftBaseline: string = '';
+  private draftDirty: boolean = false;
+
+  private reportDirty(): void {
+    if (this.draftBaseline === '') { return; }
+    const dirty: boolean = this.draftSnapshot() !== this.draftBaseline;
+    if (dirty !== this.draftDirty) {
+      this.draftDirty = dirty;
+      this.onDirtyChange(dirty);
+    }
+  }
+
+  private draftSnapshot(): string {
+    return JSON.stringify([this.label, this.address, this.portText, this.username, this.useKey, this.password,
+      this.keyId, this.passphrase, JSON.stringify(this.proxyEditorValue)]);
   }
 
   private pal(): Palette { return this.theme === 'light' ? buildLight(this.accentColor) : buildDark(this.accentColor); }

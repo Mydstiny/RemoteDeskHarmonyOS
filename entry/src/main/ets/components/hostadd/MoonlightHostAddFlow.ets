@@ -115,6 +115,8 @@ export struct MoonlightHostAddFlow {
   @Prop initialDiscoveryEnabled: boolean = true;
   onBackToProtocols: () => void = (): void => {};
   onClose: () => void = (): void => {};
+  /** Whether anything differs from how the flow opened (the page asks before throwing it away). */
+  onDirtyChange: (dirty: boolean) => void = (_dirty: boolean): void => {};
   onStartDiscovery: (key: MoonlightHostAddDiscoveryKey) => void =
     (_key: MoonlightHostAddDiscoveryKey): void => {};
   onPauseDiscovery: (key: MoonlightHostAddDiscoveryKey) => void =
@@ -171,7 +173,8 @@ export struct MoonlightHostAddFlow {
   ): void => {};
   onDiscardTemporaryState: () => Promise<void> = (): Promise<void> => Promise.resolve();
 
-  @State flow: MoonlightHostAddState = createMoonlightHostAddState(0);
+  @State @Watch('reportDirty') flow: MoonlightHostAddState = createMoonlightHostAddState(0);
+  private draftDirty: boolean = false;
   @State moonlightIconFailed: boolean = false;
   @State showAdvancedPort: boolean = false;
   @State showDiscardConfirmation: boolean = false;
@@ -225,6 +228,15 @@ export struct MoonlightHostAddFlow {
 
   private discoveryIsRunning(): boolean {
     return this.discoveryPayloadIsCurrent() && this.discoveryRunning;
+  }
+
+  /** The same rule as the in-flow 保留当前添加进度？ question. */
+  private reportDirty(): void {
+    const dirty: boolean = moonlightHostAddDraftIsDirty(this.flow);
+    if (dirty !== this.draftDirty) {
+      this.draftDirty = dirty;
+      this.onDirtyChange(dirty);
+    }
   }
 
   private pauseDiscovery(): void {
@@ -594,7 +606,7 @@ export struct MoonlightHostAddFlow {
       }.alignItems(HorizontalAlign.Start).layoutWeight(1)
       Button() { SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor([this.pal().text2]) }
         .width(36).height(36).borderRadius(18).padding(0).backgroundColor(this.pal().surface)
-        .accessibilityText('关闭').onClick((): void => { this.pauseDiscovery(); this.onClose(); })
+        .accessibilityText('关闭').onClick((): void => { this.onClose(); })
     }.width('100%').margin({ bottom: 18 })
   }
 

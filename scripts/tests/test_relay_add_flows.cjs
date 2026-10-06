@@ -43,7 +43,8 @@ check('the relay page hosts the VNC Gateway flow with the host-add sheet contrac
   const sheet = member(page, '@Builder relaySheetBuilder() {');
   assert.ok(sheet.includes("fitContent: resolveHostAddSheetContentMode('vnc', this.breakpoint) === 'fitContent',"));
   assert.ok(sheet.includes('canReturnToProtocols: this.vncGatewayFromPicker && this.editingVncGateway === null,'));
-  assert.ok(sheet.includes('onBackToProtocols: (): void => { this.vncGatewayFromPicker = false; this.sheetContent = 5; },'));
+  // Back to the picker (asks first when something typed would be lost, see test_three_screens batch 4).
+  assert.ok(sheet.includes('this.vncGatewayFromPicker = false; this.vncGatewayDirty = false; this.sheetContent = 5;'));
   const picker = member(page, '@Builder relayProtocolChoiceSheet() {');
   assert.ok(picker.includes('this.relayFormFromPicker = true;') && picker.includes('this.openVncGatewaySheet(true);'));
   assert.ok(member(page, 'private openEditVncGatewaySheet(gateway: VncGatewayView): void {').includes('this.vncGatewayFromPicker = false;'));

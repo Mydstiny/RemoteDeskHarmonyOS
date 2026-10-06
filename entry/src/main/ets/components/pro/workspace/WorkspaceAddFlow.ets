@@ -31,13 +31,17 @@ export struct WorkspaceAddFlow {
   @Prop extraRows: OrgHostRow[] = [];
   onBackToProtocols: () => void = (): void => {};
   onClose: () => void = (): void => {};
+  /** Whether anything differs from how the flow opened (the page asks before throwing it away). */
+  onDirtyChange: (dirty: boolean) => void = (_dirty: boolean): void => {};
+  private draftBaseline: string = '';
+  private draftDirty: boolean = false;
   onCreated: (workspace: Workspace, openNow: boolean) => void = (_workspace: Workspace, _openNow: boolean): void => {};
   @State step: number = 1;
-  @State name: string = '';
+  @State @Watch('reportDirty') name: string = '';
   @State color: string = WORKSPACE_COLORS[0];
   @State icon: string = WORKSPACE_ICONS[0];
   @State query: string = '';
-  @State picked: string[] = [];
+  @State @Watch('reportDirty') picked: string[] = [];
   @State errorText: string = '';
 
   aboutToAppear(): void {
@@ -45,6 +49,20 @@ export struct WorkspaceAddFlow {
     this.name = freeName('工作区');
     this.color = WORKSPACE_COLORS[count % WORKSPACE_COLORS.length];
     this.icon = WORKSPACE_ICONS[count % WORKSPACE_ICONS.length];
+    this.draftBaseline = this.draftSnapshot();
+  }
+
+  private draftSnapshot(): string {
+    return JSON.stringify([this.name, this.picked]);
+  }
+
+  private reportDirty(): void {
+    if (this.draftBaseline === '') { return; }
+    const dirty: boolean = this.draftSnapshot() !== this.draftBaseline;
+    if (dirty !== this.draftDirty) {
+      this.draftDirty = dirty;
+      this.onDirtyChange(dirty);
+    }
   }
 
   private pal(): Palette { return this.theme === 'light' ? buildLight(this.accentColor) : buildDark(this.accentColor); }

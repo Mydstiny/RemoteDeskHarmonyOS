@@ -211,6 +211,12 @@ export struct RustDeskRelayPage {
   /** Runs once the sheet has closed (a test or a recheck that must not start under a closing sheet). */
   private afterSheetDismiss: (() => void) | null = null;
   @State relaySheetClosing: boolean = false;
+  /** The relay form and the Pro sign-in as opened: a difference is input closing would throw away. */
+  private relayFormBaseline: string = '';
+  private proFormBaseline: string = '';
+  /** Unsaved input reported by the paste sheet and the VNC gateway flow. */
+  private pasteConfigDirty: boolean = false;
+  private vncGatewayDirty: boolean = false;
   @State relayViewRevision: number = 0;
   @State proViewRevision: number = 0;
   @State vncViewRevision: number = 0;
@@ -589,6 +595,7 @@ export struct RustDeskRelayPage {
 
   private openVncGatewaySheet(fromPicker: boolean = false): void {
     if (this.relaySheetClosing) { return; }
+    this.vncGatewayDirty = false;
     this.editingVncGateway = null;
     this.vncGatewayFromPicker = fromPicker;
     this.sheetContent = 10;
@@ -609,6 +616,8 @@ export struct RustDeskRelayPage {
     this.pendingHostAddReturnRelayId = '';
     this.relaySheetClosing = false;
     this.sheetContent = 1;
+    this.pasteConfigDirty = false;
+    this.vncGatewayDirty = false;
     this.resetRelayForm();
     this.proRelayId = '';
     this.proAccountId = '';
@@ -650,6 +659,7 @@ export struct RustDeskRelayPage {
     this.formKeyMode = resolveRustDeskRelayKey(relay.key, relay.keyMode, false).mode;
     this.formControlPlaneProfile = relay.controlPlaneProfile;
     this.relayKind = this.relayKindForProfile(relay.controlPlaneProfile);
+    this.relayFormBaseline = this.relayFormSnapshot();
     this.showRelayAdvanced = true;
     this.formTestResult = '';
     this.relaySaveError = '';
@@ -665,6 +675,7 @@ export struct RustDeskRelayPage {
 
   private openEditVncGatewaySheet(gateway: VncGatewayView): void {
     if (this.relaySheetClosing) { return; }
+    this.vncGatewayDirty = false;
     this.editingVncGateway = gateway;
     this.vncGatewayFromPicker = false;
     this.sheetContent = 10;
@@ -717,6 +728,7 @@ export struct RustDeskRelayPage {
     this.formProPwd = '';
     this.formProError = '';
     this.proBusy = false;
+    this.proFormBaseline = this.proFormSnapshot();
     this.sheetContent = 3;
     this.showSheet = true;
   }
@@ -731,6 +743,7 @@ export struct RustDeskRelayPage {
     this.formProPwd = '';
     this.formProError = '';
     this.proBusy = false;
+    this.proFormBaseline = this.proFormSnapshot();
     this.sheetContent = 3;
     this.showSheet = true;
   }
@@ -780,6 +793,51 @@ export struct RustDeskRelayPage {
     this.relaySaveDiagnostic = ''; this.relaySaveStage = 'idle';
     this.relayCloudSyncState = 'not_configured';
     this.relayCloudFailureKind = '';
+    this.relayFormBaseline = this.relayFormSnapshot();
+  }
+
+  private relayFormSnapshot(): string {
+    return JSON.stringify([this.formIdServer, this.formIdPortText, this.formRelayServer, this.formRelayPortText,
+      this.formApiServer, this.formKey, this.formKeyMode, this.formControlPlaneProfile]);
+  }
+
+  private proFormSnapshot(): string {
+    return JSON.stringify([this.formProServer, this.formProUser, this.formProPwd]);
+  }
+
+  /** What closing the sheet now would throw away ('' when nothing): typed input that is not saved yet. */
+  private relaySheetUnsavedLabel(): string {
+    if (this.sheetContent === 1 && !this.relaySaving && this.relayFormSnapshot() !== this.relayFormBaseline) {
+      return '中继配置';
+    }
+    if (this.sheetContent === 3 && !this.proBusy && this.proFormSnapshot() !== this.proFormBaseline) { return '登录信息'; }
+    if (this.sheetContent === 9 && this.pasteConfigDirty) { return '粘贴的配置'; }
+    if (this.sheetContent === 10 && this.vncGatewayDirty) { return 'VNC 中继配置'; }
+    return '';
+  }
+
+  /** Asks before throwing away unsaved input; `proceed` runs when nothing is lost or the user agrees. */
+  private confirmDiscardRelaySheet(proceed: () => void): void {
+    const label: string = this.relaySheetUnsavedLabel();
+    if (label === '') { proceed(); return; }
+    promptAction.showDialog({
+      title: '放弃未保存的' + label + '？',
+      message: '填写的内容还没有保存，放弃后不会保留。',
+      buttons: [{ text: '继续编辑', color: this.pal().text2 }, { text: '放弃', color: this.pal().danger }]
+    }).then((result: Object): void => {
+      const value: Record<string, number> = result as Record<string, number>;
+      if (value['index'] !== 1) { return; }
+      this.relayFormBaseline = this.relayFormSnapshot();
+      this.proFormBaseline = this.proFormSnapshot();
+      this.pasteConfigDirty = false;
+      this.vncGatewayDirty = false;
+      proceed();
+    }).catch((): void => {});
+  }
+
+  /** 取消 / ✕: the same question as a swipe-down when something typed would be lost. */
+  private closeSheetByUser(): void {
+    this.confirmDiscardRelaySheet((): void => { this.closeSheet(); });
   }
 
   private relayPortFromText(value: string, defaultPort: number): number {
@@ -891,6 +949,7 @@ export struct RustDeskRelayPage {
 
   private importAndSavePastedRelay(result: RustDeskRelayImportResult): string {
     this.applyRelayImport(result);
+    this.pasteConfigDirty = false;
     this.sheetContent = 1;
     this.formTestOk = true;
     this.formTestResult = '已填入粘贴的配置，请确认后保存';
@@ -1358,6 +1417,8 @@ export struct RustDeskRelayPage {
       });
       this.loadProAccounts();
       this.formProPwd = '';
+      // Signed in: nothing typed is left to lose.
+      this.proFormBaseline = this.proFormSnapshot();
       const count = result.addedIds.length + result.updatedIds.length;
       const toast = this.proSyncToastResult(accountId, count, true);
       if (!toast.capabilityReady) {
@@ -1523,6 +1584,19 @@ export struct RustDeskRelayPage {
       dragBar: false,
       keyboardAvoidMode: this.relaySheetKeyboardAvoidMode(),
       backgroundColor: this.pal().sheetBg, blurStyle: BlurStyle.NONE, showClose: false,
+      onWillDismiss: (action: DismissSheetAction): void => {
+        // closeSheet() (a save, or a close already confirmed) also arrives here: it goes straight through.
+        if (this.relaySheetClosing || this.relaySheetUnsavedLabel() === '') {
+          this.relaySheetClosing = true;
+          action.dismiss();
+          return;
+        }
+        this.confirmDiscardRelaySheet((): void => { this.relaySheetClosing = true; action.dismiss(); });
+      },
+      onWillSpringBackWhenDismiss: (action: SpringBackAction): void => {
+        // Stay up while the question is asked; otherwise no bounce before the one exit animation.
+        if (!this.relaySheetClosing && this.relaySheetUnsavedLabel() !== '') { action.springBack(); }
+      },
       onAppear: () => { this.relaySheetMounted = true; },
       onDisappear: () => { this.relaySheetMounted = false; this.finishSheetDismiss(); }
     })
@@ -2575,7 +2649,7 @@ export struct RustDeskRelayPage {
           Button('粘贴 RustDesk 加密配置')
             .width('100%').height(36).fontSize(13).backgroundColor(this.pal().surface)
             .fontColor(this.accentColor).borderRadius(8).enabled(!this.importingRelayConfig)
-            .margin({ bottom: 6 }).onClick((): void => { this.sheetContent = 9; })
+            .margin({ bottom: 6 }).onClick((): void => { this.pasteConfigDirty = false; this.sheetContent = 9; })
           Button('从文件导入配置')
             .width('100%').height(32).fontSize(12).backgroundColor(this.pal().surface)
             .fontColor(this.pal().text2).borderRadius(8).enabled(!this.importingRelayConfig)
@@ -2722,7 +2796,7 @@ export struct RustDeskRelayPage {
       Row() {
         Button('取消').layoutWeight(1).height(44).fontSize(14).borderRadius(11)
           .backgroundColor(this.pal().surface).fontColor(this.pal().text2)
-          .enabled(!this.relaySaving).onClick((): void => { this.closeSheet(); })
+          .enabled(!this.relaySaving).onClick((): void => { this.closeSheetByUser(); })
         Button(this.relaySaving ? '保存中…' :
           (this.relaySaveError === '' ? '保存到本机' : '重试保存'))
           .layoutWeight(1).height(44).fontSize(14).fontWeight(FontWeight.Medium)
@@ -2834,7 +2908,7 @@ export struct RustDeskRelayPage {
         Button() { SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor([this.pal().text2]) }
           .width(36).height(36).borderRadius(18).padding(0).backgroundColor(this.pal().surface)
           .enabled(!this.proBusy).accessibilityText('关闭')
-          .onClick((): void => { this.closeSheet(); })
+          .onClick((): void => { this.closeSheetByUser(); })
       }.width('100%').margin({ bottom: 8 })
       Scroll() {
         Column() {
@@ -2902,8 +2976,14 @@ export struct RustDeskRelayPage {
         editingId: this.editingVncGateway === null ? '' : this.editingVncGateway.id,
         fitContent: resolveHostAddSheetContentMode('vnc', this.breakpoint) === 'fitContent',
         canReturnToProtocols: this.vncGatewayFromPicker && this.editingVncGateway === null,
-        onBackToProtocols: (): void => { this.vncGatewayFromPicker = false; this.sheetContent = 5; },
-        onClose: (): void => { this.closeSheet(); },
+        // Back to the picker drops what was typed: the same question as closing.
+        onBackToProtocols: (): void => {
+          this.confirmDiscardRelaySheet((): void => {
+            this.vncGatewayFromPicker = false; this.vncGatewayDirty = false; this.sheetContent = 5;
+          });
+        },
+        onClose: (): void => { this.closeSheetByUser(); },
+        onDirtyChange: (dirty: boolean): void => { this.vncGatewayDirty = dirty; },
         onSave: (values: VncGatewayValues, id: string, accessToken: string,
           plainStorageConfirmed: boolean): void => {
           this.saveVncGateway(values, id, accessToken, plainStorageConfirmed);
@@ -2925,7 +3005,9 @@ export struct RustDeskRelayPage {
       })
     } else if (this.sheetContent === 9) {
       RustDeskRelayConfigPasteSheet({
-        onCancel: (): void => { this.sheetContent = 1; },
+        onCancel: (): void => { this.pasteConfigDirty = false; this.sheetContent = 1; },
+        onClose: (): void => { this.closeSheetByUser(); },
+        onDirtyChange: (dirty: boolean): void => { this.pasteConfigDirty = dirty; },
         onImported: (result: RustDeskRelayImportResult): string => this.importAndSavePastedRelay(result)
       })
     }

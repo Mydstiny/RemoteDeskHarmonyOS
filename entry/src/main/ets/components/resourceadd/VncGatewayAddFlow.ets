@@ -36,22 +36,24 @@ export struct VncGatewayAddFlow {
   @Prop canReturnToProtocols: boolean = false;
   onBackToProtocols: () => void = (): void => {};
   onClose: () => void = (): void => {};
+  /** Whether anything differs from how the flow opened (the page asks before throwing it away). */
+  onDirtyChange: (dirty: boolean) => void = (_dirty: boolean): void => {};
   onSave: (values: VncGatewayValues, id: string, accessToken: string,
     plainStorageConfirmed: boolean) => void =
     (_values: VncGatewayValues, _id: string, _accessToken: string,
       _plainStorageConfirmed: boolean): void => {};
 
   @State step: number = 0;
-  @State label: string = '';
-  @State host: string = '';
-  @State portText: string = '5901';
-  @State path: string = '/vnc';
-  @State targetId: string = '';
-  @State transport: VncTransport = 'ultravnc_repeater';
-  @State repeaterMode: VncRepeaterMode = 'mode12';
-  @State tls: boolean = false;
-  @State gatewayEnabled: boolean = true;
-  @State accessToken: string = '';
+  @State @Watch('reportDirty') label: string = '';
+  @State @Watch('reportDirty') host: string = '';
+  @State @Watch('reportDirty') portText: string = '5901';
+  @State @Watch('reportDirty') path: string = '/vnc';
+  @State @Watch('reportDirty') targetId: string = '';
+  @State @Watch('reportDirty') transport: VncTransport = 'ultravnc_repeater';
+  @State @Watch('reportDirty') repeaterMode: VncRepeaterMode = 'mode12';
+  @State @Watch('reportDirty') tls: boolean = false;
+  @State @Watch('reportDirty') gatewayEnabled: boolean = true;
+  @State @Watch('reportDirty') accessToken: string = '';
   @State existingTokenConfigured: boolean = false;
   @State errorText: string = '';
 
@@ -59,19 +61,39 @@ export struct VncGatewayAddFlow {
     return this.theme === 'light' ? buildLight(this.accentColor) : buildDark(this.accentColor);
   }
 
+  /** The fields as the flow opened; a difference is unsaved input. */
+  private draftBaseline: string = '';
+  private draftDirty: boolean = false;
+
   aboutToAppear(): void {
     const gateway: VncGatewayView | null = this.initialGateway;
-    if (gateway === null) { return; }
-    this.label = gateway.label;
-    this.host = gateway.host;
-    this.portText = gateway.port.toString();
-    this.path = gateway.path;
-    this.targetId = gateway.targetId;
-    this.transport = gateway.transport;
-    this.repeaterMode = gateway.repeaterMode;
-    this.tls = gateway.tls;
-    this.gatewayEnabled = gateway.enabled;
-    this.existingTokenConfigured = gateway.tokenConfigured;
+    if (gateway !== null) {
+      this.label = gateway.label;
+      this.host = gateway.host;
+      this.portText = gateway.port.toString();
+      this.path = gateway.path;
+      this.targetId = gateway.targetId;
+      this.transport = gateway.transport;
+      this.repeaterMode = gateway.repeaterMode;
+      this.tls = gateway.tls;
+      this.gatewayEnabled = gateway.enabled;
+      this.existingTokenConfigured = gateway.tokenConfigured;
+    }
+    this.draftBaseline = this.draftSnapshot();
+  }
+
+  private draftSnapshot(): string {
+    return JSON.stringify([this.label, this.host, this.portText, this.path, this.targetId, this.transport,
+      this.repeaterMode, this.tls, this.gatewayEnabled, this.accessToken]);
+  }
+
+  private reportDirty(): void {
+    if (this.draftBaseline === '') { return; }
+    const dirty: boolean = this.draftSnapshot() !== this.draftBaseline;
+    if (dirty !== this.draftDirty) {
+      this.draftDirty = dirty;
+      this.onDirtyChange(dirty);
+    }
   }
 
   private isEditing(): boolean {

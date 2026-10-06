@@ -1215,6 +1215,10 @@ struct HostListPage {
   /** The reason the open add flow could not save (shown in the form); the revision repeats the same message. */
   @State addFlowSaveError: string = '';
   @State addFlowSaveErrorRevision: number = 0;
+  /** The open add flow holds unsaved input (each flow reports it). */
+  private hostAddFlowDirty: boolean = false;
+  /** The classic editor's fields as the sheet appeared; a difference is unsaved input. */
+  private classicEditorBaseline: string = '';
   @State moonlightAddOwnerToken: number = 1;
   @State moonlightLanCandidates: MoonlightHostAddCandidate[] = [];
   @State moonlightDiscoveryRunning: boolean = false;
@@ -4759,6 +4763,8 @@ struct HostListPage {
     }
     this.moonlightAddCommitted = false;
     this.addFlowSaveError = '';
+    this.hostAddFlowDirty = false;
+    this.classicEditorBaseline = '';
     this.noteSheetDismissed();
     this.addSheetClosing = false;
     this.addSheetShowsModernPicker = false;
@@ -4933,6 +4939,54 @@ struct HostListPage {
     this.modernAddProtocol = 'rustdesk';
     this.openSheetSafely((): void => {
       this.showAddSheet = true;
+    });
+  }
+
+  private classicEditorSnapshot(): string {
+    return JSON.stringify([this.label, this.hostAddr, this.rdpPortVal, this.sshPortVal, this.portVal, this.username,
+      this.chn, this.rdpClientHostname, this.sheetPasswordChanged, this.sheetUseKey, this.sheetKeyId, this.sheetKeyText,
+      this.sheetKeyPath, this.sheetKeyDataChanged, this.selectedRelayId, this.selectedAccountId,
+      this.selectedRdpCredentialId, this.sheetRdpAuthMode, this.sheetRdpRestrictedAdminHash,
+      this.sheetRustdeskDirectEnabled, this.sheetRustdeskDirectHost, this.sheetRustdeskDirectPort, this.sheetPwdMode,
+      this.sheetRustdeskTotpEntryId, this.vncHostTransport, this.vncHostGatewayId, this.vncHostViewOnly,
+      this.vncHostScalingMode, this.vncHostSecurityPolicy, this.vncHostTls, this.vncHostDisplayOverrideEnabled,
+      this.vncHostClipboardEnabled]);
+  }
+
+  /** Whether closing the add sheet now would throw away input (a Moonlight host already saved is not lost). */
+  private hostAddHasUnsavedInput(): boolean {
+    if (!this.showAddSheet || this.addSheetClosing || this.addSheetShowsModernPicker) { return false; }
+    if (this.modernAddProtocol === 'moonlight' && this.moonlightAddCommitted) { return false; }
+    if (this.modernAddProtocol !== '' || this.activeHostAddProtocol() === 'ai') { return this.hostAddFlowDirty; }
+    return this.classicEditorBaseline !== '' && this.classicEditorSnapshot() !== this.classicEditorBaseline;
+  }
+
+  /** Asks before throwing away unsaved input; `proceed` runs when nothing is lost or the user agrees. */
+  private confirmDiscardHostAdd(proceed: () => void): void {
+    if (!this.hostAddHasUnsavedInput()) { proceed(); return; }
+    promptAction.showDialog({
+      title: '放弃未保存的内容？',
+      message: '填写的内容还没有保存，放弃后不会保留。',
+      buttons: [{ text: '继续编辑', color: this.pal().text2 }, { text: '放弃', color: this.pal().danger }]
+    }).then((result: Object): void => {
+      const value: Record<string, number> = result as Record<string, number>;
+      if (value['index'] !== 1) { return; }
+      this.hostAddFlowDirty = false;
+      this.classicEditorBaseline = this.classicEditorSnapshot();
+      proceed();
+    }).catch((): void => {});
+  }
+
+  /** ✕ in an add flow or the classic editor: the same question as a swipe-down. */
+  private requestAddSheetCloseByUser(): void {
+    this.confirmDiscardHostAdd((): void => { this.requestAddSheetClose(); });
+  }
+
+  /** Back from a flow's first step to the protocol picker drops what the flow holds. */
+  private backToHostAddPicker(after: () => void): void {
+    this.confirmDiscardHostAdd((): void => {
+      this.hostAddFlowDirty = false;
+      after();
     });
   }
 
@@ -7585,7 +7639,12 @@ struct HostListPage {
     // Only hosts on screen now (a search typed a moment ago may not have trimmed the selection yet).
     const inView: Set<string> = new Set<string>(this.selectionKeysForCurrentView());
     const selectedKeys: string[] = Array.from(this.hostSelectedIds).filter((key: string): boolean => inView.has(key));
-    if (selectedKeys.length === 0) { return; }
+    if (selectedKeys.length === 0) {
+      if (this.hostSelectedIds.size > 0) {
+        promptAction.showToast({ message: '选中的主机已不在当前列表中', duration: 1800 });
+      }
+      return;
+    }
     let aiLease: AiAccountLease | null = null;
     try { aiLease = AiAccess.getInstance().capture(); } catch (_error) {}
     const remoteHosts: RemoteHost[] = [];
@@ -15088,6 +15147,25 @@ struct HostListPage {
           backgroundColor: this.pal().sheetBg,
           blurStyle: BlurStyle.NONE,
           showClose: false,
+          onAppear: (): void => {
+            // The classic editor as it opened (an edit's values are loaded by now).
+            this.classicEditorBaseline = this.classicEditorSnapshot();
+          },
+          onWillDismiss: (action: DismissSheetAction): void => {
+            // requestAddSheetClose (a save, or a close already confirmed) also arrives here: it goes straight through.
+            if (this.addSheetClosing || !this.hostAddHasUnsavedInput()) {
+              action.dismiss();
+              return;
+            }
+            this.confirmDiscardHostAdd((): void => {
+              this.addSheetClosing = true;
+              action.dismiss();
+            });
+          },
+          onWillSpringBackWhenDismiss: (action: SpringBackAction): void => {
+            // Stay up while the question is asked; otherwise no bounce before the one exit animation.
+            if (!this.addSheetClosing && this.hostAddHasUnsavedInput()) { action.springBack(); }
+          },
           onDisappear: () => {
             this.handleAddSheetDisappear();
           }
@@ -15794,7 +15872,7 @@ struct HostListPage {
             .width(this.breakpoint === 'sm' ? 38 : 40)
             .height(this.breakpoint === 'sm' ? 38 : 40).borderRadius(19).padding(0)
             .backgroundColor(this.pal().surface).accessibilityText('检测在线状态')
-            .enabled(!this.hostPresenceProbeBusyIds.has(host.id))
+            .enabled(this.hostSelectionMode || !this.hostPresenceProbeBusyIds.has(host.id))
             // While selecting, the card's buttons select it (like the edit, lock and delete buttons below).
             .opacity(this.hostSelectionMode ? 0.4 : 1)
             .onClick((): void => {
@@ -23326,6 +23404,7 @@ struct HostListPage {
         moonlightProtocolAvailable: this.moonlightProtocolAvailable,
         workspaceAvailable: this.proWorkspacesVisible,
         onSelectProtocol: (protocol: string): void => {
+          this.hostAddFlowDirty = false;
           this.modernAddProtocol = protocol;
           this.addSheetShowsModernPicker = false;
           if (protocol === 'moonlight') {
@@ -23348,8 +23427,11 @@ struct HostListPage {
       AiHostEditor({ host: this.aiEditingHost, modern: resolveFabAddStyle(this.fabAddStyle, this.isDesktopDevice) === 'modern',
         viewportHeight: this.pageViewportHeight,
         canReturnToProtocols: this.aiEditingHost === null && resolveFabAddStyle(this.fabAddStyle, this.isDesktopDevice) === 'modern',
-        onBackToProtocols: (): void => { this.modernAddProtocol = ''; this.addSheetShowsModernPicker = true; },
-        onClose: (): void => { this.requestAddSheetClose(); },
+        onBackToProtocols: (): void => {
+          this.backToHostAddPicker((): void => { this.modernAddProtocol = ''; this.addSheetShowsModernPicker = true; });
+        },
+        onClose: (): void => { this.requestAddSheetCloseByUser(); },
+        onDirtyChange: (dirty: boolean): void => { this.hostAddFlowDirty = dirty; },
         onSaved: (id: string, connect: boolean): void => {
           const generation = this.aiSheetGeneration, account = this.aiSheetAccount;
           void this.refreshAiHosts().then((): void => {
@@ -23367,9 +23449,12 @@ struct HostListPage {
         lanScanning: this.rdpLanScanning,
         lanHosts: this.rdpLanScanResults,
         lanStatusText: this.rdpLanStatusText,
-        onBackToProtocols: (): void => { this.modernAddProtocol = ''; this.addSheetShowsModernPicker = true; },
+        onBackToProtocols: (): void => {
+          this.backToHostAddPicker((): void => { this.modernAddProtocol = ''; this.addSheetShowsModernPicker = true; });
+        },
         onAddCredential: (): void => { this.openRdpCredentialManager(); },
-        onClose: (): void => { this.requestAddSheetClose(); },
+        onClose: (): void => { this.requestAddSheetCloseByUser(); },
+        onDirtyChange: (dirty: boolean): void => { this.hostAddFlowDirty = dirty; },
         onStartLanScan: (port: number): void => { this.startRdpLanScan(port); },
         onSave: (host: RemoteHost, connectNow: boolean, restrictedAdminHash: string): void => {
           this.saveHostFromAddFlow(host, connectNow, restrictedAdminHash);
@@ -23386,8 +23471,11 @@ struct HostListPage {
         initialDraft: this.rustDeskAddResumeDraft,
         initialDraftRevision:
           this.rustDeskAddResumeRevision,
-        onBackToProtocols: (): void => { this.modernAddProtocol = ''; this.addSheetShowsModernPicker = true; },
-        onClose: (): void => { this.requestAddSheetClose(); },
+        onBackToProtocols: (): void => {
+          this.backToHostAddPicker((): void => { this.modernAddProtocol = ''; this.addSheetShowsModernPicker = true; });
+        },
+        onClose: (): void => { this.requestAddSheetCloseByUser(); },
+        onDirtyChange: (dirty: boolean): void => { this.hostAddFlowDirty = dirty; },
         onStartLanScan: (): void => { this.startLanScan(); },
         onManageRelays: (
           draft: RustDeskHostAddDraft): void => {
@@ -23464,6 +23552,8 @@ struct HostListPage {
           this.openExistingMoonlightHost(hostId, ownerToken);
         },
         onBackToProtocols: (): void => {
+          // The flow asked 保留当前添加进度？ already when something would be lost.
+          this.hostAddFlowDirty = false;
           this.stopMoonlightLanDiscovery();
           this.moonlightHostService.disposeOwner(this.moonlightAddOwnerToken);
           this.clearMoonlightVerificationState();
@@ -23475,7 +23565,8 @@ struct HostListPage {
         onDiscardTemporaryState: (): Promise<void> =>
           this.revokeMoonlightTemporaryPairing(),
         // Closing revokes an unsaved temporary pairing in the sheet's dismissal, as a swipe-down does.
-        onClose: (): void => { this.requestAddSheetClose(); },
+        onClose: (): void => { this.requestAddSheetCloseByUser(); },
+        onDirtyChange: (dirty: boolean): void => { this.hostAddFlowDirty = dirty; },
         onSaved: (hostId: string, openCatalog: boolean, ownerToken: number): void => {
           this.handleMoonlightHostSaved(hostId, openCatalog, ownerToken);
         }
@@ -23483,8 +23574,11 @@ struct HostListPage {
     } else if (this.modernAddProtocol === 'workspace') {
       WorkspaceAddFlow({
         extraRows: this.orgRows(this.hostViewRevision).filter((row: OrgHostRow): boolean => row.protocol === 'moonlight'),
-        onBackToProtocols: (): void => { this.modernAddProtocol = ''; this.addSheetShowsModernPicker = true; },
-        onClose: (): void => { this.requestAddSheetClose(); },
+        onBackToProtocols: (): void => {
+          this.backToHostAddPicker((): void => { this.modernAddProtocol = ''; this.addSheetShowsModernPicker = true; });
+        },
+        onClose: (): void => { this.requestAddSheetCloseByUser(); },
+        onDirtyChange: (dirty: boolean): void => { this.hostAddFlowDirty = dirty; },
         onCreated: (workspace: Workspace, openNow: boolean): void => {
           this.pendingWorkspaceOpen = openNow ? workspace : null;
           if (!openNow) { promptAction.showToast({ message: '已创建「' + workspace.name + '」', duration: 1600 }); }
@@ -23498,9 +23592,12 @@ struct HostListPage {
         saveErrorRevision: this.addFlowSaveErrorRevision,
         initialBasicFields: this.proConnectionShareBasicFields,
         onBackToProtocols: (): void => {
-          this.clearProConnectionShareDraft(); this.modernAddProtocol = ''; this.addSheetShowsModernPicker = true;
+          this.backToHostAddPicker((): void => {
+            this.clearProConnectionShareDraft(); this.modernAddProtocol = ''; this.addSheetShowsModernPicker = true;
+          });
         },
-        onClose: (): void => { this.requestAddSheetClose(); },
+        onClose: (): void => { this.requestAddSheetCloseByUser(); },
+        onDirtyChange: (dirty: boolean): void => { this.hostAddFlowDirty = dirty; },
         onSave: (host: RemoteHost, connectNow: boolean, proxyProfile: SshProxyProfileV1): void => {
           this.saveSshHostFromAddFlow(host, connectNow, proxyProfile);
         }
@@ -23513,15 +23610,18 @@ struct HostListPage {
         fitContent: resolveHostAddSheetContentMode(
           this.activeHostAddProtocol(), this.breakpoint) === 'fitContent',
         onBackToProtocols: (): void => {
-          this.modernAddProtocol = '';
-          this.addSheetShowsModernPicker = this.vncAddFromModernPicker;
-          this.vncAddFromModernPicker = false;
+          this.backToHostAddPicker((): void => {
+            this.modernAddProtocol = '';
+            this.addSheetShowsModernPicker = this.vncAddFromModernPicker;
+            this.vncAddFromModernPicker = false;
+          });
         },
         onOpenSettings: (): void => {
           this.pendingVncGatewayDirectoryOpen = true;
           this.requestAddSheetClose();
         },
-        onClose: (): void => { this.requestAddSheetClose(); },
+        onClose: (): void => { this.requestAddSheetCloseByUser(); },
+        onDirtyChange: (dirty: boolean): void => { this.hostAddFlowDirty = dirty; },
         onSave: (values: VncHostValues, password: string, connectNow: boolean,
           plainStorageConfirmed: boolean, passwordMutation: SecretEditMutationKind): void => {
           this.saveVncHostFromAddFlow(values, password, connectNow, plainStorageConfirmed,
@@ -24114,7 +24214,7 @@ struct HostListPage {
         .layoutWeight(1).fontFamily(this.font())
       Button() { SymbolGlyph($r('sys.symbol.xmark')).fontSize(16).fontColor([this.pal().text2]) }
         .width(32).height(32).borderRadius(16).padding(0).backgroundColor(this.pal().surface)
-        .accessibilityText('关闭').onClick((): void => { this.requestAddSheetClose(); })
+        .accessibilityText('关闭').onClick((): void => { this.requestAddSheetCloseByUser(); })
     }.width('100%').margin({ bottom: 12 })
   }
 
@@ -24173,11 +24273,14 @@ struct HostListPage {
       .opacity(this.editingHostId === '' || this.proto === protoVal ? 1.0 : 0.4)
       .onClick(() => {
         if (this.editingHostId !== '') { return; }
+        const untouched: boolean = !this.hostAddHasUnsavedInput();
         this.switchHostProtocol(protoVal, defaultPort);
         if (protoVal === 'vnc') {
           this.prepareClassicVncEditor(null);
         }
         if (protoVal === 'rustdesk') { this.sheetPwdMode = 0; }
+        // Switching the protocol of an untouched form is not input (VNC loads its own defaults).
+        if (untouched) { this.classicEditorBaseline = this.classicEditorSnapshot(); }
       })
   }
 
