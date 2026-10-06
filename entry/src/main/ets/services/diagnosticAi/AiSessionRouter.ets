@@ -41,5 +41,8 @@ export class AiSessionRouter {
     return '';
   }
 
+  /** The host's window is the one the user is in (no window event said it went behind). */
+  static isInFront(id: string): boolean { return AiSessionRouter.behind.indexOf(id) < 0; }
+
   static sessionActive(): boolean { return AiSessionRouter.current() !== ''; }
 }

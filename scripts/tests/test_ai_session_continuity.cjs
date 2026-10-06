@@ -532,7 +532,7 @@ test('the knowledge base describes 远程 AI, its style, both keys and the sessi
   const kb = load(D + 'DiagnosticAiKnowledgeBase');
   const settings = load(D + 'DiagnosticAiSettingsActionPolicy');
   const actions = load(D + 'DiagnosticAiAppActionPolicy');
-  assert.match(kb.DIAGNOSTIC_AI_KNOWLEDGE_VERSION, /2026-10-06-v12$/);
+  assert.match(kb.DIAGNOSTIC_AI_KNOWLEDGE_VERSION, /2026-10-06-v13$/);
   const guide = kb.aiAppGuide();
   for (const words of ['Claude Agent', 'Anthropic API Key', 'DSH', 'Codex 风格', '手机通行密钥', '安全密钥重定向',
     '退出主机回到主机列表后', '连接断开或重连时 AI 不会关闭', '当前登录账号的 AI 配置']) {
@@ -641,7 +641,7 @@ test('in a session no voice ball opens: the orb listens and reads, and the AI ca
   const close = host.slice(host.indexOf('private closeAi(): void {'), host.indexOf('private publishOpen(): void {'));
   assert.match(close, /this\.stopTalking\(\);/, 'closing the AI stops reading and voice mode');
   const lift = read('components/diagnosticAi/AiLiftLayer.ets');
-  assert.match(lift, /private onListenRequest\(\): void \{\s*if \(this\.listenRequest <= 0 \|\| !this\.controller\.sessionMode/);
+  assert.match(lift, /private onListenRequest\(\): void \{\s*if \(!this\.controller\.sessionMode \|\| this\.phase !== 2\) \{ return; \}/);
   assert.match(lift, /if \(AiReadAloud\.speakingId !== ''\) \{ AiReadAloud\.stop\(\); \}/, 'a double tap talks over the reading');
   assert.match(lift, /sessionVoice: this\.controller\.sessionMode,/);
   const chat = read('components/diagnosticAi/AiChatView.ets');
@@ -661,6 +661,30 @@ test('in a session no voice ball opens: the orb listens and reads, and the AI ca
   assert.match(read('services/diagnosticAi/AiSkillCatalog.ets'), /voice=进入语音模式（用户说语音模式、用语音回答我时；在远程连接里是悬浮球把回答读出来并接着听，不会弹出语音大球）/);
   assert.ok(load(D + 'DiagnosticAiKnowledgeBase').aiAppGuide().includes('连接中语音回答'));
   assert.match(read('components/diagnosticAi/AiVoiceSettingsPanel.ets'), /AiSegmented\(\{ options: AI_SESSION_REPLY_MODES, current: this\.config\.sessionReply,/);
+});
+
+test('AI 控制面板: the AI button opens it (or starts the AI with 点 AI 按钮直接启动, a long press then opens it)', () => {
+  const host = read('components/diagnosticAi/SessionAiHost.ets');
+  const open = host.slice(host.indexOf('private onOpenRequest(): void {'), host.indexOf('private onPanelRequest(): void {'));
+  assert.match(open, /if \(!this\.voiceConfig\(\)\.sessionQuickStart\) \{ this\.openPanel\(\); return; \}/);
+  assert.match(open, /this\.closeAi\(\);[\s\S]*this\.startAi\(\);/);
+  assert.match(host, /@StorageProp\(AI_SESSION_PANEL_REQUEST\) @Watch\('onPanelRequest'\)/);
+  assert.match(host, /AiSessionRouter\.isInFront\(this\.hostId\)/, 'only the window the user is in opens it');
+  assert.match(host, /if \(wasOpen\) \{ this\.closeAi\(\); \} else \{ this\.startAi\(\); \}/, 'the foot button starts or closes');
+  // Voice mode off (panel or double tap): nothing more is read and the orb stops listening.
+  assert.match(host, /private leaveVoiceMode\(\): void \{\s*AiChatMemory\.sessionTalk = '';\s*AiReadAloud\.stop\(\);\s*AppStorage\.setOrCreate\(AI_ORB_LISTEN_REQUEST, -Date\.now\(\)\);/);
+  const lift = read('components/diagnosticAi/AiLiftLayer.ets');
+  assert.match(lift, /if \(this\.listenRequest < 0\) \{ this\.stopOrbVoice\(false\); return; \}/);
+  assert.match(lift, /if \(this\.controller\.sessionMode && AiChatMemory\.sessionTalk === 'on'\) \{\s*AiChatMemory\.sessionTalk = '';\s*AiReadAloud\.stop\(\);/);
+  const panel = read('components/diagnosticAi/SessionAiPanel.ets');
+  for (const words of ["'语音模式'", "'连续对话'", "'点 AI 按钮直接启动'", "'关闭 AI'", "'启动 AI'"]) { assert.ok(panel.includes(words), words); }
+  for (const file of ['components/rdp/RdpSessionToolbar.ets', 'components/moonlight/MoonlightSessionToolbar.ets',
+    'components/VncSessionToolbar.ets', 'components/RemoteSessionTopBar.ets']) {
+    assert.match(read(file), /AppStorage\.setOrCreate\(AI_SESSION_PANEL_REQUEST, Date\.now\(\)\)/, file + ' long press');
+  }
+  const settings = load(D + 'DiagnosticAiSettingsActionPolicy');
+  for (const id of ['ai.voice.sessionStartVoice', 'ai.voice.sessionQuickStart']) { assert.ok(settings.diagnosticAiSettingSpec(id), id); }
+  assert.ok(load(D + 'DiagnosticAiKnowledgeBase').aiAppGuide().includes('AI 控制面板'));
 });
 
 (async () => {

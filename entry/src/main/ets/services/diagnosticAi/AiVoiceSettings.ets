@@ -9,6 +9,8 @@ export const AI_VOICE_ENABLED: string = 'aiVoice.enabled';
 export const AI_VOICE_HOLD: string = 'aiVoice.holdToTalk';
 /** AppStorage mirror of 连接中语音回答 (AiSessionVoicePolicy). */
 export const AI_VOICE_SESSION_REPLY: string = 'aiVoice.sessionReply';
+/** AppStorage mirror of 点 AI 按钮直接启动 (a session's AI button starts the AI; a long press opens its panel). */
+export const AI_SESSION_QUICK_START: string = 'aiVoice.sessionQuickStart';
 
 /** One speech engine the user can pick in AI 语音. */
 export class AiTtsProvider {
@@ -80,6 +82,10 @@ export class AiVoiceConfig {
   holdToTalk: boolean = true;
   /** 连接中语音回答: 'spoken' · 'always' · 'off' (AiSessionVoicePolicy). */
   sessionReply: string = 'spoken';
+  /** A session's AI starts in voice mode (AI 控制面板 › 语音模式). */
+  sessionStartVoice: boolean = false;
+  /** A session's AI button starts the AI at once; a long press opens AI 控制面板. */
+  sessionQuickStart: boolean = false;
   /** A cloud engine is chosen and has a key; otherwise speech falls back to the system voice. */
   hasKey: boolean = false;
   /** 语音识别 engine ('system' | 'dashscope') and its model; asrReady once the 阿里云百炼 key is saved. */
@@ -153,6 +159,8 @@ export class AiVoiceSettings {
     config.continuous = this.flag('continuous', true);
     config.holdToTalk = this.flag('holdToTalk', true);
     config.sessionReply = aiSessionReplyMode(this.text('sessionReply', 'spoken'));
+    config.sessionStartVoice = this.flag('sessionStartVoice', false);
+    config.sessionQuickStart = this.flag('sessionQuickStart', false);
     config.hasKey = provider.needsKey && this.keyFingerprint(config.provider) !== '';
     config.asr = this.text('asr', 'system') === 'dashscope' ? 'dashscope' : 'system';
     config.asrModel = this.text('asr.model', AI_ASR_MODELS[0]);
@@ -160,6 +168,7 @@ export class AiVoiceSettings {
     AppStorage.setOrCreate(AI_VOICE_ENABLED, config.enabled);
     AppStorage.setOrCreate(AI_VOICE_HOLD, config.enabled && config.holdToTalk);
     AppStorage.setOrCreate(AI_VOICE_SESSION_REPLY, config.sessionReply);
+    AppStorage.setOrCreate(AI_SESSION_QUICK_START, config.sessionQuickStart);
     return config;
   }
 
@@ -169,6 +178,8 @@ export class AiVoiceSettings {
   setContinuous(on: boolean): void { this.put('continuous', on); }
   setHoldToTalk(on: boolean): void { this.put('holdToTalk', on); this.read(); }
   setSessionReply(mode: string): void { this.put('sessionReply', aiSessionReplyMode(mode)); this.read(); }
+  setSessionStartVoice(on: boolean): void { this.put('sessionStartVoice', on); }
+  setSessionQuickStart(on: boolean): void { this.put('sessionQuickStart', on); this.read(); }
   setModel(provider: string, model: string): void { this.put(provider + '.model', model.trim().slice(0, 120)); }
   setVoice(provider: string, voice: string): void { this.put(provider + '.voice', voice.trim().slice(0, 120)); }
   setBaseUrl(provider: string, url: string): void { this.put(provider + '.baseUrl', url.trim().replace(/\/+$/, '').slice(0, 300)); }

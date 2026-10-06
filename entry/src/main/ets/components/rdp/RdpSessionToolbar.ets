@@ -1,4 +1,4 @@
-import { AI_SESSION_OPEN, AI_SESSION_RAIL_EXPANDED } from '../../services/diagnosticAi/AiBridgeKeys';
+import { AI_SESSION_OPEN, AI_SESSION_PANEL_REQUEST, AI_SESSION_RAIL_EXPANDED } from '../../services/diagnosticAi/AiBridgeKeys';
 import { curves } from '@kit.ArkUI';
 import { Palette, buildDark } from '../../common/Theme';
 import {
@@ -175,6 +175,13 @@ export struct RdpSessionToolbar {
     this.scheduleHide();
   }
 
+  /** A long press: on the AI button, AI 控制面板; on any other, the same as a tap. */
+  private longPress(action: RdpToolbarAction): void {
+    if (action !== 'ai') { this.invoke(action); return; }
+    AppStorage.setOrCreate(AI_SESSION_PANEL_REQUEST, Date.now());
+    this.scheduleHide();
+  }
+
   private closeActiveKeyboardSurface(): boolean {
     if (this.keyboardOpen) {
       this.invoke('keyboard');
@@ -233,7 +240,8 @@ export struct RdpSessionToolbar {
       (this.active(item.action) ? RDP_SESSION_CONTROL_ACCENT_SOFT : this.pal().surface))
     .focusable(false).focusOnTouch(false)
     .onClick((): void => { this.invoke(item.action); })
-    .accessibilityText(item.label + (this.active(item.action) ? '，已打开' : ''))
+    .gesture(LongPressGesture({ duration: 500 }).onAction((): void => { this.longPress(item.action); }))
+    .accessibilityText(item.label + (this.active(item.action) ? '，已打开' : '') + (item.action === 'ai' ? '，长按打开 AI 设置' : ''))
   }
 
   @Builder private collapseItem(layout: MoonlightToolbarLayout) {

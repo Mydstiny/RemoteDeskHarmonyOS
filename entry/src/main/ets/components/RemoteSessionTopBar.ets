@@ -54,6 +54,7 @@ import { ProAppRuntime } from '../services/pro/ProAppRuntime';
 import { ProEntries } from '../services/pro/ProEntries';
 import { PRO_DIAGNOSTICS_ASSISTANT_FEATURE } from '../services/pro/ProFeatureCatalog';
 import { DiagnosticAiAppActionId } from '../services/diagnosticAi/DiagnosticAiAppActionPolicy';
+import { AI_SESSION_PANEL_REQUEST } from '../services/diagnosticAi/AiBridgeKeys';
 
 const EMPTY_RUSTDESK_DISPLAY_CAPABILITIES: RustDeskDisplayCapabilities = {
   supported: false,
@@ -671,7 +672,7 @@ export struct RemoteSessionTopBar {
 
   @Builder
   private iconButton(icon: Resource, bgColor: string, action: () => void, fontSize?: number,
-    accessibilityLabel: string = 'RustDesk 会话工具栏操作') {
+    accessibilityLabel: string = 'RustDesk 会话工具栏操作', longAction: () => void = action) {
     Button() {
       SymbolGlyph(icon)
         .fontSize(fontSize ?? 20)
@@ -689,6 +690,10 @@ export struct RemoteSessionTopBar {
         this.noteUserActivity();
         action();
       })
+      .gesture(LongPressGesture({ duration: 500 }).onAction((): void => {
+        this.noteUserActivity();
+        longAction();
+      }))
   }
 
   private openSubMenu(itemId: string, hovered: boolean, clicked: boolean): void {
@@ -1248,7 +1253,7 @@ export struct RemoteSessionTopBar {
       this.iconButton($r('sys.symbol.wand_and_stars'), this.accentColor, (): void => {
         this.actions.onOpenAi();
         this.scheduleAutoCollapse();
-      }, 18, 'AI 助理')
+      }, 18, 'AI 助理，长按打开 AI 设置', (): void => { AppStorage.setOrCreate(AI_SESSION_PANEL_REQUEST, Date.now()); })
     } else if (actionId === 'pin') {
       this.iconButton(this.pinned ? $r('sys.symbol.pin_fill') : $r('sys.symbol.pin'),
         this.pinned ? '#3A3A3A' : this.accentColor, (): void => {

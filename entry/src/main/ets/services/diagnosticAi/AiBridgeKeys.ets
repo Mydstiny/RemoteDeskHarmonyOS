@@ -11,6 +11,8 @@ export const AI_SESSION_RAIL_EXPANDED: string = 'aiSession.railExpanded';
 export const AI_SESSION_OPEN: string = 'aiSession.open';
 /** AppStorage: a session's orb is asked to listen now ('<time>'): its voice mode, or the next turn after an answer was read. */
 export const AI_ORB_LISTEN_REQUEST: string = 'aiOrb.listenRequest';
+/** AppStorage: a long press on a session's AI button asks for its AI 控制面板 ('<time>'). */
+export const AI_SESSION_PANEL_REQUEST: string = 'aiSession.panelRequest';
 /** AppStorage: a session's orb is reading an answer aloud (it shows itself busy meanwhile). */
 export const AI_ORB_SPEAKING: string = 'aiOrb.speaking';
 /** AppStorage: the AI (chat, voice) asks the host page to open an app screen ('<action id>@<time>'). */

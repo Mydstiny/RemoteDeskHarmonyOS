@@ -2415,6 +2415,8 @@ struct HostListPage {
     if (id === 'ai.voice.sessionReply') { return config.sessionReply; }
     if (id === 'ai.voice.rate') { return config.rate; }
     if (id === 'ai.voice.continuous') { return config.continuous ? 'true' : 'false'; }
+    if (id === 'ai.voice.sessionStartVoice') { return config.sessionStartVoice ? 'true' : 'false'; }
+    if (id === 'ai.voice.sessionQuickStart') { return config.sessionQuickStart ? 'true' : 'false'; }
     return null;
   }
 
@@ -2430,6 +2432,8 @@ struct HostListPage {
       else if (id === 'ai.voice.sessionReply') { voice.setSessionReply(value); }
       else if (id === 'ai.voice.rate') { voice.setRate(value); }
       else if (id === 'ai.voice.continuous') { voice.setContinuous(value === 'true'); }
+      else if (id === 'ai.voice.sessionStartVoice') { voice.setSessionStartVoice(value === 'true'); }
+      else if (id === 'ai.voice.sessionQuickStart') { voice.setSessionQuickStart(value === 'true'); }
       else { return false; }
       return this.assistantVoiceSetting(id) === value;
     }

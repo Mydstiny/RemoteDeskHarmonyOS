@@ -1,4 +1,4 @@
-import { AI_SESSION_OPEN, AI_SESSION_RAIL_EXPANDED } from '../../services/diagnosticAi/AiBridgeKeys';
+import { AI_SESSION_OPEN, AI_SESSION_PANEL_REQUEST, AI_SESSION_RAIL_EXPANDED } from '../../services/diagnosticAi/AiBridgeKeys';
 import { curves } from '@kit.ArkUI';
 import { Palette, buildDark } from '../../common/Theme';
 import {
@@ -342,6 +342,10 @@ export struct MoonlightSessionToolbar {
     .opacity(this.itemEnabled(item) ? 1 : 0.72)
     .accessibilityText(this.itemAccessibilityText(item))
     .onClick((): void => { this.invoke(item); })
+    // A long press on the AI button opens AI 控制面板; on any other it is a tap.
+    .gesture(LongPressGesture({ duration: 500 }).onAction((): void => {
+      if (item.action === 'ai') { AppStorage.setOrCreate(AI_SESSION_PANEL_REQUEST, Date.now()); } else { this.invoke(item); }
+    }))
   }
 
   @Builder private pinItem(layout: MoonlightToolbarLayout) {

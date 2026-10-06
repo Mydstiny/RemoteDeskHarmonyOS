@@ -1,20 +1,24 @@
-import { promptAction, window } from '@kit.ArkUI';
+import { ComponentContent, LevelOrder, promptAction, window } from '@kit.ArkUI';
+import { common } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { AiIslandLayerParams, AiTopLayer } from './AiTopLayer';
 import { AI_VOICE_REQUEST, AiChatMemory, aiChatOwner } from './AiChatView';
 import { DiagnosticAiDeviceClass } from './AiIsland';
-import { AI_APP_ACTION_REQUEST, AI_ORB_LISTEN_REQUEST, AI_ORB_SPEAKING, AI_SESSION_HANDOVER, AI_SESSION_OPEN } from '../../services/diagnosticAi/AiBridgeKeys';
+import { AI_APP_ACTION_REQUEST, AI_ORB_LISTEN_REQUEST, AI_ORB_SPEAKING, AI_SESSION_HANDOVER, AI_SESSION_OPEN, AI_SESSION_PANEL_REQUEST } from '../../services/diagnosticAi/AiBridgeKeys';
+import { SessionAiPanelParams, sessionAiPanel } from './SessionAiPanel';
 import { AiSessionRouter } from '../../services/diagnosticAi/AiSessionRouter';
 import { AiReadAloud } from '../../services/diagnosticAi/AiSpeech';
-import { AI_VOICE_ENABLED } from '../../services/diagnosticAi/AiVoiceSettings';
+import { AI_VOICE_ENABLED, AiVoiceConfig, AiVoiceSettings } from '../../services/diagnosticAi/AiVoiceSettings';
 import { DiagnosticAiAppActionId, diagnosticAiAppActionId } from '../../services/diagnosticAi/DiagnosticAiAppActionPolicy';
 
 let sessionHostCount: number = 0;
 
 /**
  * The AI inside a remote session (RDP, RustDesk, VNC, Moonlight, SSH). The session's own button (in its side bar, or
- * SSH's 「更多」) bumps `openRequest`: the first press opens the AI as the floating orb with its small text chat beside
- * it, above the session, keeping clear of the side bar on whichever edge it is; the next press closes it. On that orb a
+ * SSH's 「更多」) bumps `openRequest`: it opens AI 控制面板 (语音模式, 连接中语音回答, 连续对话, 点 AI 按钮直接启动)
+ * whose foot button starts the AI as set — or, with 点 AI 按钮直接启动 on, starts it at once and a long press on the
+ * button (AI_SESSION_PANEL_REQUEST) opens the panel. The AI is the floating orb with its small text chat beside it,
+ * above the session, keeping clear of the side bar on whichever edge it is; the button (or the panel) closes it. On that orb a
  * tap folds the chat away or brings it back, a double tap makes the orb listen (the words go into its chat), and a drag
  * (on the orb or its chat) moves it. There is no voice ball over the session: answers are read aloud by the orb as
  * 连接中语音回答 says, and voice mode (the chat's voice button, 语音模式, 用语音回答我) is the orb reading every answer
@@ -35,6 +39,12 @@ export struct SessionAiHost {
   onSessionAction: (action: DiagnosticAiAppActionId) => boolean = (_action: DiagnosticAiAppActionId): boolean => false;
   @StorageProp(AI_VOICE_REQUEST) @Watch('onVoiceRequest') voiceRequest: number = 0;
   @StorageProp(AI_APP_ACTION_REQUEST) @Watch('onAppActionRequest') appActionRequest: string = '';
+  /** A long press on the session's AI button: AI 控制面板. */
+  @StorageProp(AI_SESSION_PANEL_REQUEST) @Watch('onPanelRequest') panelRequest: number = 0;
+  private panel: ComponentContent<SessionAiPanelParams> | null = null;
+  /** Voice mode was turned on in the panel while the AI is up: the orb listens once the panel is gone. */
+  private listenAfterPanel: boolean = false;
+  private startTimer: number = -1;
   private readonly hostId: string = 'session-ai-' + (++sessionHostCount).toString() + '-' + Date.now().toString(36);
   private island: AiTopLayer = new AiTopLayer();
   private topInset: number = 24;
@@ -72,6 +82,8 @@ export struct SessionAiHost {
       this.win = null;
     }
     this.stopTalking();
+    this.closePanel();
+    if (this.startTimer >= 0) { clearTimeout(this.startTimer); this.startTimer = -1; }
     this.island.close();
     AppStorage.setOrCreate<boolean>(AI_SESSION_OPEN, false);
     AiSessionRouter.release(this.hostId);
@@ -99,18 +111,121 @@ export struct SessionAiHost {
     try { promptAction.showToast({ message: message, duration: 2200 }); } catch (_error) { /* no toast */ }
   }
 
-  /** The side bar's AI button: opens the AI, or closes it when it is up. */
+  private voiceConfig(): AiVoiceConfig {
+    const settings: AiVoiceSettings = new AiVoiceSettings();
+    settings.init(this.getUIContext().getHostContext() as common.UIAbilityContext, aiChatOwner());
+    return settings.read();
+  }
+
+  /**
+   * The side bar's AI button: AI 控制面板; with 点 AI 按钮直接启动 on, the AI starts as set there (or closes when it is
+   * up) and a long press opens the panel.
+   */
   private onOpenRequest(): void {
     if (this.openRequest <= 0) { return; }
+    if (!this.voiceConfig().sessionQuickStart) { this.openPanel(); return; }
     if (this.island.isOpen()) {
       this.closeAi();
       return;
     }
-    this.openOrb();
+    this.startAi();
   }
+
+  private onPanelRequest(): void {
+    if (this.panelRequest <= 0 || this.disposed || !AiSessionRouter.isInFront(this.hostId)) { return; }
+    this.openPanel();
+  }
+
+  /** Start the AI as AI 控制面板 says: the orb with its chat, in voice mode if chosen (the orb then listens). */
+  private startAi(): void {
+    const config: AiVoiceConfig = this.voiceConfig();
+    this.openOrb();
+    if (!config.sessionStartVoice || !config.enabled) { return; }
+    AiChatMemory.sessionTalk = 'on';
+    if (this.startTimer >= 0) { clearTimeout(this.startTimer); }
+    // Once the orb has settled in.
+    this.startTimer = setTimeout((): void => {
+      this.startTimer = -1;
+      if (!this.disposed && this.island.isOpen() && AiChatMemory.sessionTalk === 'on') {
+        AppStorage.setOrCreate(AI_ORB_LISTEN_REQUEST, Date.now());
+      }
+    }, 900);
+  }
+
+  /** AI 控制面板 over the session (one at a time). */
+  private openPanel(): void {
+    if (this.panel !== null || this.disposed) { return; }
+    const config: AiVoiceConfig = this.voiceConfig();
+    const p: SessionAiPanelParams = new SessionAiPanelParams();
+    p.owner = aiChatOwner();
+    p.aiOpen = this.island.isOpen();
+    p.talking = p.aiOpen ? AiChatMemory.sessionTalk === 'on' : config.sessionStartVoice;
+    p.onVoiceMode = (on: boolean): void => { this.setVoiceMode(on); };
+    p.onStartOrClose = (): void => {
+      const wasOpen: boolean = this.island.isOpen();
+      this.listenAfterPanel = false;
+      this.closePanel();
+      if (wasOpen) { this.closeAi(); } else { this.startAi(); }
+    };
+    p.onClose = (): void => { this.closePanel(); };
+    const content: ComponentContent<SessionAiPanelParams> =
+      new ComponentContent(this.getUIContext(), wrapBuilder(sessionAiPanel), p);
+    this.panel = content;
+    this.listenAfterPanel = false;
+    hilog.info(0x0000, 'AiChat', 'session AI panel opens');
+    this.getUIContext().getPromptAction().openCustomDialog(content, {
+      isModal: true,
+      autoCancel: true,
+      alignment: DialogAlignment.Center,
+      maskColor: '#66000000',
+      // Above the orb and its chat.
+      levelOrder: LevelOrder.clamp(100000),
+      onDidDisappear: (): void => {
+        if (this.panel === content) { this.panel = null; }
+        content.dispose();
+        this.afterPanel();
+      }
+    }).catch((): void => { if (this.panel === content) { this.panel = null; } content.dispose(); });
+  }
+
+  private closePanel(): void {
+    const content: ComponentContent<SessionAiPanelParams> | null = this.panel;
+    if (content === null) { return; }
+    this.getUIContext().getPromptAction().closeCustomDialog(content).catch((): void => { /* already closed */ });
+  }
+
+  private afterPanel(): void {
+    if (!this.listenAfterPanel) { return; }
+    this.listenAfterPanel = false;
+    if (!this.disposed && this.island.isOpen() && AiChatMemory.sessionTalk === 'on' &&
+      AiChatMemory.requestId === '' && AiReadAloud.speakingId === '') {
+      AppStorage.setOrCreate(AI_ORB_LISTEN_REQUEST, Date.now());
+    }
+  }
+
+  /** 语音模式 switched in the panel: while the AI is up it applies now (on: the orb listens once the panel goes). */
+  private setVoiceMode(on: boolean): void {
+    if (!this.island.isOpen()) { return; }
+    if (on) {
+      AiChatMemory.sessionTalk = 'on';
+      this.listenAfterPanel = true;
+      return;
+    }
+    this.listenAfterPanel = false;
+    this.leaveVoiceMode();
+  }
+
+  /** Out of voice mode: nothing more is read, and the orb stops listening. */
+  private leaveVoiceMode(): void {
+    AiChatMemory.sessionTalk = '';
+    AiReadAloud.stop();
+    AppStorage.setOrCreate(AI_ORB_LISTEN_REQUEST, -Date.now());
+  }
+
 
   /** Closed from the side bar: the orb, its chat and its voice mode go (reading aloud stops). */
   private closeAi(): void {
+    if (this.startTimer >= 0) { clearTimeout(this.startTimer); this.startTimer = -1; }
     AiChatMemory.voiceResume = false;
     this.stopTalking();
     this.island.close();

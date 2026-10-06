@@ -165,9 +165,14 @@ struct AiLiftLayer {
       (level: number): void => { XyLiveLevel.value = level; }, false, owner);
   }
 
-  /** A session's voice mode: the orb listens now (its voice button, 语音模式, or its turn after an answer was read). */
+  /**
+   * A session's voice mode: the orb listens now (its voice button, 语音模式, or its turn after an answer was read); a
+   * negative request (voice mode turned off in AI 控制面板) stops it listening.
+   */
   private onListenRequest(): void {
-    if (this.listenRequest <= 0 || !this.controller.sessionMode || this.phase !== 2 || this.orbListening) { return; }
+    if (!this.controller.sessionMode || this.phase !== 2) { return; }
+    if (this.listenRequest < 0) { this.stopOrbVoice(false); return; }
+    if (this.listenRequest === 0 || this.orbListening) { return; }
     this.startOrbVoice(false);
   }
 
@@ -372,7 +377,16 @@ struct AiLiftLayer {
   /** A double tap: the small chat beside the orb, or away again (in a session: voice mode). */
   private orbDoubleTapped(): void {
     if (this.phase !== 2) { return; }
-    if (this.orbListening) { this.stopOrbVoice(false); return; }
+    if (this.orbListening) {
+      this.stopOrbVoice(false);
+      // In a session that also ends voice mode: nothing more is read aloud, the orb waits for a tap again.
+      if (this.controller.sessionMode && AiChatMemory.sessionTalk === 'on') {
+        AiChatMemory.sessionTalk = '';
+        AiReadAloud.stop();
+        this.toast('已退出语音模式');
+      }
+      return;
+    }
     // In a session: the orb itself listens (what it hears goes into its small chat), as a long press does at home.
     if (this.controller.sessionMode) { this.hintShown = false; this.startOrbVoice(this.holdToTalk); return; }
     this.hintShown = false;
@@ -764,7 +778,7 @@ struct AiLiftLayer {
         .onVisibleAreaChange([0.0, 0.05, 0.5], (visible: boolean, ratio: number): void => {
           if (visible && ratio > 0.01) { this.overflowSeen = true; }
         }, true)
-        .accessibilityText(this.phase !== 2 ? this.controller.label : this.orbListening ? 'AI 正在听，单击发送，双击取消' :
+        .accessibilityText(this.phase !== 2 ? this.controller.label : this.orbListening ? 'AI 正在听，单击发送，双击取消' + (this.controller.sessionMode ? '并退出语音模式' : '') :
           this.controller.sessionMode && this.orbSpeaking ? 'AI 正在朗读回答，双击打断并说话' :
           this.controller.sessionMode ?
           'AI 助手，单击' + (this.chatShown ? '收起' : '展开') + '对话框，双击说话，按住可拖动；在侧栏的 AI 按钮关闭' :

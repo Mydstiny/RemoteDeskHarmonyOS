@@ -389,9 +389,15 @@ export struct AiVoiceSettingsPanel {
               AiSegmented({ options: AI_SESSION_REPLY_MODES, current: this.config.sessionReply,
                 trackColor: this.pal().surface, textColor: this.pal().text, segmentHeight: 34,
                 onPick: (mode: string): void => { this.settings.setSessionReply(mode); this.reload(); } })
-              Text('远程连接里没有语音大球：双击悬浮球说话，回答由悬浮球读出来。说「语音模式」或「用语音回答我」时每次都读并接着听，说「用文字回答」停止。')
+              Text('远程连接里没有语音大球：双击悬浮球说话，回答由悬浮球读出来。语音模式下每个回答都读并接着听，双击悬浮球、说「用文字回答」或在 AI 控制面板关闭即退出。')
                 .fontSize(12).lineHeight(17).fontColor(this.pal().text3).width('100%')
             }.width('100%').padding({ top: 12, bottom: 14 }).alignItems(HorizontalAlign.Start)
+            Divider().color(this.pal().divider)
+            this.switchRow('启动时进入语音模式', '在连接里启动 AI 时直接进入语音模式', this.config.sessionStartVoice,
+              (on: boolean): void => { this.settings.setSessionStartVoice(on); this.reload(); })
+            Divider().color(this.pal().divider)
+            this.switchRow('点 AI 按钮直接启动', '关闭时点侧栏的 AI 按钮先打开 AI 控制面板；开启后直接启动，长按才打开面板',
+              this.config.sessionQuickStart, (on: boolean): void => { this.settings.setSessionQuickStart(on); this.reload(); })
           }.cardStyle()
           Text(this.privacyText())
             .fontSize(12).lineHeight(18).fontColor(this.pal().text3).width('100%').padding({ left: 4, right: 4, bottom: 8 })

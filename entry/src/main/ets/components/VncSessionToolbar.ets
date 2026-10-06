@@ -1,4 +1,4 @@
-import { AI_SESSION_OPEN } from '../services/diagnosticAi/AiBridgeKeys';
+import { AI_SESSION_OPEN, AI_SESSION_PANEL_REQUEST } from '../services/diagnosticAi/AiBridgeKeys';
 import { curves } from '@kit.ArkUI';
 import { OverlayPlacement, emptyOverlayPlacement } from '../services/RemoteOverlayViewportPolicy';
 import {
@@ -83,7 +83,7 @@ export struct VncSessionToolbar {
 
   @Builder
   private actionButton(icon: Resource, label: string, active: boolean,
-    action: () => void, danger: boolean = false) {
+    action: () => void, danger: boolean = false, longAction: () => void = action) {
     Button() {
       Column() {
         SymbolGlyph(icon).fontSize(17).fontColor([Color.White])
@@ -98,6 +98,7 @@ export struct VncSessionToolbar {
     .focusable(false).focusOnTouch(false)
     .accessibilityText(label)
     .onClick(action)
+    .gesture(LongPressGesture({ duration: 500 }).onAction((): void => { longAction(); }))
   }
 
   @Builder
@@ -127,7 +128,8 @@ export struct VncSessionToolbar {
         (): void => { this.actions.onToggleDiagnostics(); })
     } else if (actionId === 'ai') {
       this.actionButton($r('sys.symbol.wand_and_stars'), 'AI 助理', this.sessionAiOpen,
-        (): void => { this.actions.onOpenAi(); })
+        (): void => { this.actions.onOpenAi(); }, false,
+        (): void => { AppStorage.setOrCreate(AI_SESSION_PANEL_REQUEST, Date.now()); })
     } else {
       this.actionButton($r('sys.symbol.xmark'), '断开', false,
         (): void => { this.actions.onDisconnect(); }, true)
