@@ -44,15 +44,24 @@ assert.ok(timeline.includes("case 'ls': return 'LS';"));
 // rows above lift; the list's own bubble stays hidden until the flyer lands. A failed send puts the text back.
 const begin = page.slice(page.indexOf('private beginSend('), page.indexOf('private failSend('));
 assert.ok(begin.includes('this.pendingSend = {') && begin.includes("this.draft = ''") && begin.includes('this.followBottom = true;'));
-assert.ok(begin.includes('this.flyX = from.x - this.rootX; this.flyY = from.y - this.rootY; this.flyW = from.w; this.flyH = from.h;'),
-  'the flight starts from the composer input itself');
-assert.ok(begin.includes('this.flyW = target.w; this.flyH = target.h; this.flyX = tx;') && begin.includes('from.y - this.rootY + from.h - target.h'),
+const flight = page.slice(page.indexOf('private beginSend('), page.indexOf('private endFlight('));
+assert.ok(flight.includes("const from = this.boxOf(this.flyId('composer')), root = this.boxOf(this.flyId('root'));") &&
+  flight.includes('this.flyX = from.x - root.x; this.flyY = from.y - root.y; this.flyW = from.w; this.flyH = from.h;'),
+  'the flight starts from the composer input itself, in the same window coordinates as its target');
+assert.ok(flight.includes('this.flyW = target.w; this.flyH = target.h; this.flyX = tx;') && flight.includes('from.y - this.rootY + from.h - target.h'),
   'it first takes the bubble size beside the composer (one line narrows, several lines keep the width)');
-assert.ok(begin.includes('curves.springMotion(0.42, 0.8)') && begin.includes('this.flyY = ty; this.listLift = 0;'), 'then rises with the rows above');
-assert.ok(begin.includes('this.flyTextW = Math.max(20, target.w - 28);'), 'the text keeps its final width and never re-wraps mid-flight');
-assert.ok(page.includes('.opacity(this.flyingRow(item) ? 0 : 1)') && page.includes('if (this.flyingRow(item)) { this.flyTarget = this.rectOf(next); }'));
-assert.ok(page.includes('.onAreaChange((_old: Area, next: Area): void => { this.composerRect = this.rectOf(next); })'));
+assert.ok(flight.includes("const target = this.boxOf(this.flyId('target'));") && flight.includes('Math.abs(aim.y - target.y) > 1.5'),
+  'the bubble\'s place is read every frame and the flyer steered to it (it never lands mid-screen and jumps)');
+assert.ok(flight.includes('curves.springMotion(0.42, 0.82)') && flight.includes('this.listLift = 0;'), 'it rises with the rows above');
+assert.ok(flight.includes('this.flyTextW = Math.max(20, target.w - 28);'), 'the text keeps its final width and never re-wraps mid-flight');
+assert.ok(page.includes('.opacity(this.flyingRow(item) ? 0 : 1)') && page.includes(".id(this.flyingRow(item) ? this.flyId('target') : '')"));
+assert.ok(page.includes(".id(this.flyId('composer'))") && page.includes(".id(this.flyId('root'))"));
 assert.ok(page.includes('.translate({ y: this.listLift })') && page.includes('      this.sendFlyer()\n    }.width(\'100%\').height(\'100%\')'));
+// A reply streams in letter by letter: its row stays while it streams and a typewriter follows the text.
+assert.ok(page.includes("if (this.streaming(item)) { return item.id + ':stream'; }"));
+assert.ok(page.includes('AiTypewriter({ source: this.streamSource(item), textSize: this.textSize, palette: this.palette() })'));
+const typewriter = fs.readFileSync(path.join(ETS, 'components/ai/AiTypewriter.ets'), 'utf8');
+assert.ok(typewriter.includes('@ObjectLink source: AiStreamText;') && typewriter.includes('@Observed'));
 // Messages and replies alike sit at the foot of the conversation: nothing is held at the top any more.
 assert.ok(!/landing|LANDING_GAP|holdLanding|settleLanding/.test(page), 'the top landing is gone');
 assert.ok(page.includes('.stackFromEnd(this.sessionId !== \'\')'));

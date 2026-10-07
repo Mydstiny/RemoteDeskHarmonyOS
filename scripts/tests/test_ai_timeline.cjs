@@ -222,3 +222,24 @@ console.log('PASS Codex added and deleted files count every line');
   assert.equal(running([item('a', 'assistant', 'assistant', 'completed')]), false);
   console.log('PASS the working line gives way to a row that already shows the turn at work');
 }
+
+{
+  // The typewriter: a few characters a frame when close behind, faster when far behind, never past the text, and
+  // never half of an emoji.
+  const twSource = fs.readFileSync(base + '../../components/ai/AiTypewriter.ets', 'utf8');
+  const pure = twSource.slice(twSource.indexOf('/** How many characters to show next'), twSource.indexOf('/**\n * Types a streaming reply'));
+  const tw = { exports: {} };
+  vm.runInNewContext(ts.transpileModule(pure, { compilerOptions: { target: ts.ScriptTarget.ES2021, module: ts.ModuleKind.CommonJS } }).outputText,
+    { module: tw, exports: tw.exports });
+  Object.assign(tw, tw.exports);
+  assert.equal(tw.aiTypewriterStep(0, 3), 1);
+  assert.equal(tw.aiTypewriterStep(0, 70), 10);
+  assert.equal(tw.aiTypewriterStep(68, 70), 69);
+  assert.equal(tw.aiTypewriterStep(70, 70), 70);
+  let shown = 0, frames = 0;
+  while (shown < 600) { shown = tw.aiTypewriterStep(shown, 600); frames++; }
+  assert.ok(frames < 60, 'a large batch is caught up within about two seconds');
+  assert.equal(tw.aiTypewriterCut('a😀b', 2), 3);
+  assert.equal(tw.aiTypewriterCut('abc', 2), 2);
+  console.log('PASS the typewriter follows a reply smoothly and never splits a character');
+}

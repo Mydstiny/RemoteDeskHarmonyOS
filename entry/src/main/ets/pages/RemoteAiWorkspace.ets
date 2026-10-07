@@ -24,6 +24,7 @@ import { AiRemoteMarkdown } from '../components/ai/AiRemoteMarkdown';
 import { AiDiffView } from '../components/ai/AiDiffView';
 import { AiShimmerText } from '../components/ai/AiShimmerText';
 import { AiSpinStar } from '../components/ai/AiSpinStar';
+import { AiStreamText, AiTypewriter } from '../components/ai/AiTypewriter';
 import { WorkspaceStore } from '../services/pro/workspace/WorkspaceStore';
 import { Workspace, WORKSPACE_COLORS, newWorkspace, newWorkspaceEntry } from '../services/pro/workspace/WorkspacePolicy';
 import { aiPairRef } from '../services/ai/AiWorkspacePairPolicy';
@@ -234,6 +235,7 @@ export struct RemoteAiWorkspace {
     // Only rows that arrived with this update animate in; a conversation opened or read again appears as it is.
     this.entryBase = reread ? Number.MAX_SAFE_INTEGER : this.entryCount;
     this.entryCount = this.sessionId === '' ? 0 : this.stepEntries().length;
+    if (this.sessionId !== '') { this.feedStreams(); }
     if (this.sessionId !== '') { this.followTranscript(reread); }
     this.trackWorking();
     if (this.approval !== null && !this.approvals.some((item: AiApproval): boolean => item.id === this.approval?.id)) {
@@ -660,8 +662,6 @@ export struct RemoteAiWorkspace {
   /** The rows above lift by the new bubble's height as it rises (they jumped at once before). */
   @State listLift: number = 0;
   private flyGeneration: number = 0;
-  private composerRect: AiWsRect | null = null;
-  private flyTarget: AiWsRect | null = null;
   private rootX: number = 0;
   private rootY: number = 0;
   private shownFor: AiTranscriptItem[] | null = null;
@@ -688,9 +688,22 @@ export struct RemoteAiWorkspace {
   private transcriptHeight(): number {
     return Math.max(180, this.pageHeight - this.topVp() - this.topChrome - this.bottomChrome - 16);
   }
-  private rectOf(area: Area): AiWsRect | null {
-    const x = Number(area.globalPosition.x), y = Number(area.globalPosition.y), w = Number(area.width), h = Number(area.height);
-    return [x, y, w, h].every((value: number): boolean => Number.isFinite(value)) && w > 0 && h > 0 ? { x, y, w, h } : null;
+  /** Ids that tell this page's composer, root and flying bubble apart from another pane's. */
+  private readonly uid: string = Math.random().toString(36).slice(2, 10);
+  private flyId(part: string): string { return 'aiws-' + part + '-' + this.uid; }
+  /**
+   * A node's box in window coordinates (vp), read now from the layout: the bubble's place changes as the list scrolls
+   * to its end, so the flight reads it again every frame instead of trusting a first measurement.
+   */
+  private boxOf(id: string): AiWsRect | null {
+    try {
+      const ui = this.getUIContext();
+      const info = ui.getComponentUtils().getRectangleById(id);
+      const rect: AiWsRect = { x: ui.px2vp(info.windowOffset.x), y: ui.px2vp(info.windowOffset.y),
+        w: ui.px2vp(info.size.width), h: ui.px2vp(info.size.height) };
+      return [rect.x, rect.y, rect.w, rect.h].every((value: number): boolean => Number.isFinite(value)) && rect.w > 0 && rect.h > 0 ?
+        rect : null;
+    } catch (_error) { return null; }
   }
   /** Starts a send: the message joins the foot of the conversation, and the composer flies into it. */
   private beginSend(text: string): void {
@@ -698,14 +711,14 @@ export struct RemoteAiWorkspace {
     this.pendingBefore = this.userCount(this.items, text);
     this.pendingSend = { id: 'send:' + (++this.sendCount).toString(), role: 'user', title: 'user', text, state: 'completed',
       turnId: '', kind: 'user', detail: '', output: '' };
+    const from = this.boxOf(this.flyId('composer')), root = this.boxOf(this.flyId('root'));
     this.draft = ''; this.followBottom = true;
-    const from = this.composerRect;
     const generation = ++this.flyGeneration;
-    this.flyTarget = null;
-    if (from !== null && from.w > 0 && from.h > 0) {
+    if (from !== null && root !== null) {
       // The flyer covers the composer exactly: the input has become the bubble, still where it was.
+      this.rootX = root.x; this.rootY = root.y;
       this.flyText = text.trim();
-      this.flyX = from.x - this.rootX; this.flyY = from.y - this.rootY; this.flyW = from.w; this.flyH = from.h;
+      this.flyX = from.x - root.x; this.flyY = from.y - root.y; this.flyW = from.w; this.flyH = from.h;
       this.flyRadius = Math.min(from.h / 2, 22); this.flyTextW = Math.max(40, from.w - 28);
       // The rows above make room for the bubble as it rises rather than jumping when it is added.
       this.listLift = Math.max(40, from.h) + 18;
@@ -713,39 +726,55 @@ export struct RemoteAiWorkspace {
       this.flyText = '';
     }
     this.followTranscript(true);
-    setTimeout((): void => { this.launchFlight(generation, from, 0); }, 34);
+    if (from !== null && root !== null) { this.flyTick(generation, from, Date.now(), 0, null); }
   }
-  /** Once the bubble in the list is laid out: morph to its size beside the composer, then rise into it. */
-  private launchFlight(generation: number, from: AiWsRect | null, tries: number): void {
+  /**
+   * One frame of a flight. Waits for the bubble in the list to be laid out, takes its size beside the composer
+   * (right edges and bottoms together), then rises with a spring; while the list settles at its end the bubble's
+   * place is read again each frame and the flyer is steered to it. It lands once it has been on target for a while.
+   */
+  private flyTick(generation: number, from: AiWsRect, started: number, phase: number, aim: AiWsRect | null): void {
     if (!this.alive || generation !== this.flyGeneration) { return; }
-    const target = this.flyTarget;
-    if (from === null || this.flyText === '') { this.endFlight(generation, false); return; }
+    const target = this.boxOf(this.flyId('target'));
+    const now = Date.now();
+    const next = (nextPhase: number, nextAim: AiWsRect | null): void => {
+      setTimeout((): void => { this.flyTick(generation, from, started, nextPhase, nextAim); }, 16);
+    };
     if (target === null) {
       // Not laid out yet (a new conversation is still opening): wait a little, then let the row simply appear.
-      if (tries < 18) { setTimeout((): void => { this.launchFlight(generation, from, tries + 1); }, 34); }
-      else { this.endFlight(generation, true); }
+      if (now - started > 900) { this.endFlight(generation); } else { next(phase, aim); }
       return;
     }
-    const tx = target.x - this.rootX, ty = target.y - this.rootY;
     const ui = this.getUIContext();
-    this.flyTextW = Math.max(20, target.w - 28);
-    // 1. Shrink to the bubble beside the composer: right edges together, bottoms together.
-    ui.animateTo({ duration: 170, curve: Curve.FastOutSlowIn }, (): void => {
-      this.flyW = target.w; this.flyH = target.h; this.flyX = tx;
-      this.flyY = from.y - this.rootY + from.h - target.h; this.flyRadius = 18;
-    });
-    // 2. Rise into place with a spring as the rows above move up.
-    setTimeout((): void => {
-      if (!this.alive || generation !== this.flyGeneration) { return; }
-      ui.animateTo({ curve: curves.springMotion(0.42, 0.8) }, (): void => { this.flyY = ty; this.listLift = 0; });
-      setTimeout((): void => { this.endFlight(generation, false); }, 460);
-    }, 130);
+    const tx = target.x - this.rootX, ty = target.y - this.rootY;
+    if (phase === 0) {
+      this.flyTextW = Math.max(20, target.w - 28);
+      ui.animateTo({ duration: 170, curve: Curve.FastOutSlowIn }, (): void => {
+        this.flyW = target.w; this.flyH = target.h; this.flyX = tx;
+        this.flyY = from.y - this.rootY + from.h - target.h; this.flyRadius = 18;
+      });
+      setTimeout((): void => { this.flyTick(generation, from, now, 1, null); }, 130);
+      return;
+    }
+    if (aim === null || Math.abs(aim.y - target.y) > 1.5 || Math.abs(aim.x - target.x) > 1.5 ||
+      Math.abs(aim.h - target.h) > 1.5) {
+      // Rise (or steer) to where the bubble is now, the rows above sliding up with it.
+      ui.animateTo({ curve: curves.springMotion(0.42, 0.82) }, (): void => {
+        this.flyY = ty; this.flyX = tx; this.flyW = target.w; this.flyH = target.h; this.listLift = 0;
+      });
+      next(2, target);
+      // Remember when it was last steered: it lands once the target has held still long enough for the spring.
+      this.flySteered = now;
+      return;
+    }
+    if (now - this.flySteered > 420 || now - started > 2500) { this.endFlight(generation); return; }
+    next(2, aim);
   }
+  private flySteered: number = 0;
   /** The flyer has landed (or could not): the bubble in the list shows in its place. */
-  private endFlight(generation: number, fade: boolean): void {
+  private endFlight(generation: number): void {
     if (generation !== this.flyGeneration) { return; }
-    if (fade) { this.getUIContext().animateTo({ duration: 200 }, (): void => { this.listLift = 0; }); } else { this.listLift = 0; }
-    this.flyText = ''; this.flyTarget = null;
+    this.listLift = 0; this.flyText = '';
   }
   /** The row that the flyer is on its way to (the newest user message with its text), hidden until it lands. */
   private flyingRow(item: AiTranscriptItem): boolean {
@@ -763,7 +792,7 @@ export struct RemoteAiWorkspace {
     this.followBottom = true; this.followTranscript();
   }
   private endSend(): void {
-    this.flyGeneration++; this.flyText = ''; this.flyTarget = null; this.listLift = 0;
+    this.flyGeneration++; this.flyText = ''; this.listLift = 0;
     this.pendingSend = null; this.sendSession = '';
   }
   /** The transition of a row appearing: the sent message has its own flight; other new rows fade up once. */
@@ -823,6 +852,31 @@ export struct RemoteAiWorkspace {
   private localCommandFor(text: string): AiWsCommand | null {
     return this.localCommands().find((command: AiWsCommand): boolean => command.name === text) ?? null;
   }
+  /**
+   * The text of each reply still streaming in, which its typewriter reads: the page sets it on every update, and the
+   * row (keyed by the reply alone while it streams) is not made again for each batch of words.
+   */
+  private streamTexts: Map<string, AiStreamText> = new Map();
+  private streamSource(item: AiTranscriptItem): AiStreamText {
+    let source = this.streamTexts.get(item.id);
+    if (source === undefined) {
+      source = new AiStreamText(item.text);
+      if (this.streamTexts.size > 32) { this.streamTexts.clear(); }
+      this.streamTexts.set(item.id, source);
+    } else if (source.text !== item.text) {
+      source.text = item.text;
+    }
+    return source;
+  }
+  private streaming(item: AiTranscriptItem): boolean {
+    return item.role === 'assistant' && aiStepState(item.state) === 'running';
+  }
+  /** Feeds every streaming reply's typewriter with the newest text. */
+  private feedStreams(): void {
+    for (const item of this.shownItems()) {
+      if (this.streaming(item)) { this.streamSource(item); }
+    }
+  }
   /** Messages, and each run of consecutive steps as one entry (computed once per transcript change). */
   private stepEntriesFor: AiTranscriptItem[] | null = null;
   private stepEntriesValue: AiStepEntry[] = [];
@@ -834,6 +888,8 @@ export struct RemoteAiWorkspace {
   private entryKey(entry: AiStepEntry): string {
     if (entry.item !== null) {
       const item = entry.item;
+      // A reply streaming in keeps its row: its typewriter follows the text (see streamSource).
+      if (this.streaming(item)) { return item.id + ':stream'; }
       return item.id + ':' + item.state + ':' + item.text.length.toString() + ':' + (item.output ?? '').length.toString() +
         (this.expanded(item.id) ? ':open' : '');
     }
@@ -1933,9 +1989,7 @@ export struct RemoteAiWorkspace {
         .backgroundColor(this.palette().userBubble).constraintSize({ maxWidth: '86%' })
         // The message being sent stays hidden until the flyer lands on it; its box is where the flyer goes.
         .opacity(this.flyingRow(item) ? 0 : 1)
-        .onAreaChange((_old: Area, next: Area): void => {
-          if (this.flyingRow(item)) { this.flyTarget = this.rectOf(next); }
-        })
+        .id(this.flyingRow(item) ? this.flyId('target') : '')
     }.width('100%')
   }
   /** The composer on its way into the conversation: the input turned bubble, over everything else. */
@@ -1953,6 +2007,8 @@ export struct RemoteAiWorkspace {
   @Builder private claudeItem(item: AiTranscriptItem) {
     if (item.role === 'user') {
       this.userBubble(item)
+    } else if (item.role === 'assistant' && this.streaming(item)) {
+      AiTypewriter({ source: this.streamSource(item), textSize: this.textSize, palette: this.palette() })
     } else if (item.role === 'assistant') {
       AiRemoteMarkdown({ text: item.text, textSize: this.textSize, palette: this.palette() })
     } else if (item.kind === 'thinking') {
@@ -2185,7 +2241,7 @@ export struct RemoteAiWorkspace {
       .onBlur((): void => { this.composerFocused = false; })
       .onChange((value: string): void => { if (this.allowed && !this.busy) { this.draft = value; } }).maxLength(128000)
       // Where a send starts from: the input's own box.
-      .onAreaChange((_old: Area, next: Area): void => { this.composerRect = this.rectOf(next); })
+      .id(this.flyId('composer'))
   }
   /**
    * The composer. Codex: a pill (+, 跟进, send) that opens into a card with + / permissions / model when focused.
@@ -2576,13 +2632,12 @@ export struct RemoteAiWorkspace {
           preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER, backgroundColor: this.pal().surface,
           blurStyle: BlurStyle.NONE })
         .onAreaChange((_old: Area, next: Area): void => {
-          this.rootX = Number(next.globalPosition.x) || 0; this.rootY = Number(next.globalPosition.y) || 0;
-          const width = Number(next.width), height = Number(next.height);
+            const width = Number(next.width), height = Number(next.height);
           if (Number.isFinite(width) && width > 0 && Math.abs(width - this.pageWidth) > 0.5) { this.pageWidth = width; }
           if (Number.isFinite(height) && height > 0 && Math.abs(height - this.pageHeight) > 0.5) { this.pageHeight = height; }
         })
       this.sendFlyer()
-    }.width('100%').height('100%')
+    }.width('100%').height('100%').id(this.flyId('root'))
   }
 }
 
