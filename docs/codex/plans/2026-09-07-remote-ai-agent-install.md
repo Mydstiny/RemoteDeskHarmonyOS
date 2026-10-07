@@ -4,6 +4,20 @@
 
 电脑端 Agent 可以执行部署。它需要主机终端/文件权限、发行仓库访问权限及用户选定的项目范围。正在承载对话的 DSH 不应为了部署而自行停止：默认安装到独立 RemoteDesk profile，先完成电脑端验收。若用户明确要求接管已有 web profile，则先交付可审阅的切换步骤，再由其他终端或服务管理器完成交接。
 
+## 0. 当前固定版本（2026-10-07 起，从源码提交安装）
+
+v0.3.0 发行包之后的修复（电脑 App 项目、紧凑配对二维码、DSH 设置页，以及同一设备错过续期后审批仍有效）不在任何发行包里，App 的部署提示词改为与 Pi 相同的源码安装：克隆仓库，检出下面的完整提交哈希。提交哈希本身就是完整性校验，不再列发行资产和 SHA256。下面第 1 节的 v0.3.0 发行包记录保留作历史。
+
+| 项目 | Codex | DSH | Pi |
+| --- | --- | --- | --- |
+| 仓库 | `Mydstiny/remotedesk-codex-plugin` | `Mydstiny/remotedesk-dsh-plugin` | `Mydstiny/remotedesk-pi-plugin` |
+| 分支 | `codex/control-panel`（PR #5） | `dsh/lease-approvals` | `pi/foundation` |
+| 固定提交 | `7e3fe3fff01242a2d664a7df88001ab6d78604a5` | `bbf715fb054f52f1aacd7ccbe5c5b029526de547` | `f0f8fad88f4035968e22fe64d7f0a33e064da3f1` |
+| 插件版本 / 协议 | `0.3.0` / `v1` | `0.3.0` / `v1` | `0.3.0` / `v1` |
+| 引擎 | Codex CLI `0.153.4` | DSH `0.1.2-rc.1` | Pi 1.0 或更新 |
+
+DSH 源码安装后在程序目录运行 `npm ci --omit=dev`，只安装 `vendor/` 里自带的 bridge-core。Gitee 镜像建好后，提示词优先 GitHub，连不上再用 Gitee 的同一提交。
+
 ## 1. 已发布版本与可信入口
 
 以下信息来自已合并并发布的电脑端 v0.3.0，不能把旧 AI0 探针文档当作当前部署步骤。两个仓库已按用户要求转为公开仓库，发行页和固定版本文档可匿名获取；部署提示词不要求用户提供 GitHub token。

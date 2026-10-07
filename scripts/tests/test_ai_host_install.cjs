@@ -36,38 +36,51 @@ function panel() {
   state.page = new context.Target(); state.page.aboutToAppear(); return state;
 }
 const cases = [
-  ['version pins match reviewed install source for both backends', () => {
-    const evidence = fs.readFileSync('docs/codex/plans/2026-09-07-remote-ai-agent-install.md', 'utf8');
-    for (const backend of ['codex', 'dsh']) {
+  ['every plugin installs from its reviewed pinned source commit, without an invented release asset', () => {
+    const evidence = fs.readFileSync('docs/codex/plans/2026-09-07-remote-ai-agent-install.md', 'utf8') +
+      fs.readFileSync('docs/codex/plans/2026-10-07-pi-plugin.md', 'utf8');
+    for (const backend of ['codex', 'dsh', 'pi']) {
       const release = policy.aiInstallRelease(backend);
-      for (const field of ['repository', 'version', 'engine', 'commit', 'asset', 'sha256']) {
-        assert.ok(evidence.includes(release[field]), backend + ' ' + field);
-      }
-      const other = policy.aiInstallRelease(backend === 'codex' ? 'dsh' : 'codex');
+      assert.equal(release.asset, ''); assert.equal(release.sha256, '');
+      assert.match(release.commit, /^[0-9a-f]{40}$/);
+      for (const field of ['repository', 'version', 'commit']) assert.ok(evidence.includes(release[field]), backend + ' ' + field);
+      assert.ok(policy.aiInstallManualUrl(backend).endsWith(release.commit + (backend === 'pi' ? '/README.md' : '/docs/operations.md')));
       for (const mode of ['local', 'lan']) {
         const prompt = policy.aiInstallPrompt(backend, mode);
-        for (const field of ['repository', 'version', 'engine', 'commit', 'asset', 'sha256']) assert.ok(prompt.includes(release[field]));
+        for (const field of ['repository', 'version', 'engine', 'commit']) assert.ok(prompt.includes(release[field]));
+        assert.ok(prompt.includes('从固定提交的源码安装') && prompt.includes('检出以上完整提交哈希'));
+        assert.equal(prompt.includes('尚无发行包'), backend === 'pi', 'only Pi has no release package at all');
+        assert.ok(!prompt.includes('资产：') && !prompt.includes('资产 SHA256') && !prompt.includes('/releases/tag/'));
         assert.ok(prompt.includes(policy.aiInstallManualUrl(backend)));
-        assert.ok(!prompt.includes(other.sha256)); assert.ok(!prompt.includes(other.commit));
+        for (const other of ['codex', 'dsh', 'pi'].filter(value => value !== backend)) {
+          assert.ok(!prompt.includes(policy.aiInstallRelease(other).commit), backend + ' names only its own commit');
+        }
+        if (backend === 'pi') {
+          assert.ok(prompt.includes('已登录的模型提供方') && prompt.includes('不读取、不复制 Pi 的凭据'));
+          assert.ok(!prompt.includes('Anthropic') && !prompt.includes('Claude'));
+          assert.ok(!prompt.includes('docs/agent-deploy.md') && prompt.includes(release.commit + '/docs/compatibility.md'));
+          assert.ok(prompt.includes('复制到新对话继续'));
+        } else {
+          assert.ok(prompt.includes(release.commit + '/docs/agent-deploy.md'));
+        }
+        if (backend === 'dsh') assert.ok(prompt.includes('npm ci --omit=dev'));
       }
     }
   }],
-  ['Pi installs from its pinned source commit without an invented release asset', () => {
-    const evidence = fs.readFileSync('docs/codex/plans/2026-10-07-pi-plugin.md', 'utf8');
-    const release = policy.aiInstallRelease('pi');
-    assert.equal(release.asset, ''); assert.equal(release.sha256, '');
-    assert.match(release.commit, /^[0-9a-f]{40}$/);
-    for (const field of ['repository', 'version', 'commit']) assert.ok(evidence.includes(release[field]), 'pi ' + field);
-    assert.ok(policy.aiInstallManualUrl('pi').endsWith(release.commit + '/README.md'));
-    for (const mode of ['local', 'lan']) {
-      const prompt = policy.aiInstallPrompt('pi', mode);
-      for (const field of ['repository', 'version', 'engine', 'commit']) assert.ok(prompt.includes(release[field]));
-      assert.ok(prompt.includes('尚无发行包') && prompt.includes('检出以上完整提交哈希'));
-      assert.ok(!prompt.includes('资产：') && !prompt.includes('资产 SHA256') && !prompt.includes('/releases/tag/'));
-      assert.ok(prompt.includes('已登录的模型提供方') && prompt.includes('不读取、不复制 Pi 的凭据'));
-      assert.ok(!prompt.includes('Anthropic') && !prompt.includes('Claude'));
-      assert.ok(!prompt.includes('docs/agent-deploy.md') && prompt.includes(release.commit + '/docs/compatibility.md'));
-      for (const other of ['codex', 'dsh']) assert.ok(!prompt.includes(policy.aiInstallRelease(other).commit));
+  ['the Gitee mirror is named only once it exists, after GitHub, with the same commit', () => {
+    if (policy.AI_PLUGIN_GITEE_OWNER === '') {
+      for (const backend of ['codex', 'dsh', 'pi']) {
+        assert.equal(policy.aiInstallMirror(backend), '');
+        assert.ok(!policy.aiInstallPrompt(backend, 'lan').includes('gitee.com'));
+      }
+      return;
+    }
+    for (const backend of ['codex', 'dsh', 'pi']) {
+      const mirror = policy.aiInstallMirror(backend), release = policy.aiInstallRelease(backend);
+      assert.match(mirror, /^https:\/\/gitee\.com\/[A-Za-z0-9_.-]+\/remotedesk-(codex|dsh|pi)-plugin$/);
+      const prompt = policy.aiInstallPrompt(backend, 'lan');
+      assert.ok(prompt.indexOf('https://github.com/' + release.repository) < prompt.indexOf(mirror), 'GitHub first');
+      assert.ok(prompt.includes('优先使用 GitHub') && prompt.includes(mirror + '.git') && prompt.includes('哈希不一致就停止'));
     }
   }],
   ['prompts carry each plugin install, service, panel, recovery and pairing steps', () => {

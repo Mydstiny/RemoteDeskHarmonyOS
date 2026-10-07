@@ -12,25 +12,28 @@ export interface AiInstallRelease {
   sha256: string;
 }
 
+/**
+ * The Gitee owner that mirrors the plugin repositories (same commits as GitHub), for computers that cannot reach
+ * GitHub; '' until the mirror exists, and the prompts then name GitHub only.
+ */
+export const AI_PLUGIN_GITEE_OWNER: string = '';
+
 // Public, version-pinned metadata from the reviewed native-host handoff.
 // Callers own their copy; no account, host configuration or invitation is read.
 export function aiInstallRelease(backend: AiBackend): AiInstallRelease {
+  // Every plugin installs from its pinned source commit (the fixes after the v0.3.0 packages, such as approvals that
+  // survive a lapsed lease, are in no release package), so there is no asset or checksum to show.
   if (backend === 'codex') {
     return { name: 'Codex', repository: 'Mydstiny/remotedesk-codex-plugin', version: '0.3.0', protocol: 1,
-      engine: 'Codex CLI 0.153.4', commit: '87203937ff20c8d527ef2fe09a0b7e4a2ce0af4d',
-      asset: 'remotedesk-codex-plugin-0.3.0.tgz',
-      sha256: 'd2559c8d9a560740355fdbb6ad1a55ea332891d32126f6914449d8636fc1a67f' };
+      engine: 'Codex CLI 0.153.4', commit: '7e3fe3fff01242a2d664a7df88001ab6d78604a5', asset: '', sha256: '' };
   }
   if (backend === 'dsh') {
     return { name: 'DSH', repository: 'Mydstiny/remotedesk-dsh-plugin', version: '0.3.0', protocol: 1,
-      engine: 'DSH 0.1.2-rc.1', commit: 'c75f6b8e1e904bb4406e46bd476b8849108622c0',
-      asset: 'remotedesk-dsh-plugin-0.3.0.tgz',
-      sha256: 'c17d0e05fc656ceee96fffdad175dfd702f8ebe45ccdcae457d0aff12ada873e' };
+      engine: 'DSH 0.1.2-rc.1', commit: 'bbf715fb054f52f1aacd7ccbe5c5b029526de547', asset: '', sha256: '' };
   }
   if (backend === 'pi') {
-    // No release package yet: installed from the pinned source commit, so there is no asset or checksum to show.
     return { name: 'Pi', repository: 'Mydstiny/remotedesk-pi-plugin', version: '0.3.0', protocol: 1,
-      engine: 'Pi 1.0 或更新（@earendil-works/pi-coding-agent）', commit: 'd164a65e28a15d7cb9eb6026c0e70deef4858a4c',
+      engine: 'Pi 1.0 或更新（@earendil-works/pi-coding-agent）', commit: 'f0f8fad88f4035968e22fe64d7f0a33e064da3f1',
       asset: '', sha256: '' };
   }
   throw new Error('Unsupported AI installation backend');
@@ -39,7 +42,13 @@ export function aiInstallRelease(backend: AiBackend): AiInstallRelease {
 export function aiInstallManualUrl(backend: AiBackend): string {
   const release = aiInstallRelease(backend);
   return 'https://github.com/' + release.repository + '/blob/' + release.commit +
-    (release.asset === '' ? '/README.md' : '/docs/operations.md');
+    (backend === 'pi' ? '/README.md' : '/docs/operations.md');
+}
+
+/** The plugin's Gitee mirror ('' while there is none). */
+export function aiInstallMirror(backend: AiBackend): string {
+  if (AI_PLUGIN_GITEE_OWNER === '') { return ''; }
+  return 'https://gitee.com/' + AI_PLUGIN_GITEE_OWNER + '/' + aiInstallRelease(backend).repository.split('/')[1];
 }
 
 interface AiInstallEngine {
@@ -59,13 +68,13 @@ function aiInstallEngine(backend: AiBackend): AiInstallEngine {
   if (backend === 'dsh') {
     return { bin: 'remotedesk-dsh.mjs', port: 9444, panelPort: 9544,
       requires: 'DSH 0.1.2-rc.1 与 pnpm 已能在这台电脑上运行，并已在 DSH 里配置好要用的模型。',
-      setup: 'DSH 默认创建独立 RemoteDesk profile（~/.dsh/profiles/remotedesk）。不要停止承载当前对话的 DSH，不接管或重复启动原有 web profile。新 profile 无法使用现有模型登录时，通过原生流程让我配置，不复制账号密钥。插件在这个 profile 的 node_modules 里也有运行副本，升级时要一起更新。',
+      setup: 'DSH 默认创建独立 RemoteDesk profile（~/.dsh/profiles/remotedesk）。不要停止承载当前对话的 DSH，不接管或重复启动原有 web profile。新 profile 无法使用现有模型登录时，通过原生流程让我配置，不复制账号密钥。插件在这个 profile 的 node_modules 里也有运行副本，升级时要一起更新。源码安装后在程序目录运行 npm ci --omit=dev（只安装仓库 vendor 里自带的 bridge-core，不联网下载其他包）。',
       native: 'DSH 的工作区会作为电脑 App 里的项目出现，工作区里已有的会话也能在手机上继续。' };
   }
   if (backend === 'pi') {
     return { bin: 'remotedesk-pi.mjs', port: 9445, panelPort: 9545,
       requires: '已安装 Pi 1.0 或更新（npm i -g @earendil-works/pi-coding-agent），并至少登录过一个模型提供方（在 Pi 里 /login，或在 pi-gui 里登录）。',
-      setup: 'Pi 插件使用我电脑上已安装的 Pi 和它已登录的模型提供方，与 Pi 终端、pi-gui 共用 ~/.pi/agent 里的对话；不读取、不复制 Pi 的凭据，也不加载 Pi 扩展。插件通过 Pi 的 SDK 运行，不需要另装依赖。权限分三档：只读（默认，只能读和搜索）、修改前询问（每条命令、每次改文件都先在手机上批准）、完全访问。pi-gui 正打开着的对话，手机只能查看。',
+      setup: 'Pi 插件使用我电脑上已安装的 Pi 和它已登录的模型提供方，与 Pi 终端、pi-gui 共用 ~/.pi/agent 里的对话；不读取、不复制 Pi 的凭据，也不加载 Pi 扩展。插件通过 Pi 的 SDK 运行，不需要另装依赖。权限分三档：只读（默认，只能读和搜索）、修改前询问（每条命令、每次改文件都先在手机上批准）、完全访问。pi-gui 会一直占用它打开过的对话，直到在 pi-gui 里关闭该对话或退出 pi-gui；这期间手机只能查看，可以在手机上「复制到新对话继续」。',
       native: 'pi-gui 的工作区和所有有过 Pi 对话的文件夹会作为电脑 App 里的项目出现，里面的对话可以在手机上继续。' };
   }
   return { bin: 'remotedesk-codex.mjs', port: 9443, panelPort: 9543,
@@ -79,6 +88,7 @@ export function aiInstallPrompt(backend: AiBackend, mode: AiInstallMode): string
   const release = aiInstallRelease(backend);
   const engine = aiInstallEngine(backend);
   const source = 'https://github.com/' + release.repository;
+  const mirror = aiInstallMirror(backend);
   const pinned = source + '/blob/' + release.commit + '/';
   const local = mode === 'local';
   const command = 'node bin/' + engine.bin;
@@ -86,7 +96,7 @@ export function aiInstallPrompt(backend: AiBackend, mode: AiInstallMode): string
     '连接方式：仅本机准备。服务仅监听电脑回环地址，不监听局域网或公网，不修改防火墙、路由器或端口转发；本轮不进行手机连接。' :
     '连接方式：局域网连接。先确认电脑上的监听网卡与端口，只绑定所选局域网地址；不开放公网、不配置 RustDesk 中继。防火墙或其他网络配置变更须另行确认。';
   const fromSource = release.asset === '';
-  const documents = fromSource ?
+  const documents = backend === 'pi' ?
     [pinned + 'README.md', pinned + 'docs/compatibility.md', pinned + 'SECURITY.md', pinned + 'compatibility.json'] :
     [pinned + 'docs/agent-deploy.md', aiInstallManualUrl(backend), pinned + 'SECURITY.md', pinned + 'compatibility.json'];
   const lines: string[] = [
@@ -95,9 +105,16 @@ export function aiInstallPrompt(backend: AiBackend, mode: AiInstallMode): string
     connection,
     '一、固定版本与来源',
     '仓库：' + source,
-    fromSource ? '发行方式：尚无发行包，从固定提交的源码安装' : '发行页：' + source + '/releases/tag/v' + release.version,
+    fromSource ? (backend === 'pi' ? '发行方式：尚无发行包，从固定提交的源码安装' :
+      '发行方式：从固定提交的源码安装（v' + release.version + ' 发行包之后的修复只在源码里，不要改用发行包）') :
+      '发行页：' + source + '/releases/tag/v' + release.version,
     '固定提交：' + release.commit
   ];
+  if (mirror !== '') {
+    lines.push('优先使用 GitHub。先用 git ls-remote ' + source + '.git 检查能否连接；连不上（超时、被拒绝或 DNS 失败）时改用 Gitee 镜像：' +
+      mirror + '（与 GitHub 同一份提交，克隆地址 ' + mirror + '.git）。镜像同样检出上面的完整提交哈希，哈希不一致就停止并报告；文档链接把 github.com/' +
+      release.repository + '/blob/ 换成 gitee.com/' + AI_PLUGIN_GITEE_OWNER + '/' + release.repository.split('/')[1] + '/blob/ 阅读。报告里写明实际使用的来源。');
+  }
   if (!fromSource) { lines.push('资产：' + release.asset, '资产 SHA256：' + release.sha256); }
   lines.push(
     '协议：v' + release.protocol + '；支持引擎：' + release.engine + '。',
