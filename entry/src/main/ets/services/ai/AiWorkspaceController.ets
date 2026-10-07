@@ -14,6 +14,9 @@ const SESSION_LIST_CACHE: Map<string, AiSession[]> = new Map();
 const TRANSCRIPT_CACHE: Map<string, AiTranscriptItem[]> = new Map();
 const TRANSCRIPT_CACHE_LIMIT: number = 12;
 
+/** A slash command the engine expands in a prompt (Pi's prompt templates and skills), as its snapshot lists them. */
+export interface AiEngineCommand { name: string; description: string; kind: string; hint: string; }
+
 export class AiWorkspaceController {
   client: AiBridgeClient | null = null;
   projects: AiProject[] = [];
@@ -35,6 +38,7 @@ export class AiWorkspaceController {
   busy: boolean = false;
   allowed: boolean = false;
   inputModalities: string[] = [];
+  commands: AiEngineCommand[] = [];
   /** The conversation's current model and reasoning effort as the engine reports them. */
   currentModel: string = '';
   currentEffort: string = '';
@@ -220,7 +224,7 @@ export class AiWorkspaceController {
     this.assertGeneration(generation);
     this.client.stopEvents(); this.streamToken++; this.stopResume();
     this.rememberTranscript();
-    this.sessionId = id; this.approvals = []; this.diff = ''; this.terminals = []; this.transcript.clear();
+    this.sessionId = id; this.approvals = []; this.diff = ''; this.terminals = []; this.transcript.clear(); this.commands = [];
     this.currentModel = ''; this.currentEffort = ''; this.currentPermission = ''; this.currentCollaboration = ''; this.contextUsed = 0; this.contextWindow = 0;
     this.previewItems = TRANSCRIPT_CACHE.get(this.cacheKey() + ':' + id)?.slice() ?? [];
     if (this.previewItems.length > 0) { this.changed(); }
@@ -257,6 +261,13 @@ export class AiWorkspaceController {
         if (nativeState['tokenUsage'] !== undefined) { this.noteUsage('tokenUsage', this.record(nativeState['tokenUsage'])); }
       }
       this.inputModalities = aiArray(snapshot['inputModalities']).map((value: Object): string => aiString(value));
+      if (!older && snapshot['commands'] !== undefined) {
+        this.commands = aiArray(snapshot['commands']).map((value: Object): AiEngineCommand => {
+          const row = aiRecord(value);
+          return { name: aiString(row['name']), description: aiString(row['description']), kind: aiString(row['kind']),
+            hint: aiString(row['hint']) };
+        }).filter((command: AiEngineCommand): boolean => /^\/[A-Za-z0-9:_.-]{1,64}$/.test(command.name)).slice(0, 100);
+      }
       if (client.host.backend === 'codex') {
         const turns = aiArray(snapshot['turns']).slice().reverse();
         for (const value of turns) {
@@ -569,7 +580,7 @@ export class AiWorkspaceController {
     this.projects = []; this.sessions = []; this.models = []; this.projectId = ''; this.sessionId = '';
     this.rememberTranscript();
     this.currentModel = ''; this.currentEffort = ''; this.currentPermission = ''; this.currentCollaboration = ''; this.contextUsed = 0; this.contextWindow = 0; this.previewItems = [];
-    this.title = ''; this.allowed = false; this.accessRevoked = false; this.inputModalities = []; this.historyCursor = ''; this.archived = false; this.busy = false;
+    this.title = ''; this.allowed = false; this.accessRevoked = false; this.inputModalities = []; this.commands = []; this.historyCursor = ''; this.archived = false; this.busy = false;
     this.transcript.clear(); this.approvals = []; this.diff = ''; this.terminals = []; this.operations = [];
   }
 }

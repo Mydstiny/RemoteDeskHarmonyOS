@@ -39,4 +39,26 @@ assert.ok(sheet.includes('.constraintSize({ maxHeight: Math.max(240, this.pageHe
 const timeline = fs.readFileSync(path.join(ETS, 'services/ai/AiTimeline.ets'), 'utf8');
 assert.ok(timeline.includes("case 'LS':\n      return { icon: 'doc', verb: '列出目录'"));
 assert.ok(timeline.includes("case 'ls': return 'LS';"));
+// Sending (every engine): the text leaves the composer at once, flies up with a spring and lands near the top; the
+// row below it holds the place the reply fills; a failed send puts the text back.
+assert.ok(page.includes('const LANDING_GAP: number = 12;'));
+const begin = page.slice(page.indexOf('private beginSend('), page.indexOf('private failSend('));
+assert.ok(begin.includes('curves.springMotion(') && begin.includes('this.pendingSend = {') && begin.includes("this.draft = ''"));
+assert.ok(page.includes('if (this.landingSpacer > 0) {\n            ListItem() { Column().width(\'100%\').height(this.landingSpacer) }'));
+assert.ok(page.includes('}.transition(this.entryEffect(entry))'));
+const send = page.slice(page.indexOf('private async send('), page.indexOf('private async attach('));
+assert.ok(send.includes('this.beginSend(text);') && send.includes('this.failSend(text);'));
+assert.ok(send.indexOf('this.beginSend(text);') < send.indexOf("await this.run("), 'the bubble leaves before the network answers');
+const start = page.slice(page.indexOf('private async startChat('), page.indexOf('private modelChipLabel('));
+assert.ok(start.includes('this.beginSend(text);') && start.includes('this.failSend(text);'));
+// The engine's copy replaces the bubble shown at once.
+assert.ok(page.includes('this.userCount(this.items, this.pendingSend.text) > this.pendingBefore) { this.pendingSend = null; }'));
+
+// / commands: suggestions above the composer; the app's own run here, the engine's (Pi templates/skills) fill in.
+for (const name of ['/compact', '/model', '/stop', '/diff', '/new', '/reconnect']) assert.ok(page.includes("name: '" + name + "'"), name);
+assert.ok(page.includes('if (this.slashSuggestions().length > 0) { this.commandPanel() }'));
+assert.ok(send.includes('const command = this.localCommandFor(text);'));
+assert.ok(page.includes("if (!command.local) { this.draft = command.name + ' '; return; }"));
+const controller = fs.readFileSync(path.join(ETS, 'services/ai/AiWorkspaceController.ets'), 'utf8');
+assert.ok(controller.includes("snapshot['commands']"));
 console.log('PASS remote AI composer centring, shimmer, pull to refresh and model sheet sizing');

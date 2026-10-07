@@ -300,7 +300,9 @@ const cases = [
     assert.ok(source.includes('.scrollable(ScrollDirection.Vertical)')); assert.ok(!source.includes('ScrollDirection.None'));
     assert.equal((source.match(/Scroll\(\) \{ this\.workspace\(\) \}/g) || []).length, 1);
     const suffix = body.slice(body.lastIndexOf("}.width('100%')")); assert.ok(suffix.includes('minHeight:')); assert.ok(!suffix.includes('.height('));
-    const height = argument(body, '}.height('); // The transcript List's production expression.
+    assert.equal(argument(body, '}.height('), 'this.transcriptHeight()'); // The transcript List's production height.
+    const method = source.slice(source.indexOf('private transcriptHeight(): number {'));
+    const height = method.slice(method.indexOf('return ') + 7, method.indexOf(';'));
     assert.ok(height.includes('this.topChrome') && height.includes('this.bottomChrome'), 'the list takes the measured rest');
     assert.ok(source.includes('ui.setKeyboardAvoidMode(KeyboardAvoidMode.RESIZE);') && source.includes('onPageHide(): void { this.restoreKeyboardAvoid(); }'));
     for (const pageHeight of [160, 320, 399, 400, 480, 800]) for (const topInset of [0, 32, 80]) for (const sessionId of ['', 'fixture'])

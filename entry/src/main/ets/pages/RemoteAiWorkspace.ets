@@ -3,7 +3,7 @@ import { AiActionButton } from '../components/ai/AiActionButton';
 import { AiFormField } from '../components/ai/AiFormField';
 import { aiStatusLabel, aiRequestTitle, aiApprovalDetails, aiModeLabel, aiModeDetail, aiOperationSummary, aiShortTime, aiRelativeTime, aiEffortLabel, aiTokens, aiElapsed } from '../services/ai/AiPresentation';
 import { aiParams } from '../services/ai/AiWirePolicy';
-import { KeyboardAvoidMode, router, promptAction } from '@kit.ArkUI';
+import { KeyboardAvoidMode, curves, router, promptAction } from '@kit.ArkUI';
 import { common, ApplicationStateChangeCallback } from '@kit.AbilityKit';
 import { picker, fileIo } from '@kit.CoreFileKit';
 import { photoAccessHelper } from '@kit.MediaLibraryKit';
@@ -13,7 +13,7 @@ import { AppSheetHeader } from '../components/AppSheetHeader';
 import { AiAccess, AiAccountLease } from '../services/ai/AiAccess';
 import { AiHostService } from '../services/ai/AiHostService';
 import { AiHost, AiProject, AiSession, AiTranscriptItem, AiApproval, AiPendingOperation, aiAgentEvents, aiBackendName } from '../services/ai/AiModels';
-import { AiWorkspaceController } from '../services/ai/AiWorkspaceController';
+import { AiEngineCommand, AiWorkspaceController } from '../services/ai/AiWorkspaceController';
 import { AiLocalStore } from '../services/ai/AiLocalStore';
 import { aiArray, aiRecord, aiString, aiErrorText } from '../services/ai/AiWirePolicy';
 import { AiStylePalette, aiStylePalette } from '../services/ai/AiStylePalette';
@@ -27,6 +27,10 @@ interface AiWsButton { label: string; primary: boolean; enabled: boolean; action
 interface AiWsIconButton { symbol: Resource; label: string; enabled: boolean; action: () => void; }
 interface AiWsTab { label: string; selected: boolean; enabled: boolean; action: () => void; }
 interface AiHomeRow { key: string; session: AiSession | null; project: string; title: string; count: number; more: number; }
+/** A / command: the app's own (it acts here) or the engine's (it is sent for the engine to expand). */
+interface AiWsCommand { name: string; description: string; local: boolean; }
+/** Where a sent message lands: this far below the top of the conversation (about 2 cm from the top of the screen). */
+const LANDING_GAP: number = 12;
 interface AiWsSheetHead { title: string; close: () => void; }
 interface AiWsChoice { label: string; detail: string; selected: boolean; enabled: boolean; action: () => void; }
 interface AiWsModes { values: string[]; selected: string; choose: (value: string) => void; }
@@ -168,7 +172,11 @@ export struct RemoteAiWorkspace {
     if (this.listFilter !== '' && !this.projects.some((project: AiProject): boolean => project.id === this.listFilter)) { this.listFilter = ''; }
     // Only a conversation follows its newest message; the list keeps where the reader is (a pull to refresh jumped
     // to the bottom when the list followed too).
+    // A send belongs to its conversation; the engine's own copy of the message replaces the one shown at once.
+    if (this.landingSession !== '' && this.sessionId !== this.landingSession) { this.endLanding(); }
+    if (this.pendingSend !== null && this.userCount(this.items, this.pendingSend.text) > this.pendingBefore) { this.pendingSend = null; }
     if (this.sessionId !== '') { this.followTranscript(); }
+    if (this.landingText !== '') { this.measureLandingSoon(); }
     this.trackWorking();
     if (this.approval !== null && !this.approvals.some((item: AiApproval): boolean => item.id === this.approval?.id)) {
       this.showApproval = false; this.approval = null; this.questions = [];
@@ -395,18 +403,27 @@ export struct RemoteAiWorkspace {
   /** The home composer's send: a new conversation in the chosen project, titled by the prompt, then the prompt. */
   private async startChat(): Promise<void> {
     const text = this.draft.trim(), project = this.homeProjectId();
-    if (text === '' || project === '' || !this.allowed || !AiAccess.getInstance().proVisible()) { return; }
+    if (text === '' || !this.allowed || !AiAccess.getInstance().proVisible()) { return; }
+    const command = this.localCommandFor(text);
+    if (command !== null) { this.runCommand(command); return; }
+    if (project === '' || this.busy || !this.alive || this.inBackground) { return; }
     this.resetView();
+    const settings = this.settings(), attachments = this.attachments.slice();
+    // The message leaves the composer now; it lands in the new conversation as soon as that opens.
+    this.beginSend(text); this.pendingBefore = 0;
     await this.run(async (): Promise<void> => {
-      const title = text.split('\n')[0].slice(0, 40);
-      await this.controller.create(title, project);
-      const params: Record<string, Object> = aiParams(["text"], [text]);
-      params['settings'] = this.settings();
-      if (this.attachments.length > 0) { params['attachments'] = this.attachments.slice(); }
-      const sentAt = this.controller.transcript.mark();
-      const result = await this.controller.action('turn.start', params);
-      if (this.host !== null && aiAgentEvents(this.host.backend)) { this.controller.transcript.echo(text, aiString(result['turnId']), sentAt); }
-      this.draft = ''; this.attachments = [];
+      try {
+        const title = text.split('\n')[0].slice(0, 40);
+        await this.controller.create(title, project);
+        this.landingSession = this.controller.sessionId;
+        const params: Record<string, Object> = aiParams(["text"], [text]);
+        params['settings'] = settings;
+        if (attachments.length > 0) { params['attachments'] = attachments; }
+        const sentAt = this.controller.transcript.mark();
+        const result = await this.controller.action('turn.start', params);
+        if (this.host !== null && aiAgentEvents(this.host.backend)) { this.controller.transcript.echo(text, aiString(result['turnId']), sentAt); }
+        this.attachments = [];
+      } catch (error) { this.failSend(text); throw new Error((error as Error).message); }
     });
   }
   private modelChipLabel(): string {
@@ -424,18 +441,25 @@ export struct RemoteAiWorkspace {
   }
   private async send(steer: boolean): Promise<void> {
     const text = this.draft.trim(); if (text === '' || !this.allowed || !AiAccess.getInstance().proVisible()) { return; }
+    const command = this.localCommandFor(text);
+    if (command !== null) { this.runCommand(command); return; }
+    if (this.busy || !this.alive || this.inBackground) { return; }
+    const params: Record<string, Object> = aiParams(["text"], [text]);
+    if (!steer) {
+      params['settings'] = this.settings();
+      if (this.attachments.length > 0) { params['attachments'] = this.attachments.slice(); }
+    }
+    // Taken before sending: the engine's own copy of the prompt may arrive before the acknowledgement.
+    const sentAt = this.controller.transcript.mark();
+    // The message leaves the composer at once (every engine) and flies up to its landing place.
+    this.beginSend(text);
     await this.run(async (): Promise<void> => {
-      const params: Record<string, Object> = aiParams(["text"], [text]);
-      if (!steer) {
-        params['settings'] = this.settings();
-        if (this.attachments.length > 0) { params['attachments'] = this.attachments.slice(); }
-      }
-      // Taken before sending: the engine's own copy of the prompt may arrive before the acknowledgement.
-      const sentAt = this.controller.transcript.mark();
-      const result = await this.controller.action(steer ? 'turn.steer' : 'turn.start', params);
-      // Pi echoes the prompt only once its turn takes it; show it until its own event arrives.
-      if (this.host !== null && aiAgentEvents(this.host.backend)) { this.controller.transcript.echo(text, aiString(result['turnId']), sentAt); }
-      this.draft = ''; this.attachments = [];
+      try {
+        const result = await this.controller.action(steer ? 'turn.steer' : 'turn.start', params);
+        // Pi echoes the prompt only once its turn takes it; show it until its own event arrives.
+        if (this.host !== null && aiAgentEvents(this.host.backend)) { this.controller.transcript.echo(text, aiString(result['turnId']), sentAt); }
+        this.attachments = [];
+      } catch (error) { this.failSend(text); throw new Error((error as Error).message); }
     });
   }
   private async attach(photo: boolean = false): Promise<void> {
@@ -506,13 +530,150 @@ export struct RemoteAiWorkspace {
   private composerMode(): string { return this.working() && this.operator() ? 'stop' : 'send'; }
   /** Follows new output while the reader is at the bottom; scrolling up stops following until they return. */
   private listScroller: Scroller | null = null;
+  /**
+   * A message just sent, shown at once for every engine until the engine's own copy of it is in the transcript
+   * (how many user messages had its text when it was sent tells the two apart).
+   */
+  @State pendingSend: AiTranscriptItem | null = null;
+  private pendingBefore: number = 0;
+  private sendCount: number = 0;
+  /**
+   * The sent message flies up from the composer and lands near the top; an empty row below it holds the place the
+   * reply grows into, so the reply fills the page down to the composer and only then scrolls.
+   */
+  @State landingSpacer: number = 0;
+  private landingText: string = '';
+  private flyEffectValue: TransitionEffect | null = null;
+  private flown: boolean = false;
+  private landingSession: string = '';
+  private shownFor: AiTranscriptItem[] | null = null;
+  private shownPending: AiTranscriptItem | null = null;
+  private shownValue: AiTranscriptItem[] = [];
   private followBottom: boolean = true;
   private scroller(): Scroller {
     if (this.listScroller === null) { this.listScroller = new Scroller(); }
     return this.listScroller;
   }
   /** The transcript rows the current style and tab show (the Codex diff tab shows its own pane instead). */
-  private shownItems(): AiTranscriptItem[] { return this.visibleItems(); }
+  /** The transcript as shown: the visible items, then a message just sent until the engine's copy of it arrives. */
+  private shownItems(): AiTranscriptItem[] {
+    const items = this.visibleItems(), pending = this.pendingSend;
+    if (this.shownFor === items && this.shownPending === pending) { return this.shownValue; }
+    this.shownFor = items; this.shownPending = pending;
+    this.shownValue = pending !== null && this.userCount(items, pending.text) <= this.pendingBefore ? items.concat([pending]) : items;
+    return this.shownValue;
+  }
+  private userCount(items: AiTranscriptItem[], text: string): number {
+    return items.filter((item: AiTranscriptItem): boolean => item.role === 'user' && item.text.trim() === text).length;
+  }
+  /** The height the conversation list gets between the header and the composer. */
+  private transcriptHeight(): number {
+    return Math.max(180, this.pageHeight - this.topVp() - this.topChrome - this.bottomChrome - 16);
+  }
+  /** Starts a send: the text leaves the composer, flies up and lands near the top with a spring. */
+  private beginSend(text: string): void {
+    const height = this.transcriptHeight();
+    this.landingSession = this.sessionId; this.landingText = text; this.flown = false;
+    this.flyEffectValue = TransitionEffect.translate({ y: Math.max(60, height - LANDING_GAP - 48) })
+      .combine(TransitionEffect.scale({ x: 0.9, y: 0.9, centerX: '100%', centerY: '0%' }))
+      .combine(TransitionEffect.opacity(0.35))
+      .animation({ curve: curves.springMotion(0.55, 0.74) });
+    this.pendingBefore = this.userCount(this.items, text);
+    this.pendingSend = { id: 'send:' + (++this.sendCount).toString(), role: 'user', title: 'user', text, state: 'completed',
+      turnId: '', kind: 'user', detail: '', output: '' };
+    this.landingSpacer = Math.max(0, Math.round(height - LANDING_GAP - 48 - 18));
+    this.followBottom = true; this.draft = '';
+    this.followTranscript(); this.measureLandingSoon();
+  }
+  /** A send that failed: the bubble goes and the text is back in the composer. */
+  private failSend(text: string): void {
+    this.pendingSend = null; this.landingText = ''; this.landingSpacer = 0;
+    if (this.draft === '') { this.draft = text; }
+  }
+  private endLanding(): void { this.landingText = ''; this.landingSpacer = 0; this.pendingSend = null; this.landingSession = ''; }
+  /** The transition of a row appearing: the sent message flies in once (its engine copy then takes its place quietly). */
+  private entryEffect(entry: AiStepEntry): TransitionEffect {
+    if (!this.fresh('t:' + entry.key)) { return TransitionEffect.IDENTITY; }
+    const item = entry.item;
+    if (item !== null && item.role === 'user' && this.landingText !== '' && item.text.trim() === this.landingText) {
+      if (!this.flown && this.flyEffectValue !== null) { this.flown = true; return this.flyEffectValue; }
+      return TransitionEffect.IDENTITY;
+    }
+    return this.enterEffect();
+  }
+  /** Sizes the place below the landed message to what the reply has not filled yet; done once the reply reaches the composer. */
+  private measureLanding(): void {
+    const scroller = this.listScroller;
+    if (this.landingText === '' || this.sessionId === '' || scroller === null) { return; }
+    const entries = this.stepEntries();
+    let at = -1;
+    for (let i = entries.length - 1; i >= 0; i--) {
+      const item = entries[i].item;
+      if (item !== null && item.role === 'user' && item.text.trim() === this.landingText) { at = i; break; }
+    }
+    if (at < 0) { return; }
+    const anchor = (this.historyCursor !== '' ? 1 : 0) + (this.shownItems().length === 0 ? 1 : 0) + at;
+    const last = this.listLength() - 1 - (this.landingSpacer > 0 ? 1 : 0);
+    let top: RectResult; let bottom: RectResult;
+    try { top = scroller.getItemRect(anchor); bottom = scroller.getItemRect(last); } catch (_error) { return; }
+    if (bottom.height <= 0) { return; }
+    // The message has scrolled away above: the reply is taller than the page and simply scrolls.
+    if (top.height <= 0) { this.landingSpacer = 0; this.landingText = ''; return; }
+    const next = Math.max(0, Math.round(this.transcriptHeight() - LANDING_GAP - (bottom.y + bottom.height - top.y) - 18));
+    if (Math.abs(next - this.landingSpacer) >= 2) { this.landingSpacer = next; this.followTranscript(); }
+    if (next === 0) { this.landingText = ''; }
+  }
+  private measureLandingSoon(): void {
+    for (const delay of [60, 240, 600]) { setTimeout((): void => { if (this.alive) { this.measureLanding(); } }, delay); }
+  }
+  /** The app's own / commands that make sense here. */
+  private localCommands(): AiWsCommand[] {
+    const rows: AiWsCommand[] = [];
+    if (this.sessionId !== '' && this.capability('compact') && this.operator()) {
+      rows.push({ name: '/compact', description: '压缩上下文', local: true });
+    }
+    if (this.models.length > 0) { rows.push({ name: '/model', description: '选择模型与思考强度', local: true }); }
+    if (this.sessionId !== '' && this.working() && this.capability('cancel') && this.operator()) {
+      rows.push({ name: '/stop', description: '停止这一轮', local: true });
+    }
+    if (this.sessionId !== '' && this.capability('diffs')) { rows.push({ name: '/diff', description: '查看改动', local: true }); }
+    if (this.sessionId !== '') { rows.push({ name: '/new', description: '回到对话列表，开始新对话', local: true }); }
+    rows.push({ name: '/reconnect', description: '重新连接电脑', local: true });
+    return rows;
+  }
+  /** While the composer holds just "/…": the app's and the engine's commands that start with it. */
+  private slashSuggestions(): AiWsCommand[] {
+    const draft = this.draft;
+    if (!draft.startsWith('/') || /\s/.test(draft) || !this.allowed) { return []; }
+    const query = draft.toLowerCase();
+    const engine = this.controller.commands.map((command: AiEngineCommand): AiWsCommand => ({ name: command.name,
+      description: command.description + (command.hint !== '' ? ' · ' + command.hint : ''), local: false }));
+    return this.localCommands().concat(engine)
+      .filter((command: AiWsCommand): boolean => command.name.toLowerCase().startsWith(query)).slice(0, 8);
+  }
+  /** An engine command goes into the composer (with a space for its arguments); the app's own act at once. */
+  private runCommand(command: AiWsCommand): void {
+    if (!command.local) { this.draft = command.name + ' '; return; }
+    this.draft = '';
+    if (command.name === '/compact') {
+      void this.run(async (): Promise<void> => { await this.controller.action('session.compact'); });
+    } else if (command.name === '/model') {
+      this.showModelPicker = true;
+    } else if (command.name === '/stop') {
+      void this.run(async (): Promise<void> => { await this.controller.action('turn.cancel'); });
+    } else if (command.name === '/diff') {
+      this.detailTab = 1; this.showDetails = true;
+      void this.run(async (): Promise<void> => { await this.controller.loadDiff(); });
+    } else if (command.name === '/new') {
+      void this.backToList();
+    } else if (command.name === '/reconnect') {
+      void this.reconnect();
+    }
+  }
+  /** Sending exactly one of the app's own commands runs it instead of sending it as text. */
+  private localCommandFor(text: string): AiWsCommand | null {
+    return this.localCommands().find((command: AiWsCommand): boolean => command.name === text) ?? null;
+  }
   /** Messages, and each run of consecutive steps as one entry (computed once per transcript change). */
   private stepEntriesFor: AiTranscriptItem[] | null = null;
   private stepEntriesValue: AiStepEntry[] = [];
@@ -536,9 +697,10 @@ export struct RemoteAiWorkspace {
   /** Rows in the list, the same way build() lays them out, so following knows where the bottom is. */
   private listLength(): number {
     if (this.sessionId === '') { return 1 + this.homeRows().length; }
-    let count = (this.historyCursor !== '' ? 1 : 0) + (this.items.length === 0 ? 1 : 0);
+    let count = (this.historyCursor !== '' ? 1 : 0) + (this.shownItems().length === 0 ? 1 : 0);
     count += this.stepEntries().length + (this.working() ? 1 : 0);
     if (this.changeSummary() !== '') { count++; }
+    if (this.landingSpacer > 0) { count++; }
     return count;
   }
   /**
@@ -1810,8 +1972,31 @@ export struct RemoteAiWorkspace {
    * Claude: a card with the text over +, the model pill and send. The Claude home list starts conversations from its
    * 新对话 button instead.
    */
+  /** The / commands matching what is typed, above the composer: the app's own act at once, the engine's fill in. */
+  @Builder private commandPanel() {
+    Column() {
+      ForEach(this.slashSuggestions(), (command: AiWsCommand, index: number): void => {
+        if (index > 0) { Divider().color(this.palette().border).margin({ left: 14, right: 14 }) }
+        Row({ space: 10 }) {
+          Text(command.name).fontSize(15).fontWeight(FontWeight.Medium).fontFamily(AppConfig.fontFamily)
+            .fontColor(this.palette().text)
+          Text(command.description).fontSize(13).fontFamily(AppConfig.fontFamily).fontColor(this.palette().text3)
+            .layoutWeight(1).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+          if (!command.local) {
+            Text(this.backendName()).fontSize(11).fontFamily(AppConfig.fontFamily).fontColor(this.palette().text3)
+              .padding({ left: 6, right: 6, top: 2, bottom: 2 }).borderRadius(6).backgroundColor(this.palette().surface)
+          }
+        }.width('100%').height(46).padding({ left: 14, right: 14 })
+        .accessibilityText(command.name + '，' + command.description)
+        .onClick((): void => { this.runCommand(command); })
+      }, (command: AiWsCommand): string => command.name)
+    }.width('100%').borderRadius(18).backgroundColor(this.palette().raised)
+    .border({ width: 0.5, color: this.palette().border }).shadow({ radius: 16, color: '#14000000', offsetY: 2 }).clip(true)
+    .transition(TransitionEffect.OPACITY.combine(TransitionEffect.translate({ y: 8 })).animation({ duration: 180 }))
+  }
   @Builder private composer() {
     Column({ space: 8 }) {
+      if (this.slashSuggestions().length > 0) { this.commandPanel() }
       if (this.sessionId !== '' && this.role !== '' && !this.operator()) {
         Text('这台设备只有查看权限，可以看对话，不能发送或批准').fontSize(12).fontFamily(AppConfig.fontFamily)
           .fontColor(this.palette().text3).width('100%').padding({ left: 16, right: 16 })
@@ -1987,14 +2172,14 @@ export struct RemoteAiWorkspace {
                 .onClick((): void => { void this.run(async (): Promise<void> => { await this.controller.snapshot(true); }); })
             }
           }
-          if (this.items.length === 0) { ListItem() { this.emptyState() } }
+          if (this.shownItems().length === 0) { ListItem() { this.emptyState() } }
           // Messages, and runs of steps folded into one line each, like the Codex and Claude apps.
           ForEach(this.stepEntries(), (entry: AiStepEntry): void => {
             ListItem() {
               if (entry.item !== null) { this.claudeItem(entry.item) }
               else if (entry.steps.length === 1) { this.claudeItem(entry.steps[0]) }
               else { this.stepGroup(entry) }
-            }.transition(this.fresh('t:' + entry.key) ? this.enterEffect() : TransitionEffect.IDENTITY)
+            }.transition(this.entryEffect(entry))
           }, (entry: AiStepEntry): string => this.entryKey(entry))
           if (this.changeSummary() !== '') {
             ListItem() {
@@ -2011,6 +2196,9 @@ export struct RemoteAiWorkspace {
             }
           }
           if (this.working()) { ListItem() { this.workingRow() } }
+          if (this.landingSpacer > 0) {
+            ListItem() { Column().width('100%').height(this.landingSpacer) }
+          }
         }
       }.width('100%').height('100%').padding({ left: 16, right: 16 }).scrollBar(BarState.Auto)
         // A short list (a few conversations) still takes the pull from anywhere in its area and hands it to Refresh.
@@ -2022,7 +2210,7 @@ export struct RemoteAiWorkspace {
           if (Date.now() < this.pinBottomUntil) { return; }
           this.followBottom = end >= this.listLength() - 2;
         })
-      }.height(Math.max(180, this.pageHeight - this.topVp() - this.topChrome - this.bottomChrome - 16))
+      }.height(this.transcriptHeight())
       // Pull down on the conversation list to read it again (the chat follows its own stream).
       .pullToRefresh(this.sessionId === '' && this.allowed)
       .onRefreshing((): void => { void this.refreshList(); })
