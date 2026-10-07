@@ -24217,6 +24217,8 @@ struct RemoteDesktop {
         .width('100%').height('100%')
         .justifyContent(FlexAlign.Center)
         .backgroundColor('rgba(0,0,0,0.01)')  // 几乎透明 — 保证 XComponent surface 创建
+        // Gone at once when the session connects: never faded by (or caught in) an animation running elsewhere.
+        .transition(TransitionEffect.IDENTITY)
       }
 
       // XComponent 配置 libraryname 后, API 23 可能把触摸事件直接路由到 native 侧,

@@ -1,3 +1,4 @@
+import { settleBeforeLoop } from '../../common/AnimationLoop';
 import { displaySync } from '@kit.ArkGraphics2D';
 import { curves, uiMaterial } from '@kit.ArkUI';
 import { deviceInfo } from '@kit.BasicServicesKit';
@@ -116,8 +117,10 @@ export struct AiXiaoyiGlass {
     if (this.reduced) { return; }
     // A slow drift: a low frame rate is plenty and keeps the render pipeline free.
     setTimeout((): void => {
+      settleBeforeLoop(this.getUIContext());
       this.getUIContext().animateTo({ duration: 9000, iterations: -1, playMode: PlayMode.Alternate, curve: Curve.EaseInOut,
         expectedFrameRateRange: { min: 10, max: 30, expected: 20 } }, (): void => { this.driftX = 1; });
+      settleBeforeLoop(this.getUIContext());
       this.getUIContext().animateTo({ duration: 7000, iterations: -1, playMode: PlayMode.Alternate, curve: Curve.EaseInOut,
         expectedFrameRateRange: { min: 10, max: 30, expected: 20 } }, (): void => { this.driftY = 1; });
     }, 32);
@@ -222,6 +225,7 @@ export struct AiPrimaryPill {
   aboutToAppear(): void {
     if (this.reducedMotion) { return; }
     setTimeout((): void => {
+      settleBeforeLoop(this.getUIContext());
       this.getUIContext().animateTo({ duration: 2400, iterations: -1, curve: Curve.EaseInOut,
         expectedFrameRateRange: { min: 30, max: 60, expected: 60 } }, (): void => { this.sweep = 1; });
     }, 16);
@@ -328,6 +332,7 @@ export struct AiLiquidGlassButton {
   aboutToAppear(): void {
     if (this.reducedMotion) { return; }
     setTimeout((): void => {
+      settleBeforeLoop(this.getUIContext());
       this.getUIContext().animateTo({ duration: 6000, iterations: -1, curve: Curve.Linear,
         expectedFrameRateRange: { min: 30, max: 60, expected: 60 } }, (): void => { this.turn = 360; });
     }, 16);
@@ -435,10 +440,12 @@ export struct AiSendButton {
     if (this.reducedMotion || style === 'static' || style === 'off') { return; }
     setTimeout((): void => {
       // 呼吸 breathes deeper; 流动 and 彗星 breathe lightly while they turn (彗星 faster, a light running round).
+      settleBeforeLoop(this.getUIContext());
       this.getUIContext().animateTo({ duration: style === 'breath' ? 1400 : 1800, iterations: -1,
         playMode: PlayMode.Alternate, curve: Curve.EaseInOut,
         expectedFrameRateRange: { min: 30, max: 60, expected: 60 } }, (): void => { this.breath = 1; });
       if (style !== 'breath') {
+        settleBeforeLoop(this.getUIContext());
         this.getUIContext().animateTo({ duration: style === 'comet' ? 1500 : 3200, iterations: -1, curve: Curve.Linear,
           expectedFrameRateRange: { min: 30, max: 60, expected: 60 } }, (): void => { this.flow = 360; });
       }

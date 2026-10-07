@@ -1,3 +1,4 @@
+import { settleBeforeLoop } from '../common/AnimationLoop';
 import { common } from '@kit.AbilityKit';
 import { preferences } from '@kit.ArkData';
 import { displaySync } from '@kit.ArkGraphics2D';
@@ -370,8 +371,10 @@ struct ProBadgeRayLayers {
   private loop(k: number): void {
     this.setScale(k, 0.5);
     this.setFade(k, 0);
+    settleBeforeLoop(this.getUIContext());
     this.getUIContext().animateTo({ duration: RAY_FLIGHT_MS, iterations: -1, curve: Curve.EaseIn },
       (): void => { this.setScale(k, 3.0); });
+    settleBeforeLoop(this.getUIContext());
     this.getUIContext().keyframeAnimateTo({ iterations: -1 }, [
       {
         duration: Math.round(RAY_FLIGHT_MS * 0.3), curve: Curve.EaseOut,

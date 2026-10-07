@@ -1,3 +1,4 @@
+import { settleBeforeLoop } from '../../common/AnimationLoop';
 import { AppConfig } from '../../common/Theme';
 
 /**
@@ -32,6 +33,7 @@ export struct AiShimmerText {
     this.sweep = -this.band();
     setTimeout((): void => {
       if (generation !== this.generation) { return; }
+      settleBeforeLoop(this.getUIContext());
       this.getUIContext().animateTo({ duration: Math.max(1200, Math.round(this.widthVp * 14)), curve: Curve.Linear,
         iterations: -1, delay: 120 }, (): void => { this.sweep = this.widthVp; });
     }, 16);

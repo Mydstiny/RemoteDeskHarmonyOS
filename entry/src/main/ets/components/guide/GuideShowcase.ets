@@ -1,3 +1,4 @@
+import { settleBeforeLoop } from '../../common/AnimationLoop';
 import { curves } from '@kit.ArkUI';
 import { AppConfig, buildDark, buildLight, Palette } from '../../common/Theme';
 import { GuideContentPage } from '../../services/GuideContentRegistry';
@@ -42,6 +43,7 @@ export struct GuideShowcase {
 
   aboutToAppear(): void {
     setTimeout((): void => {
+      settleBeforeLoop(this.getUIContext());
       this.getUIContext().animateTo({ duration: 24000, iterations: -1, curve: Curve.Linear,
         expectedFrameRateRange: { min: 15, max: 30, expected: 30 } }, (): void => { this.orbit = 360; });
     }, 60);

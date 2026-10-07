@@ -1,3 +1,4 @@
+import { settleBeforeLoop } from '../../common/AnimationLoop';
 import { curves } from '@kit.ArkUI';
 import { AI_MOTION_DONE, AI_MOTION_ORB, AI_MOTION_REDUCED, AI_MOTION_SPEED, AI_MOTION_THINKING,
   aiMotionSpeedFactor } from '../../services/diagnosticAi/DiagnosticAiMotionPolicy';
@@ -26,6 +27,7 @@ struct AiQuietDots {
   aboutToAppear(): void {
     if (this.reduced) { return; }
     setTimeout((): void => {
+      settleBeforeLoop(this.getUIContext());
       this.getUIContext().animateTo({ duration: 520, iterations: -1, playMode: PlayMode.Alternate,
         curve: Curve.EaseInOut }, (): void => { this.lift = 1; });
     }, 16);
@@ -102,6 +104,7 @@ struct AiGlassOrb {
   aboutToAppear(): void {
     if (this.reduced) { return; }
     setTimeout((): void => {
+      settleBeforeLoop(this.getUIContext());
       this.getUIContext().animateTo({ duration: 1800, iterations: -1, playMode: PlayMode.Alternate,
         curve: Curve.EaseInOut }, (): void => { this.breath = 1; });
     }, 16);
