@@ -90,6 +90,7 @@ export function aiEffortLabel(effort: string): string {
     case 'high': return '高';
     case 'xhigh': return '超高';
     case 'max': return '最高';
+    case 'ultra': return '极致';
     default: return effort;
   }
 }

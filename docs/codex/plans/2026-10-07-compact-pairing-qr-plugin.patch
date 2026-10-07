@@ -40,7 +40,7 @@
        if (req.method === "POST" && url.pathname === "/api/revoke") {
 --- a/dsh/src/control-panel-page.mjs
 +++ b/dsh/src/control-panel-page.mjs
-@@ -217,7 +217,7 @@
+@@ -217,14 +217,14 @@
  async function copyText(value,message){try{if(navigator.clipboard?.writeText)await navigator.clipboard.writeText(value);else{const helper=document.createElement('textarea');helper.value=value;helper.style.position='fixed';helper.style.opacity='0';document.body.appendChild(helper);helper.select();const copied=document.execCommand('copy');helper.remove();if(!copied)throw new Error('COPY_UNAVAILABLE')}notice(message)}catch{notice('复制失败，请展开完整 JSON 后手动复制。',true)}}
  function base64Url(value){const bytes=new TextEncoder().encode(value);let binary='';for(const byte of bytes)binary+=String.fromCharCode(byte);return btoa(binary).split('+').join('-').split('/').join('_').replace(/=+$/,'');}
  function pairingLink(invite,data){const service=data?.service;const host=typeof service?.host==='string'?service.host.trim():'';const port=Number(service?.port);let url='';if(host!==''&&Number.isInteger(port)&&port>0&&port<65536){const authority=host.includes(':')&&!host.startsWith('[')?'['+host+']':host;url='https://'+authority+':'+String(port)}const payload={type:'remotedesk-pair',version:1,engine:data?.engine||ENGINE,...(url===''?{}:{url}),invite:{code:invite.code,expires:invite.expires,ca:invite.ca,serverInstance:invite.serverInstance}};return 'remotedesk://pair?data='+base64Url(JSON.stringify(payload));}
@@ -49,9 +49,36 @@
  function serviceStatus(service){if(service.running)return ['ok','运行中'];if(service.lock==='stale')return ['warn','锁文件陈旧'];return ['bad','未运行'];}
  function renderService(data){const service=data.service;const [cls,label]=serviceStatus(service);$('service-pill').className='pill '+cls;$('service-pill-text').textContent=label;const address=esc(service.host)+':'+esc(service.port);const loopback=/^(127\\.|localhost$|::1$)/.test(String(service.host||''));$('service').innerHTML='<div class="kv-row"><span>状态</span><span class="chip '+cls+'">'+label+'</span></div><div class="kv-row"><span>监听地址</span><span class="mono">'+address+'</span></div>'+(loopback?'<div class="notice" style="margin-top:2px">当前只监听本机，手机和平板暂时无法连接。需要远程使用时，用局域网地址重新初始化服务。</div>':'')+'<div class="kv-row"><span>进程</span><span class="mono">'+esc(service.pid||'—')+'</span></div><div class="kv-row"><span>控制面板</span><span class="mono">127.0.0.1:'+esc(data.panel?.port||location.port)+'</span></div>';}
  function kpi(label,value){return '<div class="kpi"><div class="kpi-label">'+label+'</div><div class="kpi-value">'+value+'</div></div>';}
+ function renderSummary(data){const paired=data.devices.filter(d=>d.status==='paired').length;const operations=Object.values(data.operations||{}).reduce((a,b)=>a+b,0);$('summary').innerHTML=kpi('项目',data.projects.length)+kpi('已配对设备',paired)+kpi('会话',data.sessions.length)+kpi('操作记录',operations);}
+ function renderProjects(data){$('projects').innerHTML=data.projects.map(p=>'<div class="item"><div class="item-icon">'+ICON_FOLDER+'</div><div class="item-body"><div class="item-title">'+esc(p.title)+'</div><div class="item-sub mono">'+esc(p.path)+'</div><div class="chips"><span class="chip">'+esc(p.id)+'</span>'+(p.provider?'<span class="chip accent">'+esc(p.provider)+'</span>':'')+(p.model?'<span class="chip">'+esc(p.model)+'</span>':'')+'</div></div></div>').join('')||'<div class="empty">尚未配置项目，先在下方添加一个本机目录。</div>';
+ if(!projectsSeen&&data.projects.length===1)checkedProjects.add(data.projects[0].id);projectsSeen=true;
+-$('project-checks').innerHTML=data.projects.map(p=>'<label class="option"><input type="checkbox" name="project" value="'+esc(p.id)+'"'+(checkedProjects.has(p.id)?' checked':'')+'><span><b>'+esc(p.title)+'</b><small class="mono">'+esc(p.id)+'</small></span></label>').join('')||'<div class="empty">先在右侧“项目”里添加项目</div>';
++$('project-checks').innerHTML='<label class="option"><input type="checkbox" name="project" value="*"'+(checkedProjects.has('*')?' checked':'')+'><span><b>全部项目（含电脑 App 里的项目）</b><small>以后在 App 里新增的项目也会开放给这台设备</small></span></label>'+data.projects.map(p=>'<label class="option"><input type="checkbox" name="project" value="'+esc(p.id)+'"'+(checkedProjects.has(p.id)?' checked':'')+'><span><b>'+esc(p.title)+'</b><small class="mono">'+esc(p.id)+'</small></span></label>').join('')||'<div class="empty">先在右侧“项目”里添加项目</div>';
+ document.querySelectorAll('input[name=project]').forEach(input=>input.addEventListener('change',()=>{if(input.checked)checkedProjects.add(input.value);else checkedProjects.delete(input.value);}));}
+ function deviceStatus(d){if(d.status==='paired')return ['ok','已配对'];if(d.status==='revoked')return ['bad','已撤销'];return ['warn','已过期'];}
+ function renderDevices(data){const rows=data.devices.slice().sort((a,b)=>(a.revoked===b.revoked?0:a.revoked?1:-1)).map(d=>{const [cls,label]=deviceStatus(d);return '<div class="item"><div class="item-icon">'+ICON_DEVICE+'</div><div class="item-body"><div class="item-title">'+esc(d.name||'未命名设备')+'</div><div class="item-sub mono" title="'+esc(d.id)+'">'+esc(d.id)+'</div><div class="chips"><span class="chip '+cls+'">'+label+'</span><span class="chip">'+(d.role==='operator'?'可操作':'只读')+'</span>'+(d.projects||[]).map(p=>'<span class="chip">'+esc(p)+'</span>').join('')+'</div></div>'+(d.revoked?'':'<button class="btn-danger revoke" type="button" data-device="'+esc(d.id)+'">撤销</button>')+'</div>';}).join('');
 --- a/dsh/src/dsh-adapter.mjs
 +++ b/dsh/src/dsh-adapter.mjs
-@@ -631,7 +631,8 @@
+@@ -5,7 +5,8 @@
+ import { createRequire } from "node:module";
+ import { pathToFileURL, fileURLToPath } from "node:url";
+ import { join } from "node:path";
+-import { realpath } from "node:fs/promises";
++import { readFile, realpath } from "node:fs/promises";
++import { homedir } from "node:os";
+ import {
+   Fault,
+   requireThat,
+@@ -14,7 +15,7 @@
+ } from "@remotedesk/bridge-core/errors";
+ import { validateNativeAnswer } from "@remotedesk/bridge-core/native-answers";
+ const PUBLIC_EVENT =
+-  /^(user\/message|assistant\/(chunk|message)|tool\/(call|result)|turn\/(start|end)|step\/(start|end)|approval\/(asked|decided)|model\/selection|session\/title|compaction\/|context\/)/;
++  /^(user\/message|assistant\/(chunk|message)|tool\/(call|result)|turn\/(start|end)|step\/(start|end)|approval\/(asked|decided)|model\/selection|session\/title|compaction\/|context\/|request\/context$)/;
+ const BLOCKED_TOOLS = new Set([
+   "subagent",
+   "subagent_fork",
+@@ -631,7 +632,8 @@
          this.handles.set(s.id, handle);
          this.checkpoint(s, {
            ...current,
@@ -61,7 +88,7 @@
            permissionMode: s.permissionMode ?? "workspace-write",
            executionProfile: "native-v1",
            inputModalities:
-@@ -675,7 +676,69 @@
+@@ -675,6 +677,80 @@
    }
    async resume(s, authorize = () => {}) {
      await this.connect(s, false, undefined, authorize);
@@ -70,12 +97,24 @@
 +   * The folder's own DSH conversations (the DSH app or CLI), newest first: top-level sessions only. A cold
 +   * session's title is read once from its log (the latest session/title, else the first typed prompt) and cached.
 +   */
++  /** The DSH app's workspaces (its sidebar), in the app's order; the store is read, never written. */
++  async nativeProjects() {
++    const file = join(process.env.DSH_HOME || join(homedir(), ".dsh"), "storages", "workspace.json");
++    const store = JSON.parse(await readFile(file, "utf8"));
++    const tables = store?.tables?.workspaces ?? {};
++    const order = Array.isArray(store?.global?.workspaceIds) ? store.global.workspaceIds : Object.keys(tables);
++    return order
++      .map((id) => [id, tables[id]])
++      .filter(([, w]) => w && typeof w.path === "string")
++      .map(([id, w]) => ({ key: "dsh:" + id, title: w.title, roots: [w.path] }));
++  }
 +  async nativeSessions(p, { limit = 100 } = {}) {
 +    const records = await this.ctx.sessionQuery.listSessions(),
++      roots = p.roots ?? [p.path],
 +      rows = [];
 +    for (const record of records) {
 +      const h = record.header;
-+      if (h?.cwd !== p.path || h.parentSession !== undefined) continue;
++      if (!roots.includes(h?.cwd) || h.parentSession !== undefined) continue;
 +      if (rows.length >= limit) break;
 +      const seen = await this.nativeSummary(h.id);
 +      rows.push({
@@ -87,7 +126,7 @@
 +      });
 +    }
 +    return rows;
-   }
++  }
 +  async nativeSummary(id) {
 +    this.nativeSummaries ??= new Map();
 +    const cached = this.nativeSummaries.get(id);
@@ -127,10 +166,18 @@
 +    };
 +    this.nativeSummaries.set(id, summary);
 +    return summary;
-+  }
+   }
    async read(s, { cursor, turnId } = {}) {
      requireThat(s.upstream, "NATIVE_SESSION_RECONCILIATION_REQUIRED");
-     const observed = await this.ctx.sessionQuery.observeSession(s.upstream, {
+@@ -714,7 +790,7 @@
+       const rows = observed.events.filter(
+           (e) => e.seq >= from && e.seq <= through && PUBLIC_EVENT.test(e.type),
+         ),
+-        events = rows.slice(0, 200);
++        events = rows.slice(0, 1000);
+       return {
+         ...this.metadata(s),
+         format: "native-event-log",
 --- a/codex-and-claudecode/src/qr-code.mjs
 +++ b/codex-and-claudecode/src/qr-code.mjs
 @@ -1,4 +1,5 @@
@@ -213,7 +260,15 @@
    const payload = JSON.parse(Buffer.from(link.split("data=")[1], "base64url").toString("utf8"));
 --- a/codex/src/codex-adapter.mjs
 +++ b/codex/src/codex-adapter.mjs
-@@ -136,6 +136,14 @@
+@@ -3,6 +3,7 @@
+ import { access, readFile, realpath } from "node:fs/promises";
+ import { delimiter, join } from "node:path";
+ import { randomUUID } from "node:crypto";
++import { homedir } from "node:os";
+ import { StdioRpc } from "../packages/bridge-core/stdio-rpc.mjs";
+ import { nativeEnvironment } from "../packages/bridge-core/lib/native-workspace.mjs";
+ import { validateNativeAnswer } from "../packages/bridge-core/lib/native-answers.mjs";
+@@ -136,6 +137,14 @@
      clearTimeout(timer);
    }
  };
@@ -228,64 +283,193 @@
  export class CodexAdapter {
    capabilities = {
      sessions: true,
-@@ -585,6 +593,40 @@
-     try {
-       authorize();
-       return await rpc.request(method, { threadId: s.upstream, ...params });
-+    } finally {
-+      await rpc.close();
-+    }
-+  }
-+  /**
-+   * The folder's own Codex conversations (the Codex app, the CLI), newest first: top-level threads only (no
-+   * sub-agents or ephemeral threads). The bridge binds each to a session by its thread id.
-+   */
-+  async nativeSessions(p, { limit = 100 } = {}) {
-+    const rpc = await this.spawn(p),
+@@ -318,6 +327,14 @@
+         this.providerOverrides?.model_provider ??
+         effective.config?.model_provider ??
+         "openai";
++      // The Codex catalog (descriptions and reasoning efforts) is offered whatever the provider; a configured
++      // custom model the catalog does not know is still offered on its own.
++      const catalog = await rpc.request("model/list", {
++        limit: 100,
++        ...(cursor ? { cursor } : {}),
++      });
++      if ((catalog.data ?? []).length > 0)
++        return { ...catalog, data: catalog.data.map((m) => ({ ...m, provider })) };
+       if (provider !== "openai") {
+         requireThat(!cursor, "CURSOR_INVALID");
+         const model =
+@@ -388,8 +405,11 @@
+     }
+   }
+   async parameters(rpc, s, p) {
++    // An imported conversation keeps its own folder when that folder belongs to the project (a project can span
++    // several folders in the Codex app); otherwise the project's folder.
++    const cwd = typeof s.cwd === "string" && (p.roots ?? [p.path]).includes(s.cwd) ? s.cwd : p.path;
+     const { config: effective } = await rpc.request("config/read", {
+-      cwd: p.path,
++      cwd,
+       includeLayers: false,
+     });
+     const profile = "remotedesk-" + randomUUID();
+@@ -406,7 +426,7 @@
+       profile,
+       mode,
+       params: {
+-        cwd: p.path,
++        cwd,
+         approvalPolicy: APPROVAL_POLICY,
+         approvalsReviewer: "user",
+         config: {
+@@ -589,6 +609,65 @@
+       await rpc.close();
+     }
+   }
++  /** The Codex app's projects (its sidebar): each with the folders (roots) its conversations run in. */
++  async nativeProjects() {
++    const rpc = await this.spawn({ path: homedir() }),
 +      rows = [];
 +    try {
 +      let cursor,
 +        count = 0;
 +      do {
-+        const page = await rpc.request("thread/list", {
-+          cwd: p.path,
-+          archived: false,
-+          modelProviders: [],
-+          limit: 100,
-+          ...(cursor ? { cursor } : {}),
-+        });
-+        for (const t of page.data ?? []) {
-+          if (t.cwd !== p.path || t.ephemeral || t.parentThreadId || t.agentRole) continue;
++        const page = await rpc.request("project/list", cursor ? { cursor } : {});
++        for (const p of page.data ?? [])
 +          rows.push({
-+            upstream: t.id,
-+            title: t.name || threadPreviewTitle(t.preview),
-+            updatedAt: (t.recencyAt ?? t.updatedAt ?? t.createdAt ?? 0) * 1000,
-+            archived: false,
++            key: "codex:" + p.id,
++            title: p.name,
++            roots: (p.roots ?? []).map((root) => root.path).filter((path) => typeof path === "string"),
 +          });
-+        }
 +        cursor = page.nextCursor;
-+      } while (cursor && rows.length < limit && ++count < 10);
-+      return rows.slice(0, limit);
-     } finally {
-       await rpc.close();
-     }
++      } while (cursor && ++count < 10);
++      return rows;
++    } finally {
++      await rpc.close();
++    }
++  }
++  /**
++   * The project's own Codex conversations (the Codex app, the CLI) across its folders, newest first: top-level
++   * threads only (no sub-agents or ephemeral threads). The bridge binds each to a session by its thread id.
++   */
++  async nativeSessions(p, { limit = 100 } = {}) {
++    const rpc = await this.spawn(p),
++      rows = new Map();
++    try {
++      for (const root of p.roots ?? [p.path]) {
++        let cursor,
++          count = 0;
++        do {
++          const page = await rpc.request("thread/list", {
++            cwd: root,
++            archived: false,
++            modelProviders: [],
++            limit: 100,
++            ...(cursor ? { cursor } : {}),
++          });
++          for (const t of page.data ?? []) {
++            if (t.ephemeral || t.parentThreadId || t.agentRole || rows.has(t.id)) continue;
++            rows.set(t.id, {
++              upstream: t.id,
++              title: t.name || threadPreviewTitle(t.preview),
++              updatedAt: (t.recencyAt ?? t.updatedAt ?? t.createdAt ?? 0) * 1000,
++              archived: false,
++              cwd: t.cwd,
++            });
++          }
++          cursor = page.nextCursor;
++        } while (cursor && rows.size < limit * 2 && ++count < 10);
++      }
++      return [...rows.values()].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, limit);
++    } finally {
++      await rpc.close();
++    }
++  }
+   async archiveState(s) {
+     const p = this.project(s),
+       rpc = await this.spawn(p);
 --- a/bridge-core/lib/server.mjs
 +++ b/bridge-core/lib/server.mjs
-@@ -51,6 +51,10 @@
+@@ -4,7 +4,7 @@
+ import { ProjectLocks } from "./project-lock.mjs";
+ import { privateDirectory } from "./privacy.mjs";
+ import { join } from "node:path";
+-import { randomUUID } from "node:crypto";
++import { createHash, randomUUID } from "node:crypto";
+ import { Store, token } from "./store.mjs";
+ import { issueClient } from "./pki.mjs";
+ import { configuration, digest, inside } from "./admin.mjs";
+@@ -51,6 +51,15 @@
    "session.compact",
    "terminal.stop",
  ]);
++/** "*" grants every project, including the computer app's own projects as they come and go. */
++function granted(d, id) {
++  return d.projects.includes(id) || d.projects.includes("*");
++}
++const APP_PROJECT_REFRESH_MS = 30000;
 +// Imported native conversations share the session store with bridge-created ones.
 +const SESSION_STORE_LIMIT = 5000;
 +const NATIVE_IMPORT_LIMIT = 100;
-+const NATIVE_RESCAN_MS = 15000;
++const NATIVE_RESCAN_MS = 30000;
  export class Bridge {
    constructor(directory, adapter) {
      this.directory = directory;
-@@ -198,6 +202,67 @@
+@@ -133,6 +142,7 @@
+           }),
+       });
+       await this.adapter.prepare?.();
++      await this.refreshAppProjects(true);
+       for (const p of this.config.projects) {
+         requireThat(
+           (await realpath(p.path)) === p.path,
+@@ -198,12 +208,126 @@
        "DEVICE_REVOKED",
      );
      return now;
++  }
++  /**
++   * The computer app's own projects (the Codex app's projects, the DSH app's workspaces) join the configured ones,
++   * with stable ids derived from the app's project id. They are re-read at most every APP_PROJECT_REFRESH_MS; a
++   * project whose folder is gone or overlaps the bridge's own state is left out. A failed read keeps the last list.
++   */
++  async refreshAppProjects(force = false) {
++    if (typeof this.adapter.nativeProjects !== "function") return;
++    if (!force && Date.now() - (this.appProjectsAt ?? 0) < APP_PROJECT_REFRESH_MS) return;
++    this.appProjectsAt = Date.now();
++    let rows;
++    try {
++      rows = await this.adapter.nativeProjects();
++    } catch (e) {
++      process.stderr.write(JSON.stringify({ appProjects: "failed", error: String(e?.code ?? e?.message ?? e).slice(0, 200) }) + "\n");
++      return;
++    }
++    const state = await realpath(this.directory),
++      coordination = await realpath(this.config.coordinationDirectory).catch(() => null),
++      next = [];
++    for (const row of rows ?? []) {
++      if (typeof row?.key !== "string" || !Array.isArray(row.roots)) continue;
++      const roots = [];
++      for (const root of row.roots) {
++        try {
++          const path = await realpath(root);
++          if (inside(path, state) || inside(state, path)) continue;
++          if (coordination && (inside(path, coordination) || inside(coordination, path))) continue;
++          if (!roots.includes(path)) roots.push(path);
++        } catch {
++          // A folder that no longer exists is not offered.
++        }
++      }
++      if (!roots.length) continue;
++      next.push({
++        id: "app-" + createHash("sha256").update(row.key).digest("hex").slice(0, 12),
++        path: roots[0],
++        roots,
++        title: String(row.title || roots[0].split(/[\\/]/).pop() || "项目").slice(0, 200),
++        app: true,
++      });
++    }
++    const configured = this.config.projects.filter((p) => !p.app);
++    this.config.projects.splice(0, this.config.projects.length, ...configured, ...next);
++    process.stderr.write(JSON.stringify({ appProjects: next.length }) + "\n");
 +  }
 +  /**
 +   * Registers the newest native conversations of a project folder (at most NATIVE_IMPORT_LIMIT, rescanned at most
@@ -308,10 +492,12 @@
 +      return;
 +    }
 +    process.stderr.write(JSON.stringify({ nativeImport: project.id, found: rows.length }) + "\n");
++    const projectIds = new Set(this.config.projects.map((p) => p.id));
++    // A conversation imported under a project that is gone (or a manual project the app now covers) moves here.
 +    const known = new Map(
 +      this.store
 +        .all("session")
-+        .filter((s) => s.project === project.id && s.upstream)
++        .filter((s) => s.upstream && (s.project === project.id || (s.nativeImported && !projectIds.has(s.project))))
 +        .map((s) => [s.upstream, s]),
 +    );
 +    for (const row of rows.slice(0, NATIVE_IMPORT_LIMIT)) {
@@ -320,11 +506,16 @@
 +      const updatedAt = Number.isFinite(row.updatedAt) ? row.updatedAt : Date.now();
 +      const existing = known.get(row.upstream);
 +      if (existing) {
-+        if (existing.nativeImported && (existing.title !== title || (existing.updatedAt ?? 0) < updatedAt))
++        if (
++          existing.nativeImported &&
++          (existing.project !== project.id || existing.title !== title || (existing.updatedAt ?? 0) < updatedAt)
++        )
 +          this.store.put("session", existing.id, {
 +            ...existing,
++            project: project.id,
 +            title,
 +            updatedAt: Math.max(existing.updatedAt ?? 0, updatedAt),
++            ...(typeof row.cwd === "string" ? { cwd: row.cwd } : {}),
 +          });
 +        continue;
 +      }
@@ -343,6 +534,7 @@
 +        upstream: row.upstream,
 +        nativePhase: "ready",
 +        nativeImported: true,
++        ...(typeof row.cwd === "string" ? { cwd: row.cwd } : {}),
 +      };
 +      this.store.put("session", s.id, s);
 +      known.set(row.upstream, s);
@@ -350,7 +542,25 @@
    }
    project(d, id) {
      identifier(id);
-@@ -395,7 +460,10 @@
+     this.current(d);
+     const p = this.config.projects.find((p) => p.id === id);
+-    requireThat(p && d.projects.includes(id), "PROJECT_FORBIDDEN");
++    requireThat(p && granted(d, id), "PROJECT_FORBIDDEN");
+     return p;
+   }
+   session(d, id) {
+@@ -385,8 +509,9 @@
+     }
+     if (method === "project.list") {
+       fields(p, []);
++      await this.refreshAppProjects();
+       return this.config.projects
+-        .filter((p) => d.projects.includes(p.id))
++        .filter((p) => granted(d, p.id))
+         .map(({ id, title }) => ({ id, title }));
+     }
+     if (method === "session.list") {
+@@ -395,7 +520,14 @@
          ["projectId", "cursor", "limit", "query", "archived"],
          ["projectId"],
        );
@@ -358,11 +568,15 @@
 +      const listed = this.project(d, p.projectId);
 +      // Conversations started on the computer itself (the Codex app, the DSH app) in this project's folder are
 +      // listed too: the first page registers them as bridge sessions bound to their native thread.
-+      if (p.cursor === undefined) await this.importNative(listed);
++      // The first look at a project waits for its scan; later ones answer from the store at once and rescan behind.
++      if (p.cursor === undefined) {
++        if (this.nativeScans?.has(listed.id)) void this.importNative(listed);
++        else await this.importNative(listed);
++      }
        if (p.query !== undefined) string(p.query, 500);
        if (p.archived !== undefined)
          requireThat(typeof p.archived === "boolean", "ARCHIVED_INVALID");
-@@ -422,6 +490,7 @@
+@@ -422,6 +554,7 @@
              reasoningEffort,
              updatedAt,
              nativePhase,
@@ -370,7 +584,7 @@
            }) => ({
              id,
              project,
-@@ -432,6 +501,7 @@
+@@ -432,6 +565,7 @@
              reasoningEffort,
              updatedAt,
              nativePhase,
@@ -378,7 +592,7 @@
            }),
          );
        if (p.limit === undefined && p.cursor === undefined) return rows;
-@@ -563,7 +633,7 @@
+@@ -563,7 +697,7 @@
      if (method === "session.create") {
        fields(p, ["projectId", "title", "settings"], ["projectId"]);
        const project = this.project(d, p.projectId);
@@ -387,7 +601,7 @@
        const s = {
          id: randomUUID(),
          project: project.id,
-@@ -744,7 +814,7 @@
+@@ -744,7 +878,7 @@
        requireThat(!s.archived, "SESSION_ARCHIVED");
        await this.adapter.quiescent?.(s);
        requireThat(this.adapter.fork, "CAPABILITY_UNAVAILABLE");
@@ -396,3 +610,33 @@
        if (p.lastTurnId !== undefined) string(p.lastTurnId, 500);
        const child = {
          ...s,
+@@ -877,7 +1011,7 @@
+       }
+     });
+     for (const stream of this.streams.values())
+-      if (stream.device.projects.includes(s.project)) this.sendEvent(stream, e);
++      if (granted(stream.device, s.project)) this.sendEvent(stream, e);
+   }
+   sendEvent(stream, e) {
+     const { res, device } = stream;
+@@ -923,7 +1057,7 @@
+     const id = token();
+     this.streams.set(id, { device: d, res });
+     for (const e of this.events)
+-      if (e.cursor > cursor && d.projects.includes(e.project))
++      if (e.cursor > cursor && granted(d, e.project))
+         this.sendEvent({ res, device: d }, e);
+     const heartbeat = setInterval(() => {
+       if (!res.destroyed) res.write(": heartbeat\n\n");
+--- a/bridge-core/lib/admin.mjs
++++ b/bridge-core/lib/admin.mjs
+@@ -116,7 +116,8 @@
+   requireThat(
+     Array.isArray(projects) &&
+       projects.length > 0 &&
+-      projects.every((id) => c.projects.some((p) => p.id === id)),
++      // "*": every project, including the computer app's own projects as they are added later.
++      projects.every((id) => id === "*" || c.projects.some((p) => p.id === id)),
+   );
+   const store = new Store(directory);
+   try {

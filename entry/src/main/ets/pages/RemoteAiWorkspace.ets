@@ -75,6 +75,9 @@ export struct RemoteAiWorkspace {
   @State currentModel: string = '';
   @State currentEffort: string = '';
   @State currentPermission: string = '';
+  /** The engine's permission and collaboration modes (from the handshake), as state so the composer redraws. */
+  @State permissionModes: string[] = [];
+  @State collaborationModes: string[] = [];
   @State currentCollaboration: string = '';
   @State contextUsed: number = 0;
   @State contextWindow: number = 0;
@@ -145,6 +148,8 @@ export struct RemoteAiWorkspace {
     this.sessionId = c.sessionId; this.projectId = c.projectId; this.historyCursor = c.historyCursor;
     this.control = c.lease !== '' && c.leaseExpires > Date.now(); this.diff = c.diff;
     this.role = c.client?.handshake?.role ?? '';
+    this.permissionModes = c.client?.choices('permissionModes') ?? [];
+    this.collaborationModes = c.client?.choices('collaborationModes') ?? [];
     if (this.listFilter !== '' && !this.projects.some((project: AiProject): boolean => project.id === this.listFilter)) { this.listFilter = ''; }
     // Only a conversation follows its newest message; the list keeps where the reader is (a pull to refresh jumped
     // to the bottom when the list followed too).
@@ -309,8 +314,19 @@ export struct RemoteAiWorkspace {
     return this.models.find((row: Record<string, Object>): boolean =>
       aiString(row['model'], aiString(row['id'])) === id || aiString(row['id']) === id);
   }
-  private chosenModel(): string { return this.model !== '' ? this.model : this.currentModel; }
-  private chosenEffort(): string { return this.effort !== '' ? this.effort : this.currentEffort; }
+  private chosenModel(): string {
+    if (this.model !== '') { return this.model; }
+    if (this.currentModel !== '') { return this.currentModel; }
+    // Before a conversation reports its model (the home composer, a new conversation): the engine's default.
+    const fallback = this.models.find((row: Record<string, Object>): boolean => row['isDefault'] === true) ?? this.models[0];
+    return fallback === undefined ? '' : aiString(fallback['model'], aiString(fallback['id']));
+  }
+  private chosenEffort(): string {
+    if (this.effort !== '') { return this.effort; }
+    if (this.currentEffort !== '') { return this.currentEffort; }
+    const row = this.modelRow(this.chosenModel());
+    return row === undefined ? '' : aiString(row['defaultReasoningEffort']);
+  }
   private modelName(id: string): string {
     const row = this.modelRow(id);
     return row === undefined ? id : aiString(row['displayName'], aiString(row['name'], id));
@@ -326,7 +342,13 @@ export struct RemoteAiWorkspace {
     this.model = aiString(row['model'], aiString(row['id'])); this.provider = aiString(row['provider']); this.effort = '';
     this.efforts = aiArray(row['supportedReasoningEfforts']).map((value: Object): string => aiString(aiRecord(value)['reasoningEffort']));
   }
-  private chosenPermission(): string { return this.permission !== '' ? this.permission : this.currentPermission; }
+  private chosenPermission(): string {
+    if (this.permission !== '') { return this.permission; }
+    if (this.currentPermission !== '') { return this.currentPermission; }
+    // What the bridge applies when nothing is chosen: Codex starts read-only, DSH in the project folder.
+    const fallback = this.host?.backend === 'dsh' ? 'workspace-write' : 'read-only';
+    return this.permissionModes.includes(fallback) ? fallback : '';
+  }
   private homeProjectId(): string {
     if (this.homeProject !== '' && this.projects.some((project: AiProject): boolean => project.id === this.homeProject)) { return this.homeProject; }
     if (this.listFilter !== '') { return this.listFilter; }
@@ -911,14 +933,14 @@ export struct RemoteAiWorkspace {
             }
             Text('模型和思考强度在输入框下方的模型按钮里选择。').fontSize(12).fontFamily(AppConfig.fontFamily)
               .fontColor(this.pal().text3).width('100%')
-            if ((this.controller.client?.choices('permissionModes') ?? []).length > 0) {
+            if (this.permissionModes.length > 0) {
               this.sectionTitle('权限模式（不选则保持当前）')
-              this.modeChoices({ values: this.controller.client?.choices('permissionModes') ?? [], selected: this.permission,
+              this.modeChoices({ values: this.permissionModes, selected: this.chosenPermission(),
                 choose: (value: string): void => { this.permission = value; } })
             }
-            if ((this.controller.client?.choices('collaborationModes') ?? []).length > 0) {
+            if (this.collaborationModes.length > 0) {
               this.sectionTitle('协作模式（不选则保持当前）')
-              this.modeChoices({ values: this.controller.client?.choices('collaborationModes') ?? [], selected: this.collaboration,
+              this.modeChoices({ values: this.collaborationModes, selected: this.collaboration !== '' ? this.collaboration : this.currentCollaboration,
                 choose: (value: string): void => { this.collaboration = value; } })
             }
             AiFormField({ title: '会话名称', value: this.newTitle, hint: '留空则不改名', limit: 200, isEnabled: !this.busy && this.allowed, onChange: (value: string): void => { this.newTitle = value; } })
@@ -1439,7 +1461,7 @@ export struct RemoteAiWorkspace {
           if (this.projects.length > 1) {
             SymbolGlyph($r('sys.symbol.chevron_down')).fontSize(12).fontColor([this.palette().text3])
           }
-        }.padding({ left: 6, right: 6, top: 4, bottom: 4 }).enabled(this.projects.length > 1)
+        }.padding({ left: 6, right: 6, top: 4, bottom: 4 }).alignSelf(ItemAlign.Start).enabled(this.projects.length > 1)
         .bindMenu(this.projects.map((project: AiProject): MenuElement => ({ value: project.title,
           action: (): void => { this.homeProject = project.id; } })))
         .accessibilityText('新对话所在项目 ' + this.projectTitle(this.homeProjectId()))
@@ -1463,7 +1485,7 @@ export struct RemoteAiWorkspace {
           .onChange((value: string): void => { if (this.allowed && !this.busy) { this.draft = value; } }).maxLength(128000)
         Row({ space: 2 }) {
           this.plusButton()
-          if ((this.controller.client?.choices('permissionModes').length ?? 0) > 0) { this.permissionButton() }
+          if (this.permissionModes.length > 0) { this.permissionButton() }
           this.chip({ label: this.modelChipLabel(), enabled: this.allowed && !this.busy && this.models.length > 0,
             action: (): void => { this.showModelPicker = true; } })
           Blank()
@@ -1496,7 +1518,7 @@ export struct RemoteAiWorkspace {
   }
   private plusMenu(): MenuElement[] {
     const items: MenuElement[] = [{ value: '添加文件或图片', enabled: this.canAttach(), action: (): void => { void this.attach(); } }];
-    if ((this.controller.client?.choices('collaborationModes') ?? []).includes('plan')) {
+    if (this.collaborationModes.includes('plan')) {
       const planning = (this.collaboration !== '' ? this.collaboration : this.currentCollaboration) === 'plan';
       items.push({ value: planning ? '关闭方案模式' : '方案模式：先出方案再动手',
         action: (): void => { this.collaboration = planning ? 'default' : 'plan'; } });
@@ -1517,7 +1539,7 @@ export struct RemoteAiWorkspace {
     Column() {
       Text('应如何批准 ' + this.backendName() + ' 的操作？').fontSize(13).fontFamily(AppConfig.fontFamily)
         .fontColor(this.palette().text3).width('100%').padding({ left: 14, right: 14, top: 10, bottom: 6 })
-      ForEach(this.controller.client?.choices('permissionModes') ?? [], (mode: string): void => {
+      ForEach(this.permissionModes, (mode: string): void => {
         Row({ space: 10 }) {
           Column({ space: 2 }) {
             Text(aiModeLabel(mode)).fontSize(15).fontFamily(AppConfig.fontFamily).fontColor(this.palette().text)

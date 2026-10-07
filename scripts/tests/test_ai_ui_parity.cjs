@@ -105,10 +105,10 @@ function workspace() {
   const app = { on: (_name, cb) => { state.appCallbacks.add(cb); state.application = cb; }, off: (_name, cb) => state.appCallbacks.delete(cb) };
   class Controller {
     constructor() { this.onChange = () => {}; this.stop = () => {}; this.reset(); }
-    reset() { Object.assign(this, { title: '', status: '', error: '', projects: [], sessions: [], transcript: { items: [] }, approvals: [], operations: [], terminals: [], models: [], allowed: false, archived: false, sessionId: '', projectId: '', historyCursor: '', lease: '', leaseExpires: 0, diff: '', client: null, previewItems: [], currentModel: '', currentEffort: '', contextUsed: 0, contextWindow: 0 }); }
+    reset() { Object.assign(this, { title: '', status: '', error: '', projects: [], sessions: [], transcript: { items: [] }, approvals: [], operations: [], terminals: [], models: [], allowed: false, archived: false, sessionId: '', projectId: '', historyCursor: '', lease: '', leaseExpires: 0, diff: '', client: null, previewItems: [], currentModel: '', currentEffort: '', currentPermission: '', currentCollaboration: '', contextUsed: 0, contextWindow: 0 }); }
     close() { state.closes++; this.stop(); this.stop = () => {}; this.reset(); }
     async connect(host) {
-      this.close(); const account = state.access.capture(); this.client = { account, host };
+      this.close(); const account = state.access.capture(); this.client = { account, host, choices: () => [] };
       this.title = 'Fixture session'; this.sessionId = 'fixture-session'; this.projectId = 'fixture-project'; this.allowed = state.granted;
       this.stop = state.access.subscribe(() => { if (!state.access.current(account)) this.close(); else this.allowed = state.granted; this.onChange(); });
     }
