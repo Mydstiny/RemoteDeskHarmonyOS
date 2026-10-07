@@ -24962,6 +24962,8 @@ struct RemoteDesktop {
           onPin: (requestId: number, pin: string): void => { this.rdpSecurityKey?.answerPin(requestId, pin); },
           onCancel: (): void => { this.rdpSecurityKey?.cancel(); }
         })
+          // Above every session layer (toolbars at 220–225, the input surfaces): its buttons must take the taps.
+          .zIndex(1000)
       }
     }
     .width('100%').height('100%')

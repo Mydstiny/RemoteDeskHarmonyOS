@@ -189,7 +189,8 @@ export struct RdpSecurityKeyPromptView {
         this.body()
       }
       .width('88%').constraintSize({ maxWidth: 380 }).padding(18).borderRadius(20)
-      .backgroundColor(this.pal().card).border({ width: 0.5, color: this.pal().cardBorder })
+      // Opaque (the dark palette's card is see-through): the remote page must not show through the request.
+      .backgroundColor(this.pal().sheetBg).border({ width: 0.5, color: this.pal().cardBorder })
       .shadow({ radius: 24, color: '#59000000', offsetY: 8 })
     }
     .width('100%').height('100%').backgroundColor('rgba(0,0,0,0.45)')
