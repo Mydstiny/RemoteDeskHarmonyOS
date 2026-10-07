@@ -3423,10 +3423,17 @@ impl RustDeskConnector {
                     last_msg_kind = "cursor_position";
                     *msg_stats.entry("cursor_position").or_default() += 1;
                     last_cursor_position_at = Some(Instant::now());
-                    if cursor_state.apply_position(position.get_x(), position.get_y()) {
+                    // Global on the peer's desktop: back into the current display's own coordinates.
+                    let (origin_x, origin_y) = display_state
+                        .lock()
+                        .map(|state| crate::current_display_origin(&state))
+                        .unwrap_or((0, 0));
+                    let cursor_x = position.get_x().saturating_sub(origin_x);
+                    let cursor_y = position.get_y().saturating_sub(origin_y);
+                    if cursor_state.apply_position(cursor_x, cursor_y) {
                         on_cursor(CursorStreamUpdate::Position {
-                            x: position.get_x(),
-                            y: position.get_y(),
+                            x: cursor_x,
+                            y: cursor_y,
                         });
                     }
                 }

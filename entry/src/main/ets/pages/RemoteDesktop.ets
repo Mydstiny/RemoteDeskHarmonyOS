@@ -874,6 +874,8 @@ const RD_DOMAIN = 0x0014;
 const RD_TAG = 'RemoteDesktop';
 const TOUCH_CLICK_SLOP_PX = 18;
 const TOUCH_DRAG_HOLD_MS = 1000;
+/** Touchpad tap-then-drag: a press this soon after a tap, moved past the slop, drags with the left button held. */
+const TOUCHPAD_TAP_DRAG_WINDOW_MS = 350;
 const TOUCH_INDICATOR_HIDE_MS = 900;
 const TOUCH_INDICATOR_ACTION_HIDE_MS = 1300;
 const TOUCHPAD_POINTER_GAIN = 1.0;
@@ -1819,6 +1821,9 @@ struct RemoteDesktop {
   private touchDragCursorX: number = 0;  // 双指开始时的光标 X (用于防漂移)
   private touchDragCursorY: number = 0;  // 双指开始时的光标 Y
   private touchWheelRemainder: number = 0;
+  /** Touchpad: when the last one-finger tap (left click) lifted, and whether this press may become a tap-drag. */
+  private touchpadLastTapUpMs: number = 0;
+  private touchpadTapDragArmed: boolean = false;
   /** Fractions of a tick the user's wheel speed left over (two-finger, physical, 2D touchpad x/y). */
   private touchWheelSpeedRemainder: number = 0;
   private physicalWheelSpeedRemainder: number = 0;
@@ -21653,6 +21658,7 @@ struct RemoteDesktop {
   private resetTouchGesture(): void {
     this.clearTouchRightClickTimer();
     this.clearTouchDirectRightClickTimer();
+    this.touchpadTapDragArmed = false;
     const wasDragging: boolean = this.touchDragActive;
     if (this.isRdpRemoteSession() && this.touchLeftDown) {
       this.discardPendingMouseMove();
@@ -21975,6 +21981,10 @@ struct RemoteDesktop {
           this.touchMoved = false;
           this.touchDragActive = false;
           this.touchGestureDone = false;
+          // A press right after a tap: moving it drags (tap, then press and drag, as on a laptop touchpad).
+          this.touchpadTapDragArmed = this.touchpadLastTapUpMs > 0 &&
+            Date.now() - this.touchpadLastTapUpMs <= TOUCHPAD_TAP_DRAG_WINDOW_MS;
+          this.touchpadLastTapUpMs = 0;
           this.startTouchHoldDragTimer();
           this.showRemoteCursorIndicator(-1, false);
         } else if (this.touchFingerCount >= 2) {
@@ -22026,6 +22036,17 @@ struct RemoteDesktop {
         if (Math.sqrt(dx * dx + dy * dy) > TOUCH_CLICK_SLOP_PX) {
           this.touchMoved = true;
           this.clearTouchRightClickTimer();
+          if (this.touchpadTapDragArmed && this.touchFingerCount === 1 && this.touchMaxFingers < 2 &&
+            !this.touchDragActive) {
+            // Tap-then-drag: hold the left button where the cursor is and let the motion below drag it.
+            this.touchpadTapDragArmed = false;
+            this.touchDragActive = true;
+            this.flushMouseMove();
+            this.sendMouseNow(this.remoteCursorX, this.remoteCursorY, 0, true);
+            this.showRemoteCursorIndicator(TOUCH_INDICATOR_BUTTON_DRAG, false);
+            hilog.info(RD_DOMAIN, RD_TAG, 'touchpad tap-drag start remote=' +
+              this.remoteCursorX.toString() + ',' + this.remoteCursorY.toString());
+          }
         }
 
         if (this.touchFingerCount >= 2) {
@@ -22120,6 +22141,7 @@ struct RemoteDesktop {
               // 单指无移动抬起 → 左键 (跳过双指手势已完成的情况)
               this.sendMouseNow(this.remoteCursorX, this.remoteCursorY, 0, true);
               this.sendMouseNow(this.remoteCursorX, this.remoteCursorY, 0, false);
+              this.touchpadLastTapUpMs = Date.now();
               this.showRemoteCursorIndicator(0, true);
               this.scheduleRemoteKeyboardAutoOpen('touchpad-left-click');
               hilog.info(RD_DOMAIN, RD_TAG,

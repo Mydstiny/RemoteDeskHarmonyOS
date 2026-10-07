@@ -1135,6 +1135,18 @@ pub(crate) fn adopt_platform_additions(state: &mut RustDeskDisplayState, json: &
     state.amyuni_virtual_count = json_flat_int(json, "amyuni_virtual_displays").unwrap_or(0).clamp(0, 16) as i32;
 }
 
+/// Where the current display starts on the peer's desktop. RustDesk pointer coordinates are global (the official
+/// client adds the display's x/y to every point), and the cursor position comes back global too; the canvas maps the
+/// current display alone, from 0.
+pub(crate) fn current_display_origin(state: &RustDeskDisplayState) -> (i32, i32) {
+    state
+        .displays
+        .iter()
+        .find(|display| display.display == state.current_display)
+        .map(|display| (display.x, display.y))
+        .unwrap_or((0, 0))
+}
+
 pub(crate) fn peer_features_from(state: &RustDeskDisplayState) -> RustDeskPeerFeaturesV1 {
     RustDeskPeerFeaturesV1 {
         struct_size: std::mem::size_of::<RustDeskPeerFeaturesV1>() as u32,
@@ -3700,6 +3712,14 @@ pub extern "C" fn rustdesk_send_mouse(
         return;
     }
     let ctx = unsafe { &*(handle as *const RustDeskClient) };
+    // Canvas coordinates are within the current display; the peer wants them on its whole desktop.
+    let (origin_x, origin_y) = ctx
+        .display_state
+        .lock()
+        .map(|state| current_display_origin(&state))
+        .unwrap_or((0, 0));
+    let x = x.saturating_add(origin_x);
+    let y = y.saturating_add(origin_y);
     let msg = if button == u32::MAX {
         ControlMsg::MouseMove { x, y }
     } else {
@@ -6292,6 +6312,26 @@ mod tests {
         assert_eq!((features.installed, features.idd_impl, features.amyuni_virtual_count), (0, 2, 2));
         assert_eq!(features.privacy_supported, 0);
         assert_eq!(peer_features_from(&RustDeskDisplayState::default()).idd_impl, 0);
+    }
+
+    #[test]
+    fn pointer_coordinates_are_global_on_the_peer_desktop() {
+        let mut client = test_client_with_display_state(RustDeskDisplayState {
+            current_display: 1,
+            displays: vec![
+                RustDeskDisplayInfoState { display: 0, x: 0, y: 0, width: 1920, height: 1080, ..Default::default() },
+                RustDeskDisplayInfoState { display: 1, x: 1920, y: -200, width: 2560, height: 1440, ..Default::default() },
+            ],
+            ..RustDeskDisplayState::default()
+        });
+        let handle = &mut client as *mut RustDeskClient as *mut c_void;
+        rustdesk_send_mouse(handle, 100, 50, 1, true);
+        let controls = client.controls.take_batch(8);
+        assert!(matches!(
+            controls.as_slice(),
+            [ControlMsg::MouseEvent { x: 2020, y: -150, button: 1, pressed: true }]
+        ));
+        assert_eq!(current_display_origin(&RustDeskDisplayState::default()), (0, 0));
     }
 
     #[test]

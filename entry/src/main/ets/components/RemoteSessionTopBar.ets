@@ -558,6 +558,27 @@ export struct RemoteSessionTopBar {
     return Math.max(1, this.sidebarMenuMaxHeight() - this.menuHeaderHeight());
   }
 
+  /** Everything the 显示 menu's rows show: a change rebuilds them (their ticks are passed by value). */
+  private displayMenuSignature(): string {
+    const caps: RustDeskDisplayCapabilities = this.rustDeskDisplayCapabilities;
+    const flags: string = (this.privacyMode ? '1' : '0') + (this.audioEnabled ? '1' : '0') +
+      (this.filePasteEnabled ? '1' : '0') + (this.canvasResetAvailable ? '1' : '0');
+    return 'display|' + this.activeSubMenu + '|' + this.viewScaleMode + '|' + this.imageQuality.toString() + '|' +
+      this.codec.toString() + '|' + flags + '|' + this.localScalePercent.toString() + '|' +
+      this.virtualDisplayImpl.toString() + '|' + this.virtualDisplayMask.toString() + '|' +
+      this.amyuniVirtualDisplayCount.toString() + '|' + caps.currentDisplay.toString() + '|' +
+      caps.pendingDisplay.toString() + '|' + caps.width.toString() + 'x' + caps.height.toString() + '|' +
+      caps.displays.length.toString() + '|' + caps.resolutions.length.toString() + '|' +
+      this.pendingDisplayResolution.width.toString() + 'x' + this.pendingDisplayResolution.height.toString();
+  }
+
+  private keyboardMouseMenuSignature(): string {
+    const flags: string = (this.showLocalCursor ? '1' : '0') + (this.browseMode ? '1' : '0') +
+      (this.relativeMouseMode ? '1' : '0') + (this.reverseWheel ? '1' : '0') +
+      (this.wheelDirectionFollowsKeyboard ? '1' : '0') + (this.swapMouseButtons ? '1' : '0');
+    return 'mouse|' + this.activeSubMenu + '|' + flags + '|' + this.touchpadSpeed.toString();
+  }
+
   private qualityLabel(value: number): string {
     if (value === 0) { return '速度'; }
     if (value === 2) { return '画质'; }
@@ -1149,7 +1170,10 @@ export struct RemoteSessionTopBar {
       this.menuHeader('显示与画质', $r('sys.symbol.display'))
       Scroll() {
         Column() {
-          this.displayRootMenuContent()
+          // The rows take their ticks by value: rebuild them whenever a value they show changes.
+          ForEach([this.displayMenuSignature()], (_signature: string): void => {
+            this.displayRootMenuContent()
+          }, (signature: string): string => signature)
         }.width('100%').padding(this.menuPadding())
       }
       .width('100%').constraintSize({ maxHeight: this.menuScrollMaxHeight() })
@@ -1279,7 +1303,9 @@ export struct RemoteSessionTopBar {
       this.menuHeader('鼠标与触控', $r('sys.symbol.mouse'))
       Scroll() {
         Column() {
-          this.keyboardMouseRootMenuContent()
+          ForEach([this.keyboardMouseMenuSignature()], (_signature: string): void => {
+            this.keyboardMouseRootMenuContent()
+          }, (signature: string): string => signature)
         }.width('100%').padding(this.menuPadding())
       }
       .width('100%').constraintSize({ maxHeight: this.menuScrollMaxHeight() })
