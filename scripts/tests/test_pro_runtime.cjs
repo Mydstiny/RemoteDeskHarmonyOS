@@ -300,6 +300,15 @@ test('every preset in the picker is a registered alternate icon and unknown name
   const registered = [...manifest.matchAll(/"name": "(rd_[a-z_]+)", "icon": "\$media:([a-z_]+)"/g)];
   assert.deepEqual(registered.map(match => match[1]),
     ['rd_white', 'rd_transparent', 'rd_night', 'rd_sky', 'rd_aurora', 'rd_vivid', 'rd_soft', 'rd_glow', 'rd_vivid_night', 'rd_vivid_ocean', 'rd_vivid_aurora']);
+  // Every preset has its own picker thumbnail (a missing branch fell back to the default icon's).
+  const panel = fs.readFileSync(require('node:path').join(__dirname,
+    '../../entry/src/main/ets/components/ProAppIconPanel.ets'), 'utf8');
+  for (const [, name] of registered) {
+    assert.ok(panel.includes("if (name === '" + name + "') { return $r('app.media.icon_preview_" + name + "'); }"),
+      name + ' needs its preview thumbnail');
+    assert.ok(fs.existsSync(require('node:path').join(__dirname,
+      '../../entry/src/main/resources/base/media/icon_preview_' + name + '.png')), name + ' preview image');
+  }
   for (const [, , resource] of registered) {
     const layered = JSON.parse(fs.readFileSync(require('node:path').join(__dirname,
       '../../AppScope/resources/base/media/' + resource + '.json'), 'utf8'))['layered-image'];
