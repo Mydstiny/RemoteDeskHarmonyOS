@@ -482,7 +482,7 @@ export struct AiHostEditor {
     if (this.inviteStatus !== '') {
       Text(this.inviteStatus).fontSize(12).fontFamily(AppConfig.fontFamily).fontColor(this.pal().text2).width('100%')
     }
-    Text('在电脑的 ' + aiBackendName(this.backend) + ' 设置页点「生成邀请」，二维码 120 秒内有效、只能用一次；配对凭据只保存在本机。')
+    Text('在电脑浏览器打开 ' + aiBackendName(this.backend) + ' 插件的控制面板（127.0.0.1:' + (aiBackendDefaultPort(this.backend) + 100).toString() + '），在「生成邀请」里选项目后生成二维码；二维码 120 秒内有效、只能用一次，配对凭据只保存在本机。')
       .fontSize(12).fontFamily(AppConfig.fontFamily).fontColor(this.pal().text2).width('100%')
     Row({ space: 4 }) {
       Text('其他配对方式与说明').fontSize(13).fontFamily(AppConfig.fontFamily).fontColor(this.pal().text2)
