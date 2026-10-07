@@ -301,10 +301,14 @@ const cases = [
     assert.equal((source.match(/Scroll\(\) \{ this\.workspace\(\) \}/g) || []).length, 1);
     const suffix = body.slice(body.lastIndexOf("}.width('100%')")); assert.ok(suffix.includes('minHeight:')); assert.ok(!suffix.includes('.height('));
     const height = argument(body, '}.height('); // The transcript List's production expression.
+    assert.ok(height.includes('this.topChrome') && height.includes('this.bottomChrome'), 'the list takes the measured rest');
+    assert.ok(source.includes('ui.setKeyboardAvoidMode(KeyboardAvoidMode.RESIZE);') && source.includes('onPageHide(): void { this.restoreKeyboardAvoid(); }'));
     for (const pageHeight of [160, 320, 399, 400, 480, 800]) for (const topInset of [0, 32, 80]) for (const sessionId of ['', 'fixture'])
       for (const uiStyle of ['claude', 'codex']) for (const approvals of [[], [{}]]) {
         // topRectHeight arrives in px; the page converts it with px2vp (3.25 px per vp on the phone) before layout.
+        // The chrome above and below the list is measured; a tall composer with an approval card is the worst case.
         const value = evaluate(height, { pageHeight, topInset, sessionId, uiStyle, approvals,
+          topChrome: uiStyle === 'codex' ? 110 : 56, bottomChrome: sessionId === '' ? 0 : 150 + approvals.length * 170,
           topVp() { return this.topInset > 0 ? this.topInset / 3.25 : 0; } });
         assert.ok(Number.isFinite(value) && value >= 180);
       }

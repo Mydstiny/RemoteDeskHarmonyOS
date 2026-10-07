@@ -13,6 +13,46 @@ export function aiStatusLabel(status: string): string {
     default: return status;
   }
 }
+/** Permission and collaboration modes the engines report, in words; an unknown mode keeps its own name. */
+export function aiModeLabel(mode: string): string {
+  switch (mode) {
+    case 'read-only': case 'readOnly': return '只读';
+    case 'workspace-write': case 'workspaceWrite': return '可写工作区';
+    case 'danger-full-access': case 'dangerFullAccess': return '完全访问';
+    case 'default': return '默认';
+    case 'acceptEdits': return '自动接受修改';
+    case 'plan': return '先做计划';
+    case 'bypassPermissions': return '跳过确认';
+    default: return mode;
+  }
+}
+const AI_METHOD_LABELS: Record<string, string> = {
+  'turn.start': '发送任务', 'turn.steer': '补充指令', 'turn.cancel': '停止回合', 'session.create': '新建会话',
+  'session.update': '更新会话设置', 'session.fork': '分叉会话', 'session.compact': '压缩上下文',
+  'session.archive': '归档会话', 'session.resume': '恢复会话', 'lease.acquire': '取得控制权', 'lease.release': '释放控制权',
+  'lease.renew': '续期控制权', 'approval.answer': '回复审批', 'terminal.stop': '停止终端任务'
+};
+/** A pending write as a person reads it: what was sent and what is known about its result. */
+export function aiOperationSummary(body: string, receipt: string): string[] {
+  let method = '';
+  try { method = aiString(aiRecord(JSON.parse(body) as Object)['method']); } catch (_error) { method = ''; }
+  let status = '结果待确认';
+  if (receipt !== '') {
+    try {
+      const value = aiString(aiRecord(JSON.parse(receipt) as Object)['status']);
+      status = value === 'succeeded' ? '已完成' : value === 'rejected' ? '电脑端已拒绝' :
+        value === 'not_found' ? '电脑端没有这条记录' : value === '' ? '结果待确认' : value;
+    } catch (_error) { status = '结果待确认'; }
+  }
+  return [AI_METHOD_LABELS[method] ?? (method === '' ? '未知操作' : method), status];
+}
+/** 10-07 15:55:02 — the device locale formatted these as "10/7/2026, 3:55:02 PM". */
+export function aiShortTime(at: number): string {
+  const date = new Date(at);
+  const two = (value: number): string => value.toString().padStart(2, '0');
+  return two(date.getMonth() + 1) + '-' + two(date.getDate()) + ' ' + two(date.getHours()) + ':' +
+    two(date.getMinutes()) + ':' + two(date.getSeconds());
+}
 export function aiRequestTitle(kind: string): string {
   switch (kind) {
     case 'command': return '运行命令';
