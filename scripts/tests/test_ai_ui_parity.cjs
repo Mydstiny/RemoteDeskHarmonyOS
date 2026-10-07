@@ -124,12 +124,12 @@ function workspace() {
 function fillDrafts(page) {
   for (const key of ['draft', 'newTitle', 'model', 'provider', 'effort', 'permission', 'collaboration']) page[key] = 'fixture draft';
   page.attachments = ['fixture']; page.efforts = ['high']; page.approval = { id: 'fixture' }; page.questions = [{ id: 'fixture' }];
-  page.showDetails = true; page.showApproval = true; page.showApprovalDetails = true; page.showSessionPicker = true;
+  page.showDetails = true; page.showApproval = true; page.showApprovalDetails = true;
 }
 function cleanDrafts(page) {
   for (const key of ['draft', 'newTitle', 'model', 'provider', 'effort', 'permission', 'collaboration']) assert.equal(page[key], '', key);
   for (const key of ['attachments', 'efforts', 'questions']) assert.equal(page[key].length, 0, key);
-  for (const key of ['showDetails', 'showApproval', 'showApprovalDetails', 'showSessionPicker']) assert.equal(page[key], false, key);
+  for (const key of ['showDetails', 'showApproval', 'showApprovalDetails']) assert.equal(page[key], false, key);
   assert.equal(page.approval, null);
 }
 const cases = [
@@ -331,10 +331,11 @@ const cases = [
     const header = read('entry/src/main/ets/components/AppSheetHeader.ets');
     assert.ok(header.includes('@Prop showProBadge: boolean = false;'));
     const workspace = read(workspaceFile);
-    // Three sheets keep the shared header with its Pro marker; both page styles carry the marker in their own header.
+    // The details and approval sheets keep the shared header with its Pro marker (projects and sessions became the
+    // workspace's home list); both page styles carry the marker in their own header.
     const headers = workspace.split('\n').filter(line => line.includes('AppSheetHeader({'));
-    assert.equal(headers.length, 3);
-    assert.equal(headers.filter(line => line.includes('showProBadge: true')).length, 3);
+    assert.equal(headers.length, 2);
+    assert.equal(headers.filter(line => line.includes('showProBadge: true')).length, 2);
     for (const builder of ['  @Builder private claudeHeader()', '  @Builder private codexHeader()']) {
       const start = workspace.indexOf(builder), end = workspace.indexOf('\n  @Builder', start + builder.length);
       assert.ok(start >= 0 && end > start && workspace.slice(start, end).includes('ProBadge()'), builder + ' shows the Pro marker');

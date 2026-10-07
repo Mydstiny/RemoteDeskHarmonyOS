@@ -53,6 +53,20 @@ export function aiShortTime(at: number): string {
   return two(date.getMonth() + 1) + '-' + two(date.getDate()) + ' ' + two(date.getHours()) + ':' +
     two(date.getMinutes()) + ':' + two(date.getSeconds());
 }
+/** The conversation list's time: 刚刚, 5 分钟前, 3 小时前, 昨天, 10-03 (or 2025-10-03 in an earlier year). */
+export function aiRelativeTime(at: number, now: number = Date.now()): string {
+  if (!Number.isFinite(at) || at <= 0) { return ''; }
+  const minutes = Math.floor((now - at) / 60000);
+  if (minutes < 1) { return '刚刚'; }
+  if (minutes < 60) { return minutes.toString() + ' 分钟前'; }
+  const date = new Date(at), today = new Date(now);
+  const startOfToday = new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime();
+  if (at >= startOfToday) { return Math.floor(minutes / 60).toString() + ' 小时前'; }
+  if (at >= startOfToday - 86400000) { return '昨天'; }
+  const two = (value: number): string => value.toString().padStart(2, '0');
+  const day = two(date.getMonth() + 1) + '-' + two(date.getDate());
+  return date.getFullYear() === today.getFullYear() ? day : date.getFullYear().toString() + '-' + day;
+}
 export function aiRequestTitle(kind: string): string {
   switch (kind) {
     case 'command': return '运行命令';

@@ -274,7 +274,7 @@ const cases = [
   }],
   ['background tasks keep the send button; a running or just accepted turn shows stop', async () => {
     const state = workspaceFixture(false);
-    state.page.control = true;
+    state.page.role = 'operator';
     for (const [status, mode] of [['background', 'send'], ['idle', 'send'], ['running', 'stop'], ['inProgress', 'stop'],
       ['请求已接受，等待执行结果', 'stop']]) {
       state.page.rawStatus = status;
@@ -282,7 +282,8 @@ const cases = [
     }
     state.page.rawStatus = 'background';
     assert.equal(state.page.backgroundTasks(), true);
-    state.page.control = false; state.page.rawStatus = 'running';
+    // A viewer device never gets the stop button (it cannot act on the turn).
+    state.page.role = 'viewer'; state.page.rawStatus = 'running';
     assert.equal(state.page.composerMode(), 'send');
   }],
   ['hiding tool steps keeps notices and conversation', async () => {

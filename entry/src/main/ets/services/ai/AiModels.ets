@@ -96,7 +96,8 @@ export interface AiPendingOperation {
   receipt: string;
 }
 export interface AiProject { id: string; title: string; }
-export interface AiSession { id: string; project: string; title: string; archived: boolean; }
+/** origin: 'computer' for a conversation started on the computer itself (the Codex or DSH app), else 'remote'. */
+export interface AiSession { id: string; project: string; title: string; archived: boolean; updatedAt: number; origin: string; }
 export interface AiCapabilities {
   methods: string[];
   permissionModes: string[];

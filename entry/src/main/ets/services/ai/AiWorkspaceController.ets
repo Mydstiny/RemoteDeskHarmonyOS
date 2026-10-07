@@ -100,30 +100,61 @@ export class AiWorkspaceController {
       if (generation === this.generation || (connected !== null && this.client === connected)) { this.busy = false; this.changed(); }
     }
   }
+  /**
+   * Every project's conversations, newest first (the newest 100 of each): the workspace opens on this list, like the
+   * Codex and Claude apps. The projects are asked together; the computer lists its own conversations on first ask.
+   */
+  private async listSessions(generation: number): Promise<AiSession[]> {
+    const client = this.client;
+    if (client === null) { return []; }
+    const pages = await Promise.all(this.projects.map((project: AiProject): Promise<Object> =>
+      client.read('session.list', aiParams(["projectId", "limit"], [project.id, 100]))));
+    this.assertGeneration(generation);
+    const sessions: AiSession[] = [];
+    pages.forEach((page: Object): void => {
+      aiArray(aiRecord(page)['data']).forEach((value: Object): void => {
+        const row = aiRecord(value);
+        sessions.push({ id: aiString(row['id']), project: aiString(row['project']),
+          title: aiString(row['title'], '未命名会话'), archived: row['archived'] === true,
+          updatedAt: aiNumber(row['updatedAt']), origin: aiString(row['origin'], 'remote') });
+      });
+    });
+    return sessions.sort((a: AiSession, b: AiSession): number => b.updatedAt - a.updatedAt);
+  }
+  async refreshSessions(): Promise<void> {
+    if (this.client === null) { return; }
+    const generation = this.generation;
+    this.sessions = await this.listSessions(generation); this.changed();
+  }
   async selectProject(id: string): Promise<void> {
     if (this.client === null) { return; }
     const generation = ++this.generation;
     await this.release();
     this.assertGeneration(generation);
     this.client.stopEvents(); this.streamToken++; this.projectId = id; this.sessionId = '';
-    this.sessions = []; this.approvals = []; this.transcript.clear(); this.changed();
-    let cursor = '';
-    const sessions: AiSession[] = [];
-    do {
-      const params: Record<string, Object> = aiParams(["projectId", "limit"], [id, 100]);
-      if (cursor !== '') { params['cursor'] = cursor; }
-      const result = aiRecord(await this.client.read('session.list', params));
-      this.assertGeneration(generation);
-      aiArray(result['data']).forEach((value: Object): void => {
-        const row = aiRecord(value); sessions.push({ id: aiString(row['id']), project: aiString(row['project']),
-          title: aiString(row['title'], '未命名会话'), archived: row['archived'] === true });
-      });
-      const next = aiString(result['nextCursor']);
-      if (next !== '' && next === cursor) { throw new Error('AI_PAGINATION_INVALID'); }
-      cursor = next;
-    } while (cursor !== '' && sessions.length < 1000);
-    this.sessions = sessions; this.changed();
+    this.approvals = []; this.transcript.clear(); this.changed();
+    this.sessions = await this.listSessions(generation); this.changed();
     await this.loadModels();
+  }
+  /** Opens a conversation from the list: its project becomes the current one (models, new conversations). */
+  async openSession(id: string): Promise<void> {
+    const session = this.sessions.find((item: AiSession): boolean => item.id === id);
+    if (this.client === null || session === undefined) { return; }
+    const switched = session.project !== this.projectId;
+    if (switched) { this.projectId = session.project; this.models = []; }
+    await this.selectSession(id);
+    if (switched || this.models.length === 0) { await this.loadModels(); }
+  }
+  /** Back to the conversation list: control is released and the list is read again. */
+  async closeSession(): Promise<void> {
+    if (this.client === null) { return; }
+    const generation = ++this.generation;
+    await this.release();
+    this.assertGeneration(generation);
+    this.client.stopEvents(); this.streamToken++; this.sessionId = ''; this.title = ''; this.approvals = [];
+    this.transcript.clear(); this.diff = ''; this.terminals = []; this.historyCursor = ''; this.archived = false;
+    this.changed();
+    this.sessions = await this.listSessions(generation); this.changed();
   }
   async selectSession(id: string): Promise<void> {
     if (this.client === null) { return; }
@@ -292,7 +323,15 @@ export class AiWorkspaceController {
       finally { this.dropWriter(key, writer); }
     }
   }
+  /** Like the Codex and Claude apps there is no separate "take control" step: an action takes control first. */
+  async ensureControl(): Promise<void> {
+    if (this.client === null || this.sessionId === '') { return; }
+    if (this.lease !== '' && this.leaseExpires > Date.now()) { return; }
+    if (this.lease !== '') { await this.release().catch((): void => {}); }
+    await this.acquire();
+  }
   async action(method: string, extra: Record<string, Object> = {}): Promise<Record<string, Object>> {
+    await this.ensureControl();
     const client = this.client;
     if (client === null || this.sessionId === '' || this.lease === '' || this.leaseExpires <= Date.now()) { throw new Error('LEASE_REQUIRED'); }
     const generation = this.generation, session = this.sessionId;
@@ -311,13 +350,13 @@ export class AiWorkspaceController {
       return result;
     } finally { if (generation === this.generation) { await this.refreshOperations().catch((): void => {}); this.changed(); } }
   }
-  async create(title: string): Promise<void> {
-    if (this.client === null || this.projectId === '') { return; }
+  async create(title: string, projectId: string = this.projectId): Promise<void> {
+    if (this.client === null || projectId === '') { return; }
     const generation = this.generation;
-    const result = await this.client.write('session.create', aiParams(["projectId", "title"], [this.projectId, title]));
+    const result = await this.client.write('session.create', aiParams(["projectId", "title"], [projectId, title]));
     this.assertGeneration(generation);
     const id = aiString(result['sessionId']);
-    await this.selectProject(this.projectId); await this.selectSession(id); await this.acquire();
+    await this.selectProject(projectId); await this.selectSession(id); await this.acquire();
   }
   async refreshApprovals(): Promise<void> {
     if (this.client === null || this.sessionId === '') { return; }
