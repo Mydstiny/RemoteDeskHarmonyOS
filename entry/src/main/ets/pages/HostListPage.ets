@@ -2324,6 +2324,8 @@ struct HostListPage {
 
   @State private aiEditingHost: AiHost | null = null;
   private aiSheetGeneration: number = 0;
+  /** The open-after-pairing handoff has its own token: the form reset on the same dismissal bumps aiSheetGeneration. */
+  private aiConnectHandoff: number = 0;
   private aiSheetAccount: AiAccountLease | null = null;
   private pendingAiAccount: AiAccountLease | null = null;
   private pendingAiConnectId: string = '';
@@ -2653,7 +2655,7 @@ struct HostListPage {
         this.pendingAiAccount = null;
         this.aiEditingHost = null;
         this.aiSheetAccount = null;
-        this.aiSheetGeneration++;
+        this.aiSheetGeneration++; this.aiConnectHandoff++;
         if (this.expandedHostGroup === 'ai') { this.expandedHostGroup = ''; }
         if (this.showAddSheet && this.activeHostAddProtocol() === 'ai') { this.requestAddSheetClose(); }
         if (this.curTab === 8) {
@@ -4829,10 +4831,11 @@ struct HostListPage {
     }
     const pendingAiId = this.pendingAiConnectId, pendingAiAccount = this.pendingAiAccount;
     this.pendingAiConnectId = ''; this.pendingAiAccount = null; this.aiEditingHost = null;
-    const aiGeneration = ++this.aiSheetGeneration;
+    ++this.aiSheetGeneration;
+    const aiHandoff = ++this.aiConnectHandoff;
     if (pendingAiId !== '' && pendingAiAccount !== null) {
       setTimeout((): void => {
-        if (aiGeneration === this.aiSheetGeneration && !this.showAddSheet && AiAccess.getInstance().current(pendingAiAccount)) {
+        if (aiHandoff === this.aiConnectHandoff && !this.showAddSheet && AiAccess.getInstance().current(pendingAiAccount)) {
           void this.openAiHost(pendingAiId);
         }
       }, 100);
@@ -12894,7 +12897,7 @@ struct HostListPage {
       if (!this.pageActive || this.appInBackground) { return; }
       this.aiEditingHost = AiHostService.getInstance().find(aiHostId(host));
       if (this.aiEditingHost === null) { return; }
-      this.aiSheetGeneration++; this.aiSheetAccount = AiAccess.getInstance().capture();
+      this.aiSheetGeneration++; this.aiConnectHandoff++; this.aiSheetAccount = AiAccess.getInstance().capture();
       this.proto = 'ai'; this.modernAddProtocol = 'ai'; this.addSheetShowsModernPicker = false;
       this.openSheetSafely((): void => { this.showAddSheet = true; }); return;
     }

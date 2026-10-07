@@ -303,7 +303,9 @@ const cases = [
     const height = argument(body, '}.height('); // The transcript List's production expression.
     for (const pageHeight of [160, 320, 399, 400, 480, 800]) for (const topInset of [0, 32, 80]) for (const sessionId of ['', 'fixture'])
       for (const uiStyle of ['claude', 'codex']) for (const approvals of [[], [{}]]) {
-        const value = evaluate(height, { pageHeight, topInset, sessionId, uiStyle, approvals });
+        // topRectHeight arrives in px; the page converts it with px2vp (3.25 px per vp on the phone) before layout.
+        const value = evaluate(height, { pageHeight, topInset, sessionId, uiStyle, approvals,
+          topVp() { return this.topInset > 0 ? this.topInset / 3.25 : 0; } });
         assert.ok(Number.isFinite(value) && value >= 180);
       }
   }],

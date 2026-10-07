@@ -22,6 +22,10 @@ import { AiRemoteMarkdown } from '../components/ai/AiRemoteMarkdown';
 import { AiDiffView } from '../components/ai/AiDiffView';
 import { ProBadge } from '../components/ProBadge';
 
+interface AiWsButton { label: string; primary: boolean; enabled: boolean; action: () => void; }
+interface AiWsIconButton { symbol: Resource; label: string; enabled: boolean; action: () => void; }
+interface AiWsChip { label: string; enabled: boolean; action: () => void; }
+interface AiWsRoundAction { symbol: Resource; label: string; primary: boolean; enabled: boolean; action: () => void; }
 interface AiQuestionValue { id: string; title: string; options: string[]; descriptions: string[]; multiple: boolean; selected: string[]; text: string; }
 @Entry
 @Component
@@ -671,20 +675,23 @@ export struct RemoteAiWorkspace {
   }
   /** The status bar height arrives in px; layout is in vp (it was used as vp, a ~3x gap above the header). */
   private topVp(): number { return this.topInset > 0 ? px2vp(this.topInset) : 0; }
-  @Builder private pillButton(label: string, primary: boolean, enabled: boolean, action: () => void) {
-    Text(label).fontSize(14).fontWeight(FontWeight.Medium).fontFamily(AppConfig.fontFamily)
-      .fontColor(primary ? this.palette().onAccent : this.palette().text).textAlign(TextAlign.Center)
+  // One object parameter: @Builder arguments passed by value never refresh, so a button drawn while connecting
+  // (busy) stayed disabled after the connection settled. An object literal is passed by reference and does refresh.
+  @Builder private pillButton(b: AiWsButton) {
+    Text(b.label).fontSize(14).fontWeight(FontWeight.Medium).fontFamily(AppConfig.fontFamily)
+      .fontColor(b.primary ? this.palette().onAccent : this.palette().text).textAlign(TextAlign.Center)
       .padding({ left: 16, right: 16 }).constraintSize({ minHeight: AppUiMetrics.minTouchTarget }).borderRadius(20)
-      .backgroundColor(primary ? this.palette().accent : this.palette().surface)
-      .border({ width: primary ? 0 : 0.5, color: this.palette().border })
-      .opacity(enabled ? 1 : 0.45).enabled(enabled).focusable(true).accessibilityText(label)
-      .onClick((): void => { if (enabled) { action(); } })
+      .backgroundColor(b.primary ? this.palette().accent : this.palette().surface)
+      .border({ width: b.primary ? 0 : 0.5, color: this.palette().border })
+      .opacity(b.enabled ? 1 : 0.45).enabled(b.enabled).focusable(true).accessibilityText(b.label)
+      .onClick((): void => { if (b.enabled) { b.action(); } })
   }
-  @Builder private iconButton(symbol: Resource, label: string, enabled: boolean, action: () => void) {
+  @Builder private iconButton(b: AiWsIconButton) {
     Stack() {
-      SymbolGlyph(symbol).fontSize(20).fontColor([this.palette().text2])
-    }.width(40).height(40).borderRadius(20).enabled(enabled).opacity(enabled ? 1 : 0.4)
-    .accessibilityText(label).focusable(true).onClick((): void => { if (enabled) { action(); } })
+      SymbolGlyph(b.symbol).fontSize(20).fontColor([this.palette().text2])
+    }.width(AppUiMetrics.minTouchTarget).height(AppUiMetrics.minTouchTarget).borderRadius(22).enabled(b.enabled)
+    .opacity(b.enabled ? 1 : 0.4).accessibilityText(b.label).focusable(true)
+    .onClick((): void => { if (b.enabled) { b.action(); } })
   }
   @Builder private sessionRow(session: AiSession) {
     Row({ space: 10 }) {
@@ -728,8 +735,7 @@ export struct RemoteAiWorkspace {
       Row() {
         Text(this.uiStyle === 'codex' ? '任务' : '会话').fontSize(13).fontFamily(AppConfig.fontFamily)
           .fontColor(this.palette().text3).layoutWeight(1)
-        this.pillButton(this.uiStyle === 'codex' ? '新建任务' : '新建会话', true,
-          this.allowed && this.projectId !== '' && !this.busy, (): void => { void this.newSession(); })
+        this.pillButton({ label: this.uiStyle === 'codex' ? '新建任务' : '新建会话', primary: true, enabled: this.allowed && this.projectId !== '' && !this.busy, action: (): void => { void this.newSession(); } })
       }.width('100%')
       if (this.sessions.length === 0) {
         Text(this.projectId === '' ? '请先选择项目' : '这个项目还没有会话').fontSize(13).fontFamily(AppConfig.fontFamily)
@@ -774,7 +780,7 @@ export struct RemoteAiWorkspace {
   }
   @Builder private claudeHeader() {
     Row({ space: 2 }) {
-      this.iconButton($r('sys.symbol.chevron_left'), '返回', true, (): void => { void this.leave(); })
+      this.iconButton({ symbol: $r('sys.symbol.chevron_left'), label: '返回', enabled: true, action: (): void => { void this.leave(); } })
       Column({ space: 3 }) {
         Text(this.title).fontSize(17).fontWeight(FontWeight.Medium).fontFamily(AppConfig.fontFamily)
           .fontColor(this.palette().text).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
@@ -786,14 +792,13 @@ export struct RemoteAiWorkspace {
         }
       }.layoutWeight(1).alignItems(HorizontalAlign.Start).padding({ left: 4 })
       ProBadge().alignSelf(ItemAlign.Center).margin({ right: 4 })
-      this.iconButton($r('sys.symbol.list_bullet'), '项目与会话', this.allowed && !this.busy,
-        (): void => { this.showSessionPicker = true; })
+      this.iconButton({ symbol: $r('sys.symbol.list_bullet'), label: '项目与会话', enabled: this.allowed && !this.busy, action: (): void => { this.showSessionPicker = true; } })
       this.moreMenuButton()
     }.width('100%').padding({ left: 6, right: 6, top: 4, bottom: 4 })
   }
   @Builder private codexHeader() {
     Row({ space: 2 }) {
-      this.iconButton($r('sys.symbol.chevron_left'), '返回', true, (): void => { void this.leave(); })
+      this.iconButton({ symbol: $r('sys.symbol.chevron_left'), label: '返回', enabled: true, action: (): void => { void this.leave(); } })
       Column({ space: 3 }) {
         Text(this.title).fontSize(16).fontWeight(FontWeight.Medium).fontFamily(AppConfig.fontFamily)
           .fontColor(this.palette().text).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
@@ -1016,10 +1021,9 @@ export struct RemoteAiWorkspace {
       Text(this.sessionId === '' ? '选择项目和会话，或新建会话开始使用。' : '会话准备就绪，取得控制权后即可发送任务。')
         .fontSize(14).fontFamily(AppConfig.fontFamily).fontColor(this.palette().text2).textAlign(TextAlign.Center)
       if (this.sessionId === '' && this.allowed) {
-        this.pillButton(this.uiStyle === 'codex' ? '打开任务列表' : '项目与会话', true, !this.busy,
-          (): void => { this.showSessionPicker = true; })
+        this.pillButton({ label: this.uiStyle === 'codex' ? '打开任务列表' : '项目与会话', primary: true, enabled: !this.busy, action: (): void => { this.showSessionPicker = true; } })
       } else if (this.sessionId === '') {
-        this.pillButton('重新连接', true, this.canReconnect && !this.busy, (): void => { void this.reconnect(); })
+        this.pillButton({ label: '重新连接', primary: true, enabled: this.canReconnect && !this.busy, action: (): void => { void this.reconnect(); } })
       }
     }.width('100%').padding({ top: 48, bottom: 48 })
   }
@@ -1042,12 +1046,11 @@ export struct RemoteAiWorkspace {
       }
       Row({ space: 10 }) {
         if (aiString(approval.request['kind']) === 'questions') {
-          this.pillButton('回答问题', true, this.control && this.allowed && !this.busy, (): void => { this.inspect(approval); })
+          this.pillButton({ label: '回答问题', primary: true, enabled: this.control && this.allowed && !this.busy, action: (): void => { this.inspect(approval); } })
         } else {
-          this.pillButton('拒绝', false, this.control && this.allowed && !this.busy,
-            (): void => { void this.answerInline(approval, 'decline'); })
-          this.pillButton('允许此次', true, this.control && this.allowed && !this.busy && approval.expires > Date.now() &&
-            this.approvalAcceptable(approval), (): void => { void this.answerInline(approval, 'accept'); })
+          this.pillButton({ label: '拒绝', primary: false, enabled: this.control && this.allowed && !this.busy, action: (): void => { void this.answerInline(approval, 'decline'); } })
+          this.pillButton({ label: '允许此次', primary: true, enabled: this.control && this.allowed && !this.busy && approval.expires > Date.now() &&
+            this.approvalAcceptable(approval), action: (): void => { void this.answerInline(approval, 'accept'); } })
         }
         Blank()
         Text('完整请求').fontSize(13).fontFamily(AppConfig.fontFamily).fontColor(this.palette().accent)
@@ -1056,19 +1059,19 @@ export struct RemoteAiWorkspace {
     }.width('100%').padding(14).borderRadius(16).backgroundColor(this.palette().raised)
     .border({ width: 1, color: this.palette().accent })
   }
-  @Builder private chip(label: string, enabled: boolean, action: () => void) {
-    Text(label).fontSize(12).fontFamily(AppConfig.fontFamily).fontColor(this.palette().text2)
+  @Builder private chip(b: AiWsChip) {
+    Text(b.label).fontSize(12).fontFamily(AppConfig.fontFamily).fontColor(this.palette().text2)
       .padding({ left: 10, right: 10, top: 6, bottom: 6 }).borderRadius(14)
       .border({ width: 0.5, color: this.palette().border }).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-      .constraintSize({ maxWidth: 150 }).enabled(enabled).opacity(enabled ? 1 : 0.45).focusable(true)
-      .accessibilityText(label).onClick((): void => { if (enabled) { action(); } })
+      .constraintSize({ maxWidth: 150 }).enabled(b.enabled).opacity(b.enabled ? 1 : 0.45).focusable(true)
+      .accessibilityText(b.label).onClick((): void => { if (b.enabled) { b.action(); } })
   }
-  @Builder private roundAction(symbol: Resource, label: string, primary: boolean, enabled: boolean, action: () => void) {
+  @Builder private roundAction(b: AiWsRoundAction) {
     Stack() {
-      SymbolGlyph(symbol).fontSize(18).fontColor([primary ? this.palette().onAccent : this.palette().text2])
-    }.width(36).height(36).borderRadius(18).backgroundColor(primary ? this.palette().accent : Color.Transparent)
-    .opacity(enabled ? 1 : 0.35).enabled(enabled).focusable(true).accessibilityText(label)
-    .onClick((): void => { if (enabled) { action(); } })
+      SymbolGlyph(b.symbol).fontSize(18).fontColor([b.primary ? this.palette().onAccent : this.palette().text2])
+    }.width(40).height(40).borderRadius(20).backgroundColor(b.primary ? this.palette().accent : Color.Transparent)
+    .opacity(b.enabled ? 1 : 0.35).enabled(b.enabled).focusable(true).accessibilityText(b.label)
+    .onClick((): void => { if (b.enabled) { b.action(); } })
   }
   @Builder private composer() {
     Column({ space: 8 }) {
@@ -1077,8 +1080,7 @@ export struct RemoteAiWorkspace {
           Text(this.controller.client?.handshake?.role === 'operator' ? '正在查看 · 取得控制权后才能发送和批准' : '这台设备只有查看权限')
             .fontSize(12).fontFamily(AppConfig.fontFamily).fontColor(this.palette().text3).layoutWeight(1)
           if (this.controller.client?.handshake?.role === 'operator') {
-            this.pillButton('取得控制权', true, this.allowed && !this.busy,
-              (): void => { void this.run(async (): Promise<void> => { await this.controller.acquire(); }); })
+            this.pillButton({ label: '取得控制权', primary: true, enabled: this.allowed && !this.busy, action: (): void => { void this.run(async (): Promise<void> => { await this.controller.acquire(); }); } })
           }
         }.width('100%')
       }
@@ -1115,25 +1117,19 @@ export struct RemoteAiWorkspace {
           .enabled(this.allowed && !this.busy && !this.archived).accessibilityText('任务内容')
           .onChange((value: string): void => { if (this.allowed && !this.busy) { this.draft = value; } }).maxLength(128000)
         Row({ space: 6 }) {
-          this.roundAction($r('sys.symbol.paperclip'), '附件', false, this.canAttach(), (): void => { void this.attach(); })
-          this.chip(this.model !== '' ? this.model : '模型', this.allowed && !this.busy,
-            (): void => { this.detailTab = 0; this.showDetails = true; })
+          this.roundAction({ symbol: $r('sys.symbol.paperclip'), label: '附件', primary: false, enabled: this.canAttach(), action: (): void => { void this.attach(); } })
+          this.chip({ label: this.model !== '' ? this.model : '模型', enabled: this.allowed && !this.busy, action: (): void => { this.detailTab = 0; this.showDetails = true; } })
           if ((this.controller.client?.choices('permissionModes').length ?? 0) > 0) {
-            this.chip(this.permission !== '' ? this.permission : '权限模式', this.allowed && !this.busy,
-              (): void => { this.detailTab = 0; this.showDetails = true; })
+            this.chip({ label: this.permission !== '' ? this.permission : '权限模式', enabled: this.allowed && !this.busy, action: (): void => { this.detailTab = 0; this.showDetails = true; } })
           }
           Blank()
           if (this.composerMode() === 'stop') {
             if (this.draft.trim() !== '' && this.capability('steer')) {
-              this.roundAction($r('sys.symbol.arrow_up'), '补充指令', false, this.allowed && !this.busy && !this.archived,
-                (): void => { void this.send(true); })
+              this.roundAction({ symbol: $r('sys.symbol.arrow_up'), label: '补充指令', primary: false, enabled: this.allowed && !this.busy && !this.archived, action: (): void => { void this.send(true); } })
             }
-            this.roundAction($r('sys.symbol.stop_circle_fill'), '停止', true, this.capability('cancel') && !this.busy,
-              (): void => { void this.run(async (): Promise<void> => { await this.controller.action('turn.cancel'); }); })
+            this.roundAction({ symbol: $r('sys.symbol.stop_circle_fill'), label: '停止', primary: true, enabled: this.capability('cancel') && !this.busy, action: (): void => { void this.run(async (): Promise<void> => { await this.controller.action('turn.cancel'); }); } })
           } else {
-            this.roundAction($r('sys.symbol.arrow_up'), '发送', true,
-              this.control && this.allowed && !this.busy && !this.archived && this.draft.trim() !== '',
-              (): void => { void this.send(false); })
+            this.roundAction({ symbol: $r('sys.symbol.arrow_up'), label: '发送', primary: true, enabled: this.control && this.allowed && !this.busy && !this.archived && this.draft.trim() !== '', action: (): void => { void this.send(false); } })
           }
         }.width('100%')
       }
