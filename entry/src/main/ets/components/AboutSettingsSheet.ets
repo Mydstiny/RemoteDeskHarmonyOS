@@ -4,6 +4,7 @@
  * 从 HostListPage.ets 提取。接收 aboutSheetMode 和关闭回调，
  * 通过 @StorageLink/@StorageProp 接入主题系统。
  */
+import { SearchBarSurface } from '../common/SearchBarSurface';
 import { common, Want } from '@kit.AbilityKit';
 import { AppSheetHeader } from './AppSheetHeader';
 import { settingsVisualIsModern } from '../services/SettingsVisualStylePolicy';
@@ -401,8 +402,8 @@ export struct AboutSettingsSheet {
         }
       }
       .layoutWeight(1).height(44).padding({ left: 14, right: 2 }).borderRadius(14)
-      .backgroundColor(this.pal().surface)
-      .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
+      .attributeModifier(new SearchBarSurface<RowAttribute>(this.theme !== 'light',
+        { background: this.pal().surface, border: this.pal().cardBorder }))
     }
     // The inset is padding on the full-width row: width 100% plus a margin would overflow the sheet.
     .width('100%').padding({ left: 20, right: 20 })

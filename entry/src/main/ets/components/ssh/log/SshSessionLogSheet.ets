@@ -1,3 +1,4 @@
+import { SearchBarSurface } from '../../../common/SearchBarSurface';
 import {
   SshSessionLogDocumentV1,
   SshSessionLogSearchHitV1
@@ -86,8 +87,9 @@ export struct SshSessionLogSheet {
       }.width('100%').padding({ left: 16, right: 16, top: 14, bottom: 10 })
       TextInput({ text: this.query, placeholder: '搜索当前主机的脱敏日志' })
         .height(42).fontSize(12).fontColor('#F2F4F7')
-        .placeholderColor('rgba(242,244,247,0.40)').backgroundColor('rgba(255,255,255,0.07)')
-        .borderRadius(9).margin({ left: 16, right: 16, bottom: 10 })
+        .placeholderColor('rgba(242,244,247,0.40)')
+        .borderRadius(9).attributeModifier(new SearchBarSurface<TextInputAttribute>(true, { background: 'rgba(255,255,255,0.07)' }))
+        .margin({ left: 16, right: 16, bottom: 10 })
         .enableAutoFill(false)
         .onChange((value: string): void => { this.onSearchChange(value.slice(0, 256)); })
       Scroll() {

@@ -1,3 +1,4 @@
+import { SearchBarSurface } from '../../../common/SearchBarSurface';
 import { settingsVisualIsModern } from '../../../services/SettingsVisualStylePolicy';
 import { appUiOnAccentText } from '../../../common/AppUiColorPolicy';
 import { buildDark, buildLight, Palette } from '../../../common/Theme';
@@ -168,7 +169,8 @@ export struct WorkspaceAddFlow {
         '按勾选顺序打开；之后可以在编辑里调整顺序和布局')
         .fontSize(12).fontColor(this.pal().text3).width('100%').margin({ bottom: 10 })
       if (this.rows().length > 6) {
-        Search({ value: this.query, placeholder: '搜索名称、地址或协议' }).height(38).backgroundColor(this.pal().surface)
+        Search({ value: this.query, placeholder: '搜索名称、地址或协议' }).height(38).borderRadius(19)
+          .attributeModifier(new SearchBarSurface<SearchAttribute>(this.theme !== 'light', { background: this.pal().surface }))
           .margin({ bottom: 8 }).onChange((value: string): void => { this.query = value; })
       }
       if (this.rows().length === 0) {

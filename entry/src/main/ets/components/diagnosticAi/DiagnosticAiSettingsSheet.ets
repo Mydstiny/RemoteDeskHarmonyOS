@@ -1,3 +1,4 @@
+import { SearchBarSurface } from '../../common/SearchBarSurface';
 import { AiMotionSettingsPanel } from './AiMotionSettingsPanel';
 import { AppSheetHeader } from '../AppSheetHeader';
 import { settingsVisualIsModern } from '../../services/SettingsVisualStylePolicy';
@@ -1281,6 +1282,7 @@ export struct DiagnosticAiSettingsSheet {
         } })
       Search({ value: this.sessionQuery, placeholder: '搜索对话内容' })
         .height(40).width('100%').borderRadius(20)
+        .attributeModifier(new SearchBarSurface<SearchAttribute>(this.theme !== 'light', {}))
         .onChange((value: string): void => { this.sessionQuery = value; })
       if (this.kindSessions().length === 0) {
         Column({ space: 10 }) {
