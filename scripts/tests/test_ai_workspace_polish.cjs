@@ -27,6 +27,9 @@ assert.ok(!shimmer.includes("height('100%')"), 'a 100% band stretched the 正在
 assert.ok(page.includes(".edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })"));
 assert.ok(page.includes("}.width('100%').height('100%').padding({ left: 16, right: 16 }).scrollBar(BarState.Auto)"));
 
+// Messages sit above the composer (the conversation stacks from the end); the home list starts at the top.
+assert.ok(page.includes(".stackFromEnd(this.sessionId !== '')"));
+
 // The model sheet fits its content instead of a fixed large sheet with blank space below.
 assert.ok(page.includes('.bindSheet($$this.showModelPicker, this.modelSheet(), { height: SheetSize.FIT_CONTENT'));
 const sheet = page.slice(page.indexOf('@Builder private modelSheet()'), page.indexOf('@Builder private modelCard()'));

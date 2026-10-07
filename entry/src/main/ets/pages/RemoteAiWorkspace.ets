@@ -2015,6 +2015,9 @@ export struct RemoteAiWorkspace {
       }.width('100%').height('100%').padding({ left: 16, right: 16 }).scrollBar(BarState.Auto)
         // A short list (a few conversations) still takes the pull from anywhere in its area and hands it to Refresh.
         .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
+        // A conversation is laid out from the bottom: its messages sit just above the composer, like a chat, and a
+        // short one does not float at the top of an empty page.
+        .stackFromEnd(this.sessionId !== '')
         .onScrollIndex((_start: number, end: number): void => {
           if (Date.now() < this.pinBottomUntil) { return; }
           this.followBottom = end >= this.listLength() - 2;
