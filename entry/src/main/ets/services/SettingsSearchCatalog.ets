@@ -150,11 +150,11 @@ const ENTRIES: SettingsSearchEntry[] = [
   entry(SETTINGS_SECTION_DIAGNOSTICS, '传统日志抓取', '日志 诊断 抓取 导出', 'diagnosticAi.classicLogs'),
   // Pro 功能
   entry(SETTINGS_SECTION_PRO, 'Pro 标识', '标识 徽标 样式', 'settings.proBadge', 'proManager'),
-  entry(SETTINGS_SECTION_PRO, '手机通行密钥', '通行密钥 passkey 登录', 'pro.phonePasskey', 'proManager'),
   entry(SETTINGS_SECTION_PRO, '安全密钥重定向', 'usb 安全密钥 webauthn fido', 'pro.securityKey', 'proManager'),
   // 数据安全
   entry(SETTINGS_SECTION_SECURITY, '端到端加密', '加密 主密码 aes 解锁'),
   entry(SETTINGS_SECTION_SECURITY, '密码与秘密回显', '回显 隐藏密码 显示密码', 'settings.secretVisibility'),
+  entry(SETTINGS_SECTION_SECURITY, '手机通行密钥', '通行密钥 passkey 登录 安全密钥 手机当密钥', 'pro.phonePasskey', 'phonePasskey'),
   entry(SETTINGS_SECTION_SECURITY, 'SSH 主机指纹', '指纹 known_hosts 信任'),
   entry(SETTINGS_SECTION_SECURITY, 'RDP 证书信任', '证书 信任 windows'),
   entry(SETTINGS_SECTION_SECURITY, 'VNC TLS 证书信任', '证书 信任 tls'),

@@ -54,6 +54,8 @@ export const SETTINGS_SHEET_SSH_SKIN: number = 56;
 /** Pro 远端显示方案: RDP desktop size and Windows scale in one sheet. */
 export const SETTINGS_SHEET_RDP_DISPLAY_PROFILE: number = 57;
 export const SETTINGS_SHEET_DIAGNOSTIC_AI: number = 58;
+/** 设置 → 安全与数据 → 手机通行密钥 (the passkey page; Pro 功能 and the AI 助理 open it too). */
+export const SETTINGS_SHEET_PHONE_PASSKEY: number = 59;
 
 export const SETTINGS_PANEL_DISMISS_TO_LEAF_OPEN_MS: number = 360;
 

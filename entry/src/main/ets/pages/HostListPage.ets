@@ -1,3 +1,5 @@
+import { PhonePasskeySettingsSheet } from '../components/pro/passkey/PhonePasskeySettingsSheet';
+import { phonePasskeyEntryAvailable } from '../services/pro/passkey/ProPasskeyEntry';
 import { SearchBarSurface } from '../common/SearchBarSurface';
 import { ProBadge, proBadgeSummary } from '../components/ProBadge';
 import { AI_VOICE_HOLD_EVENT } from '../components/diagnosticAi/AiVoiceIsland';
@@ -600,6 +602,7 @@ import {
   SETTINGS_SHEET_PRO,
   SETTINGS_SHEET_APP_ICON,
   SETTINGS_SHEET_PRO_FEATURE,
+  SETTINGS_SHEET_PHONE_PASSKEY,
   SETTINGS_SHEET_PRO_BADGE,
   SETTINGS_SHEET_RDP_DISPLAY_PROFILE,
   SETTINGS_SHEET_SSH_SKIN,
@@ -18274,6 +18277,7 @@ struct HostListPage {
     }
     if (this.settingsLeafSheetMode === SETTINGS_SHEET_APP_ICON ||
       this.settingsLeafSheetMode === SETTINGS_SHEET_PRO_FEATURE ||
+      this.settingsLeafSheetMode === SETTINGS_SHEET_PHONE_PASSKEY ||
       this.settingsLeafSheetMode === SETTINGS_SHEET_PRO_BADGE ||
       this.settingsLeafSheetMode === SETTINGS_SHEET_RDP_DISPLAY_PROFILE) { return SheetSize.FIT_CONTENT; }
     if (this.settingsLeafSheetMode === SETTINGS_SHEET_POPUP && this.popupSheetMode === 1 &&
@@ -18364,6 +18368,12 @@ struct HostListPage {
       ProFeatureDetailPanel({
         featureId: this.selectedProFeatureId,
         showClose: true,
+        viewportHeight: this.pageViewportHeight,
+        onClose: (): void => { this.closeSettingsLeafSheetByUser(); },
+        onOpenPasskey: (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_PHONE_PASSKEY); }
+      })
+    } else if (this.settingsLeafSheetMode === SETTINGS_SHEET_PHONE_PASSKEY) {
+      PhonePasskeySettingsSheet({
         viewportHeight: this.pageViewportHeight,
         onClose: (): void => { this.closeSettingsLeafSheetByUser(); }
       })
@@ -19944,6 +19954,32 @@ struct HostListPage {
     }
   }
 
+  /** 安全与数据 → 手机通行密钥: the passkey prototype's page (Debug builds with Pro, see ProPasskeyEntry). */
+  @Builder phonePasskeyRow() {
+    Row() {
+      Row() {
+        SymbolGlyph($r('sys.symbol.key_fill')).fontSize(20).fontColor([this.accentColor])
+      }.width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
+      Column() {
+        Row({ space: 6 }) {
+          Text('手机通行密钥').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
+            .fontColor(this.pal().text).fontFamily(this.font())
+          ProBadge()
+        }
+        Text('用同账号的手机当通行密钥，每次在手机上确认 · 原型')
+          .fontSize(this.settingsModern() ? 12 : 10).fontColor(this.settingsModern() ? this.pal().text2 : this.pal().text3)
+          .fontFamily(this.font()).margin({ top: 3 }).maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
+      }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
+      SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(this.settingsModern() ? 16 : 18).fontColor([this.pal().text3])
+        .margin({ right: 14 })
+    }
+    .width('100%').height(this.settingsModern() ? 'auto' : 62)
+    .constraintSize({ minHeight: this.settingsModern() ? 62 : 0 })
+    .padding({ left: 16, right: 16, top: this.settingsModern() ? 8 : 0, bottom: this.settingsModern() ? 8 : 0 })
+    .accessibilityText('手机通行密钥，Pro 原型')
+    .onClick((): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_PHONE_PASSKEY); })
+  }
+
   @Builder settingsSectionSecurity() {
     ListItem() {
       this.settingsAccordionHeader(SETTINGS_SECTION_SECURITY, $r('sys.symbol.lock_shield_fill'),
@@ -20017,6 +20053,11 @@ struct HostListPage {
             (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_SECRET_VISIBILITY); })
 
           this.cardDivider()
+
+          if (phonePasskeyEntryAvailable()) {
+            this.phonePasskeyRow()
+            this.cardDivider()
+          }
 
           // ---- TOTP 隐私保护 ----
           Row() {
@@ -20376,6 +20417,7 @@ struct HostListPage {
     switch (requires) {
       case '': return true;
       case 'appIcon': return this.appIconProVisible && this.appIconSupported;
+      case 'phonePasskey': return phonePasskeyEntryAvailable();
       case 'personalization': return this.personalizationProVisible;
       case 'touchDevice': return !this.isDesktopDevice;
       case 'cloud': return !this.appCloneLocalOnly;
@@ -22377,8 +22419,10 @@ struct HostListPage {
       case 'settings.aiDisplay': this.openSettingsLeafSheet(SETTINGS_SHEET_AI_DISPLAY); return;
       case 'settings.aiData': this.openSettingsLeafSheet(SETTINGS_SHEET_AI_DATA); return;
       case 'settings.aiInstall': this.openSettingsLeafSheet(SETTINGS_SHEET_AI_INSTALL); return;
-      // Pro 功能 → 手机通行密钥 / 安全密钥重定向: their status, and the passkey's pairing panel where it is open.
+      // 手机通行密钥 (安全与数据, or its Pro detail where it is not open) / 安全密钥重定向 (its Pro detail).
       case 'pro.phonePasskey':
+        // Its page is 安全与数据 → 手机通行密钥; where it is not open (release builds) the Pro detail explains why.
+        if (phonePasskeyEntryAvailable()) { this.openSettingsLeafSheet(SETTINGS_SHEET_PHONE_PASSKEY); return; }
         this.selectedProFeatureId = 'pro.security.phonePasskey'; this.openSettingsLeafSheet(SETTINGS_SHEET_PRO_FEATURE); return;
       case 'pro.securityKey':
         this.selectedProFeatureId = 'pro.security.webauthnRedirect'; this.openSettingsLeafSheet(SETTINGS_SHEET_PRO_FEATURE); return;

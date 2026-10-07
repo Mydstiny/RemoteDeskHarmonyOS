@@ -30,7 +30,7 @@ import {
 import { HostOrganizationManager } from './pro/org/HostOrganizationManager';
 import { WorkspaceStore } from '../services/pro/workspace/WorkspaceStore';
 import { ProWorkspaceEditorPanel } from './ProWorkspaceEditorPanel';
-import { ProPhonePasskeyPanel } from './pro/passkey/ProPhonePasskeyPanel';
+import { phonePasskeyEntryAvailable } from '../services/pro/passkey/ProPasskeyEntry';
 import { ProAppRuntime } from '../services/pro/ProAppRuntime';
 import { DEBUG } from 'BuildProfile';
 
@@ -58,6 +58,8 @@ export struct ProFeatureDetailPanel {
   @Prop showClose: boolean = false;
   @Prop viewportHeight: number = 0;
   onClose: () => void = (): void => {};
+  /** Opens 设置 → 安全与数据 → 手机通行密钥 (its page lives there now). */
+  onOpenPasskey: () => void = (): void => {};
   /** 设置 → 个性化 → 全新视觉: the shared sheet header when opened from settings. */
   @StorageProp('settingsVisualStyle') visualStyle: string = 'classic';
   @State revision: number = 0;
@@ -106,13 +108,7 @@ export struct ProFeatureDetailPanel {
     return feature === undefined ? null : proFeatureCurrentStatus(feature);
   }
   /** The phone passkey prototype is a Debug experiment for an entitled account; Release never shows it. */
-  private phonePasskeyAvailable(_revision: number): boolean {
-    if (DEBUG) {
-      return ProAppRuntime.getInstance().runtime.decision(PHONE_PASSKEY_FEATURE,
-        ProAppRuntime.getInstance().context()).executable;
-    }
-    return false;
-  }
+  private phonePasskeyAvailable(_revision: number): boolean { return phonePasskeyEntryAvailable(); }
   private toneColor(status: ProFeatureStatus | null): ResourceColor {
     if (status !== null && status.tone === 'ready') { return this.accent; }
     if (status !== null && status.tone === 'experimental') { return '#B26A00'; }
@@ -424,7 +420,12 @@ export struct ProFeatureDetailPanel {
         if (this.featureId === PRO_CONTINUATION_FEATURE) { this.continuationOptions() }
         if (this.featureId === HOST_MANAGEMENT_FEATURE) { this.hostManagementOptions() }
         if (this.featureId === WORKSPACES_FEATURE) { this.workspaceOptions() }
-        if (this.featureId === PHONE_PASSKEY_FEATURE && this.phonePasskeyAvailable(this.revision)) { ProPhonePasskeyPanel() }
+        if (this.featureId === PHONE_PASSKEY_FEATURE && this.phonePasskeyAvailable(this.revision)) {
+          // The passkey's own page is under 安全与数据; this only leads there.
+          Button('打开手机通行密钥', { type: ButtonType.Capsule }).width('100%').height(44).fontSize(15)
+            .fontColor(appUiOnAccentText(this.accent)).backgroundColor(this.accent)
+            .onClick((): void => { this.onOpenPasskey(); })
+        }
       } else {
         Text('此功能已不在目录中').fontSize(14).fontColor(this.pal().text2).fontFamily(AppConfig.fontFamily)
       }

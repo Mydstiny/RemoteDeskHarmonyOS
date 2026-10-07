@@ -375,7 +375,7 @@ export class ProRdpSecurityKey {
       const problem = response === null ? '手机没有回应：请确认手机已打开 RemoteDesk 并开启「接收登录请求」' :
         response.ok ? '' :
         response.error === 'PASSKEY_DEVICE_NOT_PAIRED' || response.error === 'PASSKEY_SIGNATURE_INVALID' ?
-          '手机还没有与这台设备配对：请在 设置 → Pro 功能 → 手机通行密钥 中配对' :
+          '手机还没有与这台设备配对：请在 设置 → 安全与数据 → 手机通行密钥 中配对' :
         response.error === 'PASSKEY_BUSY' ? '手机正在处理另一个请求，请稍后重试' : '';
       if (problem !== '') { drop(problem); return; }
       this.respondPasskey(sessionId, id, ctapResponseFromPasskey(command.op, response));

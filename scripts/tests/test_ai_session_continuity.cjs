@@ -471,6 +471,27 @@ test('设置 → 远程 AI follows what the store holds and saves only the field
 });
 
 // ---------------------------------------------------------------- app actions
+test('手机通行密钥 lives in 安全与数据: one entry check for every way in, a sheet with steps and two roles', () => {
+  const page = read('pages/HostListPage.ets'), catalog = read('services/SettingsSearchCatalog.ets');
+  const entry = read('services/pro/passkey/ProPasskeyEntry.ets'), sheet = read('components/pro/passkey/PhonePasskeySettingsSheet.ets');
+  assert.ok(entry.includes('if (!DEBUG) { return false; }') && entry.includes('.executable'), 'Debug builds with Pro only');
+  const security = page.slice(page.indexOf('@Builder settingsSectionSecurity()'), page.indexOf('@Builder settingsSectionSecurity()') + 6000);
+  assert.ok(security.includes('if (phonePasskeyEntryAvailable()) {\n            this.phonePasskeyRow()'));
+  assert.ok(page.includes(".onClick((): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_PHONE_PASSKEY); })"));
+  assert.ok(page.includes("if (phonePasskeyEntryAvailable()) { this.openSettingsLeafSheet(SETTINGS_SHEET_PHONE_PASSKEY); return; }"),
+    'the AI 助理\'s 打开手机通行密钥 goes to the new page');
+  assert.ok(page.includes("onOpenPasskey: (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_PHONE_PASSKEY); }"), 'Pro 功能 leads there');
+  assert.ok(page.includes("case 'phonePasskey': return phonePasskeyEntryAvailable();"));
+  assert.ok(catalog.includes("entry(SETTINGS_SECTION_SECURITY, '手机通行密钥'") && !catalog.includes("entry(SETTINGS_SECTION_PRO, '手机通行密钥'"));
+  assert.ok(sheet.includes("AppSheetHeader({ title: '手机通行密钥'") && sheet.includes('showProBadge: true'));
+  assert.equal((sheet.match(/^  '[^']+',?$/gm) || []).length, 3, 'three short steps');
+  assert.ok(sheet.includes("this.role = this.isDesktopDevice || this.isPadDevice ? 1 : 0;"), 'a phone opens as the key, a tablet or PC as its user');
+  assert.ok(sheet.includes("ForEach(['作为密钥', '使用手机密钥']"));
+  const kb = read('services/diagnosticAi/DiagnosticAiKnowledgeBase.ets');
+  assert.ok(kb.includes('设置 → 安全与数据 → 手机通行密钥') && !kb.includes('设置 → Pro 功能 → 手机通行密钥'));
+  assert.ok(read('services/pro/ProRdpSecurityKey.ets').includes('设置 → 安全与数据 → 手机通行密钥'));
+});
+
 test('手机通行密钥 and 安全密钥重定向 are app actions; 远程 AI words reach its pages', () => {
   const actions = load(D + 'DiagnosticAiAppActionPolicy');
   const ids = (step) => Array.from(actions.diagnosticAiAppActionsForSteps([step]), (a) => a.id);
@@ -538,7 +559,8 @@ test('手机通行密钥 and 安全密钥重定向 are app actions; 远程 AI wo
   assert.match(actions.diagnosticAiAppActionCatalog(), /^pro\.phonePasskey\|打开手机通行密钥\|execute\|direct$/m);
   // The host list opens both in Pro 功能's detail sheet.
   const host = read('pages/HostListPage.ets');
-  assert.match(host, /case 'pro\.phonePasskey':\s*this\.selectedProFeatureId = 'pro\.security\.phonePasskey'; this\.openSettingsLeafSheet\(SETTINGS_SHEET_PRO_FEATURE\)/);
+  // Its page is 安全与数据 → 手机通行密钥; where that page is not open the Pro detail explains why.
+  assert.match(host, /case 'pro\.phonePasskey':[\s\S]{0,200}SETTINGS_SHEET_PHONE_PASSKEY[\s\S]{0,200}this\.selectedProFeatureId = 'pro\.security\.phonePasskey'; this\.openSettingsLeafSheet\(SETTINGS_SHEET_PRO_FEATURE\)/);
   assert.match(host, /case 'pro\.securityKey':\s*this\.selectedProFeatureId = 'pro\.security\.webauthnRedirect'; this\.openSettingsLeafSheet\(SETTINGS_SHEET_PRO_FEATURE\)/);
 });
 
@@ -547,7 +569,7 @@ test('the knowledge base describes 远程 AI, its style, both keys and the sessi
   const kb = load(D + 'DiagnosticAiKnowledgeBase');
   const settings = load(D + 'DiagnosticAiSettingsActionPolicy');
   const actions = load(D + 'DiagnosticAiAppActionPolicy');
-  assert.match(kb.DIAGNOSTIC_AI_KNOWLEDGE_VERSION, /2026-10-07-v18$/);
+  assert.match(kb.DIAGNOSTIC_AI_KNOWLEDGE_VERSION, /2026-10-07-v19$/);
   const guide = kb.aiAppGuide();
   for (const words of ['Pi（Pi 编程代理，9445', 'pi-gui', '全部项目（含电脑 App 里的项目）', '修改前询问', 'DSH', 'Codex 风格', '手机通行密钥', '安全密钥重定向',
     '退出主机回到主机列表后', '连接断开或重连时 AI 不会关闭', '当前登录账号的 AI 配置']) {

@@ -53,6 +53,8 @@ function formatDate(time: number): string {
 export struct ProPhonePasskeyPanel {
   @StorageProp('currentTheme') theme: string = 'light';
   @StorageProp('accentColor') accent: string = '#007DFF';
+  /** 0: this device is the key (receive requests, its saved passkeys); 1: this device uses the phone's key. */
+  @Prop role: number = 0;
   @State receiving: boolean = false;
   @State listening: boolean = false;
   @State receiverStatus: string = '';
@@ -305,7 +307,7 @@ export struct ProPhonePasskeyPanel {
   }
 
   @Builder private pairCard() {
-    this.heading('让这台设备使用手机通行密钥', '先与开启了“接收登录请求”的手机配对。之后这台设备上的测试（以及后续的远程桌面）可以请求手机完成注册和登录。')
+    this.heading('与手机配对', '手机先打开「接收登录请求」。点下面的按钮后，两边会显示同一个六位配对码，核对一致后在手机上确认。')
     if (this.pairingCode.length > 0) {
       Column({ space: 4 }) {
         Text('配对码').fontSize(12).fontColor(this.pal().text3).fontFamily(AppConfig.fontFamily)
@@ -335,28 +337,30 @@ export struct ProPhonePasskeyPanel {
 
   build() {
     Column({ space: 12 }) {
-      Text('原型（调试版）：用同一华为账号的手机作为通行密钥。私钥只保存在手机的系统密钥库里，每次使用都要你在手机上确认并验证人脸、指纹或锁屏密码。')
-        .fontSize(12).fontColor(this.pal().text2).fontFamily(AppConfig.fontFamily).lineHeight(18).width('100%')
-      Column({ space: 10 }) {
-        this.receiveCard()
-      }.width('100%').padding(16).backgroundColor(this.pal().card).borderRadius(16).alignItems(HorizontalAlign.Start)
-      Column({ space: 10 }) {
-        this.pairCard()
-      }.width('100%').padding(16).backgroundColor(this.pal().card).borderRadius(16).alignItems(HorizontalAlign.Start)
-      Column({ space: 10 }) {
-        this.heading('这台设备上的通行密钥', this.records.length === 0 ? '还没有保存通行密钥' : '删除记录会同时删除系统密钥库里的私钥。')
-        ForEach(this.records, (record: PasskeyRecord): void => { this.recordRow(record) },
-          (record: PasskeyRecord): string => record.id + ':' + record.signCount.toString())
-      }.width('100%').padding(16).backgroundColor(this.pal().card).borderRadius(16).alignItems(HorizontalAlign.Start)
-      Column({ space: 10 }) {
-        this.heading('测试', '配对后从这里发送测试注册和登录；手机确认后，结果会像网站一样校验签名。')
-        Row({ space: 10 }) {
-          this.button('测试注册', true, !this.busy, (): void => { void this.testRegister(); })
-          this.button('测试登录', false, !this.busy && this.testCredentialId.length > 0,
-            (): void => { void this.testSignIn(); })
-        }.width('100%')
-        this.logLines(this.log)
-      }.width('100%').padding(16).backgroundColor(this.pal().card).borderRadius(16).alignItems(HorizontalAlign.Start)
+      if (this.role === 0) {
+        Column({ space: 10 }) {
+          this.receiveCard()
+        }.width('100%').padding(16).backgroundColor(this.pal().card).borderRadius(16).alignItems(HorizontalAlign.Start)
+        Column({ space: 10 }) {
+          this.heading('保存在这台设备上的通行密钥', this.records.length === 0 ? '还没有。别的设备测试注册后会出现在这里。' :
+            '删除记录会同时删除系统密钥库里的私钥。')
+          ForEach(this.records, (record: PasskeyRecord): void => { this.recordRow(record) },
+            (record: PasskeyRecord): string => record.id + ':' + record.signCount.toString())
+        }.width('100%').padding(16).backgroundColor(this.pal().card).borderRadius(16).alignItems(HorizontalAlign.Start)
+      } else {
+        Column({ space: 10 }) {
+          this.pairCard()
+        }.width('100%').padding(16).backgroundColor(this.pal().card).borderRadius(16).alignItems(HorizontalAlign.Start)
+        Column({ space: 10 }) {
+          this.heading('测试', '配对后发送测试注册和登录；手机确认并验证后，这里会像网站一样校验签名。')
+          Row({ space: 10 }) {
+            this.button('测试注册', true, !this.busy, (): void => { void this.testRegister(); })
+            this.button('测试登录', false, !this.busy && this.testCredentialId.length > 0,
+              (): void => { void this.testSignIn(); })
+          }.width('100%')
+          this.logLines(this.log)
+        }.width('100%').padding(16).backgroundColor(this.pal().card).borderRadius(16).alignItems(HorizontalAlign.Start)
+      }
     }.width('100%')
   }
 }
