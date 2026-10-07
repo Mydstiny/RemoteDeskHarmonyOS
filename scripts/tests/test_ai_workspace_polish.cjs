@@ -45,7 +45,21 @@ assert.ok(page.includes('const LANDING_GAP: number = 12;'));
 const begin = page.slice(page.indexOf('private beginSend('), page.indexOf('private failSend('));
 assert.ok(begin.includes('curves.springMotion(') && begin.includes('this.pendingSend = {') && begin.includes("this.draft = ''"));
 assert.ok(page.includes('if (this.landingSpacer > 0) {\n            ListItem() { Column().width(\'100%\').height(this.landingSpacer) }'));
-assert.ok(page.includes('}.transition(this.entryEffect(entry))'));
+assert.ok(page.includes('}.transition(this.entryEffect(entry, index))'));
+// Only rows that arrived with the latest update animate; rows that were already shown (re-keyed while streaming,
+// renamed when a reply finishes, or read again) never do, and a row that goes is gone at once.
+assert.ok(page.includes('if (index < this.entryBase || !this.fresh(\'t:\' + entry.key)) { return TransitionEffect.IDENTITY; }'));
+assert.ok(page.includes('this.entryBase = reread ? Number.MAX_SAFE_INTEGER : this.entryCount;'));
+assert.ok((page.match(/TransitionEffect\.IDENTITY\);/g) || []).length >= 2, 'enter and fly effects are in-only');
+assert.ok(page.includes("this.fresh('s:' + row.session.id)"), 'a listed conversation animates once, not on every update');
+// Background pauses the connection instead of closing it; a paused one resumes in place.
+assert.ok(page.includes('this.controller.pause();') && page.includes('if (await this.controller.resume()) { this.sync(); return; }'));
+const ctl = fs.readFileSync(path.join(ETS, 'services/ai/AiWorkspaceController.ets'), 'utf8');
+assert.ok(ctl.includes("const target: AiTranscript = older ? this.transcript : new AiTranscript();"), 'a re-read conversation is swapped in whole');
+assert.ok(!ctl.slice(ctl.indexOf('async ensureControl()'), ctl.indexOf('private forgetLease()')).includes('this.release()'), 'a lapsed lease is not released before it is taken again');
+// pi-gui holding the conversation: a notice and a way on in a copy.
+assert.ok(page.includes('if (this.sessionId !== \'\' && this.openIn !== \'\') { this.openInNotice() }'));
+assert.ok(page.includes("await this.controller.forkToContinue("));
 const send = page.slice(page.indexOf('private async send('), page.indexOf('private async attach('));
 assert.ok(send.includes('this.beginSend(text);') && send.includes('this.failSend(text);'));
 assert.ok(send.indexOf('this.beginSend(text);') < send.indexOf("await this.run("), 'the bubble leaves before the network answers');
@@ -65,7 +79,7 @@ assert.ok(controller.includes("snapshot['commands']"));
 assert.ok(begin.includes('this.landingHeld = true;') && begin.includes('this.followBottom = false;') && begin.includes('this.holdLanding();'));
 assert.ok(page.includes('scroller.scrollToIndex(at, false, ScrollAlign.START, { extraOffset: LengthMetrics.vp(-LANDING_GAP) })'));
 assert.ok(page.includes('if (this.landingHeld) { this.holdLanding(); return; }'), 'following never pulls a held message down');
-assert.ok(page.includes('if (this.landingHeld && source === ScrollSource.DRAG) { this.settleLanding(); }'));
+assert.ok(page.includes('if (source !== ScrollSource.DRAG) { return; }') && page.includes('if (this.landingHeld) { this.settleLanding(); }'));
 assert.ok(!page.includes('measureLanding'), 'no premature collapse of the place below the message');
 // With the keyboard up, + and the permission menu open once it is down and keep the composer open meanwhile.
 assert.ok(page.includes('.bindMenu(this.plusMenuShown, this.plusMenu(), { onDisappear: (): void => { this.menuClosed(); } })'));
@@ -76,7 +90,24 @@ assert.ok(page.includes('getFocusController().clearFocus()'));
 assert.ok(page.includes('if (this.showWorkingRow()) { ListItem() { this.workingRow() } }'));
 assert.ok(page.includes('AiSpinStar({') && !page.includes('.rotate({ angle: this.spin })'));
 // Opening and leaving a conversation slide; the page itself slides in and out.
-assert.ok(page.includes('if (c.sessionId !== this.sessionId) { this.slideView(c.sessionId !== \'\'); }'));
+// Only navigation slides (open, back, continue in a copy); a reconnect or resume changes no view.
+assert.ok(page.includes("if (sessionChanged && this.slideNext !== 0 && (c.sessionId !== '') === (this.slideNext > 0)) {"));
+for (const name of ['private async chooseSession(', 'private async newSession(', 'private async backToList(']) {
+  const body = page.slice(page.indexOf(name), page.indexOf(name) + 400);
+  assert.ok(body.includes('this.slideNext = '), name);
+}
 assert.ok(page.includes('.translate({ x: this.viewShift }).opacity(this.viewOpacity)'));
 assert.ok(page.includes('PageTransitionEnter({ type: RouteType.Push'));
+// Every search bar is on the system's 沉浸光感 material where the device has it (SearchBarSurface), its old look elsewhere.
+const surface = fs.readFileSync(path.join(ETS, 'common/SearchBarSurface.ets'), 'utf8');
+assert.ok(surface.includes('deviceInfo.sdkApiVersion >= 26 && uiMaterial.isImmersiveMaterialSupported()'), 'guarded for API 23 devices');
+assert.ok(surface.includes('instance.systemMaterial(new uiMaterial.ImmersiveMaterial({') && surface.includes('interactive: true'));
+for (const file of ['pages/HostListPage.ets', 'components/AboutSettingsSheet.ets', 'pages/RemoteAiWorkspace.ets',
+  'pages/MoonlightAppCatalogPage.ets', 'components/ProWorkspaceEditorPanel.ets', 'components/diagnosticAi/DiagnosticAiSettingsSheet.ets',
+  'components/pro/org/HostOrganizationManager.ets', 'components/pro/workspace/WorkspaceAddFlow.ets',
+  'components/ssh/search/SshTerminalSearchBar.ets', 'components/ssh/command/SshCommandPalette.ets', 'components/ssh/log/SshSessionLogSheet.ets']) {
+  const text = fs.readFileSync(path.join(ETS, file), 'utf8');
+  assert.ok(text.includes('SearchBarSurface<'), file + ' search bar uses the shared surface');
+  for (const match of text.matchAll(/Search\(\{[^\n]*\n?[^\n]*/g)) assert.ok(!/\.backgroundColor\(/.test(match[0]), file + ': no own background on Search');
+}
 console.log('PASS remote AI composer centring, shimmer, pull to refresh and model sheet sizing');

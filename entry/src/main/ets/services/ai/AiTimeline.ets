@@ -404,7 +404,9 @@ export function aiStepEntries(items: AiTranscriptItem[]): AiStepEntry[] {
 export function aiLastEntryRunning(entries: AiStepEntry[]): boolean {
   if (entries.length === 0) { return false; }
   const last = entries[entries.length - 1];
-  return last.item === null && last.steps.some((step: AiTranscriptItem): boolean => aiStepState(step.state) === 'running');
+  // A reply still streaming in is the turn at work too.
+  if (last.item !== null) { return last.item.role === 'assistant' && aiStepState(last.item.state) === 'running'; }
+  return last.steps.some((step: AiTranscriptItem): boolean => aiStepState(step.state) === 'running');
 }
 /** 已运行 4 条命令、已浏览 3 个文件 — what a run of steps did, in the order the kinds first appear. */
 export function aiStepSummary(steps: AiTranscriptItem[]): string {

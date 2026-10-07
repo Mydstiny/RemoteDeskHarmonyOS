@@ -1,3 +1,4 @@
+import { SearchBarSurface } from '../common/SearchBarSurface';
 import { AppUiMetrics } from '../common/AppUiMetrics';
 import { AiActionButton } from '../components/ai/AiActionButton';
 import { AiFormField } from '../components/ai/AiFormField';
@@ -113,6 +114,17 @@ export struct RemoteAiWorkspace {
   /** Opening or leaving a conversation slides the view in from the side it comes from. */
   @State viewShift: number = 0;
   @State viewOpacity: number = 1;
+  /** The slide the next change of conversation plays: 1 opening, -1 back to the list, 0 none (reconnects, resumes). */
+  private slideNext: number = 0;
+  /** Another app on the computer holds this conversation open (see AiWorkspaceController.openIn). */
+  @State openIn: string = '';
+  /**
+   * Rows at or past this index arrived since the last update and may animate in; rows before it were already shown
+   * (a streamed reply re-keys its row, a finished reply or a re-read conversation renames rows: none of those animate).
+   */
+  private entryBase: number = 0;
+  private entryCount: number = 0;
+  private seenSnapshot: number = 0;
   @State searching: boolean = false;
   @State query: string = '';
   @State showAddSheet: boolean = false;
@@ -201,7 +213,12 @@ export struct RemoteAiWorkspace {
     this.contextUsed = c.contextUsed; this.contextWindow = c.contextWindow;
     this.approvals = c.approvals.slice(); this.operations = c.operations.slice(); this.terminals = c.terminals.slice();
     this.models = c.models.slice(); this.allowed = c.allowed; this.archived = c.archived;
-    if (c.sessionId !== this.sessionId) { this.slideView(c.sessionId !== ''); }
+    const sessionChanged = c.sessionId !== this.sessionId;
+    if (sessionChanged && this.slideNext !== 0 && (c.sessionId !== '') === (this.slideNext > 0)) {
+      this.slideView(this.slideNext > 0); this.slideNext = 0;
+    }
+    const reread = sessionChanged || c.snapshotCount !== this.seenSnapshot;
+    this.seenSnapshot = c.snapshotCount; this.openIn = c.openIn;
     this.sessionId = c.sessionId; this.projectId = c.projectId; this.historyCursor = c.historyCursor;
     this.control = c.lease !== '' && c.leaseExpires > Date.now(); this.diff = c.diff;
     this.role = c.client?.handshake?.role ?? '';
@@ -213,7 +230,10 @@ export struct RemoteAiWorkspace {
     // A send belongs to its conversation; the engine's own copy of the message replaces the one shown at once.
     if (this.landingSession !== '' && this.sessionId !== this.landingSession) { this.endLanding(); }
     if (this.pendingSend !== null && this.userCount(this.items, this.pendingSend.text) > this.pendingBefore) { this.pendingSend = null; }
-    if (this.sessionId !== '') { this.followTranscript(); }
+    // Only rows that arrived with this update animate in; a conversation opened or read again appears as it is.
+    this.entryBase = reread ? Number.MAX_SAFE_INTEGER : this.entryCount;
+    this.entryCount = this.sessionId === '' ? 0 : this.stepEntries().length;
+    if (this.sessionId !== '') { this.followTranscript(reread); }
     this.trackLanding();
     this.trackWorking();
     if (this.approval !== null && !this.approvals.some((item: AiApproval): boolean => item.id === this.approval?.id)) {
@@ -246,9 +266,16 @@ export struct RemoteAiWorkspace {
     this.appStateCallback = {
       onApplicationBackground: (): void => {
         if (!this.preferencesReady) { this.pausedDuringSetup = true; }
-        this.resumeSession = this.controller.sessionId; this.resumeProject = this.controller.projectId;
-        this.resumeAccount = this.controller.client?.account ?? null;
-        this.inBackground = true; this.controller.close(); this.resetDrafts(); this.showDetails = false; this.controller.status = '已暂停连接'; this.sync();
+        this.inBackground = true;
+        if (this.controller.client !== null) {
+          // Paused, not closed: the conversation, its approvals and the draft stay as they are, and nothing is
+          // released on the computer (closing here dropped control, so the computer cancelled open approvals, and
+          // the conversation was read again from nothing on return).
+          this.controller.pause(); this.controller.status = '已暂停连接'; this.sync();
+        } else {
+          this.resumeSession = this.controller.sessionId; this.resumeProject = this.controller.projectId;
+          this.resumeAccount = null; this.controller.close(); this.controller.status = '已暂停连接'; this.sync();
+        }
       },
       onApplicationForeground: (): void => {
         const wasBackground = this.inBackground; this.inBackground = false;
@@ -317,6 +344,14 @@ export struct RemoteAiWorkspace {
     const host = this.host;
     // Gated on access, not on `allowed`: that reflects the connection, which the first open has yet to make.
     if (host === null || !this.accessible()) { return; }
+    // A paused connection (the app was in the background) resumes in place: the conversation stays on screen and is
+    // replaced only once it has been read again.
+    if (this.controller.paused && !this.inBackground) {
+      this.controller.status = '正在恢复连接…'; this.sync();
+      try {
+        if (await this.controller.resume()) { this.sync(); return; }
+      } catch (_error) { /* the connection did not come back: connect again below */ }
+    }
     const resumeValid = this.resumeAccount !== null && AiAccess.getInstance().current(this.resumeAccount);
     const session = this.controller.sessionId || (resumeValid ? this.resumeSession : '');
     const project = this.controller.projectId || (resumeValid ? this.resumeProject : '');
@@ -377,7 +412,7 @@ export struct RemoteAiWorkspace {
     finally { this.listRefreshing = false; }
   }
   private async backToList(): Promise<void> {
-    this.resetView(); this.followBottom = false; this.showModelPicker = false;
+    this.resetView(); this.followBottom = false; this.showModelPicker = false; this.slideNext = -1;
     await this.run(async (): Promise<void> => { this.resetDrafts(); await this.controller.closeSession(); });
     try { this.listScroller?.scrollEdge(Edge.Top); } catch (_error) { /* not laid out */ }
   }
@@ -399,8 +434,10 @@ export struct RemoteAiWorkspace {
   /** Fades and lifts a row in (made on first use: the page fields are plain values). */
   private enterEffect(): TransitionEffect {
     if (this.enterEffectValue === null) {
-      this.enterEffectValue = TransitionEffect.OPACITY.combine(TransitionEffect.translate({ y: 14 }))
-        .animation({ duration: 280, curve: Curve.FastOutSlowIn });
+      // In only: a row that goes is gone at once (fading it out while its replacement faded in showed both).
+      this.enterEffectValue = TransitionEffect.asymmetric(
+        TransitionEffect.OPACITY.combine(TransitionEffect.translate({ y: 14 })).animation({ duration: 280, curve: Curve.FastOutSlowIn }),
+        TransitionEffect.IDENTITY);
     }
     return this.enterEffectValue;
   }
@@ -521,8 +558,12 @@ export struct RemoteAiWorkspace {
         const result = await this.controller.action(steer ? 'turn.steer' : 'turn.start', params);
         // Pi echoes the prompt only once its turn takes it; show it until its own event arrives.
         if (this.host !== null && aiAgentEvents(this.host.backend)) { this.controller.transcript.echo(text, aiString(result['turnId']), sentAt); }
-        this.attachments = [];
-      } catch (error) { this.failSend(text); throw new Error((error as Error).message); }
+        this.attachments = []; this.controller.openIn = '';
+      } catch (error) {
+        this.failSend(text);
+        if ((error as Error).message.includes('PI_SESSION_OPEN_IN_APP')) { this.controller.openIn = 'pi-gui'; }
+        throw new Error((error as Error).message);
+      }
     });
   }
   private async attach(photo: boolean = false): Promise<void> {
@@ -644,10 +685,11 @@ export struct RemoteAiWorkspace {
     const height = this.transcriptHeight();
     this.landingSession = this.sessionId; this.landingText = text; this.flown = false;
     this.landingHeld = true; this.landingSawWork = false; this.followBottom = false;
-    this.flyEffectValue = TransitionEffect.translate({ y: Math.max(60, height - LANDING_GAP - 48) })
+    // Flies in only: when the engine's copy of the message takes its place the bubble must not fly back down.
+    this.flyEffectValue = TransitionEffect.asymmetric(TransitionEffect.translate({ y: Math.max(60, height - LANDING_GAP - 48) })
       .combine(TransitionEffect.scale({ x: 0.9, y: 0.9, centerX: '100%', centerY: '0%' }))
       .combine(TransitionEffect.opacity(0.35))
-      .animation({ curve: curves.springMotion(0.55, 0.74) });
+      .animation({ curve: curves.springMotion(0.55, 0.74) }), TransitionEffect.IDENTITY);
     this.pendingBefore = this.userCount(this.items, text);
     this.pendingSend = { id: 'send:' + (++this.sendCount).toString(), role: 'user', title: 'user', text, state: 'completed',
       turnId: '', kind: 'user', detail: '', output: '' };
@@ -668,8 +710,8 @@ export struct RemoteAiWorkspace {
     this.landingHeld = false; this.landingSawWork = false;
   }
   /** The transition of a row appearing: the sent message flies in once (its engine copy then takes its place quietly). */
-  private entryEffect(entry: AiStepEntry): TransitionEffect {
-    if (!this.fresh('t:' + entry.key)) { return TransitionEffect.IDENTITY; }
+  private entryEffect(entry: AiStepEntry, index: number): TransitionEffect {
+    if (index < this.entryBase || !this.fresh('t:' + entry.key)) { return TransitionEffect.IDENTITY; }
     const item = entry.item;
     if (item !== null && item.role === 'user' && this.landingText !== '' && item.text.trim() === this.landingText) {
       if (!this.flown && this.flyEffectValue !== null) { this.flown = true; return this.flyEffectValue; }
@@ -838,14 +880,18 @@ export struct RemoteAiWorkspace {
   }
   /** Until then the list is still settling (rows measured lazily, chrome measured late): keep pinning the bottom. */
   private pinBottomUntil: number = 0;
-  private followTranscript(): void {
+  /**
+   * Keeps the newest row in view. `settle` (a conversation opened or read again) pins the end a few times while the
+   * rows are measured; a streamed update scrolls once, so the reader's own scrolling is not fought.
+   */
+  private followTranscript(settle: boolean = false): void {
     const scroller = this.listScroller;
     if (this.landingHeld) { this.holdLanding(); return; }
     if (scroller === null || !this.followBottom) { return; }
     // One scroll on the next frame landed above the end when a session opened: the rows below were not measured yet
     // and the first layout from the top reported "not at the bottom". Pin it while the layout settles.
-    this.pinBottomUntil = Date.now() + 700;
-    for (const delay of [0, 120, 360, 700]) {
+    if (settle) { this.pinBottomUntil = Date.now() + 700; }
+    for (const delay of (settle ? [0, 120, 360, 700] : [0])) {
       setTimeout((): void => {
         if (!this.followBottom) { return; }
         try { scroller.scrollEdge(Edge.Bottom); } catch (_error) { /* list not laid out yet */ }
@@ -1442,12 +1488,12 @@ export struct RemoteAiWorkspace {
   }
   private async chooseSession(id: string): Promise<void> {
     if (!this.allowed || !AiAccess.getInstance().proVisible() || !this.sessions.some((session: AiSession): boolean => session.id === id)) { return; }
-    this.resetView();
+    this.resetView(); this.slideNext = 1;
     await this.run(async (): Promise<void> => { this.resetDrafts(); await this.controller.openSession(id); });
   }
   private async newSession(projectId: string): Promise<void> {
     if (!this.allowed || !AiAccess.getInstance().proVisible() || projectId === '') { return; }
-    this.resetView();
+    this.resetView(); this.slideNext = 1;
     await this.run(async (): Promise<void> => { this.resetDrafts(); await this.controller.create('新会话', projectId); });
   }
   /** Where a new conversation goes without asking: the filtered project, or the only one. */
@@ -1461,6 +1507,11 @@ export struct RemoteAiWorkspace {
   /** Chat: engine · project · turn status. List: engine · connection · how many conversations. */
   private headerSubtitle(): string {
     if (this.sessionId !== '') {
+      // How long the turn has run sits here rather than on a line of its own that came and went with each turn
+      // (and moved the conversation under it each time).
+      if (this.working() && this.workingSince > 0) {
+        return this.projectTitle(this.projectId) + ' · 已运行 ' + aiElapsed(this.nowTick - this.workingSince);
+      }
       return this.projectTitle(this.projectId) + ' · ' + (this.working() ? this.status : (this.host?.label || this.backendName()));
     }
     if (!this.allowed) { return this.backendName() + ' · ' + this.status; }
@@ -1728,7 +1779,8 @@ export struct RemoteAiWorkspace {
           .backgroundColor(Color.Transparent).padding(0).defaultFocus(true).accessibilityText('搜索对话')
           .onChange((value: string): void => { this.query = value; })
       }.width('100%').height(44).padding({ left: 14, right: 14 }).borderRadius(22)
-      .backgroundColor(this.palette().surface).margin({ bottom: 4 })
+      .attributeModifier(new SearchBarSurface<RowAttribute>(this.theme !== 'light', { background: this.palette().surface }))
+      .margin({ bottom: 4 })
     }
   }
   /**
@@ -1907,15 +1959,6 @@ export struct RemoteAiWorkspace {
     }
   }
   /** The Codex app's 已运行 13 分钟 29 秒 under the header while a turn runs. */
-  @Builder private elapsedLine() {
-    if (this.uiStyle === 'codex' && this.sessionId !== '' && this.working() && this.workingSince > 0) {
-      Column() {
-        Text('已运行 ' + aiElapsed(this.nowTick - this.workingSince)).fontSize(17).fontFamily(AppConfig.fontFamily)
-          .fontColor(this.palette().text3).width('100%').padding({ left: 16, right: 16, top: 4, bottom: 8 })
-        Divider().color(this.palette().border).margin({ left: 16, right: 16 })
-      }.width('100%')
-    }
-  }
   @Builder private emptyState() {
     Column({ space: 12 }) {
       SymbolGlyph($r('sys.symbol.ellipsis_bubble')).fontSize(36).fontColor([this.palette().text3])
@@ -2112,8 +2155,10 @@ export struct RemoteAiWorkspace {
       .padding({ left: 6, right: 6, top: this.composerPad(), bottom: this.composerPad() })
       .enabled(this.allowed && !this.busy && this.operator() && !(this.sessionId !== '' && this.archived))
       .accessibilityText('任务内容')
-      .onFocus((): void => { this.getUIContext().animateTo({ duration: 220, curve: Curve.FastOutSlowIn }, (): void => { this.composerFocused = true; }); })
-      .onBlur((): void => { this.getUIContext().animateTo({ duration: 220, curve: Curve.FastOutSlowIn }, (): void => { this.composerFocused = false; }); })
+      // Not inside animateTo: that animated every layout change of the moment (the keyboard resizing the page, the
+      // list shrinking), and the conversation slid about. The second row fades in on its own.
+      .onFocus((): void => { this.composerFocused = true; })
+      .onBlur((): void => { this.composerFocused = false; })
       .onChange((value: string): void => { if (this.allowed && !this.busy) { this.draft = value; } }).maxLength(128000)
   }
   /**
@@ -2143,8 +2188,39 @@ export struct RemoteAiWorkspace {
     .border({ width: 0.5, color: this.palette().border }).shadow({ radius: 16, color: '#14000000', offsetY: 2 }).clip(true)
     .transition(TransitionEffect.OPACITY.combine(TransitionEffect.translate({ y: 8 })).animation({ duration: 180 }))
   }
+  /**
+   * The conversation is open in another app on the computer (Pi: pi-gui holds every conversation it has open until
+   * it is closed there): the phone reads it, and can go on in a copy right away.
+   */
+  @Builder private openInNotice() {
+    Column({ space: 8 }) {
+      Row({ space: 10 }) {
+        SymbolGlyph($r('sys.symbol.lock_fill')).fontSize(16).fontColor([this.palette().text2])
+        Column({ space: 2 }) {
+          Text('这个对话在电脑上的 ' + (this.openIn === 'pi-gui' ? 'pi-gui' : this.backendName()) + ' 里打开着')
+            .fontSize(14).fontWeight(FontWeight.Medium).fontFamily(AppConfig.fontFamily).fontColor(this.palette().text)
+          Text('手机现在只能查看。在电脑上关闭这个对话（或退出 pi-gui）后就能直接继续，也可以复制到新对话马上继续。')
+            .fontSize(12).fontFamily(AppConfig.fontFamily).fontColor(this.palette().text3)
+        }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+      }.width('100%').alignItems(VerticalAlign.Top)
+      if (this.capability('fork') && this.operator()) {
+        Row({ space: 8 }) {
+          Blank()
+          this.pillButton({ label: '复制到新对话继续', primary: true, enabled: this.allowed && !this.busy, action: (): void => {
+            void this.run(async (): Promise<void> => {
+              this.resetView(); this.slideNext = 1;
+              await this.controller.forkToContinue((this.title || '对话') + ' · 手机继续');
+            });
+          } })
+        }.width('100%')
+      }
+    }.width('100%').padding(12).borderRadius(18).backgroundColor(this.palette().surface)
+    .border({ width: 0.5, color: this.palette().border })
+    .transition(TransitionEffect.OPACITY.animation({ duration: 200 }))
+  }
   @Builder private composer() {
     Column({ space: 8 }) {
+      if (this.sessionId !== '' && this.openIn !== '') { this.openInNotice() }
       if (this.slashSuggestions().length > 0) { this.commandPanel() }
       if (this.sessionId !== '' && this.role !== '' && !this.operator()) {
         Text('这台设备只有查看权限，可以看对话，不能发送或批准').fontSize(12).fontFamily(AppConfig.fontFamily)
@@ -2341,12 +2417,10 @@ export struct RemoteAiWorkspace {
     Column() {
       Column() {
         if (this.uiStyle === 'codex') { this.codexHeader() } else { this.claudeHeader() }
-        this.elapsedLine()
-        if (this.error !== '') {
-          Text(this.error).fontSize(13).fontFamily(AppConfig.fontFamily).fontColor(this.palette().danger)
-            .width('100%').padding({ left: 16, right: 16, top: 4, bottom: 4 })
-        }
       }.width('100%').onAreaChange((_old: Area, next: Area): void => { this.topChrome = this.measured(next, this.topChrome); })
+      // The list takes what the header and composer leave in the same layout pass (a measured height lagged a frame,
+      // so the keyboard, the composer opening or an approval card made the conversation jump).
+      Stack({ alignContent: Alignment.Top }) {
       Refresh({ refreshing: $$this.listRefreshing }) {
       List({ space: this.sessionId === '' ? 2 : 18, scroller: this.scroller() }) {
         if (this.sessionId === '' && this.wide()) {
@@ -2365,8 +2439,8 @@ export struct RemoteAiWorkspace {
               if (row.session !== null) { this.conversationRow(row.session) }
               else if (row.more > 0) { this.moreRow(row) }
               else { this.projectHeader(row) }
-            }.transition(row.session !== null && this.fresh('s:' + row.session.id + ':' + row.session.updatedAt.toString()) ?
-              this.enterEffect() : TransitionEffect.IDENTITY)
+            // A conversation animates in the first time it is listed, not each time it is updated.
+            }.transition(row.session !== null && this.fresh('s:' + row.session.id) ? this.enterEffect() : TransitionEffect.IDENTITY)
           }, (row: AiHomeRow): string => row.key)
         } else {
           if (this.historyCursor !== '') {
@@ -2378,12 +2452,12 @@ export struct RemoteAiWorkspace {
           }
           if (this.shownItems().length === 0) { ListItem() { this.emptyState() } }
           // Messages, and runs of steps folded into one line each, like the Codex and Claude apps.
-          ForEach(this.stepEntries(), (entry: AiStepEntry): void => {
+          ForEach(this.stepEntries(), (entry: AiStepEntry, index: number): void => {
             ListItem() {
               if (entry.item !== null) { this.claudeItem(entry.item) }
               else if (entry.steps.length === 1) { this.claudeItem(entry.steps[0]) }
               else { this.stepGroup(entry) }
-            }.transition(this.entryEffect(entry))
+            }.transition(this.entryEffect(entry, index))
           }, (entry: AiStepEntry): string => this.entryKey(entry))
           if (this.changeSummary() !== '') {
             ListItem() {
@@ -2414,14 +2488,29 @@ export struct RemoteAiWorkspace {
           if (Date.now() < this.pinBottomUntil || this.landingHeld) { return; }
           this.followBottom = end >= this.listLength() - 2 && this.landingSpacer === 0;
         })
-        // The reader dragging the list ends holding a sent message at the top.
+        // The reader dragging the list ends holding a sent message at the top, and stops pinning the end.
         .onWillScroll((_offset: number, _state: ScrollState, source: ScrollSource): void => {
-          if (this.landingHeld && source === ScrollSource.DRAG) { this.settleLanding(); }
+          if (source !== ScrollSource.DRAG) { return; }
+          this.pinBottomUntil = 0;
+          if (this.landingHeld) { this.settleLanding(); }
         })
-      }.height(this.transcriptHeight())
+      }.width('100%').height('100%')
       // Pull down on the conversation list to read it again (the chat follows its own stream).
       .pullToRefresh(this.sessionId === '' && this.allowed && !this.wide())
       .onRefreshing((): void => { void this.refreshList(); })
+        // A problem shows over the top of the list instead of pushing it down; tapping it puts it away.
+        if (this.error !== '') {
+          Row({ space: 8 }) {
+            SymbolGlyph($r('sys.symbol.exclamationmark_triangle')).fontSize(14).fontColor([this.palette().danger])
+            Text(this.error).fontSize(13).fontFamily(AppConfig.fontFamily).fontColor(this.palette().danger)
+              .layoutWeight(1).maxLines(3).textOverflow({ overflow: TextOverflow.Ellipsis })
+          }.width('100%').padding({ left: 12, right: 12, top: 8, bottom: 8 }).margin({ left: 12, right: 12, top: 4 })
+          .borderRadius(12).backgroundColor(this.palette().raised).border({ width: 0.5, color: this.palette().border })
+          .shadow({ radius: 10, color: '#14000000', offsetY: 2 })
+          .accessibilityText(this.error).onClick((): void => { this.controller.error = ''; this.error = ''; })
+          .transition(TransitionEffect.OPACITY.animation({ duration: 180 }))
+        }
+      }.width('100%').layoutWeight(1)
       Column() {
         if (this.approvals.length > 0 && this.sessionId !== '') {
           Column() { this.approvalCard(this.approvals[0]) }.width('100%').padding({ left: 12, right: 12, top: 6 })
@@ -2431,7 +2520,8 @@ export struct RemoteAiWorkspace {
         const before = this.bottomChrome; this.bottomChrome = this.measured(next, this.bottomChrome);
         if (before !== this.bottomChrome && this.sessionId !== '') { this.followTranscript(); }
       })
-    }.width('100%').constraintSize({ minHeight: Math.max(1, this.pageHeight - this.topVp() - 12), maxWidth: 1100 })
+    // The page's own height (as the window reports it), so the transcript's layoutWeight has a definite height to share.
+    }.width('100%').height(Math.max(320, this.pageHeight - this.topVp() - 12)).constraintSize({ maxWidth: 1100 })
     .translate({ x: this.viewShift }).opacity(this.viewOpacity)
     .bindSheet($$this.showAddSheet, this.addSheet(), { height: SheetSize.MEDIUM, showClose: false, dragBar: true,
       preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER, backgroundColor: this.pal().surface,

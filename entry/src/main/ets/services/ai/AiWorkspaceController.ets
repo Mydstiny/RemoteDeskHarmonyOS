@@ -49,6 +49,15 @@ export class AiWorkspaceController {
   contextWindow: number = 0;
   /** A cached transcript shown while the conversation is read again. */
   previewItems: AiTranscriptItem[] = [];
+  /**
+   * Another app on the computer holds the conversation open for writing (Pi: pi-gui keeps every conversation it has
+   * open): '' when none. The phone reads it and can go on in a copy (forkToContinue).
+   */
+  openIn: string = '';
+  /** Counts transcripts read whole (a snapshot replaced what was shown): the page does not animate those rows in. */
+  snapshotCount: number = 0;
+  /** The connection is paused (the app is in the background): the conversation stays as it was, nothing streams. */
+  paused: boolean = false;
   private accessRevoked: boolean = false;
   historyCursor: string = '';
   onChange: () => void = (): void => {};
@@ -213,6 +222,7 @@ export class AiWorkspaceController {
     this.assertGeneration(generation);
     this.rememberTranscript();
     this.client.stopEvents(); this.streamToken++; this.stopResume(); this.sessionId = ''; this.title = ''; this.approvals = [];
+    this.openIn = '';
     this.transcript.clear(); this.diff = ''; this.terminals = []; this.historyCursor = ''; this.archived = false;
     this.changed();
     this.sessions = await this.listSessions(generation); this.changed();
@@ -225,6 +235,7 @@ export class AiWorkspaceController {
     this.client.stopEvents(); this.streamToken++; this.stopResume();
     this.rememberTranscript();
     this.sessionId = id; this.approvals = []; this.diff = ''; this.terminals = []; this.transcript.clear(); this.commands = [];
+    this.openIn = '';
     this.currentModel = ''; this.currentEffort = ''; this.currentPermission = ''; this.currentCollaboration = ''; this.contextUsed = 0; this.contextWindow = 0;
     this.previewItems = TRANSCRIPT_CACHE.get(this.cacheKey() + ':' + id)?.slice() ?? [];
     if (this.previewItems.length > 0) { this.changed(); }
@@ -239,7 +250,10 @@ export class AiWorkspaceController {
     if (client === null || this.sessionId === '') { return; }
     const generation = this.generation;
     let cursor = older ? this.historyCursor : '';
-    if (!older) { this.transcript.clear(); }
+    // A conversation read again is built aside and shown whole: clearing what was shown first flashed an empty (or
+    // half read) conversation and moved every row.
+    const target: AiTranscript = older ? this.transcript : new AiTranscript();
+    let openIn = this.openIn;
     const olderIds: string[] = [];
     do {
       const params: Record<string, Object> = aiParams(["sessionId"], [this.sessionId]);
@@ -259,6 +273,7 @@ export class AiWorkspaceController {
         this.currentCollaboration = aiString(snapshot['collaborationMode'], this.currentCollaboration);
         const nativeState = this.record(snapshot['nativeState']);
         if (nativeState['tokenUsage'] !== undefined) { this.noteUsage('tokenUsage', this.record(nativeState['tokenUsage'])); }
+        if (cursor === '') { openIn = aiString(this.record(nativeState['openIn'])['surface']); }
       }
       this.inputModalities = aiArray(snapshot['inputModalities']).map((value: Object): string => aiString(value));
       if (!older && snapshot['commands'] !== undefined) {
@@ -274,36 +289,41 @@ export class AiWorkspaceController {
           const turn = aiRecord(value); const turnId = aiString(turn['id']);
           for (const item of aiArray(turn['items'])) {
             const row = aiRecord(item); olderIds.push(aiString(row['id']));
-            this.transcript.codexItem(row, turnId, aiString(turn['status']));
+            target.codexItem(row, turnId, aiString(turn['status']));
           }
           let itemCursor = aiString(turn['nextCursor']);
           while (itemCursor !== '') {
             const page = aiRecord(await client.read('session.items', aiParams(["sessionId", "turnId", "cursor"], [this.sessionId, turnId, itemCursor])));
             this.assertGeneration(generation);
             aiArray(page['data']).forEach((item: Object): void => {
-              const row = aiRecord(item); olderIds.push(aiString(row['id'])); this.transcript.codexItem(row, turnId);
+              const row = aiRecord(item); olderIds.push(aiString(row['id'])); target.codexItem(row, turnId);
             });
             const next = aiString(page['nextCursor']);
             if (next === itemCursor) { throw new Error('AI_PAGINATION_INVALID'); } itemCursor = next;
           }
         }
       } else if (aiAgentEvents(client.host.backend)) {
-        aiArray(snapshot['events']).forEach((event: Object): void => this.transcript.agentEvent(aiRecord(event), true));
+        aiArray(snapshot['events']).forEach((event: Object): void => target.agentEvent(aiRecord(event), true));
       } else {
         aiArray(snapshot['events']).forEach((event: Object): void => {
-          const row = aiRecord(event); this.noteUsage(aiString(row['type']), this.eventBody(row)); this.transcript.dshEvent(row, true);
+          const row = aiRecord(event); this.noteUsage(aiString(row['type']), this.eventBody(row)); target.dshEvent(row, true);
         });
         // A page is mapped once; a surface replacement it cannot place ends the snapshot.
-        const problem = this.transcript.flush();
+        const problem = target.flush();
         if (problem !== '') { throw new Error(problem); }
       }
       const next = aiString(snapshot['nextCursor']);
       if (next !== '' && next === cursor) { throw new Error('AI_PAGINATION_INVALID'); }
       cursor = next; this.historyCursor = cursor;
       if (older && client.host.backend === 'codex') { this.transcript.prependIds(olderIds); }
-      this.changed();
+      if (older) { this.changed(); }
       // DSH replacements need their full source interval before SSE admission.
     } while (client.host.backend !== 'codex' && cursor !== '');
+    if (!older) {
+      target.flush();
+      this.transcript = target; this.openIn = openIn; this.snapshotCount++;
+      this.changed();
+    }
   }
   private async stream(token: number): Promise<void> {
     const client = this.client; if (client === null) { return; }
@@ -454,10 +474,7 @@ export class AiWorkspaceController {
       if (generation !== this.generation) { return; }
       // A lease the service no longer knows (it restarted, or the lease lapsed while the phone slept): take control
       // again quietly. Only when that fails too (another device has it, or access is gone) is it worth saying.
-      this.clearTimers();
-      const key = this.key(), writer = this.writerOwners.get(key) ?? '';
-      this.lease = ''; this.leaseExpires = 0;
-      if (writer !== '') { this.dropWriter(key, writer); }
+      this.forgetLease();
       try { await this.acquire(); this.error = ''; }
       catch (again) { if (generation === this.generation) { this.error = aiErrorText((again as Error).message); } }
     }
@@ -476,8 +493,57 @@ export class AiWorkspaceController {
   async ensureControl(): Promise<void> {
     if (this.client === null || this.sessionId === '') { return; }
     if (this.lease !== '' && this.leaseExpires > Date.now()) { return; }
-    if (this.lease !== '') { await this.release().catch((): void => {}); }
+    // A lapsed lease is taken again, not released first: releasing ends the open approvals on the computer, while
+    // taking it again gets the same lease back with them still answerable.
+    if (this.lease !== '') { this.forgetLease(); }
     await this.acquire();
+  }
+  /** Drops the lease here only (the computer keeps it until it lapses or is taken again). */
+  private forgetLease(): void {
+    this.clearTimers();
+    const key = this.key(), writer = this.writerOwners.get(key) ?? '';
+    this.lease = ''; this.leaseExpires = 0;
+    if (writer !== '') { this.dropWriter(key, writer); }
+  }
+  /**
+   * The app went to the background: the stream and the renewals stop, and everything shown stays (the conversation,
+   * its approvals, the draft). The lease lapses on the computer if the phone stays away; nothing is released.
+   */
+  pause(): void {
+    if (this.client === null) { return; }
+    this.paused = true;
+    this.client.stopEvents(); this.streamToken++; this.stopResume(); this.clearTimers();
+    if (this.changeTimer >= 0) { clearTimeout(this.changeTimer); this.changeTimer = -1; }
+  }
+  /**
+   * Back in the foreground: the conversation is read again (shown whole when it is read), control is taken again
+   * with the same lease if it was held, approvals are read again and the stream resumes. False when there is no
+   * connection to resume (the page connects again instead).
+   */
+  async resume(): Promise<boolean> {
+    if (this.client === null || !this.paused) { return false; }
+    this.paused = false;
+    if (this.sessionId === '') {
+      await this.refreshSessions();
+      this.status = '已连接'; this.changed();
+      return true;
+    }
+    if (this.lease !== '') { this.renewTimer = setInterval((): void => { void this.renew(); }, 30000); }
+    // Right after the foreground the network may not be back yet: the stream's own backoff takes it from there.
+    try { await this.refreshConversation(); }
+    catch (error) { this.streamLost(this.streamToken, (error as Error).message); }
+    return true;
+  }
+  /**
+   * Goes on in a copy of the conversation (the engine's fork) and opens it: how the phone continues one another app
+   * on the computer holds open.
+   */
+  async forkToContinue(title: string): Promise<void> {
+    const result = await this.action('session.fork', aiParams(['title'], [title.slice(0, 200)]));
+    const id = aiString(result['sessionId']);
+    if (id === '') { throw new Error('AI_FORK_FAILED'); }
+    await this.selectSession(id);
+    void this.refreshSessions().catch((): void => {});
   }
   async action(method: string, extra: Record<string, Object> = {}): Promise<Record<string, Object>> {
     await this.ensureControl();
@@ -582,5 +648,6 @@ export class AiWorkspaceController {
     this.currentModel = ''; this.currentEffort = ''; this.currentPermission = ''; this.currentCollaboration = ''; this.contextUsed = 0; this.contextWindow = 0; this.previewItems = [];
     this.title = ''; this.allowed = false; this.accessRevoked = false; this.inputModalities = []; this.commands = []; this.historyCursor = ''; this.archived = false; this.busy = false;
     this.transcript.clear(); this.approvals = []; this.diff = ''; this.terminals = []; this.operations = [];
+    this.openIn = ''; this.paused = false;
   }
 }

@@ -208,3 +208,17 @@ console.log('PASS Codex added and deleted files count every line');
   assert.notEqual(timeline.aiDiffSignature(whole), timeline.aiDiffSignature(cut));
   console.log('PASS binary patches, long-line signatures and file content that looks like a diff');
 }
+
+{
+  // One working line: none while the newest row already shows the turn at work (a running step, a streaming reply).
+  const item = (id, role, kind, state) => ({ id, role, title: role, text: id, state, turnId: 't', kind, detail: '', output: '' });
+  const running = entries => timeline.aiLastEntryRunning(timeline.aiStepEntries(entries));
+  assert.equal(running([]), false);
+  assert.equal(running([item('u', 'user', 'user', 'completed'), item('k', 'execution', 'thinking', 'running')]), true);
+  assert.equal(running([item('u', 'user', 'user', 'completed'), item('c', 'execution', 'tool', 'inProgress')]), true);
+  assert.equal(running([item('u', 'user', 'user', 'completed'), item('a', 'assistant', 'assistant', 'running')]), true);
+  assert.equal(running([item('u', 'user', 'user', 'completed'), item('c', 'execution', 'tool', 'completed')]), false,
+    'between steps the turn shows its working line');
+  assert.equal(running([item('a', 'assistant', 'assistant', 'completed')]), false);
+  console.log('PASS the working line gives way to a row that already shows the turn at work');
+}

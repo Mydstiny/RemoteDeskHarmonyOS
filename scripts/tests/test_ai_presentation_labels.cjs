@@ -25,7 +25,8 @@ const page = fs.readFileSync(path.resolve(__dirname, '../../entry/src/main/ets/p
 assert.ok(page.includes('ForEach(this.unsettledOperations(), (operation: AiPendingOperation): void => {'), 'renewals do not flood the list');
 // The composer has one model chip (model · effort) opening the picker; permissions moved to the settings gear.
 assert.ok(page.includes("this.chip({ label: this.modelChipLabel(), enabled: this.allowed && !this.busy && this.models.length > 0,") &&
-  page.includes("action: (): void => { this.showModelPicker = true; } })"));
+  // Opened once the keyboard is down (a sheet opened over it closed again as the page resized).
+  page.includes("action: (): void => { this.afterKeyboard((): void => { this.showModelPicker = true; }, false); } })"));
 // Permission modes come with what they allow; the composer's + offers files and plan mode.
 assert.equal(p.aiModeDetail('workspace-write'), '可以在项目文件夹里修改文件、运行命令；越界时请你批准');
 assert.ok(page.includes('@Builder private permissionMenu()') && page.includes("{ value: '照片', enabled: this.canAttach()") &&

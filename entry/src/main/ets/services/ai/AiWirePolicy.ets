@@ -90,7 +90,8 @@ export class AiEventDecoder {
   }
 }
 export function aiErrorText(code: string): string {
-  if (code.includes('PI_SESSION_OPEN_IN_APP')) { return '这个对话正在电脑上的 Pi 里打开。请在电脑上切到其他对话后再从手机继续，或在手机上新建对话'; }
+  if (code.includes('PI_SESSION_OPEN_IN_APP')) { return '这个对话在电脑上的 pi-gui 里打开着，手机暂时只能查看。可以「复制到新对话继续」，或在 pi-gui 里关闭这个对话后再发'; }
+  if (code.includes('AI_FORK_FAILED')) { return '没能复制这个对话，请稍后重试'; }
   if (code.includes('PI_NOT_INSTALLED')) { return '电脑上找不到 Pi，请先安装 Pi（npm i -g @earendil-works/pi-coding-agent）'; }
   if (code.includes('PI_SESSION_NOT_FOUND')) { return '电脑上找不到这个 Pi 对话，可能已被删除或移动'; }
   if (code.includes('PI_INITIALIZATION_FAILED')) { return '电脑上的 Pi 没能启动，请在电脑上运行 pi 检查登录和模型后重试'; }

@@ -55,7 +55,7 @@ items = aiAgentItems([
 ]);
 assert.deepEqual(view(items).map(row => row[0] + ':' + row[2]), ['tool:interrupted', 'tool:declined', 'notice:failed']);
 assert.equal(plain(items)[1].output, 'Denied by user');
-assert.ok(plain(items)[2].text.includes('正在电脑上的 Pi 里打开'));
+assert.ok(plain(items)[2].text.includes('在电脑上的 pi-gui 里打开着'));
 seq = 0;
 items = aiAgentItems([ev('turn/end', { status: 'failed', result: 'Credit balance is too low' })]);
 assert.deepEqual(view(items), [['notice', 'Credit balance is too low', 'failed']]);

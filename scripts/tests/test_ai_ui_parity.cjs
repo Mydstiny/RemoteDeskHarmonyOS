@@ -105,8 +105,10 @@ function workspace() {
   const app = { on: (_name, cb) => { state.appCallbacks.add(cb); state.application = cb; }, off: (_name, cb) => state.appCallbacks.delete(cb) };
   class Controller {
     constructor() { this.onChange = () => {}; this.stop = () => {}; this.reset(); }
-    reset() { Object.assign(this, { title: '', status: '', error: '', projects: [], sessions: [], transcript: { items: [] }, approvals: [], operations: [], terminals: [], models: [], allowed: false, archived: false, sessionId: '', projectId: '', historyCursor: '', lease: '', leaseExpires: 0, diff: '', client: null, previewItems: [], currentModel: '', currentEffort: '', currentPermission: '', currentCollaboration: '', contextUsed: 0, contextWindow: 0 }); }
+    reset() { Object.assign(this, { title: '', status: '', error: '', projects: [], sessions: [], transcript: { items: [] }, approvals: [], operations: [], terminals: [], models: [], allowed: false, archived: false, sessionId: '', projectId: '', historyCursor: '', lease: '', leaseExpires: 0, diff: '', client: null, previewItems: [], paused: false, openIn: '', snapshotCount: 0, currentModel: '', currentEffort: '', currentPermission: '', currentCollaboration: '', contextUsed: 0, contextWindow: 0 }); }
     close() { state.closes++; this.stop(); this.stop = () => {}; this.reset(); }
+    pause() { this.paused = true; }
+    async resume() { if (!this.paused) return false; this.paused = false; return true; }
     async connect(host) {
       this.close(); const account = state.access.capture(); this.client = { account, host, choices: () => [] };
       this.title = 'Fixture session'; this.sessionId = 'fixture-session'; this.projectId = 'fixture-project'; this.allowed = state.granted;
@@ -118,7 +120,8 @@ function workspace() {
     AiLocalStore: { getInstance: () => ({ settings: async () => ({ showExecution: true, reconnectOnForeground: false, textSize: 15 }) }) },
     AiHostService: { getInstance: () => ({ refresh: async () => {}, find: () => ({ id: 'fixture-host', owner: state.owner, label: 'Fixture A host', backend: 'codex' }) }) },
     getContext: () => ({ getApplicationContext: () => app }), AppStorage: { get: () => state.background },
-    router: { getParams: () => ({ hostId: 'fixture-host' }) }, aiErrorText: value => value, aiStatusLabel: value => value
+    router: { getParams: () => ({ hostId: 'fixture-host' }) }, aiErrorText: value => value, aiStatusLabel: value => value,
+    aiStepEntries: items => items.map(item => ({ key: 'i:' + item.id, item, steps: [] })), aiLastEntryRunning: () => false
   }); return state;
 }
 function fillDrafts(page) {
@@ -288,9 +291,14 @@ const cases = [
     const state = workspace(); await bounded(state.page.aboutToAppear()); fillDrafts(state.page);
     state.granted = false; state.publish(); cleanDrafts(state.page); state.granted = true; state.publish(); cleanDrafts(state.page); state.page.aboutToDisappear();
   }],
-  ['independent page access listener survives background close and clears later account data', async () => {
+  ['background pauses without dropping the draft; the access listener still clears later account data', async () => {
     const state = workspace(); await bounded(state.page.aboutToAppear()); fillDrafts(state.page);
-    state.background = true; state.application.onApplicationBackground(); cleanDrafts(state.page); assert.equal(state.callbacks.length, 1);
+    const closes = state.closes;
+    state.background = true; state.application.onApplicationBackground();
+    assert.equal(state.page.controller.paused, true, 'the stream stops, the connection is not torn down');
+    assert.equal(state.closes, closes, 'nothing is closed or released on the computer');
+    assert.equal(state.page.draft, 'fixture draft', 'the draft survives a trip to the background');
+    assert.equal(state.callbacks.length, 2, 'the paused connection still watches the account (the page does too)');
     state.owner = 'owner-' + 'b'.repeat(64); state.publish(); cleanDrafts(state.page); assert.equal(state.page.host, null);
     assert.equal(state.page.resumeAccount, null); assert.equal(state.page.resumeSession, ''); assert.equal(state.page.title, '远程 AI');
     state.page.aboutToDisappear(); assert.equal(state.callbacks.length, 0); assert.equal(state.appCallbacks.size, 0);
@@ -299,8 +307,11 @@ const cases = [
     const source = read(workspaceFile), body = source.slice(source.indexOf('  @Builder private workspace()'), source.indexOf('  build() {'));
     assert.ok(source.includes('.scrollable(ScrollDirection.Vertical)')); assert.ok(!source.includes('ScrollDirection.None'));
     assert.equal((source.match(/Scroll\(\) \{ this\.workspace\(\) \}/g) || []).length, 1);
-    const suffix = body.slice(body.lastIndexOf("}.width('100%')")); assert.ok(suffix.includes('minHeight:')); assert.ok(!suffix.includes('.height('));
-    assert.equal(argument(body, '}.height('), 'this.transcriptHeight()'); // The transcript List's production height.
+    // The page column fills the scroll viewport (a minimum keeps tiny windows scrollable) and the transcript takes the
+    // rest in the same layout pass, so nothing waits a frame for a measured height.
+    const suffix = body.slice(body.lastIndexOf("}.width('100%')")); assert.ok(suffix.includes('.height(Math.max(320, this.pageHeight - this.topVp() - 12))'));
+    assert.ok(body.includes("}.width('100%').layoutWeight(1)"), 'the transcript area is laid out, not measured');
+    // The measured rest still sizes the send flight and the place below a landed message.
     const method = source.slice(source.indexOf('private transcriptHeight(): number {'));
     const height = method.slice(method.indexOf('return ') + 7, method.indexOf(';'));
     assert.ok(height.includes('this.topChrome') && height.includes('this.bottomChrome'), 'the list takes the measured rest');
