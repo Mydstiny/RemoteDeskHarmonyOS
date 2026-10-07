@@ -27,10 +27,11 @@ export interface SearchBarFallback {
 }
 
 /**
- * Every search bar's surface: a glass capsule drawn by the app (its tint, blur and soft shadow, with a light rim
- * along the top and a darker one below, as on the AI assistant's input capsule), so it shows on every device. The
- * system's immersive material is not used here: with the app targeting API 23 it drew nothing on API 26 devices and
- * the bars were left without a surface. The bar's own corner radius shapes the capsule.
+ * Every search bar's surface. On a device with the system's 沉浸光感 (API 26 and support for it) it is the system's
+ * own immersive glass, as in the system apps: refraction and a highlight edge, press deformation and touch light,
+ * following the device and 设置 → 沉浸光感. Elsewhere the app draws the glass capsule itself: tint, blur, a light rim
+ * on top and a darker one below, and a soft shadow (as on the AI assistant's input capsule). The app targets API 26
+ * (the material does nothing for an app that targets less) and runs from API 23, where this check keeps it off.
  */
 export class SearchBarSurface<T extends CommonMethod<T>> implements AttributeModifier<T> {
   private dark: boolean;
@@ -42,6 +43,16 @@ export class SearchBarSurface<T extends CommonMethod<T>> implements AttributeMod
   }
 
   applyNormalAttribute(instance: T): void {
+    if (immersiveMaterialAvailable()) {
+      instance.systemMaterial(new uiMaterial.ImmersiveMaterial({
+        style: uiMaterial.ImmersiveStyle.REGULAR,
+        // A faint tint keeps the glass visible over a plain page, as the system bars do.
+        materialColor: this.dark ? '#1AFFFFFF' : '#40F4F6FA',
+        interactive: true,
+        lightEffect: { color: Color.White }
+      }));
+      return;
+    }
     if (this.fallback.background !== undefined) { instance.backgroundColor(this.fallback.background); }
     instance.backgroundBlurStyle(BlurStyle.Regular);
     instance.border({
