@@ -34,6 +34,14 @@ import { AccountSessionCoordinator } from '../../services/AccountSessionCoordina
 /** AppStorage: a request to start voice mode (hands-free); the home page opens it (AiVoiceIsland). */
 export const AI_VOICE_REQUEST: string = 'aiVoice.request';
 
+/**
+ * A spoken turn with a remote session's orb (its answer is read aloud): the model is told it is talking, not typing —
+ * it said it was in 文字模式 while its answer was being read out.
+ */
+const SESSION_VOICE_STYLE: string = '。当前是远程连接中的悬浮球语音对话：用户是对着悬浮球说的话，你的回答显示在悬浮球旁的小对话框里，' +
+  '同时被朗读出来——这就是语音模式，不要说自己是文字模式。先用一两句口语说结论，需要时再给简短的要点；不要长篇大论，' +
+  '不要写网址、表格或代码块';
+
 /** Most documents one chat holds at a time. */
 const AI_CHAT_MAX_ATTACHMENTS: number = 5;
 /** The header row's height; the 助理 | 聊天 switch of the panel sits over its left end. */
@@ -701,6 +709,15 @@ export struct AiChatView {
    * A remote session's orb answers by voice: as 连接中语音回答 says (a question the orb heard, every answer, or none),
    * always in its voice mode — which then listens again (连续对话). Also when the chat is folded away meanwhile.
    */
+  /** This session turn is spoken: its answer will be read aloud (连接中语音回答, or the orb's voice mode). */
+  private sessionVoiceTurn(context: common.UIAbilityContext, spoken: boolean): boolean {
+    if (!this.sessionVoice) { return false; }
+    const settings: AiVoiceSettings = new AiVoiceSettings();
+    settings.init(context, this.owner);
+    const config: AiVoiceConfig = settings.read();
+    return aiSessionReadsAnswer(config.sessionReply, AiChatMemory.sessionTalk, spoken, config.enabled);
+  }
+
   private readInSession(context: common.UIAbilityContext, answer: AiChatMessage, spoken: boolean): void {
     if (!this.sessionVoice || answer.text.trim() === '') { return; }
     const settings: AiVoiceSettings = new AiVoiceSettings();
@@ -892,7 +909,8 @@ export struct AiChatView {
       const turns: AiChatTurn[] = this.messages.filter((m: AiChatMessage): boolean => m.role === 'user' || m.role === 'assistant')
         .map((m: AiChatMessage): AiChatTurn => new AiChatTurn(m.role, this.turnText(m)));
       const reply: AiChatReply = await this.chat.respond(this.context(), profile, secret, {
-        turns: turns, attachments: this.attachments, preferences: this.preferenceText(),
+        turns: turns, attachments: this.attachments,
+        preferences: this.preferenceText() + (this.sessionVoiceTurn(context, spoken) ? SESSION_VOICE_STYLE : ''),
         memory: this.preferences.memoryEnabled ? this.preferences.manualMemorySummary.trim().slice(0, 1200) : '',
         tools: tools, skills: this.skills, chosenSkills: chosen, appData: this.appData(),
         onProgress: (status: string): void => { this.progress(status); }
