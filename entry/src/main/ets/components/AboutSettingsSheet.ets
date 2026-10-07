@@ -22,6 +22,9 @@ import {
   GuideProtocol,
   GuideProtocolOption,
   guideProtocolOptions,
+  guideLessonCount,
+  guideLessonsMatching,
+  guideProtocolLabel,
   settingsUsageGuidePages
 } from '../services/GuideContentRegistry';
 import {
@@ -61,6 +64,7 @@ export struct AboutSettingsSheet {
   @State guideProtocol: GuideProtocol = 'all';
   @State expandedGuideLessonId: string = 'common-first-host';
   @State guideLessonContentHeight: number = 0;
+  @State guideQuery: string = '';
   @State releaseNotesIndex: number = 0;
   private releaseNotesController: SwiperController = new SwiperController();
   @State releaseNotesItems: ReleaseNotePage[] = [];
@@ -105,13 +109,15 @@ export struct AboutSettingsSheet {
   }
 
   private resetExpandedGuideLesson(): void {
-    const lessons: GuideLesson[] = guideLessonsFor(this.guideDevice, this.guideProtocol);
-    this.expandedGuideLessonId = lessons.length > 0 ? lessons[0].id : '';
+    const lessons: GuideLesson[] = this.operationGuideLessons();
+    this.expandedGuideLessonId = lessons.length > 0 && this.guideQuery.trim() === '' ? lessons[0].id : '';
     this.guideLessonContentHeight = 0;
   }
 
+  /** The chosen category's lessons, or every category's matches while searching. */
   private operationGuideLessons(): GuideLesson[] {
-    return guideLessonsFor(this.guideDevice, this.guideProtocol);
+    return this.guideQuery.trim() !== '' ? guideLessonsMatching(this.guideDevice, this.guideQuery) :
+      guideLessonsFor(this.guideDevice, this.guideProtocol);
   }
 
   private operationGuideLayout(): OperationGuideSheetLayout {
@@ -263,93 +269,74 @@ export struct AboutSettingsSheet {
       { topLeft: 22, topRight: 22, bottomLeft: 0, bottomRight: 0 } : 24)
   }
 
+  /** 设置 → 教程 → 操作引导中心: search, device, category chips, lessons with their entry path and steps. */
   @Builder handsOnGuideSheet() {
     Column() {
       if (this.modern()) {
-        AppSheetHeader({ title: '操作引导中心', subtitle: '按设备与协议定位，不必从头读完', whiteOnAccent: true,
+        AppSheetHeader({ title: '操作引导中心', subtitle: '按设备和场景找到步骤，也可以直接搜索', whiteOnAccent: true,
           onClose: (): void => { this.onClose(); } })
       } else {
         Row() {
           Column() {
             Text('操作引导中心').fontSize(20).fontWeight(FontWeight.Bold)
               .fontColor(this.pal().text).fontFamily(this.font())
-            Text('按设备与协议定位，不必从头读完')
+            Text('按设备和场景找到步骤，也可以直接搜索')
               .fontSize(12).fontColor(this.pal().text3).fontFamily(this.font()).margin({ top: 3 })
           }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-          Blank()
           SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor([this.pal().text2])
-            .width(36).height(36).onClick((): void => { this.onClose(); })
-        }.width('100%').padding({
-          left: 24, right: 20, top: this.operationGuideLayout().compact ? 12 : 20
-        }).margin({ bottom: this.operationGuideLayout().compact ? 8 : 12 })
+            .width(44).height(44).accessibilityText('关闭').onClick((): void => { this.onClose(); })
+        }.width('100%').padding({ left: 24, right: 12, top: this.operationGuideLayout().compact ? 8 : 14 })
+        .margin({ bottom: this.operationGuideLayout().compact ? 6 : 10 })
       }
 
-      Column() {
-        Row() {
-          Column() {
-            Text('当前按 ' + guideDeviceLabel(this.guideDevice) + ' 展示')
-              .fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
-              .fontFamily(this.font())
-            Text(guideDeviceSummary(this.guideDevice))
-              .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font()).margin({ top: 3 })
-          }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-          SymbolGlyph($r('sys.symbol.checkmark_circle_fill'))
-            .fontSize(22).fontColor([this.accentColor])
-        }.width('100%')
+      this.guideSearchBar()
 
-        Row({ space: 8 }) {
-          this.guideDeviceChip('phone')
-          this.guideDeviceChip('tablet')
-          this.guideDeviceChip('desktop')
-        }.width('100%').margin({ top: this.operationGuideLayout().compact ? 8 : 12 })
+      Column({ space: 6 }) {
+        Row({ space: 4 }) {
+          this.guideDeviceSegment('phone')
+          this.guideDeviceSegment('tablet')
+          this.guideDeviceSegment('desktop')
+        }.width('100%').padding(3).borderRadius(12).backgroundColor(this.pal().surface)
+        Text(guideDeviceLabel(this.guideDevice) + ' · ' + guideDeviceSummary(this.guideDevice))
+          .fontSize(12).fontColor(this.pal().text3).fontFamily(this.font()).width('100%').maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+      }.width('100%').padding({ left: 20, right: 20 })
+      .margin({ bottom: this.operationGuideLayout().compact ? 6 : 10 })
+
+      if (this.guideQuery.trim() === '') {
+        Scroll() {
+          Row({ space: 8 }) {
+            ForEach(guideProtocolOptions(), (option: GuideProtocolOption): void => {
+              this.guideProtocolChip(option)
+            }, (option: GuideProtocolOption): string => option.id + ':' + this.guideDevice)
+          }.padding({ left: 20, right: 20 })
+        }
+        .width('100%').height(44)
+        .scrollable(ScrollDirection.Horizontal)
+        .scrollBar(this.isDesktopDevice ? BarState.Auto : BarState.Off)
+        .margin({ bottom: 6 })
       }
-      .width('100%').padding(this.operationGuideLayout().compact ? 10 : 14).borderRadius(16)
-      .backgroundColor(this.pal().surface)
-      .margin({ left: 20, right: 20,
-        bottom: this.operationGuideLayout().compact ? 8 : 12 })
 
       Row() {
-        Column() {
-          Text('自动引导显示方式')
-            .fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
-            .fontFamily(this.font()).width('100%')
-          Text(this.guideAlwaysVisible ?
-            '每次进入适用会话时显示一次；同一会话不会反复弹出' :
-            '默认每类自动引导只显示一次，教程中心仍可随时打开')
-            .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
-            .lineHeight(16).width('100%').margin({ top: 3 })
-        }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-        Button(this.guideAlwaysVisible ? '始终显示：开' : '始终显示')
-          .height(34).fontSize(11).borderRadius(10).margin({ left: 12 })
-          .backgroundColor(this.guideAlwaysVisible ? this.accentColor : this.pal().card)
-          .fontColor(this.guideAlwaysVisible ? appUiOnAccentText(this.accentColor) : this.accentColor)
-          .onClick((): void => { this.toggleGuideAlwaysVisible(); })
-          .accessibilityText(this.guideAlwaysVisible ? '关闭始终显示引导' : '开启始终显示引导')
-      }
-      .width('100%').padding(this.operationGuideLayout().compact ? 10 : 13).borderRadius(16)
-      .backgroundColor(this.pal().surface)
-      .margin({ left: 20, right: 20,
-        bottom: this.operationGuideLayout().compact ? 8 : 12 })
-
-      Scroll() {
-        Row({ space: 8 }) {
-          ForEach(guideProtocolOptions(), (option: GuideProtocolOption): void => {
-            this.guideProtocolChip(option)
-          }, (option: GuideProtocolOption): string => option.id)
-        }.padding({ left: 20, right: 20 })
-      }
-      .width('100%').height(this.operationGuideLayout().compact ? 62 : 72)
-      .scrollable(ScrollDirection.Horizontal)
-      .scrollBar(BarState.Off)
+        Text(this.guideListTitle()).fontSize(13).fontWeight(FontWeight.Medium)
+          .fontColor(this.pal().text2).fontFamily(this.font()).layoutWeight(1).maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+        Text(this.operationGuideLessons().length.toString() + ' 篇')
+          .fontSize(12).fontColor(this.pal().text3).fontFamily(this.font())
+      }.width('100%').padding({ left: 24, right: 24, top: 4, bottom: 6 })
 
       Scroll() {
         Column() {
-          ForEach(this.operationGuideLessons(),
-            (lesson: GuideLesson): void => {
-              this.guideLessonCard(lesson)
-            }, (lesson: GuideLesson): string => lesson.id)
+          if (this.operationGuideLessons().length === 0) {
+            this.guideEmptyState()
+          } else {
+            ForEach(this.operationGuideLessons(),
+              (lesson: GuideLesson): void => {
+                this.guideLessonCard(lesson)
+              }, (lesson: GuideLesson): string => lesson.id + ':' + this.guideDevice)
+          }
         }
-        .width('100%').padding({ left: 20, right: 20, top: 4, bottom: 22 })
+        .width('100%').padding({ left: 20, right: 20, top: 2, bottom: 12 })
         .onAreaChange((_oldArea: Area, nextArea: Area): void => {
           const nextHeight: number = nextArea.height as number;
           if (Number.isFinite(nextHeight) && nextHeight > 0 &&
@@ -358,7 +345,9 @@ export struct AboutSettingsSheet {
           }
         })
       }
-      .width('100%').layoutWeight(1).scrollBar(BarState.Auto)
+      .width('100%').layoutWeight(1).scrollBar(BarState.Auto).edgeEffect(EdgeEffect.Spring)
+
+      this.guideAutoShowRow()
     }
     .width('100%').height(this.operationGuideLayout().height)
     .constraintSize({ maxWidth: 760, maxHeight: this.operationGuideLayout().height })
@@ -369,76 +358,154 @@ export struct AboutSettingsSheet {
       { topLeft: 22, topRight: 22, bottomLeft: 0, bottomRight: 0 } : 24)
   }
 
-  @Builder guideDeviceChip(device: GuideDevice) {
+  private guideListTitle(): string {
+    if (this.guideQuery.trim() !== '') { return '搜索“' + this.guideQuery.trim() + '”'; }
+    const option: GuideProtocolOption | undefined = guideProtocolOptions().find(
+      (item: GuideProtocolOption): boolean => item.id === this.guideProtocol);
+    return option !== undefined ? option.label + ' · ' + option.summary : '';
+  }
+
+  private guideCategorySymbol(protocol: GuideProtocol): Resource {
+    switch (protocol) {
+      case 'rdp': return $r('sys.symbol.desktop_fill');
+      case 'rustdesk': return $r('sys.symbol.display');
+      case 'ssh': return $r('sys.symbol.code_square');
+      case 'vnc': return $r('sys.symbol.computer_host_fill');
+      case 'moonlight': return $r('sys.symbol.gamecontroller_fill');
+      case 'ai': return $r('sys.symbol.wand_and_stars');
+      case 'assistant': return $r('sys.symbol.ellipsis_bubble');
+      default: return $r('sys.symbol.house_fill');
+    }
+  }
+
+  private setGuideQuery(value: string): void {
+    this.guideQuery = value;
+    this.expandedGuideLessonId = '';
+    this.guideLessonContentHeight = 0;
+    if (value.trim() === '') { this.resetExpandedGuideLesson(); }
+  }
+
+  @Builder guideSearchBar() {
+    Row() {
+      SymbolGlyph($r('sys.symbol.magnifyingglass')).fontSize(16).fontColor([this.pal().text3])
+      TextInput({ text: this.guideQuery, placeholder: '搜索操作，例如 配对、滚轮、SFTP' })
+        .layoutWeight(1).height(44).fontSize(14).fontFamily(this.font()).fontColor(this.pal().text)
+        .placeholderColor(this.pal().text3).backgroundColor(Color.Transparent).padding({ left: 8, right: 4 })
+        .enterKeyType(EnterKeyType.Search)
+        .onChange((value: string): void => { this.setGuideQuery(value); })
+      if (this.guideQuery !== '') {
+        SymbolGlyph($r('sys.symbol.xmark_circle_fill')).fontSize(18).fontColor([this.pal().text3])
+          .width(44).height(44).accessibilityText('清除搜索')
+          .onClick((): void => { this.setGuideQuery(''); })
+      }
+    }
+    .width('100%').height(44).padding({ left: 14, right: 2 }).borderRadius(14)
+    .backgroundColor(this.pal().surface)
+    .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
+    .margin({ left: 20, right: 20, bottom: this.operationGuideLayout().compact ? 8 : 10 })
+  }
+
+  @Builder guideDeviceSegment(device: GuideDevice) {
     Text(device === 'phone' ? '手机' : (device === 'tablet' ? 'Pad' : 'PC'))
-      .fontSize(12).fontWeight(this.guideDevice === device ? FontWeight.Medium : FontWeight.Normal)
-      .fontColor(this.guideDevice === device ? appUiOnAccentText(this.accentColor) : this.pal().text2)
-      .textAlign(TextAlign.Center).layoutWeight(1)
-      .padding({ top: 8, bottom: 8 })
-      .backgroundColor(this.guideDevice === device ? this.accentColor : this.pal().card)
-      .borderRadius(10)
+      .fontSize(13).fontWeight(this.guideDevice === device ? FontWeight.Medium : FontWeight.Normal)
+      .fontFamily(this.font())
+      .fontColor(this.guideDevice === device ? this.pal().text : this.pal().text2)
+      .textAlign(TextAlign.Center).layoutWeight(1).height(34)
+      .backgroundColor(this.guideDevice === device ? this.pal().card : Color.Transparent)
+      .borderRadius(9)
+      .shadow(this.guideDevice === device ?
+        { radius: 6, color: this.theme === 'light' ? '#1A000000' : '#40000000', offsetY: 1 } :
+        { radius: 0, color: Color.Transparent })
+      .animation({ duration: 180, curve: Curve.FastOutSlowIn })
+      .accessibilityText((this.guideDevice === device ? '已选择 ' : '') + guideDeviceLabel(device))
       .onClick((): void => {
+        if (this.guideDevice === device) { return; }
         this.guideDevice = device;
         this.resetExpandedGuideLesson();
       })
   }
 
   @Builder guideProtocolChip(option: GuideProtocolOption) {
-    Column() {
+    Row({ space: 6 }) {
+      SymbolGlyph(this.guideCategorySymbol(option.id)).fontSize(15)
+        .fontColor([this.guideProtocol === option.id ? appUiOnAccentText(this.accentColor) : this.accentColor])
       Text(option.label)
-        .fontSize(13).fontWeight(FontWeight.Medium)
+        .fontSize(13).fontWeight(FontWeight.Medium).fontFamily(this.font())
         .fontColor(this.guideProtocol === option.id ? appUiOnAccentText(this.accentColor) : this.pal().text)
-        .fontFamily(this.font())
-      Text(option.summary)
-        .fontSize(10).fontColor(this.guideProtocol === option.id ?
-          (appUiOnAccentText(this.accentColor) === '#FFFFFF' ? '#EAF3FF' : '#3D3D3D') : this.pal().text3)
-        .fontFamily(this.font()).margin({ top: 2 })
+      Text(guideLessonCount(this.guideDevice, option.id).toString())
+        .fontSize(11).fontFamily(this.font())
+        .fontColor(this.guideProtocol === option.id ? appUiOnAccentText(this.accentColor) : this.pal().text3)
+        .opacity(0.8)
     }
-    .constraintSize({ minWidth: option.id === 'ssh' || option.id === 'moonlight' ? 112 : 92 })
-    .height(58).justifyContent(FlexAlign.Center)
-    .padding({ left: 12, right: 12 }).borderRadius(14)
+    .height(40).padding({ left: 12, right: 14 }).borderRadius(20)
     .backgroundColor(this.guideProtocol === option.id ? this.accentColor : this.pal().surface)
     .border({ width: 0.5,
       color: this.guideProtocol === option.id ? this.accentColor : this.pal().cardBorder,
       style: BorderStyle.Solid })
+    .animation({ duration: 180, curve: Curve.FastOutSlowIn })
+    .accessibilityText(option.label + '，' + option.summary + '，' +
+      guideLessonCount(this.guideDevice, option.id).toString() + ' 篇')
     .onClick((): void => {
+      if (this.guideProtocol === option.id) { return; }
       this.guideProtocol = option.id;
       this.resetExpandedGuideLesson();
     })
   }
 
+  private toggleGuideLesson(id: string): void {
+    const next: string = this.expandedGuideLessonId === id ? '' : id;
+    this.getUIContext().animateTo({ duration: 220, curve: Curve.FastOutSlowIn }, (): void => {
+      this.expandedGuideLessonId = next;
+      this.guideLessonContentHeight = 0;
+    });
+  }
+
   @Builder guideLessonCard(lesson: GuideLesson) {
     Column() {
-      Row() {
+      Row({ space: 12 }) {
+        Row() {
+          SymbolGlyph(this.guideCategorySymbol(lesson.protocol)).fontSize(18).fontColor([this.accentColor])
+        }.width(36).height(36).justifyContent(FlexAlign.Center).borderRadius(18)
+        .backgroundColor(this.pal().surface)
         Column() {
           Text(lesson.title).fontSize(15).fontWeight(FontWeight.Medium)
             .fontColor(this.pal().text).fontFamily(this.font()).width('100%')
-          Text(lesson.summary).fontSize(11).fontColor(this.pal().text3)
-            .fontFamily(this.font()).width('100%').margin({ top: 4 })
+          Text((this.guideQuery.trim() !== '' ? guideProtocolLabel(lesson.protocol) + ' · ' : '') + lesson.summary)
+            .fontSize(12).fontColor(this.pal().text3).fontFamily(this.font()).width('100%').margin({ top: 3 })
         }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-        SymbolGlyph(this.expandedGuideLessonId === lesson.id ?
-          $r('sys.symbol.chevron_up') : $r('sys.symbol.chevron_down'))
-          .fontSize(16).fontColor([this.pal().text3]).margin({ left: 10 })
+        Text(lesson.steps.length.toString() + ' 步').fontSize(12).fontColor(this.pal().text3).fontFamily(this.font())
+        SymbolGlyph($r('sys.symbol.chevron_down')).fontSize(14).fontColor([this.pal().text3])
+          .rotate({ angle: this.expandedGuideLessonId === lesson.id ? 180 : 0 })
+          .animation({ duration: 220, curve: Curve.FastOutSlowIn })
       }
-      .width('100%').padding({ left: 16, right: 16, top: 15, bottom: 15 })
-      .onClick((): void => {
-        this.expandedGuideLessonId = this.expandedGuideLessonId === lesson.id ? '' : lesson.id;
-        this.guideLessonContentHeight = 0;
-      })
+      .width('100%').padding({ left: 14, right: 14, top: 12, bottom: 12 })
+      .accessibilityText(lesson.title + '，' + lesson.summary + '，' +
+        (this.expandedGuideLessonId === lesson.id ? '已展开' : '点按展开步骤'))
+      .onClick((): void => { this.toggleGuideLesson(lesson.id); })
 
       if (this.expandedGuideLessonId === lesson.id) {
-        Divider().strokeWidth(0.5).color(this.pal().divider)
-          .margin({ left: 16, right: 16 })
         Column() {
+          if (lesson.path.length > 0) {
+            Row({ space: 6 }) {
+              SymbolGlyph($r('sys.symbol.arrow_right')).fontSize(13).fontColor([this.accentColor])
+              Text(lesson.path).fontSize(12).fontColor(this.pal().text2).fontFamily(this.font()).layoutWeight(1)
+            }.width('100%').padding({ left: 10, right: 10, top: 7, bottom: 7 }).borderRadius(10)
+            .backgroundColor(this.pal().surface).margin({ bottom: 12 })
+          }
           ForEach(lesson.steps, (step: string, index: number): void => {
             Row() {
-              Text((index + 1).toString())
-                .fontSize(11).fontWeight(FontWeight.Bold).fontColor(appUiOnAccentText(this.accentColor))
-                .width(22).height(22).textAlign(TextAlign.Center)
-                .backgroundColor(this.accentColor).borderRadius(11)
-              Text(step).fontSize(13).fontColor(this.pal().text2).lineHeight(20)
-                .fontFamily(this.font()).layoutWeight(1).margin({ left: 10 })
-            }.width('100%').alignItems(VerticalAlign.Top).margin({ bottom: 11 })
+              Column() {
+                Text((index + 1).toString())
+                  .fontSize(11).fontWeight(FontWeight.Bold).fontColor(appUiOnAccentText(this.accentColor))
+                  .width(22).height(22).textAlign(TextAlign.Center)
+                  .backgroundColor(this.accentColor).borderRadius(11)
+                if (index < lesson.steps.length - 1) {
+                  Column().width(2).layoutWeight(1).backgroundColor(this.pal().divider).margin({ top: 3 })
+                }
+              }.width(22).alignSelf(ItemAlign.Stretch)
+              Text(step).fontSize(13).fontColor(this.pal().text).lineHeight(20)
+                .fontFamily(this.font()).layoutWeight(1).margin({ left: 10, bottom: 12 })
+            }.width('100%').alignItems(VerticalAlign.Top)
           }, (step: string, index: number): string => lesson.id + '-' + index.toString())
           if (lesson.note.length > 0) {
             Row() {
@@ -450,12 +517,51 @@ export struct AboutSettingsSheet {
             .width('100%').padding(11).borderRadius(12)
             .backgroundColor(this.pal().surface)
           }
-        }.width('100%').padding({ left: 16, right: 16, top: 14, bottom: 16 })
+        }
+        .width('100%').padding({ left: 14, right: 14, top: 2, bottom: 14 })
+        .transition(TransitionEffect.OPACITY.combine(TransitionEffect.translate({ y: -6 })))
       }
     }
     .width('100%').borderRadius(16).backgroundColor(this.pal().card)
-    .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
+    .border({ width: 0.5, color: this.expandedGuideLessonId === lesson.id ? this.accentColor : this.pal().cardBorder,
+      style: BorderStyle.Solid })
+    .clip(true)
     .margin({ bottom: 10 })
+  }
+
+  @Builder guideEmptyState() {
+    Column({ space: 8 }) {
+      SymbolGlyph($r('sys.symbol.magnifyingglass')).fontSize(28).fontColor([this.pal().text3])
+      Text('没有找到“' + this.guideQuery.trim() + '”相关的操作').fontSize(14).fontColor(this.pal().text2)
+        .fontFamily(this.font()).textAlign(TextAlign.Center)
+      Text('换个关键词，或在 ' + guideDeviceLabel(this.guideDevice) + ' 以外的设备里找找；也可以直接问 AI 助理。')
+        .fontSize(12).fontColor(this.pal().text3).fontFamily(this.font()).textAlign(TextAlign.Center)
+      Button('清除搜索').height(40).fontSize(13).borderRadius(12)
+        .backgroundColor(this.pal().surface).fontColor(this.accentColor)
+        .onClick((): void => { this.setGuideQuery(''); })
+    }.width('100%').padding({ top: 28, bottom: 28, left: 12, right: 12 })
+  }
+
+  @Builder guideAutoShowRow() {
+    Row() {
+      Column() {
+        Text('自动引导').fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
+          .fontFamily(this.font()).width('100%')
+        Text(this.guideAlwaysVisible ?
+          '每次进入适用的会话都显示一次，同一会话不会反复弹出' :
+          '每类自动引导只显示一次；这里随时可以重新查看')
+          .fontSize(12).fontColor(this.pal().text3).fontFamily(this.font())
+          .lineHeight(16).width('100%').margin({ top: 2 })
+      }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+      Toggle({ type: ToggleType.Switch, isOn: this.guideAlwaysVisible })
+        .selectedColor(this.accentColor).margin({ left: 12 })
+        .accessibilityText('始终显示自动引导')
+        .onChange((isOn: boolean): void => {
+          if (isOn !== this.guideAlwaysVisible) { this.toggleGuideAlwaysVisible(); }
+        })
+    }
+    .width('100%').padding({ left: 24, right: 20, top: 10, bottom: this.breakpoint === 'sm' ? 18 : 14 })
+    .border({ width: { top: 0.5 }, color: this.pal().divider })
   }
 
   @Builder aboutAppSheet() {

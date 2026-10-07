@@ -143,7 +143,7 @@ export struct HostProtocolPicker {
         resolveHostProtocolPickerOption('moonlight',
           this.moonlightProtocolAvailable, this.moonlightFabEntryAvailable))
       if (this.aiProVisible) {
-        this.protocolOption('ai', '远程 AI', 'Codex 与 DSH 会话、审批和代码差异',
+        this.protocolOption('ai', '远程 AI', 'Codex、DSH 与 Pi 会话、审批和代码差异',
           resolveHostProtocolPickerOption('ai', true, false, true))
       }
       if (this.workspaceAvailable) { this.workspaceOption() }

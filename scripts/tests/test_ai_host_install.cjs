@@ -70,6 +70,26 @@ const cases = [
       for (const other of ['codex', 'dsh']) assert.ok(!prompt.includes(policy.aiInstallRelease(other).commit));
     }
   }],
+  ['prompts carry each plugin install, service, panel, recovery and pairing steps', () => {
+    const ports = { codex: [9443, 9543, 'remotedesk-codex.mjs'], dsh: [9444, 9544, 'remotedesk-dsh.mjs'], pi: [9445, 9545, 'remotedesk-pi.mjs'] };
+    for (const backend of ['codex', 'dsh', 'pi']) {
+      const [port, panelPort, bin] = ports[backend];
+      const local = policy.aiInstallPrompt(backend, 'local'), lan = policy.aiInstallPrompt(backend, 'lan');
+      assert.ok(local.includes('init --state ~/.remotedesk/' + backend + ' --host 127.0.0.1 --hosts localhost,127.0.0.1 --port ' + port));
+      assert.ok(lan.includes('--host <局域网 IP> --hosts <局域网 IP>,localhost,127.0.0.1 --port ' + port));
+      for (const prompt of [local, lan]) {
+        assert.ok(prompt.includes('node bin/' + bin + ' panel --state <state> --port ' + panelPort));
+        assert.ok(prompt.includes('node bin/' + bin + ' stop --state <state>') && prompt.includes('recover --action inspect'));
+        assert.ok(prompt.includes('service --action uninstall') && prompt.includes('--action install'));
+        assert.ok(prompt.includes('「全部项目（含电脑 App 里的项目）」'));
+      }
+      assert.ok(lan.includes('设置 → 远程 AI → 添加主机') && lan.includes('扫描电脑上的配对二维码') && lan.includes('端口 ' + port));
+      assert.ok(local.includes('本轮不配对') && !local.includes('扫描电脑上的配对二维码'));
+    }
+    assert.ok(policy.aiInstallPrompt('codex', 'lan').includes('CODEX_HOME 改为 ~/.codex'));
+    assert.ok(policy.aiInstallPrompt('pi', 'lan').includes('pi-gui') && policy.aiInstallPrompt('pi', 'lan').includes('修改前询问'));
+    assert.ok(policy.aiInstallPrompt('dsh', 'lan').includes('~/.dsh/profiles/remotedesk'));
+  }],
   ['unknown inputs fail and returned metadata cannot mutate authority', () => {
     assert.throws(() => policy.aiInstallRelease('unknown'));
     assert.throws(() => policy.aiInstallPrompt('codex', 'public'));

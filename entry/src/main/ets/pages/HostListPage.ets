@@ -15698,7 +15698,14 @@ struct HostListPage {
 
   private hostGroupSummaryText(card: HostGroupCardModel): string {
     if (card.hosts.length === 0) { return this.hostSearchOrFilterActive() ? '无匹配' : '暂无主机'; }
-    if (card.type === 'ai') { return 'Codex / DSH'; }
+    if (card.type === 'ai') {
+      // The AI hosts' own engines (their projection names the backend), e.g. Codex / Pi.
+      const names: string[] = [];
+      card.hosts.forEach((host: RemoteHost): void => {
+        if (host.username !== '' && names.indexOf(host.username) < 0) { names.push(host.username); }
+      });
+      return names.length > 0 ? names.join(' / ') : 'Codex / DSH / Pi';
+    }
     if (card.type === 'rustdesk' && !this.rustdeskPresenceDetectionEnabled) {
       return '';
     }
@@ -19862,7 +19869,7 @@ struct HostListPage {
           this.protocolActionRow(protocolIcon('ai'), '本机数据管理', '配置导入导出与操作记录',
             (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_AI_DATA); })
           this.cardDivider()
-          this.protocolActionRow(protocolIcon('ai'), '电脑端安装', 'Codex 与 DSH 安装指引',
+          this.protocolActionRow(protocolIcon('ai'), '电脑端安装', 'Codex、DSH 与 Pi 安装指引',
             (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_AI_INSTALL); })
         }.borderRadius(24).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
           .border({ width: 0.5, color: this.pal().cardBorder })

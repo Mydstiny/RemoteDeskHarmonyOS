@@ -61,7 +61,7 @@ export function hostGroupTitle(type: HostGroupType): string {
 
 export function hostGroupSubtitle(type: HostGroupType): string {
   switch (type) {
-    case 'ai': return 'Codex 与 DSH 工作区';
+    case 'ai': return 'Codex、DSH 与 Pi 工作区';
     case 'rdp': return 'Windows 远程桌面';
     case 'rustdesk': return '跨平台远程控制';
     case 'ssh': return '终端与服务器';

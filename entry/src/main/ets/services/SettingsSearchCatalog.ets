@@ -165,7 +165,7 @@ const ENTRIES: SettingsSearchEntry[] = [
   entry(SETTINGS_SECTION_TUTORIAL, '本版本更新日志', '更新 新功能 版本 更新说明', '', 'releaseNotes'),
   entry(SETTINGS_SECTION_TUTORIAL, '快速认识应用', '教程 入门 新手'),
   entry(SETTINGS_SECTION_TUTORIAL, 'Pro 功能介绍', 'pro 会员 功能'),
-  entry(SETTINGS_SECTION_TUTORIAL, '操作引导中心', '帮助 步骤 怎么用 引导'),
+  entry(SETTINGS_SECTION_TUTORIAL, '操作引导中心', '帮助 步骤 怎么用 引导 搜索 远程 ai 助理 配对'),
   entry(SETTINGS_SECTION_TUTORIAL, '连接前准备', '准备 sunshine 服务端 开启远程桌面'),
   // 关于
   entry(SETTINGS_SECTION_ABOUT, '关于应用', '开源 许可 作者 联系方式'),

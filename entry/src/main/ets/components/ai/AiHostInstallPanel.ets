@@ -79,9 +79,10 @@ export struct AiHostInstallPanel {
         AppSettingsChoiceButton({ label: '局域网连接', isSelected: this.mode === 'lan',
           onSelect: (): void => { this.selectMode('lan'); } })
       }.width('100%')
-      Text(this.mode === 'local' ? '先在电脑上准备并验收，稍后再设置手机连接。' : '电脑端需确认网卡、端口和项目目录，随后回到这里添加主机并配对。')
+      Text(this.mode === 'local' ? '先在电脑上装好并验收，稍后再改为局域网并配对手机。' :
+        '电脑端会确认网卡、端口和项目目录，装好后台服务和控制面板；随后回到这里添加主机，扫描控制面板上的二维码配对。')
         .fontSize(13).fontFamily(AppConfig.fontFamily).fontColor(this.pal().text2).width('100%')
-      Text('这里只生成安装说明。软件安装、项目权限和后续配对由电脑端确认；设置页默认提供二维码，扫描不可用时可切换链接配对。')
+      Text('这里只生成安装提示词：复制后发给电脑上的 AI 编程助手（如 Codex、Pi），由它在电脑上完成安装、配置后台服务和控制面板。软件安装、项目权限和配对都需要你在电脑上确认；控制面板默认提供二维码，扫描不可用时可改用链接配对。')
         .fontSize(12).fontFamily(AppConfig.fontFamily).fontColor(this.pal().text2).width('100%')
       AiActionButton({ label: '预览安装提示词', isEnabled: !this.inBackground,
         onAction: (): void => { this.showPreview(); } })
