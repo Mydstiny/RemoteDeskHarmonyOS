@@ -494,18 +494,13 @@ export struct AboutSettingsSheet {
           }
           ForEach(lesson.steps, (step: string, index: number): void => {
             Row() {
-              Column() {
-                Text((index + 1).toString())
-                  .fontSize(11).fontWeight(FontWeight.Bold).fontColor(appUiOnAccentText(this.accentColor))
-                  .width(22).height(22).textAlign(TextAlign.Center)
-                  .backgroundColor(this.accentColor).borderRadius(11)
-                if (index < lesson.steps.length - 1) {
-                  Column().width(2).layoutWeight(1).backgroundColor(this.pal().divider).margin({ top: 3 })
-                }
-              }.width(22).alignSelf(ItemAlign.Stretch)
+              Text((index + 1).toString())
+                .fontSize(11).fontWeight(FontWeight.Bold).fontColor(appUiOnAccentText(this.accentColor))
+                .width(22).height(22).textAlign(TextAlign.Center)
+                .backgroundColor(this.accentColor).borderRadius(11)
               Text(step).fontSize(13).fontColor(this.pal().text).lineHeight(20)
-                .fontFamily(this.font()).layoutWeight(1).margin({ left: 10, bottom: 12 })
-            }.width('100%').alignItems(VerticalAlign.Top)
+                .fontFamily(this.font()).layoutWeight(1).margin({ left: 10 })
+            }.width('100%').alignItems(VerticalAlign.Top).margin({ bottom: 12 })
           }, (step: string, index: number): string => lesson.id + '-' + index.toString())
           if (lesson.note.length > 0) {
             Row() {
