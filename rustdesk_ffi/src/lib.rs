@@ -985,8 +985,14 @@ pub(crate) struct RustDeskDisplayState {
     pub displays: Vec<RustDeskDisplayInfoState>,
     pub peer_version: String,
     pub peer_platform: String,
-    /// PeerInfo.platform_additions (a flat JSON object): installed service, virtual display driver, privacy modes.
-    pub platform_additions: String,
+    /// From PeerInfo.platform_additions (a flat JSON object). The login PeerInfo carries all of it; a display
+    /// change resends only the displays and the virtual-display keys, which update just those fields (as the official
+    /// client merges them).
+    pub peer_installed: bool,
+    pub idd_impl: i32,
+    pub rustdesk_virtual_mask: u32,
+    pub amyuni_virtual_count: i32,
+    pub privacy_impl_key: String,
     /// The last BackNotification.PrivacyModeState value (0 unknown) and how many answers came.
     pub privacy_state: i32,
     pub privacy_generation: u32,
@@ -1010,7 +1016,11 @@ impl Default for RustDeskDisplayState {
             displays: Vec::new(),
             peer_version: String::new(),
             peer_platform: String::new(),
-            platform_additions: String::new(),
+            peer_installed: false,
+            idd_impl: 0,
+            rustdesk_virtual_mask: 0,
+            amyuni_virtual_count: 0,
+            privacy_impl_key: String::new(),
             privacy_state: 0,
             privacy_generation: 0,
         }
@@ -1100,26 +1110,39 @@ pub(crate) fn privacy_mode_impl_key(json: &str) -> String {
         .unwrap_or_default()
 }
 
-pub(crate) fn peer_features_from(state: &RustDeskDisplayState) -> RustDeskPeerFeaturesV1 {
-    let json = state.platform_additions.as_str();
-    let idd = json_flat_string(json, "idd_impl").unwrap_or_default();
+/// Adopt PeerInfo.platform_additions. A full PeerInfo (the login one: it has a version) sets everything; a display
+/// update (no version or platform) carries only the virtual-display keys — keys it leaves out mean none plugged in —
+/// and keeps the installed service and the privacy implementation learned at login.
+pub(crate) fn adopt_platform_additions(state: &mut RustDeskDisplayState, json: &str, full: bool) {
+    if full {
+        state.peer_installed = json_flat_bool(json, "is_installed").unwrap_or(false);
+        state.privacy_impl_key = privacy_mode_impl_key(json);
+    }
+    if full || json_value_after(json, "idd_impl").is_some() {
+        state.idd_impl = match json_flat_string(json, "idd_impl").unwrap_or_default().as_str() {
+            "rustdesk_idd" => 1,
+            "amyuni_idd" => 2,
+            _ => 0,
+        };
+    }
     let mut mask: u32 = 0;
     for index in json_flat_int_list(json, "rustdesk_virtual_displays") {
         if (1..=4).contains(&index) {
             mask |= 1 << index;
         }
     }
+    state.rustdesk_virtual_mask = mask;
+    state.amyuni_virtual_count = json_flat_int(json, "amyuni_virtual_displays").unwrap_or(0).clamp(0, 16) as i32;
+}
+
+pub(crate) fn peer_features_from(state: &RustDeskDisplayState) -> RustDeskPeerFeaturesV1 {
     RustDeskPeerFeaturesV1 {
         struct_size: std::mem::size_of::<RustDeskPeerFeaturesV1>() as u32,
-        installed: if json_flat_bool(json, "is_installed").unwrap_or(false) { 1 } else { 0 },
-        idd_impl: match idd.as_str() {
-            "rustdesk_idd" => 1,
-            "amyuni_idd" => 2,
-            _ => 0,
-        },
-        rustdesk_virtual_mask: mask,
-        amyuni_virtual_count: json_flat_int(json, "amyuni_virtual_displays").unwrap_or(0).clamp(0, 16) as i32,
-        privacy_supported: if privacy_mode_impl_key(json).is_empty() { 0 } else { 1 },
+        installed: if state.peer_installed { 1 } else { 0 },
+        idd_impl: state.idd_impl,
+        rustdesk_virtual_mask: state.rustdesk_virtual_mask,
+        amyuni_virtual_count: state.amyuni_virtual_count,
+        privacy_supported: if state.privacy_impl_key.is_empty() { 0 } else { 1 },
         privacy_state: state.privacy_state,
         privacy_generation: state.privacy_generation,
         reserved: [0; 4],
@@ -3204,7 +3227,7 @@ pub extern "C" fn rustdesk_toggle_privacy_mode(handle: *mut c_void, on: bool) ->
     let impl_key = ctx
         .display_state
         .lock()
-        .map(|state| privacy_mode_impl_key(&state.platform_additions))
+        .map(|state| state.privacy_impl_key.clone())
         .unwrap_or_default();
     ctx.controls.enqueue(ControlMsg::TogglePrivacyMode { impl_key, on })
 }
@@ -6242,12 +6265,9 @@ mod tests {
 
     #[test]
     fn peer_features_read_virtual_displays_and_privacy_from_platform_additions() {
-        let state = RustDeskDisplayState {
-            platform_additions: r#"{"is_installed":true,"idd_impl":"rustdesk_idd","rustdesk_virtual_displays":[1, 3],"supported_privacy_mode_impl":[["privacy_mode_impl_mag","Mag"],["privacy_mode_impl_exclude_from_capture","Exclude"]]}"#.into(),
-            privacy_state: 4,
-            privacy_generation: 2,
-            ..RustDeskDisplayState::default()
-        };
+        let mut state = RustDeskDisplayState { privacy_state: 4, privacy_generation: 2, ..RustDeskDisplayState::default() };
+        let login = r#"{"headless":false,"is_installed":true,"idd_impl":"rustdesk_idd","rustdesk_virtual_displays":[1, 3],"supported_privacy_mode_impl":[["privacy_mode_impl_mag","Privacy mode 1"],["privacy_mode_impl_exclude_from_capture","Privacy mode 2"]],"has_file_clipboard":true}"#;
+        adopt_platform_additions(&mut state, login, true);
         let features = peer_features_from(&state);
         assert_eq!(features.struct_size, 48);
         assert_eq!(features.installed, 1);
@@ -6255,12 +6275,19 @@ mod tests {
         assert_eq!(features.rustdesk_virtual_mask, (1 << 1) | (1 << 3));
         assert_eq!(features.privacy_supported, 1);
         assert_eq!((features.privacy_state, features.privacy_generation), (4, 2));
-        assert_eq!(privacy_mode_impl_key(&state.platform_additions), "privacy_mode_impl_mag");
+        assert_eq!(state.privacy_impl_key, "privacy_mode_impl_mag");
 
-        let amyuni = RustDeskDisplayState {
-            platform_additions: r#"{"idd_impl": "amyuni_idd", "amyuni_virtual_displays": 2}"#.into(),
-            ..RustDeskDisplayState::default()
-        };
+        // A display update (virtual display plugged out) keeps what the login told and clears absent keys.
+        adopt_platform_additions(&mut state, r#"{"idd_impl":"rustdesk_idd"}"#, false);
+        let features = peer_features_from(&state);
+        assert_eq!((features.installed, features.idd_impl, features.rustdesk_virtual_mask), (1, 1, 0));
+        assert_eq!(state.privacy_impl_key, "privacy_mode_impl_mag");
+        // An update without additions (peer not installed) changes nothing else.
+        adopt_platform_additions(&mut state, "", false);
+        assert_eq!((state.idd_impl, state.peer_installed), (1, true));
+
+        let mut amyuni = RustDeskDisplayState::default();
+        adopt_platform_additions(&mut amyuni, r#"{"idd_impl": "amyuni_idd", "amyuni_virtual_displays": 2}"#, true);
         let features = peer_features_from(&amyuni);
         assert_eq!((features.installed, features.idd_impl, features.amyuni_virtual_count), (0, 2, 2));
         assert_eq!(features.privacy_supported, 0);
@@ -6270,7 +6297,7 @@ mod tests {
     #[test]
     fn live_session_controls_validate_and_queue() {
         let mut client = test_client_with_display_state(RustDeskDisplayState {
-            platform_additions: r#"{"supported_privacy_mode_impl":[["privacy_mode_impl_mag","Mag"]]}"#.into(),
+            privacy_impl_key: "privacy_mode_impl_mag".into(),
             ..RustDeskDisplayState::default()
         });
         let handle = &mut client as *mut RustDeskClient as *mut c_void;

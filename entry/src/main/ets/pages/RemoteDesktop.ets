@@ -1,6 +1,6 @@
 import { recordVncFailure } from '../services/VncDiagnosticEvents';
 import { AI_SESSION_RAIL_EXPANDED } from '../services/diagnosticAi/AiBridgeKeys';
-import { rustDeskCodecName, rustDeskLiveAudioPossible, rustDeskPrivacyStateMessage } from '../services/RustDeskLiveOptionsPolicy';
+import { rustDeskCodecName, rustDeskLiveAudioPossible, rustDeskPrivacyStateMessage, rustDeskPrivacyStateOn } from '../services/RustDeskLiveOptionsPolicy';
 import { AiTouchShieldTracker } from '../services/diagnosticAi/AiTouchShield';
 import { recordRustDeskFailure, recordRustDeskFirstFrame, recordRustDeskQualityRequest,
   recordRustDeskQualityResult } from '../services/RustDeskDiagnosticEvents';
@@ -1207,6 +1207,13 @@ class RustDeskPreviewXComponentController extends XComponentController {
   }
 }
 
+
+/**
+ * Whether each native RustDesk session started with remote audio (its local player exists only then). Kept by
+ * session id, so a page that takes a session over later still knows; unknown counts as "no".
+ */
+const RUSTDESK_SESSIONS_STARTED_WITH_AUDIO: Map<number, boolean> = new Map<number, boolean>();
+
 @Entry
 @Component
 struct RemoteDesktop {
@@ -1297,9 +1304,12 @@ struct RemoteDesktop {
   @State rustDeskVirtualDisplayImpl: number = 0;
   @State rustDeskVirtualDisplayMask: number = 0;
   @State rustDeskAmyuniVirtualCount: number = 0;
-  /** The last privacy-mode answer seen (its counter), so each new answer is announced once. */
+  /** The last privacy-mode answer seen (its counter), so each new answer is announced once per session. */
   private rustDeskPrivacyGeneration: number = 0;
-  /** This RustDesk session started with remote audio (its local player exists, so audio can come back live). */
+  private rustDeskFeaturesSessionId: number = -1;
+  /** What the peer last said about privacy mode in this session: -1 nothing yet, 0 off, 1 on (the menu shows it). */
+  @State rustDeskPrivacyAnswer: number = -1;
+  /** The RustDesk session being connected starts with remote audio (recorded per session once it is up). */
   private rustDeskConnectedWithAudio: boolean = true;
   @StorageLink('virtualMouseStyle') virtualMouseStyle: string = 'arrow';
   @StorageLink('rdpControlMode') @Watch('onRemoteControlModeChange')
@@ -5997,14 +6007,26 @@ struct RemoteDesktop {
     return this.isRustDeskSession() && this.sessionId > 0 && this.connected;
   }
 
+  /** This session started with remote audio (its local player exists); unknown counts as no. */
+  private rustDeskStartedWithAudio(): boolean {
+    return RUSTDESK_SESSIONS_STARTED_WITH_AUDIO.get(this.sessionId) === true;
+  }
+
   /** Remote audio as the peer should send it now: the preference, if this session has a local player for it. */
   private rustDeskLiveAudio(): boolean {
-    return this.rustdeskAudioEnabled && this.rustDeskConnectedWithAudio;
+    return this.rustdeskAudioEnabled && this.rustDeskStartedWithAudio();
+  }
+
+  /** 隐私模式 as the menu shows it: the peer's last answer in this session, else the preference. */
+  private rustDeskPrivacyShown(): boolean {
+    return this.rustDeskPrivacyAnswer >= 0 ? this.rustDeskPrivacyAnswer === 1 : this.rustdeskPrivacyMode;
   }
 
   private setRustDeskPrivacyMode(on: boolean): void {
     this.rustdeskPrivacyMode = on;
     this.persistSessionPref('rustdeskPrivacyMode', on);
+    // Until the peer answers, the menu shows what was asked.
+    this.rustDeskPrivacyAnswer = -1;
     // Live: the peer answers (on / not supported / denied …) and the answer is shown when it comes.
     if (this.rustDeskLive() && this.loader.toggleRustDeskPrivacyMode(this.sessionId, on)) {
       promptAction.showToast({ message: on ? '正在请求远端开启隐私模式…' : '正在请求远端关闭隐私模式…', duration: 1600 });
@@ -6032,7 +6054,7 @@ struct RemoteDesktop {
   private setRustDeskAudioEnabled(on: boolean): void {
     this.rustdeskAudioEnabled = on;
     this.persistSessionPref('rustdeskAudioEnabled', on);
-    if (this.rustDeskLive() && rustDeskLiveAudioPossible(on, this.rustDeskConnectedWithAudio) &&
+    if (this.rustDeskLive() && rustDeskLiveAudioPossible(on, this.rustDeskStartedWithAudio()) &&
       this.loader.setRustDeskStreamOptions(this.sessionId, this.rustdeskCodec, this.rustDeskLiveAudio())) {
       promptAction.showToast({ message: on ? '远端音频已开启' : '远端音频已静音', duration: 1600 });
       return;
@@ -6394,7 +6416,7 @@ struct RemoteDesktop {
     }
     if (this.isRustDeskSession()) {
       return runRemoteSessionAiAction(action, this.remoteSessionTopBarActions(), {
-        privacyMode: this.rustdeskPrivacyMode, audioEnabled: this.rustdeskAudioEnabled,
+        privacyMode: this.rustDeskPrivacyShown(), audioEnabled: this.rustdeskAudioEnabled,
         clipboardEnabled: this.rustdeskClipboardEnabled, filePasteEnabled: this.rustdeskFilePasteEnabled,
         imageQuality: this.rustdeskImageQuality, codec: this.rustdeskCodec, showLocalCursor: this.rustdeskShowLocalCursor,
         browseMode: this.rustdeskBrowseMode, relativeMouseMode: this.rustdeskRelativeMouseMode,
@@ -12521,6 +12543,8 @@ struct RemoteDesktop {
     const generation: number = snapshot.privacyGeneration ?? 0;
     if (generation > this.rustDeskPrivacyGeneration) {
       this.rustDeskPrivacyGeneration = generation;
+      const answeredOn: boolean | null = rustDeskPrivacyStateOn(snapshot.privacyState ?? 0);
+      if (answeredOn !== null) { this.rustDeskPrivacyAnswer = answeredOn ? 1 : 0; }
       const message: string = rustDeskPrivacyStateMessage(snapshot.privacyState ?? 0);
       hilog.info(RD_DOMAIN, RD_TAG, 'rustdesk privacy answer state=' + (snapshot.privacyState ?? 0).toString());
       if (message !== '') { promptAction.showToast({ message: message, duration: 2400 }); }
@@ -12529,10 +12553,15 @@ struct RemoteDesktop {
 
   private startRustDeskGeometrySync(sessionId: number): void {
     this.stopRustDeskGeometrySync();
-    this.rustDeskPrivacyGeneration = 0;
-    this.rustDeskVirtualDisplayImpl = 0;
-    this.rustDeskVirtualDisplayMask = 0;
-    this.rustDeskAmyuniVirtualCount = 0;
+    // A new session starts fresh; the same session coming back from the background keeps what was already said.
+    if (sessionId !== this.rustDeskFeaturesSessionId) {
+      this.rustDeskFeaturesSessionId = sessionId;
+      this.rustDeskPrivacyGeneration = 0;
+      this.rustDeskPrivacyAnswer = -1;
+      this.rustDeskVirtualDisplayImpl = 0;
+      this.rustDeskVirtualDisplayMask = 0;
+      this.rustDeskAmyuniVirtualCount = 0;
+    }
     if (!this.isRustDeskSession() || sessionId <= 0) {
       return;
     }
@@ -16726,6 +16755,9 @@ struct RemoteDesktop {
             duration: 2600
           });
         }
+      }
+      if (host.protocol === 'rustdesk') {
+        RUSTDESK_SESSIONS_STARTED_WITH_AUDIO.set(sid, this.rustDeskConnectedWithAudio);
       }
       this.startRemoteCursorPolling(sid);
       if (!this.recordActiveSession(host, sid, true)) {
@@ -24286,7 +24318,7 @@ struct RemoteDesktop {
           protocol: this.currentProtocolName(),
           layout: remoteTopBarLayout(this.isDesktopDevice, this.breakpoint, this.isPadDevice),
           edgeRail: this.shouldUseRemoteSessionEdgeRail(),
-          privacyMode: this.rustdeskPrivacyMode,
+          privacyMode: this.rustDeskPrivacyShown(),
           virtualDisplayImpl: this.rustDeskVirtualDisplayImpl,
           virtualDisplayMask: this.rustDeskVirtualDisplayMask,
           amyuniVirtualDisplayCount: this.rustDeskAmyuniVirtualCount,

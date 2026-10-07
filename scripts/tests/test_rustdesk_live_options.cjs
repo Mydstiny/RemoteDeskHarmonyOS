@@ -40,13 +40,17 @@ check('the peer answers to a privacy-mode request are shown in plain words', () 
 
 check('the Rust core asks for privacy mode the way modern peers act on, and adopts live options', () => {
   const connector = readRoot('rustdesk_ffi/src/connector.rs');
-  assert.match(connector, /if privacy_mode \{[\s\S]{0,400}build_toggle_privacy_mode_message\(&impl_key, true\)/,
-    'after login, privacy mode is requested with Misc.toggle_privacy_mode');
+  assert.match(connector, /if privacy_mode && !privacy_impl_key\.is_empty\(\) \{[\s\S]{0,500}build_toggle_privacy_mode_message\(&impl_key, true\)/,
+    'after login, privacy mode is requested with Misc.toggle_privacy_mode, only from peers that list an implementation');
   assert.match(connector, /Misc_oneof_union::back_notification\(ref note\)[\s\S]{0,300}display\.privacy_state = value;/);
   assert.match(connector, /if live_options\.pending \{[\s\S]{0,400}preferred_codec = live_options\.codec;\s*audio_enabled = live_options\.audio_enabled;/,
     'the loop adopts the live codec and audio so pressure resends keep them');
   assert.match(connector, /Misc_oneof_union::toggle_virtual_display\(toggle\)/);
-  assert.match(connector, /state\.platform_additions = info\.get_platform_additions\(\)/);
+  // A display update (no version) merges only the virtual-display keys and does not replace the login PeerInfo.
+  assert.match(connector, /let full = !info\.get_version\(\)\.is_empty\(\) \|\| !info\.get_platform\(\)\.is_empty\(\);\s*crate::adopt_platform_additions\(state, info\.get_platform_additions\(\), full\);/);
+  assert.match(connector, /if !info\.get_version\(\)\.is_empty\(\) \|\| !info\.get_platform\(\)\.is_empty\(\) \{\s*controls\.file_clipboard\.update_peer\(info\);/);
+  // The live send carries the codec: no reassertion that would resend the configured fps.
+  assert.match(connector, /audio_enabled = live_options\.audio_enabled;[\s\S]{0,200}stream_options_reasserted = true;/);
   const lib = readRoot('rustdesk_ffi/src/lib.rs');
   for (const fn of ['rustdesk_get_peer_features', 'rustdesk_toggle_privacy_mode', 'rustdesk_toggle_virtual_display',
     'rustdesk_set_stream_options']) {
@@ -76,6 +80,9 @@ check('the 显示 menu: virtual displays for Windows peers, privacy / audio / co
   assert.ok(page.includes('this.loader.toggleRustDeskPrivacyMode(this.sessionId, on)'));
   assert.ok(page.includes('this.loader.setRustDeskStreamOptions(this.sessionId, next, this.rustDeskLiveAudio())'));
   assert.ok(page.includes('this.adoptRustDeskPeerFeatures(snapshot);'));
+  assert.ok(page.includes('if (sessionId !== this.rustDeskFeaturesSessionId) {'), 'answers are announced once per session');
+  assert.ok(page.includes('privacyMode: this.rustDeskPrivacyShown(),'), 'the menu tick follows the peer answer');
+  assert.ok(page.includes('return RUSTDESK_SESSIONS_STARTED_WITH_AUDIO.get(this.sessionId) === true;'));
   assert.ok(page.includes('virtualDisplayImpl: this.rustDeskVirtualDisplayImpl,'));
   const policy = read('services/RemoteSessionTopBarPolicy.ets');
   assert.ok(policy.includes("'virtualDisplay': '虚拟显示器只支持已安装 RustDesk 且带虚拟显示驱动的 Windows 被控端'"));

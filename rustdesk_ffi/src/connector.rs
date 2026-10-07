@@ -2948,13 +2948,15 @@ impl RustDeskConnector {
             stream_options_reasserted = true;
             eprintln!("[RustDesk-FFI] streaming: initial stream options reasserted");
         }
-        if privacy_mode {
-            // Peers from 1.2.4 on ignore the login option's privacy_mode: ask for it the way they act on.
-            let impl_key = self
-                .session
-                .peer_info()
-                .map(|info| crate::privacy_mode_impl_key(info.get_platform_additions()))
-                .unwrap_or_default();
+        let privacy_impl_key = self
+            .session
+            .peer_info()
+            .map(|info| crate::privacy_mode_impl_key(info.get_platform_additions()))
+            .unwrap_or_default();
+        if privacy_mode && !privacy_impl_key.is_empty() {
+            // Peers from 1.2.4 on ignore the login option's privacy_mode: ask for it the way they act on. Only peers
+            // that list an implementation are asked (the preference is global; a Mac or an old peer is left alone).
+            let impl_key = privacy_impl_key;
             let message = Self::build_toggle_privacy_mode_message(&impl_key, true);
             match Self::send_message_encrypted(crypto, &message) {
                 Ok(()) => eprintln!("[RustDesk-FFI] privacy mode requested impl={}", impl_key),
@@ -3031,7 +3033,9 @@ impl RustDeskConnector {
                 live_options.pending = false;
                 preferred_codec = live_options.codec;
                 audio_enabled = live_options.audio_enabled;
-                stream_options_reasserted = false;
+                // This send carries the codec: no extra reassertion (it would also resend the configured fps over a
+                // pressure-lowered one).
+                stream_options_reasserted = true;
                 match self.session.send_runtime_options(
                     crypto,
                     preferred_codec,
@@ -3485,8 +3489,12 @@ impl RustDeskConnector {
                 Some(Message_oneof_union::peer_info(ref info)) => {
                     last_msg_kind = "peer_info";
                     *msg_stats.entry("peer_info").or_default() += 1;
-                    controls.file_clipboard.update_peer(info);
-                    self.session.update_peer_info(info.clone());
+                    // A display update (a monitor or virtual display came or went) has no version or platform: it
+                    // must not replace the login PeerInfo (keyboard transport, file clipboard capability).
+                    if !info.get_version().is_empty() || !info.get_platform().is_empty() {
+                        controls.file_clipboard.update_peer(info);
+                        self.session.update_peer_info(info.clone());
+                    }
                     Self::apply_peer_info_geometry(&display_state, info, &stream_stats);
                     on_display_state();
                 }
@@ -5383,8 +5391,10 @@ impl RustDeskConnector {
     }
 
     fn populate_display_state(state: &mut crate::RustDeskDisplayState, info: &PeerInfo) -> bool {
-        // Virtual display driver, installed service and privacy modes (the peer resends it when they change).
-        state.platform_additions = info.get_platform_additions().chars().take(4096).collect();
+        // Virtual display driver, installed service and privacy modes. The login PeerInfo has a version; a display
+        // update has none and resends only the displays and the virtual-display keys.
+        let full = !info.get_version().is_empty() || !info.get_platform().is_empty();
+        crate::adopt_platform_additions(state, info.get_platform_additions(), full);
         let previous_displays = state.displays.clone();
         let previous_geometry = (
             state.current_display,
