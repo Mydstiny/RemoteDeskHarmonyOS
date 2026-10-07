@@ -170,6 +170,7 @@ function workspaceFixture(reconnect, {
     AppStorage: { get: () => state.background },
     router: { getParams: () => ({ hostId: 'host-fixture' }), back: () => { state.navigations++; } },
     aiErrorText: value => value, aiStatusLabel: value => value, aiConversationItem: timeline.aiConversationItem, aiStepEntries: timeline.aiStepEntries,
+    aiLastEntryRunning: timeline.aiLastEntryRunning,
     aiItemDiff: (item) => { state.itemDiffs++; return timeline.aiItemDiff(item); }, aiDiffFiles: timeline.aiDiffFiles,
     aiDiffStats: timeline.aiDiffStats, aiDiffSignature: (files) => { state.signatures++; return timeline.aiDiffSignature(files); },
     ...timers
@@ -317,6 +318,9 @@ const cases = [
     assert.equal(timeline.aiStepGroupIcon(rows.slice(1, 5)), 'terminal');
     state.page.rawStatus = 'running'; state.page.historyCursor = 'older';
     assert.equal(state.page.listLength(), 17);
+    // A running step already shows the turn at work: no second 正在思考 line below it.
+    state.page.items = rows.concat([item('think', 'execution', 'thinking', { state: 'running' })]);
+    assert.equal(state.page.listLength(), 17, 'the running thinking row takes the working line\'s place');
   }],
   ['Claude file edits can be allowed; Codex ones need the complete native item', async () => {
     const state = workspaceFixture(false);

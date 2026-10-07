@@ -61,4 +61,22 @@ assert.ok(send.includes('const command = this.localCommandFor(text);'));
 assert.ok(page.includes("if (!command.local) { this.draft = command.name + ' '; return; }"));
 const controller = fs.readFileSync(path.join(ETS, 'services/ai/AiWorkspaceController.ets'), 'utf8');
 assert.ok(controller.includes("snapshot['commands']"));
+// The landed message stays at the top while the reply grows below it; the turn's end (or a drag) settles the page.
+assert.ok(begin.includes('this.landingHeld = true;') && begin.includes('this.followBottom = false;') && begin.includes('this.holdLanding();'));
+assert.ok(page.includes('scroller.scrollToIndex(at, false, ScrollAlign.START, { extraOffset: LengthMetrics.vp(-LANDING_GAP) })'));
+assert.ok(page.includes('if (this.landingHeld) { this.holdLanding(); return; }'), 'following never pulls a held message down');
+assert.ok(page.includes('if (this.landingHeld && source === ScrollSource.DRAG) { this.settleLanding(); }'));
+assert.ok(!page.includes('measureLanding'), 'no premature collapse of the place below the message');
+// With the keyboard up, + and the permission menu open once it is down and keep the composer open meanwhile.
+assert.ok(page.includes('.bindMenu(this.plusMenuShown, this.plusMenu(), { onDisappear: (): void => { this.menuClosed(); } })'));
+assert.ok(page.includes('.bindMenu(this.permissionMenuShown, this.permissionMenu(), { onDisappear: (): void => { this.menuClosed(); } })'));
+assert.ok(page.includes("return this.composerFocused || this.draft !== '' || this.composerHold;"));
+assert.ok(page.includes('getFocusController().clearFocus()'));
+// One working line: none below a row that already shows the turn at work; the Claude ✳ animates only itself.
+assert.ok(page.includes('if (this.showWorkingRow()) { ListItem() { this.workingRow() } }'));
+assert.ok(page.includes('AiSpinStar({') && !page.includes('.rotate({ angle: this.spin })'));
+// Opening and leaving a conversation slide; the page itself slides in and out.
+assert.ok(page.includes('if (c.sessionId !== this.sessionId) { this.slideView(c.sessionId !== \'\'); }'));
+assert.ok(page.includes('.translate({ x: this.viewShift }).opacity(this.viewOpacity)'));
+assert.ok(page.includes('PageTransitionEnter({ type: RouteType.Push'));
 console.log('PASS remote AI composer centring, shimmer, pull to refresh and model sheet sizing');

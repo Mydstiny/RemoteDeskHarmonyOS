@@ -397,6 +397,15 @@ export function aiStepEntries(items: AiTranscriptItem[]): AiStepEntry[] {
   close();
   return entries;
 }
+/**
+ * The newest row already shows the turn at work (正在思考 with its shimmer, a step's spinner): the 正在思考 /
+ * 正在工作 line below the transcript would say it a second time.
+ */
+export function aiLastEntryRunning(entries: AiStepEntry[]): boolean {
+  if (entries.length === 0) { return false; }
+  const last = entries[entries.length - 1];
+  return last.item === null && last.steps.some((step: AiTranscriptItem): boolean => aiStepState(step.state) === 'running');
+}
 /** 已运行 4 条命令、已浏览 3 个文件 — what a run of steps did, in the order the kinds first appear. */
 export function aiStepSummary(steps: AiTranscriptItem[]): string {
   const order: string[] = [];
