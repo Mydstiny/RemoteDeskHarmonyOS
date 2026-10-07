@@ -2,8 +2,9 @@ import { ProEntitlementState } from './ProAccessPolicy';
 import { PRO_LIFETIME } from './ProFeatureCatalog';
 
 /**
- * 1.2.0 免费试用: the merchant contract is still under review, so every user has Pro until charging starts (users are
- * told before it does). Turning this off restores the real, signed entitlement as the only source of Pro.
+ * 1.2.0 免费试用, in Debug and Release alike: Pro went up early (a HarmonyOS PC had to be bought for testing) and the
+ * merchant contract is still under review, so every user has Pro until it passes (PRO_TRIAL_STORY). Turning this off
+ * restores the real, signed entitlement as the only source of Pro.
  */
 export const PRO_COMPLIMENTARY_TRIAL: boolean = true;
 

@@ -1,3 +1,5 @@
+import { PRO_TRIAL_STORY } from './ProTrialStory';
+
 export const CURRENT_RELEASE_VERSION: string = '1.2.0';
 export const CURRENT_RELEASE_VERSION_CODE: number = 1001008;
 
@@ -15,7 +17,7 @@ export interface ReleaseNotePage {
 
 /** One-line summary shown under the version in the 1.1.6+ 「新功能」 list. */
 export function releaseHeadline(version: string): string {
-  if (version === '1.2.0') { return 'AI 助理全面登场：聊天、语音、连接中的悬浮球都能用；所有 Pro 功能免费试用。'; }
+  if (version === '1.2.0') { return 'AI 助理与远程 AI 登场，全新视觉默认开启，三指滚动更顺手；所有 Pro 功能免费试用。'; }
   if (version === '1.1.6') { return 'RDP 会话内传文件、VNC 多显示器切换、竖屏会话更顺手，连接、终端与设置体验全面打磨。'; }
   return '';
 }
@@ -41,7 +43,8 @@ function currentReleasePages(): ReleaseNotePage[] {
     {
       id: 'release-pro-trial', symbol: $rawfile('icons/key.svg'), glyph: $r('sys.symbol.star_fill'),
       tag: '免费试用', title: 'Pro 全部功能免费试用',
-      desc: '正式收费前，所有用户都能免费使用已开发的全部 Pro 功能：AI 助理、工作区、高级主机管理、远端显示方案、个性化、同账号接续等。开始收费前会在应用内提前通知。'
+      desc: '所有用户都能免费使用已开发的全部 Pro 功能：AI 助理、远程 AI、工作区、高级主机管理、远端显示方案、个性化、同账号接续等。' +
+        PRO_TRIAL_STORY
     },
     {
       id: 'release-ai-assistant', symbol: $rawfile('icons/cloud.svg'), glyph: $r('sys.symbol.wand_and_stars'),
@@ -72,6 +75,26 @@ function currentReleasePages(): ReleaseNotePage[] {
       id: 'release-ai-layout', symbol: $rawfile('icons/computer-desktop.svg'), glyph: $r('sys.symbol.rectangle_on_rectangle'),
       tag: '改进', title: 'AI 始终在最上层，新增小艺风格',
       desc: '语音模式、AI 面板和悬浮球不再被设置页等弹窗挡住，手机横屏、平板分屏和 PC 小窗口里也不会超出窗口；PC 大屏上，AI 按钮移到左下角，和「+」并排。设置 › AI 动效里可以换成小艺风格：蓝紫渐变和随声音起伏的彩色光环。'
+    },
+    {
+      id: 'release-remote-ai', symbol: $rawfile('icons/command-line.svg'), glyph: $r('sys.symbol.code_square'),
+      tag: '新功能', title: '远程 AI：Codex、DSH、Pi',
+      desc: '在手机和平板上接着用电脑上的 Codex、DSH 和 Pi：回复逐字显示，命令和改动可展开查看，操作审批直接点；运行中可以补充要求或打断重来。切到后台不再断开，审批也不会丢。电脑端插件可从 GitHub 或 Gitee 安装。'
+    },
+    {
+      id: 'release-new-look', symbol: $rawfile('icons/cog-6-tooth.svg'), glyph: $r('sys.symbol.paintpalette_fill'),
+      tag: '改进', title: '全新视觉默认开启',
+      desc: '设置按用途分组、顶部可搜索、直接显示当前值；远程主机、密钥保险库和中继页一起换新外观，搜索框统一成玻璃胶囊。想要原来的样子，在「设置 → 个性化 → 全新视觉」关掉即可。应用图标里也多了一款「流光」。'
+    },
+    {
+      id: 'release-touch-scroll', symbol: $rawfile('icons/computer-desktop.svg'), glyph: $r('sys.symbol.mouse'),
+      tag: '改进', title: '三指滚动，滚轮随手调',
+      desc: '开启双指缩放后，双指只用来缩放和移动画面，滚动改为三指上下滑动，不再和缩放抢手势；三指轻点不再打开控制面板。每个协议的滚轮方向和速度可以分别设置，RDP、RustDesk、VNC 连接中也能直接调。'
+    },
+    {
+      id: 'release-rustdesk-display', symbol: $rawfile('icons/computer-desktop.svg'), glyph: $r('sys.symbol.display'),
+      tag: '新功能', title: 'RustDesk 连接中调整显示',
+      desc: '侧栏里直接切换远端显示器、分辨率、编解码和画质；Windows 被控端还能开隐私模式、插入虚拟显示器，断开后自动恢复。'
     },
     {
       id: 'release-1-1-6-summary', symbol: $rawfile('icons/folder-open.svg'), glyph: $r('sys.symbol.folder_fill'),

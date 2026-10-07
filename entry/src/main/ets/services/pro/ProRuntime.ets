@@ -4,6 +4,7 @@ import { ProAccessContext, ProAccessDecision, ProEntitlementState, proFeatureAcc
 import { ProFeature, proFeatures, PRO_LIFETIME } from './ProFeatureCatalog';
 import { ProEntitlementService, ProEntitlementSnapshot } from './ProEntitlementService';
 import { ProComplimentaryGrant, proComplimentaryGrant } from './ProComplimentaryPolicy';
+import { proDeveloperToolsVisible } from './ProDeveloperTools';
 export type ProDebugMode = 'real' | 'free' | 'pro';
 export interface ProRuntimeSnapshot {
   realState: ProEntitlementState;
@@ -43,7 +44,7 @@ export class ProRuntime {
       effectiveState === 'verificationRequired' ?
       '权益待验证' : effectiveState === 'revoked' ? 'Pro 权益已撤销' : '免费版';
     if (DEBUG) {
-      if (mode === 'real' && real.environment === 'sandbox') { label = '沙盒 · ' + label; }
+      if (mode === 'real' && real.environment === 'sandbox' && proDeveloperToolsVisible()) { label = '沙盒 · ' + label; }
       if (mode === 'pro') { label = '模拟 Pro'; }
       if (mode === 'free') { label = '模拟免费'; }
     }

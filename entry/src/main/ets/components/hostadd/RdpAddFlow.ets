@@ -21,7 +21,7 @@ import {
 @Component
 export struct RdpAddFlow {
   @StorageProp('currentTheme') theme: string = 'light';
-  @StorageProp('settingsVisualStyle') visualStyle: string = 'classic';
+  @StorageProp('settingsVisualStyle') visualStyle: string = 'modern';
   @StorageProp('accentColor') accentColor: string = '#007DFF';
   @Prop @Watch('onCredentialsChanged') credentials: RdpCredential[] = [];
   @Prop lanScanning: boolean = false;

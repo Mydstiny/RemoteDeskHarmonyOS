@@ -95,7 +95,7 @@ export struct VirtualKeyboardSettingsSheet {
   onClose: () => void = (): void => {};
   onCustomEditorVisibleChange: (visible: boolean) => void = (_visible: boolean): void => {};
   /** 设置 → 个性化 → 全新视觉: the shared sheet header and descriptions of at least 12vp. */
-  @StorageProp('settingsVisualStyle') visualStyle: string = 'classic';
+  @StorageProp('settingsVisualStyle') visualStyle: string = 'modern';
   /** A new combo, or changes to the one being edited, that are not saved yet (closing the sheet asks first). */
   onCustomEditorDirtyChange: (dirty: boolean) => void = (_dirty: boolean): void => {};
   private editorStart: string = '';

@@ -95,13 +95,8 @@ export struct ProShowcase {
         .linearGradient({ angle: 135, colors: [[item.hue, 0], [item.hue2, 1]] })
         .shadow({ radius: 16, color: tint(item.hue, '66'), offsetY: 6 })
         Column({ space: 4 }) {
-          Row({ space: 8 }) {
-            Text(item.title).fontSize(22).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
-              .fontFamily(AppConfig.fontFamily)
-            Text('Pro 主打').fontSize(11).fontWeight(FontWeight.Medium).fontColor(Color.White)
-              .padding({ left: 8, right: 8, top: 3, bottom: 3 }).borderRadius(9)
-              .linearGradient({ angle: 90, colors: [[item.hue, 0], [item.hue2, 1]] })
-          }
+          Text(item.title).fontSize(22).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
+            .fontFamily(AppConfig.fontFamily)
           Flex({ wrap: FlexWrap.Wrap }) {
             ForEach(item.tags, (tag: string): void => {
               Text(tag).fontSize(12).fontColor(item.hue).fontFamily(AppConfig.fontFamily)
@@ -176,9 +171,9 @@ export struct ProShowcase {
           this.hero()
           Row({ space: 8 }) {
             SymbolGlyph($r('sys.symbol.info_circle_fill')).fontSize(15).fontColor([this.pal().text3])
-            Text(proIntroStatus(PRO_COMPLIMENTARY_TRIAL)).fontSize(12).fontColor(this.pal().text3)
-              .fontFamily(AppConfig.fontFamily).layoutWeight(1)
-          }.width('100%').padding({ left: 4, right: 4, top: 2, bottom: 2 })
+            Text(proIntroStatus(PRO_COMPLIMENTARY_TRIAL)).fontSize(12).fontColor(this.pal().text2)
+              .fontFamily(AppConfig.fontFamily).lineHeight(18).layoutWeight(1)
+          }.width('100%').alignItems(VerticalAlign.Top).padding({ left: 4, right: 4, top: 2, bottom: 2 })
           ForEach(this.featured, (item: ProIntroItem): void => { this.featuredCard(item) },
             (item: ProIntroItem): string => 'featured-' + item.id)
           ForEach(this.rows(), (line: ProIntroItem[], at: number): void => {

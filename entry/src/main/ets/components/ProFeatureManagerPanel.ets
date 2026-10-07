@@ -61,7 +61,7 @@ export struct ProFeatureDetailPanel {
   /** Opens 设置 → 安全与数据 → 手机通行密钥 (its page lives there now). */
   onOpenPasskey: () => void = (): void => {};
   /** 设置 → 个性化 → 全新视觉: the shared sheet header when opened from settings. */
-  @StorageProp('settingsVisualStyle') visualStyle: string = 'classic';
+  @StorageProp('settingsVisualStyle') visualStyle: string = 'modern';
   @State revision: number = 0;
   @State continuation: ProContinuationSettings = ProContinuationPreferences.getInstance().settings();
   @State collaborationGranted: boolean = true;
@@ -447,7 +447,7 @@ export struct ProBadgeSettingsPanel {
   @Prop viewportHeight: number = 0;
   onClose: () => void = (): void => {};
   /** 设置 → 个性化 → 全新视觉: the shared sheet header when opened from settings. */
-  @StorageProp('settingsVisualStyle') visualStyle: string = 'classic';
+  @StorageProp('settingsVisualStyle') visualStyle: string = 'modern';
   @State badgeStyle: ProBadgeStyle = 'capsule';
   @State badgeMotion: ProBadgeMotion = 'sweep';
   @State palette: string = 'aurora';

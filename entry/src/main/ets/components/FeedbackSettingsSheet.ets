@@ -36,7 +36,7 @@ export struct FeedbackSettingsSheet {
   @StorageLink('accentColor') accentColor: string = '#007DFF';
   @StorageProp('currentBreakpoint') breakpoint: string = 'md';
   /** 设置 → 个性化 → 全新视觉: the shared sheet header (title, subtitle, 44vp close). */
-  @StorageProp('settingsVisualStyle') visualStyle: string = 'classic';
+  @StorageProp('settingsVisualStyle') visualStyle: string = 'modern';
   private modern(): boolean { return settingsVisualIsModern(this.visualStyle); }
 
   onClose: () => void = (): void => {};

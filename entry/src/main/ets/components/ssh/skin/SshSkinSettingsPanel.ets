@@ -64,7 +64,7 @@ export struct SshSkinSettingsPanel {
   @StorageProp('accentColor') accent: string = '#007DFF';
   @StorageProp(SSH_SKIN_REVISION_KEY) revision: number = 0;
   /** 设置 → 个性化 → 全新视觉: shared header and tabs, and a visible edit button on each skin. */
-  @StorageProp('settingsVisualStyle') visualStyle: string = 'classic';
+  @StorageProp('settingsVisualStyle') visualStyle: string = 'modern';
   @State @Watch('reportEditingDirty') editing: SshSkin | null = null;
   @State editingIsNew: boolean = false;
   /** The settings sheet shows a close button on Pad and PC, where it has no drag bar. */

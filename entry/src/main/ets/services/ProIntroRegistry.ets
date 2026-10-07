@@ -1,3 +1,5 @@
+import { PRO_TRIAL_STORY } from './ProTrialStory';
+
 /**
  * ProIntroRegistry — content of the Pro 功能介绍 sheet shown after the first-install guide, after the post-update
  * 「新功能」 list and from 「设置 → 教程」.
@@ -91,13 +93,13 @@ export function proIntroItems(): ProIntroItem[] {
   }));
 }
 
-/** Line under the title. `trial`: the 1.2.0 free trial is on (every Pro feature is open to everyone). */
+/** Line under the hero. `trial`: the 1.2.0 free trial is on (every Pro feature is open to everyone). */
 export function proIntroStatus(trial: boolean): string {
-  return trial ? '现在全部 Pro 功能免费试用；正式收费前会在应用内提前通知，可在「设置 → Pro 功能」查看每项状态' :
+  return trial ? PRO_TRIAL_STORY + '每项功能的状态可在「设置 → Pro 功能」查看。' :
     '正在打磨中，正式开放后可在「设置」中开通';
 }
 
-/** What holds for the trial: everything free now, notice before charging, and a core that stays free. */
+/** What holds for the trial: everything free now and a core that stays free. */
 export function proIntroPromises(): string[] {
-  return ['全部功能免费试用', '收费前提前通知', '核心连接永久免费'];
+  return ['全部功能免费试用', '核心连接永久免费'];
 }

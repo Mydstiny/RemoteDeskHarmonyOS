@@ -162,7 +162,17 @@ const SHARED_GUIDE_PAGES: GuideContentPage[] = [
     hue: '#00A3A3',
     title: '常用工具都在手边',
     desc: '远程画面的边缘有控制入口，键盘、快捷键、显示和文件传输都从这里打开。',
-    points: ['贴边入口：键盘、组合键、显示与画质', 'RDP 与 RustDesk 会话里直接收发文件', 'SSH：多标签、SFTP 文件和传输中心', 'Moonlight 退出时可选「仅断开」或「结束应用」']
+    points: ['贴边入口：键盘、组合键、显示与画质', '三指上下滑动滚动，滚轮方向和速度在会话栏里直接调', 'RDP 与 RustDesk 会话里直接收发文件', 'SSH：多标签、SFTP 文件和传输中心']
+  },
+  {
+    id: 'ai-assistant',
+    symbol: $rawfile('icons/cloud.svg'),
+    glyph: $r('sys.symbol.wand_and_stars'),
+    tag: 'AI 助理',
+    hue: '#8B5CF6',
+    title: 'AI 助理随时帮忙',
+    desc: '配置好你自己的 AI 服务后，主页、设置和连接中都能叫它：问问题、改设置、排查连接，也能接着用电脑上的 AI。',
+    points: ['聊天与语音：写作、翻译、读文档、设提醒', '连接中以悬浮球出现，不挡远程画面', '远程 AI：在手机上继续和审批电脑上的 Codex、DSH、Pi', 'Pro 功能，现在全部免费试用']
   },
   {
     id: 'data-recovery-and-help',

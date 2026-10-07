@@ -53,7 +53,7 @@ export struct AboutSettingsSheet {
   @StorageLink('accentColor') accentColor: string = '#007DFF';
   @StorageProp('currentBreakpoint') breakpoint: string = 'sm';
   /** 设置 → 个性化 → 全新视觉: the shared sheet header (title, subtitle, 44vp close). */
-  @StorageProp('settingsVisualStyle') visualStyle: string = 'classic';
+  @StorageProp('settingsVisualStyle') visualStyle: string = 'modern';
   private modern(): boolean { return settingsVisualIsModern(this.visualStyle); }
   @StorageProp('isDesktopDevice') isDesktopDevice: boolean = false;
   @StorageProp('isPadDevice') isPadDevice: boolean = false;

@@ -28,7 +28,7 @@ function freeName(base: string): string {
 @Component
 export struct WorkspaceAddFlow {
   @StorageProp('currentTheme') theme: string = 'light';
-  @StorageProp('settingsVisualStyle') visualStyle: string = 'classic';
+  @StorageProp('settingsVisualStyle') visualStyle: string = 'modern';
   @StorageProp('accentColor') accentColor: string = '#007DFF';
   /** Hosts the stores cannot list on their own (Moonlight, from the home page). */
   @Prop extraRows: OrgHostRow[] = [];

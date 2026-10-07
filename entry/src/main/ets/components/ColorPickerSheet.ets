@@ -23,7 +23,7 @@ export struct ColorPickerSheet {
   private hueTrackWidth: number = 0;
   onColorChange?: (hex: string) => void;
   /** 设置 → 个性化 → 全新视觉: the shared sheet header with a close button; larger labels and tabs. */
-  @StorageProp('settingsVisualStyle') visualStyle: string = 'classic';
+  @StorageProp('settingsVisualStyle') visualStyle: string = 'modern';
   onClose: () => void = (): void => {};
   private modern(): boolean { return settingsVisualIsModern(this.visualStyle); }
 

@@ -18,7 +18,7 @@ export struct RemoteSessionControlBarSettingsSheet {
   @StorageProp('currentTheme') theme: string = 'light';
   @StorageProp('accentColor') accentColor: string = '#007DFF';
   /** 设置 → 个性化 → 全新视觉: the shared sheet header, larger rows and full-size switches. */
-  @StorageProp('settingsVisualStyle') visualStyle: string = 'classic';
+  @StorageProp('settingsVisualStyle') visualStyle: string = 'modern';
   @Prop initialRdpHidden: boolean = false;
   @Prop initialRustDeskHidden: boolean = false;
   @Prop initialVncHidden: boolean = false;

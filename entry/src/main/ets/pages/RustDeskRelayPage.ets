@@ -161,7 +161,7 @@ export struct RustDeskRelayPage {
   onShowRelayHosts: (relayId: string) => void = (_relayId: string): void => {};
   @StorageProp('currentBreakpoint') breakpoint: string = 'sm';
   @StorageProp('isDesktopDevice') isDesktopDevice: boolean = false;
-  @StorageProp('settingsVisualStyle') visualStyle: string = 'classic';
+  @StorageProp('settingsVisualStyle') visualStyle: string = 'modern';
   @StorageProp('topRectHeight') topRectHeight: number = 0;
   @State relays: RustDeskRelayConfig[] = [];
   @State vncGateways: VncGatewayView[] = [];

@@ -27,7 +27,7 @@ import {
 @Component
 export struct SshAddFlow {
   @StorageProp('currentTheme') theme: string = 'light';
-  @StorageProp('settingsVisualStyle') visualStyle: string = 'classic';
+  @StorageProp('settingsVisualStyle') visualStyle: string = 'modern';
   @StorageProp('accentColor') accentColor: string = '#007DFF';
   @Prop @Watch('onKeysChanged') keys: SshKey[] = [];
   @Prop initialBasicFields: SshAddBasicFields | null = null;

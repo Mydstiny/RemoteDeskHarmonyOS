@@ -40,7 +40,7 @@ export struct TotpCodeCard {
   @StorageProp('totpLogoMode') totpLogoMode: string = 'logo';
   @StorageProp('currentBreakpoint') breakpoint: string = 'sm';
   @StorageProp('isDesktopDevice') isDesktopDevice: boolean = false;
-  @StorageProp('settingsVisualStyle') visualStyle: string = 'classic';
+  @StorageProp('settingsVisualStyle') visualStyle: string = 'modern';
   @StorageProp('remoteDesktopBgFlag') @Watch('onCardLifecycleChanged') appInBackground: boolean = false;
   @Prop @Watch('onCardLifecycleChanged') pageLocked: boolean = false;
   @Prop showCheckbox: boolean = false;

@@ -23,7 +23,7 @@ export struct SshKeyCard {
   @StorageLink('currentTheme') theme: string = 'light';
   @StorageProp('accentColor') accentColor: string = '#007DFF';
   @StorageProp('isDesktopDevice') isDesktopDevice: boolean = false;
-  @StorageProp('settingsVisualStyle') visualStyle: string = 'classic';
+  @StorageProp('settingsVisualStyle') visualStyle: string = 'modern';
   @StorageProp('currentBreakpoint') breakpoint: string = 'sm';
   @State menuVisible: boolean = false;
 

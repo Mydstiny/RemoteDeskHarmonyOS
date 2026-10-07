@@ -1,6 +1,7 @@
 import { ProBadge } from './ProBadge';
 import { DEBUG } from 'BuildProfile';
 import { ProUsbFidoProbePanel } from './ProUsbFidoProbePanel';
+import { proDeveloperToolsVisible } from '../services/pro/ProDeveloperTools';
 import { ProAppRuntime } from '../services/pro/ProAppRuntime';
 import { ProDebugMode } from '../services/pro/ProRuntime';
 import { ProPurchaseLifecycle } from '../services/pro/ProPurchaseLifecycle';
@@ -9,6 +10,7 @@ import { BusinessError } from '@kit.BasicServicesKit';
 import { Palette, buildDark, buildLight } from '../common/Theme';
 import { ProFeature, proFeatureProgress, proFeatures } from '../services/pro/ProFeatureCatalog';
 import { markProTrialStarted, proTrialStarted } from '../services/pro/ProTrialNotice';
+import { PRO_TRIAL_STORY } from '../services/ProTrialStory';
 import {
   HuaweiProBillingProvider, ProStoreProduct, ProPurchaseCoordinator,
   PRO_LAUNCH_PRICE, PRO_REGULAR_PRICE, proBillingError, proRefundError
@@ -82,7 +84,7 @@ export struct ProPurchaseSheet {
     this.message = this.billingReady ? '读取商品价格后可购买；已购买的账号可直接恢复权益。' :
       'Pro 正在准备中，当前版本的功能继续免费使用。';
   }
-  private prefix(): string { return this.testing ? '沙盒 ' : ''; }
+  private prefix(): string { return this.testing && proDeveloperToolsVisible() ? '沙盒 ' : ''; }
   private async operate(action: string): Promise<void> {
     if (!this.billingReady || (this.testing && !DEBUG)) { return; }
     if (this.busy) { return; }
@@ -183,7 +185,7 @@ export struct ProPurchaseSheet {
               .fontSize(14).fontColor(this.pal().text2).textAlign(TextAlign.Center)
             Text(this.proLabel).fontSize(13).fontColor(this.accent)
             if (this.trial) {
-              Text('1.2.0 起全部 Pro 功能免费试用 · 正式收费前会提前通知').fontSize(12).fontColor(this.accent)
+              Text('1.2.0 起全部 Pro 功能免费试用').fontSize(12).fontColor(this.accent)
             } else {
               Text('一次购买 · 不自动续费').fontSize(12).fontColor(this.accent)
             }
@@ -193,10 +195,11 @@ export struct ProPurchaseSheet {
             (feature: ProFeature): string => feature.id)
           Text('核心功能一直免费').fontSize(15).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
             .width('100%').margin({ top: 8 })
-          Text(this.trial ? '协议连接、正常画质、键鼠操作、基础文件传输和安全更新永久免费。免费试用期间，其余已开发的 Pro 功能全部开放；标注“规划中”的能力尚未交付，碰一碰等验证中的功能稍后开放。' :
+          Text(this.trial ? '协议连接、正常画质、键鼠操作、基础文件传输和安全更新永久免费。' + PRO_TRIAL_STORY +
+            '试用期间，其余已开发的 Pro 功能全部开放；标注“规划中”的能力尚未交付，碰一碰等验证中的功能稍后开放。' :
             '协议连接、正常画质、键鼠操作、基础文件传输和安全更新保持免费。标注“规划中”的能力尚未交付，Pro 正式购买仍在准备中。')
             .fontSize(13).fontColor(this.pal().text2).lineHeight(21).width('100%')
-          if (DEBUG) {
+          if (proDeveloperToolsVisible()) {
             ProUsbFidoProbePanel({ isOpen: (): boolean => this.live })
             Column({ space: 8 }) {
               Text('开发者调试 · 权益模拟').fontSize(14).fontColor(this.pal().text)
@@ -247,7 +250,7 @@ export struct ProPurchaseSheet {
       }.width('100%').layoutWeight(1).scrollBar(BarState.Off)
       if (this.trial) {
         Column({ space: 8 }) {
-          Text(this.trialStarted ? '全部 Pro 功能免费试用中。商户审核通过、正式收费前，会在应用内提前通知。' : this.message)
+          Text(this.trialStarted ? '全部 Pro 功能免费试用中，商务合同审核通过前一直保持试用。' : this.message)
             .fontSize(12).fontColor(this.pal().text2).lineHeight(18).width('100%')
           Button(this.trialStarted ? 'Pro 试用中' : '立即试用')
             .width('100%').height(48).fontSize(16).fontWeight(FontWeight.Medium)

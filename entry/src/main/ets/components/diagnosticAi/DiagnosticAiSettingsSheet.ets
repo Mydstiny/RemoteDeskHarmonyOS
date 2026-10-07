@@ -153,7 +153,7 @@ export struct DiagnosticAiSettingsSheet {
   @StorageProp('accentColor') accent: string = '#007DFF';
   @StorageProp('currentBreakpoint') breakpoint: string = 'md';
   /** 设置 → 个性化 → 全新视觉: the shared sheet header, palette colors and plain wording. */
-  @StorageProp('settingsVisualStyle') visualStyle: string = 'classic';
+  @StorageProp('settingsVisualStyle') visualStyle: string = 'modern';
   onClose: () => void = (): void => {};
   onAppAction: (action: DiagnosticAiAppActionId) => void = (_action: DiagnosticAiAppActionId): void => {};
   /** Replace the current native settings sheet with the assistant sheet for a saved session. */

@@ -56,7 +56,7 @@ export struct RdpDisplayProfilePanel {
   @Prop viewportHeight: number = 0;
   onClose: () => void = (): void => {};
   /** 设置 → 个性化 → 全新视觉: the shared sheet header when opened from settings (not in a live session). */
-  @StorageProp('settingsVisualStyle') visualStyle: string = 'classic';
+  @StorageProp('settingsVisualStyle') visualStyle: string = 'modern';
   @StorageProp('rdpDesktopResolutionId') @Watch('onResolutionChange') resolutionId: string = 'auto';
   @StorageProp('rdpCustomWidth') @Watch('onCustomChange') customWidth: number = 1920;
   @StorageProp('rdpCustomHeight') @Watch('onCustomChange') customHeight: number = 1080;

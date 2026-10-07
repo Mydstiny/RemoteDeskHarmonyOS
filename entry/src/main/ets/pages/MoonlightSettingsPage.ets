@@ -76,7 +76,7 @@ export struct MoonlightSettingsSurface {
   @StorageProp('topRectHeight') topRectHeight: number = 0;
   @StorageProp('currentBreakpoint') breakpoint: string = 'sm';
   /** 设置 → 个性化 → 全新视觉: 44vp controls, readable descriptions, plain wording and typed custom sizes. */
-  @StorageProp('settingsVisualStyle') visualStyle: string = 'classic';
+  @StorageProp('settingsVisualStyle') visualStyle: string = 'modern';
   @State customWidthText: string = '';
   @State customWidthEditing: boolean = false;
   @State customHeightText: string = '';

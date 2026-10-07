@@ -23,7 +23,7 @@ export struct VncSheetScaffold {
   @Prop bottomSafePadding: number = 18;
   @State measuredHeight: number = 0;
   /** 设置 → 个性化 → 全新视觉: 44vp header buttons and readable (12vp, text2) descriptions. */
-  @StorageProp('settingsVisualStyle') visualStyle: string = 'classic';
+  @StorageProp('settingsVisualStyle') visualStyle: string = 'modern';
   onLeadingAction: () => void = (): void => {};
   onTrailingClose: () => void = (): void => {};
 

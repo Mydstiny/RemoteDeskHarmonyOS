@@ -33,7 +33,7 @@ export struct AiSettingsSurface {
   @StorageProp('accentColor') accent: string = '#007DFF';
   @StorageProp('topRectHeight') topInset: number = 0;
   /** 设置 → 个性化 → 全新视觉: the shared sheet header when embedded, icons and plain wording on the rows. */
-  @StorageProp('settingsVisualStyle') visualStyle: string = 'classic';
+  @StorageProp('settingsVisualStyle') visualStyle: string = 'modern';
   // When hosted by HostListPage this surface is rendered inside its shared
   // settings bindSheet. Route pages keep using router params as before.
   @Prop @Watch('onRequestedSectionChange') requestedSection: string = '';

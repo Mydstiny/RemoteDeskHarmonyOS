@@ -1,5 +1,6 @@
 import { PhonePasskeySettingsSheet } from '../components/pro/passkey/PhonePasskeySettingsSheet';
 import { phonePasskeyEntryAvailable } from '../services/pro/passkey/ProPasskeyEntry';
+import { proDeveloperToolsVisible } from '../services/pro/ProDeveloperTools';
 import { SEARCH_CAPSULE_HEIGHT, SEARCH_CAPSULE_RADIUS, SEARCH_CAPSULE_TEXT, searchGlassShadow, searchGlassSheen } from '../common/SearchBarSurface';
 import { ProBadge, proBadgeSummary } from '../components/ProBadge';
 import { AI_VOICE_HOLD_EVENT } from '../components/diagnosticAi/AiVoiceIsland';
@@ -1271,7 +1272,7 @@ struct HostListPage {
   // Keep the released storage/cloud key while exposing the broader FAB-style semantics in UI code.
   @StorageLink('hostAddMode') fabAddStyle: string = 'modern';
   /** 设置 → 个性化 → 全新视觉 ('modern'); anything else is the classic settings look. */
-  @StorageLink('settingsVisualStyle') settingsVisualStyle: string = 'classic';
+  @StorageLink('settingsVisualStyle') settingsVisualStyle: string = 'modern';
   /** 全新视觉: the settings search text; while it is not empty the page lists matching settings. */
   @State settingsSearchQuery: string = '';
   private settingsListScroller: Scroller = new Scroller();
@@ -2745,7 +2746,7 @@ struct HostListPage {
       const savedLiveViewMode: number = prefs.getSync('liveViewMode', defaults.liveViewMode) as number;
       const savedHostAddMode: string = prefs.getSync('hostAddMode', 'modern') as string;
       const savedSettingsVisualStyle: string =
-        prefs.getSync(SETTINGS_VISUAL_STYLE_KEY, SETTINGS_VISUAL_STYLE_CLASSIC) as string;
+        prefs.getSync(SETTINGS_VISUAL_STYLE_KEY, SETTINGS_VISUAL_STYLE_MODERN) as string;
       const savedVirtualMouseStyle: string =
         prefs.getSync('virtualMouseStyle', defaults.virtualMouseStyle) as string;
       const savedTotpLogoMode: string = prefs.getSync('totpLogoMode', defaults.totpLogoMode) as string;
@@ -19906,8 +19907,9 @@ struct HostListPage {
   }
 
   @Builder settingsSectionProDebug() {
-    // Debug builds: while the Pro section is hidden (free or simulated free), keep the state switch reachable.
-    if (DEBUG && !this.proManagerVisible) {
+    // Debug builds with the Pro developer tools shown: while the Pro section is hidden (free or simulated free), keep
+    // the state switch reachable.
+    if (proDeveloperToolsVisible() && !this.proManagerVisible) {
     ListItem() {
       Column() {
         Column() {
@@ -19929,7 +19931,7 @@ struct HostListPage {
     ListItem() {
       Column() {
         Column() {
-          if (DEBUG) {
+          if (proDeveloperToolsVisible()) {
             this.proDebugStateRow()
             this.cardDivider()
           }
@@ -20490,7 +20492,8 @@ struct HostListPage {
   }
 
   private settingsModernVisibility(): SettingsModernVisibility {
-    return { remoteAi: this.aiProVisible, proDebug: DEBUG && !this.proManagerVisible, pro: this.proManagerVisible };
+    return { remoteAi: this.aiProVisible, proDebug: proDeveloperToolsVisible() && !this.proManagerVisible,
+      pro: this.proManagerVisible };
   }
 
   /** 全新视觉: bring an opened section's header up under the page title (smoothly; a header already there stays). */

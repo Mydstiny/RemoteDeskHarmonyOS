@@ -106,7 +106,7 @@ function unavailableLocalSave(): Promise<MoonlightLocalSaveResult> {
 @Component
 export struct MoonlightHostAddFlow {
   @StorageProp('currentTheme') theme: string = 'light';
-  @StorageProp('settingsVisualStyle') visualStyle: string = 'classic';
+  @StorageProp('settingsVisualStyle') visualStyle: string = 'modern';
   @StorageProp('accentColor') accentColor: string = '#007DFF';
   @StorageProp('currentBreakpoint') breakpoint: string = 'sm';
   @Prop ownerToken: number = 0;

@@ -23,7 +23,7 @@ export struct ProAppIconPanel {
   @Prop showClose: boolean = false;
   onClose: () => void = (): void => {};
   /** 设置 → 个性化 → 全新视觉: the shared sheet header when opened from settings. */
-  @StorageProp('settingsVisualStyle') visualStyle: string = 'classic';
+  @StorageProp('settingsVisualStyle') visualStyle: string = 'modern';
   private stopIcons: (() => void) | null = null;
   private stopRuntime: (() => void) | null = null;
 

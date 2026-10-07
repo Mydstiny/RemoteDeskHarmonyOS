@@ -17,7 +17,11 @@ function load(file) {
   const $r = name => ({ resource: name });
   const $rawfile = name => ({ rawfile: name });
   vm.runInNewContext(source, { module, exports: module.exports, $r, $rawfile,
-    require(id) { throw new Error('unexpected import ' + id); } }, { filename: file });
+    require(id) {
+      // The trial story is shared by the Pro intro and the release notes (a sibling with no imports of its own).
+      if (id === './ProTrialStory') { return load(path.posix.join(path.posix.dirname(file), 'ProTrialStory.ets')); }
+      throw new Error('unexpected import ' + id);
+    } }, { filename: file });
   return module.exports;
 }
 
@@ -45,23 +49,29 @@ test('Pro 功能介绍 lists eight distinct areas, AI 助理 first and featured,
   items[0].tags.push('x'); assert.equal(pro.proIntroItems()[0].tags.length, items[0].tags.length - 1);
   items[0].points.push('x'); assert.equal(pro.proIntroItems()[0].points.length, items[0].points.length - 1);
   assert.notEqual(pro.proIntroStatus(true), pro.proIntroStatus(false));
-  assert.match(pro.proIntroStatus(true), /免费试用/);
+  assert.match(pro.proIntroStatus(true), /需要购买鸿蒙 PC 做测试/);
+  assert.match(pro.proIntroStatus(true), /商务合同审核通过前/);
+  assert.match(load('entry/src/main/ets/services/ProTrialStory.ets').PRO_TRIAL_STORY, /年底前 25 元，明年起 38\.8 元/);
   assert.match(pro.proIntroStatus(false), /正式开放/);
-  assert.deepEqual([...pro.proIntroPromises()], ['全部功能免费试用', '收费前提前通知', '核心连接永久免费']);
+  // No 「收费前提前通知」: the story under the hero says why Pro is here and what it will cost.
+  assert.deepEqual([...pro.proIntroPromises()], ['全部功能免费试用', '核心连接永久免费']);
+  const showcase = read('entry/src/main/ets/components/guide/ProShowcase.ets');
+  assert.equal(showcase.includes('Pro 主打'), false, 'AI 助理 carries no 主打 tag');
 });
 
-test('first-install guide has nine colored slides, device page fourth, start last', () => {
+test('first-install guide has ten colored slides, device page fourth, AI 助理 included, start last', () => {
   const guide = load('entry/src/main/ets/services/GuideContentRegistry.ets');
   for (const device of ['phone', 'tablet', 'desktop']) {
     const pages = guide.firstInstallGuidePages(device);
-    assert.equal(pages.length, 9);
+    assert.equal(pages.length, 10);
     assert.equal(pages[3].id, 'device-path-' + device);
+    assert.ok(pages.some(page => page.id === 'ai-assistant'));
     assert.equal(pages[pages.length - 1].id, 'start-first-host');
     pages.forEach(page => assert.match(page.hue, hex, page.id));
     assert.ok(pages.some(page => page.id === 'home-at-a-glance'));
     assert.ok(pages.some(page => page.id === 'security-locks'));
   }
-  assert.equal(guide.settingsUsageGuidePages('phone').length, 9);
+  assert.equal(guide.settingsUsageGuidePages('phone').length, 10);
 });
 
 test('1.2.0 notes lead with the free Pro trial; the 1.1.6 notes are kept as they shipped', () => {
@@ -69,8 +79,13 @@ test('1.2.0 notes lead with the free Pro trial; the 1.1.6 notes are kept as they
   assert.equal(notes.CURRENT_RELEASE_VERSION, '1.2.0');
   assert.equal(notes.CURRENT_RELEASE_VERSION_CODE, 1001008);
   const pages = notes.pagesForReleasedVersion(notes.CURRENT_RELEASE_VERSION);
-  assert.equal(pages.length, 8);
+  assert.equal(pages.length, 12);
   assert.equal(pages[0].id, 'release-pro-trial');
+  assert.match(pages[0].desc, /年底前 25 元，明年起 38\.8 元/);
+  for (const id of ['release-remote-ai', 'release-new-look', 'release-touch-scroll', 'release-rustdesk-display']) {
+    assert.ok(pages.some(page => page.id === id), id);
+  }
+  assert.equal(pages[pages.length - 1].id, 'release-1-1-6-summary');
   assert.equal(pages[0].tag, '免费试用');
   assert.match(notes.releaseHeadline('1.2.0'), /免费试用/);
   pages.forEach(page => assert.ok((page.tag || '').length > 0, page.id));

@@ -47,7 +47,7 @@ export struct VncSettingsSheet {
   @StorageProp('currentTheme') theme: string = 'light';
   @StorageProp('accentColor') accentColor: string = '#007DFF';
   /** 设置 → 个性化 → 全新视觉: plain wording, 44vp choices and fields, 12vp descriptions. */
-  @StorageProp('settingsVisualStyle') visualStyle: string = 'classic';
+  @StorageProp('settingsVisualStyle') visualStyle: string = 'modern';
   @StorageLink(VNC_REVERSE_WHEEL_KEY) vncReverseWheelPreference: boolean = false;
   @Prop mode: number = SETTINGS_SHEET_VNC_CONNECTION;
   onClose: () => void = (): void => {};

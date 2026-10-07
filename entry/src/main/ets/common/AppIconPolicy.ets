@@ -16,6 +16,7 @@ export const APP_ICON_PRESETS: AppIconPreset[] = [
   { name: 'rd_aurora', label: '幻彩' },
   { name: 'rd_vivid', label: '炫蓝' },
   { name: 'rd_soft', label: '柔蓝' },
+  { name: 'rd_glow', label: '流光' },
   { name: 'rd_vivid_night', label: '夜色' },
   { name: 'rd_vivid_ocean', label: '海蓝' },
   { name: 'rd_vivid_aurora', label: '霓彩' }

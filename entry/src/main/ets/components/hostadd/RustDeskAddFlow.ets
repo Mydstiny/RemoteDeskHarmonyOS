@@ -20,7 +20,7 @@ import { rustDeskAddControlIdError } from '../../services/RustDeskHostConfigPoli
 @Component
 export struct RustDeskAddFlow {
   @StorageProp('currentTheme') theme: string = 'light';
-  @StorageProp('settingsVisualStyle') visualStyle: string = 'classic';
+  @StorageProp('settingsVisualStyle') visualStyle: string = 'modern';
   @StorageProp('accentColor') accentColor: string = '#007DFF';
   @Prop relays: RustDeskRelayConfig[] = [];
   @Prop lanScanning: boolean = false;

@@ -260,19 +260,20 @@ function loadTree(file, cache = new Map()) {
   return module.exports;
 }
 
-check('全新视觉 is opt-in: stored per account, cloud-synced, and readable and settable by the AI', () => {
+check('全新视觉 is on by default: only a stored classic keeps the classic look; cloud-synced and AI-settable', () => {
   const style = load('services/SettingsVisualStylePolicy');
   assert.equal(style.SETTINGS_VISUAL_STYLE_KEY, 'settingsVisualStyle');
-  for (const value of ['', 'classic', 'Modern', 'new', undefined]) {
-    assert.equal(style.normalizeSettingsVisualStyle(value), 'classic', String(value));
-    assert.equal(style.settingsVisualIsModern(value), false);
+  for (const value of ['', 'modern', 'Modern', 'new', undefined]) {
+    assert.equal(style.normalizeSettingsVisualStyle(value), 'modern', String(value));
+    assert.equal(style.settingsVisualIsModern(value), true);
   }
-  assert.equal(style.normalizeSettingsVisualStyle('modern'), 'modern');
+  assert.equal(style.normalizeSettingsVisualStyle('classic'), 'classic');
+  assert.equal(style.settingsVisualIsModern('classic'), false);
   const sync = load('services/CloudSyncSettingsPolicy');
   assert.ok(sync.cloudUserSettingIsSyncable('settingsVisualStyle'));
   const page = read('pages/HostListPage.ets');
-  assert.ok(page.includes("@StorageLink('settingsVisualStyle') settingsVisualStyle: string = 'classic';"));
-  assert.ok(page.includes('prefs.getSync(SETTINGS_VISUAL_STYLE_KEY, SETTINGS_VISUAL_STYLE_CLASSIC)'));
+  assert.ok(page.includes("@StorageLink('settingsVisualStyle') settingsVisualStyle: string = 'modern';"));
+  assert.ok(page.includes('prefs.getSync(SETTINGS_VISUAL_STYLE_KEY, SETTINGS_VISUAL_STYLE_MODERN)'));
   assert.ok(page.includes("case 'ui.settingsVisual': this.saveSettingsVisualStyle(value === SETTINGS_VISUAL_STYLE_MODERN)"));
   assert.ok(member(page, '@Builder settingsVisualStyleRow() {').includes("accessibilityText('全新视觉')"));
   const ai = read('services/diagnosticAi/DiagnosticAiSettingsActionPolicy.ets');
@@ -463,7 +464,7 @@ check('settings sheets switch to the shared header only in 全新视觉 and keep
   };
   for (const [file, title] of Object.entries(sheets)) {
     const source = read(file);
-    assert.ok(source.includes("@StorageProp('settingsVisualStyle') visualStyle: string = 'classic';"), file);
+    assert.ok(source.includes("@StorageProp('settingsVisualStyle') visualStyle: string = 'modern';"), file);
     const at = source.indexOf('AppSheetHeader({ ' + title);
     assert.ok(at > 0, file + ' uses the shared header');
     assert.ok(source.slice(Math.max(0, at - 200), at).includes('this.modern()'), file + ' gates it');

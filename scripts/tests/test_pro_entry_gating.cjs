@@ -96,6 +96,24 @@ function phonePasskeySheet(file) {
   return true;
 }
 
+// The Pro developer tools (权益模拟, 沙盒测试, the USB FIDO probe, the 「沙盒 ·」 label) are hidden even in Debug, and
+// Release gives everyone Pro through the free trial.
+{
+  const tools = sources.get('services/pro/ProDeveloperTools.ets');
+  assert.match(tools, /export const PRO_DEVELOPER_TOOLS_SHOWN: boolean = false;/);
+  assert.match(tools, /return DEBUG && PRO_DEVELOPER_TOOLS_SHOWN;/);
+  const host = sources.get('pages/HostListPage.ets');
+  assert.match(host, /if \(proDeveloperToolsVisible\(\)\) \{\s*this\.proDebugStateRow\(\)/);
+  assert.match(host, /if \(proDeveloperToolsVisible\(\) && !this\.proManagerVisible\) \{/);
+  assert.equal((host.match(/this\.proDebugStateRow\(\)/g) || []).length, 2);
+  const purchase = sources.get('components/ProPurchaseSheet.ets');
+  assert.match(purchase, /if \(proDeveloperToolsVisible\(\)\) \{\s*ProUsbFidoProbePanel/);
+  assert.equal(/if \(DEBUG\) \{\s*ProUsbFidoProbePanel/.test(purchase), false);
+  assert.match(purchase, /this\.testing && proDeveloperToolsVisible\(\) \? '沙盒 '/);
+  assert.match(sources.get('services/pro/ProRuntime.ets'), /real\.environment === 'sandbox' && proDeveloperToolsVisible\(\)\) \{ label = '沙盒 · '/);
+  assert.match(sources.get('services/pro/ProComplimentaryPolicy.ets'), /export const PRO_COMPLIMENTARY_TRIAL: boolean = true;/);
+}
+
 // RDP/RustDesk advanced display: every Pro choice follows ProEntries.visible for its own feature.
 const remoteDesktop = sources.get('pages/RemoteDesktop.ets');
 assert.match(sources.get('pages/HostListPage.ets'),

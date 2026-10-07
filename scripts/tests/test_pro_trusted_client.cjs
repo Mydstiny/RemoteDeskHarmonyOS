@@ -313,7 +313,8 @@ test('actual App runtime renews daily, retries an offline boundary and keeps Rel
     t.after(() => app.runtime.dispose()); await app.initialize({}); app.setSandbox(true);
     for (let i = 0; i < 20 && app.runtime.snapshot().realState !== 'active'; i++) await new Promise(resolve => setImmediate(resolve));
     if (debug) {
-      assert.equal(app.runtime.snapshot().label, '沙盒 · Pro 已激活');
+      // The 「沙盒 ·」 label is a developer tool, hidden since 2026-10-07 (ProDeveloperTools).
+      assert.equal(app.runtime.snapshot().label, 'Pro 已激活');
       assert.ok(app.lease(config.productId));
       for (const delay of [86400000, 86400000, 300000]) {
         if (delay === 300000) { offline = false; status = 'revoked'; revision = 2; }

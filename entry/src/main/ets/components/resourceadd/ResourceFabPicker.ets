@@ -9,7 +9,7 @@ export struct ResourceFabPicker {
   @StorageProp('accentColor') accentColor: string = '#007DFF';
   /** PC has no camera scanner: 扫描二维码 is not offered there. */
   @StorageProp('isDesktopDevice') isDesktopDevice: boolean = false;
-  @StorageProp('settingsVisualStyle') visualStyle: string = 'classic';
+  @StorageProp('settingsVisualStyle') visualStyle: string = 'modern';
   @Prop kind: string = 'ssh_key';
   onSelect: (option: string) => void = (_option: string): void => {};
   onClose: () => void = (): void => {};
