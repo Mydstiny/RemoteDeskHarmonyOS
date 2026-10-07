@@ -189,6 +189,21 @@ extern "C" {
         uint32_t reserved;
     };
     bool  rustdesk_set_image_quality(void* handle, int quality);
+    struct RustDeskFfiPeerFeatures {
+        uint32_t structSize;
+        int32_t installed;
+        int32_t iddImpl;
+        uint32_t rustdeskVirtualMask;
+        int32_t amyuniVirtualCount;
+        int32_t privacySupported;
+        int32_t privacyState;
+        uint32_t privacyGeneration;
+        uint32_t reserved[4];
+    };
+    bool  rustdesk_get_peer_features(void* handle, RustDeskFfiPeerFeatures* out_features);
+    bool  rustdesk_toggle_privacy_mode(void* handle, bool on);
+    bool  rustdesk_toggle_virtual_display(void* handle, int display, bool on);
+    bool  rustdesk_set_stream_options(void* handle, int codec, bool audio_enabled);
     bool  rustdesk_get_quality_state(void* handle, RustDeskFfiQualityState* out_state);
     struct RustDeskFfiPermissionState {
         uint32_t version;
@@ -259,6 +274,9 @@ static constexpr uint32_t kRustDeskPeerTransportTcp = 1U << 0;
 static constexpr uint32_t kRustDeskPeerTransportUdpKcp = 1U << 1;
 static constexpr uint32_t kRustDeskReleaseStrategyMask =
     kRustDeskStrategyForceRelay | kRustDeskStrategyDirectIp;
+static_assert(sizeof(RustDeskFfiPeerFeatures) == 48,
+              "RustDeskPeerFeaturesV1 ABI size changed; update both sides together");
+static_assert(offsetof(RustDeskFfiPeerFeatures, privacyGeneration) == 28);
 static_assert(sizeof(RustDeskFfiStreamStats) == 96,
               "RustDeskStreamStats ABI size changed; update both sides together");
 static_assert(alignof(RustDeskFfiStreamStats) == 8,
@@ -2838,6 +2856,53 @@ bool RustDeskBridge::reportVideoPressureForSession(uint64_t sessionId,
     return true;
 }
 
+bool RustDeskBridge::togglePrivacyMode(bool on) {
+#ifdef RUSTDESK_USE_REAL_CORE
+    return rdDispatchFfiOutbound(
+        impl_.get(), mode_, RustDeskFfiOutboundLane::Control,
+        [on](void* handle) {
+            return rustdesk_toggle_privacy_mode(handle, on);
+        });
+#else
+    (void)on;
+    return false;
+#endif
+}
+
+bool RustDeskBridge::toggleVirtualDisplay(int display, bool on) {
+#ifdef RUSTDESK_USE_REAL_CORE
+    if (display < -1 || display > 4 || (display == -1 && on)) {
+        return false;
+    }
+    return rdDispatchFfiOutbound(
+        impl_.get(), mode_, RustDeskFfiOutboundLane::Control,
+        [display, on](void* handle) {
+            return rustdesk_toggle_virtual_display(handle, display, on);
+        });
+#else
+    (void)display;
+    (void)on;
+    return false;
+#endif
+}
+
+bool RustDeskBridge::setStreamOptions(int codec, bool audioEnabled) {
+#ifdef RUSTDESK_USE_REAL_CORE
+    if (codec < 0 || codec > 5) {
+        return false;
+    }
+    return rdDispatchFfiOutbound(
+        impl_.get(), mode_, RustDeskFfiOutboundLane::Control,
+        [codec, audioEnabled](void* handle) {
+            return rustdesk_set_stream_options(handle, codec, audioEnabled);
+        });
+#else
+    (void)codec;
+    (void)audioEnabled;
+    return false;
+#endif
+}
+
 bool RustDeskBridge::setImageQuality(int quality) {
 #ifdef RUSTDESK_USE_REAL_CORE
     if (quality < 0 || quality > 2) {
@@ -2941,6 +3006,17 @@ RustDeskDiagnosticsStats RustDeskBridge::getDiagnostics() const {
             result.qualityRequestedGeneration = qualityState.requestedGeneration;
             result.qualityAppliedGeneration = qualityState.appliedGeneration;
             result.qualityUpdateStatus = static_cast<int>(qualityState.updateStatus);
+        }
+        RustDeskFfiPeerFeatures peerFeatures {};
+        if (rustdesk_get_peer_features(handleLease.get(), &peerFeatures) &&
+            peerFeatures.structSize == sizeof(RustDeskFfiPeerFeatures)) {
+            result.peerInstalled = peerFeatures.installed != 0;
+            result.virtualDisplayImpl = peerFeatures.iddImpl;
+            result.rustdeskVirtualDisplayMask = peerFeatures.rustdeskVirtualMask;
+            result.amyuniVirtualDisplayCount = peerFeatures.amyuniVirtualCount;
+            result.privacySupported = peerFeatures.privacySupported != 0;
+            result.privacyState = peerFeatures.privacyState;
+            result.privacyGeneration = peerFeatures.privacyGeneration;
         }
         RustDeskFfiPermissionState permissionState {};
         if (rustdesk_get_permission_state(handleLease.get(), &permissionState) &&

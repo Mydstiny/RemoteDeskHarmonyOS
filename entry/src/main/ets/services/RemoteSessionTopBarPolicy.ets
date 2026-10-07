@@ -180,7 +180,7 @@ export type RemoteSessionPrimaryActionId = 'pin' | 'control' | 'display' |
   'portrait' | 'diagnostics' | 'disconnect' | 'ai';
 
 export type RustDeskTopBarSubMenuId = 'viewScale' | 'remoteDisplay' |
-  'resolution' | 'imageQuality' | 'codec' | 'touchpadSpeed';
+  'resolution' | 'imageQuality' | 'codec' | 'touchpadSpeed' | 'virtualDisplay';
 
 export interface RustDeskTopBarSubMenuState {
   active: RustDeskTopBarSubMenuId | '';
@@ -209,6 +209,7 @@ export function rustDeskTopBarSubMenuForItem(itemId: string): RustDeskTopBarSubM
   if (itemId === 'imageQuality') { return 'imageQuality'; }
   if (itemId === 'codec') { return 'codec'; }
   if (itemId === 'touchpadSpeed') { return 'touchpadSpeed'; }
+  if (itemId === 'virtualDisplay') { return 'virtualDisplay'; }
   return '';
 }
 
@@ -397,7 +398,7 @@ const RUSTDESK_DISABLED_REASONS: Record<string, string> = {
   'voiceCall': '语音通话需要 RustDesk 音频输入和通话信令接入后启用',
   'recordSession': '录制需要本地录屏/编码保存链路接入后启用',
   'resolutionSettings': '远端显示器能力尚未同步完成',
-  'virtualDisplay': '虚拟显示器需要 RustDesk 虚拟显示控制协议接入后启用',
+  'virtualDisplay': '虚拟显示器只支持已安装 RustDesk 且带虚拟显示驱动的 Windows 被控端',
   'remoteCamera': '查看摄像头需要 RustDesk 摄像头流接入后启用',
   'terminal': '终端需要 RustDesk 远程 shell 能力接入后启用',
   'tcpTunnel': 'TCP 隧道需要 RustDesk tunnel 控制通道接入后启用',

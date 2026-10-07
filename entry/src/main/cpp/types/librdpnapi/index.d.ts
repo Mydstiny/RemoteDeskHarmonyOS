@@ -428,6 +428,9 @@ export const VERSION: SessionVersionInfo;
   export function sendMouseWheel(sessionId: number, x: number, y: number, delta: number): void;
   export function sendRustDeskTouchpadWheel(sessionId: number, x: number, y: number): boolean;
   export function setRustDeskImageQuality(sessionId: number, quality: number): boolean;
+  export function toggleRustDeskPrivacyMode(sessionId: number, on: boolean): boolean;
+  export function toggleRustDeskVirtualDisplay(sessionId: number, display: number, on: boolean): boolean;
+  export function setRustDeskStreamOptions(sessionId: number, codec: number, audioEnabled: boolean): boolean;
   export function sendText(sessionId: number, text: string): void;
   export function enqueueSshTerminalInput(sessionId: number, text: string,
     expectedGeneration?: number, control?: boolean, ordered?: boolean,
@@ -1025,6 +1028,17 @@ export interface RustDeskDiagnosticsSnapshot {
   qualityRequestedGeneration: number;
   qualityAppliedGeneration: number;
   qualityUpdateStatus: number;
+  /** RustDesk peer extras (PeerInfo.platform_additions) and the last privacy-mode answer. */
+  peerInstalled?: boolean;
+  /** Virtual display driver on a Windows peer: 0 none, 1 rustdesk_idd, 2 amyuni_idd. */
+  virtualDisplayImpl?: number;
+  /** rustdesk_idd: bit n set = virtual display n (1..4) plugged in. */
+  rustdeskVirtualDisplayMask?: number;
+  amyuniVirtualDisplayCount?: number;
+  privacySupported?: boolean;
+  /** BackNotification.PrivacyModeState (0 unknown, 4 on, 8 off, 3 unsupported, 5 denied …) and its counter. */
+  privacyState?: number;
+  privacyGeneration?: number;
   videoMessages: number;
   receivedFrames: number;
   keyframes: number;

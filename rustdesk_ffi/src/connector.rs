@@ -25,14 +25,14 @@ use crate::cursor_state::{CursorCacheMissReason, CursorIdResult, CursorState, Cu
 use crate::net;
 use crate::peer_stream::{KcpPeerStream, PeerStream};
 use crate::protocol::message_proto::{
-    AudioFormat, AudioFrame, CaptureDisplays, Clipboard, ClipboardFormat, ControlKey, DisplayInfo,
+    AudioFormat, AudioFrame, BackNotification_oneof_union, CaptureDisplays, Clipboard, ClipboardFormat, ControlKey, DisplayInfo,
     DisplayResolution, EncodedVideoFrames, FileAction, FileAction_oneof_union, FileEntry,
     FileResponse, FileResponse_oneof_union, FileTransferBlock, FileTransferDone,
     FileTransferReceiveRequest, FileTransferSendConfirmRequest, FileType, IdPk, KeyEvent,
     KeyEvent_oneof_union, KeyboardMode, Message, Message_oneof_union, Misc, Misc_oneof_union,
     MouseEvent, PeerInfo, PermissionInfo_Permission, PointerDeviceEvent, PublicKey, Resolution,
     SupportedResolutions, SwitchDisplay, TouchEvent, TouchPanEnd, TouchPanStart, TouchPanUpdate,
-    TouchScaleUpdate, VideoFrame, VideoFrame_oneof_union,
+    TogglePrivacyMode, ToggleVirtualDisplay, TouchScaleUpdate, VideoFrame, VideoFrame_oneof_union,
 };
 use crate::protocol::rendezvous::{
     encode_socket_addr_v6, PeerCandidate, PunchHoleInfo, RendezvousClient, RendezvousRouteOptions,
@@ -74,6 +74,15 @@ const MAX_REMOTE_CLIPBOARD_FORMATS: usize = 32;
 // for tiny payloads. Preserve interoperability while rejecting giant-window
 // frames before the decoder allocates their requested history.
 const MAX_REMOTE_CLIPBOARD_ZSTD_WINDOW_LOG: u32 = 19;
+
+/// Session options the user changed while connected (codec, remote audio). The control pump records them; the
+/// streaming loop sends them with its own stream options and keeps them, so pressure resends do not undo them.
+#[derive(Debug, Clone, Copy)]
+struct LiveSessionOptions {
+    codec: i32,
+    audio_enabled: bool,
+    pending: bool,
+}
 
 #[derive(Default, Debug)]
 struct PhysicalModifierState {
@@ -2628,6 +2637,7 @@ impl RustDeskConnector {
         sent_mouse_moves: &mut u64,
         sent_mouse_buttons: &mut u64,
         control_send_errors: &mut u64,
+        live_options: &mut LiveSessionOptions,
     ) -> io::Result<()> {
         crypto.check_streaming_writer()?;
         if controls.shutdown_requested() {
@@ -2659,6 +2669,11 @@ impl RustDeskConnector {
                 }
                 crate::ControlMsg::VideoPressure { level } => {
                     *requested_pressure_level = level.min(3);
+                }
+                crate::ControlMsg::SetStreamOptions { codec, audio_enabled } => {
+                    live_options.codec = codec;
+                    live_options.audio_enabled = audio_enabled;
+                    live_options.pending = true;
                 }
                 crate::ControlMsg::SetImageQuality {
                     quality,
@@ -2858,6 +2873,10 @@ impl RustDeskConnector {
 
         let mut stream_options_reasserted = false;
         let mut image_quality = image_quality.clamp(0, 2);
+        // Codec and remote audio can change while connected (rustdesk_set_stream_options).
+        let mut preferred_codec = preferred_codec;
+        let mut audio_enabled = audio_enabled;
+        let mut live_options = LiveSessionOptions { codec: preferred_codec, audio_enabled, pending: false };
         let mut quality_refresh = QualityRefreshGate::default();
         let mut empty_reads: u32 = 0; // 连续空读计数
                                       // 消息类型统计 — 用于诊断对端停止发送前的行为
@@ -2929,6 +2948,19 @@ impl RustDeskConnector {
             stream_options_reasserted = true;
             eprintln!("[RustDesk-FFI] streaming: initial stream options reasserted");
         }
+        if privacy_mode {
+            // Peers from 1.2.4 on ignore the login option's privacy_mode: ask for it the way they act on.
+            let impl_key = self
+                .session
+                .peer_info()
+                .map(|info| crate::privacy_mode_impl_key(info.get_platform_additions()))
+                .unwrap_or_default();
+            let message = Self::build_toggle_privacy_mode_message(&impl_key, true);
+            match Self::send_message_encrypted(crypto, &message) {
+                Ok(()) => eprintln!("[RustDesk-FFI] privacy mode requested impl={}", impl_key),
+                Err(err) => eprintln!("[RustDesk-FFI] privacy mode request failed: {}", err),
+            }
+        }
         crypto.start_streaming_writer()?;
         eprintln!(
             "[RustDesk-FFI] streaming: single writer started after handshake video_ack_required={}",
@@ -2983,6 +3015,7 @@ impl RustDeskConnector {
                 &mut sent_mouse_moves,
                 &mut sent_mouse_buttons,
                 &mut control_send_errors,
+                &mut live_options,
             ) {
                 if err.kind() == ErrorKind::Interrupted {
                     eprintln!("[RustDesk-FFI] streaming: shutdown requested, exiting loop");
@@ -2990,6 +3023,33 @@ impl RustDeskConnector {
                     break 'streaming;
                 }
                 return Err(err);
+            }
+
+            if live_options.pending {
+                // Codec / remote audio changed while connected: the peer's encoder follows the new OptionMessage, and
+                // every later resend (pressure, codec reassertion) carries the new values.
+                live_options.pending = false;
+                preferred_codec = live_options.codec;
+                audio_enabled = live_options.audio_enabled;
+                stream_options_reasserted = false;
+                match self.session.send_runtime_options(
+                    crypto,
+                    preferred_codec,
+                    image_quality,
+                    privacy_mode,
+                    audio_enabled,
+                    Some(stream_options_fps),
+                ) {
+                    Ok(()) => {
+                        stream_options_sent_count += 1;
+                        Session::send_refresh_video(crypto)?;
+                        eprintln!(
+                            "[RustDesk-FFI] live stream options sent codec={} audio={}",
+                            preferred_codec, audio_enabled
+                        );
+                    }
+                    Err(err) => eprintln!("[RustDesk-FFI] live stream options failed: {}", err),
+                }
             }
 
             Self::flush_stale_file_uploads(
@@ -3015,6 +3075,7 @@ impl RustDeskConnector {
                     &mut sent_mouse_moves,
                     &mut sent_mouse_buttons,
                     &mut control_send_errors,
+                    &mut live_options,
                 )
             }) {
                 Ok(plaintext) => {
@@ -3288,6 +3349,22 @@ impl RustDeskConnector {
                     *msg_stats.entry(misc_key).or_default() += 1;
                     if let Some(Misc_oneof_union::audio_format(ref format)) = misc.union {
                         on_audio_format(format);
+                    }
+                    if let Some(Misc_oneof_union::back_notification(ref note)) = misc.union {
+                        if let Some(BackNotification_oneof_union::privacy_mode_state(ref state)) = note.union {
+                            let value = *state as i32;
+                            if let Ok(mut display) = display_state.lock() {
+                                display.privacy_state = value;
+                                display.privacy_generation = display.privacy_generation.wrapping_add(1);
+                            }
+                            eprintln!(
+                                "[RustDesk-FFI] privacy mode state={} impl={} details={}",
+                                value,
+                                note.get_impl_key(),
+                                note.get_details()
+                            );
+                            on_display_state();
+                        }
                     }
                     if let Some(Misc_oneof_union::switch_display(ref display)) = misc.union {
                         Self::apply_switch_display_geometry(&display_state, display, &stream_stats);
@@ -3663,6 +3740,28 @@ impl RustDeskConnector {
         message
     }
 
+    fn build_toggle_privacy_mode_message(impl_key: &str, on: bool) -> Message {
+        let mut toggle = TogglePrivacyMode::new();
+        toggle.set_impl_key(impl_key.to_string());
+        toggle.set_on(on);
+        let mut misc = Misc::new();
+        misc.union = Some(Misc_oneof_union::toggle_privacy_mode(toggle));
+        let mut message = Message::new();
+        message.union = Some(Message_oneof_union::misc(misc));
+        message
+    }
+
+    fn build_toggle_virtual_display_message(display: i32, on: bool) -> Message {
+        let mut toggle = ToggleVirtualDisplay::new();
+        toggle.set_display(display);
+        toggle.set_on(on);
+        let mut misc = Misc::new();
+        misc.union = Some(Misc_oneof_union::toggle_virtual_display(toggle));
+        let mut message = Message::new();
+        message.union = Some(Message_oneof_union::misc(misc));
+        message
+    }
+
     fn build_switch_display_message(display: i32) -> Message {
         let mut switch_display = SwitchDisplay::new();
         switch_display.set_display(display);
@@ -3786,6 +3885,30 @@ impl RustDeskConnector {
                 Self::send_message_encrypted(crypto, &message)
             }
             crate::ControlMsg::VideoPressure { .. } => Ok(()),
+            // Adopted by the streaming loop (pump_control_messages records it).
+            crate::ControlMsg::SetStreamOptions { .. } => Ok(()),
+            crate::ControlMsg::TogglePrivacyMode { impl_key, on } => {
+                let message = Self::build_toggle_privacy_mode_message(&impl_key, on);
+                let result = Self::send_message_encrypted(crypto, &message);
+                eprintln!(
+                    "[RustDesk-FFI] privacy mode toggle on={} impl={} result={}",
+                    on,
+                    impl_key,
+                    if result.is_ok() { "ok" } else { "error" }
+                );
+                result
+            }
+            crate::ControlMsg::ToggleVirtualDisplay { display, on } => {
+                let message = Self::build_toggle_virtual_display_message(display, on);
+                let result = Self::send_message_encrypted(crypto, &message);
+                eprintln!(
+                    "[RustDesk-FFI] virtual display toggle display={} on={} result={}",
+                    display,
+                    on,
+                    if result.is_ok() { "ok" } else { "error" }
+                );
+                result
+            }
             crate::ControlMsg::SetImageQuality { quality, .. } => {
                 Session::send_image_quality(crypto, quality)
             }
@@ -3879,6 +4002,9 @@ impl RustDeskConnector {
             crate::ControlMsg::RefreshVideoDisplay { .. } => "refresh_video_display",
             crate::ControlMsg::VideoPressure { .. } => "video_pressure",
             crate::ControlMsg::SetImageQuality { .. } => "image_quality",
+            crate::ControlMsg::SetStreamOptions { .. } => "stream_options",
+            crate::ControlMsg::TogglePrivacyMode { .. } => "privacy_mode",
+            crate::ControlMsg::ToggleVirtualDisplay { .. } => "virtual_display",
             crate::ControlMsg::KeyEvent { .. } => "key",
             crate::ControlMsg::MouseEvent { .. } => "mouse",
             crate::ControlMsg::MouseMove { .. } => "mouse_move",
@@ -5257,6 +5383,8 @@ impl RustDeskConnector {
     }
 
     fn populate_display_state(state: &mut crate::RustDeskDisplayState, info: &PeerInfo) -> bool {
+        // Virtual display driver, installed service and privacy modes (the peer resends it when they change).
+        state.platform_additions = info.get_platform_additions().chars().take(4096).collect();
         let previous_displays = state.displays.clone();
         let previous_geometry = (
             state.current_display,

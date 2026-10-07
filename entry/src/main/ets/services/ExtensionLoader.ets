@@ -2314,6 +2314,36 @@ export class ExtensionLoader implements RustDeskClipboardNative {
     }
   }
 
+  /** Live RustDesk privacy mode; the peer's answer shows up as privacyState in getSessionDiagnostics. */
+  toggleRustDeskPrivacyMode(sessionId: number, on: boolean): boolean {
+    try {
+      return rdpnapi.toggleRustDeskPrivacyMode(sessionId, on) as boolean;
+    } catch (err) {
+      hilog.warn(DOMAIN, TAG, '[ExtensionLoader] toggleRustDeskPrivacyMode unavailable: ' + JSON.stringify(err));
+      return false;
+    }
+  }
+
+  /** Plug a Windows peer's virtual display in or out (display -1 with on=false: all of them). */
+  toggleRustDeskVirtualDisplay(sessionId: number, display: number, on: boolean): boolean {
+    try {
+      return rdpnapi.toggleRustDeskVirtualDisplay(sessionId, display, on) as boolean;
+    } catch (err) {
+      hilog.warn(DOMAIN, TAG, '[ExtensionLoader] toggleRustDeskVirtualDisplay unavailable: ' + JSON.stringify(err));
+      return false;
+    }
+  }
+
+  /** Live RustDesk codec preference (0 auto … 5 H265) and remote audio. */
+  setRustDeskStreamOptions(sessionId: number, codec: number, audioEnabled: boolean): boolean {
+    try {
+      return rdpnapi.setRustDeskStreamOptions(sessionId, codec, audioEnabled) as boolean;
+    } catch (err) {
+      hilog.warn(DOMAIN, TAG, '[ExtensionLoader] setRustDeskStreamOptions unavailable: ' + JSON.stringify(err));
+      return false;
+    }
+  }
+
   getRustDeskDisplayCapabilities(sessionId: number): RustDeskDisplayCapabilities {
     try {
       return rdpnapi.getRustDeskDisplayCapabilities(sessionId) as RustDeskDisplayCapabilities;

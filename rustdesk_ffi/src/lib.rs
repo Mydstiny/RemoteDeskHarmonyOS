@@ -985,6 +985,11 @@ pub(crate) struct RustDeskDisplayState {
     pub displays: Vec<RustDeskDisplayInfoState>,
     pub peer_version: String,
     pub peer_platform: String,
+    /// PeerInfo.platform_additions (a flat JSON object): installed service, virtual display driver, privacy modes.
+    pub platform_additions: String,
+    /// The last BackNotification.PrivacyModeState value (0 unknown) and how many answers came.
+    pub privacy_state: i32,
+    pub privacy_generation: u32,
 }
 
 impl Default for RustDeskDisplayState {
@@ -1005,7 +1010,119 @@ impl Default for RustDeskDisplayState {
             displays: Vec::new(),
             peer_version: String::new(),
             peer_platform: String::new(),
+            platform_additions: String::new(),
+            privacy_state: 0,
+            privacy_generation: 0,
         }
+    }
+}
+
+/// What a peer offers beyond the stream (from PeerInfo.platform_additions) and the last privacy-mode answer. Read by
+/// rustdesk_get_peer_features; appended fields only ever go into `reserved`.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RustDeskPeerFeaturesV1 {
+    pub struct_size: u32,
+    /// 1: RustDesk runs as an installed service on the peer (virtual displays need it).
+    pub installed: i32,
+    /// Virtual display driver: 0 none, 1 rustdesk_idd, 2 amyuni_idd.
+    pub idd_impl: i32,
+    /// rustdesk_idd: bit n set = virtual display n (1..=4) is plugged in.
+    pub rustdesk_virtual_mask: u32,
+    /// amyuni_idd: how many virtual displays are plugged in.
+    pub amyuni_virtual_count: i32,
+    /// 1: the peer lists at least one privacy-mode implementation.
+    pub privacy_supported: i32,
+    /// Last BackNotification.PrivacyModeState (0 unknown) and its counter.
+    pub privacy_state: i32,
+    pub privacy_generation: u32,
+    pub reserved: [u32; 4],
+}
+
+/// The text after `"key":` in a flat JSON object such as PeerInfo.platform_additions (no nesting by key is needed).
+fn json_value_after<'a>(json: &'a str, key: &str) -> Option<&'a str> {
+    let needle = format!("\"{}\"", key);
+    let at = json.find(&needle)? + needle.len();
+    let rest = json[at..].trim_start().strip_prefix(':')?;
+    Some(rest.trim_start())
+}
+
+pub(crate) fn json_flat_bool(json: &str, key: &str) -> Option<bool> {
+    let value = json_value_after(json, key)?;
+    if value.starts_with("true") {
+        Some(true)
+    } else if value.starts_with("false") {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+pub(crate) fn json_flat_string(json: &str, key: &str) -> Option<String> {
+    let value = json_value_after(json, key)?.strip_prefix('"')?;
+    let end = value.find('"')?;
+    Some(value[..end].chars().take(64).collect())
+}
+
+pub(crate) fn json_flat_int(json: &str, key: &str) -> Option<i64> {
+    let value = json_value_after(json, key)?;
+    let digits: String = value
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || *c == '-')
+        .take(12)
+        .collect();
+    digits.parse().ok()
+}
+
+pub(crate) fn json_flat_int_list(json: &str, key: &str) -> Vec<i64> {
+    let Some(value) = json_value_after(json, key).and_then(|v| v.strip_prefix('[')) else {
+        return Vec::new();
+    };
+    let Some(end) = value.find(']') else {
+        return Vec::new();
+    };
+    value[..end]
+        .split(',')
+        .filter_map(|item| item.trim().parse::<i64>().ok())
+        .take(16)
+        .collect()
+}
+
+/// supported_privacy_mode_impl is `[["privacy_mode_impl_mag","…"], …]`: the first implementation's key ('' none).
+pub(crate) fn privacy_mode_impl_key(json: &str) -> String {
+    json_value_after(json, "supported_privacy_mode_impl")
+        .and_then(|v| v.strip_prefix('['))
+        .map(|v| v.trim_start())
+        .and_then(|v| v.strip_prefix('['))
+        .map(|v| v.trim_start())
+        .and_then(|v| v.strip_prefix('"'))
+        .and_then(|v| v.find('"').map(|end| v[..end].chars().take(64).collect()))
+        .unwrap_or_default()
+}
+
+pub(crate) fn peer_features_from(state: &RustDeskDisplayState) -> RustDeskPeerFeaturesV1 {
+    let json = state.platform_additions.as_str();
+    let idd = json_flat_string(json, "idd_impl").unwrap_or_default();
+    let mut mask: u32 = 0;
+    for index in json_flat_int_list(json, "rustdesk_virtual_displays") {
+        if (1..=4).contains(&index) {
+            mask |= 1 << index;
+        }
+    }
+    RustDeskPeerFeaturesV1 {
+        struct_size: std::mem::size_of::<RustDeskPeerFeaturesV1>() as u32,
+        installed: if json_flat_bool(json, "is_installed").unwrap_or(false) { 1 } else { 0 },
+        idd_impl: match idd.as_str() {
+            "rustdesk_idd" => 1,
+            "amyuni_idd" => 2,
+            _ => 0,
+        },
+        rustdesk_virtual_mask: mask,
+        amyuni_virtual_count: json_flat_int(json, "amyuni_virtual_displays").unwrap_or(0).clamp(0, 16) as i32,
+        privacy_supported: if privacy_mode_impl_key(json).is_empty() { 0 } else { 1 },
+        privacy_state: state.privacy_state,
+        privacy_generation: state.privacy_generation,
+        reserved: [0; 4],
     }
 }
 
@@ -1377,6 +1494,23 @@ pub(crate) enum ControlMsg {
     SetImageQuality {
         quality: i32,
         generation: u64,
+    },
+    /// Live remote codec and remote audio (an OptionMessage); the streaming loop adopts them, so later stream-option
+    /// resends (pressure, codec reassertion) keep what the user chose.
+    SetStreamOptions {
+        codec: i32,
+        audio_enabled: bool,
+    },
+    /// Privacy mode on the peer (Misc.toggle_privacy_mode). Peers from 1.2.4 on ignore the login option's
+    /// privacy_mode, so this is the only request they act on; the answer comes back as a BackNotification.
+    TogglePrivacyMode {
+        impl_key: String,
+        on: bool,
+    },
+    /// Plug a virtual display in or out on a Windows peer (Misc.toggle_virtual_display; -1 with on=false: all).
+    ToggleVirtualDisplay {
+        display: i32,
+        on: bool,
     },
     KeyEvent {
         scancode: u32,
@@ -3037,6 +3171,64 @@ pub extern "C" fn rustdesk_set_image_quality(handle: *mut c_void, quality: c_int
         }
         false
     }
+}
+
+/// The peer's extras (virtual displays, privacy mode) and the last privacy-mode answer.
+#[no_mangle]
+pub extern "C" fn rustdesk_get_peer_features(
+    handle: *mut c_void,
+    out_features: *mut RustDeskPeerFeaturesV1,
+) -> bool {
+    if handle.is_null() || out_features.is_null() {
+        return false;
+    }
+    let ctx = unsafe { &*(handle as *const RustDeskClient) };
+    let Ok(state) = ctx.display_state.lock() else {
+        return false;
+    };
+    let features = peer_features_from(&state);
+    unsafe {
+        *out_features = features;
+    }
+    true
+}
+
+/// Queue a live privacy-mode request (the peer answers with a BackNotification; see rustdesk_get_peer_features).
+#[no_mangle]
+pub extern "C" fn rustdesk_toggle_privacy_mode(handle: *mut c_void, on: bool) -> bool {
+    if handle.is_null() {
+        set_last_error("rustdesk_toggle_privacy_mode invalid arguments");
+        return false;
+    }
+    let ctx = unsafe { &*(handle as *const RustDeskClient) };
+    let impl_key = ctx
+        .display_state
+        .lock()
+        .map(|state| privacy_mode_impl_key(&state.platform_additions))
+        .unwrap_or_default();
+    ctx.controls.enqueue(ControlMsg::TogglePrivacyMode { impl_key, on })
+}
+
+/// Queue plugging a virtual display in (1..=4 for rustdesk_idd, 0 for amyuni_idd) or out (-1 with on=false: all).
+#[no_mangle]
+pub extern "C" fn rustdesk_toggle_virtual_display(handle: *mut c_void, display: c_int, on: bool) -> bool {
+    if handle.is_null() || !(-1..=4).contains(&display) || (display == -1 && on) {
+        set_last_error("rustdesk_toggle_virtual_display invalid arguments");
+        return false;
+    }
+    let ctx = unsafe { &*(handle as *const RustDeskClient) };
+    ctx.controls.enqueue(ControlMsg::ToggleVirtualDisplay { display, on })
+}
+
+/// Queue a live codec preference (0 auto … 5 H265) and remote audio switch for the peer's encoder.
+#[no_mangle]
+pub extern "C" fn rustdesk_set_stream_options(handle: *mut c_void, codec: c_int, audio_enabled: bool) -> bool {
+    if handle.is_null() || !(0..=5).contains(&codec) {
+        set_last_error("rustdesk_set_stream_options invalid arguments");
+        return false;
+    }
+    let ctx = unsafe { &*(handle as *const RustDeskClient) };
+    ctx.controls.enqueue(ControlMsg::SetStreamOptions { codec, audio_enabled })
 }
 
 /// Copy the latest quality preference/application state without consuming it.
@@ -6046,6 +6238,57 @@ mod tests {
         assert_eq!(params.profile, RustDeskProfile::Stable);
         assert_eq!(params.preferred_codec, 4);
         assert_eq!(params.effective_fps, 30);
+    }
+
+    #[test]
+    fn peer_features_read_virtual_displays_and_privacy_from_platform_additions() {
+        let state = RustDeskDisplayState {
+            platform_additions: r#"{"is_installed":true,"idd_impl":"rustdesk_idd","rustdesk_virtual_displays":[1, 3],"supported_privacy_mode_impl":[["privacy_mode_impl_mag","Mag"],["privacy_mode_impl_exclude_from_capture","Exclude"]]}"#.into(),
+            privacy_state: 4,
+            privacy_generation: 2,
+            ..RustDeskDisplayState::default()
+        };
+        let features = peer_features_from(&state);
+        assert_eq!(features.struct_size, 48);
+        assert_eq!(features.installed, 1);
+        assert_eq!(features.idd_impl, 1);
+        assert_eq!(features.rustdesk_virtual_mask, (1 << 1) | (1 << 3));
+        assert_eq!(features.privacy_supported, 1);
+        assert_eq!((features.privacy_state, features.privacy_generation), (4, 2));
+        assert_eq!(privacy_mode_impl_key(&state.platform_additions), "privacy_mode_impl_mag");
+
+        let amyuni = RustDeskDisplayState {
+            platform_additions: r#"{"idd_impl": "amyuni_idd", "amyuni_virtual_displays": 2}"#.into(),
+            ..RustDeskDisplayState::default()
+        };
+        let features = peer_features_from(&amyuni);
+        assert_eq!((features.installed, features.idd_impl, features.amyuni_virtual_count), (0, 2, 2));
+        assert_eq!(features.privacy_supported, 0);
+        assert_eq!(peer_features_from(&RustDeskDisplayState::default()).idd_impl, 0);
+    }
+
+    #[test]
+    fn live_session_controls_validate_and_queue() {
+        let mut client = test_client_with_display_state(RustDeskDisplayState {
+            platform_additions: r#"{"supported_privacy_mode_impl":[["privacy_mode_impl_mag","Mag"]]}"#.into(),
+            ..RustDeskDisplayState::default()
+        });
+        let handle = &mut client as *mut RustDeskClient as *mut c_void;
+        assert!(!rustdesk_toggle_virtual_display(handle, 5, true));
+        assert!(!rustdesk_toggle_virtual_display(handle, -1, true), "-1 only plugs everything out");
+        assert!(!rustdesk_set_stream_options(handle, 6, true));
+        assert!(rustdesk_toggle_privacy_mode(handle, true));
+        assert!(rustdesk_toggle_virtual_display(handle, -1, false));
+        assert!(rustdesk_set_stream_options(handle, 4, false));
+        let controls = client.controls.take_batch(8);
+        assert!(matches!(
+            controls.as_slice(),
+            [
+                ControlMsg::TogglePrivacyMode { impl_key, on: true },
+                ControlMsg::ToggleVirtualDisplay { display: -1, on: false },
+                ControlMsg::SetStreamOptions { codec: 4, audio_enabled: false },
+            ] if impl_key == "privacy_mode_impl_mag"
+        ));
     }
 
     #[test]

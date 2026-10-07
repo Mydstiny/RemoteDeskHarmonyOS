@@ -4410,6 +4410,14 @@ napi_value NapiGetSessionDiagnostics(napi_env env, napi_callback_info info) {
     SetObjectInt64(env, result, "qualityAppliedGeneration",
                    static_cast<int64_t>(nativeStats.qualityAppliedGeneration));
     SetObjectInt32(env, result, "qualityUpdateStatus", nativeStats.qualityUpdateStatus);
+    SetObjectBool(env, result, "peerInstalled", nativeStats.peerInstalled);
+    SetObjectInt32(env, result, "virtualDisplayImpl", nativeStats.virtualDisplayImpl);
+    SetObjectInt32(env, result, "rustdeskVirtualDisplayMask",
+                   static_cast<int32_t>(nativeStats.rustdeskVirtualDisplayMask));
+    SetObjectInt32(env, result, "amyuniVirtualDisplayCount", nativeStats.amyuniVirtualDisplayCount);
+    SetObjectBool(env, result, "privacySupported", nativeStats.privacySupported);
+    SetObjectInt32(env, result, "privacyState", nativeStats.privacyState);
+    SetObjectInt64(env, result, "privacyGeneration", static_cast<int64_t>(nativeStats.privacyGeneration));
     SetObjectInt64(env, result, "videoMessages", static_cast<int64_t>(
         vncSession && counters ? counters->ingressFrames.load(std::memory_order_acquire) :
         nativeStats.videoMessages));
@@ -7747,6 +7755,93 @@ napi_value NapiSendRustDeskTouchpadWheel(napi_env env, napi_callback_info info) 
         const std::shared_ptr<RustDeskBridge> bridge = GetRustDeskAdapter(session);
         if (bridge) accepted = bridge->sendTouchpadWheel(x, y);
     }
+    napi_value result;
+    napi_get_boolean(env, accepted, &result);
+    return result;
+}
+
+/** The live RustDesk bridge of a session whose owner is active, or null with the reason. */
+static std::shared_ptr<RustDeskBridge> ActiveRustDeskBridge(int32_t sessionId, const char** rejection) {
+    auto it = g_sessionRegistry.find(sessionId);
+    const std::shared_ptr<SessionContext> session =
+        it == g_sessionRegistry.end() ? nullptr : it->second;
+    if (!session) {
+        *rejection = "session-not-found";
+        return nullptr;
+    }
+    if (!IsSessionCallbackActive(session)) {
+        *rejection = "session-owner-inactive";
+        return nullptr;
+    }
+    std::shared_ptr<RustDeskBridge> bridge = GetRustDeskAdapter(session);
+    if (!bridge) {
+        *rejection = "bridge-unavailable";
+    }
+    return bridge;
+}
+
+/** NAPI: toggleRustDeskPrivacyMode(sessionId, on): boolean (the peer's answer arrives in the diagnostics). */
+napi_value NapiToggleRustDeskPrivacyMode(napi_env env, napi_callback_info info) {
+    size_t argc = 2;
+    napi_value args[2];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    int32_t sessionId = 0;
+    bool on = false;
+    if (argc >= 2) {
+        napi_get_value_int32(env, args[0], &sessionId);
+        napi_get_value_bool(env, args[1], &on);
+    }
+    const char* rejection = "ffi-control-rejected";
+    const std::shared_ptr<RustDeskBridge> bridge = ActiveRustDeskBridge(sessionId, &rejection);
+    const bool accepted = bridge && bridge->togglePrivacyMode(on);
+    OH_LOG_INFO(LOG_APP, "[ExtLoader] RustDesk privacy mode session=%{public}d on=%{public}d accepted=%{public}d reason=%{public}s",
+        sessionId, on ? 1 : 0, accepted ? 1 : 0, accepted ? "ok" : rejection);
+    napi_value result;
+    napi_get_boolean(env, accepted, &result);
+    return result;
+}
+
+/** NAPI: toggleRustDeskVirtualDisplay(sessionId, display, on): boolean */
+napi_value NapiToggleRustDeskVirtualDisplay(napi_env env, napi_callback_info info) {
+    size_t argc = 3;
+    napi_value args[3];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    int32_t sessionId = 0;
+    int32_t display = -2;
+    bool on = false;
+    if (argc >= 3) {
+        napi_get_value_int32(env, args[0], &sessionId);
+        napi_get_value_int32(env, args[1], &display);
+        napi_get_value_bool(env, args[2], &on);
+    }
+    const char* rejection = "ffi-control-rejected";
+    const std::shared_ptr<RustDeskBridge> bridge = ActiveRustDeskBridge(sessionId, &rejection);
+    const bool accepted = bridge && bridge->toggleVirtualDisplay(display, on);
+    OH_LOG_INFO(LOG_APP, "[ExtLoader] RustDesk virtual display session=%{public}d display=%{public}d on=%{public}d accepted=%{public}d reason=%{public}s",
+        sessionId, display, on ? 1 : 0, accepted ? 1 : 0, accepted ? "ok" : rejection);
+    napi_value result;
+    napi_get_boolean(env, accepted, &result);
+    return result;
+}
+
+/** NAPI: setRustDeskStreamOptions(sessionId, codec, audioEnabled): boolean — live codec and remote audio. */
+napi_value NapiSetRustDeskStreamOptions(napi_env env, napi_callback_info info) {
+    size_t argc = 3;
+    napi_value args[3];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    int32_t sessionId = 0;
+    int32_t codec = -1;
+    bool audioEnabled = true;
+    if (argc >= 3) {
+        napi_get_value_int32(env, args[0], &sessionId);
+        napi_get_value_int32(env, args[1], &codec);
+        napi_get_value_bool(env, args[2], &audioEnabled);
+    }
+    const char* rejection = "ffi-control-rejected";
+    const std::shared_ptr<RustDeskBridge> bridge = ActiveRustDeskBridge(sessionId, &rejection);
+    const bool accepted = bridge && bridge->setStreamOptions(codec, audioEnabled);
+    OH_LOG_INFO(LOG_APP, "[ExtLoader] RustDesk stream options session=%{public}d codec=%{public}d audio=%{public}d accepted=%{public}d reason=%{public}s",
+        sessionId, codec, audioEnabled ? 1 : 0, accepted ? 1 : 0, accepted ? "ok" : rejection);
     napi_value result;
     napi_get_boolean(env, accepted, &result);
     return result;
@@ -13350,6 +13445,18 @@ napi_value ExtensionLoaderNapi::Init(napi_env env, napi_value exports) {
     napi_create_function(env, "setRustDeskImageQuality", NAPI_AUTO_LENGTH,
                          NapiSetRustDeskImageQuality, nullptr, &fn);
     napi_set_named_property(env, exports, "setRustDeskImageQuality", fn);
+
+    napi_create_function(env, "toggleRustDeskPrivacyMode", NAPI_AUTO_LENGTH,
+                         NapiToggleRustDeskPrivacyMode, nullptr, &fn);
+    napi_set_named_property(env, exports, "toggleRustDeskPrivacyMode", fn);
+
+    napi_create_function(env, "toggleRustDeskVirtualDisplay", NAPI_AUTO_LENGTH,
+                         NapiToggleRustDeskVirtualDisplay, nullptr, &fn);
+    napi_set_named_property(env, exports, "toggleRustDeskVirtualDisplay", fn);
+
+    napi_create_function(env, "setRustDeskStreamOptions", NAPI_AUTO_LENGTH,
+                         NapiSetRustDeskStreamOptions, nullptr, &fn);
+    napi_set_named_property(env, exports, "setRustDeskStreamOptions", fn);
 
     napi_create_function(env, "getRustDeskDisplayCapabilities", NAPI_AUTO_LENGTH,
                          NapiGetRustDeskDisplayCapabilities, nullptr, &fn);

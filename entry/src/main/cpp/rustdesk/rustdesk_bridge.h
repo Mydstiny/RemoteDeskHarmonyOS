@@ -68,6 +68,14 @@ struct RustDeskDiagnosticsStats {
     uint64_t qualityRequestedGeneration = 0;
     uint64_t qualityAppliedGeneration = 0;
     int qualityUpdateStatus = 0;
+    // The peer's extras (PeerInfo.platform_additions) and the last privacy-mode answer (BackNotification).
+    bool peerInstalled = false;
+    int virtualDisplayImpl = 0; // 0 none, 1 rustdesk_idd, 2 amyuni_idd
+    uint32_t rustdeskVirtualDisplayMask = 0; // bit n: virtual display n (1..4) plugged in
+    int amyuniVirtualDisplayCount = 0;
+    bool privacySupported = false;
+    int privacyState = 0;
+    uint32_t privacyGeneration = 0;
     std::string peerPlatform = "unknown";
     bool remoteInputPermissionKnown = false;
     bool remoteInputAllowed = true;
@@ -302,6 +310,12 @@ public:
     void            requestFrameRefresh() override;
     void            reportVideoPressure(int level) override;
     bool            setImageQuality(int quality);
+    /** Live privacy mode (Misc.toggle_privacy_mode); the peer's answer shows up in getDiagnostics().privacyState. */
+    bool            togglePrivacyMode(bool on);
+    /** Plug a Windows peer's virtual display in or out (display -1 with on=false: all). */
+    bool            toggleVirtualDisplay(int display, bool on);
+    /** Live codec preference (0 auto … 5 H265) and remote audio. */
+    bool            setStreamOptions(int codec, bool audioEnabled);
     bool            reportVideoPressureForSession(uint64_t sessionId,
                                                   uint64_t generation,
                                                   uint64_t ownerToken,

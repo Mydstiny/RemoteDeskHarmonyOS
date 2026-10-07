@@ -1,5 +1,6 @@
 import { recordVncFailure } from '../services/VncDiagnosticEvents';
 import { AI_SESSION_RAIL_EXPANDED } from '../services/diagnosticAi/AiBridgeKeys';
+import { rustDeskCodecName, rustDeskLiveAudioPossible, rustDeskPrivacyStateMessage } from '../services/RustDeskLiveOptionsPolicy';
 import { AiTouchShieldTracker } from '../services/diagnosticAi/AiTouchShield';
 import { recordRustDeskFailure, recordRustDeskFirstFrame, recordRustDeskQualityRequest,
   recordRustDeskQualityResult } from '../services/RustDeskDiagnosticEvents';
@@ -1292,6 +1293,14 @@ struct RemoteDesktop {
   @StorageProp(VNC_WHEEL_SPEED_KEY) vncWheelSpeed: number = 100;
   @StorageLink('rustdeskSwapMouseButtons') rustdeskSwapMouseButtons: boolean = false;
   @StorageLink('rustdeskTouchpadSpeed') rustdeskTouchpadSpeed: number = 1.0;
+  /** A Windows peer's virtual display driver (0 none, 1 rustdesk_idd, 2 amyuni_idd) and what is plugged in. */
+  @State rustDeskVirtualDisplayImpl: number = 0;
+  @State rustDeskVirtualDisplayMask: number = 0;
+  @State rustDeskAmyuniVirtualCount: number = 0;
+  /** The last privacy-mode answer seen (its counter), so each new answer is announced once. */
+  private rustDeskPrivacyGeneration: number = 0;
+  /** This RustDesk session started with remote audio (its local player exists, so audio can come back live). */
+  private rustDeskConnectedWithAudio: boolean = true;
   @StorageLink('virtualMouseStyle') virtualMouseStyle: string = 'arrow';
   @StorageLink('rdpControlMode') @Watch('onRemoteControlModeChange')
   rdpControlMode: number = 0; // 0=touchpad, 1=direct touch, 2=keyboard/mouse
@@ -5983,20 +5992,54 @@ struct RemoteDesktop {
     }
   }
 
+  /** A live RustDesk session the user is connected to (its live options can change now). */
+  private rustDeskLive(): boolean {
+    return this.isRustDeskSession() && this.sessionId > 0 && this.connected;
+  }
+
+  /** Remote audio as the peer should send it now: the preference, if this session has a local player for it. */
+  private rustDeskLiveAudio(): boolean {
+    return this.rustdeskAudioEnabled && this.rustDeskConnectedWithAudio;
+  }
+
   private setRustDeskPrivacyMode(on: boolean): void {
     this.rustdeskPrivacyMode = on;
     this.persistSessionPref('rustdeskPrivacyMode', on);
+    // Live: the peer answers (on / not supported / denied …) and the answer is shown when it comes.
+    if (this.rustDeskLive() && this.loader.toggleRustDeskPrivacyMode(this.sessionId, on)) {
+      promptAction.showToast({ message: on ? '正在请求远端开启隐私模式…' : '正在请求远端关闭隐私模式…', duration: 1600 });
+      return;
+    }
     promptAction.showToast({
       message: on ? '隐私模式将在下次连接时请求启用' : '隐私模式将在下次连接时关闭',
       duration: 1800
     });
   }
 
+  /** Plug a Windows peer's virtual display in or out; the peer's display list updates by itself. */
+  private toggleRustDeskVirtualDisplay(display: number, on: boolean): void {
+    if (!this.rustDeskLive()) { return; }
+    if (!this.loader.toggleRustDeskVirtualDisplay(this.sessionId, display, on)) {
+      promptAction.showToast({ message: '虚拟显示器请求未被远端会话接受', duration: 1800 });
+      return;
+    }
+    promptAction.showToast({
+      message: display < 0 ? '正在拔出全部虚拟显示器…' : (on ? '正在插入虚拟显示器…' : '正在移除虚拟显示器…'),
+      duration: 1600
+    });
+  }
+
   private setRustDeskAudioEnabled(on: boolean): void {
     this.rustdeskAudioEnabled = on;
     this.persistSessionPref('rustdeskAudioEnabled', on);
+    if (this.rustDeskLive() && rustDeskLiveAudioPossible(on, this.rustDeskConnectedWithAudio) &&
+      this.loader.setRustDeskStreamOptions(this.sessionId, this.rustdeskCodec, this.rustDeskLiveAudio())) {
+      promptAction.showToast({ message: on ? '远端音频已开启' : '远端音频已静音', duration: 1600 });
+      return;
+    }
     promptAction.showToast({
-      message: on ? '远端音频偏好已保存，下次连接时启用' : '远端音频偏好已保存，下次连接时静音',
+      message: on ? (this.rustDeskLive() ? '这次连接开始时没有开远端音频，重新连接后开启' :
+        '远端音频偏好已保存，下次连接时启用') : '远端音频偏好已保存，下次连接时静音',
       duration: 1800
     });
   }
@@ -8251,7 +8294,13 @@ struct RemoteDesktop {
     const next: number = codec >= 0 && codec <= 5 ? codec : 0;
     this.rustdeskCodec = next;
     this.persistSessionPref('rustdeskCodec', next);
-    promptAction.showToast({ message: '编解码偏好已保存，重连后完全生效', duration: 2000 });
+    // Live: the peer's encoder switches (if it can encode that codec) and the decoder follows the next keyframe.
+    if (this.rustDeskLive() && this.loader.setRustDeskStreamOptions(this.sessionId, next, this.rustDeskLiveAudio())) {
+      promptAction.showToast({ message: '已请求远端改用 ' + rustDeskCodecName(next) +
+        ' 编码；远端不支持时会继续用当前编码', duration: 2200 });
+      return;
+    }
+    promptAction.showToast({ message: '编解码偏好已保存，下次连接生效', duration: 2000 });
   }
 
   private setRustDeskShowLocalCursor(on: boolean): void {
@@ -8386,6 +8435,9 @@ struct RemoteDesktop {
       onLockRemote: (): void => {},
       onTogglePrivacy: (on: boolean): void => {
         this.setRustDeskPrivacyMode(on);
+      },
+      onToggleRustDeskVirtualDisplay: (display: number, on: boolean): void => {
+        this.toggleRustDeskVirtualDisplay(display, on);
       },
       onToggleAudio: (on: boolean): void => {
         this.setRustDeskAudioEnabled(on);
@@ -12458,8 +12510,29 @@ struct RemoteDesktop {
     }
   }
 
+  /** A Windows peer's virtual displays and the peer's answer to a privacy-mode request (from the diagnostics). */
+  private adoptRustDeskPeerFeatures(snapshot: RustDeskDiagnosticsSnapshot): void {
+    const impl: number = snapshot.virtualDisplayImpl ?? 0;
+    const mask: number = snapshot.rustdeskVirtualDisplayMask ?? 0;
+    const amyuni: number = snapshot.amyuniVirtualDisplayCount ?? 0;
+    if (impl !== this.rustDeskVirtualDisplayImpl) { this.rustDeskVirtualDisplayImpl = impl; }
+    if (mask !== this.rustDeskVirtualDisplayMask) { this.rustDeskVirtualDisplayMask = mask; }
+    if (amyuni !== this.rustDeskAmyuniVirtualCount) { this.rustDeskAmyuniVirtualCount = amyuni; }
+    const generation: number = snapshot.privacyGeneration ?? 0;
+    if (generation > this.rustDeskPrivacyGeneration) {
+      this.rustDeskPrivacyGeneration = generation;
+      const message: string = rustDeskPrivacyStateMessage(snapshot.privacyState ?? 0);
+      hilog.info(RD_DOMAIN, RD_TAG, 'rustdesk privacy answer state=' + (snapshot.privacyState ?? 0).toString());
+      if (message !== '') { promptAction.showToast({ message: message, duration: 2400 }); }
+    }
+  }
+
   private startRustDeskGeometrySync(sessionId: number): void {
     this.stopRustDeskGeometrySync();
+    this.rustDeskPrivacyGeneration = 0;
+    this.rustDeskVirtualDisplayImpl = 0;
+    this.rustDeskVirtualDisplayMask = 0;
+    this.rustDeskAmyuniVirtualCount = 0;
     if (!this.isRustDeskSession() || sessionId <= 0) {
       return;
     }
@@ -12488,6 +12561,7 @@ struct RemoteDesktop {
     if (this.sessionId !== sessionId || snapshot.sessionId !== sessionId) {
       return;
     }
+    this.adoptRustDeskPeerFeatures(snapshot);
     const observedPeerPlatform: string = snapshot.peerPlatform !== undefined ?
       snapshot.peerPlatform : 'unknown';
     const previousPhoneTarget: boolean = this.isRustDeskPhoneSession();
@@ -16284,6 +16358,9 @@ struct RemoteDesktop {
       }
       const rdpTargetServerName: string = host.protocol === 'rdp'
         ? (host.customHostname.trim() !== '' ? host.customHostname : host.host) : '';
+      // The local audio player exists only when the session starts with remote audio (live 远端音频 needs it).
+      this.rustDeskConnectedWithAudio = host.protocol !== 'rustdesk' ||
+        (AppStorage.get<boolean>('rustdeskAudioEnabled') ?? true);
       const cfg: SessionConfig = {
         protocol: host.protocol,
         host: sessionHost,
@@ -24210,6 +24287,9 @@ struct RemoteDesktop {
           layout: remoteTopBarLayout(this.isDesktopDevice, this.breakpoint, this.isPadDevice),
           edgeRail: this.shouldUseRemoteSessionEdgeRail(),
           privacyMode: this.rustdeskPrivacyMode,
+          virtualDisplayImpl: this.rustDeskVirtualDisplayImpl,
+          virtualDisplayMask: this.rustDeskVirtualDisplayMask,
+          amyuniVirtualDisplayCount: this.rustDeskAmyuniVirtualCount,
           audioEnabled: this.rustdeskAudioEnabled,
           clipboardEnabled: this.isRdpRemoteSession() ?
             this.rdpClipboardEnabled : this.rustdeskClipboardEnabled,

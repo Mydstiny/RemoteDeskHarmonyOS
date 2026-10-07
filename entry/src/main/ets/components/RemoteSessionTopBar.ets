@@ -104,6 +104,8 @@ export interface RemoteSessionTopBarActions {
   onCtrlAltDel: () => void;
   onLockRemote: () => void;
   onTogglePrivacy: (on: boolean) => void;
+  /** Plug a Windows peer's virtual display in or out (display -1 with on=false: all of them). */
+  onToggleRustDeskVirtualDisplay: (display: number, on: boolean) => void;
   onToggleAudio: (on: boolean) => void;
   onToggleClipboard: (on: boolean) => void;
   onToggleFilePaste: (on: boolean) => void;
@@ -168,7 +170,8 @@ export function runRemoteSessionAiAction(action: DiagnosticAiAppActionId, action
     case 'session.portrait': actions.onTogglePortraitDisplay(); return true;
     case 'session.display': actions.onOpenRustDeskResolution(); return true;
     case 'session.quality': actions.onSetRustDeskImageQuality((s.imageQuality + 1) % 3); return true;
-    case 'session.codec': actions.onSetRustDeskCodec((s.codec + 1) % 3); return true;
+    // Auto → VP8 → VP9 → AV1 → H264 → H265 → auto, switched live.
+    case 'session.codec': actions.onSetRustDeskCodec((s.codec + 1) % 6); return true;
     case 'session.cursor': actions.onToggleShowLocalCursor(!s.showLocalCursor); return true;
     case 'session.browseMode': actions.onToggleBrowseMode(!s.browseMode); return true;
     case 'session.relativeMouse': actions.onToggleRelativeMouse(!s.relativeMouseMode); return true;
@@ -197,6 +200,10 @@ export struct RemoteSessionTopBar {
   };
   @Prop @Watch('onEdgeRailChanged') edgeRail: boolean = false;
   @Prop privacyMode: boolean = false;
+  /** A Windows peer's virtual display driver (0 none, 1 rustdesk_idd, 2 amyuni_idd) and what is plugged in. */
+  @Prop virtualDisplayImpl: number = 0;
+  @Prop virtualDisplayMask: number = 0;
+  @Prop amyuniVirtualDisplayCount: number = 0;
   @Prop audioEnabled: boolean = true;
   @Prop clipboardEnabled: boolean = true;
   @Prop filePasteEnabled: boolean = true;
@@ -258,6 +265,7 @@ export struct RemoteSessionTopBar {
     onCtrlAltDel: (): void => {},
     onLockRemote: (): void => {},
     onTogglePrivacy: (_on: boolean): void => {},
+    onToggleRustDeskVirtualDisplay: (_display: number, _on: boolean): void => {},
     onToggleAudio: (_on: boolean): void => {},
     onToggleClipboard: (_on: boolean): void => {},
     onToggleFilePaste: (_on: boolean): void => {},
@@ -937,16 +945,24 @@ export struct RemoteSessionTopBar {
       if (this.activeSubMenu === 'imageQuality') {
         this.imageQualitySubMenuContent()
       }
-      this.subMenuItem('编解码（重连生效）', this.codecLabel(this.codec),
+      this.subMenuItem('编解码', this.codecLabel(this.codec),
         'displaySettings', 'codec')
       if (this.activeSubMenu === 'codec') {
         this.codecSubMenuContent()
       }
-      this.menuItem('虚拟显示器', 'virtualDisplay', (): void => {})
-      this.menuItem('隐私模式（重连生效）', 'togglePrivacyMode', (): void => {
+      if (this.virtualDisplayImpl > 0) {
+        this.subMenuItem('虚拟显示器', this.virtualDisplayStatusLabel(), 'displaySettings', 'virtualDisplay')
+        if (this.activeSubMenu === 'virtualDisplay') {
+          this.virtualDisplaySubMenuContent()
+        }
+      } else {
+        // Shown greyed with its reason: only Windows peers with RustDesk installed and a virtual display driver.
+        this.menuItem('虚拟显示器', 'virtualDisplay', (): void => {})
+      }
+      this.menuItem('隐私模式', 'togglePrivacyMode', (): void => {
         this.actions.onTogglePrivacy(!this.privacyMode);
       }, this.privacyMode)
-      this.menuItem('远端音频（重连生效）', 'toggleAudio', (): void => {
+      this.menuItem('远端音频', 'toggleAudio', (): void => {
         this.actions.onToggleAudio(!this.audioEnabled);
       }, this.audioEnabled)
       this.menuItem('允许复制粘贴文件', 'toggleFilePaste', (): void => {
@@ -1057,6 +1073,52 @@ export struct RemoteSessionTopBar {
       .fontColor('#6B7280')
       .width('100%')
       .padding({ left: 38, right: 8, top: 2, bottom: 4 })
+  }
+
+  /** How many virtual displays are plugged in on the peer. */
+  private virtualDisplayCount(): number {
+    if (this.virtualDisplayImpl === 2) { return Math.max(0, this.amyuniVirtualDisplayCount); }
+    let count: number = 0;
+    for (let index = 1; index <= 4; index++) {
+      if ((this.virtualDisplayMask & (1 << index)) !== 0) { count++; }
+    }
+    return count;
+  }
+
+  private virtualDisplayStatusLabel(): string {
+    const count: number = this.virtualDisplayCount();
+    return count > 0 ? '已插入 ' + count.toString() + ' 个' : '未插入';
+  }
+
+  @Builder
+  private virtualDisplaySubMenuContent() {
+    if (this.virtualDisplayImpl === 1) {
+      // RustDesk's own driver: four slots, each switched on and off by itself.
+      ForEach([1, 2, 3, 4], (index: number): void => {
+        this.menuItem('虚拟显示器 ' + index.toString(), 'displaySettings', (): void => {
+          this.actions.onToggleRustDeskVirtualDisplay(index, (this.virtualDisplayMask & (1 << index)) === 0);
+        }, (this.virtualDisplayMask & (1 << index)) !== 0)
+      }, (index: number): string => 'vd-' + index.toString() + '-' +
+        ((this.virtualDisplayMask & (1 << index)) !== 0 ? 'on' : 'off'))
+    } else {
+      // Amyuni's driver: plug one more in, or one out (at most four).
+      if (this.amyuniVirtualDisplayCount < 4) {
+        this.menuItem('添加一个虚拟显示器', 'displaySettings', (): void => {
+          this.actions.onToggleRustDeskVirtualDisplay(0, true);
+        })
+      }
+      if (this.amyuniVirtualDisplayCount > 0) {
+        this.menuItem('移除一个虚拟显示器', 'displaySettings', (): void => {
+          this.actions.onToggleRustDeskVirtualDisplay(0, false);
+        })
+      }
+    }
+    if (this.virtualDisplayCount() > 0) {
+      this.menuItem('拔出全部虚拟显示器', 'displaySettings', (): void => {
+        this.actions.onToggleRustDeskVirtualDisplay(-1, false);
+      })
+    }
+    this.menuNote('插入后在「远端显示器」里切换到它；最后一个连接断开后远端会自动拔出')
   }
 
   @Builder
