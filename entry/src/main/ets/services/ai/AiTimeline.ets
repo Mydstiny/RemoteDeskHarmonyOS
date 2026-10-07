@@ -50,7 +50,9 @@ function canonicalTool(name: string): string {
     case 'write': return 'Write';
     case 'edit': return 'Edit';
     case 'grep': return 'Grep';
-    case 'glob': return 'Glob';
+    case 'glob':
+    case 'find': return 'Glob';
+    case 'ls': return 'LS';
     case 'web_fetch': return 'WebFetch';
     case 'web_search': return 'WebSearch';
     case 'todo_write': return 'TodoWrite';
@@ -325,6 +327,8 @@ export function aiToolView(item: AiTranscriptItem): AiToolView {
       return aiEditView(item, path);
     case 'Glob':
       return { icon: 'search', verb: '查找文件', target: str(input['pattern']), stats: '' };
+    case 'LS':
+      return { icon: 'doc', verb: '列出目录', target: aiShortPath(path) || '项目目录', stats: '' };
     case 'Grep':
       return { icon: 'search', verb: '搜索', target: str(input['pattern']), stats: '' };
     case 'WebFetch':

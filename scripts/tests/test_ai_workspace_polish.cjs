@@ -21,6 +21,7 @@ assert.ok(!page.includes('this.pulse'));
 assert.ok(shimmer.includes('.blendMode(BlendMode.SRC_ATOP)') && shimmer.includes('BlendApplyType.OFFSCREEN'));
 assert.ok(shimmer.includes('iterations: -1'));
 assert.ok(shimmer.includes("return '#00' +"), 'the clear stop is #00RRGGBB');
+assert.ok(!shimmer.includes("height('100%')"), 'a 100% band stretched the 正在思考 row to the whole list');
 
 // Pull to refresh: the list fills Refresh and keeps its spring edge even when short.
 assert.ok(page.includes(".edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })"));
@@ -31,4 +32,8 @@ assert.ok(page.includes('.bindSheet($$this.showModelPicker, this.modelSheet(), {
 const sheet = page.slice(page.indexOf('@Builder private modelSheet()'), page.indexOf('@Builder private modelCard()'));
 assert.ok(!sheet.includes(".height('100%')") && !sheet.includes('.layoutWeight(1)'));
 assert.ok(sheet.includes('.constraintSize({ maxHeight: Math.max(240, this.pageHeight * 0.78) })'));
+// Pi's directory listing reads as 列出目录, not a generic tool.
+const timeline = fs.readFileSync(path.join(ETS, 'services/ai/AiTimeline.ets'), 'utf8');
+assert.ok(timeline.includes("case 'LS':\n      return { icon: 'doc', verb: '列出目录'"));
+assert.ok(timeline.includes("case 'ls': return 'LS';"));
 console.log('PASS remote AI composer centring, shimmer, pull to refresh and model sheet sizing');

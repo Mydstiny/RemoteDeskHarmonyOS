@@ -42,7 +42,8 @@ export struct AiShimmerText {
       Text(this.text).fontSize(this.fontSize).fontFamily(AppConfig.fontFamily).fontColor(this.baseColor).maxLines(1)
         .textOverflow({ overflow: TextOverflow.Ellipsis })
       if (this.widthVp > 0) {
-        Column().width(this.band()).height('100%')
+        // A fixed height (one line): '100%' of the stack would stretch a list row to the whole list.
+        Column().width(this.band()).height(Math.round(this.fontSize * 1.4))
           .linearGradient({ angle: 90, colors: [[this.clear(), 0], [this.highlight, 0.5], [this.clear(), 1]] })
           .translate({ x: this.sweep })
           .blendMode(BlendMode.SRC_ATOP)
