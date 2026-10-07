@@ -387,22 +387,26 @@ export struct AboutSettingsSheet {
 
   @Builder guideSearchBar() {
     Row() {
-      SymbolGlyph($r('sys.symbol.magnifyingglass')).fontSize(16).fontColor([this.pal().text3])
-      TextInput({ text: this.guideQuery, placeholder: '搜索操作，例如 配对、滚轮、SFTP' })
-        .layoutWeight(1).height(44).fontSize(14).fontFamily(this.font()).fontColor(this.pal().text)
-        .placeholderColor(this.pal().text3).backgroundColor(Color.Transparent).padding({ left: 8, right: 4 })
-        .enterKeyType(EnterKeyType.Search)
-        .onChange((value: string): void => { this.setGuideQuery(value); })
-      if (this.guideQuery !== '') {
-        SymbolGlyph($r('sys.symbol.xmark_circle_fill')).fontSize(18).fontColor([this.pal().text3])
-          .width(44).height(44).accessibilityText('清除搜索')
-          .onClick((): void => { this.setGuideQuery(''); })
+      Row() {
+        SymbolGlyph($r('sys.symbol.magnifyingglass')).fontSize(16).fontColor([this.pal().text3])
+        TextInput({ text: this.guideQuery, placeholder: '搜索操作，例如 配对、滚轮、SFTP' })
+          .layoutWeight(1).height(44).fontSize(14).fontFamily(this.font()).fontColor(this.pal().text)
+          .placeholderColor(this.pal().text3).backgroundColor(Color.Transparent).padding({ left: 8, right: 4 })
+          .enterKeyType(EnterKeyType.Search)
+          .onChange((value: string): void => { this.setGuideQuery(value); })
+        if (this.guideQuery !== '') {
+          SymbolGlyph($r('sys.symbol.xmark_circle_fill')).fontSize(18).fontColor([this.pal().text3])
+            .width(44).height(44).accessibilityText('清除搜索')
+            .onClick((): void => { this.setGuideQuery(''); })
+        }
       }
+      .layoutWeight(1).height(44).padding({ left: 14, right: 2 }).borderRadius(14)
+      .backgroundColor(this.pal().surface)
+      .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
     }
-    .width('100%').height(44).padding({ left: 14, right: 2 }).borderRadius(14)
-    .backgroundColor(this.pal().surface)
-    .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
-    .margin({ left: 20, right: 20, bottom: this.operationGuideLayout().compact ? 8 : 10 })
+    // The inset is padding on the full-width row: width 100% plus a margin would overflow the sheet.
+    .width('100%').padding({ left: 20, right: 20 })
+    .margin({ bottom: this.operationGuideLayout().compact ? 8 : 10 })
   }
 
   @Builder guideDeviceSegment(device: GuideDevice) {

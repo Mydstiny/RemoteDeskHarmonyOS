@@ -24,8 +24,9 @@ export function resolveOperationGuideSheetLayout(viewportHeight: number,
   const extraLarge: boolean = breakpoint === 'xl';
   const fallbackViewport: number = small ? 720 : 840;
   const normalizedViewport: number = finitePositive(viewportHeight, fallbackViewport);
-  const viewportInset: number = small ? 16 : 32;
-  const availableHeight: number = Math.max(320, normalizedViewport - viewportInset);
+  // A bottom sheet (phone) may use the window less a small inset; a centered sheet (Pad, PC) is capped by the system
+  // at about 90% of the window, so it plans for 88% and its footer is never cut off.
+  const availableHeight: number = Math.max(320, small ? normalizedViewport - 16 : Math.floor(normalizedViewport * 0.88));
   const compact: boolean = availableHeight < 620;
   const chromeHeight: number = compact ? 300 : 350;
   const normalizedLessonCount: number = nonNegativeInteger(lessonCount);
