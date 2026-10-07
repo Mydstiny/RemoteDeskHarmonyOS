@@ -26,6 +26,19 @@ export function aiModeLabel(mode: string): string {
     default: return mode;
   }
 }
+/** What a permission or collaboration mode lets the agent do, for the composer's permission menu. */
+export function aiModeDetail(mode: string): string {
+  switch (mode) {
+    case 'read-only': case 'readOnly': return '只能查看文件；修改文件或运行命令前先请你批准';
+    case 'workspace-write': case 'workspaceWrite': return '可以在项目文件夹里修改文件、运行命令；越界时请你批准';
+    case 'danger-full-access': case 'dangerFullAccess': return '不受沙箱限制，可以访问整台电脑（风险较高）';
+    case 'acceptEdits': return '修改文件不再询问，运行命令前仍会询问';
+    case 'bypassPermissions': return '所有操作都不再询问（风险较高）';
+    case 'plan': return '先给出方案，你确认后再动手';
+    case 'default': return '直接动手完成任务';
+    default: return '';
+  }
+}
 const AI_METHOD_LABELS: Record<string, string> = {
   'turn.start': '发送任务', 'turn.steer': '补充指令', 'turn.cancel': '停止回合', 'session.create': '新建会话',
   'session.update': '更新会话设置', 'session.fork': '分叉会话', 'session.compact': '压缩上下文',
@@ -66,6 +79,29 @@ export function aiRelativeTime(at: number, now: number = Date.now()): string {
   const two = (value: number): string => value.toString().padStart(2, '0');
   const day = two(date.getMonth() + 1) + '-' + two(date.getDate());
   return date.getFullYear() === today.getFullYear() ? day : date.getFullYear().toString() + '-' + day;
+}
+/** Reasoning effort in words, as the model picker and its chip show it. */
+export function aiEffortLabel(effort: string): string {
+  switch (effort) {
+    case 'off': case 'none': return '不思考';
+    case 'minimal': return '极简';
+    case 'low': return '低';
+    case 'medium': return '中';
+    case 'high': return '高';
+    case 'xhigh': return '超高';
+    case 'max': return '最高';
+    default: return effort;
+  }
+}
+/** 860, 12.4k, 128k, 1.2M: token counts for the context meter. */
+export function aiTokens(count: number): string {
+  if (!Number.isFinite(count) || count <= 0) { return '0'; }
+  if (count < 1000) { return Math.round(count).toString(); }
+  if (count < 1000000) {
+    const k = count / 1000;
+    return (k < 100 ? (Math.round(k * 10) / 10).toString() : Math.round(k).toString()) + 'k';
+  }
+  return (Math.round(count / 100000) / 10).toString() + 'M';
 }
 export function aiRequestTitle(kind: string): string {
   switch (kind) {

@@ -23,5 +23,18 @@ assert.deepEqual(Array.from(p.aiOperationSummary('not json', 'not json')), ['未
 assert.match(p.aiShortTime(new Date(2026, 9, 7, 15, 5, 2).getTime()), /^10-07 15:05:02$/);
 const page = fs.readFileSync(path.resolve(__dirname, '../../entry/src/main/ets/pages/RemoteAiWorkspace.ets'), 'utf8');
 assert.ok(page.includes('ForEach(this.unsettledOperations(), (operation: AiPendingOperation): void => {'), 'renewals do not flood the list');
-assert.ok(page.includes("this.chip({ label: this.permission !== '' ? aiModeLabel(this.permission) : '权限模式'"));
+// The composer has one model chip (model · effort) opening the picker; permissions moved to the settings gear.
+assert.ok(page.includes("this.chip({ label: this.modelChipLabel(), enabled: this.allowed && !this.busy && this.models.length > 0,") &&
+  page.includes("action: (): void => { this.showModelPicker = true; } })"));
+// Permission modes come with what they allow; the composer's + offers files and plan mode.
+assert.equal(p.aiModeDetail('workspace-write'), '可以在项目文件夹里修改文件、运行命令；越界时请你批准');
+assert.ok(page.includes('@Builder private permissionMenu()') && page.includes("value: '添加文件或图片'"));
+assert.equal(p.aiEffortLabel('high'), '高');
+assert.equal(p.aiEffortLabel('off'), '不思考');
+assert.equal(p.aiTokens(860), '860');
+assert.equal(p.aiTokens(12400), '12.4k');
+assert.equal(p.aiTokens(128000), '128k');
+assert.equal(p.aiTokens(1250000), '1.3M');
+assert.equal(p.aiRelativeTime(Date.now() - 30000), '刚刚');
+assert.equal(p.aiRelativeTime(Date.now() - 5 * 60000), '5 分钟前');
 console.log('PASS remote AI labels: modes, pending writes and times read as words');

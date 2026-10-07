@@ -169,7 +169,7 @@ function workspaceFixture(reconnect, {
     getContext: () => ({ getApplicationContext: () => application }),
     AppStorage: { get: () => state.background },
     router: { getParams: () => ({ hostId: 'host-fixture' }), back: () => { state.navigations++; } },
-    aiErrorText: value => value, aiStatusLabel: value => value, aiConversationItem: timeline.aiConversationItem,
+    aiErrorText: value => value, aiStatusLabel: value => value, aiConversationItem: timeline.aiConversationItem, aiStepEntries: timeline.aiStepEntries,
     aiItemDiff: (item) => { state.itemDiffs++; return timeline.aiItemDiff(item); }, aiDiffFiles: timeline.aiDiffFiles,
     aiDiffStats: timeline.aiDiffStats, aiDiffSignature: (files) => { state.signatures++; return timeline.aiDiffSignature(files); },
     ...timers
@@ -306,16 +306,17 @@ const cases = [
       rows.push(item('a' + turn, 'assistant', 'assistant'));
     }
     state.page.items = rows; state.page.historyCursor = ''; state.page.rawStatus = 'idle';
-    state.page.uiStyle = 'claude';
-    assert.equal(state.page.listLength(), 30);
-    state.page.uiStyle = 'codex'; state.page.codexTab = 0;
-    assert.equal(state.page.shownItems().length, 10); assert.equal(state.page.listLength(), 10);
-    state.page.codexTab = 1;
-    assert.equal(state.page.shownItems().length, 20); assert.equal(state.page.listLength(), 20);
-    state.page.codexTab = 2;
-    assert.equal(state.page.shownItems().length, 0); assert.equal(state.page.listLength(), 1);
-    state.page.codexTab = 0; state.page.rawStatus = 'running'; state.page.historyCursor = 'older';
-    assert.equal(state.page.listLength(), 12);
+    state.page.sessionId = 'fixture-session';
+    // Like the Codex and Claude apps, each turn's four commands fold into one line: user, steps, answer.
+    for (const style of ['claude', 'codex']) {
+      state.page.uiStyle = style;
+      assert.equal(state.page.stepEntries().length, 15, style);
+      assert.equal(state.page.listLength(), 15, style);
+    }
+    assert.equal(timeline.aiStepSummary(rows.slice(1, 5)), '已运行 4 条命令');
+    assert.equal(timeline.aiStepGroupIcon(rows.slice(1, 5)), 'terminal');
+    state.page.rawStatus = 'running'; state.page.historyCursor = 'older';
+    assert.equal(state.page.listLength(), 17);
   }],
   ['Claude file edits can be allowed; Codex ones need the complete native item', async () => {
     const state = workspaceFixture(false);

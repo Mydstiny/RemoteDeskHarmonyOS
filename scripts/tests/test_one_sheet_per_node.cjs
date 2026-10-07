@@ -36,7 +36,7 @@ assert.deepEqual(chained, [], 'a node chains two bindSheets: ' + chained.join(',
 // The fixed pages keep one sheet per node.
 const workspace = fs.readFileSync(path.join(ETS, 'pages/RemoteAiWorkspace.ets'), 'utf8');
 const build = workspace.slice(workspace.indexOf('  build() {'));
-// Projects and sessions became the workspace's home list: details and approval remain, on separate nodes.
-assert.equal((build.match(/\.bindSheet\(/g) || []).length, 2);
+// Projects and sessions became the workspace's home list; approval, settings and the model picker each have a node.
+assert.equal((build.match(/\.bindSheet\(/g) || []).length, 3);
 assert.ok(build.indexOf('Stack() {') < build.indexOf('.bindSheet($$this.showApproval'));
 console.log('PASS one bindSheet per node across ' + sheets + ' sheets');

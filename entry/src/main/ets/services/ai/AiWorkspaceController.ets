@@ -5,9 +5,14 @@ import { AiBridgeClient } from './AiBridgeClient';
 import { aiRandomId } from './AiTransport';
 import { AiLifecycle } from './AiLifecycle';
 import { AiLocalStore } from './AiLocalStore';
-import { AiHost, AiProject, AiSession, AiApproval, AiEvent, AiPendingOperation } from './AiModels';
+import { AiHost, AiProject, AiSession, AiApproval, AiEvent, AiPendingOperation, AiTranscriptItem } from './AiModels';
 import { AiTranscript } from './AiTranscript';
 import { aiArray, aiRecord, aiString, aiNumber, aiErrorText } from './AiWirePolicy';
+
+/** Last conversation lists (per account and host) and recent transcripts: shown at once, then read again. */
+const SESSION_LIST_CACHE: Map<string, AiSession[]> = new Map();
+const TRANSCRIPT_CACHE: Map<string, AiTranscriptItem[]> = new Map();
+const TRANSCRIPT_CACHE_LIMIT: number = 12;
 
 export class AiWorkspaceController {
   client: AiBridgeClient | null = null;
@@ -30,6 +35,16 @@ export class AiWorkspaceController {
   busy: boolean = false;
   allowed: boolean = false;
   inputModalities: string[] = [];
+  /** The conversation's current model and reasoning effort as the engine reports them. */
+  currentModel: string = '';
+  currentEffort: string = '';
+  currentPermission: string = '';
+  currentCollaboration: string = '';
+  /** Tokens in the model's context after the last request, and the window size (0 when the engine has not said). */
+  contextUsed: number = 0;
+  contextWindow: number = 0;
+  /** A cached transcript shown while the conversation is read again. */
+  previewItems: AiTranscriptItem[] = [];
   private accessRevoked: boolean = false;
   historyCursor: string = '';
   onChange: () => void = (): void => {};
@@ -47,6 +62,40 @@ export class AiWorkspaceController {
   private executionEvents: number = 0;
   private stopAccess: () => void = (): void => {};
   private key(): string { return (this.client?.host.id ?? '') + ':' + this.sessionId; }
+  private cacheKey(): string { return (this.client?.host.owner ?? '') + ':' + (this.client?.host.id ?? ''); }
+  private rememberTranscript(): void {
+    if (this.client === null || this.sessionId === '' || this.transcript.items.length === 0) { return; }
+    const key = this.cacheKey() + ':' + this.sessionId;
+    TRANSCRIPT_CACHE.delete(key); TRANSCRIPT_CACHE.set(key, this.transcript.items.slice());
+    while (TRANSCRIPT_CACHE.size > TRANSCRIPT_CACHE_LIMIT) {
+      const oldest = TRANSCRIPT_CACHE.keys().next().value as string; TRANSCRIPT_CACHE.delete(oldest);
+    }
+  }
+  /** Context use from Codex token usage (window included) or DSH request context and answer usage. */
+  private noteUsage(type: string, body: Record<string, Object>): void {
+    if (type === 'thread/tokenUsage/updated' || type === 'tokenUsage') {
+      const usage = this.record(body['tokenUsage']); const last = this.record(usage['last']);
+      const used = aiNumber(last['totalTokens'], aiNumber(last['inputTokens']));
+      if (used > 0) { this.contextUsed = used; }
+      const window = aiNumber(usage['modelContextWindow']);
+      if (window > 0) { this.contextWindow = window; }
+    } else if (type === 'assistant/message') {
+      const usage = this.record(body['usage']);
+      const used = aiNumber(usage['inputTokens']) + aiNumber(usage['outputTokens']);
+      if (used > 0) { this.contextUsed = used; }
+    } else if (type === 'request/context') {
+      const window = aiNumber(body['contextWindow']);
+      if (window > 0) { this.contextWindow = window; }
+    }
+  }
+  private record(value: Object | undefined | null): Record<string, Object> {
+    const empty: Record<string, Object> = {};
+    return value !== undefined && value !== null && typeof value === 'object' && !Array.isArray(value) ?
+      value as Record<string, Object> : empty;
+  }
+  private eventBody(event: Record<string, Object>): Record<string, Object> {
+    return this.record(event['params'] ?? event['data']);
+  }
   /** Maps the events recorded since the last change, then tells the page. */
   private changed(): void {
     if (this.changeTimer >= 0) { clearTimeout(this.changeTimer); this.changeTimer = -1; }
@@ -89,6 +138,8 @@ export class AiWorkspaceController {
       });
       this.assertGeneration(generation);
       this.projects = projects; this.status = '已连接'; this.busy = false;
+      const cached = SESSION_LIST_CACHE.get(this.cacheKey());
+      if (cached !== undefined && this.sessions.length === 0) { this.sessions = cached.slice(); this.changed(); }
       if (this.projects.length > 0) { await this.selectProject(this.projects[0].id); }
     } catch (error) {
       hilog.warn(0x0000, 'RemoteAi', 'connect %{public}s ended %{public}s', host.backend, (error as Error).message);
@@ -119,7 +170,9 @@ export class AiWorkspaceController {
           updatedAt: aiNumber(row['updatedAt']), origin: aiString(row['origin'], 'remote') });
       });
     });
-    return sessions.sort((a: AiSession, b: AiSession): number => b.updatedAt - a.updatedAt);
+    sessions.sort((a: AiSession, b: AiSession): number => b.updatedAt - a.updatedAt);
+    SESSION_LIST_CACHE.set(this.cacheKey(), sessions.slice());
+    return sessions;
   }
   async refreshSessions(): Promise<void> {
     if (this.client === null) { return; }
@@ -151,6 +204,7 @@ export class AiWorkspaceController {
     const generation = ++this.generation;
     await this.release();
     this.assertGeneration(generation);
+    this.rememberTranscript();
     this.client.stopEvents(); this.streamToken++; this.sessionId = ''; this.title = ''; this.approvals = [];
     this.transcript.clear(); this.diff = ''; this.terminals = []; this.historyCursor = ''; this.archived = false;
     this.changed();
@@ -162,9 +216,14 @@ export class AiWorkspaceController {
     await this.release();
     this.assertGeneration(generation);
     this.client.stopEvents(); this.streamToken++;
+    this.rememberTranscript();
     this.sessionId = id; this.approvals = []; this.diff = ''; this.terminals = []; this.transcript.clear();
-    await this.snapshot(false);
+    this.currentModel = ''; this.currentEffort = ''; this.currentPermission = ''; this.currentCollaboration = ''; this.contextUsed = 0; this.contextWindow = 0;
+    this.previewItems = TRANSCRIPT_CACHE.get(this.cacheKey() + ':' + id)?.slice() ?? [];
+    if (this.previewItems.length > 0) { this.changed(); }
+    try { await this.snapshot(false); } finally { this.previewItems = []; }
     this.assertGeneration(generation);
+    this.rememberTranscript();
     await this.refreshApprovals(); await this.refreshOperations();
     void this.stream(++this.streamToken);
   }
@@ -186,6 +245,14 @@ export class AiWorkspaceController {
       // cursor covers everything read; DSH pages end at the first page's `through`, later events come by the stream.
       if (!older && (cursor === '' || client.host.backend === 'claudecode')) { this.eventCursor = aiNumber(result['cursor']); }
       this.status = aiString(snapshot['status'], '状态未知');
+      if (!older) {
+        this.currentModel = aiString(snapshot['model'], this.currentModel);
+        this.currentEffort = aiString(snapshot['reasoningEffort'], this.currentEffort);
+        this.currentPermission = aiString(snapshot['permissionMode'], this.currentPermission);
+        this.currentCollaboration = aiString(snapshot['collaborationMode'], this.currentCollaboration);
+        const nativeState = this.record(snapshot['nativeState']);
+        if (nativeState['tokenUsage'] !== undefined) { this.noteUsage('tokenUsage', this.record(nativeState['tokenUsage'])); }
+      }
       this.inputModalities = aiArray(snapshot['inputModalities']).map((value: Object): string => aiString(value));
       if (client.host.backend === 'codex') {
         const turns = aiArray(snapshot['turns']).slice().reverse();
@@ -209,7 +276,9 @@ export class AiWorkspaceController {
       } else if (client.host.backend === 'claudecode') {
         aiArray(snapshot['events']).forEach((event: Object): void => this.transcript.claudeEvent(aiRecord(event), true));
       } else {
-        aiArray(snapshot['events']).forEach((event: Object): void => this.transcript.dshEvent(aiRecord(event), true));
+        aiArray(snapshot['events']).forEach((event: Object): void => {
+          const row = aiRecord(event); this.noteUsage(aiString(row['type']), this.eventBody(row)); this.transcript.dshEvent(row, true);
+        });
         // A page is mapped once; a surface replacement it cannot place ends the snapshot.
         const problem = this.transcript.flush();
         if (problem !== '') { throw new Error(problem); }
@@ -230,6 +299,7 @@ export class AiWorkspaceController {
         this.eventCursor = event.cursor;
         if (event.session !== this.sessionId) { return; }
         const type = aiString(event.event['type']);
+        this.noteUsage(type, this.eventBody(event.event));
         if (client.host.backend === 'codex') { this.scheduleLiveSnapshot(token); }
         else if (client.host.backend === 'claudecode') { this.transcript.claudeEvent(event.event, true); }
         else { this.transcript.dshEvent(event.event, true); }
@@ -428,6 +498,8 @@ export class AiWorkspaceController {
     this.client?.close(); this.client = null;
     this.writerOwners.forEach((writer: string, key: string): void => { this.dropWriter(key, writer); }); this.lease = ''; this.leaseExpires = 0;
     this.projects = []; this.sessions = []; this.models = []; this.projectId = ''; this.sessionId = '';
+    this.rememberTranscript();
+    this.currentModel = ''; this.currentEffort = ''; this.currentPermission = ''; this.currentCollaboration = ''; this.contextUsed = 0; this.contextWindow = 0; this.previewItems = [];
     this.title = ''; this.allowed = false; this.accessRevoked = false; this.inputModalities = []; this.historyCursor = ''; this.archived = false; this.busy = false;
     this.transcript.clear(); this.approvals = []; this.diff = ''; this.terminals = []; this.operations = [];
   }

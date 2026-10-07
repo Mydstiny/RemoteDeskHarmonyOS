@@ -369,3 +369,66 @@ export function aiConversationItem(item: AiTranscriptItem): boolean {
   const kind = item.kind ?? (item.role === 'execution' ? 'tool' : item.role);
   return kind === 'user' || kind === 'assistant' || kind === 'notice';
 }
+
+/**
+ * One row of the conversation as the Codex and Claude apps show it: a message, or a run of consecutive steps (tool
+ * calls and thinking) folded into one summary line that opens to the single steps.
+ */
+export interface AiStepEntry { key: string; item: AiTranscriptItem | null; steps: AiTranscriptItem[]; }
+export function aiIsStep(item: AiTranscriptItem): boolean {
+  const kind = item.kind ?? (item.role === 'execution' ? 'tool' : item.role);
+  return kind === 'tool' || kind === 'thinking';
+}
+export function aiStepEntries(items: AiTranscriptItem[]): AiStepEntry[] {
+  const entries: AiStepEntry[] = [];
+  let run: AiTranscriptItem[] = [];
+  const close = (): void => {
+    if (run.length > 0) { entries.push({ key: 'g:' + run[0].id, item: null, steps: run }); run = []; }
+  };
+  for (const item of items) {
+    if (aiIsStep(item)) { run.push(item); continue; }
+    close();
+    entries.push({ key: 'i:' + item.id, item, steps: [] });
+  }
+  close();
+  return entries;
+}
+/** 已运行 4 条命令、已浏览 3 个文件 — what a run of steps did, in the order the kinds first appear. */
+export function aiStepSummary(steps: AiTranscriptItem[]): string {
+  const order: string[] = [];
+  const counts: Map<string, number> = new Map();
+  let thinking = 0;
+  for (const step of steps) {
+    if ((step.kind ?? '') === 'thinking') { thinking++; continue; }
+    const icon = aiToolView(step).icon;
+    if (!counts.has(icon)) { order.push(icon); }
+    counts.set(icon, (counts.get(icon) ?? 0) + 1);
+  }
+  const parts: string[] = order.map((icon: string): string => {
+    const n = (counts.get(icon) ?? 0).toString();
+    switch (icon) {
+      case 'terminal': return '已运行 ' + n + ' 条命令';
+      case 'edit': return '已修改 ' + n + ' 个文件';
+      case 'doc': return '已浏览 ' + n + ' 个文件';
+      case 'search': return '搜索 ' + n + ' 次';
+      case 'globe': return '浏览网页 ' + n + ' 次';
+      case 'agent': return '派出 ' + n + ' 个子任务';
+      case 'list': return '更新待办';
+      default: return '调用 ' + n + ' 个工具';
+    }
+  });
+  if (parts.length === 0) { return thinking > 0 ? '已思考' : ''; }
+  return parts.join('、');
+}
+/** The icon a folded run shows: the kind it did most (commands over edits over reading). */
+export function aiStepGroupIcon(steps: AiTranscriptItem[]): string {
+  const counts: Map<string, number> = new Map();
+  for (const step of steps) {
+    if ((step.kind ?? '') === 'thinking') { continue; }
+    const icon = aiToolView(step).icon;
+    counts.set(icon, (counts.get(icon) ?? 0) + 1);
+  }
+  let best = 'thinking', most = 0;
+  counts.forEach((count: number, icon: string): void => { if (count > most) { most = count; best = icon; } });
+  return best;
+}

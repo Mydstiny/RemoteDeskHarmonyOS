@@ -105,7 +105,7 @@ function workspace() {
   const app = { on: (_name, cb) => { state.appCallbacks.add(cb); state.application = cb; }, off: (_name, cb) => state.appCallbacks.delete(cb) };
   class Controller {
     constructor() { this.onChange = () => {}; this.stop = () => {}; this.reset(); }
-    reset() { Object.assign(this, { title: '', status: '', error: '', projects: [], sessions: [], transcript: { items: [] }, approvals: [], operations: [], terminals: [], models: [], allowed: false, archived: false, sessionId: '', projectId: '', historyCursor: '', lease: '', leaseExpires: 0, diff: '', client: null }); }
+    reset() { Object.assign(this, { title: '', status: '', error: '', projects: [], sessions: [], transcript: { items: [] }, approvals: [], operations: [], terminals: [], models: [], allowed: false, archived: false, sessionId: '', projectId: '', historyCursor: '', lease: '', leaseExpires: 0, diff: '', client: null, previewItems: [], currentModel: '', currentEffort: '', contextUsed: 0, contextWindow: 0 }); }
     close() { state.closes++; this.stop(); this.stop = () => {}; this.reset(); }
     async connect(host) {
       this.close(); const account = state.access.capture(); this.client = { account, host };
@@ -331,12 +331,15 @@ const cases = [
     const header = read('entry/src/main/ets/components/AppSheetHeader.ets');
     assert.ok(header.includes('@Prop showProBadge: boolean = false;'));
     const workspace = read(workspaceFile);
-    // The details and approval sheets keep the shared header with its Pro marker (projects and sessions became the
+    // The settings, approval and model sheets keep the shared header with its Pro marker (projects and sessions became the
     // workspace's home list); both page styles carry the marker in their own header.
     const headers = workspace.split('\n').filter(line => line.includes('AppSheetHeader({'));
-    assert.equal(headers.length, 2);
-    assert.equal(headers.filter(line => line.includes('showProBadge: true')).length, 2);
-    for (const builder of ['  @Builder private claudeHeader()', '  @Builder private codexHeader()']) {
+    assert.equal(headers.length, 3);
+    assert.equal(headers.filter(line => line.includes('showProBadge: true')).length, 3);
+    // Both styles draw the shared app header (round back, title, new conversation and settings).
+    assert.ok(workspace.includes('  @Builder private claudeHeader() { this.appHeader() }') &&
+      workspace.includes('  @Builder private codexHeader() { this.appHeader() }'));
+    for (const builder of ['  @Builder private appHeader()']) {
       const start = workspace.indexOf(builder), end = workspace.indexOf('\n  @Builder', start + builder.length);
       assert.ok(start >= 0 && end > start && workspace.slice(start, end).includes('ProBadge()'), builder + ' shows the Pro marker');
     }
