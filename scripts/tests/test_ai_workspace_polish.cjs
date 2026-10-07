@@ -39,18 +39,29 @@ assert.ok(sheet.includes('.constraintSize({ maxHeight: Math.max(240, this.pageHe
 const timeline = fs.readFileSync(path.join(ETS, 'services/ai/AiTimeline.ets'), 'utf8');
 assert.ok(timeline.includes("case 'LS':\n      return { icon: 'doc', verb: '列出目录'"));
 assert.ok(timeline.includes("case 'ls': return 'LS';"));
-// Sending (every engine): the text leaves the composer at once, flies up with a spring and lands near the top; the
-// row below it holds the place the reply fills; a failed send puts the text back.
-assert.ok(page.includes('const LANDING_GAP: number = 12;'));
+// Sending (every engine), as in Messages: the composer becomes the bubble where it stands, narrows to the bubble's
+// size with its right edge fixed, then rises with a spring into its place at the foot of the conversation while the
+// rows above lift; the list's own bubble stays hidden until the flyer lands. A failed send puts the text back.
 const begin = page.slice(page.indexOf('private beginSend('), page.indexOf('private failSend('));
-assert.ok(begin.includes('curves.springMotion(') && begin.includes('this.pendingSend = {') && begin.includes("this.draft = ''"));
-assert.ok(page.includes('if (this.landingSpacer > 0) {\n            ListItem() { Column().width(\'100%\').height(this.landingSpacer) }'));
+assert.ok(begin.includes('this.pendingSend = {') && begin.includes("this.draft = ''") && begin.includes('this.followBottom = true;'));
+assert.ok(begin.includes('this.flyX = from.x - this.rootX; this.flyY = from.y - this.rootY; this.flyW = from.w; this.flyH = from.h;'),
+  'the flight starts from the composer input itself');
+assert.ok(begin.includes('this.flyW = target.w; this.flyH = target.h; this.flyX = tx;') && begin.includes('from.y - this.rootY + from.h - target.h'),
+  'it first takes the bubble size beside the composer (one line narrows, several lines keep the width)');
+assert.ok(begin.includes('curves.springMotion(0.42, 0.8)') && begin.includes('this.flyY = ty; this.listLift = 0;'), 'then rises with the rows above');
+assert.ok(begin.includes('this.flyTextW = Math.max(20, target.w - 28);'), 'the text keeps its final width and never re-wraps mid-flight');
+assert.ok(page.includes('.opacity(this.flyingRow(item) ? 0 : 1)') && page.includes('if (this.flyingRow(item)) { this.flyTarget = this.rectOf(next); }'));
+assert.ok(page.includes('.onAreaChange((_old: Area, next: Area): void => { this.composerRect = this.rectOf(next); })'));
+assert.ok(page.includes('.translate({ y: this.listLift })') && page.includes('      this.sendFlyer()\n    }.width(\'100%\').height(\'100%\')'));
+// Messages and replies alike sit at the foot of the conversation: nothing is held at the top any more.
+assert.ok(!/landing|LANDING_GAP|holdLanding|settleLanding/.test(page), 'the top landing is gone');
+assert.ok(page.includes('.stackFromEnd(this.sessionId !== \'\')'));
 assert.ok(page.includes('}.transition(this.entryEffect(entry, index))'));
 // Only rows that arrived with the latest update animate; rows that were already shown (re-keyed while streaming,
 // renamed when a reply finishes, or read again) never do, and a row that goes is gone at once.
 assert.ok(page.includes('if (index < this.entryBase || !this.fresh(\'t:\' + entry.key)) { return TransitionEffect.IDENTITY; }'));
 assert.ok(page.includes('this.entryBase = reread ? Number.MAX_SAFE_INTEGER : this.entryCount;'));
-assert.ok((page.match(/TransitionEffect\.IDENTITY\);/g) || []).length >= 2, 'enter and fly effects are in-only');
+assert.ok(page.includes('TransitionEffect.IDENTITY);'), 'rows fade in only; a row that goes is gone at once');
 assert.ok(page.includes("this.fresh('s:' + row.session.id)"), 'a listed conversation animates once, not on every update');
 // Background pauses the connection instead of closing it; a paused one resumes in place.
 assert.ok(page.includes('this.controller.pause();') && page.includes('if (await this.controller.resume()) { this.sync(); return; }'));
@@ -75,12 +86,8 @@ assert.ok(send.includes('const command = this.localCommandFor(text);'));
 assert.ok(page.includes("if (!command.local) { this.draft = command.name + ' '; return; }"));
 const controller = fs.readFileSync(path.join(ETS, 'services/ai/AiWorkspaceController.ets'), 'utf8');
 assert.ok(controller.includes("snapshot['commands']"));
-// The landed message stays at the top while the reply grows below it; the turn's end (or a drag) settles the page.
-assert.ok(begin.includes('this.landingHeld = true;') && begin.includes('this.followBottom = false;') && begin.includes('this.holdLanding();'));
-assert.ok(page.includes('scroller.scrollToIndex(at, false, ScrollAlign.START, { extraOffset: LengthMetrics.vp(-LANDING_GAP) })'));
-assert.ok(page.includes('if (this.landingHeld) { this.holdLanding(); return; }'), 'following never pulls a held message down');
-assert.ok(page.includes('if (source !== ScrollSource.DRAG) { return; }') && page.includes('if (this.landingHeld) { this.settleLanding(); }'));
-assert.ok(!page.includes('measureLanding'), 'no premature collapse of the place below the message');
+// Dragging the list stops pinning its end.
+assert.ok(page.includes('if (source !== ScrollSource.DRAG) { return; }') && page.includes('this.pinBottomUntil = 0;'));
 // With the keyboard up, + and the permission menu open once it is down and keep the composer open meanwhile.
 assert.ok(page.includes('.bindMenu(this.plusMenuShown, this.plusMenu(), { onDisappear: (): void => { this.menuClosed(); } })'));
 assert.ok(page.includes('.bindMenu(this.permissionMenuShown, this.permissionMenu(), { onDisappear: (): void => { this.menuClosed(); } })'));

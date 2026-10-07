@@ -4,7 +4,7 @@ import { AiActionButton } from '../components/ai/AiActionButton';
 import { AiFormField } from '../components/ai/AiFormField';
 import { aiStatusLabel, aiRequestTitle, aiApprovalDetails, aiModeLabel, aiModeDetail, aiOperationSummary, aiShortTime, aiRelativeTime, aiEffortLabel, aiTokens, aiElapsed } from '../services/ai/AiPresentation';
 import { aiParams } from '../services/ai/AiWirePolicy';
-import { KeyboardAvoidMode, LengthMetrics, curves, router, promptAction } from '@kit.ArkUI';
+import { KeyboardAvoidMode, curves, router, promptAction } from '@kit.ArkUI';
 import { common, ApplicationStateChangeCallback } from '@kit.AbilityKit';
 import { picker, fileIo } from '@kit.CoreFileKit';
 import { photoAccessHelper } from '@kit.MediaLibraryKit';
@@ -34,8 +34,9 @@ interface AiWsTab { label: string; selected: boolean; enabled: boolean; action: 
 interface AiHomeRow { key: string; session: AiSession | null; project: string; title: string; count: number; more: number; }
 /** A / command: the app's own (it acts here) or the engine's (it is sent for the engine to expand). */
 interface AiWsCommand { name: string; description: string; local: boolean; }
+/** A box in window coordinates (vp). */
+interface AiWsRect { x: number; y: number; w: number; h: number; }
 /** Where a sent message lands: this far below the top of the conversation (about 2 cm from the top of the screen). */
-const LANDING_GAP: number = 12;
 interface AiWsSheetHead { title: string; close: () => void; }
 interface AiWsChoice { label: string; detail: string; selected: boolean; enabled: boolean; action: () => void; }
 interface AiWsModes { values: string[]; selected: string; choose: (value: string) => void; }
@@ -228,13 +229,12 @@ export struct RemoteAiWorkspace {
     // Only a conversation follows its newest message; the list keeps where the reader is (a pull to refresh jumped
     // to the bottom when the list followed too).
     // A send belongs to its conversation; the engine's own copy of the message replaces the one shown at once.
-    if (this.landingSession !== '' && this.sessionId !== this.landingSession) { this.endLanding(); }
+    if (this.sendSession !== '' && this.sessionId !== this.sendSession) { this.endSend(); }
     if (this.pendingSend !== null && this.userCount(this.items, this.pendingSend.text) > this.pendingBefore) { this.pendingSend = null; }
     // Only rows that arrived with this update animate in; a conversation opened or read again appears as it is.
     this.entryBase = reread ? Number.MAX_SAFE_INTEGER : this.entryCount;
     this.entryCount = this.sessionId === '' ? 0 : this.stepEntries().length;
     if (this.sessionId !== '') { this.followTranscript(reread); }
-    this.trackLanding();
     this.trackWorking();
     if (this.approval !== null && !this.approvals.some((item: AiApproval): boolean => item.id === this.approval?.id)) {
       this.showApproval = false; this.approval = null; this.questions = [];
@@ -421,7 +421,7 @@ export struct RemoteAiWorkspace {
    * apps' push and pop). A message sent from the home composer flies into its new conversation instead.
    */
   private slideView(forward: boolean): void {
-    if (!this.alive || (forward && this.landingText !== '')) { return; }
+    if (!this.alive || (forward && this.flyText !== '')) { return; }
     this.viewShift = forward ? Math.min(96, this.pageWidth * 0.25) : -Math.min(64, this.pageWidth * 0.16);
     this.viewOpacity = 0;
     setTimeout((): void => {
@@ -515,7 +515,7 @@ export struct RemoteAiWorkspace {
       try {
         const title = text.split('\n')[0].slice(0, 40);
         await this.controller.create(title, project);
-        this.landingSession = this.controller.sessionId;
+        this.sendSession = this.controller.sessionId;
         const params: Record<string, Object> = aiParams(["text"], [text]);
         params['settings'] = settings;
         if (attachments.length > 0) { params['attachments'] = attachments; }
@@ -551,7 +551,7 @@ export struct RemoteAiWorkspace {
     }
     // Taken before sending: the engine's own copy of the prompt may arrive before the acknowledgement.
     const sentAt = this.controller.transcript.mark();
-    // The message leaves the composer at once (every engine) and flies up to its landing place.
+    // The message leaves the composer at once (every engine) and flies into its place at the foot of the conversation.
     this.beginSend(text);
     await this.run(async (): Promise<void> => {
       try {
@@ -642,20 +642,28 @@ export struct RemoteAiWorkspace {
   private pendingBefore: number = 0;
   private sendCount: number = 0;
   /**
-   * The sent message flies up from the composer and lands LANDING_GAP below the top of the list, and stays there:
-   * the reply grows down from it into an empty row below (a page tall, so the list never sits at its end and
-   * nothing is pushed up). When the turn ends the row shrinks to what the reply left of the page; a reply taller
-   * than the page is read from its start. Dragging the list hands it back to the reader.
+   * Sending, as in Messages: the composer turns into the bubble where it stands (its own width, height and pill
+   * shape), shrinks to the bubble's size with its right edge fixed (a one-line message narrows from the full input
+   * width; a longer one keeps its width and mostly changes height), then rises with a spring into its place at the
+   * foot of the conversation while the rows above slide up to make room. The bubble in the list stays hidden until
+   * the flyer lands on it. Replies, like messages, sit at the foot of the conversation above the composer.
    */
-  @State landingSpacer: number = 0;
-  private landingText: string = '';
-  /** The landed message is held at the top (until the turn ends or the reader drags). */
-  private landingHeld: boolean = false;
-  /** The turn was seen running since the send (its end, not the moment before it starts, settles the page). */
-  private landingSawWork: boolean = false;
-  private flyEffectValue: TransitionEffect | null = null;
-  private flown: boolean = false;
-  private landingSession: string = '';
+  private sendSession: string = '';
+  @State flyText: string = '';
+  @State flyX: number = 0;
+  @State flyY: number = 0;
+  @State flyW: number = 0;
+  @State flyH: number = 0;
+  @State flyRadius: number = 20;
+  /** The text's own width inside the flyer, fixed for the flight so it never re-wraps while the bubble narrows. */
+  @State flyTextW: number = 0;
+  /** The rows above lift by the new bubble's height as it rises (they jumped at once before). */
+  @State listLift: number = 0;
+  private flyGeneration: number = 0;
+  private composerRect: AiWsRect | null = null;
+  private flyTarget: AiWsRect | null = null;
+  private rootX: number = 0;
+  private rootY: number = 0;
   private shownFor: AiTranscriptItem[] | null = null;
   private shownPending: AiTranscriptItem | null = null;
   private shownValue: AiTranscriptItem[] = [];
@@ -680,91 +688,92 @@ export struct RemoteAiWorkspace {
   private transcriptHeight(): number {
     return Math.max(180, this.pageHeight - this.topVp() - this.topChrome - this.bottomChrome - 16);
   }
-  /** Starts a send: the text leaves the composer, flies up and lands near the top with a spring. */
+  private rectOf(area: Area): AiWsRect | null {
+    const x = Number(area.globalPosition.x), y = Number(area.globalPosition.y), w = Number(area.width), h = Number(area.height);
+    return [x, y, w, h].every((value: number): boolean => Number.isFinite(value)) && w > 0 && h > 0 ? { x, y, w, h } : null;
+  }
+  /** Starts a send: the message joins the foot of the conversation, and the composer flies into it. */
   private beginSend(text: string): void {
-    const height = this.transcriptHeight();
-    this.landingSession = this.sessionId; this.landingText = text; this.flown = false;
-    this.landingHeld = true; this.landingSawWork = false; this.followBottom = false;
-    // Flies in only: when the engine's copy of the message takes its place the bubble must not fly back down.
-    this.flyEffectValue = TransitionEffect.asymmetric(TransitionEffect.translate({ y: Math.max(60, height - LANDING_GAP - 48) })
-      .combine(TransitionEffect.scale({ x: 0.9, y: 0.9, centerX: '100%', centerY: '0%' }))
-      .combine(TransitionEffect.opacity(0.35))
-      .animation({ curve: curves.springMotion(0.55, 0.74) }), TransitionEffect.IDENTITY);
+    this.sendSession = this.sessionId;
     this.pendingBefore = this.userCount(this.items, text);
     this.pendingSend = { id: 'send:' + (++this.sendCount).toString(), role: 'user', title: 'user', text, state: 'completed',
       turnId: '', kind: 'user', detail: '', output: '' };
-    this.landingSpacer = Math.max(this.pageHeight, height + 200);
-    this.draft = '';
-    // Laid out in the same frame as the new rows: the message is placed at the top as it appears and flies there.
-    this.holdLanding();
-    for (const delay of [16, 120, 400]) { setTimeout((): void => { if (this.alive) { this.holdLanding(); } }, delay); }
+    this.draft = ''; this.followBottom = true;
+    const from = this.composerRect;
+    const generation = ++this.flyGeneration;
+    this.flyTarget = null;
+    if (from !== null && from.w > 0 && from.h > 0) {
+      // The flyer covers the composer exactly: the input has become the bubble, still where it was.
+      this.flyText = text.trim();
+      this.flyX = from.x - this.rootX; this.flyY = from.y - this.rootY; this.flyW = from.w; this.flyH = from.h;
+      this.flyRadius = Math.min(from.h / 2, 22); this.flyTextW = Math.max(40, from.w - 28);
+      // The rows above make room for the bubble as it rises rather than jumping when it is added.
+      this.listLift = Math.max(40, from.h) + 18;
+    } else {
+      this.flyText = '';
+    }
+    this.followTranscript(true);
+    setTimeout((): void => { this.launchFlight(generation, from, 0); }, 34);
+  }
+  /** Once the bubble in the list is laid out: morph to its size beside the composer, then rise into it. */
+  private launchFlight(generation: number, from: AiWsRect | null, tries: number): void {
+    if (!this.alive || generation !== this.flyGeneration) { return; }
+    const target = this.flyTarget;
+    if (from === null || this.flyText === '') { this.endFlight(generation, false); return; }
+    if (target === null) {
+      // Not laid out yet (a new conversation is still opening): wait a little, then let the row simply appear.
+      if (tries < 18) { setTimeout((): void => { this.launchFlight(generation, from, tries + 1); }, 34); }
+      else { this.endFlight(generation, true); }
+      return;
+    }
+    const tx = target.x - this.rootX, ty = target.y - this.rootY;
+    const ui = this.getUIContext();
+    this.flyTextW = Math.max(20, target.w - 28);
+    // 1. Shrink to the bubble beside the composer: right edges together, bottoms together.
+    ui.animateTo({ duration: 170, curve: Curve.FastOutSlowIn }, (): void => {
+      this.flyW = target.w; this.flyH = target.h; this.flyX = tx;
+      this.flyY = from.y - this.rootY + from.h - target.h; this.flyRadius = 18;
+    });
+    // 2. Rise into place with a spring as the rows above move up.
+    setTimeout((): void => {
+      if (!this.alive || generation !== this.flyGeneration) { return; }
+      ui.animateTo({ curve: curves.springMotion(0.42, 0.8) }, (): void => { this.flyY = ty; this.listLift = 0; });
+      setTimeout((): void => { this.endFlight(generation, false); }, 460);
+    }, 130);
+  }
+  /** The flyer has landed (or could not): the bubble in the list shows in its place. */
+  private endFlight(generation: number, fade: boolean): void {
+    if (generation !== this.flyGeneration) { return; }
+    if (fade) { this.getUIContext().animateTo({ duration: 200 }, (): void => { this.listLift = 0; }); } else { this.listLift = 0; }
+    this.flyText = ''; this.flyTarget = null;
+  }
+  /** The row that the flyer is on its way to (the newest user message with its text), hidden until it lands. */
+  private flyingRow(item: AiTranscriptItem): boolean {
+    if (this.flyText === '' || item.role !== 'user' || item.text.trim() !== this.flyText) { return false; }
+    const items = this.shownItems();
+    for (let i = items.length - 1; i >= 0; i--) {
+      if (items[i].role === 'user') { return items[i] === item || items[i].id === item.id; }
+    }
+    return false;
   }
   /** A send that failed: the bubble goes and the text is back in the composer. */
   private failSend(text: string): void {
-    this.endLanding();
+    this.endSend();
     if (this.draft === '') { this.draft = text; }
     this.followBottom = true; this.followTranscript();
   }
-  private endLanding(): void {
-    this.landingText = ''; this.landingSpacer = 0; this.pendingSend = null; this.landingSession = '';
-    this.landingHeld = false; this.landingSawWork = false;
+  private endSend(): void {
+    this.flyGeneration++; this.flyText = ''; this.flyTarget = null; this.listLift = 0;
+    this.pendingSend = null; this.sendSession = '';
   }
-  /** The transition of a row appearing: the sent message flies in once (its engine copy then takes its place quietly). */
+  /** The transition of a row appearing: the sent message has its own flight; other new rows fade up once. */
   private entryEffect(entry: AiStepEntry, index: number): TransitionEffect {
     if (index < this.entryBase || !this.fresh('t:' + entry.key)) { return TransitionEffect.IDENTITY; }
     const item = entry.item;
-    if (item !== null && item.role === 'user' && this.landingText !== '' && item.text.trim() === this.landingText) {
-      if (!this.flown && this.flyEffectValue !== null) { this.flown = true; return this.flyEffectValue; }
+    if (item !== null && item.role === 'user' && (this.flyText !== '' || item.id.startsWith('send:'))) {
       return TransitionEffect.IDENTITY;
     }
     return this.enterEffect();
-  }
-  /** The list row of the landed message, or -1. */
-  private landingIndex(): number {
-    if (this.landingText === '') { return -1; }
-    const entries = this.stepEntries();
-    for (let i = entries.length - 1; i >= 0; i--) {
-      const item = entries[i].item;
-      if (item !== null && item.role === 'user' && item.text.trim() === this.landingText) {
-        return (this.historyCursor !== '' ? 1 : 0) + (this.shownItems().length === 0 ? 1 : 0) + i;
-      }
-    }
-    return -1;
-  }
-  /** Keeps the landed message LANDING_GAP below the top of the list. */
-  private holdLanding(): void {
-    const scroller = this.listScroller, at = this.landingIndex();
-    if (!this.landingHeld || this.sessionId === '' || scroller === null || at < 0) { return; }
-    try { scroller.scrollToIndex(at, false, ScrollAlign.START, { extraOffset: LengthMetrics.vp(-LANDING_GAP) }); } catch (_error) { /* not laid out */ }
-  }
-  /**
-   * The turn ended (or the reader took the list): the empty row keeps only what the reply left of the page, so the
-   * page ends at the composer; a reply taller than the page leaves none and is read from its start.
-   */
-  private settleLanding(): void {
-    const scroller = this.listScroller, at = this.landingIndex();
-    this.landingHeld = false;
-    let next = 0;
-    if (scroller !== null && at >= 0) {
-      try {
-        const top = scroller.getItemRect(at), bottom = scroller.getItemRect(this.listLength() - 2);
-        if (top.height > 0 && bottom.height > 0) {
-          next = Math.max(0, Math.round(this.transcriptHeight() - LANDING_GAP - (bottom.y + bottom.height - top.y) - 18));
-        }
-      } catch (_error) { next = 0; }
-    }
-    this.landingSpacer = next; this.landingText = '';
-  }
-  /** Each update while a sent message is held: note the turn running, settle once it has ended. */
-  private trackLanding(): void {
-    if (this.landingText === '' || !this.landingHeld) { return; }
-    if (this.working()) { this.landingSawWork = true; this.holdLanding(); return; }
-    const at = this.landingIndex(), entries = this.stepEntries();
-    const replied = at >= 0 && entries.length > 0 && entries[entries.length - 1].item?.role === 'assistant' &&
-      this.pendingSend === null;
-    if (this.landingSawWork || replied) {
-      setTimeout((): void => { if (this.alive && this.landingHeld && !this.working()) { this.settleLanding(); } }, 160);
-    }
   }
   /** The app's own / commands that make sense here. */
   private localCommands(): AiWsCommand[] {
@@ -842,7 +851,6 @@ export struct RemoteAiWorkspace {
     let count = (this.historyCursor !== '' ? 1 : 0) + (this.shownItems().length === 0 ? 1 : 0);
     count += this.stepEntries().length + (this.showWorkingRow() ? 1 : 0);
     if (this.changeSummary() !== '') { count++; }
-    if (this.landingSpacer > 0) { count++; }
     return count;
   }
   /**
@@ -886,7 +894,6 @@ export struct RemoteAiWorkspace {
    */
   private followTranscript(settle: boolean = false): void {
     const scroller = this.listScroller;
-    if (this.landingHeld) { this.holdLanding(); return; }
     if (scroller === null || !this.followBottom) { return; }
     // One scroll on the next frame landed above the end when a session opened: the rows below were not measured yet
     // and the first layout from the top reported "not at the bottom". Pin it while the layout settles.
@@ -1924,7 +1931,24 @@ export struct RemoteAiWorkspace {
         .fontColor(this.palette().text).copyOption(CopyOptions.InApp)
         .padding({ left: 14, right: 14, top: 10, bottom: 10 }).borderRadius(18)
         .backgroundColor(this.palette().userBubble).constraintSize({ maxWidth: '86%' })
+        // The message being sent stays hidden until the flyer lands on it; its box is where the flyer goes.
+        .opacity(this.flyingRow(item) ? 0 : 1)
+        .onAreaChange((_old: Area, next: Area): void => {
+          if (this.flyingRow(item)) { this.flyTarget = this.rectOf(next); }
+        })
     }.width('100%')
+  }
+  /** The composer on its way into the conversation: the input turned bubble, over everything else. */
+  @Builder private sendFlyer() {
+    if (this.flyText !== '') {
+      Stack({ alignContent: Alignment.TopStart }) {
+        Text(this.flyText).width(this.flyTextW).fontSize(this.textSize).lineHeight(Math.round(this.textSize * 1.5))
+          .fontFamily(AppConfig.fontFamily).fontColor(this.palette().text)
+      }.position({ x: this.flyX, y: this.flyY }).width(this.flyW).height(this.flyH)
+      .padding({ left: 14, right: 14, top: 10, bottom: 10 }).borderRadius(this.flyRadius)
+      .backgroundColor(this.palette().userBubble).clip(true).hitTestBehavior(HitTestMode.None)
+      .accessibilityLevel('no')
+    }
   }
   @Builder private claudeItem(item: AiTranscriptItem) {
     if (item.role === 'user') {
@@ -2160,6 +2184,8 @@ export struct RemoteAiWorkspace {
       .onFocus((): void => { this.composerFocused = true; })
       .onBlur((): void => { this.composerFocused = false; })
       .onChange((value: string): void => { if (this.allowed && !this.busy) { this.draft = value; } }).maxLength(128000)
+      // Where a send starts from: the input's own box.
+      .onAreaChange((_old: Area, next: Area): void => { this.composerRect = this.rectOf(next); })
   }
   /**
    * The composer. Codex: a pill (+, 跟进, send) that opens into a card with + / permissions / model when focused.
@@ -2474,9 +2500,6 @@ export struct RemoteAiWorkspace {
             }
           }
           if (this.showWorkingRow()) { ListItem() { this.workingRow() } }
-          if (this.landingSpacer > 0) {
-            ListItem() { Column().width('100%').height(this.landingSpacer) }
-          }
         }
       }.width('100%').height('100%').padding({ left: 16, right: 16 }).scrollBar(BarState.Auto)
         // A short list (a few conversations) still takes the pull from anywhere in its area and hands it to Refresh.
@@ -2484,15 +2507,15 @@ export struct RemoteAiWorkspace {
         // A conversation is laid out from the bottom: its messages sit just above the composer, like a chat, and a
         // short one does not float at the top of an empty page.
         .stackFromEnd(this.sessionId !== '')
+        .translate({ y: this.listLift })
         .onScrollIndex((_start: number, end: number): void => {
-          if (Date.now() < this.pinBottomUntil || this.landingHeld) { return; }
-          this.followBottom = end >= this.listLength() - 2 && this.landingSpacer === 0;
+          if (Date.now() < this.pinBottomUntil) { return; }
+          this.followBottom = end >= this.listLength() - 2;
         })
         // The reader dragging the list ends holding a sent message at the top, and stops pinning the end.
         .onWillScroll((_offset: number, _state: ScrollState, source: ScrollSource): void => {
           if (source !== ScrollSource.DRAG) { return; }
           this.pinBottomUntil = 0;
-          if (this.landingHeld) { this.settleLanding(); }
         })
       }.width('100%').height('100%')
       // Pull down on the conversation list to read it again (the chat follows its own stream).
@@ -2528,33 +2551,38 @@ export struct RemoteAiWorkspace {
       blurStyle: BlurStyle.NONE })
   }
   build() {
-    // One sheet per node: three bindSheets on the Row shared one slot, so the closed details/approval bindings
-    // dismissed the picker the moment it opened (and its flag stayed true, so later taps did nothing).
-    Row() {
-      if (this.wide()) {
-        Column() { this.sidebar() }.width('34%').height('100%')
-        Divider().vertical(true).color(this.palette().border).height('100%')
-      }
-      Stack() {
-        Scroll() { this.workspace() }.width('100%').height('100%')
-          .scrollable(ScrollDirection.Vertical).scrollBar(BarState.Auto)
-          .bindSheet($$this.showApproval, this.approvalSheet(), { height: SheetSize.LARGE, showClose: false, dragBar: false,
-            preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
-            keyboardAvoidMode: SheetKeyboardAvoidMode.RESIZE_ONLY, backgroundColor: this.pal().sheetBg, blurStyle: BlurStyle.NONE })
-      }.layoutWeight(1).height('100%')
-      .bindSheet($$this.showDetails, this.detailsSheet(), { height: SheetSize.LARGE, showClose: false, dragBar: false,
-        preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
-        keyboardAvoidMode: SheetKeyboardAvoidMode.RESIZE_ONLY, backgroundColor: this.pal().sheetBg, blurStyle: BlurStyle.NONE })
-    }.justifyContent(FlexAlign.Center).width('100%').height('100%')
-      .padding({ top: this.topVp() }).safeAreaPadding({ bottom: 12 }).backgroundColor(this.palette().bg)
-      .bindSheet($$this.showModelPicker, this.modelSheet(), { height: SheetSize.FIT_CONTENT, showClose: false, dragBar: true,
-        preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER, backgroundColor: this.pal().surface,
-        blurStyle: BlurStyle.NONE })
-      .onAreaChange((_old: Area, next: Area): void => {
-        const width = Number(next.width), height = Number(next.height);
-        if (Number.isFinite(width) && width > 0 && Math.abs(width - this.pageWidth) > 0.5) { this.pageWidth = width; }
-        if (Number.isFinite(height) && height > 0 && Math.abs(height - this.pageHeight) > 0.5) { this.pageHeight = height; }
-      })
+    // The flyer of a send sits over the whole page (it starts in the composer and lands in the list).
+    Stack({ alignContent: Alignment.TopStart }) {
+      // One sheet per node: three bindSheets on the Row shared one slot, so the closed details/approval bindings
+      // dismissed the picker the moment it opened (and its flag stayed true, so later taps did nothing).
+      Row() {
+        if (this.wide()) {
+          Column() { this.sidebar() }.width('34%').height('100%')
+          Divider().vertical(true).color(this.palette().border).height('100%')
+        }
+        Stack() {
+          Scroll() { this.workspace() }.width('100%').height('100%')
+            .scrollable(ScrollDirection.Vertical).scrollBar(BarState.Auto)
+            .bindSheet($$this.showApproval, this.approvalSheet(), { height: SheetSize.LARGE, showClose: false, dragBar: false,
+              preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
+              keyboardAvoidMode: SheetKeyboardAvoidMode.RESIZE_ONLY, backgroundColor: this.pal().sheetBg, blurStyle: BlurStyle.NONE })
+        }.layoutWeight(1).height('100%')
+        .bindSheet($$this.showDetails, this.detailsSheet(), { height: SheetSize.LARGE, showClose: false, dragBar: false,
+          preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
+          keyboardAvoidMode: SheetKeyboardAvoidMode.RESIZE_ONLY, backgroundColor: this.pal().sheetBg, blurStyle: BlurStyle.NONE })
+      }.justifyContent(FlexAlign.Center).width('100%').height('100%')
+        .padding({ top: this.topVp() }).safeAreaPadding({ bottom: 12 }).backgroundColor(this.palette().bg)
+        .bindSheet($$this.showModelPicker, this.modelSheet(), { height: SheetSize.FIT_CONTENT, showClose: false, dragBar: true,
+          preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER, backgroundColor: this.pal().surface,
+          blurStyle: BlurStyle.NONE })
+        .onAreaChange((_old: Area, next: Area): void => {
+          this.rootX = Number(next.globalPosition.x) || 0; this.rootY = Number(next.globalPosition.y) || 0;
+          const width = Number(next.width), height = Number(next.height);
+          if (Number.isFinite(width) && width > 0 && Math.abs(width - this.pageWidth) > 0.5) { this.pageWidth = width; }
+          if (Number.isFinite(height) && height > 0 && Math.abs(height - this.pageHeight) > 0.5) { this.pageHeight = height; }
+        })
+      this.sendFlyer()
+    }.width('100%').height('100%')
   }
 }
 
