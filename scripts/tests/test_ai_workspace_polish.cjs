@@ -143,8 +143,14 @@ assert.ok(page.includes('.translate({ x: this.viewShift }).opacity(this.viewOpac
 assert.ok(page.includes('PageTransitionEnter({ type: RouteType.Push'));
 // Every search bar is on the system's 沉浸光感 material where the device has it (SearchBarSurface), its old look elsewhere.
 const surface = fs.readFileSync(path.join(ETS, 'common/SearchBarSurface.ets'), 'utf8');
-assert.ok(surface.includes('deviceInfo.sdkApiVersion >= 26 && uiMaterial.isImmersiveMaterialSupported()'), 'guarded for API 23 devices');
-assert.ok(surface.includes('instance.systemMaterial(new uiMaterial.ImmersiveMaterial({') && surface.includes('interactive: true'));
+// The capsule is drawn by the app (the system material drew nothing for an app targeting API 23): tint, blur, a light
+// rim on top and a darker one below, and a soft shadow, in light and dark.
+const applied = surface.slice(surface.indexOf('applyNormalAttribute('));
+assert.ok(!applied.includes('systemMaterial') && applied.includes('instance.backgroundBlurStyle(BlurStyle.Regular);'));
+assert.ok(applied.includes("{ top: '#FFFFFFFF', left: '#1A000000', right: '#1A000000', bottom: '#24000000' }") &&
+  applied.includes("{ top: '#4DFFFFFF', left: '#26FFFFFF', right: '#26FFFFFF', bottom: '#1AFFFFFF' }"));
+const chat = fs.readFileSync(path.join(ETS, 'components/diagnosticAi/AiChatView.ets'), 'utf8');
+assert.ok(chat.includes(".lineHeight(22).placeholderFont({ size: 16 })"), 'the assistant composer placeholder sits on its centre line');
 for (const file of ['pages/HostListPage.ets', 'components/AboutSettingsSheet.ets', 'pages/RemoteAiWorkspace.ets',
   'pages/MoonlightAppCatalogPage.ets', 'components/ProWorkspaceEditorPanel.ets', 'components/diagnosticAi/DiagnosticAiSettingsSheet.ets',
   'components/pro/org/HostOrganizationManager.ets', 'components/pro/workspace/WorkspaceAddFlow.ets',

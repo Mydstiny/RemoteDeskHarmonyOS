@@ -557,7 +557,7 @@ export struct AiInputCapsule {
 
   build() {
     Row() { this.content() }
-      .layoutWeight(1).constraintSize({ minHeight: 44 })
+      .layoutWeight(1).constraintSize({ minHeight: 44 }).alignItems(VerticalAlign.Center)
       .padding({ left: 16, right: 12, top: 2, bottom: 2 })
       .borderRadius(22)
       .backgroundColor('#1FFFFFFF')

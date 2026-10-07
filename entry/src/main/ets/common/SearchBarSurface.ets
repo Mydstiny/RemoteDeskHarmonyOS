@@ -27,10 +27,10 @@ export interface SearchBarFallback {
 }
 
 /**
- * Every search bar's surface. With 沉浸光感 available it is the system's own glass, as in the system apps: the
- * refraction and highlight edge, the press deformation and the touch light, following the device's computing level
- * and 设置 → 沉浸光感. Elsewhere the bar keeps the look it had. The bar's corner radius shapes the glass, so it is
- * set on the bar itself; background, border and shadow belong to this surface and are not set on the bar.
+ * Every search bar's surface: a glass capsule drawn by the app (its tint, blur and soft shadow, with a light rim
+ * along the top and a darker one below, as on the AI assistant's input capsule), so it shows on every device. The
+ * system's immersive material is not used here: with the app targeting API 23 it drew nothing on API 26 devices and
+ * the bars were left without a surface. The bar's own corner radius shapes the capsule.
  */
 export class SearchBarSurface<T extends CommonMethod<T>> implements AttributeModifier<T> {
   private dark: boolean;
@@ -42,21 +42,16 @@ export class SearchBarSurface<T extends CommonMethod<T>> implements AttributeMod
   }
 
   applyNormalAttribute(instance: T): void {
-    if (immersiveMaterialAvailable()) {
-      instance.systemMaterial(new uiMaterial.ImmersiveMaterial({
-        style: uiMaterial.ImmersiveStyle.REGULAR,
-        // A faint tint keeps the glass visible over a plain page, as the system bars do.
-        materialColor: this.dark ? '#1AFFFFFF' : '#40F4F6FA',
-        interactive: true,
-        lightEffect: { color: Color.White }
-      }));
-      return;
-    }
     if (this.fallback.background !== undefined) { instance.backgroundColor(this.fallback.background); }
-    if (this.fallback.blur === true) { instance.backgroundBlurStyle(BlurStyle.Regular); }
-    if (this.fallback.border !== undefined) {
-      instance.border({ width: 0.5, color: this.fallback.border, style: BorderStyle.Solid });
+    instance.backgroundBlurStyle(BlurStyle.Regular);
+    instance.border({
+      width: { top: 1, left: 0.6, right: 0.6, bottom: 0.8 },
+      color: this.dark ? { top: '#4DFFFFFF', left: '#26FFFFFF', right: '#26FFFFFF', bottom: '#1AFFFFFF' } :
+        { top: '#FFFFFFFF', left: '#1A000000', right: '#1A000000', bottom: '#24000000' },
+      style: BorderStyle.Solid
+    });
+    if (this.fallback.shadow !== false) {
+      instance.shadow({ radius: 14, color: this.dark ? '#33000000' : '#14000000', offsetY: 3 });
     }
-    if (this.fallback.shadow === true) { instance.shadow({ radius: 12, color: 'rgba(0,0,0,0.06)', offsetY: 2 }); }
   }
 }

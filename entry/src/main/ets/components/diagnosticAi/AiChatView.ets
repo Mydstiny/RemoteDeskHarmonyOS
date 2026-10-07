@@ -1578,6 +1578,9 @@ export struct AiChatView {
         TextArea({ placeholder: '继续聊…', text: this.draft })
           .id('aiChatDraft')
           .layoutWeight(1).fontSize(16).fontColor('#FFFFFF').placeholderColor(aiInk(this.aiStyle, 'text2'))
+          // One line (text or the 继续聊 placeholder) is 22 high with 9 above and below: it sits on the 40 vp
+          // field's centre line. Without a line height the placeholder rode below the middle.
+          .lineHeight(22).placeholderFont({ size: 16 })
           .caretStyle({ width: 2.5, color: '#FFFFFF' }).backgroundColor(Color.Transparent)
           .padding({ left: 0, right: 0, top: 9, bottom: 9 })
           .constraintSize({ minHeight: 40, maxHeight: 120 })
