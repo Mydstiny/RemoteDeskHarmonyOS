@@ -1,4 +1,4 @@
-import { SearchBarSurface } from '../../../common/SearchBarSurface';
+import { searchGlassBorder, searchGlassShadow, searchGlassSheen } from '../../../common/SearchBarSurface';
 import { settingsVisualIsModern } from '../../../services/SettingsVisualStylePolicy';
 import { appUiOnAccentText } from '../../../common/AppUiColorPolicy';
 import { buildDark, buildLight, Palette } from '../../../common/Theme';
@@ -170,7 +170,7 @@ export struct WorkspaceAddFlow {
         .fontSize(12).fontColor(this.pal().text3).width('100%').margin({ bottom: 10 })
       if (this.rows().length > 6) {
         Search({ value: this.query, placeholder: '搜索名称、地址或协议' }).height(38).borderRadius(19)
-          .attributeModifier(new SearchBarSurface<SearchAttribute>(this.theme !== 'light', { background: this.pal().surface }))
+          .backgroundColor(this.pal().surface).linearGradient(searchGlassSheen(this.theme !== 'light')).backgroundBlurStyle(BlurStyle.Regular).border(searchGlassBorder(this.theme !== 'light')).shadow(searchGlassShadow(this.theme !== 'light'))
           .margin({ bottom: 8 }).onChange((value: string): void => { this.query = value; })
       }
       if (this.rows().length === 0) {

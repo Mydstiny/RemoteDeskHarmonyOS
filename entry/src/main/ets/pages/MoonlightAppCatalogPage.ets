@@ -1,4 +1,4 @@
-import { SearchBarSurface } from '../common/SearchBarSurface';
+import { searchGlassBorder, searchGlassShadow, searchGlassSheen } from '../common/SearchBarSurface';
 import { display, promptAction, router } from '@kit.ArkUI';
 import { common } from '@kit.AbilityKit';
 import { connection } from '@kit.NetworkKit';
@@ -1496,7 +1496,7 @@ export struct MoonlightAppCatalogSurface {
               .placeholderColor(this.pal().text3).fontSize(13).margin({ left: 8 })
               .onChange((value: string): void => { this.query = value; this.applyFilter(); })
           }.layoutWeight(1).height(46).padding({ left: 13, right: 10 }).borderRadius(15)
-            .attributeModifier(new SearchBarSurface<RowAttribute>(this.theme !== 'light', { background: this.pal().searchBg }))
+            .backgroundColor(this.pal().searchBg).linearGradient(searchGlassSheen(this.theme !== 'light')).backgroundBlurStyle(BlurStyle.Regular).border(searchGlassBorder(this.theme !== 'light')).shadow(searchGlassShadow(this.theme !== 'light'))
           Scroll() {
             Row({ space: 7 }) {
               this.filterButton('全部', 'all')

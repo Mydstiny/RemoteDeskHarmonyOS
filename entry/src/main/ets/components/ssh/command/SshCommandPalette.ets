@@ -1,4 +1,4 @@
-import { SearchBarSurface } from '../../../common/SearchBarSurface';
+import { searchGlassBorder, searchGlassShadow, searchGlassSheen } from '../../../common/SearchBarSurface';
 import { KeyCode } from '@kit.InputKit';
 import {
   rankSshCommands,
@@ -113,7 +113,7 @@ export struct SshCommandPalette {
           .placeholderColor('rgba(242,244,247,0.42)')
           .caretColor(this.accentColor)
           .borderRadius(12)
-          .attributeModifier(new SearchBarSurface<TextInputAttribute>(true, { background: Color.Transparent }))
+          .backgroundColor(Color.Transparent).linearGradient(searchGlassSheen(true)).backgroundBlurStyle(BlurStyle.Regular).border(searchGlassBorder(true)).shadow(searchGlassShadow(true))
           .enableAutoFill(false)
           .enablePreviewText(true)
           .onChange((value: string): void => { this.onQueryChange(value); })

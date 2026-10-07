@@ -143,17 +143,11 @@ assert.ok(page.includes('.translate({ x: this.viewShift }).opacity(this.viewOpac
 assert.ok(page.includes('PageTransitionEnter({ type: RouteType.Push'));
 // Every search bar is on the system's 沉浸光感 material where the device has it (SearchBarSurface), its old look elsewhere.
 const surface = fs.readFileSync(path.join(ETS, 'common/SearchBarSurface.ets'), 'utf8');
-// The capsule is drawn by the app (the system material drew nothing for an app targeting API 23): tint, blur, a light
-// rim on top and a darker one below, and a soft shadow, in light and dark.
-const applied = surface.slice(surface.indexOf('applyNormalAttribute('));
-assert.ok(applied.indexOf('if (immersiveMaterialAvailable()) {') < applied.indexOf('instance.systemMaterial(') &&
-  applied.includes('instance.backgroundBlurStyle(BlurStyle.Regular);'), 'system glass where supported, the drawn capsule elsewhere');
-assert.ok(surface.includes('deviceInfo.sdkApiVersion >= 26 && uiMaterial.isImmersiveMaterialSupported()'), 'guarded for API 23–25 devices');
-const profile = fs.readFileSync(path.join(ETS, '../../../../build-profile.example.json5'), 'utf8');
-assert.ok(profile.includes('"targetSdkVersion": "26.0.0"') && profile.includes('"compatibleSdkVersion": "6.1.0(23)"'),
-  'targets API 26 (the material needs it) and still installs from API 23');
-assert.ok(applied.includes("{ top: '#FFFFFFFF', left: '#1A000000', right: '#1A000000', bottom: '#24000000' }") &&
-  applied.includes("{ top: '#4DFFFFFF', left: '#26FFFFFF', right: '#26FFFFFF', bottom: '#1AFFFFFF' }"));
+// The capsule is set directly on each bar (an attribute modifier left the bars with no surface on device): a sheen,
+// blur, a light rim on top and a darker one below, and a soft shadow, in light and dark.
+assert.ok(surface.includes('export function searchGlassSheen(dark: boolean): LinearGradientOptions {') &&
+  surface.includes("{ top: '#FFFFFFFF', left: '#1F000000', right: '#1F000000', bottom: '#2E000000' }") &&
+  surface.includes("{ top: '#59FFFFFF', left: '#2EFFFFFF', right: '#2EFFFFFF', bottom: '#1FFFFFFF' }"));
 const chat = fs.readFileSync(path.join(ETS, 'components/diagnosticAi/AiChatView.ets'), 'utf8');
 assert.ok(chat.includes(".lineHeight(22).placeholderFont({ size: 16 })"), 'the assistant composer placeholder sits on its centre line');
 for (const file of ['pages/HostListPage.ets', 'components/AboutSettingsSheet.ets', 'pages/RemoteAiWorkspace.ets',
@@ -161,7 +155,8 @@ for (const file of ['pages/HostListPage.ets', 'components/AboutSettingsSheet.ets
   'components/pro/org/HostOrganizationManager.ets', 'components/pro/workspace/WorkspaceAddFlow.ets',
   'components/ssh/search/SshTerminalSearchBar.ets', 'components/ssh/command/SshCommandPalette.ets', 'components/ssh/log/SshSessionLogSheet.ets']) {
   const text = fs.readFileSync(path.join(ETS, file), 'utf8');
-  assert.ok(text.includes('SearchBarSurface<'), file + ' search bar uses the shared surface');
-  for (const match of text.matchAll(/Search\(\{[^\n]*\n?[^\n]*/g)) assert.ok(!/\.backgroundColor\(/.test(match[0]), file + ': no own background on Search');
+  assert.ok(text.includes('.border(searchGlassBorder(') && text.includes('.shadow(searchGlassShadow(') &&
+    text.includes('.linearGradient(searchGlassSheen(') && !text.includes('attributeModifier(new SearchBarSurface'),
+    file + ' search bar draws the glass capsule itself');
 }
 console.log('PASS remote AI composer centring, shimmer, pull to refresh and model sheet sizing');

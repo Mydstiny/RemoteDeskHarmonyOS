@@ -1,4 +1,4 @@
-import { SearchBarSurface } from '../../../common/SearchBarSurface';
+import { searchGlassBorder, searchGlassShadow, searchGlassSheen } from '../../../common/SearchBarSurface';
 import { KeyCode } from '@kit.InputKit';
 import {
   routeSshShortcut,
@@ -132,7 +132,7 @@ export struct SshTerminalSearchBar {
           .placeholderColor('rgba(242,244,247,0.46)')
           .caretColor(this.accentColor)
           .borderRadius(8)
-          .attributeModifier(new SearchBarSurface<TextInputAttribute>(true, { background: 'rgba(255,255,255,0.07)' }))
+          .backgroundColor('rgba(255,255,255,0.07)').linearGradient(searchGlassSheen(true)).backgroundBlurStyle(BlurStyle.Regular).border(searchGlassBorder(true)).shadow(searchGlassShadow(true))
           .padding({ left: 10, right: 10 })
           .enterKeyType(EnterKeyType.Search)
           .enableAutoFill(false)

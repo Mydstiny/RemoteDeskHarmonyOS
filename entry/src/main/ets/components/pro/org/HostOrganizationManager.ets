@@ -1,4 +1,4 @@
-import { SearchBarSurface } from '../../../common/SearchBarSurface';
+import { searchGlassBorder, searchGlassShadow, searchGlassSheen } from '../../../common/SearchBarSurface';
 import { appUiOnAccentText } from '../../../common/AppUiColorPolicy';
 import { common } from '@kit.AbilityKit';
 import { ProSymbolIcon } from '../ProSymbolIcon';
@@ -192,7 +192,7 @@ export struct HostOrganizationManager {
     Column({ space: 8 }) {
       if (this.rows(this.revision).length > 8) {
         Search({ value: this.hostQuery, placeholder: '搜索主机' }).height(36).borderRadius(18)
-          .attributeModifier(new SearchBarSurface<SearchAttribute>(this.theme !== 'light', { background: this.pal().surface }))
+          .backgroundColor(this.pal().surface).linearGradient(searchGlassSheen(this.theme !== 'light')).backgroundBlurStyle(BlurStyle.Regular).border(searchGlassBorder(this.theme !== 'light')).shadow(searchGlassShadow(this.theme !== 'light'))
           .onChange((value: string): void => { this.hostQuery = value; })
       }
       if (this.rows(this.revision).length === 0) {

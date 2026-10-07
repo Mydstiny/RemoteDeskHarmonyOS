@@ -72,3 +72,26 @@ export class SearchBarSurface<T extends CommonMethod<T>> implements AttributeMod
     }
   }
 }
+
+/*
+ * The glass capsule as plain attribute values, set directly on each search bar (an attribute modifier left the bars
+ * with no surface at all on device): a white sheen fading down over the bar's colour, a light rim on top and a darker
+ * one below, and a soft shadow.
+ */
+export function searchGlassSheen(dark: boolean): LinearGradientOptions {
+  return { angle: 180, colors: dark ? [['#24FFFFFF', 0], ['#08FFFFFF', 0.55], ['#00FFFFFF', 1]] :
+    [['#B3FFFFFF', 0], ['#40FFFFFF', 0.55], ['#14FFFFFF', 1]] };
+}
+
+export function searchGlassBorder(dark: boolean): BorderOptions {
+  return {
+    width: { top: 1, left: 0.8, right: 0.8, bottom: 1 },
+    color: dark ? { top: '#59FFFFFF', left: '#2EFFFFFF', right: '#2EFFFFFF', bottom: '#1FFFFFFF' } :
+      { top: '#FFFFFFFF', left: '#1F000000', right: '#1F000000', bottom: '#2E000000' },
+    style: BorderStyle.Solid
+  };
+}
+
+export function searchGlassShadow(dark: boolean): ShadowOptions {
+  return { radius: 16, color: dark ? '#40000000' : '#1A000000', offsetY: 4 };
+}

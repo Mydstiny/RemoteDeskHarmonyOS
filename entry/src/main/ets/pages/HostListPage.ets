@@ -1,6 +1,6 @@
 import { PhonePasskeySettingsSheet } from '../components/pro/passkey/PhonePasskeySettingsSheet';
 import { phonePasskeyEntryAvailable } from '../services/pro/passkey/ProPasskeyEntry';
-import { SearchBarSurface } from '../common/SearchBarSurface';
+import { searchGlassBorder, searchGlassShadow, searchGlassSheen } from '../common/SearchBarSurface';
 import { ProBadge, proBadgeSummary } from '../components/ProBadge';
 import { AI_VOICE_HOLD_EVENT } from '../components/diagnosticAi/AiVoiceIsland';
 import { AiIslandLayerParams, AiTopLayer, AiVoiceLayerParams } from '../components/diagnosticAi/AiTopLayer';
@@ -17311,12 +17311,6 @@ struct HostListPage {
     return '100%';
   }
 
-  /** The host search bar's surface: the system's 沉浸光感 glass where available (see SearchBarSurface). */
-  private searchBarSurface(): SearchBarSurface<RowAttribute> {
-    return new SearchBarSurface<RowAttribute>(this.theme !== 'light',
-      { background: this.pal().card, border: this.pal().cardBorder, blur: true, shadow: true });
-  }
-
   @Builder hostSearchLeadingIcon() {
     if (this.settingsModern()) {
       SymbolGlyph($r('sys.symbol.magnifyingglass')).fontSize(18).fontColor([this.pal().text3])
@@ -17638,7 +17632,8 @@ struct HostListPage {
                 if (this.searchText !== '') { this.hostSearchClearButton() }
               }.width('50%').constraintSize({ maxWidth: 480 })
                 .height(44).borderRadius(22)
-                .attributeModifier(this.searchBarSurface())
+                .backgroundColor(this.pal().card).linearGradient(searchGlassSheen(this.theme !== 'light')).backgroundBlurStyle(BlurStyle.Regular)
+                .border(searchGlassBorder(this.theme !== 'light')).shadow(searchGlassShadow(this.theme !== 'light'))
                 .alignItems(VerticalAlign.Center)
               }.width('100%').height(52).padding({ left: 8, right: 8, bottom: 8 })
               if (this.modernHostSelectionBarShown()) { this.modernHostSelectionBar() }
@@ -17665,7 +17660,8 @@ struct HostListPage {
                 if (this.searchText !== '') { this.hostSearchClearButton() }
               }.width('92%')
                 .height(44).borderRadius(22)
-                .attributeModifier(this.searchBarSurface())
+                .backgroundColor(this.pal().card).linearGradient(searchGlassSheen(this.theme !== 'light')).backgroundBlurStyle(BlurStyle.Regular)
+                .border(searchGlassBorder(this.theme !== 'light')).shadow(searchGlassShadow(this.theme !== 'light'))
                 .alignItems(VerticalAlign.Center)
               if (this.modernHostSelectionBarShown()) {
                 this.modernHostSelectionBar()
@@ -20408,8 +20404,7 @@ struct HostListPage {
       }
     }
     .width('100%').height(52).padding({ left: 16, right: 4 }).borderRadius(18)
-    .attributeModifier(new SearchBarSurface<RowAttribute>(this.theme !== 'light',
-      { background: this.pal().card, border: this.pal().cardBorder, blur: true }))
+    .backgroundColor(this.pal().card).linearGradient(searchGlassSheen(this.theme !== 'light')).backgroundBlurStyle(BlurStyle.Regular).border(searchGlassBorder(this.theme !== 'light')).shadow(searchGlassShadow(this.theme !== 'light'))
   }
 
   /** Rows the page itself shows right now (Pro features, device kind, app clone…). */

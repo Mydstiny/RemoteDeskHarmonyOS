@@ -1,4 +1,4 @@
-import { SearchBarSurface } from '../../../common/SearchBarSurface';
+import { searchGlassBorder, searchGlassShadow, searchGlassSheen } from '../../../common/SearchBarSurface';
 import {
   SshSessionLogDocumentV1,
   SshSessionLogSearchHitV1
@@ -88,7 +88,7 @@ export struct SshSessionLogSheet {
       TextInput({ text: this.query, placeholder: '搜索当前主机的脱敏日志' })
         .height(42).fontSize(12).fontColor('#F2F4F7')
         .placeholderColor('rgba(242,244,247,0.40)')
-        .borderRadius(9).attributeModifier(new SearchBarSurface<TextInputAttribute>(true, { background: 'rgba(255,255,255,0.07)' }))
+        .borderRadius(9).backgroundColor('rgba(255,255,255,0.07)').linearGradient(searchGlassSheen(true)).backgroundBlurStyle(BlurStyle.Regular).border(searchGlassBorder(true)).shadow(searchGlassShadow(true))
         .margin({ left: 16, right: 16, bottom: 10 })
         .enableAutoFill(false)
         .onChange((value: string): void => { this.onSearchChange(value.slice(0, 256)); })

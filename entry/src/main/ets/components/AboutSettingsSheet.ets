@@ -5,7 +5,7 @@
  * 通过 @StorageLink/@StorageProp 接入主题系统。
  */
 import { SlidingSegment } from './SlidingSegment';
-import { SearchBarSurface } from '../common/SearchBarSurface';
+import { searchGlassBorder, searchGlassShadow, searchGlassSheen } from '../common/SearchBarSurface';
 import { common, Want } from '@kit.AbilityKit';
 import { AppSheetHeader } from './AppSheetHeader';
 import { settingsVisualIsModern } from '../services/SettingsVisualStylePolicy';
@@ -405,8 +405,7 @@ export struct AboutSettingsSheet {
         }
       }
       .layoutWeight(1).height(44).padding({ left: 14, right: 2 }).borderRadius(14)
-      .attributeModifier(new SearchBarSurface<RowAttribute>(this.theme !== 'light',
-        { background: this.pal().surface, border: this.pal().cardBorder }))
+      .backgroundColor(this.pal().surface).linearGradient(searchGlassSheen(this.theme !== 'light')).backgroundBlurStyle(BlurStyle.Regular).border(searchGlassBorder(this.theme !== 'light')).shadow(searchGlassShadow(this.theme !== 'light'))
     }
     // The inset is padding on the full-width row: width 100% plus a margin would overflow the sheet.
     .width('100%').padding({ left: 20, right: 20 })

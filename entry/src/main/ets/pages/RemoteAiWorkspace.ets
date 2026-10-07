@@ -1,4 +1,4 @@
-import { SearchBarSurface } from '../common/SearchBarSurface';
+import { searchGlassBorder, searchGlassShadow, searchGlassSheen } from '../common/SearchBarSurface';
 import { AppUiMetrics } from '../common/AppUiMetrics';
 import { AiActionButton } from '../components/ai/AiActionButton';
 import { AiFormField } from '../components/ai/AiFormField';
@@ -1931,7 +1931,7 @@ export struct RemoteAiWorkspace {
           .backgroundColor(Color.Transparent).padding(0).defaultFocus(true).accessibilityText('搜索对话')
           .onChange((value: string): void => { this.query = value; })
       }.width('100%').height(44).padding({ left: 14, right: 14 }).borderRadius(22)
-      .attributeModifier(new SearchBarSurface<RowAttribute>(this.theme !== 'light', { background: this.palette().surface }))
+      .backgroundColor(this.palette().surface).linearGradient(searchGlassSheen(this.theme !== 'light')).backgroundBlurStyle(BlurStyle.Regular).border(searchGlassBorder(this.theme !== 'light')).shadow(searchGlassShadow(this.theme !== 'light'))
       .margin({ bottom: 4 })
     }
   }

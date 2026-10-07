@@ -1,4 +1,4 @@
-import { SearchBarSurface } from '../common/SearchBarSurface';
+import { searchGlassBorder, searchGlassShadow, searchGlassSheen } from '../common/SearchBarSurface';
 import { AppConfig, buildDark, buildLight, Palette } from '../common/Theme';
 import { ProSymbolIcon } from './pro/ProSymbolIcon';
 import { ProEntries } from '../services/pro/ProEntries';
@@ -283,7 +283,7 @@ export struct ProWorkspaceEditorPanel {
               .onClick((): void => { this.picking = false; this.picked = []; })
           }.width('100%')
           Search({ value: this.pickQuery, placeholder: '搜索名称、地址或协议' }).height(36).borderRadius(18)
-            .attributeModifier(new SearchBarSurface<SearchAttribute>(this.theme !== 'light', { background: this.pal().surface }))
+            .backgroundColor(this.pal().surface).linearGradient(searchGlassSheen(this.theme !== 'light')).backgroundBlurStyle(BlurStyle.Regular).border(searchGlassBorder(this.theme !== 'light')).shadow(searchGlassShadow(this.theme !== 'light'))
             .onChange((value: string): void => { this.pickQuery = value; })
           if (this.pickRows().length === 0) {
             Text(this.rows().length === 0 ? '还没有主机' : '没有更多可添加的主机').fontSize(12)
