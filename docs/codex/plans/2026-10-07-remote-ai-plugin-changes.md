@@ -1,6 +1,6 @@
 # 远程 AI 插件改动（2026-10-07，待同步回插件仓库）
 
-本机正在运行的插件副本已经改好并通过联调：DSH `0.3.0-c1f1cb7`、Codex `0.3.0-codex01592-a0788dc`、Claude Code `0.2.0-82f7608`。
+本机正在运行的插件副本已经改好并通过联调：DSH `0.3.0-c1f1cb7`、Codex `0.3.0-codex01592-a0788dc`、Claude Code `0.2.0-82f7608`。Claude Code 插件随后改成了 Pi 插件，改动见 `2026-10-07-pi-plugin.md`。
 插件源码不在这台 Mac 上，以下改动需要同步回各自的 GitHub 仓库。代码差异见同目录的 `2026-10-07-compact-pairing-qr-plugin.patch`。
 
 ## 1. 精简配对二维码（三个插件）

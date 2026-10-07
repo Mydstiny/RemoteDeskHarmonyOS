@@ -398,7 +398,7 @@ const cases = [
     assert.ok(backendCard.includes('.height(68)') && backendCard.includes('.borderRadius(16)'));
     const routeCard = read('entry/src/main/ets/components/ai/AiConnectionPathCard.ets');
     assert.ok(routeCard.includes('.height(68)') && routeCard.includes('.borderRadius(16)'));
-    // Every backend (Codex, DSH, Claude Agent) gets a card enabled by its own Pro entitlement.
+    // Every backend (Codex, DSH, Pi) gets a card enabled by its own Pro entitlement.
     assert.ok(editor.includes('ForEach(AI_BACKENDS') && editor.includes('AiBackendChoiceCard({ backend, title: aiBackendName(backend)'));
     assert.ok(editor.includes('AiAccess.getInstance().executable(backend)'));
     assert.ok(editor.includes('AiConnectionPathCard({ path: \'lan\''));
@@ -418,7 +418,7 @@ const cases = [
     assert.ok(lanDiscovery.includes('getDefaultNet') && lanDiscovery.includes('CONNECT_TIMEOUT_MS: number = 320'));
     assert.ok(settingsPage.includes('AiBackendChoiceCard({ backend: backend') && settingsPage.includes("this.backendChoiceCard('codex'"));
     assert.ok(read('entry/src/main/ets/components/ai/AiHostInstallPanel.ets').includes('AiBackendChoiceCard({ backend, title: aiBackendName(backend)'));
-    assert.ok(settingsPage.includes("this.backendChoiceCard('claudecode', 'Claude Agent'"));
+    assert.ok(settingsPage.includes("this.backendChoiceCard('pi', 'Pi'"));
     assert.ok(settingsPage.includes("padding({ top: this.embedded ? 0 : (this.topInset > 0 ? px2vp(this.topInset) : 0) })"));
     const actionRow = read('entry/src/main/ets/components/AppSettingsActionRow.ets');
     assert.ok(!actionRow.includes('Button({ type: ButtonType.Normal })'), 'Settings action rows must not use native rectangular Button clipping');

@@ -28,7 +28,7 @@ const accepted = {
   'pretty invite JSON': JSON.stringify(invite, null, 2),
   'Codex link with url': link({ type: 'remotedesk-pair', version: 1, engine: 'codex', url: 'https://192.168.31.142:9443', invite }),
   'DSH link without url': link({ type: 'remotedesk-pair', version: 1, engine: 'dsh', invite }),
-  'Claude Code link with IPv6 url': link({ type: 'remotedesk-pair', version: 1, engine: 'claudecode', url: 'https://[fe80::1]:9445', invite }),
+  'Pi link with IPv6 url': link({ type: 'remotedesk-pair', version: 1, engine: 'pi', url: 'https://[fe80::1]:9445', invite }),
   'link with surrounding whitespace': '  ' + link({ type: 'remotedesk-pair', version: 1, engine: 'codex', invite }) + '\n'
 };
 for (const [name, text] of Object.entries(accepted)) {

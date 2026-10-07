@@ -5,7 +5,7 @@ import { AiBridgeClient } from './AiBridgeClient';
 import { aiRandomId } from './AiTransport';
 import { AiLifecycle } from './AiLifecycle';
 import { AiLocalStore } from './AiLocalStore';
-import { AiHost, AiProject, AiSession, AiApproval, AiEvent, AiPendingOperation, AiTranscriptItem } from './AiModels';
+import { AiHost, AiProject, AiSession, AiApproval, AiEvent, AiPendingOperation, AiTranscriptItem, aiAgentEvents } from './AiModels';
 import { AiTranscript } from './AiTranscript';
 import { aiArray, aiRecord, aiString, aiNumber, aiErrorText } from './AiWirePolicy';
 
@@ -241,9 +241,9 @@ export class AiWorkspaceController {
       this.assertGeneration(generation);
       const session = aiRecord(result['session']); const snapshot = aiRecord(result['snapshot']);
       this.title = aiString(session['title']); this.archived = session['archived'] === true;
-      // The event stream resumes after what the pages hold. Claude pages slice the live history, so the last page's
+      // The event stream resumes after what the pages hold. Agent (Pi) pages slice the live history, so the last page's
       // cursor covers everything read; DSH pages end at the first page's `through`, later events come by the stream.
-      if (!older && (cursor === '' || client.host.backend === 'claudecode')) { this.eventCursor = aiNumber(result['cursor']); }
+      if (!older && (cursor === '' || aiAgentEvents(client.host.backend))) { this.eventCursor = aiNumber(result['cursor']); }
       this.status = aiString(snapshot['status'], '状态未知');
       if (!older) {
         this.currentModel = aiString(snapshot['model'], this.currentModel);
@@ -273,8 +273,8 @@ export class AiWorkspaceController {
             if (next === itemCursor) { throw new Error('AI_PAGINATION_INVALID'); } itemCursor = next;
           }
         }
-      } else if (client.host.backend === 'claudecode') {
-        aiArray(snapshot['events']).forEach((event: Object): void => this.transcript.claudeEvent(aiRecord(event), true));
+      } else if (aiAgentEvents(client.host.backend)) {
+        aiArray(snapshot['events']).forEach((event: Object): void => this.transcript.agentEvent(aiRecord(event), true));
       } else {
         aiArray(snapshot['events']).forEach((event: Object): void => {
           const row = aiRecord(event); this.noteUsage(aiString(row['type']), this.eventBody(row)); this.transcript.dshEvent(row, true);
@@ -301,7 +301,7 @@ export class AiWorkspaceController {
         const type = aiString(event.event['type']);
         this.noteUsage(type, this.eventBody(event.event));
         if (client.host.backend === 'codex') { this.scheduleLiveSnapshot(token); }
-        else if (client.host.backend === 'claudecode') { this.transcript.claudeEvent(event.event, true); }
+        else if (aiAgentEvents(client.host.backend)) { this.transcript.agentEvent(event.event, true); }
         else { this.transcript.dshEvent(event.event, true); }
         if (type.startsWith('execution.')) { this.status = type.slice(10); this.executionEvents++; }
         if (type.startsWith('approval.')) { void this.refreshApprovals().catch((): void => {}); }

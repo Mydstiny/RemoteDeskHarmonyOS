@@ -1,5 +1,5 @@
 'use strict';
-// Claude Agent event contract (remotedesk-claudecode-plugin src/claude-adapter.mjs): live turns stream text chunks
+// Agent event contract (remotedesk-pi-plugin src/pi-adapter.mjs, docs/protocol.md): live turns stream text chunks
 // and then repeat the whole message, tool results arrive as user messages of tool_result blocks, and stored history
 // has one event per message with every block inside. Runs the production mapper in AiTranscript.ets.
 const fs = require('node:fs'), path = require('node:path'), vm = require('node:vm'), assert = require('node:assert/strict');
@@ -14,7 +14,7 @@ function load(name, mocks) {
 }
 const models = load('AiModels', { '../EndpointAddressPolicy': { parseEndpointHost: () => ({ ok: true }), parseEndpointServerIdentity: () => ({ ok: true }) } });
 const wire = load('AiWirePolicy', { './AiModels': models, '@kit.ArkTS': { util: {} } });
-const { aiClaudeItems, AiTranscript } = load('AiTranscript', { './AiModels': models, './AiWirePolicy': wire });
+const { aiAgentItems, AiTranscript } = load('AiTranscript', { './AiModels': models, './AiWirePolicy': wire });
 const plain = value => JSON.parse(JSON.stringify(value));
 const view = items => plain(items).map(item => [item.kind, item.text, item.state]);
 let seq = 0;
@@ -31,7 +31,7 @@ const live = [
   ev('user/message', { message: [{ type: 'tool_result', tool_use_id: 'u1', content: [{ type: 'text', text: 'ok 3 tests' }] }] }),
   ev('assistant/chunk', { chunk: { text: 'All ' } }),
 ];
-let items = aiClaudeItems(live);
+let items = aiAgentItems(live);
 assert.deepEqual(view(items), [
   ['assistant', 'Looking…', 'completed'],
   ['tool', '', 'completed'],
@@ -40,30 +40,30 @@ assert.equal(plain(items)[1].title, 'Bash');
 assert.equal(plain(items)[1].output, 'ok 3 tests');
 assert.ok(plain(items)[1].detail.includes('npm test'));
 live.push(ev('assistant/message', { message: 'All tests pass.', kind: 'text' }), ev('turn/end', { status: 'completed', result: 'All tests pass.' }));
-items = aiClaudeItems(live);
+items = aiAgentItems(live);
 assert.deepEqual(view(items), [
   ['assistant', 'Looking…', 'completed'], ['tool', '', 'completed'], ['assistant', 'All tests pass.', 'completed']]);
 console.log('PASS live chunks are replaced by the whole message and tool results join their call');
 
 // A tool still running when the turn is interrupted ends with the turn; refused tools and errors are notices.
 seq = 0;
-items = aiClaudeItems([
+items = aiAgentItems([
   ev('tool/call', { id: 'u2', name: 'Edit', input: { file_path: 'a.ts' } }),
   ev('tool/result', { name: 'Bash', denied: true, message: 'Denied by user' }),
-  ev('error', { code: 'CLAUDE_API_KEY_REQUIRED' }),
+  ev('error', { code: 'PI_SESSION_OPEN_IN_APP' }),
   ev('turn/end', { status: 'interrupted', result: '' }),
 ]);
 assert.deepEqual(view(items).map(row => row[0] + ':' + row[2]), ['tool:interrupted', 'tool:declined', 'notice:failed']);
 assert.equal(plain(items)[1].output, 'Denied by user');
-assert.ok(plain(items)[2].text.includes('Anthropic API Key'));
+assert.ok(plain(items)[2].text.includes('正在电脑上的 Pi 里打开'));
 seq = 0;
-items = aiClaudeItems([ev('turn/end', { status: 'failed', result: 'Credit balance is too low' })]);
+items = aiAgentItems([ev('turn/end', { status: 'failed', result: 'Credit balance is too low' })]);
 assert.deepEqual(view(items), [['notice', 'Credit balance is too low', 'failed']]);
 console.log('PASS interrupted, refused and failed turns are shown without running leftovers');
 
 // Stored history: one event per message; tool_use and thinking live inside the message content.
 seq = 0;
-items = aiClaudeItems([
+items = aiAgentItems([
   ev('user/message', { message: { role: 'user', content: 'Fix the login timeout' }, text: 'Fix the login timeout' }, 'm1'),
   ev('assistant/message', { message: { role: 'assistant', content: [
     { type: 'thinking', thinking: 'Check retry interval' }, { type: 'text', text: 'Reading the auth module.' },
@@ -82,15 +82,15 @@ console.log('PASS stored history maps text, thinking, tools and their results');
 
 // Malformed events never throw and never become items; the transcript orders events by sequence number.
 seq = 0;
-assert.deepEqual(plain(aiClaudeItems([ev('assistant/chunk', 'oops'), ev('assistant/chunk', { chunk: ['x'] }),
+assert.deepEqual(plain(aiAgentItems([ev('assistant/chunk', 'oops'), ev('assistant/chunk', { chunk: ['x'] }),
   ev('user/message', { message: 42 }), ev('unknown/type', {})])), []);
 // The plugin numbers live events apart from the history it read (its live seq restarts at 0), so events keep their
 // arrival order and are renumbered: history first, then live events, every item id unique.
 const transcript = new AiTranscript();
-transcript.claudeEvent({ seq: 0, type: 'user/message', data: { message: 'first' }, turn: 'h1' });
-transcript.claudeEvent({ seq: 1, type: 'assistant/message', data: { message: 'second', kind: 'text' }, turn: 'h2' });
-transcript.claudeEvent({ seq: 0, type: 'user/message', data: { message: 'third' }, turn: 'run' });
-transcript.claudeEvent({ seq: 1, type: 'assistant/message', data: { message: 'fourth', kind: 'text' }, turn: 'run' });
+transcript.agentEvent({ seq: 0, type: 'user/message', data: { message: 'first' }, turn: 'h1' });
+transcript.agentEvent({ seq: 1, type: 'assistant/message', data: { message: 'second', kind: 'text' }, turn: 'h2' });
+transcript.agentEvent({ seq: 0, type: 'user/message', data: { message: 'third' }, turn: 'run' });
+transcript.agentEvent({ seq: 1, type: 'assistant/message', data: { message: 'fourth', kind: 'text' }, turn: 'run' });
 assert.deepEqual(plain(transcript.items).map(item => item.role + ':' + item.text),
   ['user:first', 'assistant:second', 'user:third', 'assistant:fourth']);
 assert.deepEqual(plain(transcript.items).map(item => item.id), ['claude:0', 'claude:1', 'claude:2', 'claude:3']);
@@ -101,7 +101,7 @@ console.log('PASS malformed Claude events are skipped and events keep their arri
 // History pages are recorded first and mapped once; a later flush maps nothing new.
 const batched = new AiTranscript();
 for (let index = 0; index < 50; index++) {
-  batched.claudeEvent({ seq: index, type: index % 2 ? 'assistant/message' : 'user/message',
+  batched.agentEvent({ seq: index, type: index % 2 ? 'assistant/message' : 'user/message',
     data: { message: 'm' + index, kind: 'text' }, turn: 'h' + index }, true);
 }
 assert.equal(batched.items.length, 0);
@@ -119,20 +119,20 @@ for (let round = 0; round < 3; round++) {
 }
 stream.push(ev('assistant/chunk', { chunk: { text: 'tail' } }, 'run'));
 const compacted = new AiTranscript();
-stream.forEach(event => compacted.claudeEvent(event, true));
+stream.forEach(event => compacted.agentEvent(event, true));
 compacted.flush();
-assert.deepEqual(view(compacted.items), view(aiClaudeItems(stream)));
+assert.deepEqual(view(compacted.items), view(aiAgentItems(stream)));
 assert.deepEqual(view(compacted.items).slice(-1), [['assistant', 'tail', 'running']]);
 console.log('PASS dropping replaced chunks keeps the mapped transcript identical');
 
 // A sent prompt shows at once and sits before its turn's output; the engine's own copy replaces it.
 const echoed = new AiTranscript();
-echoed.claudeEvent({ seq: 0, type: 'turn/start', data: { id: 'run-1' }, turn: 'run-1' });
+echoed.agentEvent({ seq: 0, type: 'turn/start', data: { id: 'run-1' }, turn: 'run-1' });
 echoed.echo('Fix the login timeout', 'run-1');
 assert.deepEqual(plain(echoed.items).map(item => item.role + ':' + item.text), ['user:Fix the login timeout']);
-echoed.claudeEvent({ seq: 1, type: 'assistant/chunk', data: { chunk: { text: 'On it' } }, turn: 'run-1' });
+echoed.agentEvent({ seq: 1, type: 'assistant/chunk', data: { chunk: { text: 'On it' } }, turn: 'run-1' });
 assert.deepEqual(plain(echoed.items).map(item => item.role + ':' + item.text), ['user:Fix the login timeout', 'assistant:On it']);
-echoed.claudeEvent({ seq: 2, type: 'user/message', data: { message: 'Fix the login timeout' }, turn: 'run-1' });
+echoed.agentEvent({ seq: 2, type: 'user/message', data: { message: 'Fix the login timeout' }, turn: 'run-1' });
 assert.deepEqual(plain(echoed.items).filter(item => item.role === 'user').map(item => item.id), ['claude:2']);
 echoed.echo('   ', 'run-2');
 assert.equal(plain(echoed.items).length, 2);
@@ -140,11 +140,11 @@ console.log('PASS sent prompts show at once and give way to the engine copy');
 
 // The same words already in the history never stand for a new prompt: only a later engine event can.
 const repeated = new AiTranscript();
-repeated.claudeEvent({ seq: 0, type: 'user/message', data: { message: [{ type: 'text', text: '继续' }] }, turn: 'old' });
-repeated.claudeEvent({ seq: 1, type: 'assistant/message', data: { message: '好的', kind: 'text' }, turn: 'old' });
+repeated.agentEvent({ seq: 0, type: 'user/message', data: { message: [{ type: 'text', text: '继续' }] }, turn: 'old' });
+repeated.agentEvent({ seq: 1, type: 'assistant/message', data: { message: '好的', kind: 'text' }, turn: 'old' });
 repeated.echo('继续', 'run-9');
 assert.deepEqual(plain(repeated.items).map(item => item.role + ':' + item.text), ['user:继续', 'assistant:好的', 'user:继续']);
-repeated.claudeEvent({ seq: 0, type: 'assistant/chunk', data: { chunk: { text: '继续处理' } }, turn: 'run-9' });
+repeated.agentEvent({ seq: 0, type: 'assistant/chunk', data: { chunk: { text: '继续处理' } }, turn: 'run-9' });
 assert.deepEqual(plain(repeated.items).map(item => item.role + ':' + item.text),
   ['user:继续', 'assistant:好的', 'user:继续', 'assistant:继续处理']);
 // Two prompts of one turn keep their sending order and their own ids.
@@ -153,23 +153,23 @@ const echoes = plain(repeated.items).filter(item => item.id.startsWith('echo:'))
 assert.deepEqual(echoes.map(item => item.text), ['继续', '再补充一句']);
 assert.equal(new Set(echoes.map(item => item.id)).size, 2);
 // A tool result of the same turn is not the prompt; the engine's own copy of the prompt is.
-repeated.claudeEvent({ seq: 1, type: 'user/message', data: { message: [{ type: 'tool_result', tool_use_id: 'x', content: 'ok' }] }, turn: 'run-9' });
+repeated.agentEvent({ seq: 1, type: 'user/message', data: { message: [{ type: 'tool_result', tool_use_id: 'x', content: 'ok' }] }, turn: 'run-9' });
 assert.equal(plain(repeated.items).filter(item => item.id.startsWith('echo:')).length, 2);
-repeated.claudeEvent({ seq: 2, type: 'user/message', data: { message: [{ type: 'text', text: '继续' }] }, turn: 'run-9' });
+repeated.agentEvent({ seq: 2, type: 'user/message', data: { message: [{ type: 'text', text: '继续' }] }, turn: 'run-9' });
 assert.deepEqual(plain(repeated.items).filter(item => item.id.startsWith('echo:')).map(item => item.text), ['再补充一句']);
 // A steered prompt has no turn id; the engine copy with the same words replaces it.
 repeated.echo('改用 TypeScript', '');
 assert.deepEqual(plain(repeated.items).slice(-1).map(item => item.text), ['改用 TypeScript']);
-repeated.claudeEvent({ seq: 3, type: 'user/message', data: { message: [{ type: 'text', text: '改用 TypeScript' }] }, turn: 'run-9' });
+repeated.agentEvent({ seq: 3, type: 'user/message', data: { message: [{ type: 'text', text: '改用 TypeScript' }] }, turn: 'run-9' });
 assert.ok(!plain(repeated.items).some(item => item.id.startsWith('echo:') && item.text === '改用 TypeScript'));
 console.log('PASS a prompt echo is replaced only by a later engine event, one for one, in sending order');
 
 // The engine's copy may arrive before the acknowledgement: marked before sending, it still stands for the prompt.
 {
   const early = new AiTranscript();
-  early.claudeEvent({ seq: 0, type: 'assistant/message', data: { message: 'earlier', kind: 'text' }, turn: 'old' });
+  early.agentEvent({ seq: 0, type: 'assistant/message', data: { message: 'earlier', kind: 'text' }, turn: 'old' });
   const sentAt = early.mark();
-  early.claudeEvent({ seq: 0, type: 'user/message', data: { message: [{ type: 'text', text: '修复登录' }] }, turn: 'run-2' });
+  early.agentEvent({ seq: 0, type: 'user/message', data: { message: [{ type: 'text', text: '修复登录' }] }, turn: 'run-2' });
   early.echo('修复登录', 'run-2', sentAt);
   assert.deepEqual(plain(early.items).map(item => item.role + ':' + item.text), ['assistant:earlier', 'user:修复登录']);
   assert.ok(!plain(early.items).some(item => item.id.startsWith('echo:')));
@@ -180,11 +180,11 @@ console.log('PASS a prompt echo is replaced only by a later engine event, one fo
 // A steered prompt (no turn id) sits where it was sent, not after everything that followed.
 {
   const steered = new AiTranscript();
-  steered.claudeEvent({ seq: 0, type: 'assistant/chunk', data: { chunk: { text: '处理中' } }, turn: 'run' });
+  steered.agentEvent({ seq: 0, type: 'assistant/chunk', data: { chunk: { text: '处理中' } }, turn: 'run' });
   const sentAt = steered.mark();
   steered.echo('改用 TypeScript', '', sentAt);
-  steered.claudeEvent({ seq: 1, type: 'tool/call', data: { id: 't1', name: 'Read', input: { file_path: '/a.ts' } }, turn: 'run' });
-  steered.claudeEvent({ seq: 2, type: 'assistant/message', data: { message: '好的，改用 TypeScript', kind: 'text' }, turn: 'run' });
+  steered.agentEvent({ seq: 1, type: 'tool/call', data: { id: 't1', name: 'Read', input: { file_path: '/a.ts' } }, turn: 'run' });
+  steered.agentEvent({ seq: 2, type: 'assistant/message', data: { message: '好的，改用 TypeScript', kind: 'text' }, turn: 'run' });
   assert.deepEqual(plain(steered.items).map(item => item.kind + ':' + (item.text || item.title)),
     ['user:改用 TypeScript', 'tool:Read', 'assistant:好的，改用 TypeScript']);
 }
@@ -192,27 +192,39 @@ console.log('PASS a prompt echo is replaced only by a later engine event, one fo
 {
   const injected = new AiTranscript();
   injected.echo('部署到预发环境', 'run-7', injected.mark());
-  injected.claudeEvent({ seq: 0, type: 'user/message', data: { message: [{ type: 'text', text: '<system-reminder>hook output</system-reminder>' }] }, turn: 'run-7' });
+  injected.agentEvent({ seq: 0, type: 'user/message', data: { message: [{ type: 'text', text: '<system-reminder>hook output</system-reminder>' }] }, turn: 'run-7' });
   assert.equal(plain(injected.items).filter(item => item.id.startsWith('echo:')).length, 1);
   // The engine's own copy with attachments added still does.
-  injected.claudeEvent({ seq: 1, type: 'user/message', data: { message: [{ type: 'text', text: '部署到预发环境\n[附件 1]' }] }, turn: 'run-7' });
+  injected.agentEvent({ seq: 1, type: 'user/message', data: { message: [{ type: 'text', text: '部署到预发环境\n[附件 1]' }] }, turn: 'run-7' });
   assert.equal(plain(injected.items).filter(item => item.id.startsWith('echo:')).length, 0);
 }
 // Malformed events are skipped, not thrown.
 {
   const odd = new AiTranscript();
   odd.echo('hello', 't', odd.mark());
-  assert.doesNotThrow(() => odd.claudeEvent({ seq: 0, type: 'user/message', data: 'oops', turn: 't' }));
-  assert.doesNotThrow(() => odd.claudeEvent({ seq: 1, type: 'user/message', turn: 't' }));
+  assert.doesNotThrow(() => odd.agentEvent({ seq: 0, type: 'user/message', data: 'oops', turn: 't' }));
+  assert.doesNotThrow(() => odd.agentEvent({ seq: 1, type: 'user/message', turn: 't' }));
   assert.equal(plain(odd.items).filter(item => item.id.startsWith('echo:')).length, 1);
 }
 console.log('PASS early engine copies, steered prompts, injected context and malformed events');
 
-// The backend table: Claude Agent is a third backend with its own port, name and validation.
-assert.deepEqual(Array.from(models.AI_BACKENDS), ['codex', 'dsh', 'claudecode']);
-assert.equal(models.aiBackendDefaultPort('claudecode'), 9445);
-assert.equal(models.aiBackendName('claudecode'), 'Claude Agent');
-assert.equal(models.emptyAiHost('owner-' + 'a'.repeat(64), 'h1', 'claudecode').port, 9445);
+// The backend table: Pi is the third backend (it replaced the Claude Agent plugin on the same port).
+assert.deepEqual(Array.from(models.AI_BACKENDS), ['codex', 'dsh', 'pi']);
+assert.equal(models.aiBackendDefaultPort('pi'), 9445);
+assert.equal(models.aiBackendName('pi'), 'Pi');
+assert.equal(models.emptyAiHost('owner-' + 'a'.repeat(64), 'h1', 'pi').port, 9445);
 assert.equal(models.aiBackendValid('claude'), false);
-assert.equal(models.aiSettingsValid({ ...models.defaultAiSettings(), defaultBackend: 'claudecode' }), true);
-console.log('PASS Claude Agent backend table');
+assert.equal(models.aiBackendValid('claudecode'), false);
+assert.equal(models.aiAgentEvents('pi'), true);
+assert.equal(models.aiAgentEvents('codex'), false);
+assert.equal(models.aiSettingsValid({ ...models.defaultAiSettings(), defaultBackend: 'pi' }), true);
+// Hosts and settings saved for the Claude Agent plugin read as Pi; only those are migrated.
+const legacy = { ...models.emptyAiHost('owner-' + 'a'.repeat(64), 'h2', 'codex'), backend: 'claudecode' };
+assert.equal(models.aiMigrateLegacyHost(legacy), true);
+assert.equal(legacy.backend, 'pi');
+assert.equal(models.aiHostError({ ...legacy, label: 'Mac' }), '');
+const codex = models.emptyAiHost('owner-' + 'a'.repeat(64), 'h3', 'codex');
+assert.equal(models.aiMigrateLegacyHost(codex), false);
+assert.equal(codex.backend, 'codex');
+assert.equal(models.aiMigrateLegacySettings({ ...models.defaultAiSettings(), defaultBackend: 'claudecode' }).defaultBackend, 'pi');
+console.log('PASS Pi backend table and the Claude Agent migration');

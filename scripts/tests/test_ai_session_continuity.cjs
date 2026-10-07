@@ -6,7 +6,7 @@
  *   carries it on when the user leaves the host (source contracts: these are ArkUI components);
  * - 远程 AI 设置 (界面风格, 显示工具执行过程, 回到前台后恢复查看) are in the AI's settings catalog, read and saved per
  *   account through AiHostService;
- * - 手机通行密钥 and 安全密钥重定向 are app actions; the knowledge base describes 远程 AI, Claude Agent and both keys
+ * - 手机通行密钥 and 安全密钥重定向 are app actions; the knowledge base describes 远程 AI, Pi and both keys
  *   with ids that exist.
  */
 const fs = require('node:fs');
@@ -64,18 +64,23 @@ test('远程 AI settings read and change as catalog values, on a copy, and refus
   assert.equal(models.aiRemoteSettingValue(base, 'remoteAi.uiStyle'), 'claude', 'settings saved before the style read as Claude');
   assert.equal(models.aiRemoteSettingValue(base, 'remoteAi.showExecution'), 'true');
   assert.equal(models.aiRemoteSettingValue(base, 'remoteAi.reconnectOnForeground'), 'true');
-  assert.equal(models.aiRemoteSettingValue(base, 'remoteAi.textSize'), null);
+  assert.equal(models.aiRemoteSettingValue(base, 'remoteAi.textSize'), '15');
+  assert.equal(models.aiRemoteSettingValue(base, 'remoteAi.defaultBackend'), 'codex');
+  assert.equal(models.aiRemoteSettingValue(base, 'remoteAi.colorScheme'), null);
   const codex = models.aiRemoteSettingChanged(base, 'remoteAi.uiStyle', 'codex');
   assert.equal(codex.uiStyle, 'codex');
   assert.equal(base.uiStyle, undefined, 'the settings passed in stay as they were');
   assert.equal(models.aiRemoteSettingChanged(base, 'remoteAi.showExecution', 'false').showExecution, false);
   assert.equal(models.aiRemoteSettingChanged(base, 'remoteAi.reconnectOnForeground', 'false').reconnectOnForeground, false);
-  for (const [id, value] of [['remoteAi.uiStyle', 'siri'], ['remoteAi.showExecution', '开启'], ['remoteAi.textSize', '20'],
-    ['remoteAi.defaultBackend', 'dsh'], ['ai.style', 'xiaoyi']]) {
+  assert.equal(models.aiRemoteSettingChanged(base, 'remoteAi.defaultBackend', 'pi').defaultBackend, 'pi');
+  assert.equal(models.aiRemoteSettingChanged(base, 'remoteAi.textSize', '20').textSize, 20);
+  for (const [id, value] of [['remoteAi.uiStyle', 'siri'], ['remoteAi.showExecution', '开启'], ['remoteAi.textSize', '30'],
+    ['remoteAi.textSize', '1e1'], ['remoteAi.defaultBackend', 'claudecode'], ['ai.style', 'xiaoyi']]) {
     assert.equal(models.aiRemoteSettingChanged(base, id, value), null, id + '=' + value);
   }
   assert.deepEqual(Array.from(models.AI_REMOTE_SETTING_IDS),
-    ['remoteAi.uiStyle', 'remoteAi.showExecution', 'remoteAi.reconnectOnForeground']);
+    ['remoteAi.uiStyle', 'remoteAi.showExecution', 'remoteAi.reconnectOnForeground', 'remoteAi.defaultBackend',
+      'remoteAi.textSize']);
 });
 
 test('a 远程 AI settings save writes only what that writer changed, over what is stored', () => {
@@ -108,6 +113,16 @@ test('the AI settings catalog has the 远程 AI settings, and plain words pick t
   assert.deepEqual(pick('把远程 AI 换成 Codex 风格'), ['remoteAi.uiStyle=codex']);
   assert.deepEqual(pick('远程AI界面改回Claude风格'), ['remoteAi.uiStyle=claude']);
   assert.deepEqual(pick('关闭工具执行过程'), ['remoteAi.showExecution=false']);
+  // 默认电脑端 AI and 文字大小 only with the setting named: Pi is inside API, Codex in 安装 Codex, a number anywhere.
+  assert.deepEqual(pick('远程 AI 默认 AI 改成 Pi'), ['remoteAi.defaultBackend=pi']);
+  assert.deepEqual(pick('把默认电脑端 AI 换成 DSH'), ['remoteAi.defaultBackend=dsh']);
+  assert.deepEqual(pick('远程 AI 默认用 Codex'), ['remoteAi.defaultBackend=codex']);
+  assert.deepEqual(pick('远程 AI 的文字大小调到 18'), ['remoteAi.textSize=18']);
+  assert.deepEqual(pick('把会话文字大小改成 20'), ['remoteAi.textSize=20']);
+  for (const other of ['帮我把 API Key 改一下', '远程 AI 添加 Pi 主机', '在电脑上安装 Codex', '把端口改成 20', 'SSH 字号调到 16']) {
+    assert.deepEqual(pick(other), [], other);
+  }
+  assert.deepEqual(Array.from(settings.diagnosticAiSettingSpec('remoteAi.defaultBackend').choices, (c) => c.value), ['codex', 'dsh', 'pi']);
   assert.deepEqual(pick('关闭联网搜索工具调用'), [], 'the AI 助理\'s own tools are not 远程 AI\'s');
   // 从 A 换成 B means B.
   assert.deepEqual(pick('把远程 AI 从 Claude 风格换成 Codex 风格'), ['remoteAi.uiStyle=codex']);
@@ -471,9 +486,9 @@ test('手机通行密钥 and 安全密钥重定向 are app actions; 远程 AI wo
   assert.deepEqual(ids('在 Moonlight 网络设置里换个端口'), ['settings.moonlightNetwork']);
   assert.deepEqual(ids('在设置 → 远程 AI → 界面风格里选 Codex 风格'), ['settings.aiDisplay']);
   // (AI hosts are also added from the list's own 添加主机.)
-  assert.deepEqual(ids('在远程 AI 里添加 Claude Agent 主机'), ['host.add', 'settings.aiHosts']);
+  assert.deepEqual(ids('在远程 AI 里添加 Pi 主机'), ['host.add', 'settings.aiHosts']);
   assert.deepEqual(ids('在电脑端安装远程 AI 插件'), ['settings.aiInstall']);
-  assert.deepEqual(ids('在电脑上安装 Claude Agent 插件'), ['settings.aiInstall']);
+  assert.deepEqual(ids('在电脑上安装 Pi 插件'), ['settings.aiInstall']);
   // 远程 AI on its own, or its pairing, is its host page.
   assert.deepEqual(ids('打开 设置 → 远程 AI'), ['settings.aiHosts']);
   assert.deepEqual(ids('打开设置 → 远程 AI → 连接与配对'), ['settings.aiHosts']);
@@ -495,7 +510,7 @@ test('手机通行密钥 and 安全密钥重定向 are app actions; 远程 AI wo
   assert.deepEqual(ids('使用 YubiKey 登录'), ['pro.securityKey']);
   assert.deepEqual(ids('用 ed25519-sk (FIDO) 生成 SSH 密钥'), ['ssh.keys', 'settings.keyVault']);
   // The install page by its own name and the hosts' plugins; pairing words keep the host page.
-  for (const step of ['在电脑上安装 Codex', '在电脑上安装DSH', '在电脑上安装 Claude Code', '按电脑端安装里的指引安装 DSH',
+  for (const step of ['在电脑上安装 Codex', '在电脑上安装DSH', '在电脑上安装 Pi', '按电脑端安装里的指引安装 DSH',
     '在电脑端安装页复制 Codex 安装命令', '在电脑端安装 Codex 后回到 App 配对', '在 Codex 主机上更新插件到最新版本',
     '在电脑上运行 DSH 安装脚本', 'Codex 安装失败时检查 Node 版本', '确认电脑端插件正在运行']) {
     assert.deepEqual(ids(step), ['settings.aiInstall'], step);
@@ -532,9 +547,9 @@ test('the knowledge base describes 远程 AI, its style, both keys and the sessi
   const kb = load(D + 'DiagnosticAiKnowledgeBase');
   const settings = load(D + 'DiagnosticAiSettingsActionPolicy');
   const actions = load(D + 'DiagnosticAiAppActionPolicy');
-  assert.match(kb.DIAGNOSTIC_AI_KNOWLEDGE_VERSION, /2026-10-07-v16$/);
+  assert.match(kb.DIAGNOSTIC_AI_KNOWLEDGE_VERSION, /2026-10-07-v17$/);
   const guide = kb.aiAppGuide();
-  for (const words of ['Claude Agent', 'Anthropic API Key', 'DSH', 'Codex 风格', '手机通行密钥', '安全密钥重定向',
+  for (const words of ['Pi（Pi 编程代理，9445', 'pi-gui', '全部项目（含电脑 App 里的项目）', '修改前询问', 'DSH', 'Codex 风格', '手机通行密钥', '安全密钥重定向',
     '退出主机回到主机列表后', '连接断开或重连时 AI 不会关闭', '当前登录账号的 AI 配置']) {
     assert.ok(guide.includes(words), 'the guide mentions ' + words);
   }

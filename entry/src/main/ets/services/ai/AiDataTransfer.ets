@@ -1,7 +1,7 @@
 import { picker, fileIo } from '@kit.CoreFileKit';
 import { util } from '@kit.ArkTS';
 import { AiAccess } from './AiAccess';
-import { AiHost, AiSettings, aiHostError, aiSettingsValid } from './AiModels';
+import { AiHost, AiSettings, aiHostError, aiMigrateLegacyHost, aiMigrateLegacySettings, aiSettingsValid } from './AiModels';
 import { AiLocalStore } from './AiLocalStore';
 import { AiLifecycle } from './AiLifecycle';
 import { AiTransport, aiRandomId } from './AiTransport';
@@ -36,6 +36,8 @@ export class AiDataTransfer {
       text = util.TextDecoder.create('utf-8', { fatal: true }).decodeToString(data);
     } finally { fileIo.closeSync(file); }
     const document = JSON.parse(text) as AiPortableConfig;
+    // A backup made while the Pi plugin was still the Claude Agent plugin restores as Pi.
+    if (document.settings !== undefined && document.settings !== null) { aiMigrateLegacySettings(document.settings); }
     if (document.version !== 1 || !Array.isArray(document.hosts) || document.hosts.length > 256 ||
       !aiSettingsValid(document.settings)) { throw new Error('AI_IMPORT_INVALID'); }
     const hosts: AiHost[] = [];
@@ -45,6 +47,7 @@ export class AiDataTransfer {
         backend: row.backend, address: row.address, port: row.port, serverName: row.serverName,
         groupId: row.groupId, sortOrder: row.sortOrder, lastConnected: 0, createdAt: Date.now(),
         transport: row.transport, relayHostId: '', projectId: '' };
+      aiMigrateLegacyHost(host);
       if (aiHostError(host) !== '') { throw new Error('AI_IMPORT_INVALID'); } hosts.push(host);
     }
     access.assertCurrent(account);

@@ -2,7 +2,7 @@ import { common } from '@kit.AbilityKit';
 import { RemoteHost } from '../../model/RemoteHost';
 import { AiAccess, AiAccountLease } from './AiAccess';
 import { AiLocalStore } from './AiLocalStore';
-import { AiHost, AiSettings, aiBackendName, aiRemoteSettingChanged, aiRemoteSettingValue } from './AiModels';
+import { AiBackend, AiHost, AiSettings, aiBackendName, aiRemoteSettingChanged, aiRemoteSettingValue } from './AiModels';
 
 export function projectAiHost(ai: AiHost): RemoteHost {
   const host = new RemoteHost();
@@ -56,13 +56,15 @@ export class AiHostService {
     return settings === null ? null : aiRemoteSettingValue(settings, id);
   }
   /**
-   * The AI 助理 changes a 远程 AI setting (界面风格, 显示工具执行过程, 回到前台后恢复查看) for the current account, as
+   * The AI 助理 changes a 远程 AI setting (界面风格, 显示工具执行过程, 回到前台后恢复查看, 默认 AI, 文字大小) for the current account, as
    * 设置 → 远程 AI saves it: only that field, on what is stored at that moment (another change made meanwhile stays).
    * False when it cannot be changed now (no access, not read yet, or not one of those); `onFailed` when the save fails.
    */
   applyRemoteSetting(id: string, value: string, onFailed: () => void = (): void => {}): boolean {
     const settings: AiSettings | null = this.ownSettings();
     if (settings === null || aiRemoteSettingChanged(settings, id, value) === null) { return false; }
+    // Like the cards in 设置 → 远程 AI: a default AI the account cannot use is not offered.
+    if (id === 'remoteAi.defaultBackend' && !AiAccess.getInstance().executable(value as AiBackend)) { return false; }
     let account: AiAccountLease;
     try { account = AiAccess.getInstance().capture(); } catch (_error) { return false; }
     // Shown at once; what the store keeps replaces it.

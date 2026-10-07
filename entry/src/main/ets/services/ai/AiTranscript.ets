@@ -42,18 +42,18 @@ function aiJson(value: Object | undefined): string {
   try { return JSON.stringify(value, null, 2); } catch (_error) { return ''; }
 }
 
-function aiClaudeItem(id: string, kind: string, title: string, text: string, state: string, turnId: string,
+function aiAgentItem(id: string, kind: string, title: string, text: string, state: string, turnId: string,
   order: number): AiTranscriptItem {
   const role = kind === 'user' ? 'user' : kind === 'assistant' ? 'assistant' : 'execution';
   return { id, role, title, text, state, turnId, kind, detail: '', output: '', order };
 }
 
 /**
- * Claude Agent events (live and history) to transcript items. Live turns stream text chunks and then repeat the
+ * Agent events (Pi; live and history) to transcript items. Live turns stream text chunks and then repeat the
  * whole message, so a finished message replaces the chunks before it; tool results arrive as user messages made of
  * tool_result blocks and are attached to their tool call; history carries tool_use and thinking inside messages.
  */
-export function aiClaudeItems(events: Record<string, Object>[]): AiTranscriptItem[] {
+export function aiAgentItems(events: Record<string, Object>[]): AiTranscriptItem[] {
   const items: AiTranscriptItem[] = [];
   const tools: Map<string, AiTranscriptItem> = new Map();
   const streams: Map<string, number> = new Map();
@@ -64,7 +64,7 @@ export function aiClaudeItems(events: Record<string, Object>[]): AiTranscriptIte
     order: number): void => {
     const existing = tools.get(id);
     if (existing !== undefined) { return; }
-    const item = aiClaudeItem('claude:tool:' + id, 'tool', name === '' ? '工具' : name, '', state, turnId, order);
+    const item = aiAgentItem('claude:tool:' + id, 'tool', name === '' ? '工具' : name, '', state, turnId, order);
     item.detail = aiJson(input);
     tools.set(id, item);
     items.push(item);
@@ -92,7 +92,7 @@ export function aiClaudeItems(events: Record<string, Object>[]): AiTranscriptIte
       const current = streamItems.get(streamId);
       if (current !== undefined) { current.text = current.text + text; }
       else {
-        const item = aiClaudeItem(streamId, 'assistant', 'assistant', text, 'running', turnId, seq);
+        const item = aiAgentItem(streamId, 'assistant', 'assistant', text, 'running', turnId, seq);
         streamItems.set(streamId, item);
         items.push(item);
       }
@@ -101,10 +101,10 @@ export function aiClaudeItems(events: Record<string, Object>[]): AiTranscriptIte
         const kind = aiString(data['kind'], 'text');
         if (aiString(data['message']) === '') { continue; }
         if (kind === 'thinking') {
-          items.push(aiClaudeItem(id, 'thinking', '思考', aiString(data['message']), 'completed', turnId, seq));
+          items.push(aiAgentItem(id, 'thinking', '思考', aiString(data['message']), 'completed', turnId, seq));
         } else {
           dropStream(turnId);
-          items.push(aiClaudeItem(id, 'assistant', 'assistant', aiString(data['message']), 'completed', turnId, seq));
+          items.push(aiAgentItem(id, 'assistant', 'assistant', aiString(data['message']), 'completed', turnId, seq));
         }
         continue;
       }
@@ -113,10 +113,10 @@ export function aiClaudeItems(events: Record<string, Object>[]): AiTranscriptIte
         index: number): void => {
         const blockType = aiString(block['type']);
         if (blockType === 'text' && aiString(block['text']) !== '') {
-          items.push(aiClaudeItem(id + ':' + index.toString(), 'assistant', 'assistant', aiString(block['text']),
+          items.push(aiAgentItem(id + ':' + index.toString(), 'assistant', 'assistant', aiString(block['text']),
             'completed', turnId, seq));
         } else if (blockType === 'thinking' && aiString(block['thinking']) !== '') {
-          items.push(aiClaudeItem(id + ':' + index.toString(), 'thinking', '思考', aiString(block['thinking']),
+          items.push(aiAgentItem(id + ':' + index.toString(), 'thinking', '思考', aiString(block['thinking']),
             'completed', turnId, seq));
         } else if (blockType === 'tool_use') {
           // Stored history does not say whether the tool finished; its tool_result, if any, will.
@@ -140,25 +140,25 @@ export function aiClaudeItems(events: Record<string, Object>[]): AiTranscriptIte
           texts.push('［图片］');
         }
       });
-      if (texts.length > 0) { items.push(aiClaudeItem(id, 'user', 'user', texts.join('\n'), 'completed', turnId, seq)); }
+      if (texts.length > 0) { items.push(aiAgentItem(id, 'user', 'user', texts.join('\n'), 'completed', turnId, seq)); }
     } else if (type === 'tool/call') {
       addTool(aiString(data['id']), aiString(data['name']), data['input'], turnId, 'running', seq);
     } else if (type === 'tool/result') {
       // A tool the local user or policy refused; it never ran.
-      const item = aiClaudeItem(id, 'tool', aiString(data['name'], '工具'), '', 'declined', turnId, seq);
+      const item = aiAgentItem(id, 'tool', aiString(data['name'], '工具'), '', 'declined', turnId, seq);
       item.output = aiString(data['message']);
       items.push(item);
     } else if (type === 'turn/end') {
       const status = aiString(data['status'], 'completed');
       turnStates.set(turnId, status);
       if (status === 'failed' && aiString(data['result']) !== '') {
-        const notice = aiClaudeItem(id, 'notice', '执行失败', aiString(data['result']), 'failed', turnId, seq);
+        const notice = aiAgentItem(id, 'notice', '执行失败', aiString(data['result']), 'failed', turnId, seq);
         items.push(notice);
       }
     } else if (type === 'error') {
-      items.push(aiClaudeItem(id, 'notice', '错误', aiErrorText(aiString(data['code'])), 'failed', turnId, seq));
+      items.push(aiAgentItem(id, 'notice', '错误', aiErrorText(aiString(data['code'])), 'failed', turnId, seq));
     } else if (type === 'session/compacted') {
-      items.push(aiClaudeItem(id, 'notice', '上下文已压缩', '', 'completed', turnId, seq));
+      items.push(aiAgentItem(id, 'notice', '上下文已压缩', '', 'completed', turnId, seq));
     }
   }
   // A finished turn leaves nothing running: its stream and unanswered tools end with the turn.
@@ -533,7 +533,7 @@ function aiUserText(event: Record<string, Object>): string {
   return texts.join('\n').trim();
 }
 
-/** A prompt shown before the engine reports it: Claude does not echo prompts while the turn runs. */
+/** A prompt shown before the engine reports it: the agent engines echo it only once the turn takes it. */
 interface AiEcho {
   item: AiTranscriptItem;
   text: string;
@@ -552,23 +552,23 @@ export class AiTranscript {
   /** Arrival positions of engine prompts that already stood for an echo. */
   private claimed: Set<number> = new Set();
   /**
-   * Claude events in arrival order (history pages, then live events). The plugin numbers live events apart from
+   * Agent events in arrival order (history pages, then live events). The plugin numbers live events apart from
    * the history it read, so `seq` is not a usable order; each event is renumbered by arrival instead.
    */
-  private claudeLog: Record<string, Object>[] = [];
-  private claudeArrived: number = 0;
+  private agentLog: Record<string, Object>[] = [];
+  private agentArrived: number = 0;
   private echoes: AiEcho[] = [];
   private echoCount: number = 0;
-  /** 'claude' or 'dsh' when events arrived since items were last mapped. */
+  /** 'agent' or 'dsh' when events arrived since items were last mapped. */
   private pending: string = '';
 
   clear(): void {
-    this.items = []; this.dshEvents.clear(); this.claudeLog = []; this.claudeArrived = 0; this.echoes = [];
+    this.items = []; this.dshEvents.clear(); this.agentLog = []; this.agentArrived = 0; this.echoes = [];
     this.pending = ''; this.dsh = new AiDshMapper(); this.dshFresh = []; this.dshRestart = false; this.claimed.clear();
   }
 
   /** Where the event log stands; taken before a prompt is sent, so an engine copy arriving early still counts. */
-  mark(): number { return this.claudeArrived; }
+  mark(): number { return this.agentArrived; }
 
   /** Whether an engine prompt (text, turn) can stand for `echo`: the same words, or the turn it opened. */
   private stands(echo: AiEcho, text: string, turn: string, exact: boolean): boolean {
@@ -593,12 +593,12 @@ export class AiTranscript {
   echo(text: string, turnId: string, after: number = -1): void {
     const trimmed = text.trim();
     if (trimmed === '') { return; }
-    const from = after >= 0 ? Math.min(after, this.claudeArrived) : this.claudeArrived;
+    const from = after >= 0 ? Math.min(after, this.agentArrived) : this.agentArrived;
     this.echoCount++;
     const echo: AiEcho = { item: { id: 'echo:' + this.echoCount.toString(), role: 'user', title: 'user', text,
       state: 'completed', turnId, kind: 'user', detail: '', output: '', order: from }, text: trimmed, after: from };
     // The engine's copy may already be here (it can arrive before the acknowledgement).
-    for (const entry of this.claudeLog) {
+    for (const entry of this.agentLog) {
       const index = aiNumber(entry['seq'], -1);
       if (index < from || this.claimed.has(index) || entry['type'] !== 'user/message') { continue; }
       const engine = aiUserText(entry);
@@ -628,12 +628,12 @@ export class AiTranscript {
     return result;
   }
 
-  /** Records a Claude event; `defer` leaves the mapping to the next flush() (history pages, streamed events). */
-  claudeEvent(event: Record<string, Object>, defer: boolean = false): void {
+  /** Records an agent event; `defer` leaves the mapping to the next flush() (history pages, streamed events). */
+  agentEvent(event: Record<string, Object>, defer: boolean = false): void {
     const type = aiString(event['type']);
     const data = event['data'];
     const turn = aiString(event['turn']);
-    const index = this.claudeArrived++;
+    const index = this.agentArrived++;
     const logged: Record<string, Object> = { 'seq': index, 'type': type };
     if (data !== undefined && data !== null) { logged['data'] = data; }
     if (turn !== '') { logged['turn'] = turn; }
@@ -642,10 +642,10 @@ export class AiTranscript {
       aiString((data as Record<string, Object>)['kind'], 'text') !== 'thinking' &&
       aiString((data as Record<string, Object>)['message']) !== '') {
       // The finished message replaces its turn's streamed chunks; they need not be mapped again.
-      this.claudeLog = this.claudeLog.filter((entry: Record<string, Object>): boolean =>
+      this.agentLog = this.agentLog.filter((entry: Record<string, Object>): boolean =>
         !(entry['type'] === 'assistant/chunk' && aiString(entry['turn']) === turn));
     }
-    this.claudeLog.push(logged);
+    this.agentLog.push(logged);
     if (type === 'user/message') {
       const text = aiUserText(event);
       if (text !== '') {
@@ -656,7 +656,7 @@ export class AiTranscript {
         }
       }
     }
-    this.pending = 'claude';
+    this.pending = 'agent';
     if (!defer) { this.flush(); }
   }
 
@@ -684,8 +684,8 @@ export class AiTranscript {
   flush(): string {
     const pending = this.pending;
     this.pending = '';
-    if (pending === 'claude') {
-      this.items = this.withEchoes(aiClaudeItems(this.claudeLog));
+    if (pending === 'agent') {
+      this.items = this.withEchoes(aiAgentItems(this.agentLog));
     } else if (pending === 'dsh') {
       const fresh = this.dshFresh.sort((a: number, b: number): number => a - b);
       this.dshFresh = [];

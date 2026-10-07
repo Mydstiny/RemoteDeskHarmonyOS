@@ -306,8 +306,8 @@ export struct AiSettingsSurface {
             ProFeatureGate({ featureId: this.backendFeature('dsh'), context: ProAppRuntime.getInstance().context('ai'), content: (): void => {
               this.backendChoiceCard('dsh', 'DSH', 'DeepSeek Harness · 9444');
             } })
-            ProFeatureGate({ featureId: this.backendFeature('claudecode'), context: ProAppRuntime.getInstance().context('ai'), content: (): void => {
-              this.backendChoiceCard('claudecode', 'Claude Agent', 'Anthropic Claude · 9445');
+            ProFeatureGate({ featureId: this.backendFeature('pi'), context: ProAppRuntime.getInstance().context('ai'), content: (): void => {
+              this.backendChoiceCard('pi', 'Pi', 'Pi 编程代理 · 9445');
             } })
           }.width('100%')
           this.sectionTitle('主机与配对', '局域网连接 · RustDesk 中继将在后续版本开放')

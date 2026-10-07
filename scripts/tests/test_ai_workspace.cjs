@@ -15,7 +15,7 @@ function environment(){
     write:(method,params,session)=>{writes.push({method,params,session});return writeHook(method,params,session);}};
   const mocks={'./AiAccess':{AiAccess:{getInstance:()=>access}},'./AiBridgeClient':{AiBridgeClient:{connect:async()=>client}},
     '../EndpointAddressPolicy':{parseEndpointHost:()=>({ok:true}),parseEndpointServerIdentity:()=>({ok:true})},
-    './AiTransport':{aiRandomId:()=> 'writer'+(++randomSeq)},'@kit.ArkTS':{util:{}},
+    './AiTransport':{aiRandomId:()=> 'writer'+(++randomSeq)},'@kit.ArkTS':{util:{}},'@kit.PerformanceAnalysisKit':{hilog:{info(){},warn(){},error(){},debug(){}}},
     './AiLocalStore':{AiLocalStore:{getInstance:()=>({operations:async()=>[]})}}};
   function load(name){if(modules.has(name))return modules.get(name).exports;const module={exports:{}};modules.set(name,module);
     const source=ts.transpileModule(fs.readFileSync(base+name+'.ets','utf8'),{compilerOptions:{target:ts.ScriptTarget.ES2021,module:ts.ModuleKind.CommonJS}}).outputText;
@@ -103,8 +103,8 @@ function environment(){
     console.log('PASS A-B-A reacquire stays blocked until stale ownership settles; new lease survives');
   }
   {
-    // Claude pages slice the live history: the stream resumes after the last page. DSH resumes after the first.
-    for(const[backend,expected]of[['claudecode',15],['dsh',10]]){
+    // Agent (Pi) pages slice the live history: the stream resumes after the last page. DSH resumes after the first.
+    for(const[backend,expected]of[['pi',15],['dsh',10]]){
       const e=environment();e.client.host.backend=backend;
       e.onRead(async(method,params)=>method==='session.read'?(params.cursor?
         {session:{id:'A'},snapshot:{events:[{seq:1,type:'assistant/message',data:{message:'second',kind:'text',turn:1}}],nextCursor:'',status:'idle'},cursor:15}:
@@ -112,7 +112,7 @@ function environment(){
       await e.c.snapshot(false);
       assert.equal(e.c.eventCursor,expected,backend);e.c.close();
     }
-    console.log('PASS the event stream resumes after the last Claude page and after the first DSH page');
+    console.log('PASS the event stream resumes after the last Pi page and after the first DSH page');
   }
   {
     // A turn that ends before its acknowledgement arrives stays ended.

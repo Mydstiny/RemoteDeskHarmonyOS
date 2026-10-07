@@ -18,7 +18,8 @@ export function aiModeLabel(mode: string): string {
   switch (mode) {
     case 'read-only': case 'readOnly': return '只读';
     case 'workspace-write': case 'workspaceWrite': return '可写工作区';
-    case 'danger-full-access': case 'dangerFullAccess': return '完全访问';
+    case 'danger-full-access': case 'dangerFullAccess': case 'full-access': return '完全访问';
+    case 'ask': return '修改前询问';
     case 'default': return '默认';
     case 'acceptEdits': return '自动接受修改';
     case 'plan': return '先做计划';
@@ -26,12 +27,18 @@ export function aiModeLabel(mode: string): string {
     default: return mode;
   }
 }
-/** What a permission or collaboration mode lets the agent do, for the composer's permission menu. */
-export function aiModeDetail(mode: string): string {
+/**
+ * What a permission or collaboration mode lets the agent do, for the composer's permission menu. Pi's read-only
+ * withholds the write tools (nothing to approve); Codex's asks before going further.
+ */
+export function aiModeDetail(mode: string, backend: string = ''): string {
+  if (backend === 'pi' && (mode === 'read-only' || mode === 'readOnly')) { return '只能查看和搜索文件，不能运行命令或修改文件'; }
   switch (mode) {
     case 'read-only': case 'readOnly': return '只能查看文件；修改文件或运行命令前先请你批准';
     case 'workspace-write': case 'workspaceWrite': return '可以在项目文件夹里修改文件、运行命令；越界时请你批准';
     case 'danger-full-access': case 'dangerFullAccess': return '不受沙箱限制，可以访问整台电脑（风险较高）';
+    case 'ask': return '读文件直接执行；每条命令、每次改文件都先请你在手机上批准';
+    case 'full-access': return '命令和改文件都不再询问，直接执行（风险较高）';
     case 'acceptEdits': return '修改文件不再询问，运行命令前仍会询问';
     case 'bypassPermissions': return '所有操作都不再询问（风险较高）';
     case 'plan': return '先给出方案，你确认后再动手';
@@ -146,8 +153,8 @@ function aiMarkedLines(text: string, mark: string): string {
   return text.split('\n').map((line: string): string => mark + line).join('\n');
 }
 
-/** A Claude Edit/MultiEdit/Write/NotebookEdit approval: the request carries the whole edit in its tool input. */
-function aiClaudeFileChange(request: Record<string, Object>, reason: string): string {
+/** A Pi Edit/MultiEdit/Write approval: the request carries the whole edit in its tool input. */
+function aiAgentFileChange(request: Record<string, Object>, reason: string): string {
   const tool = aiString(request['tool']);
   const input = aiFields(request['input']);
   const path = aiString(input['file_path'], aiString(input['notebook_path']));
@@ -174,7 +181,7 @@ function aiClaudeFileChange(request: Record<string, Object>, reason: string): st
 export function aiApprovalDetails(request: Record<string, Object>): string {
   const kind = aiString(request['kind']);
   const reason = aiString(request['reason']);
-  if (kind === 'fileChange' && aiString(request['engine']) === 'claudecode') { return aiClaudeFileChange(request, reason); }
+  if (kind === 'fileChange' && aiString(request['engine']) === 'pi') { return aiAgentFileChange(request, reason); }
   if (kind === 'fileChange') {
     if (request['nativeItemComplete'] !== true || request['nativeItem'] === undefined) { return '文件预览不可用，请取消本次请求后重试。'; }
     const item = aiFields(request['nativeItem']);

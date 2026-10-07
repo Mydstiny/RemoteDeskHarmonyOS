@@ -12,7 +12,7 @@ import { AppConfig, Palette, buildDark, buildLight } from '../common/Theme';
 import { AppSheetHeader } from '../components/AppSheetHeader';
 import { AiAccess, AiAccountLease } from '../services/ai/AiAccess';
 import { AiHostService } from '../services/ai/AiHostService';
-import { AiHost, AiProject, AiSession, AiTranscriptItem, AiApproval, AiPendingOperation, aiBackendName } from '../services/ai/AiModels';
+import { AiHost, AiProject, AiSession, AiTranscriptItem, AiApproval, AiPendingOperation, aiAgentEvents, aiBackendName } from '../services/ai/AiModels';
 import { AiWorkspaceController } from '../services/ai/AiWorkspaceController';
 import { AiLocalStore } from '../services/ai/AiLocalStore';
 import { aiArray, aiRecord, aiString, aiErrorText } from '../services/ai/AiWirePolicy';
@@ -405,7 +405,7 @@ export struct RemoteAiWorkspace {
       if (this.attachments.length > 0) { params['attachments'] = this.attachments.slice(); }
       const sentAt = this.controller.transcript.mark();
       const result = await this.controller.action('turn.start', params);
-      if (this.host?.backend === 'claudecode') { this.controller.transcript.echo(text, aiString(result['turnId']), sentAt); }
+      if (this.host !== null && aiAgentEvents(this.host.backend)) { this.controller.transcript.echo(text, aiString(result['turnId']), sentAt); }
       this.draft = ''; this.attachments = [];
     });
   }
@@ -433,8 +433,8 @@ export struct RemoteAiWorkspace {
       // Taken before sending: the engine's own copy of the prompt may arrive before the acknowledgement.
       const sentAt = this.controller.transcript.mark();
       const result = await this.controller.action(steer ? 'turn.steer' : 'turn.start', params);
-      // Claude does not echo the prompt while the turn runs; show it until its own event arrives.
-      if (this.host?.backend === 'claudecode') { this.controller.transcript.echo(text, aiString(result['turnId']), sentAt); }
+      // Pi echoes the prompt only once its turn takes it; show it until its own event arrives.
+      if (this.host !== null && aiAgentEvents(this.host.backend)) { this.controller.transcript.echo(text, aiString(result['turnId']), sentAt); }
       this.draft = ''; this.attachments = [];
     });
   }
@@ -703,10 +703,10 @@ export struct RemoteAiWorkspace {
     files.forEach((file: AiDiffFile): void => { added += file.added; removed += file.removed; });
     return '修改了 ' + files.length.toString() + ' 个文件 · ' + aiDiffStats(added, removed);
   }
-  /** Claude's file approvals carry the whole edit in their input; Codex ones need the native item to be complete. */
+  /** Pi's file approvals carry the whole edit in their input; Codex ones need the native item to be complete. */
   private approvalAcceptable(approval: AiApproval): boolean {
     return approval.request['kind'] !== 'fileChange' || approval.request['nativeItemComplete'] === true ||
-      approval.request['engine'] === 'claudecode';
+      approval.request['engine'] === 'pi';
   }
   /** A collapsed log output: its first lines, and never more than a screenful of characters. */
   private outputPreview(output: string): string {
@@ -1017,7 +1017,7 @@ export struct RemoteAiWorkspace {
               Column() {
                 ForEach(this.permissionModes, (mode: string, index: number): void => {
                   if (index > 0) { Divider().color(this.palette().border).margin({ left: 18, right: 18 }) }
-                  this.choiceRow({ label: aiModeLabel(mode), detail: aiModeDetail(mode), selected: this.chosenPermission() === mode,
+                  this.choiceRow({ label: aiModeLabel(mode), detail: aiModeDetail(mode, this.host?.backend ?? ''), selected: this.chosenPermission() === mode,
                     enabled: !this.busy && this.allowed, action: (): void => { this.permission = mode; } })
                 }, (mode: string): string => mode)
               }.width('100%').borderRadius(18).backgroundColor(this.pal().card).clip(true)
@@ -1930,8 +1930,8 @@ export struct RemoteAiWorkspace {
         Row({ space: 12 }) {
           Column({ space: 3 }) {
             Text(aiModeLabel(mode)).fontSize(16).fontFamily(AppConfig.fontFamily).fontColor(this.palette().text)
-            if (aiModeDetail(mode) !== '') {
-              Text(aiModeDetail(mode)).fontSize(13).fontFamily(AppConfig.fontFamily).fontColor(this.palette().text3)
+            if (aiModeDetail(mode, this.host?.backend ?? '') !== '') {
+              Text(aiModeDetail(mode, this.host?.backend ?? '')).fontSize(13).fontFamily(AppConfig.fontFamily).fontColor(this.palette().text3)
             }
           }.layoutWeight(1).alignItems(HorizontalAlign.Start)
           if (this.chosenPermission() === mode) {

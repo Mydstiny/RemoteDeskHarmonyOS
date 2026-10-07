@@ -321,7 +321,7 @@ const cases = [
   ['Claude file edits can be allowed; Codex ones need the complete native item', async () => {
     const state = workspaceFixture(false);
     const approval = request => ({ id: 'a', request, expires: Date.now() + 60000 });
-    assert.equal(state.page.approvalAcceptable(approval({ kind: 'fileChange', engine: 'claudecode', tool: 'Edit' })), true);
+    assert.equal(state.page.approvalAcceptable(approval({ kind: 'fileChange', engine: 'pi', tool: 'Edit' })), true);
     assert.equal(state.page.approvalAcceptable(approval({ kind: 'fileChange', engine: 'codex' })), false);
     assert.equal(state.page.approvalAcceptable(approval({ kind: 'fileChange', engine: 'codex', nativeItemComplete: true })), true);
     assert.equal(state.page.approvalAcceptable(approval({ kind: 'command' })), true);

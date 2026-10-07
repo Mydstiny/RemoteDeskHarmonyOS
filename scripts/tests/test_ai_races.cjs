@@ -35,6 +35,7 @@ function environment() {
     })}},
     '../EndpointAddressPolicy': {parseEndpointHost: value => ({ok: true, endpoint: {family: value.includes('.test') ? 'hostname' : 'ipv4'}}), parseEndpointServerIdentity: () => ({ok: true})},
     './AiLocalStore': {AiLocalStore: {getInstance: () => store}},
+    '@kit.PerformanceAnalysisKit':{hilog:{info(){},warn(){},error(){},debug(){}}},
     '@kit.ArkTS': {util: {TextEncoder: class {encodeInto(text) {return new TextEncoder().encode(text);}},
       TextDecoder: {create: (_encoding, options) => {const decoder=new TextDecoder('utf-8', options); return {decodeToString: (bytes, settings) => decoder.decode(bytes, settings)};}}}},
     '@kit.NetworkKit': {connection: {getAddressesByName: async () => delayedDns ? await new Promise(resolve => {dnsResolve = resolve;}) : [{address:'127.0.0.1'}]}},

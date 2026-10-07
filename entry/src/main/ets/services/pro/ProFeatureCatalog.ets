@@ -154,8 +154,8 @@ export function proFeatures(): ProFeature[] {
     remoteAi('pro.ai.workspace', '远程 AI 工作台', '在自己的电脑上运行 AI，查看执行过程、批准操作并恢复会话。'),
     remoteAi('pro.ai.codex', 'Codex 远程控制', '连接电脑端 Codex 插件，使用原生会话、审批与文件差异。'),
     remoteAi('pro.ai.dsh', 'DSH 远程控制', '连接电脑端 DSH 插件，使用已配置的模型与原生工具。'),
-    remoteAi('pro.ai.claudecode', 'Claude Agent 远程控制',
-      '连接电脑端 Claude Agent 插件（使用你自己的 Anthropic API Key），使用原生会话、权限确认与文件差异。'),
+    remoteAi('pro.ai.pi', 'Pi 远程控制',
+      '连接电脑端 Pi 插件，使用电脑上已登录的模型，继续 Pi 与 pi-gui 里的对话，权限分只读、修改前询问、完全访问三档。'),
     planned('pro.ai.rustdeskTransport', 'AI 跨网连接', '后续通过自建 RustDesk 服务连接电脑上的 AI 工作台。'),
     appIcon(),
     knockTransfer(),
@@ -176,7 +176,7 @@ export function proFeatureProgress(id: string): string {
     case 'pro.ai.workspace':
     case 'pro.ai.codex':
     case 'pro.ai.dsh': return '已开发（局域网连接） · 实机验收暂缓';
-    case 'pro.ai.claudecode': return '已开发（局域网连接） · 电脑端需填写 Anthropic API Key · 待实机验收';
+    case 'pro.ai.pi': return '已开发（局域网连接） · 电脑端插件已通过真实对话验收 · 待手机实机验收';
     case 'pro.ai.rustdeskTransport': return '规划中 · 等待 RustDesk 数据通道';
     case 'pro.security.webauthnRedirect': return '开发中 · RDP 安全密钥通道已接入调试版，待鸿蒙 PC、安全密钥与 Windows 验收';
     case 'pro.security.phonePasskey': return '原型 · 调试版可在同账号设备间测试注册与登录；RDP 接入待鸿蒙 PC 验收';

@@ -52,19 +52,20 @@ const cases = [
       }
     }
   }],
-  ['Claude Agent installs from its pinned source commit without an invented release asset', () => {
-    const evidence = fs.readFileSync('docs/codex/plans/2026-10-05-remote-ai-claude-entry-and-ui-styles-plan.md', 'utf8');
-    const release = policy.aiInstallRelease('claudecode');
+  ['Pi installs from its pinned source commit without an invented release asset', () => {
+    const evidence = fs.readFileSync('docs/codex/plans/2026-10-07-pi-plugin.md', 'utf8');
+    const release = policy.aiInstallRelease('pi');
     assert.equal(release.asset, ''); assert.equal(release.sha256, '');
     assert.match(release.commit, /^[0-9a-f]{40}$/);
-    for (const field of ['repository', 'version', 'commit']) assert.ok(evidence.includes(release[field]), 'claudecode ' + field);
-    assert.ok(policy.aiInstallManualUrl('claudecode').endsWith(release.commit + '/README.md'));
+    for (const field of ['repository', 'version', 'commit']) assert.ok(evidence.includes(release[field]), 'pi ' + field);
+    assert.ok(policy.aiInstallManualUrl('pi').endsWith(release.commit + '/README.md'));
     for (const mode of ['local', 'lan']) {
-      const prompt = policy.aiInstallPrompt('claudecode', mode);
+      const prompt = policy.aiInstallPrompt('pi', mode);
       for (const field of ['repository', 'version', 'engine', 'commit']) assert.ok(prompt.includes(release[field]));
       assert.ok(prompt.includes('尚无发行包') && prompt.includes('检出以上完整提交哈希'));
       assert.ok(!prompt.includes('资产：') && !prompt.includes('资产 SHA256') && !prompt.includes('/releases/tag/'));
-      assert.ok(prompt.includes('Anthropic API Key') && prompt.includes('不使用 claude.ai 账号登录'));
+      assert.ok(prompt.includes('已登录的模型提供方') && prompt.includes('不读取、不复制 Pi 的凭据'));
+      assert.ok(!prompt.includes('Anthropic') && !prompt.includes('Claude'));
       assert.ok(!prompt.includes('docs/agent-deploy.md') && prompt.includes(release.commit + '/docs/compatibility.md'));
       for (const other of ['codex', 'dsh']) assert.ok(!prompt.includes(policy.aiInstallRelease(other).commit));
     }

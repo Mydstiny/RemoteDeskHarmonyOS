@@ -122,13 +122,19 @@ const SETTINGS: AiSettingSpec[] = [
   wheelSpeed('ssh', 'SSH'),
   wheelSpeed('vnc', 'VNC'),
   wheelSpeed('moonlight', 'Moonlight'),
-  // 远程 AI (Codex, DSH, Claude Agent on the user's computer): kept per account by the host page's bridge.
+  // 远程 AI (Codex, DSH, Pi on the user's computer): kept per account by the host page's bridge.
   new AiSettingSpec('remoteAi.uiStyle', '远程 AI 界面风格', 'remoteAi.uiStyle',
     choices([['claude', 'Claude 风格'], ['codex', 'Codex 风格']]),
-    '远程 AI 会话页的外观：Claude 是对话时间线，Codex 是对话/日志/差异分页；下次打开会话生效'),
+    '远程 AI 会话页的外观：Claude 风格仿 Claude App，Codex 风格仿 Codex App，操作相同；下次打开会话生效'),
   toggle('remoteAi.showExecution', '远程 AI 显示工具执行过程', 'remoteAi.showExecution', '会话里列出工具调用与执行记录'),
   toggle('remoteAi.reconnectOnForeground', '远程 AI 回到前台后恢复查看', 'remoteAi.reconnectOnForeground',
     '回到 App 时重新校验服务并读取会话；发送时自动取得控制权'),
+  new AiSettingSpec('remoteAi.defaultBackend', '远程 AI 默认电脑端 AI', 'remoteAi.defaultBackend',
+    choices([['codex', 'Codex'], ['dsh', 'DSH'], ['pi', 'Pi']]),
+    '添加 AI 主机时默认选的电脑端 AI；已添加的主机不变'),
+  new AiSettingSpec('remoteAi.textSize', '远程 AI 会话文字大小', 'remoteAi.textSize',
+    choices(['12', '13', '14', '15', '16', '17', '18', '19', '20', '21', '22'].map((size: string): string[] => [size, size])),
+    '远程 AI 会话里的文字大小，默认 15'),
   // AI 助理 itself: how it answers and how it moves.
   new AiSettingSpec('ai.personality', 'AI 回答风格', 'aiAssistant.personality',
     choices([['balanced', '均衡'], ['warm', '温和'], ['concise', '简洁'], ['technical', '技术']]), '技术风格才讲协议细节'),
@@ -385,6 +391,11 @@ const VALUE_REFUSALS_AFTER: string[] = ['不需要了', '不要了', '不用了'
 /** Before 换成 / 改成 …, these refuse the change itself (不要换成深色模式, 先不要切换到 H265). */
 const CHANGE_REFUSALS: string[] = ['先不要', '暂时不要', '不要', '不想', '不用', '不再', '别'];
 /** Values too plain to name a setting by themselves (不显示 is also what people say about anything on screen). */
+/**
+ * Settings whose values mean other things on their own (Pi inside API, Codex in 安装 Codex, a bare number): they are
+ * picked only with the setting named (默认电脑端 AI 改成 Pi, 远程 AI 文字大小调到 18).
+ */
+const NAMED_ONLY: string[] = ['remoteAi.defaultBackend', 'remoteAi.textSize'];
 const PLAIN_LABELS: string[] = ['不显示'];
 /** 开启 / 关闭 (or 开 / 关) as a setting's two values: it is turned on and off like a switch (会话快速退出, 窗口晕染). */
 const ON_LABELS: string[] = ['开启', '开'];
@@ -434,6 +445,8 @@ function settingWords(id: string): string[] {
     case 'remoteAi.showExecution': return ['工具执行过程', '远程 ai+执行过程', '远程 ai+工具过程', '远程 ai+执行记录',
       '远程 ai+工具执行', '远程 ai+工具调用'];
     case 'remoteAi.reconnectOnForeground': return ['恢复查看', '回到前台'];
+    case 'remoteAi.defaultBackend': return ['默认电脑端 ai', '远程 ai+默认 ai', '远程 ai+默认后端', '远程 ai+默认用'];
+    case 'remoteAi.textSize': return ['远程 ai+文字大小', '远程 ai+字号', '会话文字大小'];
     default: break;
   }
   if (id.indexOf('PinchZoom') > 0) { return ['双指缩放', '捏合缩放']; }
@@ -579,7 +592,7 @@ function longestChoice(spec: AiSettingSpec, clause: string, subjectHit: boolean)
     }
     // Without the setting's name, only distinctive values count (H265, 画质优先, 深色), not 自动/标准/大/不显示.
     const distinctive: boolean = (label.length >= 3 || /[a-z0-9]/.test(label) || label === '深色' || label === '浅色') &&
-      PLAIN_LABELS.indexOf(label) < 0;
+      PLAIN_LABELS.indexOf(label) < 0 && NAMED_ONLY.indexOf(spec.id) < 0;
     if ((subjectHit || distinctive) && clause.indexOf(label) >= 0 && label.length > bestLength) {
       best = choice; bestLength = label.length;
     }

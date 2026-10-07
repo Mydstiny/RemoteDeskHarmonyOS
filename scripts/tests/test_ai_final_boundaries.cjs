@@ -14,7 +14,7 @@ function environment(){
   const mocks={'./AiAccess':{AiAccess:{getInstance:()=>access}},'./AiBridgeClient':{AiBridgeClient:{connect:()=>connectHook()}},
     './AiTransport':{aiRandomId:()=> 'writer'+(++seq)},
     '../EndpointAddressPolicy':{parseEndpointHost:()=>({ok:true}),parseEndpointServerIdentity:()=>({ok:true})},
-    '@kit.ArkData':{relationalStore:{}},'@kit.ArkTS':{util:{TextEncoder:class{encodeInto(text){return new TextEncoder().encode(text);}}}}};
+    '@kit.PerformanceAnalysisKit':{hilog:{info(){},warn(){},error(){},debug(){}}},'@kit.ArkData':{relationalStore:{}},'@kit.ArkTS':{util:{TextEncoder:class{encodeInto(text){return new TextEncoder().encode(text);}}}}};
   function load(name){if(modules.has(name))return modules.get(name).exports;const module={exports:{}};modules.set(name,module);
     const source=ts.transpileModule(fs.readFileSync(base+name+'.ets','utf8'),{compilerOptions:{target:ts.ScriptTarget.ES2021,module:ts.ModuleKind.CommonJS}}).outputText;
     vm.runInNewContext('(function(require,module,exports){'+source+'\n})',{Promise,Map,Set,Array,Object,JSON,Date,Number,Error,setInterval,clearInterval,setTimeout,clearTimeout})
@@ -77,13 +77,13 @@ function storeEnvironment(){
     for(const expected of ['新增 created.txt','删除 deleted.txt','修改 old.txt → new.txt','+created','-deleted','-old\n+new'])assert.ok(text.includes(expected));
     assert.match(p.aiApprovalDetails({kind:'fileChange',nativeItemComplete:false,nativeItem:{changes:[]}}),/预览不可用/);
     assert.ok(p.aiApprovalDetails({kind:'fileChange',nativeItemComplete:true,nativeItem:{changes:[{path:'file',kind:'add',diff:'+line'}]}}).includes('新增 file'));
-    const claudeEdit=p.aiApprovalDetails({kind:'fileChange',engine:'claudecode',tool:'Edit',input:{file_path:'/r/a.ts',old_string:'x = 1',new_string:'x = 2'}});
+    const claudeEdit=p.aiApprovalDetails({kind:'fileChange',engine:'pi',tool:'Edit',input:{file_path:'/r/a.ts',old_string:'x = 1',new_string:'x = 2'}});
     assert.ok(claudeEdit.includes('修改 /r/a.ts')&&claudeEdit.includes('- x = 1')&&claudeEdit.includes('+ x = 2'));
-    assert.ok(p.aiApprovalDetails({kind:'fileChange',engine:'claudecode',tool:'Write',input:{file_path:'/r/b.md',content:'hi'}}).includes('写入 /r/b.md\n+ hi'));
-    assert.ok(p.aiApprovalDetails({kind:'fileChange',engine:'claudecode',tool:'Write',input:{file_path:'/r/c',content:'y'.repeat(50000)}}).includes('其余内容在电脑端'));
+    assert.ok(p.aiApprovalDetails({kind:'fileChange',engine:'pi',tool:'Write',input:{file_path:'/r/b.md',content:'hi'}}).includes('写入 /r/b.md\n+ hi'));
+    assert.ok(p.aiApprovalDetails({kind:'fileChange',engine:'pi',tool:'Write',input:{file_path:'/r/c',content:'y'.repeat(50000)}}).includes('其余内容在电脑端'));
     assert.doesNotThrow(()=>p.aiApprovalDetails({kind:'fileChange',nativeItemComplete:true,nativeItem:{changes:[{path:'f',kind:null,diff:'+x'}]}}));
     assert.doesNotThrow(()=>p.aiApprovalDetails({kind:'fileChange',nativeItemComplete:true,nativeItem:'oops'}));
-    assert.doesNotThrow(()=>p.aiApprovalDetails({kind:'fileChange',engine:'claudecode',tool:'Edit'}));
+    assert.doesNotThrow(()=>p.aiApprovalDetails({kind:'fileChange',engine:'pi',tool:'Edit'}));
     console.log('PASS file preview labels add/delete/update/move and incomplete preview fails closed');
   }
 })().catch(error=>{console.error(error);process.exitCode=1;});

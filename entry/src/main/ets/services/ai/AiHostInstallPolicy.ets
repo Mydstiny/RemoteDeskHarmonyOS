@@ -27,10 +27,10 @@ export function aiInstallRelease(backend: AiBackend): AiInstallRelease {
       asset: 'remotedesk-dsh-plugin-0.3.0.tgz',
       sha256: 'c17d0e05fc656ceee96fffdad175dfd702f8ebe45ccdcae457d0aff12ada873e' };
   }
-  if (backend === 'claudecode') {
+  if (backend === 'pi') {
     // No release package yet: installed from the pinned source commit, so there is no asset or checksum to show.
-    return { name: 'Claude Agent', repository: 'Mydstiny/remotedesk-claudecode-plugin', version: '0.2.0', protocol: 1,
-      engine: 'Claude Agent SDK 0.3.286（Claude Code 2.1.286）', commit: '82f76082082a17d71f73cf1075651fc21c89771f',
+    return { name: 'Pi', repository: 'Mydstiny/remotedesk-pi-plugin', version: '0.3.0', protocol: 1,
+      engine: 'Pi 1.0 或更新（@earendil-works/pi-coding-agent）', commit: 'a826216a559bd44508fa77f1ec08b36fc711a37e',
       asset: '', sha256: '' };
   }
   throw new Error('Unsupported AI installation backend');
@@ -52,8 +52,8 @@ export function aiInstallPrompt(backend: AiBackend, mode: AiInstallMode): string
     '连接方式：局域网连接。先确认电脑上的监听网卡与端口，只绑定所选局域网地址；不开放公网、不配置 RustDesk 中继。防火墙或其他网络配置变更须另行确认。';
   const engine = backend === 'dsh' ?
     'DSH 默认创建独立 RemoteDesk profile。不要停止承载当前对话的 DSH，不接管或重复启动原有 web profile。新 profile 无法使用现有模型登录时，通过原生流程让我配置，不复制账号密钥。' :
-    backend === 'claudecode' ?
-    'Claude Agent 只用 Anthropic API Key 认证：由我在电脑端设置页填写，只保存在插件私有目录；不使用 claude.ai 账号登录，不读取或复制已有 Claude 配置与凭据。使用原生工具与按需权限确认。' :
+    backend === 'pi' ?
+    'Pi 插件使用我电脑上已安装的 Pi（需 1.0 或更新）和它已登录的模型提供方（在 Pi 里 /login 或在 pi-gui 里登录）；不读取、不复制 Pi 的凭据，也不加载 Pi 扩展。权限默认只读，可在手机上切换为「修改前询问」或「完全访问」。' :
     'Codex 保留现有会话、账号和配置，通过受支持的现有登录使用 provider/model。使用原生工具、默认只读沙箱和按需审批，不覆盖整个 Codex 配置。';
   const fromSource = release.asset === '';
   const documents = fromSource ?

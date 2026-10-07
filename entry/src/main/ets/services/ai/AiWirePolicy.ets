@@ -90,8 +90,10 @@ export class AiEventDecoder {
   }
 }
 export function aiErrorText(code: string): string {
-  if (code.includes('CLAUDE_API_KEY_REQUIRED')) { return '电脑端 Claude Agent 尚未配置 Anthropic API Key，请在电脑设置页填写后重试'; }
-  if (code.includes('CLAUDE_QUERY_FAILED')) { return 'Claude Agent 执行失败，请检查电脑端 API Key、网络与额度后重试'; }
+  if (code.includes('PI_SESSION_OPEN_IN_APP')) { return '这个对话正在电脑上的 Pi 里打开。请在电脑上切到其他对话后再从手机继续，或在手机上新建对话'; }
+  if (code.includes('PI_NOT_INSTALLED')) { return '电脑上找不到 Pi，请先安装 Pi（npm i -g @earendil-works/pi-coding-agent）'; }
+  if (code.includes('PI_SESSION_NOT_FOUND')) { return '电脑上找不到这个 Pi 对话，可能已被删除或移动'; }
+  if (code.includes('PI_INITIALIZATION_FAILED')) { return '电脑上的 Pi 没能启动，请在电脑上运行 pi 检查登录和模型后重试'; }
   if (code.includes('AI_MODEL_IMAGE')) { return '当前模型未声明图片能力，请选择支持图片的模型'; }
   if (code.includes('AI_ATTACHMENT')) { return '附件读取失败，请选择 500 KB 以内的 PNG、JPEG 或 UTF-8 文本'; }
   if (code.includes('AI_QUESTION_ANSWER')) { return '请填写所有问题的回答'; }

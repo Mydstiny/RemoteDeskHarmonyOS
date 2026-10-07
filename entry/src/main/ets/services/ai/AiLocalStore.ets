@@ -4,7 +4,7 @@ import { util } from '@kit.ArkTS';
 import { AiAccess, AiAccountLease } from './AiAccess';
 import { AiLifecycle } from './AiLifecycle';
 import { AiHost, AiIdentity, AiPendingOperation, AiSettings, aiHostError, aiIdValid,
-  aiSameEndpoint, aiSettingsValid, defaultAiSettings } from './AiModels';
+  aiSameEndpoint, aiSettingsValid, defaultAiSettings, aiMigrateLegacyHost, aiMigrateLegacySettings } from './AiModels';
 
 export interface AiConnectionRecord { host: AiHost; identity: AiIdentity | null; }
 
@@ -78,6 +78,7 @@ export class AiLocalStore {
       try {
         while (rows.goToNextRow()) {
           const host = JSON.parse(rows.getString(0)) as AiHost;
+          aiMigrateLegacyHost(host);
           if (host.owner !== lease.owner || aiHostError(host) !== '' || hosts.length >= 256) {
             throw new Error('AI_HOST_RECORD_INVALID');
           }
@@ -124,8 +125,10 @@ export class AiLocalStore {
       try {
         if (!rows.goToFirstRow()) { return null; }
         const host = JSON.parse(rows.getString(0)) as AiHost;
+        // A host saved for the retired Claude Agent plugin is a Pi host now; its old pairing cannot reach Pi.
+        const legacy = aiMigrateLegacyHost(host);
         if (host.owner !== lease.owner || aiHostError(host) !== '') { throw new Error('AI_HOST_RECORD_INVALID'); }
-        if (rows.getString(1) === '') { return { host, identity: null }; }
+        if (legacy || rows.getString(1) === '') { return { host, identity: null }; }
         const identity = JSON.parse(rows.getString(1)) as AiIdentity;
         if (!aiIdValid(identity.deviceId) || !aiIdValid(identity.instance) ||
           !identity.ca.includes('BEGIN CERTIFICATE') || !identity.certificate.includes('BEGIN CERTIFICATE') ||
@@ -149,7 +152,7 @@ export class AiLocalStore {
       const rows = await db.querySql('SELECT data FROM ai_settings WHERE owner=?', [lease.owner]);
       try {
         if (!rows.goToFirstRow()) { return defaultAiSettings(); }
-        const settings = JSON.parse(rows.getString(0)) as AiSettings;
+        const settings = aiMigrateLegacySettings(JSON.parse(rows.getString(0)) as AiSettings);
         if (!aiSettingsValid(settings)) { throw new Error('AI_SETTINGS_INVALID'); }
         return settings;
       } finally { rows.close(); }
@@ -165,7 +168,7 @@ export class AiLocalStore {
       let stored: AiSettings = defaultAiSettings();
       try {
         if (rows.goToFirstRow()) {
-          stored = JSON.parse(rows.getString(0)) as AiSettings;
+          stored = aiMigrateLegacySettings(JSON.parse(rows.getString(0)) as AiSettings);
           if (!aiSettingsValid(stored)) { throw new Error('AI_SETTINGS_INVALID'); }
         }
       } finally { rows.close(); }

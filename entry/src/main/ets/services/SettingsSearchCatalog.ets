@@ -133,7 +133,7 @@ const ENTRIES: SettingsSearchEntry[] = [
   entry(SETTINGS_SECTION_MOONLIGHT, 'Moonlight 配对与信任', '配对 pin 信任 证书', 'settings.moonlightTrust'),
   entry(SETTINGS_SECTION_MOONLIGHT, 'Moonlight 数据管理', '删除 数据 清理', 'settings.moonlightData'),
   // 远程 AI
-  entry(SETTINGS_SECTION_AI, '远程 AI 连接与配对', 'codex dsh claude 配对 主机 默认 ai', 'settings.aiHosts', 'aiPro'),
+  entry(SETTINGS_SECTION_AI, '远程 AI 连接与配对', 'codex dsh pi pi-gui 配对 主机 默认 ai', 'settings.aiHosts', 'aiPro'),
   entry(SETTINGS_SECTION_AI, '远程 AI 显示与恢复', '界面风格 claude 风格 codex 风格 文字大小 工具过程', 'settings.aiDisplay',
     'aiPro'),
   entry(SETTINGS_SECTION_AI, '远程 AI 本机数据管理', '导出 导入 操作记录', 'settings.aiData', 'aiPro'),
