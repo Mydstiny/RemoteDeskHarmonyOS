@@ -30,7 +30,7 @@ export function aiInstallRelease(backend: AiBackend): AiInstallRelease {
   if (backend === 'pi') {
     // No release package yet: installed from the pinned source commit, so there is no asset or checksum to show.
     return { name: 'Pi', repository: 'Mydstiny/remotedesk-pi-plugin', version: '0.3.0', protocol: 1,
-      engine: 'Pi 1.0 或更新（@earendil-works/pi-coding-agent）', commit: '5a28ba7cd11669ffbf7710fc4dfec894d0a903f4',
+      engine: 'Pi 1.0 或更新（@earendil-works/pi-coding-agent）', commit: '079bcd278f6cf38ca4029357dce04c3bf5d15bdb',
       asset: '', sha256: '' };
   }
   throw new Error('Unsupported AI installation backend');
