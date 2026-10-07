@@ -347,7 +347,8 @@ import {
   ActiveRemoteSessionRegistry,
   ActiveRemoteSessionRecord,
   ActiveRemoteSessionRestoreAdoption,
-  ActiveRemoteSessionTermination
+  ActiveRemoteSessionTermination,
+  remoteVideoSessionBusyMessage
 } from '../services/ActiveRemoteSessionRegistry';
 import {
   nativeDisconnectStateIsFailed,
@@ -876,6 +877,8 @@ import { util } from '@kit.ArkTS';
 
 const RD_DOMAIN = 0x0014;
 const RD_TAG = 'RemoteDesktop';
+/** Numbers each session page so logs tell two live pages (source and independent window) apart. */
+let remoteDesktopPageSeq: number = 0;
 const TOUCH_CLICK_SLOP_PX = 18;
 const TOUCH_DRAG_HOLD_MS = 1000;
 /** Touchpad tap-then-drag: a press this soon after a tap, moved past the slop, drags with the left button held. */
@@ -5512,6 +5515,9 @@ struct RemoteDesktop {
   }
 
   private onRemoteConnectionStateChange(): void {
+    hilog.info(RD_DOMAIN, RD_TAG, 'connection-state page=#' + this.pageSeq.toString() + ' connected=' +
+      (this.connected ? '1' : '0') + ' connecting=' + (this.connecting ? '1' : '0') + ' session=' +
+      this.sessionId.toString() + ' handoff=' + (this.pcWindowHandoffComplete ? '1' : '0'));
     this.onProRemoteContinuationConnectionChange();
     if (this.connected) {
       this.syncRemoteSystemPointer('connection-state');
@@ -10592,7 +10598,13 @@ struct RemoteDesktop {
     }
   }
 
+  /** This page's number (see remoteDesktopPageSeq). */
+  private pageSeq: number = 0;
+
   async aboutToAppear(): Promise<void> {
+    remoteDesktopPageSeq += 1;
+    this.pageSeq = remoteDesktopPageSeq;
+    hilog.info(RD_DOMAIN, RD_TAG, 'page #' + this.pageSeq.toString() + ' appear');
     const reusedAfterOrientationCleanup: boolean = this.orientationCleanupRequested;
     // A reused page must not let a previous teardown's WMS promise suppress
     // the new session's orientation request. Bump both fences before the first
@@ -11050,6 +11062,8 @@ struct RemoteDesktop {
   }
 
   aboutToDisappear(): void {
+    hilog.info(RD_DOMAIN, RD_TAG, 'page #' + this.pageSeq.toString() + ' disappear connected=' +
+      (this.connected ? '1' : '0') + ' session=' + this.sessionId.toString());
     this.stopRustDeskQualityConfirmation();
     this.stopProRemoteContinuation();
     this.proRdpPageLive = false;
@@ -14576,7 +14590,8 @@ struct RemoteDesktop {
         // sharpness only after the server has advertised Display Control caps.
         this.requestRdpDynamicLayoutNow('display-control-ready');
       }
-      hilog.info(RD_DOMAIN, RD_TAG, 'RDP render watchdog stats paints=' +
+      hilog.info(RD_DOMAIN, RD_TAG, 'RDP render watchdog page=#' + this.pageSeq.toString() + ' connected=' +
+        (this.connected ? '1' : '0') + ' connecting=' + (this.connecting ? '1' : '0') + ' stats paints=' +
         stats.paintCount.toString() + ' rendered=' + stats.renderedPaintCount.toString() +
         ' first=' + stats.firstPaintMs.toString() + ' last=' + stats.lastPaintMs.toString() +
         ' remoteAgeMs=' + stats.lastRemoteUpdateAgeMs.toString() +
@@ -16719,7 +16734,10 @@ struct RemoteDesktop {
       hilog.info(RD_DOMAIN, RD_TAG, 'NAPI connect returned: ' + sid);
       if (sid <= 0) {
         let errMsg: string = '连接失败 [E-CONNECT-' + Math.abs(sid) + ']';
+        const busy: string = sid === -2 ?
+          remoteVideoSessionBusyMessage(this.activeSessionRegistry.getActive(), host.id, '') : '';
         if (sid === -1) { errMsg = '协议 "' + host.protocol + '" 未找到 [E-CONNECT-1]'; }
+        else if (busy !== '') { errMsg = busy + ' [E-CONNECT-2]'; }
         else if (sid === -2 && host.protocol === 'rustdesk') { errMsg = 'RustDesk helper 未运行 [E-CONNECT-2]'; }
         else if (sid === -2) { errMsg = '连接被拒绝 (' + host.host + ':' + host.port + ') [E-CONNECT-2]'; }
         else if (sid === -3) { errMsg = 'RustDesk helper 未运行 [E-CONNECT-3]'; }

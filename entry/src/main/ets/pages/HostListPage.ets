@@ -923,7 +923,8 @@ import { SessionConfig } from '../types/rdpnapi';
 import {
   ActiveRemoteSessionRegistry,
   ActiveRemoteSessionRecord,
-  ActiveRemoteSessionTermination
+  ActiveRemoteSessionTermination,
+  remoteVideoSessionBusyMessage
 } from '../services/ActiveRemoteSessionRegistry';
 import { MoonlightSessionCoordinator } from '../services/MoonlightSessionCoordinator';
 import { RemoteProtocol } from '../services/RemoteSessionState';
@@ -8485,6 +8486,14 @@ struct HostListPage {
     await this.connectToHost(host, id);
   }
 
+  /** Why a picture session cannot start now: another RDP/RustDesk/VNC session holds the media path ('' if none). */
+  private videoSessionBusyMessage(hostId: string): string {
+    const active: ActiveRemoteSessionRecord | null = ActiveRemoteSessionRegistry.getInstance().getActive();
+    const holder: RemoteHost | undefined = active === null ? undefined :
+      this.hosts.find((candidate: RemoteHost): boolean => candidate.id === active.hostId);
+    return remoteVideoSessionBusyMessage(active, hostId, holder === undefined ? '' : holder.label);
+  }
+
   private async connectToHost(host: RemoteHost, continuationId: string = '', shareId: string = ''): Promise<void> {
     if (host.protocol === 'ai') { await this.openAiHost(aiHostId(host)); return; }
     // Every explicit new attempt replaces the previous local continuation route token.
@@ -12690,7 +12699,11 @@ struct HostListPage {
           '账号状态已变化，请重新发起连接。');
       }
       const sid: number = this.loader.connect(sessionConfig);
-      if (sid <= 0) { throw new Error('无法启动 RustDesk 连接 [E-RUSTDESK-PREFLIGHT-' + Math.abs(sid).toString() + ']'); }
+      if (sid <= 0) {
+        const busy: string = this.videoSessionBusyMessage(host.id);
+        throw new Error(busy !== '' ? busy + ' [E-RUSTDESK-PREFLIGHT-' + Math.abs(sid).toString() + ']' :
+          '无法启动 RustDesk 连接 [E-RUSTDESK-PREFLIGHT-' + Math.abs(sid).toString() + ']');
+      }
       preflightDisconnectIdentity = this.loader.captureDisconnectIdentity(sid);
       if (preflightDisconnectIdentity === null) {
         throw new Error('RustDesk 会话所有权回执不可用，已停止预鉴权流程。');
