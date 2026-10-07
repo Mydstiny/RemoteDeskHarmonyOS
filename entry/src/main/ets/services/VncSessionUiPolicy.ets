@@ -3,13 +3,13 @@ import { VncDisplayScaleMode, VncLocalCursorMode } from './VncModelPolicy';
 export type VncToolbarDeviceClass = 'pc' | 'pad' | 'phone';
 export type VncToolbarOrientation = 'portrait' | 'landscape';
 export type VncToolbarSide = 'left' | 'right';
-export type VncToolbarPrimaryActionId = 'keyboard' | 'controlMode' | 'shortcuts' |
+export type VncToolbarPrimaryActionId = 'keyboard' | 'controlMode' | 'wheel' | 'shortcuts' |
   'display' | 'displayScale' | 'portrait' | 'diagnostics' | 'disconnect' | 'ai';
 export type VncCursorOwnershipEvidence = 'bootstrap' | 'protocol_cursor' |
   'framebuffer_composited' | 'protocol_hidden';
 
 const VNC_TOOLBAR_PRIMARY_ACTION_IDS: VncToolbarPrimaryActionId[] = [
-  'keyboard', 'controlMode', 'shortcuts', 'displayScale', 'diagnostics', 'disconnect'
+  'keyboard', 'controlMode', 'wheel', 'shortcuts', 'displayScale', 'diagnostics', 'disconnect'
 ];
 
 /** PC 顶栏和 Phone/Pad 侧栏必须消费完全相同、顺序一致的动作集合。 */
@@ -17,7 +17,7 @@ export function vncToolbarPrimaryActionIds(displayCount: number = 0,
   portraitEnabled: boolean = false, aiVisible: boolean = false): VncToolbarPrimaryActionId[] {
   const actions: VncToolbarPrimaryActionId[] = VNC_TOOLBAR_PRIMARY_ACTION_IDS.slice();
   if (displayCount > 1) {
-    actions.splice(3, 0, 'display');
+    actions.splice(actions.indexOf('shortcuts') + 1, 0, 'display');
   }
   if (portraitEnabled) {
     actions.splice(Math.max(0, actions.length - 1), 0, 'portrait');

@@ -26,6 +26,11 @@ import {
 } from '../services/RemoteSessionTopBarPolicy';
 import { RemoteSessionCapabilities } from '../services/RemoteSessionCapabilityPolicy';
 import {
+  normalizeRemoteWheelSpeed,
+  remoteWheelSessionSpeedChoices,
+  remoteWheelSpeedLabel
+} from '../services/RemoteWheelPreferencePolicy';
+import {
   RustDeskDisplayCapabilities,
   RustDeskDisplayInfo,
   RustDeskDisplayResolution
@@ -127,6 +132,8 @@ export interface RemoteSessionTopBarActions {
   onToggleWheelDirectionFollowsKeyboard: (on: boolean) => void;
   onToggleSwapMouseButtons: (on: boolean) => void;
   onSetTouchpadSpeed: (speed: number) => void;
+  /** 滚轮速度 (percent): the same setting as 设置 › 远程滚轮 for this protocol. */
+  onSetWheelSpeed: (speed: number) => void;
   onToggleDiagnostics: (on: boolean) => void;
   onUnsupported: (actionId: string, reason: string) => void;
   /** The rail's AI button: the session's AI (SessionAiHost) appears as the orb with its small chat. */
@@ -219,6 +226,7 @@ export struct RemoteSessionTopBar {
   @Prop wheelDirectionFollowsKeyboard: boolean = true;
   @Prop swapMouseButtons: boolean = false;
   @Prop touchpadSpeed: number = 1.0;
+  @Prop wheelSpeed: number = 100;
   @Prop portraitDisplayEnabled: boolean = false;
   @Prop portraitDisplayActive: boolean = false;
   @Prop portraitSidebarHeightMode: RemotePortraitSidebarHeightMode = 'auto';
@@ -287,6 +295,7 @@ export struct RemoteSessionTopBar {
     onToggleWheelDirectionFollowsKeyboard: (_on: boolean): void => {},
     onToggleSwapMouseButtons: (_on: boolean): void => {},
     onSetTouchpadSpeed: (_speed: number): void => {},
+    onSetWheelSpeed: (_speed: number): void => {},
     onToggleDiagnostics: (_on: boolean): void => {},
     onUnsupported: (_actionId: string, _reason: string): void => {},
     onOpenAi: (): void => {}
@@ -576,7 +585,8 @@ export struct RemoteSessionTopBar {
     const flags: string = (this.showLocalCursor ? '1' : '0') + (this.browseMode ? '1' : '0') +
       (this.relativeMouseMode ? '1' : '0') + (this.reverseWheel ? '1' : '0') +
       (this.wheelDirectionFollowsKeyboard ? '1' : '0') + (this.swapMouseButtons ? '1' : '0');
-    return 'mouse|' + this.activeSubMenu + '|' + flags + '|' + this.touchpadSpeed.toString();
+    return 'mouse|' + this.activeSubMenu + '|' + flags + '|' + this.touchpadSpeed.toString() + '|' +
+      this.wheelSpeed.toString();
   }
 
   private qualityLabel(value: number): string {
@@ -1275,6 +1285,11 @@ export struct RemoteSessionTopBar {
     this.menuItem('远程滚轮反向', 'keyboardMouseSettings', (): void => {
       this.actions.onToggleReverseWheel(!this.reverseWheel);
     }, this.reverseWheel)
+    this.subMenuItem('滚轮速度', remoteWheelSpeedLabel(normalizeRemoteWheelSpeed(this.wheelSpeed, this.protocol)),
+      'keyboardMouseSettings', 'wheelSpeed')
+    if (this.activeSubMenu === 'wheelSpeed') {
+      this.wheelSpeedSubMenuContent()
+    }
     if (this.protocol === 'rustdesk') {
       this.menuItem('交换鼠标左右键', 'keyboardMouseSettings', (): void => {
         this.actions.onToggleSwapMouseButtons(!this.swapMouseButtons);
@@ -1285,6 +1300,15 @@ export struct RemoteSessionTopBar {
         this.touchpadSpeedSubMenuContent()
       }
     }
+  }
+
+  @Builder
+  private wheelSpeedSubMenuContent() {
+    ForEach(remoteWheelSessionSpeedChoices(this.protocol), (speed: number): void => {
+      this.menuItem(remoteWheelSpeedLabel(speed), 'keyboardMouseSettings', (): void => {
+        this.actions.onSetWheelSpeed(speed);
+      }, normalizeRemoteWheelSpeed(this.wheelSpeed, this.protocol) === speed)
+    }, (speed: number): string => 'wheel-' + speed.toString())
   }
 
   @Builder

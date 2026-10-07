@@ -222,6 +222,14 @@ export function remoteWheelSpeedChoices(protocol: string = ''): number[] {
   return out;
 }
 
+/**
+ * The speeds a session's own controls offer (the RDP control centre, the RustDesk bar's 鼠标与触控, the VNC rail's
+ * 滚轮): a short list, the full 25% grid stays in 设置 › 远程滚轮. A speed set there that is not listed still shows.
+ */
+export function remoteWheelSessionSpeedChoices(protocol: string = ''): number[] {
+  return protocol === 'vnc' ? [50, 100, 150, 200, 400, 600, 1000] : [50, 75, 100, 150, 200, 300, 400];
+}
+
 export function remoteWheelSpeedLabel(value: number): string {
   const v: number = normalizeRemoteWheelSpeed(value, 'vnc');
   return v === REMOTE_WHEEL_SPEED_DEFAULT ? '100%（默认）' : v.toString() + '%';

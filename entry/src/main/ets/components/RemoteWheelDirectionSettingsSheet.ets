@@ -49,7 +49,7 @@ function speedNote(protocol: RemoteWheelProtocol): string {
     return '终端滚动缓冲每次滚动的行数；开启了鼠标的终端应用（如 tmux、vim）按应用自己的设置滚动，SFTP 文件列表不受影响。';
   }
   if (protocol === 'moonlight') { return '串流游戏或桌面里每格滚动的距离。'; }
-  return '每格滚轮、每次双指滑动在远端滚动的距离。';
+  return '每格滚轮、每次双指或三指滑动在远端滚动的距离。';
 }
 
 /**

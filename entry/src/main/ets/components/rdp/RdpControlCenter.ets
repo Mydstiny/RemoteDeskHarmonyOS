@@ -6,6 +6,11 @@ import { rdpDisplayProfileSummary, rdpResolutionSelection } from '../../services
 import { RdpRenderStats } from '../../types/rdpnapi';
 import { EMPTY_RDP_RENDER_STATS } from '../RdpDiagnosticsHud';
 import {
+  normalizeRemoteWheelSpeed,
+  remoteWheelSessionSpeedChoices,
+  remoteWheelSpeedLabel
+} from '../../services/RemoteWheelPreferencePolicy';
+import {
   rdpResolutionAspectAssessment,
   rdpResolutionLabel,
   rdpResolutionPresetsForSurface,
@@ -48,6 +53,8 @@ export struct RdpControlCenter {
    */
   @Prop selectionRevision: number = 0;
   @Prop reverseWheel: boolean = false;
+  /** 设置 › 远程滚轮's RDP speed (percent): changed here it is saved there too and applies at once. */
+  @Prop wheelSpeed: number = 100;
   @Prop resolutionId: string = 'auto';
   @Prop customWidth: number = 1920;
   @Prop customHeight: number = 1080;
@@ -82,6 +89,7 @@ export struct RdpControlCenter {
   onCanvasZoom: (enabled: boolean) => void = (_enabled: boolean): void => {};
   onResetCanvas: () => void = (): void => {};
   onReverseWheel: (enabled: boolean) => void = (_enabled: boolean): void => {};
+  onWheelSpeed: (speed: number) => void = (_speed: number): void => {};
   onResolution: (id: string) => void = (_id: string): void => {};
   onCustomResolution: (width: string, height: string) => void = (_width: string, _height: string): void => {};
   onRemoteUiScale: (value: string) => void = (_value: string): void => {};
@@ -259,6 +267,29 @@ export struct RdpControlCenter {
       .onClick(action)
   }
 
+  /** 滚轮速度: the session's short list of speeds, the same value as 设置 › 远程滚轮 › RDP. */
+  @Builder private wheelSpeedRow() {
+    Column({ space: 8 }) {
+      Row() {
+        Text('滚轮速度').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
+          .fontFamily(AppTheme.fontFamily).layoutWeight(1)
+        Text(remoteWheelSpeedLabel(normalizeRemoteWheelSpeed(this.wheelSpeed))).fontSize(12)
+          .fontColor(this.pal().text2).fontFamily(AppTheme.fontFamily)
+      }.width('100%')
+      Scroll() {
+        Row({ space: 6 }) {
+          ForEach(remoteWheelSessionSpeedChoices('rdp'), (speed: number): void => {
+            this.choice(speed.toString() + '%', normalizeRemoteWheelSpeed(this.wheelSpeed) === speed,
+              (): void => { this.onWheelSpeed(speed); })
+          }, (speed: number): string => speed.toString() + '|' + this.selectionRevision.toString() + '|' +
+            (normalizeRemoteWheelSpeed(this.wheelSpeed) === speed ? '1' : '0'))
+        }
+      }.scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off).width('100%')
+      Text('鼠标滚轮、实体触控板和三指上下滑动都按这个速度滚动').fontSize(10).fontColor(this.pal().text3)
+        .fontFamily(AppTheme.fontFamily).width('100%')
+    }.width('100%').padding({ left: 12, right: 12, top: 10, bottom: 10 })
+  }
+
   @Builder private metric(label: string, value: string, color: string = '') {
     Row() {
       Text(label).fontSize(10).fontColor(this.pal().text3).layoutWeight(1)
@@ -332,7 +363,7 @@ export struct RdpControlCenter {
           .fontSize(9).fontColor(this.pal().text3).width('100%')
           .padding({ left: 12, right: 12, bottom: 8 })
         Divider().color(this.pal().divider)
-        this.toggleRow('手势缩放与平移', '在远端画面上双指缩放并移动画布',
+        this.toggleRow('手势缩放与平移', '双指缩放并移动画面；开启后滚动改用三指上下滑动',
           this.canvasZoomEnabled, this.onCanvasZoom)
         Divider().color(this.pal().divider).margin({ left: 12 })
         this.actionRow($r('sys.symbol.display'), '复位画面',
@@ -340,6 +371,8 @@ export struct RdpControlCenter {
           this.onResetCanvas)
         Divider().color(this.pal().divider).margin({ left: 12 })
         this.toggleRow('反转滚轮方向', '立即同步到当前 RDP 会话输入', this.reverseWheel, this.onReverseWheel)
+        Divider().color(this.pal().divider).margin({ left: 12 })
+        this.wheelSpeedRow()
     }.width('100%').backgroundColor(this.pal().card).borderRadius(16)
       .border({ width: 0.5, color: this.pal().cardBorder })
   }

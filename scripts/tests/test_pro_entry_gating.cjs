@@ -60,8 +60,9 @@ const badges = new Map([
   ['components/pro/workspace/WorkspaceStrip.ets', [1, /if \(ProEntries\.visible\('pro\.workspaces'\)\) \{/]],
   ['components/pro/workspace/WorkspaceGroupCard.ets', [1, /if \(ProEntries\.visible\('pro\.workspaces'\)\) \{/]],
   // AI cards/section (4) follow aiProVisible; the app-icon row follows ProEntries; the account card
-  // marker follows ProEntries.proActive(); the RDP 远端显示方案 row follows rdpAdvancedDisplayVisible.
-  ['pages/HostListPage.ets', [9, /aiProVisible = AiAccess\.getInstance\(\)\.proVisible\(\)/]],
+  // marker follows ProEntries.proActive(); the RDP 远端显示方案 row follows rdpAdvancedDisplayVisible;
+  // 安全与数据 › 手机通行密钥 follows phonePasskeyEntryAvailable().
+  ['pages/HostListPage.ets', [10, /(?=[\s\S]*aiProVisible = AiAccess\.getInstance\(\)\.proVisible\(\))(?=[\s\S]*if \(phonePasskeyEntryAvailable\(\)\) \{\s*this\.phonePasskeyRow\(\))/]],
   // RDP session panel: 远端显示方案 exists only while RemoteDesktop passes advancedDisplayVisible, and
   // 安全密钥重定向 only while it passes securityKeyVisible.
   ['components/rdp/RdpControlCenter.ets', [2, /(?=[\s\S]*if \(this\.advancedDisplayVisible\) \{\s*this\.displayProfileEntry\(\))(?=[\s\S]*if \(this\.securityKeyVisible\) \{\s*this\.securityKeyEntry\(\))/]],
@@ -83,7 +84,16 @@ for (const [file, text] of sources) {
 // settings sheets whose own badge is registered and gated above (they open only from those gated entries).
 for (const [file, text] of sources) {
   if (file === 'components/AppSheetHeader.ets' || !/showProBadge: true/.test(text)) continue;
-  assert.ok(file === 'pages/RemoteAiWorkspace.ets' || badges.has(file), `${file}: Pro sheet header needs a registered gate`);
+  assert.ok(file === 'pages/RemoteAiWorkspace.ets' || badges.has(file) || phonePasskeySheet(file),
+    `${file}: Pro sheet header needs a registered gate`);
+}
+// 手机通行密钥's sheet opens only from its 安全与数据 row and the AI route, both behind phonePasskeyEntryAvailable().
+function phonePasskeySheet(file) {
+  if (file !== 'components/pro/passkey/PhonePasskeySettingsSheet.ets') return false;
+  const host = sources.get('pages/HostListPage.ets');
+  assert.match(host, /if \(phonePasskeyEntryAvailable\(\)\) \{ this\.openSettingsLeafSheet\(SETTINGS_SHEET_PHONE_PASSKEY\)/);
+  assert.match(sources.get('services/pro/passkey/ProPasskeyEntry.ets'), /if \(!DEBUG\) \{ return false; \}[\s\S]{0,400}executable/);
+  return true;
 }
 
 // RDP/RustDesk advanced display: every Pro choice follows ProEntries.visible for its own feature.

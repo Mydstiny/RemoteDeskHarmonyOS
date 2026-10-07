@@ -52,7 +52,7 @@ const CONTROL_MODES: string[][] = [['0', '触控板'], ['1', '触控'], ['2', '�
 function wheelSpeed(protocol: string, name: string): AiSettingSpec {
   const speeds: string[][] = remoteWheelSpeedChoices(protocol).map((v: number): string[] => [v.toString(), remoteWheelSpeedLabel(v)]);
   return new AiSettingSpec('remote.' + protocol + 'WheelSpeed', name + ' 滚轮速度', protocol + 'WheelSpeed', choices(speeds),
-    '每格滚轮、每次双指滑动在远端滚动的距离；嫌快调低、嫌慢调高，100% 为默认' +
+    '每格滚轮、每次双指或三指滑动在远端滚动的距离；嫌快调低、嫌慢调高，100% 为默认' +
       (protocol === 'vnc' ? '；macOS 屏幕共享等滚得少的服务器可调到 400%–1000%' : ''));
 }
 

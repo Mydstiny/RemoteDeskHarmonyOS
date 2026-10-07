@@ -180,7 +180,7 @@ export type RemoteSessionPrimaryActionId = 'pin' | 'control' | 'display' |
   'portrait' | 'diagnostics' | 'disconnect' | 'ai';
 
 export type RustDeskTopBarSubMenuId = 'viewScale' | 'remoteDisplay' |
-  'resolution' | 'imageQuality' | 'codec' | 'touchpadSpeed' | 'virtualDisplay';
+  'resolution' | 'imageQuality' | 'codec' | 'touchpadSpeed' | 'wheelSpeed' | 'virtualDisplay';
 
 export interface RustDeskTopBarSubMenuState {
   active: RustDeskTopBarSubMenuId | '';
@@ -209,6 +209,7 @@ export function rustDeskTopBarSubMenuForItem(itemId: string): RustDeskTopBarSubM
   if (itemId === 'imageQuality') { return 'imageQuality'; }
   if (itemId === 'codec') { return 'codec'; }
   if (itemId === 'touchpadSpeed') { return 'touchpadSpeed'; }
+  if (itemId === 'wheelSpeed') { return 'wheelSpeed'; }
   if (itemId === 'virtualDisplay') { return 'virtualDisplay'; }
   return '';
 }

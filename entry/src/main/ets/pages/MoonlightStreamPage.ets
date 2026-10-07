@@ -4781,6 +4781,23 @@ struct MoonlightStreamPage {
           this.queueTrackpadPointer(projected.wireX, projected.wireY);
         }
         this.trackpadScrollCentroidValid = false;
+      } else if (this.trackpadVisualTouches.size >= 3) {
+        // Three fingers scroll (two fingers zoom and pan the picture when zoom is on); the centroid is re-anchored
+        // whenever a finger lands or lifts, so a count change never scrolls.
+        const centroid: MoonlightTouchPoint | null = this.trackpadCentroid();
+        if (centroid !== null && this.trackpadScrollCentroidValid) {
+          const dx: number = centroid.x - this.trackpadScrollCentroidX;
+          const dy: number = centroid.y - this.trackpadScrollCentroidY;
+          if (Math.hypot(dx, dy) >= 0.35) {
+            this.trackpadGestureMoved = true;
+            this.sendTrackpadScroll(dx, dy);
+          }
+        }
+        if (centroid !== null) {
+          this.trackpadScrollCentroidX = centroid.x;
+          this.trackpadScrollCentroidY = centroid.y;
+          this.trackpadScrollCentroidValid = true;
+        }
       } else {
         const centroid: MoonlightTouchPoint | null = this.trackpadCentroid();
         if (centroid !== null && !this.moonlightTwoFingerSuppressedUntilRelease &&

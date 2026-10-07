@@ -24,6 +24,8 @@ export interface VncSessionToolbarActions {
   onCollapse: () => void;
   onToggleKeyboard: () => void;
   onCycleControlMode: () => void;
+  /** 滚轮: the session's wheel direction and speed. */
+  onOpenWheel: () => void;
   onOpenShortcuts: () => void;
   onOpenDisplays: () => void;
   onCycleDisplayScale: () => void;
@@ -70,6 +72,7 @@ export struct VncSessionToolbar {
     onCollapse: (): void => {},
     onToggleKeyboard: (): void => {},
     onCycleControlMode: (): void => {},
+    onOpenWheel: (): void => {},
     onOpenShortcuts: (): void => {},
     onOpenDisplays: (): void => {},
     onCycleDisplayScale: (): void => {},
@@ -109,6 +112,9 @@ export struct VncSessionToolbar {
     } else if (actionId === 'controlMode') {
       this.actionButton($r('sys.symbol.arrow_up_left'), this.controlModeLabel, false,
         (): void => { this.actions.onCycleControlMode(); })
+    } else if (actionId === 'wheel') {
+      this.actionButton($r('sys.symbol.mouse'), '滚轮', false,
+        (): void => { this.actions.onOpenWheel(); })
     } else if (actionId === 'shortcuts') {
       this.actionButton($r('sys.symbol.bolt_fill'), this.shortcutsOpen ? '收组合键' : '组合键',
         this.shortcutsOpen,

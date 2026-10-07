@@ -236,13 +236,16 @@ import {
   HarmonyShortcutCaptureService
 } from '../services/HarmonyShortcutCaptureService';
 import {
+  remoteTouchGestureNotice,
   remoteVirtualTouchpadKeyboardGuide,
   RemoteVirtualTouchpadKeyboardGuide,
+  shouldShowRemoteTouchGestureNotice,
   shouldRetryRemoteVirtualTouchpadKeyboardGuide,
   shouldShowRemoteVirtualTouchpadKeyboardGuide
 } from '../services/RemoteVirtualTouchpadGuidePolicy';
 import {
   GUIDE_ALWAYS_VISIBLE_STORAGE_KEY,
+  REMOTE_TOUCH_GESTURE_NOTICE_STORAGE_KEY,
   remoteTouchpadGuideStorageKey,
   RemoteTouchpadGuideProtocol
 } from '../services/GuideVisibilityPolicy';
@@ -271,6 +274,7 @@ import {
 import { ProRdpSecurityKeyPreference } from '../services/pro/ProRdpSecurityKeyPreference';
 import { RdpSessionToolbar, RdpToolbarAction } from '../components/rdp/RdpSessionToolbar';
 import { VncSessionToolbar, VncSessionToolbarActions } from '../components/VncSessionToolbar';
+import { RemoteSessionWheelPanel } from '../components/RemoteSessionWheelPanel';
 import {
   rustDeskCodecConfigValue,
   rustDeskCodecForPreference,
@@ -1375,6 +1379,8 @@ struct RemoteDesktop {
   @State rdpSecurityKeyEnabled: boolean = false;
   private rdpSecurityKey: ProRdpSecurityKey | null = null;
   @State @Watch('onHarmonyShortcutInputOwnerChange') showVncCertificateSheet: boolean = false;
+  /** The VNC rail's 滚轮 sheet (direction and speed). */
+  @State @Watch('onHarmonyShortcutInputOwnerChange') showVncWheelSheet: boolean = false;
   @State vncCertificateState: VncCertificatePreflightState = VncCertificatePreflightState.IDLE;
   @State vncCertificateInfo: VncCertificateInfo | null = null;
   @State vncCertificateError: string = '';
@@ -1836,6 +1842,9 @@ struct RemoteDesktop {
   private rdpTouchPressY: number = 0;
   private touchGestureDone: boolean = false; // 双指手势已完成, 抑制剩余手指的多余点击
   private touchMaxFingers: number = 0;       // 本次手势最高手指数 (用于三指检测)
+  /** Fingers down at the last three-finger scroll sample (a change re-anchors) and that sample's centroid. */
+  private threeFingerScrollCount: number = 0;
+  private threeFingerScrollLastY: number = 0;
   private activeTouchPoints: Map<number, LocalPoint> = new Map<number, LocalPoint>();
   private canvasTransform: CanvasTransform = { scale: 1, panX: 0, panY: 0, rotation: 0 };
   private canvasRotationQuarterTurns: number = 0;
@@ -1885,7 +1894,7 @@ struct RemoteDesktop {
   private pendingModifierPanelOpenAfterControlPanel: boolean = false;
   private pendingModifierPanelSessionId: number = -1;
   private modifierPanelPrepareOnly: boolean = false;
-  // 三指控制面板
+  // 控制面板（虚拟触控板提示里的「打开控制面板」；三指轻点已不再打开它）
   @State @Watch('onHarmonyShortcutInputOwnerChange') showControlPanel: boolean = false;
   @State @Watch('onHarmonyShortcutInputOwnerChange') keyboardOpen: boolean = false;
   @State fileTransferBusy: boolean = false;
@@ -2785,6 +2794,10 @@ struct RemoteDesktop {
       onCycleControlMode: (): void => {
         this.markVncToolbarInteraction();
         this.cycleVncControlMode();
+      },
+      onOpenWheel: (): void => {
+        this.markVncToolbarInteraction();
+        this.showVncWheelSheet = true;
       },
       onOpenShortcuts: (): void => {
         this.markVncToolbarInteraction();
@@ -4672,7 +4685,7 @@ struct RemoteDesktop {
 
   private harmonyShortcutModalOwnsInput(): boolean {
     return this.showRdpSessionErrorSheet || this.showRustDeskAuthSheet ||
-      this.showRustDeskTwoFactorSheet || this.showVncCertificateSheet ||
+      this.showRustDeskTwoFactorSheet || this.showVncCertificateSheet || this.showVncWheelSheet ||
       this.showPassphraseSheet || this.showControlPanel || this.keyboardOpen ||
       this.modifierPanelVisible || this.shortcutPanelVisible ||
       this.rdpControlCenterVisible || this.showRustDeskDisplayResolutionMenu ||
@@ -5509,6 +5522,7 @@ struct RemoteDesktop {
       this.scheduleVirtualTouchpadKeyboardGuide();
     } else {
       this.rdpControlCenterVisible = false;
+      this.showVncWheelSheet = false;
       if (this.virtualTouchpadKeyboardGuideTimer >= 0) {
         clearTimeout(this.virtualTouchpadKeyboardGuideTimer);
         this.virtualTouchpadKeyboardGuideTimer = -1;
@@ -8393,6 +8407,18 @@ struct RemoteDesktop {
     this.setRustDeskReverseWheel(on);
   }
 
+  /** A session's own 滚轮速度 control: the same setting as 设置 › 远程滚轮 for this protocol, applied at once. */
+  private setCurrentProtocolWheelSpeed(speed: number): void {
+    const protocol: string = this.isVncSession() ? 'vnc' : this.currentProtocolName();
+    if (protocol !== 'rdp' && protocol !== 'rustdesk' && protocol !== 'vnc') { return; }
+    const value: number = normalizeRemoteWheelSpeed(speed, protocol);
+    const key: string = protocol === 'rdp' ? RDP_WHEEL_SPEED_KEY :
+      (protocol === 'rustdesk' ? RUSTDESK_WHEEL_SPEED_KEY : VNC_WHEEL_SPEED_KEY);
+    this.persistSessionPref(key, value);
+    this.touchWheelSpeedRemainder = 0;
+    hilog.info(RD_DOMAIN, RD_TAG, 'session wheel speed protocol=' + protocol + ' speed=' + value.toString());
+  }
+
   private setRustDeskSwapMouseButtons(on: boolean): void {
     if (shouldReleaseMouseButtonsBeforeSwapChange(this.rustdeskSwapMouseButtons,
       on, this.remoteMouseButtonsDown)) {
@@ -8526,6 +8552,9 @@ struct RemoteDesktop {
       },
       onToggleSwapMouseButtons: (on: boolean): void => {
         this.setRustDeskSwapMouseButtons(on);
+      },
+      onSetWheelSpeed: (speed: number): void => {
+        this.setCurrentProtocolWheelSpeed(speed);
       },
       onSetTouchpadSpeed: (speed: number): void => {
         this.setRustDeskTouchpadSpeed(speed);
@@ -13497,10 +13526,13 @@ struct RemoteDesktop {
       shownInRuntimeSession,
       this.virtualTouchpadKeyboardGuidePromptVisible,
       this.isVncViewOnlySession(), alreadyShownEver, this.guideAlwaysVisible)) {
+      this.promptRemoteTouchGestureNotice(protocol);
       return;
     }
     const guide: RemoteVirtualTouchpadKeyboardGuide =
       remoteVirtualTouchpadKeyboardGuide(protocol);
+    // The first-run guide already describes the gestures: the change notice is not shown on top of it later.
+    guideVisibility.markShown(getContext(this) as common.Context, REMOTE_TOUCH_GESTURE_NOTICE_STORAGE_KEY);
     this.virtualTouchpadKeyboardGuidePromptVisible = true;
     this.syncHarmonyShortcutCapture('virtual-touchpad-guide-open');
     try {
@@ -13527,6 +13559,44 @@ struct RemoteDesktop {
       });
     } catch (err) {
       this.handleVirtualTouchpadKeyboardGuideFailure(err as Error);
+    }
+  }
+
+  /**
+   * Once per device after the update: scrolling by touch moved to three fingers and the three-finger tap no longer
+   * opens the control panel. Shown at the first RDP, RustDesk or VNC session in a touch mode.
+   */
+  private promptRemoteTouchGestureNotice(protocol: string): void {
+    const guideVisibility: GuideVisibilityService = GuideVisibilityService.getInstance();
+    const context: common.Context = getContext(this) as common.Context;
+    if (!shouldShowRemoteTouchGestureNotice(protocol, this.connected, this.currentControlMode(),
+      this.virtualTouchpadKeyboardGuidePromptVisible, this.isVncViewOnlySession(),
+      guideVisibility.wasShown(context, REMOTE_TOUCH_GESTURE_NOTICE_STORAGE_KEY))) {
+      return;
+    }
+    const notice: RemoteVirtualTouchpadKeyboardGuide = remoteTouchGestureNotice(protocol);
+    // Marked before it shows: a notice that failed to appear is not worth asking again.
+    guideVisibility.markShown(context, REMOTE_TOUCH_GESTURE_NOTICE_STORAGE_KEY);
+    this.virtualTouchpadKeyboardGuidePromptVisible = true;
+    this.syncHarmonyShortcutCapture('touch-gesture-notice-open');
+    try {
+      promptAction.showDialog({
+        title: notice.title,
+        message: notice.message,
+        isModal: true,
+        buttons: [{ text: '知道了', color: this.accentColor }]
+      }).then((): void => {
+        this.virtualTouchpadKeyboardGuidePromptVisible = false;
+        this.syncHarmonyShortcutCapture('touch-gesture-notice-close');
+      }).catch((_err: Error): void => {
+        this.virtualTouchpadKeyboardGuidePromptVisible = false;
+        this.syncHarmonyShortcutCapture('touch-gesture-notice-failed');
+      });
+      hilog.info(RD_DOMAIN, RD_TAG, 'touch-gesture-notice shown protocol=' + protocol);
+    } catch (err) {
+      this.virtualTouchpadKeyboardGuidePromptVisible = false;
+      this.syncHarmonyShortcutCapture('touch-gesture-notice-failed');
+      hilog.warn(RD_DOMAIN, RD_TAG, 'touch-gesture-notice failed: ' + JSON.stringify(err));
     }
   }
 
@@ -21678,6 +21748,7 @@ struct RemoteDesktop {
     this.touchMoved = false;
     this.touchGestureDone = false;
     this.touchMaxFingers = 0;
+    this.threeFingerScrollCount = 0;
     this.touchWheelRemainder = 0;
     this.lastTouchWheelMs = 0;
     this.touchpadAnchorValid = false;
@@ -21709,16 +21780,30 @@ struct RemoteDesktop {
       'two-finger right-click anchor=' + savedX.toString() + ',' + savedY.toString());
   }
 
-  private finishThreeFingerPanel(): void {
-    if (this.touchGestureDone) {
+  /**
+   * Three fingers moving up or down scroll the remote, in every touch mode (two fingers zoom and pan the picture
+   * when zoom is on). A finger landing or lifting moves the centroid, so the count changing re-anchors instead of
+   * scrolling by the jump; fewer than three fingers left never scroll. A three-finger tap does nothing.
+   */
+  private handleThreeFingerScrollMove(event: TouchEvent): void {
+    this.touchDragPending = false;
+    const count: number = this.trackedCanvasTouchCount(event);
+    const centroid: LocalPoint | null = this.averageTouchPoint(event);
+    if (count < 3 || centroid === null) {
+      this.threeFingerScrollCount = count;
       return;
     }
-    this.showControlPanel = !this.showControlPanel;
-    this.touchGestureDone = true;
-    this.touchDragPending = false;
-    hilog.info(RD_DOMAIN, RD_TAG, 'three-finger tap panel=' +
-      (this.showControlPanel ? 'open' : 'close') + ' anchor=' +
-      this.touchDragCursorX.toString() + ',' + this.touchDragCursorY.toString());
+    if (count !== this.threeFingerScrollCount) {
+      this.threeFingerScrollCount = count;
+      this.threeFingerScrollLastY = centroid.y;
+      return;
+    }
+    const stepDy: number = centroid.y - this.threeFingerScrollLastY;
+    this.threeFingerScrollLastY = centroid.y;
+    if (shouldForwardContinuousRemoteWheelSample(stepDy)) {
+      this.touchMoved = true;
+      this.sendTouchPadWheel(stepDy);
+    }
   }
 
   private syncActiveTouchPoints(event: TouchEvent): void {
@@ -21928,15 +22013,16 @@ struct RemoteDesktop {
    *   1 指抬起 (无移动) -> 左键点击
    *   1 指停留 1 秒后移动 -> 左键按住拖拽, 抬手释放
    *   2 指抬起 (无移动) -> 右键点击
-   *   2 指纵向移动 -> 滚轮
+   *   2 指纵向移动 -> 滚轮（仅在未开启双指缩放时；开启后双指只缩放和移动画面）
+   *   3 指上下滑动 -> 滚轮（任何时候）；3 指轻点不再打开控制面板
    *
    * 防漂移: 第 2 指落下时记录光标位置; 双指抬起时无移动则回退到记录位置发右键,
    *   避免第 1 指落下瞬间的微移导致光标偏移。
    */
   private handleTouchPadInput = (event: TouchEvent): void => {
-    // A read-only VNC session still needs to observe the touch sequence so a
-    // three-finger tap can open the local control sheet. Every actual remote
-    // send below remains guarded by canForwardInput().
+    // A read-only VNC session still observes the touch sequence (its local
+    // canvas gestures). Every actual remote send below remains guarded by
+    // canForwardInput().
     if (!this.canForwardInput('touch-pad') && !this.isVncViewOnlySession()) { return; }
     try {
       event.stopPropagation();
@@ -22049,6 +22135,10 @@ struct RemoteDesktop {
           }
         }
 
+        if (this.touchMaxFingers >= 3) {
+          this.handleThreeFingerScrollMove(event);
+          return;
+        }
         if (this.touchFingerCount >= 2) {
           if (shouldApplyCanvasTwoFingerPan(this.canvasTwoFingerState)) {
             this.touchMoved = true;
@@ -22130,9 +22220,9 @@ struct RemoteDesktop {
             this.showRemoteCursorIndicator(-1, true);
             hilog.info(RD_DOMAIN, RD_TAG, 'one-finger hold drag end remote=' +
               this.remoteCursorX.toString() + ',' + this.remoteCursorY.toString());
-          } else if (event.type === TouchType.Up && !this.touchMoved && this.touchMaxFingers >= 3) {
-            // 三指点击只打开/关闭控制面板，不向远端发送鼠标事件。
-            this.finishThreeFingerPanel();
+          } else if (this.touchMaxFingers >= 3) {
+            // 三指只用于上下滚动：抬起时不点击，也不再打开控制面板（键盘与组合键在会话栏里）。
+            hilog.info(RD_DOMAIN, RD_TAG, 'three-finger gesture end scrolled=' + (this.touchMoved ? '1' : '0'));
           } else if (event.type === TouchType.Up && !this.touchMoved) {
             if (this.touchDragPending) {
               // 双指无移动抬起, 拖拽未启动 → 纯右键 (无左键干扰)
@@ -22158,7 +22248,7 @@ struct RemoteDesktop {
         } else {
           // 从双指变单指 (一根手指抬起, 另一根还在屏幕上)
           if (this.touchMaxFingers >= 3) {
-            // 三指候选手势等待所有手指抬起，期间不退化成双指右键或单指移动。
+            // 三指手势等待所有手指抬起，期间不退化成双指右键或单指移动。
             this.touchDragPending = false;
           } else if (this.touchDragPending) {
             // 双指未移动就有一指抬起 → 双指点击 → 右键
@@ -22263,6 +22353,10 @@ struct RemoteDesktop {
         }
       } else if (event.type === TouchType.Move) {
         this.touchFingerCount = this.trackedCanvasTouchCount(event);
+        if (this.touchMaxFingers >= 3) {
+          this.handleThreeFingerScrollMove(event);
+          return;
+        }
         if (this.touchMaxFingers >= 2) {
           const avg: LocalPoint | null = this.averageTouchPoint(event);
           if (avg) {
@@ -22330,10 +22424,8 @@ struct RemoteDesktop {
             ' pending=' + (this.touchDragPending ? 'true' : 'false') +
             ' leftDown=' + (this.touchLeftDown ? 'true' : 'false'));
         if (this.touchMaxFingers >= 3) {
+          // Three fingers scroll; lifting them clicks nothing.
           if (this.touchFingerCount <= 0) {
-            if (event.type === TouchType.Up && !this.touchMoved) {
-              this.finishThreeFingerPanel();
-            }
             this.resetTouchGesture();
           }
           return;
@@ -22435,19 +22527,7 @@ struct RemoteDesktop {
         return;
       }
       if (this.trackedCanvasTouchCount(event) >= 3 || this.touchMaxFingers >= 3) {
-        // 键鼠模式下 3 指仅用于控制面板开关, Move 事件不发送鼠标/滚轮
-        if (event.type === TouchType.Move) {
-          // 只更新 touchMoved 状态 (区分滑动 vs 点击), 不发远端事件
-          const avg: LocalPoint | null = this.averageTouchPoint(event);
-          if (avg) {
-            const dx: number = avg.x - this.touchStartLocalX;
-            const dy: number = avg.y - this.touchStartLocalY;
-            if (Math.sqrt(dx * dx + dy * dy) > TOUCH_CLICK_SLOP_PX) {
-              this.touchMoved = true;
-            }
-          }
-          return;
-        }
+        // 键鼠模式下屏幕上的三指上下滑动同样滚动远端（不发鼠标移动和点击）。
         this.handleTouchPadInput(event);
       } else if (event.type === TouchType.Down || event.type === TouchType.Up ||
         event.type === TouchType.Cancel) {
@@ -24270,6 +24350,7 @@ struct RemoteDesktop {
             canvasResetAvailable: this.canvasTransformGestureModified,
             selectionRevision: this.rdpControlCenterSelectionRevision,
             reverseWheel: this.rdpReverseWheel,
+            wheelSpeed: this.rdpWheelSpeed,
             resolutionId: normalizeRdpResolutionId(this.rdpDesktopResolutionId, this.rdpDesktopPreset),
             customWidth: this.rdpCustomWidth,
             advancedDisplayVisible: this.rdpAdvancedDisplayVisible(),
@@ -24301,6 +24382,7 @@ struct RemoteDesktop {
             onCanvasZoom: (enabled: boolean): void => { this.setRdpCanvasZoomPreference(enabled); },
             onResetCanvas: (): void => { this.resetCanvasTransformFromMenu(); },
             onReverseWheel: (enabled: boolean): void => { this.setRdpReverseWheelPreference(enabled); },
+            onWheelSpeed: (speed: number): void => { this.setCurrentProtocolWheelSpeed(speed); },
             onResolution: (id: string): void => { this.setRdpResolutionPreference(id); },
             onCustomResolution: (width: string, height: string): void => {
               this.setRdpCustomResolution(width, height);
@@ -24359,6 +24441,7 @@ struct RemoteDesktop {
           wheelDirectionFollowsKeyboard: this.rustdeskWheelDirectionFollowsKeyboard,
           swapMouseButtons: this.rustdeskSwapMouseButtons,
           touchpadSpeed: this.rustdeskTouchpadSpeed,
+          wheelSpeed: this.wheelSpeedForCurrentProtocol(),
           rustDeskPhoneTarget: this.isRustDeskPhoneSession(),
           explicitPhone: this.isExplicitPhoneSession(),
           phoneStatus: this.explicitPhoneStatus,
@@ -24554,7 +24637,7 @@ struct RemoteDesktop {
         })
       }
 
-      // 三指控制面板改用 bindSheet — 弹到屏幕中央
+      // 控制面板用 bindSheet — 弹到屏幕中央
 
       RemoteCursorOverlay({ cursor: this.remoteCursorOverlayState })
 
@@ -24675,6 +24758,15 @@ struct RemoteDesktop {
             action.dismiss();
           },
           onDisappear: (): void => { this.handleRdpSessionErrorSheetDisappear(); }
+        })
+
+      Column().width('100%').height('100%').hitTestBehavior(HitTestMode.None)
+        .bindSheet($$this.showVncWheelSheet, this.vncWheelSheetBuilder(), {
+          height: SheetSize.FIT_CONTENT,
+          preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
+          dragBar: false,
+          backgroundColor: this.pal().sheetBg,
+          showClose: false
         })
 
       // Pro RustDesk 鉴权必须使用纵向底部 bindSheet；不能在横屏远程画布上用全屏 overlay。
@@ -25384,6 +25476,18 @@ struct RemoteDesktop {
       PageTransitionEnter({ duration: 0 }).opacity(1)
       PageTransitionExit({ duration: 0 }).opacity(1)
     }
+  }
+
+  @Builder vncWheelSheetBuilder() {
+    RemoteSessionWheelPanel({
+      protocol: 'vnc',
+      protocolLabel: 'VNC',
+      reverse: this.vncReverseWheel,
+      speed: this.vncWheelSpeed,
+      onReverse: (on: boolean): void => { this.setCurrentProtocolReverseWheel(on); },
+      onSpeed: (speed: number): void => { this.setCurrentProtocolWheelSpeed(speed); },
+      onClose: (): void => { this.showVncWheelSheet = false; }
+    })
   }
 
   @Builder rdpSessionErrorSheet() {

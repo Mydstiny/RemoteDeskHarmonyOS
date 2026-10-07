@@ -16,7 +16,7 @@ function method(name) {
 }
 const methods = ['handleXComponentTouch', 'handleConfiguredTouchInput', 'handleXComponentMouse',
   'primaryTouchPoint', 'syncActiveTouchPoints', 'resetTouchGesture',
-  'startDirectTouchRightClickTimer', 'clearTouchDirectRightClickTimer'];
+  'startDirectTouchRightClickTimer', 'clearTouchDirectRightClickTimer', 'handleThreeFingerScrollMove'];
 const compiled = ts.transpileModule('class Page {\n' + methods.map(method).join('\n') +
   '\n}\nmodule.exports = Page;', { compilerOptions: { target: ts.ScriptTarget.ES2020 } }).outputText;
 const TouchType = { Down: 0, Up: 1, Move: 2, Cancel: 3 };
@@ -29,6 +29,7 @@ function fixture(protocol = 'rdp', scale = 4, mode = 1) {
     RD_DOMAIN: 0, RD_TAG: 'test', Date, Math,
     hilog: { info() {}, warn() {}, error(...args) { throw Error(args.join(' ')); } },
     shouldResetRemoteImeOnPointerDown: () => false,
+    shouldForwardContinuousRemoteWheelSample: (dy) => Number.isFinite(dy) && Math.abs(dy) >= 0.1,
     setTimeout: (fn) => { timers.set(++timerId, fn); return timerId; },
     clearTimeout: (id) => timers.delete(id) };
   vm.runInNewContext(compiled, context);
@@ -56,6 +57,8 @@ function fixture(protocol = 'rdp', scale = 4, mode = 1) {
     mapInputPoint: (x, y) => ({ x: Math.round(x * scale), y: Math.round(y * scale), inside: x >= 0 && y >= 0 }),
     logMappedInput() {}, showRemoteCursorIndicator() {}, clearTouchRightClickTimer() {},
     recoverRemotePointerFocus() {}, resetTouchpadPointerCurve() {}, resetCanvasTwoFingerGesture() {},
+    scheduleRemoteKeyboardAutoOpen() {}, releaseCanvasPinchInput() {},
+    sendTouchPadWheel(dy) { events.push(['wheel', dy]); },
     queueMouseMove(x, y, update = true) {
       h.pending = [x, y]; h.pendingMouseMoveValid = true;
       if (update) { h.remoteCursorX = x; h.remoteCursorY = y; }
@@ -172,4 +175,30 @@ for (const protocol of ['vnc', 'rustdesk', 'rustdesk-phone']) {
     assert.deepEqual(buttons(f).at(-1), ['up', 412, 400, 0]);
   });
 }
+test('three fingers scroll by their centroid, re-anchor on each count change, and the tap clicks nothing', () => {
+  const f = fixture('rdp', 1, 1);
+  f.h.averageTouchPoint = () => {
+    const points = [...f.h.activeTouchPoints.values()];
+    return { x: points.reduce((a, p) => a + p.x, 0) / points.length,
+      y: points.reduce((a, p) => a + p.y, 0) / points.length, inside: true };
+  };
+  const send = (type, touches, changed) => f.h.handleConfiguredTouchInput({ type, sourceTool: SourceTool.Finger,
+    touches, changedTouches: changed, stopPropagation() {} });
+  const at = (dy) => [{ x: 100, y: 100 + dy, id: 1 }, { x: 140, y: 100 + dy, id: 2 }, { x: 180, y: 100 + dy, id: 3 }];
+  send(TouchType.Down, at(0).slice(0, 1), at(0).slice(0, 1));
+  send(TouchType.Down, at(0).slice(0, 2), [at(0)[1]]);
+  send(TouchType.Down, at(0), [at(0)[2]]);
+  send(TouchType.Move, at(6), at(6));    // first three-finger sample: anchor only
+  send(TouchType.Move, at(16), at(16));  // 10 down
+  send(TouchType.Move, at(10), at(10));  // 6 up
+  const lifted = at(10);
+  send(TouchType.Up, lifted.slice(0, 2), [lifted[2]]);
+  send(TouchType.Move, [{ x: 100, y: 140, id: 1 }, { x: 140, y: 140, id: 2 }],
+    [{ x: 100, y: 140, id: 1 }, { x: 140, y: 140, id: 2 }]);  // two left: never scroll
+  send(TouchType.Up, [{ x: 140, y: 140, id: 2 }], [{ x: 100, y: 140, id: 1 }]);
+  send(TouchType.Up, [], [{ x: 140, y: 140, id: 2 }]);
+  assert.deepEqual(f.events.filter(e => e[0] === 'wheel'), [['wheel', 10], ['wheel', -6]]);
+  assert.equal(f.events.some(e => e[0] === 'down' && e[3] === 2), false);
+  assert.equal(f.h.threeFingerScrollCount, 0); assert.equal(f.h.touchMaxFingers, 0);
+});
 console.log(count + ' RDP direct-touch checks PASS');
