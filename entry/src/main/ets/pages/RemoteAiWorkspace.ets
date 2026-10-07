@@ -747,8 +747,11 @@ export struct RemoteAiWorkspace {
     }
   }
   private box(part: string): AiWsRect | null {
-    return this.flyMode === 'window' ? this.boxOf(this.flyId(part)) : (this.areaBoxes.get(part) ?? null);
+    if (this.flyMode !== 'window') { return this.areaBoxes.get(part) ?? null; }
+    return this.boxOf(part === 'target' ? this.flyTargetId() : this.flyId(part));
   }
+  /** The id of the bubble this flight goes to (a new one each flight). */
+  private flyTargetId(): string { return this.flyId('target-' + this.flyGeneration.toString()); }
   /** Starts a send: the message joins the foot of the conversation, and the composer flies into it. */
   private beginSend(text: string): void {
     this.sendSession = this.sessionId;
@@ -801,6 +804,8 @@ export struct RemoteAiWorkspace {
     if (phase === 0) {
       // Beside the composer as it is now (it can have moved since the send).
       const base = this.box('composer') ?? from;
+      hilog.info(0x0000, 'RemoteAiFly', 'aim composerY=%{public}d targetY=%{public}d targetH=%{public}d',
+        Math.round(base.y), Math.round(target.y), Math.round(target.h));
       this.flyTextW = Math.max(20, target.w - 28);
       ui.animateTo({ duration: 170, curve: Curve.FastOutSlowIn }, (): void => {
         this.flyW = target.w; this.flyH = target.h; this.flyX = tx;
@@ -2069,7 +2074,9 @@ export struct RemoteAiWorkspace {
         .backgroundColor(this.palette().userBubble).constraintSize({ maxWidth: '86%' })
         // The message being sent stays hidden until the flyer lands on it; its box is where the flyer goes.
         .opacity(this.flyingRow(item) ? 0 : 1)
-        .id(this.flyingRow(item) ? this.flyId('target') : '')
+        // Every bubble has an id of its own, and the one being flown to an id of this flight: an id set to '' keeps
+        // the old one, so the previous message still answered to the target id and the next flight went to it.
+        .id(this.flyingRow(item) ? this.flyTargetId() : this.flyId('bubble-' + item.id))
         .onAreaChange((_old: Area, next: Area): void => { if (this.flyingRow(item)) { this.noteBox('target', next); } })
     }.width('100%')
   }

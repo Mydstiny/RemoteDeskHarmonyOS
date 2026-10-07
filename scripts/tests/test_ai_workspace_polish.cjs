@@ -55,7 +55,11 @@ assert.ok(flight.includes("const target = this.box('target');") && flight.includ
   'the bubble\'s place is read every frame and the flyer steered to it (it never lands mid-screen and jumps)');
 assert.ok(flight.includes('curves.springMotion(0.42, 0.82)') && flight.includes('this.listLift = 0;'), 'it rises with the rows above');
 assert.ok(flight.includes('this.flyTextW = Math.max(20, target.w - 28);'), 'the text keeps its final width and never re-wraps mid-flight');
-assert.ok(page.includes('.opacity(this.flyingRow(item) ? 0 : 1)') && page.includes(".id(this.flyingRow(item) ? this.flyId('target') : '')"));
+assert.ok(page.includes('.opacity(this.flyingRow(item) ? 0 : 1)') &&
+  page.includes(".id(this.flyingRow(item) ? this.flyTargetId() : this.flyId('bubble-' + item.id))"),
+  'each flight finds only its own bubble: an earlier message never keeps answering to the target id');
+assert.ok(page.includes("private flyTargetId(): string { return this.flyId('target-' + this.flyGeneration.toString()); }"));
+assert.ok(!page.includes(".id(this.flyingRow(item) ? this.flyId('target') : '')"));
 assert.ok(page.includes(".id(this.flyId('composer'))") && page.includes(".id(this.flyId('root'))"));
 assert.ok(page.includes('.translate({ y: this.listLift })') && page.includes('      this.sendFlyer()\n    }.width(\'100%\').height(\'100%\')'));
 // The flight is steered only while the list settles; a conversation still going on underneath does not drag it up
