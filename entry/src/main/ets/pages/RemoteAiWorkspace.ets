@@ -43,7 +43,7 @@ interface AiWsSheetHead { title: string; close: () => void; }
 interface AiWsChoice { label: string; detail: string; selected: boolean; enabled: boolean; action: () => void; }
 interface AiWsModes { values: string[]; selected: string; choose: (value: string) => void; }
 interface AiWsChip { label: string; enabled: boolean; action: () => void; }
-interface AiWsRoundAction { symbol: Resource; label: string; primary: boolean; enabled: boolean; action: () => void; }
+interface AiWsRoundAction { symbol: Resource; label: string; primary: boolean; enabled: boolean; action: () => void; hold?: () => void; }
 interface AiQuestionValue { id: string; title: string; options: string[]; descriptions: string[]; multiple: boolean; selected: string[]; text: string; }
 /** What the page asks of a conversation view: back, its page hooks, and what it shows. */
 class AiViewHandle {
@@ -565,7 +565,16 @@ export struct RemoteAiWorkspace {
     this.beginSend(text);
     await this.run(async (): Promise<void> => {
       try {
-        const result = await this.controller.action(steer ? 'turn.steer' : 'turn.start', params);
+        let result: Record<string, Object>;
+        try {
+          result = await this.controller.action(steer ? 'turn.steer' : 'turn.start', params);
+        } catch (error) {
+          // The turn ended just as the guidance went out: send it as a new turn instead.
+          if (!steer || !(error as Error).message.includes('NO_ACTIVE_TURN')) { throw new Error((error as Error).message); }
+          params['settings'] = this.settings();
+          if (this.attachments.length > 0) { params['attachments'] = this.attachments.slice(); }
+          result = await this.controller.action('turn.start', params);
+        }
         // Pi echoes the prompt only once its turn takes it; show it until its own event arrives.
         if (this.host !== null && aiAgentEvents(this.host.backend)) { this.controller.transcript.echo(text, aiString(result['turnId']), sentAt); }
         this.attachments = []; this.controller.openIn = '';
@@ -575,6 +584,18 @@ export struct RemoteAiWorkspace {
         throw new Error((error as Error).message);
       }
     });
+  }
+  /** Stops the running turn, waits for the computer to report it ended, then sends what is typed as a new turn. */
+  private async interruptAndSend(): Promise<void> {
+    if (this.draft.trim() === '' || !this.operator() || this.busy || !this.capability('cancel')) { return; }
+    try { promptAction.showToast({ message: '正在打断当前任务，随后发送', duration: 1500 }); } catch (_error) { /* no toast */ }
+    await this.run(async (): Promise<void> => { await this.controller.action('turn.cancel'); });
+    const until = Date.now() + 6000;
+    while (this.alive && this.working() && Date.now() < until) {
+      await new Promise<void>((resolve): void => { setTimeout(resolve, 150); });
+    }
+    if (!this.alive || this.draft.trim() === '') { return; }
+    await this.send(false);
   }
   private async attach(photo: boolean = false): Promise<void> {
     if (!this.allowed || !AiAccess.getInstance().proVisible()) { return; }
@@ -788,8 +809,12 @@ export struct RemoteAiWorkspace {
       setTimeout((): void => { this.flyTick(generation, from, now, 1, null); }, 130);
       return;
     }
-    if (aim === null || Math.abs(aim.y - target.y) > 1.5 || Math.abs(aim.x - target.x) > 1.5 ||
-      Math.abs(aim.h - target.h) > 1.5) {
+    // Steered only while the list settles at its end (a moment after the rise begins). Later moves are the
+    // conversation going on underneath (a reply still streaming pushes the new message up): the flyer does not chase
+    // them across the screen, it lands and the list carries the bubble from there.
+    const settling = now - started < 450;
+    if (aim === null || (settling && (Math.abs(aim.y - target.y) > 1.5 || Math.abs(aim.x - target.x) > 1.5 ||
+      Math.abs(aim.h - target.h) > 1.5))) {
       // Rise (or steer) to where the bubble is now, the rows above sliding up with it.
       ui.animateTo({ curve: curves.springMotion(0.42, 0.82) }, (): void => {
         this.flyY = ty; this.flyX = tx; this.flyW = target.w; this.flyH = target.h; this.listLift = 0;
@@ -799,8 +824,14 @@ export struct RemoteAiWorkspace {
       this.flySteered = now;
       return;
     }
-    if (now - this.flySteered > 420 || now - started > 2500) {
+    if (now - this.flySteered > 420 || now - started > 900) {
       hilog.info(0x0000, 'RemoteAiFly', 'landed mode=%{public}s after=%{public}d', this.flyMode, now - started);
+      if (aim !== null && (Math.abs(aim.y - target.y) > 3 || Math.abs(aim.x - target.x) > 3)) {
+        // The bubble moved a little since: meet it there before handing over, rather than jump.
+        ui.animateTo({ duration: 160, curve: Curve.FastOutSlowIn }, (): void => { this.flyY = ty; this.flyX = tx; });
+        setTimeout((): void => { this.endFlight(generation); }, 170);
+        return;
+      }
       this.endFlight(generation); return;
     }
     next(2, aim);
@@ -2173,6 +2204,10 @@ export struct RemoteAiWorkspace {
     .enabled(b.enabled).focusable(true).accessibilityText(b.label)
     .clickEffect({ level: ClickEffectLevel.MIDDLE, scale: 0.88 })
     .onClick((): void => { if (b.enabled) { b.action(); } })
+    // A long press does the button's second action (while a turn runs: stop it and send as a new turn).
+    .gesture(LongPressGesture({ repeat: false, duration: 450 }).onAction((): void => {
+      if (b.enabled && b.hold !== undefined) { b.hold(); }
+    }))
   }
   private actionFill(): string {
     if (this.uiStyle === 'codex') { return this.theme === 'light' ? '#2F6BFF' : '#4C82FF'; }
@@ -2183,6 +2218,18 @@ export struct RemoteAiWorkspace {
       this.sendButton({ symbol: $r('sys.symbol.stop_circle_fill'), label: '停止', primary: true,
         enabled: this.capability('cancel') && !this.busy,
         action: (): void => { void this.run(async (): Promise<void> => { await this.controller.action('turn.cancel'); }); } })
+    } else if (this.sessionId !== '' && this.composerMode() === 'stop') {
+      // While a turn runs with something typed: stop stays at hand beside send, and send guides the running turn (the
+      // engine reads it after its current step); a long press on send stops the turn and sends it as a new one.
+      Row({ space: 6 }) {
+        this.sendButton({ symbol: $r('sys.symbol.stop_circle_fill'), label: '停止', primary: true,
+          enabled: this.capability('cancel') && !this.busy,
+          action: (): void => { void this.run(async (): Promise<void> => { await this.controller.action('turn.cancel'); }); } })
+        this.sendButton({ symbol: $r('sys.symbol.arrow_up'), label: '引导当前任务（长按：打断并发送）', primary: false,
+          enabled: this.operator() && this.allowed && !this.busy && !this.archived,
+          action: (): void => { void this.send(this.capability('steer')); },
+          hold: (): void => { void this.interruptAndSend(); } })
+      }
     } else {
       this.sendButton({ symbol: $r('sys.symbol.arrow_up'), label: this.sessionId === '' ? '开始新对话' :
         (this.composerMode() === 'stop' ? '补充指令' : '发送'), primary: false,

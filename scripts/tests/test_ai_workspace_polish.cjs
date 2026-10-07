@@ -58,6 +58,17 @@ assert.ok(flight.includes('this.flyTextW = Math.max(20, target.w - 28);'), 'the 
 assert.ok(page.includes('.opacity(this.flyingRow(item) ? 0 : 1)') && page.includes(".id(this.flyingRow(item) ? this.flyId('target') : '')"));
 assert.ok(page.includes(".id(this.flyId('composer'))") && page.includes(".id(this.flyId('root'))"));
 assert.ok(page.includes('.translate({ y: this.listLift })') && page.includes('      this.sendFlyer()\n    }.width(\'100%\').height(\'100%\')'));
+// The flight is steered only while the list settles; a conversation still going on underneath does not drag it up
+// the screen, and a last small move is met before the hand-over.
+assert.ok(flight.includes('const settling = now - started < 450;') && flight.includes('now - started > 900'));
+assert.ok(flight.includes('this.flyY = ty; this.flyX = tx; });\n        setTimeout((): void => { this.endFlight(generation); }, 170);'));
+// While a turn runs: stop beside send; send guides the turn (a turn that just ended takes it as a new one); a long
+// press stops the turn and sends as a new turn.
+assert.ok(page.includes("label: '引导当前任务（长按：打断并发送）'") && page.includes('hold: (): void => { void this.interruptAndSend(); }'));
+assert.ok(page.includes(".gesture(LongPressGesture({ repeat: false, duration: 450 })"));
+assert.ok(page.includes("if (!steer || !(error as Error).message.includes('NO_ACTIVE_TURN'))"));
+const interrupt = page.slice(page.indexOf('private async interruptAndSend('), page.indexOf('private async attach('));
+assert.ok(interrupt.indexOf("action('turn.cancel')") < interrupt.indexOf('await this.send(false);') && interrupt.includes('this.working()'));
 // A reply streams in letter by letter: its row stays while it streams and a typewriter follows the text.
 assert.ok(page.includes("if (this.streaming(item)) { return item.id + ':stream'; }"));
 assert.ok(page.includes('AiTypewriter({ source: this.streamSource(item), textSize: this.textSize, palette: this.palette() })'));
