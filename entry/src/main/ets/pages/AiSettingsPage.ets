@@ -327,8 +327,8 @@ export struct AiSettingsSurface {
           if (this.sectionVisible('display')) {
           this.sectionTitle('界面风格', '远程 AI 会话页的外观；切换后下次打开会话生效。')
           Row({ space: 10 }) {
-            this.styleCard('claude', 'Claude 风格', '对话式时间线 · 米白与陶土橙', ['#F5F4EE', '#C96442', '#262624'])
-            this.styleCard('codex', 'Codex 风格', '对话 / 日志 / 差异分页 · 黑白中性色', ['#FFFFFF', '#0D0D0D', '#2F2F2F'])
+            this.styleCard('claude', 'Claude 风格', '仿 Claude App · 米白与陶土橙', ['#F5F4EE', '#C96442', '#262624'])
+            this.styleCard('codex', 'Codex 风格', '仿 Codex App · 黑白与蓝色', ['#FFFFFF', '#0D0D0D', '#2F2F2F'])
           }.width('100%')
           this.sectionTitle('显示与恢复')
           Column() {
@@ -337,7 +337,7 @@ export struct AiSettingsSurface {
                 this.settings.showExecution = value; this.save();
               } })
             Divider().strokeWidth(0.5).color(this.pal().divider)
-            AppSettingsSwitchRow({ title: '回到前台后恢复查看', detail: '重新校验服务并读取会话，控制权仍需手动取得',
+            AppSettingsSwitchRow({ title: '回到前台后恢复查看', detail: '重新校验服务并读取会话；发送时自动取得控制权',
               isOn: this.settings.reconnectOnForeground, isEnabled: !this.busy && this.settingsReady, onChange: (value: boolean): void => {
                 this.settings.reconnectOnForeground = value; this.save();
               } })

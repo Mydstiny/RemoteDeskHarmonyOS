@@ -128,7 +128,7 @@ const SETTINGS: AiSettingSpec[] = [
     '远程 AI 会话页的外观：Claude 是对话时间线，Codex 是对话/日志/差异分页；下次打开会话生效'),
   toggle('remoteAi.showExecution', '远程 AI 显示工具执行过程', 'remoteAi.showExecution', '会话里列出工具调用与执行记录'),
   toggle('remoteAi.reconnectOnForeground', '远程 AI 回到前台后恢复查看', 'remoteAi.reconnectOnForeground',
-    '回到 App 时重新校验服务并读取会话，控制权仍需手动取得'),
+    '回到 App 时重新校验服务并读取会话；发送时自动取得控制权'),
   // AI 助理 itself: how it answers and how it moves.
   new AiSettingSpec('ai.personality', 'AI 回答风格', 'aiAssistant.personality',
     choices([['balanced', '均衡'], ['warm', '温和'], ['concise', '简洁'], ['technical', '技术']]), '技术风格才讲协议细节'),

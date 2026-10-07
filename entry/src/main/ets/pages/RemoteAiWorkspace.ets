@@ -862,7 +862,8 @@ export struct RemoteAiWorkspace {
       Stack() {
         SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor([this.pal().text])
       }.width(AppUiMetrics.minTouchTarget).height(AppUiMetrics.minTouchTarget).borderRadius(22)
-      .backgroundColor(this.pal().surface).accessibilityText('关闭').focusable(true)
+      .backgroundColor(this.pal().card).shadow({ radius: 8, color: '#10000000', offsetY: 1 })
+      .accessibilityText('关闭').focusable(true)
       .clickEffect({ level: ClickEffectLevel.LIGHT, scale: 0.9 }).onClick((): void => { h.close(); })
       Text(h.title).fontSize(18).fontWeight(FontWeight.Medium).fontFamily(AppConfig.fontFamily).fontColor(this.pal().text)
         .layoutWeight(1).textAlign(TextAlign.Center)
@@ -1785,7 +1786,9 @@ export struct RemoteAiWorkspace {
   private composerExpanded(): boolean { return this.composerFocused || this.draft !== ''; }
   @Builder private composerInput() {
     TextArea({ text: this.draft, placeholder: this.composerPlaceholder() })
-      .constraintSize({ minHeight: 40, maxHeight: this.composerMaxHeight() }).layoutWeight(1)
+      .constraintSize({ minHeight: 40, maxHeight: this.composerMaxHeight() })
+      // Codex sets the text between + and send in one row; in Claude's card it sits on its own line.
+      .layoutWeight(this.uiStyle === 'codex' ? 1 : 0)
       .fontSize(this.textSize + 1).fontFamily(AppConfig.fontFamily).fontColor(this.palette().text)
       .placeholderColor(this.palette().text3).backgroundColor(Color.Transparent).padding({ left: 6, right: 6, top: 8, bottom: 8 })
       .enabled(this.allowed && !this.busy && this.operator() && !(this.sessionId !== '' && this.archived))
