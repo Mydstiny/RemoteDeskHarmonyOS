@@ -6,7 +6,7 @@ import { AppSettingsChoiceButton } from '../AppSettingsChoiceButton';
 import { AiBackendChoiceCard } from './AiBackendChoiceCard';
 import { AiActionButton } from './AiActionButton';
 import { AiBackend, AI_BACKENDS, aiBackendName, aiBackendSubtitle } from '../../services/ai/AiModels';
-import { AiInstallMode, aiInstallRelease, aiInstallPrompt, aiInstallManualUrl } from '../../services/ai/AiHostInstallPolicy';
+import { AiInstallMode, aiInstallRelease, aiInstallPrompt, aiInstallManualUrl, aiInstallMirrorManualUrl } from '../../services/ai/AiHostInstallPolicy';
 
 /** Public help only. All device/service/credential operations stay on the host. */
 @Component
@@ -47,11 +47,12 @@ export struct AiHostInstallPanel {
       this.status = '已复制到本机剪贴板，请自行传给电脑端 Agent。';
     } catch (_error) { this.status = '复制失败，可重试或选择预览文字复制。'; }
   }
-  private async openManual(): Promise<void> {
+  /** The manual at the pinned commit: on GitHub, or on the Gitee mirror for networks that cannot reach GitHub. */
+  private async openManual(mirror: boolean = false): Promise<void> {
     if (!this.alive || this.inBackground) { return; }
     const generation = this.generation;
     const want: Want = { action: 'ohos.want.action.viewData', entities: ['entity.system.browsable'],
-      uri: aiInstallManualUrl(this.backend) };
+      uri: mirror ? aiInstallMirrorManualUrl(this.backend) : aiInstallManualUrl(this.backend) };
     try {
       const context = getContext(this) as common.UIAbilityContext;
       await context.startAbility(want);
@@ -94,6 +95,10 @@ export struct AiHostInstallPanel {
       }
       AiActionButton({ label: '查看手工安装说明', isEnabled: !this.inBackground,
         onAction: (): void => { void this.openManual(); } })
+      if (aiInstallMirrorManualUrl(this.backend) !== '') {
+        AiActionButton({ label: 'GitHub 打不开？在 Gitee 镜像查看', isEnabled: !this.inBackground,
+          onAction: (): void => { void this.openManual(true); } })
+      }
       if (this.status !== '') {
         Text(this.status).fontSize(13).fontFamily(AppConfig.fontFamily).fontColor(this.pal().text2).width('100%')
       }

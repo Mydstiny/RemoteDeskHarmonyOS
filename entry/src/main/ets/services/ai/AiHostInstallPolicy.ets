@@ -16,7 +16,7 @@ export interface AiInstallRelease {
  * The Gitee owner that mirrors the plugin repositories (same commits as GitHub), for computers that cannot reach
  * GitHub; '' until the mirror exists, and the prompts then name GitHub only.
  */
-export const AI_PLUGIN_GITEE_OWNER: string = '';
+export const AI_PLUGIN_GITEE_OWNER: string = 'Lijiong_Space';
 
 // Public, version-pinned metadata from the reviewed native-host handoff.
 // Callers own their copy; no account, host configuration or invitation is read.
@@ -49,6 +49,13 @@ export function aiInstallManualUrl(backend: AiBackend): string {
 export function aiInstallMirror(backend: AiBackend): string {
   if (AI_PLUGIN_GITEE_OWNER === '') { return ''; }
   return 'https://gitee.com/' + AI_PLUGIN_GITEE_OWNER + '/' + aiInstallRelease(backend).repository.split('/')[1];
+}
+
+/** The same manual at the same commit on the Gitee mirror ('' while there is none). */
+export function aiInstallMirrorManualUrl(backend: AiBackend): string {
+  const mirror = aiInstallMirror(backend);
+  if (mirror === '') { return ''; }
+  return mirror + '/blob/' + aiInstallRelease(backend).commit + (backend === 'pi' ? '/README.md' : '/docs/operations.md');
 }
 
 interface AiInstallEngine {

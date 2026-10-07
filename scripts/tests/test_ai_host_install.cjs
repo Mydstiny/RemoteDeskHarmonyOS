@@ -81,7 +81,10 @@ const cases = [
       const prompt = policy.aiInstallPrompt(backend, 'lan');
       assert.ok(prompt.indexOf('https://github.com/' + release.repository) < prompt.indexOf(mirror), 'GitHub first');
       assert.ok(prompt.includes('优先使用 GitHub') && prompt.includes(mirror + '.git') && prompt.includes('哈希不一致就停止'));
+      assert.equal(policy.aiInstallMirrorManualUrl(backend), policy.aiInstallManualUrl(backend).replace('https://github.com/' + release.repository, mirror));
     }
+    const panel = fs.readFileSync('entry/src/main/ets/components/ai/AiHostInstallPanel.ets', 'utf8');
+    assert.ok(panel.includes("label: 'GitHub 打不开？在 Gitee 镜像查看'") && panel.includes('void this.openManual(true);'));
   }],
   ['prompts carry each plugin install, service, panel, recovery and pairing steps', () => {
     const ports = { codex: [9443, 9543, 'remotedesk-codex.mjs'], dsh: [9444, 9544, 'remotedesk-dsh.mjs'], pi: [9445, 9545, 'remotedesk-pi.mjs'] };
