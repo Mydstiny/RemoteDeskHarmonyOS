@@ -1,4 +1,4 @@
-import { searchGlassBorder, searchGlassShadow, searchGlassSheen } from '../common/SearchBarSurface';
+import { SEARCH_CAPSULE_HEIGHT, SEARCH_CAPSULE_RADIUS, SEARCH_CAPSULE_TEXT, searchGlassShadow, searchGlassSheen } from '../common/SearchBarSurface';
 import { AppUiMetrics } from '../common/AppUiMetrics';
 import { AiActionButton } from '../components/ai/AiActionButton';
 import { AiFormField } from '../components/ai/AiFormField';
@@ -1926,12 +1926,12 @@ export struct RemoteAiWorkspace {
     if (this.searching) {
       Row({ space: 8 }) {
         SymbolGlyph($r('sys.symbol.magnifyingglass')).fontSize(18).fontColor([this.palette().text3])
-        TextInput({ text: this.query, placeholder: '搜索对话' }).layoutWeight(1).fontSize(16)
+        TextInput({ text: this.query, placeholder: '搜索对话' }).layoutWeight(1).fontSize(SEARCH_CAPSULE_TEXT).placeholderFont({ size: SEARCH_CAPSULE_TEXT })
           .fontFamily(AppConfig.fontFamily).fontColor(this.palette().text).placeholderColor(this.palette().text3)
           .backgroundColor(Color.Transparent).padding(0).defaultFocus(true).accessibilityText('搜索对话')
           .onChange((value: string): void => { this.query = value; })
-      }.width('100%').height(44).padding({ left: 14, right: 14 }).borderRadius(22)
-      .backgroundColor(this.palette().surface).linearGradient(searchGlassSheen(this.theme !== 'light')).backgroundBlurStyle(BlurStyle.Regular).border(searchGlassBorder(this.theme !== 'light')).shadow(searchGlassShadow(this.theme !== 'light'))
+      }.width('100%').height(SEARCH_CAPSULE_HEIGHT).padding({ left: 14, right: 14 }).borderRadius(SEARCH_CAPSULE_RADIUS)
+      .backgroundColor(this.palette().surface).linearGradient(searchGlassSheen(this.theme !== 'light')).backgroundBlurStyle(BlurStyle.Regular).shadow(searchGlassShadow(this.theme !== 'light'))
       .margin({ bottom: 4 })
     }
   }

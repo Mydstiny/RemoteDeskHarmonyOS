@@ -143,11 +143,9 @@ assert.ok(page.includes('.translate({ x: this.viewShift }).opacity(this.viewOpac
 assert.ok(page.includes('PageTransitionEnter({ type: RouteType.Push'));
 // Every search bar is on the system's 沉浸光感 material where the device has it (SearchBarSurface), its old look elsewhere.
 const surface = fs.readFileSync(path.join(ETS, 'common/SearchBarSurface.ets'), 'utf8');
-// The capsule is set directly on each bar (an attribute modifier left the bars with no surface on device): a sheen,
-// blur, a light rim on top and a darker one below, and a soft shadow, in light and dark.
-assert.ok(surface.includes('export function searchGlassSheen(dark: boolean): LinearGradientOptions {') &&
-  surface.includes("{ top: '#FFFFFFFF', left: '#1F000000', right: '#1F000000', bottom: '#2E000000' }") &&
-  surface.includes("{ top: '#59FFFFFF', left: '#2EFFFFFF', right: '#2EFFFFFF', bottom: '#1FFFFFFF' }"));
+// One search capsule everywhere: 44 high, fully round, 15 pt text, a sheen, blur and soft shadow, no rim.
+assert.ok(surface.includes('export const SEARCH_CAPSULE_HEIGHT: number = 44;') && surface.includes('export const SEARCH_CAPSULE_RADIUS: number = 22;') &&
+  surface.includes('export const SEARCH_CAPSULE_TEXT: number = 15;') && !surface.includes('searchGlassBorder'));
 const chat = fs.readFileSync(path.join(ETS, 'components/diagnosticAi/AiChatView.ets'), 'utf8');
 assert.ok(chat.includes(".lineHeight(22).placeholderFont({ size: 16 })"), 'the assistant composer placeholder sits on its centre line');
 for (const file of ['pages/HostListPage.ets', 'components/AboutSettingsSheet.ets', 'pages/RemoteAiWorkspace.ets',
@@ -155,8 +153,9 @@ for (const file of ['pages/HostListPage.ets', 'components/AboutSettingsSheet.ets
   'components/pro/org/HostOrganizationManager.ets', 'components/pro/workspace/WorkspaceAddFlow.ets',
   'components/ssh/search/SshTerminalSearchBar.ets', 'components/ssh/command/SshCommandPalette.ets', 'components/ssh/log/SshSessionLogSheet.ets']) {
   const text = fs.readFileSync(path.join(ETS, file), 'utf8');
-  assert.ok(text.includes('.border(searchGlassBorder(') && text.includes('.shadow(searchGlassShadow(') &&
-    text.includes('.linearGradient(searchGlassSheen(') && !text.includes('attributeModifier(new SearchBarSurface'),
-    file + ' search bar draws the glass capsule itself');
+  assert.ok(text.includes('.shadow(searchGlassShadow(') && text.includes('.linearGradient(searchGlassSheen(') &&
+    !text.includes('searchGlassBorder') && !text.includes('attributeModifier(new SearchBarSurface'), file + ' search capsule: sheen and shadow, no rim');
+  assert.ok(text.includes('SEARCH_CAPSULE_HEIGHT') && text.includes('SEARCH_CAPSULE_RADIUS') && text.includes('SEARCH_CAPSULE_TEXT'),
+    file + ' search capsule has the shared size');
 }
 console.log('PASS remote AI composer centring, shimmer, pull to refresh and model sheet sizing');

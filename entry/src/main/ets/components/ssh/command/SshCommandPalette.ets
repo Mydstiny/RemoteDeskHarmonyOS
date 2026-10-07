@@ -1,4 +1,4 @@
-import { searchGlassBorder, searchGlassShadow, searchGlassSheen } from '../../../common/SearchBarSurface';
+import { SEARCH_CAPSULE_HEIGHT, SEARCH_CAPSULE_RADIUS, SEARCH_CAPSULE_TEXT, searchGlassShadow, searchGlassSheen } from '../../../common/SearchBarSurface';
 import { KeyCode } from '@kit.InputKit';
 import {
   rankSshCommands,
@@ -107,13 +107,15 @@ export struct SshCommandPalette {
         TextInput({ text: this.query, placeholder: '搜索主机、会话或动作' })
           .id('sshCommandPaletteInput')
           .layoutWeight(1)
-          .height(42)
-          .fontSize(14)
+          .height(SEARCH_CAPSULE_HEIGHT)
+          .fontSize(SEARCH_CAPSULE_TEXT)
+          .placeholderFont({ size: SEARCH_CAPSULE_TEXT })
+          .padding({ left: 16, right: 16 })
           .fontColor('#F2F4F7')
           .placeholderColor('rgba(242,244,247,0.42)')
           .caretColor(this.accentColor)
-          .borderRadius(12)
-          .backgroundColor(Color.Transparent).linearGradient(searchGlassSheen(true)).backgroundBlurStyle(BlurStyle.Regular).border(searchGlassBorder(true)).shadow(searchGlassShadow(true))
+          .borderRadius(SEARCH_CAPSULE_RADIUS)
+          .backgroundColor(Color.Transparent).linearGradient(searchGlassSheen(true)).backgroundBlurStyle(BlurStyle.Regular).shadow(searchGlassShadow(true))
           .enableAutoFill(false)
           .enablePreviewText(true)
           .onChange((value: string): void => { this.onQueryChange(value); })

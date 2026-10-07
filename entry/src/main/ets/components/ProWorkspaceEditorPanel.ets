@@ -1,4 +1,4 @@
-import { searchGlassBorder, searchGlassShadow, searchGlassSheen } from '../common/SearchBarSurface';
+import { SEARCH_CAPSULE_HEIGHT, SEARCH_CAPSULE_RADIUS, SEARCH_CAPSULE_TEXT, searchGlassShadow, searchGlassSheen } from '../common/SearchBarSurface';
 import { AppConfig, buildDark, buildLight, Palette } from '../common/Theme';
 import { ProSymbolIcon } from './pro/ProSymbolIcon';
 import { ProEntries } from '../services/pro/ProEntries';
@@ -282,8 +282,8 @@ export struct ProWorkspaceEditorPanel {
             Text('取消').fontSize(13).fontColor(this.pal().text2).padding(4)
               .onClick((): void => { this.picking = false; this.picked = []; })
           }.width('100%')
-          Search({ value: this.pickQuery, placeholder: '搜索名称、地址或协议' }).height(36).borderRadius(18)
-            .backgroundColor(this.pal().surface).linearGradient(searchGlassSheen(this.theme !== 'light')).backgroundBlurStyle(BlurStyle.Regular).border(searchGlassBorder(this.theme !== 'light')).shadow(searchGlassShadow(this.theme !== 'light'))
+          Search({ value: this.pickQuery, placeholder: '搜索名称、地址或协议' }).height(SEARCH_CAPSULE_HEIGHT).borderRadius(SEARCH_CAPSULE_RADIUS).textFont({ size: SEARCH_CAPSULE_TEXT }).placeholderFont({ size: SEARCH_CAPSULE_TEXT })
+            .backgroundColor(this.pal().surface).linearGradient(searchGlassSheen(this.theme !== 'light')).backgroundBlurStyle(BlurStyle.Regular).shadow(searchGlassShadow(this.theme !== 'light'))
             .onChange((value: string): void => { this.pickQuery = value; })
           if (this.pickRows().length === 0) {
             Text(this.rows().length === 0 ? '还没有主机' : '没有更多可添加的主机').fontSize(12)

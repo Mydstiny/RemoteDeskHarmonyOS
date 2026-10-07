@@ -5,7 +5,7 @@
  * 通过 @StorageLink/@StorageProp 接入主题系统。
  */
 import { SlidingSegment } from './SlidingSegment';
-import { searchGlassBorder, searchGlassShadow, searchGlassSheen } from '../common/SearchBarSurface';
+import { SEARCH_CAPSULE_HEIGHT, SEARCH_CAPSULE_RADIUS, SEARCH_CAPSULE_TEXT, searchGlassShadow, searchGlassSheen } from '../common/SearchBarSurface';
 import { common, Want } from '@kit.AbilityKit';
 import { AppSheetHeader } from './AppSheetHeader';
 import { settingsVisualIsModern } from '../services/SettingsVisualStylePolicy';
@@ -392,9 +392,9 @@ export struct AboutSettingsSheet {
   @Builder guideSearchBar() {
     Row() {
       Row() {
-        SymbolGlyph($r('sys.symbol.magnifyingglass')).fontSize(16).fontColor([this.pal().text3])
+        SymbolGlyph($r('sys.symbol.magnifyingglass')).fontSize(18).fontColor([this.pal().text3])
         TextInput({ text: this.guideQuery, placeholder: '搜索操作，例如 配对、滚轮、SFTP' })
-          .layoutWeight(1).height(44).fontSize(14).fontFamily(this.font()).fontColor(this.pal().text)
+          .layoutWeight(1).height(40).fontSize(SEARCH_CAPSULE_TEXT).placeholderFont({ size: SEARCH_CAPSULE_TEXT }).fontFamily(this.font()).fontColor(this.pal().text)
           .placeholderColor(this.pal().text3).backgroundColor(Color.Transparent).padding({ left: 8, right: 4 })
           .enterKeyType(EnterKeyType.Search)
           .onChange((value: string): void => { this.setGuideQuery(value); })
@@ -404,8 +404,8 @@ export struct AboutSettingsSheet {
             .onClick((): void => { this.setGuideQuery(''); })
         }
       }
-      .layoutWeight(1).height(44).padding({ left: 14, right: 2 }).borderRadius(14)
-      .backgroundColor(this.pal().surface).linearGradient(searchGlassSheen(this.theme !== 'light')).backgroundBlurStyle(BlurStyle.Regular).border(searchGlassBorder(this.theme !== 'light')).shadow(searchGlassShadow(this.theme !== 'light'))
+      .layoutWeight(1).height(SEARCH_CAPSULE_HEIGHT).padding({ left: 14, right: 2 }).borderRadius(SEARCH_CAPSULE_RADIUS)
+      .backgroundColor(this.pal().surface).linearGradient(searchGlassSheen(this.theme !== 'light')).backgroundBlurStyle(BlurStyle.Regular).shadow(searchGlassShadow(this.theme !== 'light'))
     }
     // The inset is padding on the full-width row: width 100% plus a margin would overflow the sheet.
     .width('100%').padding({ left: 20, right: 20 })

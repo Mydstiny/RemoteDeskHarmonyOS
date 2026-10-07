@@ -1,4 +1,4 @@
-import { searchGlassBorder, searchGlassShadow, searchGlassSheen } from '../../../common/SearchBarSurface';
+import { SEARCH_CAPSULE_HEIGHT, SEARCH_CAPSULE_RADIUS, SEARCH_CAPSULE_TEXT, searchGlassShadow, searchGlassSheen } from '../../../common/SearchBarSurface';
 import { KeyCode } from '@kit.InputKit';
 import {
   routeSshShortcut,
@@ -126,14 +126,15 @@ export struct SshTerminalSearchBar {
           .id('sshTerminalSearchInput')
           .layoutWeight(1)
           .constraintSize({ minWidth: 88 })
-          .height(34)
-          .fontSize(13)
+          .height(SEARCH_CAPSULE_HEIGHT)
+          .fontSize(SEARCH_CAPSULE_TEXT)
+          .placeholderFont({ size: SEARCH_CAPSULE_TEXT })
           .fontColor('#F2F4F7')
           .placeholderColor('rgba(242,244,247,0.46)')
           .caretColor(this.accentColor)
-          .borderRadius(8)
-          .backgroundColor('rgba(255,255,255,0.07)').linearGradient(searchGlassSheen(true)).backgroundBlurStyle(BlurStyle.Regular).border(searchGlassBorder(true)).shadow(searchGlassShadow(true))
-          .padding({ left: 10, right: 10 })
+          .borderRadius(SEARCH_CAPSULE_RADIUS)
+          .backgroundColor('rgba(255,255,255,0.07)').linearGradient(searchGlassSheen(true)).backgroundBlurStyle(BlurStyle.Regular).shadow(searchGlassShadow(true))
+          .padding({ left: 16, right: 16 })
           .enterKeyType(EnterKeyType.Search)
           .enableAutoFill(false)
           .enablePreviewText(true)

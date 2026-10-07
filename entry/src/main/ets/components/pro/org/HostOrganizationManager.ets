@@ -1,4 +1,4 @@
-import { searchGlassBorder, searchGlassShadow, searchGlassSheen } from '../../../common/SearchBarSurface';
+import { SEARCH_CAPSULE_HEIGHT, SEARCH_CAPSULE_RADIUS, SEARCH_CAPSULE_TEXT, searchGlassShadow, searchGlassSheen } from '../../../common/SearchBarSurface';
 import { appUiOnAccentText } from '../../../common/AppUiColorPolicy';
 import { common } from '@kit.AbilityKit';
 import { ProSymbolIcon } from '../ProSymbolIcon';
@@ -191,8 +191,8 @@ export struct HostOrganizationManager {
     badge: (ref: string) => string) {
     Column({ space: 8 }) {
       if (this.rows(this.revision).length > 8) {
-        Search({ value: this.hostQuery, placeholder: '搜索主机' }).height(36).borderRadius(18)
-          .backgroundColor(this.pal().surface).linearGradient(searchGlassSheen(this.theme !== 'light')).backgroundBlurStyle(BlurStyle.Regular).border(searchGlassBorder(this.theme !== 'light')).shadow(searchGlassShadow(this.theme !== 'light'))
+        Search({ value: this.hostQuery, placeholder: '搜索主机' }).height(SEARCH_CAPSULE_HEIGHT).borderRadius(SEARCH_CAPSULE_RADIUS).textFont({ size: SEARCH_CAPSULE_TEXT }).placeholderFont({ size: SEARCH_CAPSULE_TEXT })
+          .backgroundColor(this.pal().surface).linearGradient(searchGlassSheen(this.theme !== 'light')).backgroundBlurStyle(BlurStyle.Regular).shadow(searchGlassShadow(this.theme !== 'light'))
           .onChange((value: string): void => { this.hostQuery = value; })
       }
       if (this.rows(this.revision).length === 0) {

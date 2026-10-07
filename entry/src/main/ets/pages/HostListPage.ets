@@ -1,6 +1,6 @@
 import { PhonePasskeySettingsSheet } from '../components/pro/passkey/PhonePasskeySettingsSheet';
 import { phonePasskeyEntryAvailable } from '../services/pro/passkey/ProPasskeyEntry';
-import { searchGlassBorder, searchGlassShadow, searchGlassSheen } from '../common/SearchBarSurface';
+import { SEARCH_CAPSULE_HEIGHT, SEARCH_CAPSULE_RADIUS, SEARCH_CAPSULE_TEXT, searchGlassShadow, searchGlassSheen } from '../common/SearchBarSurface';
 import { ProBadge, proBadgeSummary } from '../components/ProBadge';
 import { AI_VOICE_HOLD_EVENT } from '../components/diagnosticAi/AiVoiceIsland';
 import { AiIslandLayerParams, AiTopLayer, AiVoiceLayerParams } from '../components/diagnosticAi/AiTopLayer';
@@ -17625,15 +17625,15 @@ struct HostListPage {
               Row() {
                 this.hostSearchLeadingIcon()
                 TextInput({ placeholder: '搜索主机...', text: this.searchText })
-                  .backgroundColor(Color.Transparent).height(40)
+                  .backgroundColor(Color.Transparent).height(40).fontSize(SEARCH_CAPSULE_TEXT).placeholderFont({ size: SEARCH_CAPSULE_TEXT })
                   .fontColor(this.pal().text).placeholderColor(this.pal().text3)
                   .fontFamily(this.font()).layoutWeight(1)
                   .onChange((v: string) => { this.onSearchChange(v); })
                 if (this.searchText !== '') { this.hostSearchClearButton() }
               }.width('50%').constraintSize({ maxWidth: 480 })
-                .height(44).borderRadius(22)
+                .height(SEARCH_CAPSULE_HEIGHT).borderRadius(SEARCH_CAPSULE_RADIUS)
                 .backgroundColor(this.pal().card).linearGradient(searchGlassSheen(this.theme !== 'light')).backgroundBlurStyle(BlurStyle.Regular)
-                .border(searchGlassBorder(this.theme !== 'light')).shadow(searchGlassShadow(this.theme !== 'light'))
+                .shadow(searchGlassShadow(this.theme !== 'light'))
                 .alignItems(VerticalAlign.Center)
               }.width('100%').height(52).padding({ left: 8, right: 8, bottom: 8 })
               if (this.modernHostSelectionBarShown()) { this.modernHostSelectionBar() }
@@ -17653,15 +17653,15 @@ struct HostListPage {
               Row() {
                 this.hostSearchLeadingIcon()
                 TextInput({ placeholder: '搜索主机...', text: this.searchText })
-                  .backgroundColor(Color.Transparent).height(40)
+                  .backgroundColor(Color.Transparent).height(40).fontSize(SEARCH_CAPSULE_TEXT).placeholderFont({ size: SEARCH_CAPSULE_TEXT })
                   .fontColor(this.pal().text).placeholderColor(this.pal().text3)
                   .fontFamily(this.font()).layoutWeight(1)
                   .onChange((v: string) => { this.onSearchChange(v); })
                 if (this.searchText !== '') { this.hostSearchClearButton() }
               }.width('92%')
-                .height(44).borderRadius(22)
+                .height(SEARCH_CAPSULE_HEIGHT).borderRadius(SEARCH_CAPSULE_RADIUS)
                 .backgroundColor(this.pal().card).linearGradient(searchGlassSheen(this.theme !== 'light')).backgroundBlurStyle(BlurStyle.Regular)
-                .border(searchGlassBorder(this.theme !== 'light')).shadow(searchGlassShadow(this.theme !== 'light'))
+                .shadow(searchGlassShadow(this.theme !== 'light'))
                 .alignItems(VerticalAlign.Center)
               if (this.modernHostSelectionBarShown()) {
                 this.modernHostSelectionBar()
@@ -20393,7 +20393,7 @@ struct HostListPage {
     Row({ space: 8 }) {
       SymbolGlyph($r('sys.symbol.magnifyingglass')).fontSize(18).fontColor([this.pal().text2])
       TextInput({ placeholder: '搜索设置', text: $$this.settingsSearchQuery })
-        .layoutWeight(1).height(44).fontSize(15).fontColor(this.pal().text)
+        .layoutWeight(1).height(40).fontSize(SEARCH_CAPSULE_TEXT).placeholderFont({ size: SEARCH_CAPSULE_TEXT }).fontColor(this.pal().text)
         .placeholderColor(this.pal().text3).backgroundColor(Color.Transparent)
         .padding({ left: 0, right: 0 }).enterKeyType(EnterKeyType.Search)
         .accessibilityText('搜索设置')
@@ -20403,8 +20403,8 @@ struct HostListPage {
           .onClick((): void => { this.settingsSearchQuery = ''; })
       }
     }
-    .width('100%').height(52).padding({ left: 16, right: 4 }).borderRadius(18)
-    .backgroundColor(this.pal().card).linearGradient(searchGlassSheen(this.theme !== 'light')).backgroundBlurStyle(BlurStyle.Regular).border(searchGlassBorder(this.theme !== 'light')).shadow(searchGlassShadow(this.theme !== 'light'))
+    .width('100%').height(SEARCH_CAPSULE_HEIGHT).padding({ left: 14, right: 4 }).borderRadius(SEARCH_CAPSULE_RADIUS)
+    .backgroundColor(this.pal().card).linearGradient(searchGlassSheen(this.theme !== 'light')).backgroundBlurStyle(BlurStyle.Regular).shadow(searchGlassShadow(this.theme !== 'light'))
   }
 
   /** Rows the page itself shows right now (Pro features, device kind, app clone…). */
