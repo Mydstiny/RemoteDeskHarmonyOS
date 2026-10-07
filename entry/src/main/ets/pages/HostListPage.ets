@@ -20167,7 +20167,7 @@ struct HostListPage {
             })
           this.cardDivider()
           this.cardActionRow($r('app.media.icon_desktop'), '操作引导中心',
-            '按手机、Pad、PC 和五种协议查看具体步骤',
+            '按设备和场景查看步骤，含远程 AI 与 AI 助理，可搜索',
             (): void => {
               this.openSettingsLeafSheet(SETTINGS_SHEET_POPUP, (): void => {
                 this.aboutSheetMode = 5;

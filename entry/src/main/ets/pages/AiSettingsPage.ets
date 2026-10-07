@@ -312,7 +312,7 @@ export struct AiSettingsSurface {
           }.width('100%')
           this.sectionTitle('主机与配对', '局域网连接 · RustDesk 中继将在后续版本开放')
           if (this.hosts.length === 0) {
-            Text('还没有 AI 主机。添加电脑地址后，可粘贴电脑生成的邀请完成配对。')
+            Text('还没有 AI 主机。添加电脑地址后，扫描电脑控制面板上的二维码完成配对；PC 上可粘贴配对链接。')
               .fontSize(13).fontFamily(AppConfig.fontFamily).fontColor(this.pal().text2).width('100%')
           }
           ForEach(this.hosts, (host: AiHost): void => {
@@ -321,7 +321,7 @@ export struct AiSettingsSurface {
             } })
           }, (host: AiHost): string => host.id + ':' + host.revision.toString())
           AppSettingsActionRow({ icon: this.modern() ? $r('sys.symbol.plus_circle_fill') : protocolIcon('ai'), title: '添加主机',
-            detail: this.modern() ? '填写电脑地址，再粘贴电脑端生成的邀请完成配对' : '沿用当前经典／全新添加偏好',
+            detail: this.modern() ? '填写电脑地址，再扫描电脑控制面板上的二维码配对' : '沿用当前经典／全新添加偏好',
             isEnabled: !this.busy, onAction: (): void => { this.openEditor(null); } })
           }
           if (this.sectionVisible('display')) {
