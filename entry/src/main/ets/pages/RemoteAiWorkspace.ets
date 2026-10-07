@@ -1192,9 +1192,19 @@ export struct RemoteAiWorkspace {
     }.width('100%').constraintSize({ minHeight: Math.max(1, this.pageHeight - this.topVp() - 12), maxWidth: 1100 })
   }
   build() {
+    // One sheet per node: three bindSheets on the Row shared one slot, so the closed details/approval bindings
+    // dismissed the picker the moment it opened (and its flag stayed true, so later taps did nothing).
     Row() {
-      Scroll() { this.workspace() }.width('100%').height('100%')
-        .scrollable(ScrollDirection.Vertical).scrollBar(BarState.Auto)
+      Stack() {
+        Scroll() { this.workspace() }.width('100%').height('100%')
+          .scrollable(ScrollDirection.Vertical).scrollBar(BarState.Auto)
+          .bindSheet($$this.showApproval, this.approvalSheet(), { height: SheetSize.LARGE, showClose: false, dragBar: false,
+            preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
+            keyboardAvoidMode: SheetKeyboardAvoidMode.RESIZE_ONLY, backgroundColor: this.pal().sheetBg, blurStyle: BlurStyle.NONE })
+      }.width('100%').height('100%')
+      .bindSheet($$this.showDetails, this.detailsSheet(), { height: SheetSize.LARGE, showClose: false, dragBar: false,
+        preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
+        keyboardAvoidMode: SheetKeyboardAvoidMode.RESIZE_ONLY, backgroundColor: this.pal().sheetBg, blurStyle: BlurStyle.NONE })
     }.justifyContent(FlexAlign.Center).width('100%').height('100%')
       .padding({ top: this.topVp() }).safeAreaPadding({ bottom: 12 }).backgroundColor(this.palette().bg)
       .onAreaChange((_old: Area, next: Area): void => {
@@ -1205,11 +1215,5 @@ export struct RemoteAiWorkspace {
       .bindSheet($$this.showSessionPicker, this.sessionPickerSheet(), { height: SheetSize.LARGE, showClose: false, dragBar: false,
         preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
         keyboardAvoidMode: SheetKeyboardAvoidMode.RESIZE_ONLY, backgroundColor: this.palette().bg, blurStyle: BlurStyle.NONE })
-      .bindSheet($$this.showDetails, this.detailsSheet(), { height: SheetSize.LARGE, showClose: false, dragBar: false,
-        preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
-        keyboardAvoidMode: SheetKeyboardAvoidMode.RESIZE_ONLY, backgroundColor: this.pal().sheetBg, blurStyle: BlurStyle.NONE })
-      .bindSheet($$this.showApproval, this.approvalSheet(), { height: SheetSize.LARGE, showClose: false, dragBar: false,
-        preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
-        keyboardAvoidMode: SheetKeyboardAvoidMode.RESIZE_ONLY, backgroundColor: this.pal().sheetBg, blurStyle: BlurStyle.NONE })
   }
 }

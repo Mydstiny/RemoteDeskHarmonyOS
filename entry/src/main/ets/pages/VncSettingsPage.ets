@@ -958,6 +958,17 @@ export struct VncSettingsPage {
             .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font()).width('100%').padding({ left: 4, right: 4, bottom: 20 })
         }.width('100%').padding({ left: 16, right: 16, bottom: 24 })
       }.layoutWeight(1).scrollBar(BarState.Auto).edgeEffect(EdgeEffect.Spring)
+      // One sheet per node: bound beside the host flow on the Column, the closed one dismissed the other.
+      .bindSheet($$this.showTrustManagerSheet, this.trustManagerSheet(), {
+        height: SheetSize.LARGE,
+        preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
+        dragBar: this.breakpoint === 'sm',
+        backgroundColor: this.pal().sheetBg,
+        blurStyle: BlurStyle.NONE,
+        showClose: false,
+        maskColor: 'rgba(0,0,0,0.4)',
+        onDisappear: (): void => { this.showTrustManagerSheet = false; }
+      })
     }.width('100%').height('100%').backgroundColor(this.pal().bg)
       .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.BOTTOM])
       .bindSheet($$this.hostFlowVisible, this.hostFlowContent(), {
@@ -970,16 +981,6 @@ export struct VncSettingsPage {
         showClose: false,
         maskColor: 'rgba(0,0,0,0.4)',
         onDisappear: (): void => { this.finishHostFlowDismiss(); }
-      })
-      .bindSheet($$this.showTrustManagerSheet, this.trustManagerSheet(), {
-        height: SheetSize.LARGE,
-        preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
-        dragBar: this.breakpoint === 'sm',
-        backgroundColor: this.pal().sheetBg,
-        blurStyle: BlurStyle.NONE,
-        showClose: false,
-        maskColor: 'rgba(0,0,0,0.4)',
-        onDisappear: (): void => { this.showTrustManagerSheet = false; }
       })
   }
 
