@@ -28,7 +28,11 @@ assert.ok(page.includes("this.chip({ label: this.modelChipLabel(), enabled: this
   page.includes("action: (): void => { this.showModelPicker = true; } })"));
 // Permission modes come with what they allow; the composer's + offers files and plan mode.
 assert.equal(p.aiModeDetail('workspace-write'), '可以在项目文件夹里修改文件、运行命令；越界时请你批准');
-assert.ok(page.includes('@Builder private permissionMenu()') && page.includes("value: '添加文件或图片'"));
+assert.ok(page.includes('@Builder private permissionMenu()') && page.includes("{ value: '照片', enabled: this.canAttach()") &&
+  page.includes('@Builder private addSheet()'));
+assert.equal(p.aiElapsed(29000), '29秒');
+assert.equal(p.aiElapsed(809000), '13分钟29秒');
+assert.equal(p.aiEffortLabel('ultra'), '极致');
 assert.equal(p.aiEffortLabel('high'), '高');
 assert.equal(p.aiEffortLabel('off'), '不思考');
 assert.equal(p.aiTokens(860), '860');

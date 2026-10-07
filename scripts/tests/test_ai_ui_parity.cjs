@@ -331,18 +331,14 @@ const cases = [
     const header = read('entry/src/main/ets/components/AppSheetHeader.ets');
     assert.ok(header.includes('@Prop showProBadge: boolean = false;'));
     const workspace = read(workspaceFile);
-    // The settings, approval and model sheets keep the shared header with its Pro marker (projects and sessions became the
-    // workspace's home list); both page styles carry the marker in their own header.
+    // The settings and approval sheets keep the shared header with its Pro marker; the page itself follows the
+    // Codex and Claude apps (round back, title, ⋯) and the host list carries the Pro marker of the entry.
     const headers = workspace.split('\n').filter(line => line.includes('AppSheetHeader({'));
-    assert.equal(headers.length, 3);
-    assert.equal(headers.filter(line => line.includes('showProBadge: true')).length, 3);
-    // Both styles draw the shared app header (round back, title, new conversation and settings).
+    assert.equal(headers.length, 2);
+    assert.equal(headers.filter(line => line.includes('showProBadge: true')).length, 2);
     assert.ok(workspace.includes('  @Builder private claudeHeader() { this.appHeader() }') &&
       workspace.includes('  @Builder private codexHeader() { this.appHeader() }'));
-    for (const builder of ['  @Builder private appHeader()']) {
-      const start = workspace.indexOf(builder), end = workspace.indexOf('\n  @Builder', start + builder.length);
-      assert.ok(start >= 0 && end > start && workspace.slice(start, end).includes('ProBadge()'), builder + ' shows the Pro marker');
-    }
+    assert.ok(workspace.includes('@Builder private refSheetHeader(h: AiWsSheetHead)'));
     assert.ok(workspace.includes("enabled(!this.busy && this.allowed).accessibilityText(question.title)"));
     const settings = read('entry/src/main/ets/pages/AiSettingsPage.ets');
     assert.ok(settings.includes("this.accessText === '' ? 'Pro 远程 AI' : this.accessText"));

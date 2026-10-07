@@ -94,6 +94,14 @@ export function aiEffortLabel(effort: string): string {
     default: return effort;
   }
 }
+/** 29秒, 13分钟29秒, 2小时5分钟: how long a turn has run (the Codex app's 已运行). */
+export function aiElapsed(ms: number): string {
+  const seconds = Math.max(0, Math.floor(ms / 1000));
+  if (seconds < 60) { return seconds.toString() + '秒'; }
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) { return minutes.toString() + '分钟' + (seconds % 60).toString() + '秒'; }
+  return Math.floor(minutes / 60).toString() + '小时' + (minutes % 60).toString() + '分钟';
+}
 /** 860, 12.4k, 128k, 1.2M: token counts for the context meter. */
 export function aiTokens(count: number): string {
   if (!Number.isFinite(count) || count <= 0) { return '0'; }
