@@ -131,6 +131,19 @@ public:
     /** 是否已初始化 */
     bool IsInitialized() const { return initialized_; }
     bool IsPresentationReady();
+    // False for a renderer bound to its own surface (an explicit SurfaceId): its presentation epoch is its own
+    // generation and the process XComponent's detach state does not apply to it.
+    bool UsesProcessSurface() const { return usesProcessSurface_; }
+    // Whether the process surface state (detach, generation) gates this renderer: the process surface itself, or an
+    // explicit SurfaceId that was the page's bound process surface when the renderer was made (a single session,
+    // restore and PIP). A renderer on another SurfaceId (a concurrent picture session's own window, which never binds
+    // the process surface) follows only its own surface.
+    bool FollowsProcessSurface() const { return usesProcessSurface_ || followsProcessSurface_; }
+    // A concurrent session's page lost its own surface: stop presenting to it.
+    void MarkOwnSurfaceDestroyed() { ownSurfaceDetached_.store(true, std::memory_order_release); }
+    bool OwnSurfaceDetached() const {
+        return !FollowsProcessSurface() && ownSurfaceDetached_.load(std::memory_order_acquire);
+    }
 
     /** 获取当前宽度 */
     int GetWidth() const { return snapshotSurfaceWidth_.load(std::memory_order_acquire); }
@@ -260,6 +273,8 @@ private:
     int64_t rendererHandle_;
     void* explicitNativeWindow_;
     bool usesProcessSurface_;
+    bool followsProcessSurface_ = false;
+    std::atomic<bool> ownSurfaceDetached_ {false};
     bool initialized_;
     bool destroying_;
     std::mutex lifecycleMutex_;
@@ -398,6 +413,9 @@ namespace RendererNapi {
     void SetRendererRedrawCallback(int64_t handle, const Render::DecoderSessionIdentity& owner,
                                    std::function<void()> callback);
     uint64_t RegisterActiveRedrawCallback(std::function<void()> callback);
+    // The session's own redraw callback (several picture sessions may be live); attached to its renderer.
+    uint64_t RegisterActiveRedrawCallback(const Render::DecoderSessionIdentity& owner,
+                                          std::function<void()> callback);
     void UnregisterActiveRedrawCallback(uint64_t token);
     void RenderRetained(int64_t handle);
     RdpPresentationMetricsSnapshot GetActivePresentationStats();

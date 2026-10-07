@@ -6,6 +6,13 @@ import { RustDeskClipboardNative } from './RustDeskClipboardClient';
  * 对接 librdpnapi.so 的 C++ ExtensionSystem
  */
 import rdpnapi from 'librdpnapi.so';
+import { deviceInfo } from '@kit.BasicServicesKit';
+import {
+  isRemotePictureProtocolName,
+  REMOTE_PICTURE_SESSION_LIMIT_CODE,
+  remotePictureSessionAllowed,
+  remotePictureSessionLimit
+} from './RemotePictureSessionLimitPolicy';
 import {
   disconnectAllSubmissionMayReleaseTracking,
   nativeSessionStateBlocksAutomaticTransition,
@@ -688,6 +695,24 @@ export class ExtensionLoader implements RustDeskClipboardNative {
     return ExtensionLoader.instance;
   }
 
+  /** How many picture sessions this device may have open at once (PC 4, tablet 2, phone 1). */
+  static pictureSessionLimit(): number {
+    let deviceType: string = '';
+    try { deviceType = deviceInfo.deviceType; } catch (_err) { deviceType = ''; }
+    return remotePictureSessionLimit(deviceType);
+  }
+
+  /** Live RDP, RustDesk and VNC sessions in this process, every window included. */
+  livePictureSessionCount(): number {
+    try {
+      const count: number = rdpnapi.getLivePictureSessionCount() as number;
+      return Number.isFinite(count) && count > 0 ? count : 0;
+    } catch (err) {
+      hilog.warn(DOMAIN, TAG, '[ExtensionLoader] getLivePictureSessionCount: ' + JSON.stringify(err));
+      return 0;
+    }
+  }
+
   // ====== 协议连接 ======
 
   connect(config: SessionConfig): number {
@@ -704,6 +729,14 @@ export class ExtensionLoader implements RustDeskClipboardNative {
         diagnosticModule, 'request', 'skipped', 0, 0, -90, diagnosticNetwork);
       this.recordDiagnosticRoutes(config, 'skipped', 0, 0, -90);
       return -90;
+    }
+    if (isRemotePictureProtocolName(config.protocol) &&
+      !remotePictureSessionAllowed(this.livePictureSessionCount(), ExtensionLoader.pictureSessionLimit())) {
+      // Several picture sessions may be open at once, up to the device's limit (every window counts).
+      this.recordDiagnosticConnection(diagnosticModule, 'request', 'skipped', 0, 0,
+        REMOTE_PICTURE_SESSION_LIMIT_CODE, diagnosticNetwork);
+      this.recordDiagnosticRoutes(config, 'skipped', 0, 0, REMOTE_PICTURE_SESSION_LIMIT_CODE);
+      return REMOTE_PICTURE_SESSION_LIMIT_CODE;
     }
     this.recordDiagnosticConnection(
       diagnosticModule, 'request', 'started', 0, 0, 0, diagnosticNetwork);
@@ -2108,9 +2141,18 @@ export class ExtensionLoader implements RustDeskClipboardNative {
 
   // ====== 渲染管线 ======
 
-  initRenderer(xcId: string, w: number, h: number): number {
+  /**
+   * The session this facade's native media belongs to, for the session-scoped native calls: several picture sessions
+   * may be live (分屏、PC 多窗口), so a page never lets native pick "the" live session. Before connect it is -1, which
+   * native treats as "not live yet" (a renderer stays pending; a decoder or audio player fails closed).
+   */
+  nativeOwnerSessionArg(): number {
+    return this.currentSessionId > 0 ? this.currentSessionId : -1;
+  }
+
+  initRenderer(xcId: string, w: number, h: number, ownerSessionId: number = this.nativeOwnerSessionArg()): number {
     try {
-      this.rendererHandle = rdpnapi.initRenderer(xcId, w, h) as number;
+      this.rendererHandle = rdpnapi.initRenderer(xcId, w, h, ownerSessionId) as number;
     } catch (err) {
       hilog.error(DOMAIN, TAG, '[ExtensionLoader] initRenderer: ' + JSON.stringify(err));
       this.rendererHandle = -1;
@@ -2145,10 +2187,11 @@ export class ExtensionLoader implements RustDeskClipboardNative {
   }
 
   initDecoder(w: number, h: number, c: number, rendererHandle: number = -1,
-    desktopSurfaceCompatibility: boolean = false): number {
+    desktopSurfaceCompatibility: boolean = false,
+    ownerSessionId: number = this.nativeOwnerSessionArg()): number {
     try {
       this.decoderHandle = rdpnapi.initDecoder(
-        w, h, c, rendererHandle, desktopSurfaceCompatibility) as number;
+        w, h, c, rendererHandle, desktopSurfaceCompatibility, ownerSessionId) as number;
     } catch (err) {
       hilog.error(DOMAIN, TAG, '[ExtensionLoader] initDecoder: ' + JSON.stringify(err));
       this.decoderHandle = -1;
@@ -2235,7 +2278,7 @@ export class ExtensionLoader implements RustDeskClipboardNative {
    */
   rebindActiveVideoPipeline(): boolean {
     try {
-      const rebound: boolean = rdpnapi.rebindActiveVideoPipeline() as boolean;
+      const rebound: boolean = rdpnapi.rebindActiveVideoPipeline(this.nativeOwnerSessionArg()) as boolean;
       const synchronized: boolean = replayRdpRendererGeometryAfterPipelineBinding(
         rebound, this.currentSessionId,
         (sessionId: number): boolean => this.synchronizeRdpRendererGeometry(sessionId));
@@ -2647,7 +2690,8 @@ export class ExtensionLoader implements RustDeskClipboardNative {
 
   initAudioPlayer(sr?: number, ch?: number): number {
     try {
-      this.audioPlayerHandle = rdpnapi.initAudioPlayer(sr ?? 48000, ch ?? 2) as number;
+      this.audioPlayerHandle = rdpnapi.initAudioPlayer(
+        sr ?? 48000, ch ?? 2, this.nativeOwnerSessionArg()) as number;
     } catch (err) {
       hilog.error(DOMAIN, TAG, '[ExtensionLoader] initAudioPlayer: ' + JSON.stringify(err));
       this.audioPlayerHandle = -1;
@@ -2685,12 +2729,33 @@ export class ExtensionLoader implements RustDeskClipboardNative {
       if (handle > 0) {
         rdpnapi.setAudioMute(handle, mute);
       } else {
-        rdpnapi.setActiveAudioMute(mute);
+        rdpnapi.setActiveAudioMute(mute, this.nativeOwnerSessionArg());
       }
       hilog.info(DOMAIN, TAG, '[ExtensionLoader] setAudioMute: handle=' +
         handle.toString() + ' mute=' + (mute ? 'true' : 'false'));
     } catch (err) {
       hilog.error(DOMAIN, TAG, '[ExtensionLoader] setAudioMute: ' + JSON.stringify(err));
+    }
+  }
+
+  /** Only the focused window's picture session plays sound while several are live; 0 lets every session play. */
+  setAudioFocusSession(sessionId: number): void {
+    try {
+      rdpnapi.setAudioFocusSession(sessionId > 0 ? sessionId : 0);
+    } catch (err) {
+      hilog.warn(DOMAIN, TAG, '[ExtensionLoader] setAudioFocusSession: ' + JSON.stringify(err));
+    }
+  }
+
+  /** A concurrent picture session's page lost its own surface: stop its renderer without touching the process one. */
+  markRendererSurfaceDestroyed(rendererHandle: number): void {
+    if (rendererHandle <= 0) {
+      return;
+    }
+    try {
+      rdpnapi.markRendererSurfaceDestroyed(rendererHandle);
+    } catch (err) {
+      hilog.warn(DOMAIN, TAG, '[ExtensionLoader] markRendererSurfaceDestroyed: ' + JSON.stringify(err));
     }
   }
 
@@ -3685,19 +3750,29 @@ export class ExtensionLoader implements RustDeskClipboardNative {
    * 重新初始化 renderer 并绑定 surface。
    */
   reattachRenderForForeground(surfaceId: string, width: number,
-    height: number, sessionId: number = this.currentSessionId): ExtensionResult<number> {
+    height: number, sessionId: number = this.currentSessionId,
+    bindProcessSurface: boolean = true): ExtensionResult<number> {
     try {
       if (!shouldBindSurfaceBeforeForegroundRenderer(surfaceId, width, height)) {
         return errResult(ExtensionErrorCode.ERR_SURFACE_INVALID,
           '前台恢复 Surface 无效', 'surfaceId=' + surfaceId + ' size=' + width.toString() + 'x' + height.toString());
       }
-      const surfaceBound = rdpnapi.setXComponentSurfaceId(surfaceId, width, height) as boolean;
-      if (!surfaceBound) {
+      // A concurrent picture session (its page does not own the process surface) renders to its own surface only,
+      // so it needs a real SurfaceId: a component id would draw to the other page's process surface.
+      if (!bindProcessSurface && !/^[0-9]+$/.test(surfaceId.trim())) {
         return errResult(ExtensionErrorCode.ERR_SURFACE_INVALID,
-          'setXComponentSurfaceId 失败', 'surfaceId=' + surfaceId);
+          '独立画面需要 SurfaceId', 'surfaceId=' + surfaceId);
       }
-      hilog.info(DOMAIN, TAG, '[ExtensionLoader] reattachRenderForForeground: surface rebound id=' + surfaceId);
-      const rendererHandle: number = rdpnapi.initRenderer(surfaceId, width, height) as number;
+      if (bindProcessSurface) {
+        const surfaceBound = rdpnapi.setXComponentSurfaceId(surfaceId, width, height) as boolean;
+        if (!surfaceBound) {
+          return errResult(ExtensionErrorCode.ERR_SURFACE_INVALID,
+            'setXComponentSurfaceId 失败', 'surfaceId=' + surfaceId);
+        }
+        hilog.info(DOMAIN, TAG, '[ExtensionLoader] reattachRenderForForeground: surface rebound id=' + surfaceId);
+      }
+      const rendererHandle: number = rdpnapi.initRenderer(surfaceId, width, height,
+        sessionId > 0 ? sessionId : -1) as number;
       if (rendererHandle <= 0) {
         return errResult(ExtensionErrorCode.ERR_SURFACE_INVALID,
           'initRenderer 失败', 'surfaceId=' + surfaceId);
@@ -3728,7 +3803,7 @@ export class ExtensionLoader implements RustDeskClipboardNative {
    */
   requestFrameRefresh(): ExtensionResult<void> {
     try {
-      rdpnapi.requestFrameRefresh();
+      rdpnapi.requestFrameRefresh(this.nativeOwnerSessionArg());
       return okVoid();
     } catch (err) {
       hilog.warn(DOMAIN, TAG, '[ExtensionLoader] requestFrameRefresh: ' + JSON.stringify(err));
@@ -3808,7 +3883,7 @@ export class ExtensionLoader implements RustDeskClipboardNative {
    */
   isAudioActive(): boolean {
     try {
-      return rdpnapi.isAudioPlaybackActive() as boolean;
+      return rdpnapi.isAudioPlaybackActive(this.nativeOwnerSessionArg()) as boolean;
     } catch (err) {
       hilog.warn(DOMAIN, TAG, '[ExtensionLoader] isAudioActive fallback: ' + JSON.stringify(err));
       return false;

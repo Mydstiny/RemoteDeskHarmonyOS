@@ -275,7 +275,8 @@ declare module 'librdpnapi.so' {
     operationId: number, timeoutMs: number): Promise<SshPublicKeyInstallResult> & { operationId: number };
   export function cancelSshOperation(operationId: number): boolean;
 
-  export function initRenderer(xcId: string, width: number, height: number): number;
+  // ownerSessionId: > 0 the page's live session; < 0 a session not live yet (pending renderer).
+  export function initRenderer(xcId: string, width: number, height: number, ownerSessionId?: number): number;
   export function destroyRenderer(handle: number): void;
   export function renderFrame(handle: number, textureId: number): void;
   export function renderRawBGRA(handle: number, data: ArrayBuffer, width: number, height: number, stride: number): void;
@@ -286,11 +287,12 @@ declare module 'librdpnapi.so' {
   export function registerNativeXComponent(): boolean;
   export function setXComponentSurfaceId(surfaceId: string, width: number, height: number): boolean;
   export function markXComponentSurfaceDestroyed(): void;
-  export function requestFrameRefresh(): void;
+  export function markRendererSurfaceDestroyed(handle: number): void;
+  export function requestFrameRefresh(sessionId?: number): void;
   export function getRendererViewport(handle: number): RendererViewport | null;
 
   export function initDecoder(width: number, height: number, codecType: number,
-    rendererHandle?: number, desktopSurfaceCompatibility?: boolean): number;
+    rendererHandle?: number, desktopSurfaceCompatibility?: boolean, ownerSessionId?: number): number;
   export function destroyDecoder(handle: number): void;
   export function decodeFrame(handle: number, data: ArrayBuffer, size: number, timestamp: number): number;
   export function getTextureId(handle: number): number;
@@ -298,7 +300,7 @@ declare module 'librdpnapi.so' {
   export function bindVideoPipeline(decoderHandle: number, rendererHandle: number): boolean;
   export function detachVideoPipeline(decoderHandle: number): boolean;
   export function requestDecoderRecovery(decoderHandle: number): boolean;
-  export function rebindActiveVideoPipeline(): boolean;
+  export function rebindActiveVideoPipeline(sessionId?: number): boolean;
   export interface HardwareVideoDecoderCapability {
     available: boolean;
     name: string;
@@ -319,12 +321,16 @@ declare module 'librdpnapi.so' {
   }
   export function getHardwareVideoDecoderCapabilities(): HardwareVideoDecoderCapabilities;
 
-  export function initAudioPlayer(sampleRate?: number, channels?: number): number;
+  export function initAudioPlayer(sampleRate?: number, channels?: number, sessionId?: number): number;
   export function destroyAudioPlayer(handle: number): void;
   export function setAudioMute(handle: number, mute: boolean): void;
-  export function setActiveAudioMute(mute: boolean): void;
-  export function isAudioPlaybackActive(): boolean;
+  export function setActiveAudioMute(mute: boolean, sessionId?: number): void;
+  export function isAudioPlaybackActive(sessionId?: number): boolean;
+  // Only the focused window's picture session plays sound while several are live; 0 lets every session play.
+  export function setAudioFocusSession(sessionId: number): void;
   export function isVideoPlaybackActive(): boolean;
+  // Live RDP, RustDesk and VNC sessions in this process (every window).
+  export function getLivePictureSessionCount(): number;
 
   export function handleKeyEvent(scancode: number, pressed: boolean, keyCode: number, modifiers: number): void;
   export function handleMouseEvent(x: number, y: number, button: number, pressed: boolean, wheelDelta: number): void;

@@ -1300,6 +1300,7 @@ RdpCertificateInfo probeRdpCertificateOverTls(const std::string& host, int port,
 #include <freerdp/client/channels.h>
 #include <freerdp/client/cmdline.h>
 #include <freerdp/client/rdpdr.h>
+#include <freerdp/client/rdpsnd.h>
 #include <freerdp/addin.h>
 #include <freerdp/codec/color.h>
 #if defined(REMOTEDESK_RDP_SECURITY_KEY)
@@ -2167,7 +2168,7 @@ struct FreeRdpAdapter::Impl {
         inputQueueCv.notify_one();
     }
 
-    bool startSessionWorkers(FreeRdpAdapter* owner) {
+    bool startSessionWorkers(FreeRdpAdapter* owner, const Render::DecoderSessionIdentity& sessionOwner) {
         std::lock_guard<std::mutex> lifecycleLock(workerLifecycleMutex);
         if (!startInputQueueWorker(owner)) {
             presentationEnabled.store(false, std::memory_order_release);
@@ -2192,7 +2193,8 @@ struct FreeRdpAdapter::Impl {
             }
         });
         redrawNotifier = notifier;
-        redrawCallbackToken = RendererNapi::RegisterActiveRedrawCallback([notifier]() {
+        // Per session: another live picture session keeps its own redraw callback.
+        redrawCallbackToken = RendererNapi::RegisterActiveRedrawCallback(sessionOwner, [notifier]() {
             notifier->notify();
         });
         if (redrawCallbackToken == 0) {
@@ -2768,12 +2770,62 @@ private:
     std::array<Carrier, kReservationCount> carriers_;
 };
 
-static std::mutex g_rdpAudioCallbackMutex;
-static AudioDataCallback g_rdpAudioCallback;
-static Render::DecoderSessionIdentity g_rdpAudioCallbackOwner;
-static std::shared_ptr<Render::CallbackAdmissionContext> g_rdpAudioAdmission;
-static uint64_t g_rdpAudioCallbackToken = 0;
 static std::atomic<int64_t> g_rdpCallbackToken {1};
+
+// Remote audio, one route per connection: several RDP sessions may be live at once (分屏、PC 多窗口). Keyed by the
+// adapter; the test seam uses the null key.
+struct RdpAudioRoute {
+    AudioDataCallback callback;
+    Render::DecoderSessionIdentity owner;
+    std::shared_ptr<Render::CallbackAdmissionContext> admission;
+    uint64_t token = 0;
+};
+static std::mutex g_rdpAudioCallbackMutex;
+static std::unordered_map<const void*, RdpAudioRoute> g_rdpAudioRoutes;
+
+// Replaces `key`'s route; an empty callback or a failed admission bind leaves none. Returns the replaced admission,
+// which the caller closes outside the mutex (the platform entry snapshots it under the mutex before closing).
+static std::shared_ptr<Render::CallbackAdmissionContext> replaceRdpAudioRoute(
+    const void* key, AudioDataCallback callback, const Render::DecoderSessionIdentity& owner,
+    uint64_t* tokenOut = nullptr) {
+    std::shared_ptr<Render::CallbackAdmissionContext> admission;
+    uint64_t token = 0;
+    if (callback) {
+        admission = std::make_shared<Render::CallbackAdmissionContext>();
+        token = static_cast<uint64_t>(g_rdpCallbackToken.fetch_add(1, std::memory_order_relaxed));
+        if (!admission->bind(token, owner, owner.generation)) {
+            admission.reset();
+            token = 0;
+        }
+    }
+    std::shared_ptr<Render::CallbackAdmissionContext> oldAdmission;
+    std::lock_guard<std::mutex> lock(g_rdpAudioCallbackMutex);
+    const auto it = g_rdpAudioRoutes.find(key);
+    if (it != g_rdpAudioRoutes.end()) {
+        oldAdmission = std::move(it->second.admission);
+        g_rdpAudioRoutes.erase(it);
+    }
+    if (admission) {
+        g_rdpAudioRoutes[key] = RdpAudioRoute {std::move(callback), owner, std::move(admission), token};
+    }
+    if (tokenOut != nullptr) {
+        *tokenOut = token;
+    }
+    return oldAdmission;
+}
+
+// Removes `key`'s route when it still belongs to `owner` (always, when `owner` is invalid).
+static std::shared_ptr<Render::CallbackAdmissionContext> clearRdpAudioRoute(
+    const void* key, const Render::DecoderSessionIdentity& owner) {
+    std::lock_guard<std::mutex> lock(g_rdpAudioCallbackMutex);
+    const auto it = g_rdpAudioRoutes.find(key);
+    if (it == g_rdpAudioRoutes.end() || (owner.valid() && !(it->second.owner == owner))) {
+        return nullptr;
+    }
+    std::shared_ptr<Render::CallbackAdmissionContext> oldAdmission = std::move(it->second.admission);
+    g_rdpAudioRoutes.erase(it);
+    return oldAdmission;
+}
 
 struct RdpCallbackRegistryEntry {
     std::shared_ptr<Render::CallbackAdmissionContext> admission;
@@ -3349,27 +3401,76 @@ static void markRdpGfxFallback(const std::string& scope, const char* reason) {
                 reason != nullptr ? reason : "unknown");
 }
 
-#if defined(REMOTEDESK_RDP_SECURITY_KEY)
-// The prebuilt FreeRDP channel table has no rdpewa entry; this provider adds the vendored one and
-// delegates every other channel unchanged.
+// The prebuilt fake rdpsnd backend reports PCM through freerdp_ohos_rdpsnd_play without saying which connection it
+// belongs to. With several RDP sessions live, its Play is wrapped to note the connection on the playing thread for
+// the duration of the call, so the PCM reaches that session's player and no other.
+static std::atomic<PFREERDP_RDPSND_DEVICE_ENTRY> g_rdpsndFakeEntry {nullptr};
+static std::atomic<PREGISTERRDPSNDDEVICE> g_rdpsndRegisterDevice {nullptr};
+static std::atomic<pcPlay> g_rdpsndFakePlay {nullptr};
+static thread_local rdpContext* t_rdpsndPlayContext = nullptr;
+
+static UINT remoteDeskRdpsndPlay(rdpsndDevicePlugin* device, const BYTE* data, size_t size) {
+    const pcPlay play = g_rdpsndFakePlay.load(std::memory_order_acquire);
+    if (play == nullptr) {
+        return CHANNEL_RC_OK;
+    }
+    rdpContext* const previous = t_rdpsndPlayContext;
+    t_rdpsndPlayContext = (device != nullptr && device->rdpsnd != nullptr)
+        ? freerdp_rdpsnd_get_context(device->rdpsnd) : nullptr;
+    const UINT rc = play(device, data, size);
+    t_rdpsndPlayContext = previous;
+    return rc;
+}
+
+static void remoteDeskRegisterRdpsndDevice(rdpsndPlugin* rdpsnd, rdpsndDevicePlugin* device) {
+    if (device != nullptr && device->Play != nullptr && device->Play != remoteDeskRdpsndPlay) {
+        g_rdpsndFakePlay.store(device->Play, std::memory_order_release);
+        device->Play = remoteDeskRdpsndPlay;
+    }
+    const PREGISTERRDPSNDDEVICE registerDevice = g_rdpsndRegisterDevice.load(std::memory_order_acquire);
+    if (registerDevice != nullptr) {
+        registerDevice(rdpsnd, device);
+    }
+}
+
+static UINT VCAPITYPE remoteDeskRdpsndFakeEntry(PFREERDP_RDPSND_DEVICE_ENTRY_POINTS entryPoints) {
+    const PFREERDP_RDPSND_DEVICE_ENTRY fakeEntry = g_rdpsndFakeEntry.load(std::memory_order_acquire);
+    if (fakeEntry == nullptr || entryPoints == nullptr) {
+        return ERROR_INTERNAL_ERROR;
+    }
+    if (entryPoints->pRegisterRdpsndDevice == nullptr) {
+        return fakeEntry(entryPoints);
+    }
+    if (entryPoints->pRegisterRdpsndDevice != remoteDeskRegisterRdpsndDevice) {
+        g_rdpsndRegisterDevice.store(entryPoints->pRegisterRdpsndDevice, std::memory_order_release);
+    }
+    FREERDP_RDPSND_DEVICE_ENTRY_POINTS wrapped = *entryPoints;
+    wrapped.pRegisterRdpsndDevice = remoteDeskRegisterRdpsndDevice;
+    return fakeEntry(&wrapped);
+}
+
+// Delegates every channel to the prebuilt table, wrapping the fake rdpsnd backend (above) and, with security-key
+// redirection, adding the vendored rdpewa entry the prebuilt table lacks.
 static PVIRTUALCHANNELENTRY loadRemoteDeskStaticAddinEntry(LPCSTR name, LPCSTR subsystem, LPCSTR type,
                                                           DWORD flags) {
+#if defined(REMOTEDESK_RDP_SECURITY_KEY)
     if (name != nullptr && std::strcmp(name, "rdpewa") == 0 && subsystem == nullptr &&
         (flags & FREERDP_ADDIN_CHANNEL_DYNAMIC) != 0) {
         return reinterpret_cast<PVIRTUALCHANNELENTRY>(rdpewa_DVCPluginEntry);
     }
-    return freerdp_channels_load_static_addin_entry(name, subsystem, type, flags);
-}
 #endif
+    PVIRTUALCHANNELENTRY entry = freerdp_channels_load_static_addin_entry(name, subsystem, type, flags);
+    if (entry != nullptr && name != nullptr && subsystem != nullptr &&
+        std::strcmp(name, RDPSND_CHANNEL_NAME) == 0 && std::strcmp(subsystem, "fake") == 0) {
+        g_rdpsndFakeEntry.store(reinterpret_cast<PFREERDP_RDPSND_DEVICE_ENTRY>(entry), std::memory_order_release);
+        return reinterpret_cast<PVIRTUALCHANNELENTRY>(remoteDeskRdpsndFakeEntry);
+    }
+    return entry;
+}
 
 static void ensureFreeRdpStaticAddinProvider() {
     std::call_once(g_rdpAddinProviderOnce, []() {
-#if defined(REMOTEDESK_RDP_SECURITY_KEY)
         const int rc = freerdp_register_addin_provider(loadRemoteDeskStaticAddinEntry, FREERDP_ADDIN_STATIC);
-#else
-        const int rc = freerdp_register_addin_provider(freerdp_channels_load_static_addin_entry,
-                                                       FREERDP_ADDIN_STATIC);
-#endif
         OH_LOG_INFO(LOG_APP, "[RDP] static addin provider registered rc=%{public}d provider=%{public}p",
                     rc, reinterpret_cast<void*>(freerdp_get_current_addin_provider()));
     });
@@ -4423,19 +4524,49 @@ DWORD FreeRdpAdapter::evaluateCertificate(const char* host, UINT16 port,
 }
 
 static UINT invokeRdpSoundWithExpectedToken(
-    uint64_t expectedToken, const BYTE* data, size_t size,
+    uint64_t expectedToken, rdpContext* context, const BYTE* data, size_t size,
     UINT32 sampleRate, UINT16 channels, UINT16 bitsPerSample) {
     AudioDataCallback callback;
     Render::DecoderSessionIdentity owner;
     std::shared_ptr<Render::CallbackAdmissionContext> admission;
-    {
-        std::lock_guard<std::mutex> lock(g_rdpAudioCallbackMutex);
-        if (expectedToken != 0 && g_rdpAudioCallbackToken != expectedToken) {
+    // The playing connection's own route. A connection that is no longer registered (tearing down) plays nowhere;
+    // PCM with no connection (the test seam) goes to the only route, or to the one holding the expected token.
+    const void* routeKey = nullptr;
+    if (context != nullptr) {
+        std::lock_guard<std::mutex> lock(g_rdpCallbackRegistryMutex);
+        const auto it = g_rdpCallbackRegistry.find(context);
+        if (it == g_rdpCallbackRegistry.end() || it->second.adapter == nullptr) {
             return 0;
         }
-        callback = g_rdpAudioCallback;
-        owner = g_rdpAudioCallbackOwner;
-        admission = g_rdpAudioAdmission;
+        routeKey = it->second.adapter;
+    }
+    {
+        std::lock_guard<std::mutex> lock(g_rdpAudioCallbackMutex);
+        const RdpAudioRoute* route = nullptr;
+        if (routeKey != nullptr) {
+            const auto it = g_rdpAudioRoutes.find(routeKey);
+            route = it == g_rdpAudioRoutes.end() ? nullptr : &it->second;
+        } else if (expectedToken != 0) {
+            for (const auto& entry : g_rdpAudioRoutes) {
+                if (entry.second.token == expectedToken) {
+                    route = &entry.second;
+                    break;
+                }
+            }
+            if (route == nullptr) {
+                return 0;
+            }
+        } else if (g_rdpAudioRoutes.size() == 1) {
+            route = &g_rdpAudioRoutes.begin()->second;
+        }
+        if (route != nullptr) {
+            if (expectedToken != 0 && route->token != expectedToken) {
+                return 0;
+            }
+            callback = route->callback;
+            owner = route->owner;
+            admission = route->admission;
+        }
     }
     auto callbackLease = admission ? admission->tryAcquire() : Render::CallbackAdmissionContext::Lease();
     // Keep the owner lease through the actual callback/sink write. The
@@ -4502,7 +4633,7 @@ extern "C" UINT freerdp_ohos_rdpsnd_play(const BYTE* data, size_t size,
                                           UINT32 sampleRate, UINT16 channels,
                                           UINT16 bitsPerSample) {
     return invokeRdpSoundWithExpectedToken(
-        0, data, size, sampleRate, channels, bitsPerSample);
+        0, t_rdpsndPlayContext, data, size, sampleRate, channels, bitsPerSample);
 }
 
 // ---- 证书验证: 由 ArkTS 预检弹窗确认后, native 只接受匹配策略 ----
@@ -5737,7 +5868,7 @@ BOOL FreeRdpAdapter::cbPostConnect(freerdp* instance) {
     self->impl_->lastFrameHeight = 0;
     self->impl_->forceNextFullFrame = true;
     self->impl_->damageAccumulator->clear();
-    if (!self->impl_->startSessionWorkers(self)) {
+    if (!self->impl_->startSessionWorkers(self, callbackLease.owner)) {
         self->impl_->presentationEnabled.store(false, std::memory_order_release);
         const Render::DecoderSessionIdentity failedOwner = callbackLease.owner;
         if (failedOwner.valid()) {
@@ -7364,28 +7495,11 @@ uint64_t FreeRdpAdapter::ShutdownTicketSerialForTesting() const {
 
 void FreeRdpAdapter::SetRdpsndCallbackForTesting(
     AudioDataCallback callback, const Render::DecoderSessionIdentity& owner) {
-    std::shared_ptr<Render::CallbackAdmissionContext> oldAdmission;
-    std::shared_ptr<Render::CallbackAdmissionContext> newAdmission;
-    uint64_t newToken = 0;
-    if (callback && owner.valid() && owner.generation != 0) {
-        newAdmission = std::make_shared<Render::CallbackAdmissionContext>();
-        newToken = static_cast<uint64_t>(
-            g_rdpCallbackToken.fetch_add(1, std::memory_order_relaxed));
-        if (!newAdmission->bind(newToken,
-                                owner, owner.generation)) {
-            newAdmission.reset();
-            callback = nullptr;
-            newToken = 0;
-        }
+    if (!owner.valid() || owner.generation == 0) {
+        callback = nullptr;
     }
-    {
-        std::lock_guard<std::mutex> lock(g_rdpAudioCallbackMutex);
-        oldAdmission = std::move(g_rdpAudioAdmission);
-        g_rdpAudioCallbackOwner = owner;
-        g_rdpAudioCallback = std::move(callback);
-        g_rdpAudioAdmission = std::move(newAdmission);
-        g_rdpAudioCallbackToken = newToken;
-    }
+    const std::shared_ptr<Render::CallbackAdmissionContext> oldAdmission =
+        replaceRdpAudioRoute(nullptr, std::move(callback), owner);
     if (oldAdmission) {
         // Do not wait while holding the callback mutex: the platform entry
         // snapshots the admission under this mutex before closing it.
@@ -7395,16 +7509,8 @@ void FreeRdpAdapter::SetRdpsndCallbackForTesting(
 
 void FreeRdpAdapter::ClearRdpsndCallbackForTesting(
     const Render::DecoderSessionIdentity& owner) {
-    std::shared_ptr<Render::CallbackAdmissionContext> oldAdmission;
-    {
-        std::lock_guard<std::mutex> lock(g_rdpAudioCallbackMutex);
-        if (g_rdpAudioCallbackOwner == owner) {
-            g_rdpAudioCallbackOwner = Render::DecoderSessionIdentity {};
-            g_rdpAudioCallback = nullptr;
-            oldAdmission = std::move(g_rdpAudioAdmission);
-            g_rdpAudioCallbackToken = 0;
-        }
-    }
+    const std::shared_ptr<Render::CallbackAdmissionContext> oldAdmission =
+        owner.valid() ? clearRdpAudioRoute(nullptr, owner) : nullptr;
     if (oldAdmission) {
         (void)closeRdpCallbackAdmission(oldAdmission, "rdpsnd-clear");
     }
@@ -7418,14 +7524,15 @@ uint64_t FreeRdpAdapter::CallbackContextTokenForTesting(rdpContext* context) {
 
 uint64_t FreeRdpAdapter::RdpsndCallbackTokenForTesting() {
     std::lock_guard<std::mutex> lock(g_rdpAudioCallbackMutex);
-    return g_rdpAudioCallbackToken;
+    const auto it = g_rdpAudioRoutes.find(nullptr);
+    return it == g_rdpAudioRoutes.end() ? 0 : it->second.token;
 }
 
 UINT FreeRdpAdapter::InvokeRdpsndCallbackForTestingWithToken(
     uint64_t capturedToken, const BYTE* data, size_t size,
     UINT32 sampleRate, UINT16 channels, UINT16 bitsPerSample) {
     return invokeRdpSoundWithExpectedToken(
-        capturedToken, data, size, sampleRate, channels, bitsPerSample);
+        capturedToken, nullptr, data, size, sampleRate, channels, bitsPerSample);
 }
 
 std::shared_ptr<std::atomic<bool>> FreeRdpAdapter::QueueBlockedWorkerForTesting() {
@@ -7509,6 +7616,11 @@ RemoteCursorSnapshot FreeRdpAdapter::getRemoteCursorSnapshot(bool includePixels)
 FreeRdpAdapter::~FreeRdpAdapter() {
     // 断开活跃连接或等待连接线程结束
     disconnect();
+    // An audio route whose owner changed after connect is not cleared by disconnect(); it must not outlive the
+    // adapter it is keyed by.
+    if (const auto audioAdmission = clearRdpAudioRoute(this, Render::DecoderSessionIdentity {})) {
+        (void)closeRdpCallbackAdmission(audioAdmission, "adapter-destroy");
+    }
     // Deferred join owners are process-scoped. Stopping either owner from an
     // individual adapter destructor can reject work for another live RDP
     // session, especially while that session owns teardown reservations.
@@ -7639,26 +7751,9 @@ int FreeRdpAdapter::connectInternal(
     }
     impl_->connecting = true;
     impl_->stopRequested = false;
-    std::shared_ptr<Render::CallbackAdmissionContext> oldAudioAdmission;
-    {
-        std::lock_guard<std::mutex> lock(g_rdpAudioCallbackMutex);
-        oldAudioAdmission = std::move(g_rdpAudioAdmission);
-        if (cfg.rdAudioEnabled && impl_->audioCallback) {
-            g_rdpAudioCallbackOwner = impl_->ownerSnapshot();
-            g_rdpAudioCallback = impl_->audioCallback;
-            g_rdpAudioAdmission = std::make_shared<Render::CallbackAdmissionContext>();
-            if (!g_rdpAudioAdmission->bind(
-                    g_rdpCallbackToken.fetch_add(1, std::memory_order_relaxed),
-                    g_rdpAudioCallbackOwner, g_rdpAudioCallbackOwner.generation)) {
-                g_rdpAudioAdmission.reset();
-                g_rdpAudioCallback = nullptr;
-            }
-        } else if (g_rdpAudioCallbackOwner == impl_->ownerSnapshot()) {
-            g_rdpAudioCallbackOwner = Render::DecoderSessionIdentity {};
-            g_rdpAudioCallback = nullptr;
-            g_rdpAudioAdmission.reset();
-        }
-    }
+    const std::shared_ptr<Render::CallbackAdmissionContext> oldAudioAdmission =
+        replaceRdpAudioRoute(this, cfg.rdAudioEnabled ? impl_->audioCallback : AudioDataCallback(),
+                             impl_->ownerSnapshot());
     if (oldAudioAdmission) {
         (void)closeRdpCallbackAdmission(oldAudioAdmission, "connect-rebind");
     }
@@ -8446,15 +8541,8 @@ void FreeRdpAdapter::disconnectInternal(bool publishDisconnected) {
     impl_->connecting = false;
     cleanupInstance(
         deadline, disconnectGeneration, teardownReservations);
-    std::shared_ptr<Render::CallbackAdmissionContext> oldAudioAdmission;
-    {
-        std::lock_guard<std::mutex> lock(g_rdpAudioCallbackMutex);
-        if (g_rdpAudioCallbackOwner == impl_->ownerSnapshot()) {
-            g_rdpAudioCallbackOwner = Render::DecoderSessionIdentity {};
-            g_rdpAudioCallback = nullptr;
-            oldAudioAdmission = std::move(g_rdpAudioAdmission);
-        }
-    }
+    const std::shared_ptr<Render::CallbackAdmissionContext> oldAudioAdmission =
+        clearRdpAudioRoute(this, impl_->ownerSnapshot());
     if (oldAudioAdmission) {
         (void)closeRdpCallbackAdmission(oldAudioAdmission, "disconnect-clear");
     }
@@ -9300,26 +9388,8 @@ void FreeRdpAdapter::setAudioCallback(AudioDataCallback cb) {
         audioEnabled = impl_->config.rdAudioEnabled;
     }
     if (audioEnabled) {
-        std::shared_ptr<Render::CallbackAdmissionContext> oldAudioAdmission;
-        {
-            std::lock_guard<std::mutex> lock(g_rdpAudioCallbackMutex);
-            oldAudioAdmission = std::move(g_rdpAudioAdmission);
-            if (impl_->audioCallback) {
-                g_rdpAudioCallbackOwner = impl_->ownerSnapshot();
-                g_rdpAudioCallback = impl_->audioCallback;
-                g_rdpAudioAdmission = std::make_shared<Render::CallbackAdmissionContext>();
-                if (!g_rdpAudioAdmission->bind(
-                        g_rdpCallbackToken.fetch_add(1, std::memory_order_relaxed),
-                        g_rdpAudioCallbackOwner, g_rdpAudioCallbackOwner.generation)) {
-                    g_rdpAudioAdmission.reset();
-                    g_rdpAudioCallback = nullptr;
-                }
-            } else if (g_rdpAudioCallbackOwner == impl_->ownerSnapshot()) {
-                g_rdpAudioCallbackOwner = Render::DecoderSessionIdentity {};
-                g_rdpAudioCallback = nullptr;
-                g_rdpAudioAdmission.reset();
-            }
-        }
+        const std::shared_ptr<Render::CallbackAdmissionContext> oldAudioAdmission =
+            replaceRdpAudioRoute(this, impl_->audioCallback, impl_->ownerSnapshot());
         if (oldAudioAdmission) {
             (void)closeRdpCallbackAdmission(oldAudioAdmission, "audio-callback-rebind");
         }

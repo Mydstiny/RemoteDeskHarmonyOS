@@ -927,6 +927,10 @@ import {
   remoteVideoSessionBusyMessage
 } from '../services/ActiveRemoteSessionRegistry';
 import { MoonlightSessionCoordinator } from '../services/MoonlightSessionCoordinator';
+import {
+  REMOTE_PICTURE_SESSION_LIMIT_CODE,
+  remotePictureSessionLimitMessage
+} from '../services/RemotePictureSessionLimitPolicy';
 import { RemoteProtocol } from '../services/RemoteSessionState';
 import {
   nativeDisconnectStateIsFailed,
@@ -8486,12 +8490,20 @@ struct HostListPage {
     await this.connectToHost(host, id);
   }
 
-  /** Why a picture session cannot start now: another RDP/RustDesk/VNC session holds the media path ('' if none). */
-  private videoSessionBusyMessage(hostId: string): string {
+  /**
+   * Why a picture session could not start ('' if not for that reason): the device's picture-session limit is reached
+   * (several may be open at once on PC and tablet), or on a one-session phone another session holds the media path.
+   */
+  private videoSessionBusyMessage(hostId: string, sid: number): string {
     const active: ActiveRemoteSessionRecord | null = ActiveRemoteSessionRegistry.getInstance().getActive();
     const holder: RemoteHost | undefined = active === null ? undefined :
       this.hosts.find((candidate: RemoteHost): boolean => candidate.id === active.hostId);
-    return remoteVideoSessionBusyMessage(active, hostId, holder === undefined ? '' : holder.label);
+    const label: string = holder === undefined ? '' : holder.label;
+    const limit: number = ExtensionLoader.pictureSessionLimit();
+    if (sid === REMOTE_PICTURE_SESSION_LIMIT_CODE) {
+      return remotePictureSessionLimitMessage(limit, active, hostId, label);
+    }
+    return limit <= 1 ? remoteVideoSessionBusyMessage(active, hostId, label) : '';
   }
 
   private async connectToHost(host: RemoteHost, continuationId: string = '', shareId: string = ''): Promise<void> {
@@ -12700,7 +12712,7 @@ struct HostListPage {
       }
       const sid: number = this.loader.connect(sessionConfig);
       if (sid <= 0) {
-        const busy: string = this.videoSessionBusyMessage(host.id);
+        const busy: string = this.videoSessionBusyMessage(host.id, sid);
         throw new Error(busy !== '' ? busy + ' [E-RUSTDESK-PREFLIGHT-' + Math.abs(sid).toString() + ']' :
           '无法启动 RustDesk 连接 [E-RUSTDESK-PREFLIGHT-' + Math.abs(sid).toString() + ']');
       }

@@ -449,12 +449,17 @@ RDP_TEST_CASE(video_session_owner_gate_is_safe_for_concurrent_stale_callbacks) {
     RDP_ASSERT(gate.accepts(current));
 }
 
+// Several picture sessions may share the sinks; start each case with none admitted.
+static void ClearSharedSessionOwners(Render::SessionSinkOwnerLease& registry) {
+    auto exclusive = registry.acquireExclusive();
+    for (const Render::DecoderSessionIdentity& owner : exclusive.owners()) {
+        RDP_ASSERT(exclusive.beginDeactivate(owner));
+    }
+}
+
 RDP_TEST_CASE(video_shared_owner_lease_barriers_cross_protocol_sink_and_stale_teardown) {
     Render::SessionSinkOwnerLease& registry = Render::SharedSessionSinkOwnerLease();
-    const Render::DecoderSessionIdentity existing = registry.snapshot();
-    if (existing.valid()) {
-        RDP_ASSERT(registry.deactivateIfActive(existing));
-    }
+    ClearSharedSessionOwners(registry);
 
     const Render::DecoderSessionIdentity first {31, 301, 3001};
     const Render::DecoderSessionIdentity second {32, 302, 3002};
@@ -490,19 +495,24 @@ RDP_TEST_CASE(video_shared_owner_lease_barriers_cross_protocol_sink_and_stale_te
 
     RDP_ASSERT_EQ(firstSinkWrites.load(std::memory_order_acquire), 1ULL);
     RDP_ASSERT(secondActivated.load(std::memory_order_acquire));
+    // Both sessions stay live (分屏、PC 多窗口); an implicit owner resolves to neither.
+    RDP_ASSERT(registry.acquire(first));
+    RDP_ASSERT(registry.acquire(second));
+    RDP_ASSERT(!registry.snapshot().valid());
+    RDP_ASSERT(registry.ownerForSession(first.sessionId) == first);
+    RDP_ASSERT_EQ(registry.readyCount(), static_cast<size_t>(2));
+    // Tearing one down leaves the other untouched.
+    RDP_ASSERT(registry.deactivateIfActive(first));
+    RDP_ASSERT(!registry.deactivateIfActive(first));
     RDP_ASSERT(!registry.acquire(first));
     RDP_ASSERT(registry.acquire(second));
-    RDP_ASSERT(!registry.deactivateIfActive(first));
     RDP_ASSERT(registry.snapshot() == second);
     RDP_ASSERT(registry.deactivateIfActive(second));
 }
 
 RDP_TEST_CASE(video_shared_owner_lease_two_phase_transition_has_no_partial_sink) {
     Render::SessionSinkOwnerLease& registry = Render::SharedSessionSinkOwnerLease();
-    const Render::DecoderSessionIdentity existing = registry.snapshot();
-    if (existing.valid()) {
-        RDP_ASSERT(registry.deactivateIfActive(existing));
-    }
+    ClearSharedSessionOwners(registry);
 
     const Render::DecoderSessionIdentity first {61, 601, 6001};
     const Render::DecoderSessionIdentity second {62, 602, 6002};
@@ -539,7 +549,7 @@ RDP_TEST_CASE(video_shared_owner_lease_two_phase_transition_has_no_partial_sink)
     RDP_ASSERT(registry.deactivateIfActive(second));
 }
 
-RDP_TEST_CASE(video_shared_owner_begin_activate_rejects_second_live_owner) {
+RDP_TEST_CASE(video_shared_owner_begin_activate_admits_second_live_owner) {
     Render::SessionSinkOwnerLease registry;
     const Render::DecoderSessionIdentity first {63, 603, 6003};
     const Render::DecoderSessionIdentity second {64, 604, 6004};
@@ -551,22 +561,68 @@ RDP_TEST_CASE(video_shared_owner_begin_activate_rejects_second_live_owner) {
     }
     {
         auto exclusive = registry.acquireExclusive();
-        RDP_ASSERT(!exclusive.beginActivate(second));
+        RDP_ASSERT(exclusive.beginActivate(second));
         RDP_ASSERT(exclusive.accepts(first));
+        // Pending until its own commit; the first session is not displaced meanwhile.
         RDP_ASSERT(!exclusive.accepts(second));
-        RDP_ASSERT(exclusive.activeSnapshot() == first);
+        RDP_ASSERT(exclusive.snapshot() == first);
+        RDP_ASSERT(!exclusive.activeSnapshot().valid());
+        RDP_ASSERT(exclusive.commit(second));
+        RDP_ASSERT(exclusive.accepts(second));
     }
-    RDP_ASSERT(registry.snapshot() == first);
+    RDP_ASSERT(!registry.snapshot().valid());
     RDP_ASSERT(registry.acquire(first));
-    RDP_ASSERT(!registry.acquire(second));
+    RDP_ASSERT(registry.acquire(second));
+    RDP_ASSERT(registry.ownerForSession(second.sessionId) == second);
+    RDP_ASSERT(registry.deactivateIfActive(second));
+    RDP_ASSERT(registry.snapshot() == first);
+}
+
+RDP_TEST_CASE(video_shared_owner_refuses_new_generation_while_old_is_live_and_caps_owners) {
+    Render::SessionSinkOwnerLease registry;
+    const Render::DecoderSessionIdentity old {65, 605, 6005};
+    const Render::DecoderSessionIdentity next {65, 606, 6006};
+    RDP_ASSERT(registry.activate(old));
+    {
+        auto exclusive = registry.acquireExclusive();
+        RDP_ASSERT(!exclusive.beginActivate(next));
+    }
+    RDP_ASSERT(!registry.activate(next));
+    RDP_ASSERT(registry.deactivateIfActive(old));
+    RDP_ASSERT(registry.activate(next));
+    for (uint64_t index = 1; index < Render::SessionSinkOwnerLease::kMaxOwners; ++index) {
+        RDP_ASSERT(registry.activate(Render::DecoderSessionIdentity {100 + index, 700 + index, 7000 + index}));
+    }
+    RDP_ASSERT_EQ(registry.readyCount(), Render::SessionSinkOwnerLease::kMaxOwners);
+    RDP_ASSERT(!registry.activate(Render::DecoderSessionIdentity {199, 799, 7999}));
+}
+
+RDP_TEST_CASE(video_shared_owner_exclusive_owner_keeps_single_owner_rule) {
+    // Moonlight and a foreground SSH page never share the sinks; picture sessions share them with each other.
+    Render::SessionSinkOwnerLease registry;
+    const Render::DecoderSessionIdentity picture {66, 607, 6007};
+    const Render::DecoderSessionIdentity otherPicture {67, 608, 6008};
+    const Render::DecoderSessionIdentity moonlight {68, 609, 6009};
+    RDP_ASSERT(registry.activate(picture));
+    RDP_ASSERT(!registry.activate(moonlight, true));
+    RDP_ASSERT(registry.activate(otherPicture));
+    RDP_ASSERT(registry.deactivateIfActive(picture));
+    RDP_ASSERT(registry.deactivateIfActive(otherPicture));
+    {
+        auto exclusive = registry.acquireExclusive();
+        RDP_ASSERT(exclusive.beginActivate(moonlight, true));
+        RDP_ASSERT(!exclusive.beginActivate(picture));
+        RDP_ASSERT(exclusive.commit(moonlight));
+    }
+    RDP_ASSERT(!registry.activate(picture));
+    RDP_ASSERT(registry.snapshot() == moonlight);
+    RDP_ASSERT(registry.deactivateIfActive(moonlight));
+    RDP_ASSERT(registry.activate(picture));
 }
 
 RDP_TEST_CASE(rdp_callback_owner_lease_covers_source_damage_and_queue_submit) {
     Render::SessionSinkOwnerLease& registry = Render::SharedSessionSinkOwnerLease();
-    const Render::DecoderSessionIdentity existing = registry.snapshot();
-    if (existing.valid()) {
-        RDP_ASSERT(registry.deactivateIfActive(existing));
-    }
+    ClearSharedSessionOwners(registry);
 
     const Render::DecoderSessionIdentity owner {71, 701, 7001};
     RDP_ASSERT(registry.activate(owner));

@@ -72,6 +72,8 @@ function fixture() {
   }
   const mocks = {
     'BuildProfile': { DEBUG: true },
+    // The service logs each prompt answer (40e84057c).
+    '@kit.PerformanceAnalysisKit': { hilog: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} } },
     'librdpnapi.so': { default: napi },
     './ProAppRuntime': { ProAppRuntime: { getInstance: () => ({ runtime, context: () => ({ capabilities: [] }) }) } },
     './ProUsbFidoKey': { ProUsbFidoKeys, ProUsbFidoKeySession },

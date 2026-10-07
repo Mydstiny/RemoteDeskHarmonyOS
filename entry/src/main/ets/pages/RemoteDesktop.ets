@@ -406,6 +406,15 @@ import {
   shouldDeferVncRendererUntilSurface
 } from '../services/VncRendererSurfacePolicy';
 import {
+  RemotePictureSurfaceClaims,
+  RemotePictureSurfaceMode,
+  rendererNeedsOwnSurfaceId
+} from '../services/RemotePictureSurfacePolicy';
+import {
+  REMOTE_PICTURE_SESSION_LIMIT_CODE,
+  remotePictureSessionLimitMessage
+} from '../services/RemotePictureSessionLimitPolicy';
+import {
   shouldHideRemoteNavigation,
   shouldHideRemoteStatusBar,
   shouldReapplyRemoteNavigation,
@@ -9678,6 +9687,7 @@ struct RemoteDesktop {
             this.closeRemoteInputForWindowTransition('window-inactive');
           } else if (!wasActive && this.sessionWindowActive) {
             this.restartClipboardBridgeIfActiveForeground();
+            this.claimAudioFocus('window-active');
           }
         };
         try {
@@ -10507,6 +10517,10 @@ struct RemoteDesktop {
       this.rendererHandle = -1;
       this.surfaceReady = false;
       this.latestSurfaceId = '';
+      // The target window takes the process surface, as a single session always did; this page renders nothing from
+      // here on and never touches the process surface again (a failed hand-off claims it afresh below).
+      RemotePictureSurfaceClaims.release(this.pageSeq);
+      this.pictureSurfaceMode = 'own';
       if (!this.recordActiveSession(host, sessionId, false)) {
         throw new Error('authenticated session registry update rejected');
       }
@@ -10586,6 +10600,9 @@ struct RemoteDesktop {
       }
       this.pcWindowAfterAuthentication = false;
       this.pcWindowHandoffStarted = false;
+      if (!this.pcWindowHandoffComplete) {
+        this.pictureSurfaceMode = 'unset';
+      }
       hilog.error(RD_DOMAIN, RD_TAG,
         'authenticated independent window handoff failed: ' + JSON.stringify(err));
       promptAction.showToast({
@@ -10600,6 +10617,30 @@ struct RemoteDesktop {
 
   /** This page's number (see remoteDesktopPageSeq). */
   private pageSeq: number = 0;
+  /** Whether this page uses the process XComponent surface or only its own (see RemotePictureSurfacePolicy). */
+  private pictureSurfaceMode: RemotePictureSurfaceMode = 'unset';
+
+  /**
+   * 多个画面会话同时存在时，只有第一个页面使用进程级画面；之后打开的页面只画到自己的 SurfaceId 上。
+   * Decided once, when the page first needs its surface.
+   */
+  private usesOwnPictureSurface(): boolean {
+    if (this.pictureSurfaceMode === 'unset') {
+      this.pictureSurfaceMode = RemotePictureSurfaceClaims.claim(this.pageSeq);
+      hilog.info(RD_DOMAIN, RD_TAG, 'page #' + this.pageSeq.toString() + ' picture surface=' +
+        this.pictureSurfaceMode);
+    }
+    return this.pictureSurfaceMode === 'own';
+  }
+
+  /** 声音焦点：几个画面会话同时存在时，只播放获得焦点的窗口所属会话的声音。 */
+  private claimAudioFocus(reason: string): void {
+    if (this.sessionId <= 0 || !this.sessionWindowActive) {
+      return;
+    }
+    this.loader.setAudioFocusSession(this.sessionId);
+    hilog.info(RD_DOMAIN, RD_TAG, 'audio focus session=' + this.sessionId.toString() + ' reason=' + reason);
+  }
 
   async aboutToAppear(): Promise<void> {
     remoteDesktopPageSeq += 1;
@@ -11064,6 +11105,7 @@ struct RemoteDesktop {
   aboutToDisappear(): void {
     hilog.info(RD_DOMAIN, RD_TAG, 'page #' + this.pageSeq.toString() + ' disappear connected=' +
       (this.connected ? '1' : '0') + ' session=' + this.sessionId.toString());
+    RemotePictureSurfaceClaims.release(this.pageSeq);
     this.stopRustDeskQualityConfirmation();
     this.stopProRemoteContinuation();
     this.proRdpPageLive = false;
@@ -11198,13 +11240,15 @@ struct RemoteDesktop {
       return;
     }
     this.resetRemoteImeSession('session-connect');
-    const vncSurfaceReady: boolean = !this.isVncSession() ||
+    const needsOwnSurfaceId: boolean =
+      rendererNeedsOwnSurfaceId(this.isVncSession(), this.pictureSurfaceMode);
+    const vncSurfaceReady: boolean = !needsOwnSurfaceId ||
       isVncRendererSurfaceReady(this.surfaceReady, this.latestSurfaceId);
     if (!this.surfaceReady || !vncSurfaceReady) {
       hilog.info(RD_DOMAIN, RD_TAG, 'tryStartConnect: surface unavailable, waiting for SurfaceId' +
         ' ready=' + (this.surfaceReady ? 'true' : 'false') +
         ' hasId=' + (this.latestSurfaceId.trim().length > 0 ? 'true' : 'false'));
-      if (this.isVncSession()) {
+      if (needsOwnSurfaceId) {
         this.pollSurfaceId(0);
       }
       return;
@@ -11937,7 +11981,7 @@ struct RemoteDesktop {
         desktop.width, desktop.height);
       const surfaceId: string = this.latestSurfaceId.length > 0 ? this.latestSurfaceId : this.xcId;
       const result = this.loader.reattachRenderForForeground(
-        surfaceId, pageSurface.width, pageSurface.height, this.sessionId);
+        surfaceId, pageSurface.width, pageSurface.height, this.sessionId, !this.usesOwnPictureSurface());
       if (result.ok && result.value !== undefined && result.value > 0) {
         this.rendererHandle = result.value;
         if (this.pendingHost !== null) {
@@ -12063,6 +12107,7 @@ struct RemoteDesktop {
     this.registryPresentationRestorePending = true;
     this.bgRestorePending = true;
     this.cleanupStarted = false;
+    this.claimAudioFocus('restore');
     this.orientationCleanupRequested = false;
     this.connectStarted = false;
     this.connected = false;
@@ -16208,15 +16253,18 @@ struct RemoteDesktop {
       // 断开清理会把 native surface 标记为 detached；马上重连时
       // initRenderer 之前必须重新绑定最新 SurfaceId，否则新会话的
       // 每一帧都会被 SurfaceDetached 拒绝，表现为“断线后立刻重连失败”。
-      if (isVnc && !isVncRendererSurfaceReady(this.surfaceReady, this.latestSurfaceId)) {
+      const ownPictureSurface: boolean = this.usesOwnPictureSurface();
+      const rendererOnOwnSurfaceId: boolean = rendererNeedsOwnSurfaceId(isVnc, this.pictureSurfaceMode);
+      if (rendererOnOwnSurfaceId && !isVncRendererSurfaceReady(this.surfaceReady, this.latestSurfaceId)) {
         this.connectStarted = false;
         this.surfaceReady = false;
         hilog.warn(RD_DOMAIN, RD_TAG,
-          'doConnect: VNC SurfaceId invalid before renderer bind; retrying after SurfaceId');
+          'doConnect: SurfaceId invalid before renderer bind; retrying after SurfaceId vnc=' +
+            (isVnc ? '1' : '0') + ' own=' + (ownPictureSurface ? '1' : '0'));
         this.pollSurfaceId(0);
         return;
       }
-      if (this.latestSurfaceId.trim().length > 0) {
+      if (!ownPictureSurface && this.latestSurfaceId.trim().length > 0) {
         const surfaceId: string = this.latestSurfaceId.trim();
         const rebound: boolean = rdpnapi.setXComponentSurfaceId(
           surfaceId, pageSurface.width, pageSurface.height) as boolean;
@@ -16240,9 +16288,10 @@ struct RemoteDesktop {
       }
       console.info('[RD-DIAG] initRenderer: xcId=' + this.xcId + ' w=' + pageSurface.width +
         ' h=' + pageSurface.height + ' remote=' + w + 'x' + h);
+      const rendererSurface: string =
+        rendererOnOwnSurfaceId && this.latestSurfaceId.trim().length > 0 ? this.latestSurfaceId.trim() : this.xcId;
       const rHandle: number = this.loader.initRenderer(
-        isVnc && this.latestSurfaceId.trim().length > 0 ? this.latestSurfaceId.trim() : this.xcId,
-        pageSurface.width, pageSurface.height);
+        rendererSurface, pageSurface.width, pageSurface.height, -1);
       console.info('[RD-DIAG] initRenderer returned: ' + rHandle);
       if (rHandle <= 0) {
         throw new Error('渲染器初始化失败 [E-RENDERER-INIT] rc=' + rHandle);
@@ -16734,9 +16783,16 @@ struct RemoteDesktop {
       hilog.info(RD_DOMAIN, RD_TAG, 'NAPI connect returned: ' + sid);
       if (sid <= 0) {
         let errMsg: string = '连接失败 [E-CONNECT-' + Math.abs(sid) + ']';
-        const busy: string = sid === -2 ?
+        const pictureSessionLimit: number = ExtensionLoader.pictureSessionLimit();
+        // Several picture sessions may be open at once up to the device's limit; a one-session phone still names
+        // the session in the way when native refuses.
+        const busy: string = sid === -2 && pictureSessionLimit <= 1 ?
           remoteVideoSessionBusyMessage(this.activeSessionRegistry.getActive(), host.id, '') : '';
-        if (sid === -1) { errMsg = '协议 "' + host.protocol + '" 未找到 [E-CONNECT-1]'; }
+        if (sid === REMOTE_PICTURE_SESSION_LIMIT_CODE) {
+          errMsg = remotePictureSessionLimitMessage(pictureSessionLimit,
+            this.activeSessionRegistry.getActive(), host.id, '') + ' [E-CONNECT-LIMIT]';
+        }
+        else if (sid === -1) { errMsg = '协议 "' + host.protocol + '" 未找到 [E-CONNECT-1]'; }
         else if (busy !== '') { errMsg = busy + ' [E-CONNECT-2]'; }
         else if (sid === -2 && host.protocol === 'rustdesk') { errMsg = 'RustDesk helper 未运行 [E-CONNECT-2]'; }
         else if (sid === -2) { errMsg = '连接被拒绝 (' + host.host + ':' + host.port + ') [E-CONNECT-2]'; }
@@ -16765,10 +16821,34 @@ struct RemoteDesktop {
       this.phoneAdaptiveOrientation = host.rustdeskAdaptiveOrientation;
       this.explicitPhoneStatus = '';
       this.sessionId = sid;
+      this.claimAudioFocus('connect');
       this.nativeDisconnectIdentity =
         this.loader.captureDisconnectIdentity(sid);
       if (this.nativeDisconnectIdentity === null) {
         throw new Error('原生会话所有权回执不可用 [E-SESSION-OWNER-RECEIPT]');
+      }
+      // The renderer made before connect was pending until this session's activation adopted it. With several picture
+      // pages another session could have taken it (two pages between renderer and connect at once): make this session
+      // hold its own renderer, rebuilding it for this session when it went elsewhere.
+      if (this.rendererHandle > 0 && !this.loader.bindRendererToSession(this.rendererHandle, sid)) {
+        hilog.warn(RD_DOMAIN, RD_TAG, 'doConnect: renderer not held by session ' + sid.toString() +
+          '; rebuilding it for this session');
+        this.loader.destroyRendererHandle(this.rendererHandle);
+        this.rendererHandle = -1;
+        // Destroying the process-surface renderer releases the process window: bind this page's surface again first.
+        if (!ownPictureSurface && this.latestSurfaceId.trim().length > 0) {
+          rdpnapi.setXComponentSurfaceId(this.latestSurfaceId.trim(), pageSurface.width, pageSurface.height);
+        }
+        const ownRenderer: number = this.loader.initRenderer(
+          rendererSurface, pageSurface.width, pageSurface.height, sid);
+        if (ownRenderer <= 0 || !this.loader.bindRendererToSession(ownRenderer, sid)) {
+          if (ownRenderer > 0) {
+            this.loader.destroyRendererHandle(ownRenderer);
+          }
+          throw new Error('渲染器初始化失败 [E-RENDERER-OWNER] rc=' + ownRenderer);
+        }
+        this.rendererHandle = ownRenderer;
+        this.nativeHandles.markSurfaceAttached(this.rendererHandle);
       }
       // A new session receives its own bounded presentation attempt. Runtime
       // identity fencing prevents foreground/PiP restoration from repeating it.
@@ -18063,7 +18143,8 @@ struct RemoteDesktop {
       // Rebinding with the page or remote logical size changes the native window
       // dimensions and makes the PIP image appear cropped or quarter-sized.
       const result = this.loader.reattachRenderForForeground(
-        surface.surfaceId, surface.surfaceWidth, surface.surfaceHeight, this.sessionId);
+        surface.surfaceId, surface.surfaceWidth, surface.surfaceHeight, this.sessionId,
+        !this.usesOwnPictureSurface());
       if (!result.ok || result.value === undefined || result.value <= 0) {
         hilog.warn(RD_DOMAIN, RD_TAG, 'attachRendererToPipSurface: renderer init failed code=' +
           result.code + ' msg=' + result.message);
@@ -18143,7 +18224,8 @@ struct RemoteDesktop {
     }
     try {
       this.releaseCanvasPinchInput('pip-surface-changed');
-      const rebound: boolean = rdpnapi.setXComponentSurfaceId(
+      // A page on its own surface never rebinds the process surface (another session's page owns it).
+      const rebound: boolean = this.usesOwnPictureSurface() || rdpnapi.setXComponentSurfaceId(
         surface.surfaceId, surface.surfaceWidth, surface.surfaceHeight) as boolean;
       if (!rebound) {
         hilog.warn(RD_DOMAIN, RD_TAG, 'handlePipSurfaceChanged: native surface update failed id=' +
@@ -18581,6 +18663,9 @@ struct RemoteDesktop {
     this.pipRendererHandle = -1;
     this.nativeHandles.markAsyncTeardownTransferred();
     this.pcWindowHandoffComplete = true;
+    // The page that took the session over renders it; this one never touches the process surface again.
+    RemotePictureSurfaceClaims.release(this.pageSeq);
+    this.pictureSurfaceMode = 'own';
     hilog.warn(RD_DOMAIN, RD_TAG,
       'registry restore superseded; local page relinquished without native disconnect');
   }
@@ -18720,8 +18805,9 @@ struct RemoteDesktop {
         this.preAuthenticatedSessionPending = false;
       }
       if (preAuthenticatedAttach) {
+        this.usesOwnPictureSurface();
         const renderer: number = this.loader.initRenderer(
-          surfaceId, pageSurface.width, pageSurface.height);
+          surfaceId, pageSurface.width, pageSurface.height, restoreSessionId > 0 ? restoreSessionId : -1);
         if (renderer <= 0) {
           throw new Error('预鉴权会话画布初始化失败 [E-RUSTDESK-PREFLIGHT-RENDERER]');
         }
@@ -18735,7 +18821,7 @@ struct RemoteDesktop {
           restoringRustDesk && this.isDesktopDevice;
         const decoder: number = this.loader.initDecoder(
           desktop.width, desktop.height, decoderCodec, renderer,
-          desktopRustDeskSurfaceCompatibility);
+          desktopRustDeskSurfaceCompatibility, restoreSessionId > 0 ? restoreSessionId : -1);
         if (decoder <= 0) {
           throw new Error('后台恢复解码器初始化失败 [E-DECODER-RESTORE-INIT] rc=' + decoder);
         }
@@ -18808,7 +18894,7 @@ struct RemoteDesktop {
         return;
       }
       const result = this.loader.reattachRenderForForeground(
-        surfaceId, pageSurface.width, pageSurface.height, this.sessionId);
+        surfaceId, pageSurface.width, pageSurface.height, this.sessionId, !this.usesOwnPictureSurface());
       if (result.ok && result.value !== undefined && result.value > 0) {
         this.rendererHandle = result.value;
         if (this.pendingHost !== null) {
@@ -19260,6 +19346,14 @@ struct RemoteDesktop {
       const pageSurface: RemoteSessionPipContentSize = this.currentPageSurfaceSize(
         preserveRdpGeometry ? this.remoteWidth : desktop.width,
         preserveRdpGeometry ? this.remoteHeight : desktop.height);
+      if (this.usesOwnPictureSurface()) {
+        // Another picture session's page owns the process surface; this page renders to its own SurfaceId only.
+        this.surfaceReady = surfaceId.trim().length > 0;
+        hilog.info(RD_DOMAIN, RD_TAG, 'onSurfaceCreated: own picture surface id=' + surfaceId +
+          ' page=' + pageSurface.width + 'x' + pageSurface.height);
+        this.tryStartConnect();
+        return;
+      }
       const ok: boolean = rdpnapi.setXComponentSurfaceId(
         surfaceId, pageSurface.width, pageSurface.height) as boolean;
       hilog.info(RD_DOMAIN, RD_TAG, 'setXComponentSurfaceId: surfaceId=' + surfaceId +
@@ -19310,7 +19404,8 @@ struct RemoteDesktop {
   // 轮询获取 surfaceId (onSurfaceCreated 回调在 API 23 不可用)
   private pollSurfaceId(attempt: number): void {
     const currentSurfaceReady: boolean = this.surfaceReady &&
-      (!this.isVncSession() || isVncRendererSurfaceReady(this.surfaceReady, this.latestSurfaceId));
+      (!rendererNeedsOwnSurfaceId(this.isVncSession(), this.pictureSurfaceMode) ||
+        isVncRendererSurfaceReady(this.surfaceReady, this.latestSurfaceId));
     if (currentSurfaceReady || (this.connectStarted && !this.bgRestorePending)) {
       return;
     }
@@ -19350,6 +19445,14 @@ struct RemoteDesktop {
   }
 
   private markXComponentSurfaceDetached(source: string): void {
+    // This page's renderer stops either way (one on its own surface follows only that surface).
+    this.loader.markRendererSurfaceDestroyed(this.rendererHandle);
+    if (this.pictureSurfaceMode !== 'process') {
+      // The process surface is another session's page's, or this page never bound it.
+      hilog.info(RD_DOMAIN, RD_TAG, 'picture surface (' + this.pictureSurfaceMode + ') detached from ' + source +
+        ' renderer=' + this.rendererHandle.toString());
+      return;
+    }
     try {
       rdpnapi.markXComponentSurfaceDestroyed();
     } catch (_e) {

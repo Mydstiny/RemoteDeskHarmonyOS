@@ -613,6 +613,8 @@ namespace DecoderNapi {
     void DeactivateDecoder(int64_t decoderHandle, const DecoderSessionIdentity& owner);
     void DestroyDecoderHandle(int64_t decoderHandle);
     void DestroyDecoderHandle(int64_t decoderHandle, const DecoderSessionIdentity& owner);
+    /** The session a decoder handle is bound to (invalid when the handle is unknown). */
+    DecoderSessionIdentity BoundOwnerForDecoderHandle(int64_t decoderHandle);
 #if defined(RDP_NATIVE_CALLBACK_TESTING)
     std::shared_ptr<HardwareDecoder> RegisterCallbackTestDecoder(
         const DecoderSessionIdentity& owner, int64_t& handle);

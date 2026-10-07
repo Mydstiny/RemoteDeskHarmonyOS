@@ -373,10 +373,21 @@ static void QuiesceAudioCapturer(
     }
 }
 
+// The session a capturer handle is bound to (several picture sessions may be live); an unknown handle falls back
+// to the only live session, as before.
+static Render::DecoderSessionIdentity OwnerForCapturerHandle(int64_t handle) {
+    if (handle > 0) {
+        const auto metadata = g_audioCapturerRegistry.snapshot(handle);
+        if (metadata.found && metadata.boundOwner.valid()) {
+            return metadata.boundOwner;
+        }
+    }
+    return Render::SharedSessionSinkOwnerLease().snapshot();
+}
+
 static AudioCapturerAccess AcquireAudioCapturer(int64_t handle) {
     AudioCapturerAccess access;
-    const Render::DecoderSessionIdentity owner =
-        Render::SharedSessionSinkOwnerLease().snapshot();
+    const Render::DecoderSessionIdentity owner = OwnerForCapturerHandle(handle);
     if (!owner.valid()) {
         return access;
     }
@@ -401,13 +412,22 @@ static bool ReadAudioCapturerHandle(napi_env env, napi_callback_info info,
 }
 
 napi_value NapiInitAudioCapturer(napi_env env, napi_callback_info info) {
-    size_t argc = 2; napi_value args[2];
+    // initAudioCapturer(sampleRate, channels, sessionId?): the session the microphone is redirected to.
+    size_t argc = 3; napi_value args[3] = {nullptr, nullptr, nullptr};
     napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
     int32_t sr = 16000, ch = 1;
     if (argc >= 1) napi_get_value_int32(env, args[0], &sr);
     if (argc >= 2) napi_get_value_int32(env, args[1], &ch);
-    const Render::DecoderSessionIdentity owner =
-        Render::SharedSessionSinkOwnerLease().snapshot();
+    int64_t sessionId = 0;
+    if (argc >= 3 && args[2] != nullptr) {
+        napi_valuetype type = napi_undefined;
+        if (napi_typeof(env, args[2], &type) == napi_ok && type == napi_number) {
+            napi_get_value_int64(env, args[2], &sessionId);
+        }
+    }
+    const Render::DecoderSessionIdentity owner = sessionId > 0 ?
+        Render::SharedSessionSinkOwnerLease().ownerForSession(static_cast<uint64_t>(sessionId)) :
+        (sessionId < 0 ? Render::DecoderSessionIdentity {} : Render::SharedSessionSinkOwnerLease().snapshot());
     const auto ownerLease = Render::SharedSessionSinkOwnerLease().acquire(owner);
     if (!ownerLease) {
         napi_value error;
@@ -451,8 +471,7 @@ napi_value NapiDestroyAudioCapturer(napi_env env, napi_callback_info info) {
     if (!ReadAudioCapturerHandle(env, info, handle)) {
         napi_value u; napi_get_undefined(env, &u); return u;
     }
-    const Render::DecoderSessionIdentity owner =
-        Render::SharedSessionSinkOwnerLease().snapshot();
+    const Render::DecoderSessionIdentity owner = OwnerForCapturerHandle(handle);
     if (owner.valid()) {
         const auto ownerLease = Render::SharedSessionSinkOwnerLease().acquire(owner);
         if (ownerLease) {

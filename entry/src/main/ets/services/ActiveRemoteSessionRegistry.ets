@@ -474,9 +474,9 @@ export class ActiveRemoteSessionRegistry {
 }
 
 /**
- * The native media path (decoder, renderer, audio and input) serves one picture session at a time: a second RDP,
- * RustDesk or VNC connection is refused while another one is live, even in its own window. Returns what to tell the
- * user ('' when nothing is in the way): which session holds it and that it has to be closed first.
+ * On a device that allows one picture session at a time (a phone; see RemotePictureSessionLimitPolicy), a second RDP,
+ * RustDesk or VNC connection is refused while another one is live. Returns what to tell the user ('' when nothing is
+ * in the way): which session holds it and that it has to be closed first.
  */
 export function remoteVideoSessionBusyMessage(active: ActiveRemoteSessionRecord | null, hostId: string,
   activeLabel: string): string {

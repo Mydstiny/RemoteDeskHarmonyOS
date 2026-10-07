@@ -21,6 +21,7 @@
 #include <ohaudio/native_audiostream_base.h>
 
 #include "audio_queue_policy.h"
+#include "audio_activity_state.h"
 #include "render/callback_admission_context.h"
 #include "render/decoder_callback_gate.h"
 #include "render/platform_lifecycle.h"
@@ -54,7 +55,8 @@ enum class AudioPlayerError {
  */
 class AudioPlayer : public std::enable_shared_from_this<AudioPlayer> {
 public:
-    explicit AudioPlayer(Render::DecoderSessionIdentity owner = {});
+    explicit AudioPlayer(Render::DecoderSessionIdentity owner = {},
+                         std::shared_ptr<AudioActivityState> activity = nullptr);
     ~AudioPlayer();
 
     /**
@@ -127,6 +129,8 @@ private:
     int                   sampleRate_;
     int                   channels_;
     const Render::DecoderSessionIdentity owner_;
+    // The owning session's activity state (each picture session has its own); null for test players.
+    const std::shared_ptr<AudioActivityState> activity_;
     AudioPlayerState      state_;
     std::mutex            bufferMutex_;
     std::vector<uint8_t>  pcmBuffer_;
@@ -193,11 +197,15 @@ namespace AudioPlayerNapi {
     void DestroyDetachedNative(int64_t handle, std::shared_ptr<AudioPlayer> activePlayer,
                                const Render::DecoderSessionIdentity& owner);
     bool IsActivePlaybackReceiving();
+    bool IsActivePlaybackReceiving(const Render::DecoderSessionIdentity& owner);
     bool PollActiveAudioInactivity(const Render::DecoderSessionIdentity& owner,
                                    uint64_t nowMs);
     bool SuspendActiveNative(const Render::DecoderSessionIdentity& owner);
     bool IsActiveAudioMuted();
     void SetActiveAudioMuted(bool muted);
+    void SetActiveAudioMuted(const Render::DecoderSessionIdentity& owner, bool muted);
+    // Only the focused picture session plays while several are live (0: no focus chosen, all play).
+    void SetAudioFocusSession(uint64_t sessionId);
 #if defined(RDP_NATIVE_CALLBACK_TESTING)
     std::shared_ptr<AudioPlayer> RegisterCallbackTestPlayer(
         const Render::DecoderSessionIdentity& owner, int64_t& handle);

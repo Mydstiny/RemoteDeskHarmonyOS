@@ -2196,6 +2196,9 @@ struct DecoderContext {
     std::atomic<bool> pipelineTransitioning {false};
     std::condition_variable pipelineTransitionCv;
     int64_t rendererHandle = 0;
+    // True while this context is its owner session's published decoder (the slot's handle). Read lock-free under
+    // pipelineMutex, where the active-owner mutex may not be taken; written only under that mutex.
+    std::atomic<bool> ownerActive {false};
     DecoderSessionIdentity owner;
     // A decoder handle is permanently bound to the session generation that
     // created it. Keep this value after detach so a stale public handle cannot
@@ -2237,19 +2240,90 @@ struct DecoderContext {
     int64_t retiringRendererHandle = 0;
 };
 
-static std::atomic<int64_t> g_activeDecoderHandle {0};
+// One slot per live picture session (several sessions may decode at the same time: Pad split screen, PC windows).
+// A slot holds what used to be process-wide: the session's published decoder, its selected display and the
+// native-image presentation mode. All fields are guarded by g_activeDecoderOwnerMutex.
+struct ActiveDecoderSlot {
+    DecoderSessionIdentity owner;
+    int64_t handle = 0;
+    Render::NativeImagePresentationMode presentationMode =
+        Render::NativeImagePresentationMode::Identity;
+    uint64_t displayGeneration = 0;
+    // -1 means that the first frame establishes the legacy/current display. Once
+    // a RustDesk display is selected, frames from every other display are dropped
+    // before entering either decoder implementation.
+    int display = -1;
+};
 static std::mutex g_activeDecoderOwnerMutex;
-static DecoderSessionIdentity g_activeDecoderOwner;
-static std::atomic<Render::NativeImagePresentationMode>
-    g_activeNativeImagePresentationMode {
-        Render::NativeImagePresentationMode::Identity};
-static std::atomic<uint64_t> g_activeDisplayGeneration {0};
+static std::vector<ActiveDecoderSlot> g_activeDecoders;
+static std::atomic<uint64_t> g_nextDisplayGeneration {1};
 static std::atomic<uint64_t> g_nextDecoderGeneration {1};
-// -1 means that the first frame establishes the legacy/current display. Once
-// a RustDesk display is selected, frames from every other display are dropped
-// before entering either decoder implementation.
-static std::atomic<int> g_activeDisplay {-1};
 static OpaqueHandleRegistry<DecoderContext> g_decoderRegistry;
+
+static uint64_t NextDisplayGeneration() {
+    return g_nextDisplayGeneration.fetch_add(1, std::memory_order_acq_rel);
+}
+
+// Callers hold g_activeDecoderOwnerMutex.
+static ActiveDecoderSlot* ActiveDecoderSlotLocked(const DecoderSessionIdentity& owner) {
+    if (!owner.valid()) {
+        return nullptr;
+    }
+    for (ActiveDecoderSlot& slot : g_activeDecoders) {
+        if (slot.owner == owner) {
+            return &slot;
+        }
+    }
+    return nullptr;
+}
+
+static int64_t ActiveDecoderHandleLocked(const DecoderSessionIdentity& owner) {
+    const ActiveDecoderSlot* slot = ActiveDecoderSlotLocked(owner);
+    return slot != nullptr ? slot->handle : 0;
+}
+
+// Publishes (or clears, handle 0) the session's decoder and keeps each context's lock-free ownerActive flag in step.
+// Registry access under the active-owner mutex follows the established order (owner mutex, then registry).
+static void PublishActiveDecoderHandleLocked(ActiveDecoderSlot& slot, int64_t handle) {
+    if (slot.handle == handle) {
+        return;
+    }
+    if (slot.handle > 0) {
+        if (auto previous = g_decoderRegistry.retain(slot.handle)) {
+            previous->ownerActive.store(false, std::memory_order_release);
+        }
+    }
+    slot.handle = handle;
+    if (handle > 0) {
+        if (auto current = g_decoderRegistry.retain(handle)) {
+            current->ownerActive.store(true, std::memory_order_release);
+        }
+    }
+}
+
+// Clears `handle` from whichever session published it.
+static void UnpublishDecoderHandleLocked(int64_t handle) {
+    if (handle <= 0) {
+        return;
+    }
+    for (ActiveDecoderSlot& slot : g_activeDecoders) {
+        if (slot.handle == handle) {
+            PublishActiveDecoderHandleLocked(slot, 0);
+        }
+    }
+}
+
+// Entry points that carry only a decoder handle act for the session that handle is bound to; with a single live
+// session an unbound handle falls back to it, as before.
+static DecoderSessionIdentity OwnerForDecoderHandle(int64_t handle) {
+    if (handle > 0) {
+        const auto metadata = g_decoderRegistry.snapshot(handle);
+        if (metadata.found && metadata.boundOwner.valid()) {
+            return metadata.boundOwner;
+        }
+    }
+    return Render::SharedSessionSinkOwnerLease().snapshot();
+}
 constexpr size_t kMaxSoftwareDecodeQueue = 30;
 
 DecoderCallbackTarget AcquireDecoderCallbackTarget(
@@ -2320,16 +2394,6 @@ int64_t RegisterDecoderContextForOwner(
         ctx->dropCounterGeneration = ctx->decoderGeneration;
     }
     return handle;
-}
-
-int64_t RegisterDecoderContext(const std::shared_ptr<DecoderContext>& ctx) {
-    if (!ctx) {
-        return 0;
-    }
-    const DecoderSessionIdentity owner =
-        Render::SharedSessionSinkOwnerLease().snapshot();
-    const auto ownerLease = Render::SharedSessionSinkOwnerLease().acquire(owner);
-    return ownerLease ? RegisterDecoderContextForOwner(ctx, owner) : 0;
 }
 
 bool StopSoftwareWorker(DecoderContext* ctx, bool waitForCompletion = false) {
@@ -3045,8 +3109,7 @@ OwnedDecodeOutcome DecodeNativeForOwnerOutcome(
         // decoder operation takes the owner gate or active-owner mutex back
         // while holding the pipeline mutex.
         std::lock_guard<std::mutex> ownerLock(g_activeDecoderOwnerMutex);
-        if (!Render::SessionOwnerMatches(g_activeDecoderOwner, owner) ||
-            g_activeDecoderHandle.load(std::memory_order_acquire) != handle) {
+        if (ActiveDecoderHandleLocked(owner) != handle) {
             return {};
         }
         decoderLease = g_decoderRegistry.acquire(handle, owner);
@@ -3090,7 +3153,7 @@ OwnedDecodeOutcome DecodeNativeForOwnerOutcome(
                      "[Decoder] native decode skipped: pipeline busy, retry via next frame");
         return {-1, DecoderNapi::OwnedSubmitStatus::Backpressure};
     }
-    if (g_activeDecoderHandle.load(std::memory_order_acquire) != handle) {
+    if (!decoderLease->ownerActive.load(std::memory_order_acquire)) {
         return {};
     }
     if (decoderLease->pipelineTransitioning.load(std::memory_order_acquire)) {
@@ -3171,8 +3234,7 @@ int DecodePublicNative(int64_t handle, const DecoderSessionIdentity& owner,
     DecoderHandleLease decoderLease;
     {
         std::lock_guard<std::mutex> ownerLock(g_activeDecoderOwnerMutex);
-        if (!Render::SessionOwnerMatches(g_activeDecoderOwner, owner) ||
-            g_activeDecoderHandle.load(std::memory_order_acquire) != handle) {
+        if (ActiveDecoderHandleLocked(owner) != handle) {
             return DecoderNapi::kDecodeInactiveSession;
         }
         decoderLease = g_decoderRegistry.acquire(handle, owner);
@@ -3368,10 +3430,11 @@ bool PublishCallbackTestDecoder(
     }
     {
         std::lock_guard<std::mutex> ownerLock(g_activeDecoderOwnerMutex);
-        if (!Render::SessionOwnerMatches(g_activeDecoderOwner, owner)) {
+        ActiveDecoderSlot* slot = ActiveDecoderSlotLocked(owner);
+        if (slot == nullptr) {
             return false;
         }
-        g_activeDecoderHandle.store(handle, std::memory_order_release);
+        PublishActiveDecoderHandleLocked(*slot, handle);
     }
     return true;
 }
@@ -3403,11 +3466,15 @@ void DestroyCallbackTestDecoder(
 /**
  * NAPI: initDecoder(width: number, height: number, codec: number,
  *                   rendererHandle?: number,
- *                   desktopSurfaceCompatibility?: boolean): number
+ *                   desktopSurfaceCompatibility?: boolean,
+ *                   ownerSessionId?: number): number
+ *
+ * ownerSessionId names the picture session the decoder belongs to; required once several sessions are live (without
+ * it the only live session is used, as before; a negative id fails closed).
  */
 napi_value NapiInitDecoder(napi_env env, napi_callback_info info) {
-    size_t argc = 5;
-    napi_value args[5] = {nullptr, nullptr, nullptr, nullptr, nullptr};
+    size_t argc = 6;
+    napi_value args[6] = {nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
     napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
 
     int32_t width, height, codecInt;
@@ -3422,6 +3489,13 @@ napi_value NapiInitDecoder(napi_env env, napi_callback_info info) {
     if (argc >= 5 && args[4] != nullptr) {
         napi_get_value_bool(env, args[4], &desktopSurfaceCompatibility);
     }
+    int64_t ownerSessionId = 0;
+    if (argc >= 6 && args[5] != nullptr) {
+        napi_valuetype ownerType = napi_undefined;
+        if (napi_typeof(env, args[5], &ownerType) == napi_ok && ownerType == napi_number) {
+            napi_get_value_int64(env, args[5], &ownerSessionId);
+        }
+    }
 
     CodecType codec = static_cast<CodecType>(codecInt);
 
@@ -3432,14 +3506,27 @@ napi_value NapiInitDecoder(napi_env env, napi_callback_info info) {
     ctx->desktopSurfaceCompatibility = desktopSurfaceCompatibility;
     ctx->width = width;
     ctx->height = height;
-    const int64_t handleValue = RegisterDecoderContext(ctx);
+    // The owner both the hardware decoder and its software fallback register for: the named live session; none for
+    // a page whose session is not live yet (fails closed, never another session's decoder); the only live session
+    // when no id is given (single-session behavior).
+    const DecoderSessionIdentity requestedOwner = ownerSessionId > 0 ?
+        Render::SharedSessionSinkOwnerLease().ownerForSession(static_cast<uint64_t>(ownerSessionId)) :
+        (ownerSessionId < 0 ? DecoderSessionIdentity {} : Render::SharedSessionSinkOwnerLease().snapshot());
+    if (!requestedOwner.valid()) {
+        napi_value errVal;
+        napi_create_int32(env, -1, &errVal);
+        return errVal;
+    }
+    int64_t handleValue = 0;
+    {
+        const auto requestedOwnerLease = Render::SharedSessionSinkOwnerLease().acquire(requestedOwner);
+        handleValue = requestedOwnerLease ? RegisterDecoderContextForOwner(ctx, requestedOwner) : 0;
+    }
     if (handleValue > 0) {
         {
             std::lock_guard<std::mutex> ownerLock(g_activeDecoderOwnerMutex);
-            if (Render::SessionOwnerMatches(g_activeDecoderOwner, ctx->owner)) {
-                ctx->presentationMode.store(
-                    g_activeNativeImagePresentationMode.load(std::memory_order_acquire),
-                    std::memory_order_release);
+            if (const ActiveDecoderSlot* slot = ActiveDecoderSlotLocked(ctx->owner)) {
+                ctx->presentationMode.store(slot->presentationMode, std::memory_order_release);
             }
         }
         auto decoder = std::shared_ptr<HardwareDecoder>(new HardwareDecoder());
@@ -3479,7 +3566,13 @@ napi_value NapiInitDecoder(napi_env env, napi_callback_info info) {
                 std::memory_order_release);
             softwareCtx->width = width;
             softwareCtx->height = height;
-            const int64_t softwareHandle = RegisterDecoderContext(softwareCtx);
+            int64_t softwareHandle = 0;
+            {
+                const auto requestedOwnerLease =
+                    Render::SharedSessionSinkOwnerLease().acquire(requestedOwner);
+                softwareHandle = requestedOwnerLease ?
+                    RegisterDecoderContextForOwner(softwareCtx, requestedOwner) : 0;
+            }
             if (softwareHandle <= 0) {
                 softwareDecoder->Destroy();
                 napi_value errVal;
@@ -3524,11 +3617,7 @@ napi_value NapiDecodeFrame(napi_env env, napi_callback_info info) {
     int64_t timestamp = 0;
     napi_get_value_int64(env, args[3], &timestamp);
 
-    DecoderSessionIdentity owner;
-    {
-        std::lock_guard<std::mutex> ownerLock(g_activeDecoderOwnerMutex);
-        owner = g_activeDecoderOwner;
-    }
+    const DecoderSessionIdentity owner = OwnerForDecoderHandle(handleVal);
     const int result = DecodePublicNative(handleVal, owner,
                                           static_cast<const uint8_t*>(data), size,
                                           static_cast<uint64_t>(timestamp));
@@ -3548,18 +3637,13 @@ napi_value NapiGetTextureId(napi_env env, napi_callback_info info) {
 
     int64_t handleVal;
     napi_get_value_int64(env, args[0], &handleVal);
-    DecoderSessionIdentity owner;
-    {
-        std::lock_guard<std::mutex> ownerLock(g_activeDecoderOwnerMutex);
-        owner = g_activeDecoderOwner;
-    }
+    const DecoderSessionIdentity owner = OwnerForDecoderHandle(handleVal);
     const auto sinkLease = Render::SharedSessionSinkOwnerLease().acquire(owner);
     DecoderHandleLease decoderLease;
     bool isActive = false;
     if (sinkLease) {
         std::lock_guard<std::mutex> ownerLock(g_activeDecoderOwnerMutex);
-        isActive = Render::SessionOwnerMatches(g_activeDecoderOwner, owner) &&
-            g_activeDecoderHandle.load(std::memory_order_acquire) == handleVal;
+        isActive = ActiveDecoderHandleLocked(owner) == handleVal;
         if (isActive) {
             decoderLease = g_decoderRegistry.acquire(handleVal, owner);
         }
@@ -3588,7 +3672,8 @@ napi_value NapiDestroyDecoder(napi_env env, napi_callback_info info) {
 
     int64_t handleVal;
     napi_get_value_int64(env, args[0], &handleVal);
-    const DecoderSessionIdentity owner = Render::SharedSessionSinkOwnerLease().snapshot();
+    // The handle names its session (several may be live); an unbound handle falls back to the only live one.
+    const DecoderSessionIdentity owner = OwnerForDecoderHandle(handleVal);
     if (owner.valid()) {
         DecoderNapi::DeactivateDecoder(handleVal, owner);
         DecoderNapi::DestroyDecoderHandle(handleVal, owner);
@@ -3611,19 +3696,14 @@ napi_value NapiTestDecoderH264(napi_env env, napi_callback_info info) {
 
     int64_t handleVal;
     napi_get_value_int64(env, args[0], &handleVal);
-    DecoderSessionIdentity owner;
-    {
-        std::lock_guard<std::mutex> ownerLock(g_activeDecoderOwnerMutex);
-        owner = g_activeDecoderOwner;
-    }
+    const DecoderSessionIdentity owner = OwnerForDecoderHandle(handleVal);
     bool decoderReady = false;
     {
         const auto sinkLease = Render::SharedSessionSinkOwnerLease().acquire(owner);
         DecoderHandleLease decoderLease;
         if (sinkLease) {
             std::lock_guard<std::mutex> ownerLock(g_activeDecoderOwnerMutex);
-            if (Render::SessionOwnerMatches(g_activeDecoderOwner, owner) &&
-                g_activeDecoderHandle.load(std::memory_order_acquire) == handleVal) {
+            if (ActiveDecoderHandleLocked(owner) == handleVal) {
                 decoderLease = g_decoderRegistry.acquire(handleVal, owner);
             }
         }
@@ -3717,12 +3797,21 @@ napi_value NapiRequestDecoderRecovery(napi_env env, napi_callback_info info) {
  * restore path uses the same owner and renderer validation.
  */
 napi_value NapiRebindActiveVideoPipeline(napi_env env, napi_callback_info info) {
-    (void)info;
-    DecoderSessionIdentity owner;
-    {
-        std::lock_guard<std::mutex> ownerLock(g_activeDecoderOwnerMutex);
-        owner = g_activeDecoderOwner;
+    // rebindActiveVideoPipeline(sessionId?: number): with several live picture sessions the page names its own.
+    size_t argc = 1;
+    napi_value args[1] = {nullptr};
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    int64_t sessionId = 0;
+    if (argc >= 1 && args[0] != nullptr) {
+        napi_valuetype type = napi_undefined;
+        if (napi_typeof(env, args[0], &type) == napi_ok && type == napi_number) {
+            napi_get_value_int64(env, args[0], &sessionId);
+        }
     }
+    // A negative id is a page whose session is not live yet: nothing to rebind, never another session's pipeline.
+    const DecoderSessionIdentity owner = sessionId > 0 ?
+        Render::SharedSessionSinkOwnerLease().ownerForSession(static_cast<uint64_t>(sessionId)) :
+        (sessionId < 0 ? DecoderSessionIdentity {} : Render::SharedSessionSinkOwnerLease().snapshot());
     const bool rebound = DecoderNapi::RebindActiveVideoPipeline(owner);
     napi_value ret;
     napi_get_boolean(env, rebound, &ret);
@@ -3818,32 +3907,26 @@ napi_value NapiGetHardwareVideoDecoderCapabilities(
 }
 
 int DecoderNapi::DecodeNative(int64_t handle, const VideoFrame& frame) {
-    DecoderSessionIdentity owner;
-    {
-        std::lock_guard<std::mutex> ownerLock(g_activeDecoderOwnerMutex);
-        owner = g_activeDecoderOwner;
-    }
-    return DecodeNativeForOwner(handle, owner, frame);
+    return DecodeNativeForOwner(handle, OwnerForDecoderHandle(handle), frame);
 }
 
 bool DecoderNapi::IsActiveSessionOwner(const DecoderSessionIdentity& owner) {
     std::lock_guard<std::mutex> lock(g_activeDecoderOwnerMutex);
-    return Render::SessionOwnerMatches(g_activeDecoderOwner, owner);
+    return ActiveDecoderSlotLocked(owner) != nullptr;
 }
 
 bool DecoderNapi::IsActiveDisplayFrame(const DecoderSessionIdentity& owner,
                                        const VideoFrame& frame) {
     std::lock_guard<std::mutex> lock(g_activeDecoderOwnerMutex);
-    if (!Render::SessionOwnerMatches(g_activeDecoderOwner, owner)) {
+    ActiveDecoderSlot* slot = ActiveDecoderSlotLocked(owner);
+    if (slot == nullptr) {
         return false;
     }
-    int activeDisplay = g_activeDisplay.load(std::memory_order_acquire);
-    if (activeDisplay < 0) {
-        activeDisplay = frame.display;
-        g_activeDisplay.store(activeDisplay, std::memory_order_release);
-        g_activeDisplayGeneration.fetch_add(1, std::memory_order_acq_rel);
+    if (slot->display < 0) {
+        slot->display = frame.display;
+        slot->displayGeneration = NextDisplayGeneration();
     }
-    return activeDisplay >= 0 && frame.display == activeDisplay;
+    return slot->display >= 0 && frame.display == slot->display;
 }
 
 int DecoderNapi::DecodeActiveNative(const DecoderSessionIdentity& owner,
@@ -3852,11 +3935,12 @@ int DecoderNapi::DecodeActiveNative(const DecoderSessionIdentity& owner,
     int64_t handle = 0;
     {
         std::lock_guard<std::mutex> ownerLock(g_activeDecoderOwnerMutex);
-        if (!Render::SessionOwnerMatches(g_activeDecoderOwner, owner)) {
+        const ActiveDecoderSlot* slot = ActiveDecoderSlotLocked(owner);
+        if (slot == nullptr) {
             return kDecodeInactiveSession;
         }
-        activeDisplay = g_activeDisplay.load(std::memory_order_acquire);
-        handle = g_activeDecoderHandle.load(std::memory_order_acquire);
+        activeDisplay = slot->display;
+        handle = slot->handle;
     }
     if (activeDisplay < 0 || frame.display != activeDisplay) {
         return kDecodeInactiveDisplay;
@@ -3878,10 +3962,11 @@ DecoderNapi::OwnedSubmitStatus DecoderNapi::DecodeOwnedNative(
     }
     {
         std::lock_guard<std::mutex> ownerLock(g_activeDecoderOwnerMutex);
-        if (!Render::SessionOwnerMatches(g_activeDecoderOwner, owner)) {
+        const ActiveDecoderSlot* slot = ActiveDecoderSlotLocked(owner);
+        if (slot == nullptr) {
             return OwnedSubmitStatus::Stale;
         }
-        const int activeDisplay = g_activeDisplay.load(std::memory_order_acquire);
+        const int activeDisplay = slot->display;
         // Phone/Pad Surface sessions deliberately use display=-1: they bind
         // the codec directly to the native window and do not select a
         // RustDesk display. Keep that sentinel valid while retaining exact
@@ -3889,11 +3974,8 @@ DecoderNapi::OwnedSubmitStatus DecoderNapi::DecodeOwnedNative(
         const bool displayMatches = activeDisplay < 0
             ? frame.display < 0
             : frame.display == activeDisplay;
-        if (!displayMatches ||
-            g_activeDisplayGeneration.load(std::memory_order_acquire) !=
-                displayGeneration ||
-            g_activeDecoderHandle.load(std::memory_order_acquire) !=
-                decoderHandle) {
+        if (!displayMatches || slot->displayGeneration != displayGeneration ||
+            slot->handle != decoderHandle) {
             return OwnedSubmitStatus::Stale;
         }
     }
@@ -3905,11 +3987,7 @@ void DecoderNapi::DeactivateDecoder(int64_t handle) {
     if (handle <= 0) {
         return;
     }
-    DecoderSessionIdentity owner;
-    {
-        std::lock_guard<std::mutex> ownerLock(g_activeDecoderOwnerMutex);
-        owner = g_activeDecoderOwner;
-    }
+    const DecoderSessionIdentity owner = OwnerForDecoderHandle(handle);
     if (owner.valid()) {
         DeactivateDecoder(handle, owner);
     }
@@ -3926,13 +4004,21 @@ void DecoderNapi::DeactivateDecoder(
     }
     {
         std::lock_guard<std::mutex> ownerLock(g_activeDecoderOwnerMutex);
-        if (!Render::SessionOwnerMatches(g_activeDecoderOwner, owner) ||
-            g_activeDecoderHandle.load(std::memory_order_acquire) != handle) {
+        ActiveDecoderSlot* slot = ActiveDecoderSlotLocked(owner);
+        if (slot == nullptr || slot->handle != handle) {
             return;
         }
-        g_activeDecoderHandle.store(0, std::memory_order_release);
+        PublishActiveDecoderHandleLocked(*slot, 0);
     }
     g_decoderRegistry.deactivate(handle, owner);
+}
+
+DecoderSessionIdentity DecoderNapi::BoundOwnerForDecoderHandle(int64_t handle) {
+    if (handle <= 0) {
+        return DecoderSessionIdentity {};
+    }
+    const auto metadata = g_decoderRegistry.snapshot(handle);
+    return metadata.found ? metadata.boundOwner : DecoderSessionIdentity {};
 }
 
 void DecoderNapi::DestroyDecoderHandle(int64_t handle) {
@@ -3950,10 +4036,9 @@ void DecoderNapi::DestroyDecoderHandle(int64_t handle) {
     const DecoderSessionIdentity owner = ctx->boundOwner;
     {
         std::lock_guard<std::mutex> ownerLock(g_activeDecoderOwnerMutex);
-        if (g_activeDecoderHandle.load(std::memory_order_acquire) == handle) {
-            g_activeDecoderHandle.store(0, std::memory_order_release);
-        }
+        UnpublishDecoderHandleLocked(handle);
     }
+    ctx->ownerActive.store(false, std::memory_order_release);
     DestroyDecoderContext(ctx, owner);
 }
 
@@ -3968,8 +4053,7 @@ void DecoderNapi::DestroyDecoderHandle(
     }
     const bool wasActive = [&]() {
         std::lock_guard<std::mutex> ownerLock(g_activeDecoderOwnerMutex);
-        return g_activeDecoderHandle.load(std::memory_order_acquire) == handle &&
-            Render::SessionOwnerMatches(g_activeDecoderOwner, owner);
+        return ActiveDecoderHandleLocked(owner) == handle;
     }();
     auto ctx = g_decoderRegistry.destroy(handle, owner);
     if (!ctx) {
@@ -3977,11 +4061,13 @@ void DecoderNapi::DestroyDecoderHandle(
     }
     if (wasActive) {
         std::lock_guard<std::mutex> ownerLock(g_activeDecoderOwnerMutex);
-        if (g_activeDecoderHandle.load(std::memory_order_acquire) == handle &&
-            Render::SessionOwnerMatches(g_activeDecoderOwner, owner)) {
-            g_activeDecoderHandle.store(0, std::memory_order_release);
+        ActiveDecoderSlot* slot = ActiveDecoderSlotLocked(owner);
+        if (slot != nullptr && slot->handle == handle) {
+            // The registry entry is gone, so clear the context's flag directly.
+            slot->handle = 0;
         }
     }
+    ctx->ownerActive.store(false, std::memory_order_release);
     DestroyDecoderContext(ctx, owner);
 }
 
@@ -3994,12 +4080,17 @@ DecoderTelemetrySnapshot DecoderNapi::GetActiveTelemetry(
         return snapshot;
     }
     DecoderHandleLease decoderLease;
+    uint64_t displayGeneration = 0;
+    int display = -1;
     {
         std::lock_guard<std::mutex> ownerLock(g_activeDecoderOwnerMutex);
-        if (!Render::SessionOwnerMatches(g_activeDecoderOwner, expectedOwner)) {
+        const ActiveDecoderSlot* slot = ActiveDecoderSlotLocked(expectedOwner);
+        if (slot == nullptr) {
             return snapshot;
         }
-        handle = g_activeDecoderHandle.load(std::memory_order_acquire);
+        handle = slot->handle;
+        displayGeneration = slot->displayGeneration;
+        display = slot->display;
         decoderLease = g_decoderRegistry.acquire(handle, expectedOwner);
     }
     if (!decoderLease) {
@@ -4011,15 +4102,15 @@ DecoderTelemetrySnapshot DecoderNapi::GetActiveTelemetry(
         !Render::SessionOwnerMatches(decoderLease.owner(), expectedOwner)) {
         return DecoderTelemetrySnapshot {};
     }
-    if (g_activeDecoderHandle.load(std::memory_order_acquire) != handle) {
+    if (!decoderLease->ownerActive.load(std::memory_order_acquire)) {
         return DecoderTelemetrySnapshot {};
     }
     snapshot.valid = true;
     snapshot.owner = decoderLease.owner();
     snapshot.decoderGeneration = decoderLease->decoderGeneration;
     snapshot.dropCounterGeneration = decoderLease->dropCounterGeneration;
-    snapshot.displayGeneration = g_activeDisplayGeneration.load(std::memory_order_acquire);
-    snapshot.display = g_activeDisplay.load(std::memory_order_acquire);
+    snapshot.displayGeneration = displayGeneration;
+    snapshot.display = display;
     snapshot.rendererHandle = decoderLease->rendererHandle;
     snapshot.rendererGeneration =
         decoderLease->rendererGeneration.load(std::memory_order_acquire);
@@ -4089,12 +4180,17 @@ DecoderPresentationTelemetrySnapshot DecoderNapi::GetActivePresentationTelemetry
         return snapshot;
     }
     DecoderHandleLease decoderLease;
+    uint64_t displayGeneration = 0;
+    int display = -1;
     {
         std::lock_guard<std::mutex> ownerLock(g_activeDecoderOwnerMutex);
-        if (!Render::SessionOwnerMatches(g_activeDecoderOwner, expectedOwner)) {
+        const ActiveDecoderSlot* slot = ActiveDecoderSlotLocked(expectedOwner);
+        if (slot == nullptr) {
             return snapshot;
         }
-        handle = g_activeDecoderHandle.load(std::memory_order_acquire);
+        handle = slot->handle;
+        displayGeneration = slot->displayGeneration;
+        display = slot->display;
         decoderLease = g_decoderRegistry.acquire(handle, expectedOwner);
     }
     if (!decoderLease) {
@@ -4104,7 +4200,7 @@ DecoderPresentationTelemetrySnapshot DecoderNapi::GetActivePresentationTelemetry
     if (decoderLease->pipelineTransitioning.load(std::memory_order_acquire) ||
         !decoderLease->videoPipelineAttached ||
         !Render::SessionOwnerMatches(decoderLease.owner(), expectedOwner) ||
-        g_activeDecoderHandle.load(std::memory_order_acquire) != handle) {
+        !decoderLease->ownerActive.load(std::memory_order_acquire)) {
         return {};
     }
     const uint64_t presentationDecoderGeneration =
@@ -4129,9 +4225,8 @@ DecoderPresentationTelemetrySnapshot DecoderNapi::GetActivePresentationTelemetry
     snapshot.decoderHandle = handle;
     snapshot.rendererHandle = decoderLease->rendererHandle;
     snapshot.decoderGeneration = decoderLease->decoderGeneration;
-    snapshot.displayGeneration =
-        g_activeDisplayGeneration.load(std::memory_order_acquire);
-    snapshot.display = g_activeDisplay.load(std::memory_order_acquire);
+    snapshot.displayGeneration = displayGeneration;
+    snapshot.display = display;
     snapshot.rendererGeneration = rendererGeneration;
     snapshot.rendererPresentedFrames =
         decoderLease->rendererPresentedFrames.load(std::memory_order_acquire);
@@ -4214,11 +4309,11 @@ OwnedDecoderCreationResult DecoderNapi::CreateOwnedHardwareDecoder(
         Render::NativeImagePresentationMode::Identity;
     {
         std::lock_guard<std::mutex> ownerLock(g_activeDecoderOwnerMutex);
-        if (!Render::SessionOwnerMatches(g_activeDecoderOwner, owner)) {
+        const ActiveDecoderSlot* slot = ActiveDecoderSlotLocked(owner);
+        if (slot == nullptr) {
             return result;
         }
-        presentationMode = g_activeNativeImagePresentationMode.load(
-            std::memory_order_acquire);
+        presentationMode = slot->presentationMode;
     }
 
     auto ctx = std::make_shared<DecoderContext>();
@@ -4467,34 +4562,32 @@ DecoderPresentationTelemetrySnapshot DecoderNapi::GetOwnedAuxPresentationTelemet
 }
 
 void DecoderNapi::SetActiveSessionId(const DecoderSessionIdentity& owner) {
+    if (!owner.valid()) {
+        return;
+    }
     std::lock_guard<std::mutex> lock(g_activeDecoderOwnerMutex);
-    if (Render::SessionOwnerMatches(g_activeDecoderOwner, owner)) {
+    if (ActiveDecoderSlotLocked(owner) != nullptr) {
         // A RustDesk transport reconnect keeps the native sink owner stable;
         // changing only its FFI admission epoch must not discard the active
         // decoder handle or selected display.
         return;
     }
-    g_activeDecoderOwner = owner;
-    g_activeNativeImagePresentationMode.store(
-        Render::NativeImagePresentationMode::Identity,
-        std::memory_order_release);
-    g_activeDecoderHandle.store(0, std::memory_order_release);
-    g_activeDisplay.store(-1, std::memory_order_release);
-    g_activeDisplayGeneration.fetch_add(1, std::memory_order_acq_rel);
+    // Another live session keeps its own slot: each picture session has its own decoder and display.
+    ActiveDecoderSlot slot;
+    slot.owner = owner;
+    slot.displayGeneration = NextDisplayGeneration();
+    g_activeDecoders.push_back(slot);
 }
 
 void DecoderNapi::ClearActiveSessionId(const DecoderSessionIdentity& owner) {
     std::lock_guard<std::mutex> lock(g_activeDecoderOwnerMutex);
-    if (!Render::SessionOwnerMatches(g_activeDecoderOwner, owner)) {
-        return;
+    for (auto it = g_activeDecoders.begin(); it != g_activeDecoders.end(); ++it) {
+        if (it->owner == owner) {
+            PublishActiveDecoderHandleLocked(*it, 0);
+            g_activeDecoders.erase(it);
+            return;
+        }
     }
-    g_activeDecoderOwner = DecoderSessionIdentity {};
-    g_activeNativeImagePresentationMode.store(
-        Render::NativeImagePresentationMode::Identity,
-        std::memory_order_release);
-    g_activeDecoderHandle.store(0, std::memory_order_release);
-    g_activeDisplay.store(-1, std::memory_order_release);
-    g_activeDisplayGeneration.fetch_add(1, std::memory_order_acq_rel);
 }
 
 bool DecoderNapi::SetActiveNativeImagePresentationMode(
@@ -4503,13 +4596,12 @@ bool DecoderNapi::SetActiveNativeImagePresentationMode(
     DecoderHandleLease decoderLease;
     {
         std::lock_guard<std::mutex> ownerLock(g_activeDecoderOwnerMutex);
-        if (!Render::SessionOwnerMatches(g_activeDecoderOwner, owner)) {
+        ActiveDecoderSlot* slot = ActiveDecoderSlotLocked(owner);
+        if (slot == nullptr) {
             return false;
         }
-        g_activeNativeImagePresentationMode.store(
-            presentationMode, std::memory_order_release);
-        const int64_t decoderHandle =
-            g_activeDecoderHandle.load(std::memory_order_acquire);
+        slot->presentationMode = presentationMode;
+        const int64_t decoderHandle = slot->handle;
         if (decoderHandle > 0) {
             decoderLease = g_decoderRegistry.acquire(decoderHandle, owner);
         }
@@ -4540,31 +4632,29 @@ bool DecoderNapi::SetActiveNativeImagePresentationMode(
 
 bool DecoderNapi::SetActiveDisplay(const DecoderSessionIdentity& owner, int display) {
     std::lock_guard<std::mutex> lock(g_activeDecoderOwnerMutex);
-    if (!Render::SessionOwnerMatches(g_activeDecoderOwner, owner)) {
+    ActiveDecoderSlot* slot = ActiveDecoderSlotLocked(owner);
+    if (slot == nullptr) {
         return false;
     }
     if (display < 0) {
-        const int previous = g_activeDisplay.exchange(-1, std::memory_order_acq_rel);
+        const int previous = slot->display;
+        slot->display = -1;
         if (previous != -1) {
-            g_activeDisplayGeneration.fetch_add(1, std::memory_order_acq_rel);
+            slot->displayGeneration = NextDisplayGeneration();
         }
         return previous != -1;
     }
-    const int previous = g_activeDisplay.exchange(display, std::memory_order_acq_rel);
+    const int previous = slot->display;
+    slot->display = display;
     if (previous != display) {
-        g_activeDisplayGeneration.fetch_add(1, std::memory_order_acq_rel);
+        slot->displayGeneration = NextDisplayGeneration();
     }
     OH_LOG_INFO(LOG_APP, "[Decoder] active RustDesk display=%{public}d", display);
     return previous != display;
 }
 
 bool DecoderNapi::BindVideoPipeline(int64_t decoderHandle, int64_t rendererHandle) {
-    DecoderSessionIdentity owner;
-    {
-        std::lock_guard<std::mutex> ownerLock(g_activeDecoderOwnerMutex);
-        owner = g_activeDecoderOwner;
-    }
-    return BindVideoPipeline(decoderHandle, rendererHandle, owner);
+    return BindVideoPipeline(decoderHandle, rendererHandle, OwnerForDecoderHandle(decoderHandle));
 }
 
 bool DecoderNapi::BindVideoPipeline(
@@ -4575,7 +4665,7 @@ bool DecoderNapi::BindVideoPipeline(
     }
     {
         std::lock_guard<std::mutex> ownerLock(g_activeDecoderOwnerMutex);
-        if (!Render::SessionOwnerMatches(g_activeDecoderOwner, owner)) {
+        if (ActiveDecoderSlotLocked(owner) == nullptr) {
             OH_LOG_WARN(LOG_APP, "[Decoder] bindVideoPipeline rejected: no active session owner");
             return false;
         }
@@ -4597,13 +4687,17 @@ bool DecoderNapi::BindVideoPipeline(
     DecoderHandleLease decoderLease;
     Render::NativeImagePresentationMode presentationMode =
         Render::NativeImagePresentationMode::Identity;
+    uint64_t slotDisplayGeneration = 0;
+    int slotDisplay = -1;
     {
         std::lock_guard<std::mutex> ownerLock(g_activeDecoderOwnerMutex);
-        if (!Render::SessionOwnerMatches(g_activeDecoderOwner, owner)) {
+        const ActiveDecoderSlot* slot = ActiveDecoderSlotLocked(owner);
+        if (slot == nullptr) {
             return false;
         }
-        presentationMode = g_activeNativeImagePresentationMode.load(
-            std::memory_order_acquire);
+        presentationMode = slot->presentationMode;
+        slotDisplayGeneration = slot->displayGeneration;
+        slotDisplay = slot->display;
         decoderLease = g_decoderRegistry.acquire(decoderHandle, owner);
     }
     const std::shared_ptr<DecoderContext> ctx = decoderLease.shared();
@@ -4614,10 +4708,11 @@ bool DecoderNapi::BindVideoPipeline(
     }
     {
         std::lock_guard<std::mutex> ownerLock(g_activeDecoderOwnerMutex);
-        if (!Render::SessionOwnerMatches(g_activeDecoderOwner, owner)) {
+        ActiveDecoderSlot* slot = ActiveDecoderSlotLocked(owner);
+        if (slot == nullptr) {
             return false;
         }
-        g_activeDecoderHandle.store(0, std::memory_order_release);
+        PublishActiveDecoderHandleLocked(*slot, 0);
     }
     int64_t oldRendererHandle = 0;
     DecoderSessionIdentity oldOwner;
@@ -4651,8 +4746,8 @@ bool DecoderNapi::BindVideoPipeline(
                 1, std::memory_order_acq_rel);
         }
         ctx->dropCounterGeneration = ctx->decoderGeneration;
-        ctx->displayGeneration = g_activeDisplayGeneration.load(std::memory_order_acquire);
-        ctx->display = g_activeDisplay.load(std::memory_order_acquire);
+        ctx->displayGeneration = slotDisplayGeneration;
+        ctx->display = slotDisplay;
         ctx->presentationMode.store(presentationMode, std::memory_order_release);
         if (ctx->decoder) {
             ctx->decoder->SetNativeImagePresentationMode(presentationMode);
@@ -4725,7 +4820,7 @@ bool DecoderNapi::BindVideoPipeline(
     bool ownerStillActive = false;
     {
         std::lock_guard<std::mutex> ownerLock(g_activeDecoderOwnerMutex);
-        ownerStillActive = Render::SessionOwnerMatches(g_activeDecoderOwner, owner);
+        ownerStillActive = ActiveDecoderSlotLocked(owner) != nullptr;
     }
     const bool configured = ownerStillActive && ConfigurePipeline(ctx, true);
     if (!configured) {
@@ -4745,9 +4840,12 @@ bool DecoderNapi::BindVideoPipeline(
     bool published = false;
     {
         std::lock_guard<std::mutex> ownerLock(g_activeDecoderOwnerMutex);
-        if (Render::SessionOwnerMatches(g_activeDecoderOwner, owner) &&
-            g_activeDecoderHandle.load(std::memory_order_acquire) == 0) {
-            g_activeDecoderHandle.store(decoderHandle, std::memory_order_release);
+        ActiveDecoderSlot* slot = ActiveDecoderSlotLocked(owner);
+        if (slot != nullptr && slot->handle == 0) {
+            // The owner-scoped mode may have changed while this bind was in transition: hand the latest value to the
+            // context, where a later setter also writes it (under pipelineMutex) once the handle is published.
+            ctx->presentationMode.store(slot->presentationMode, std::memory_order_release);
+            PublishActiveDecoderHandleLocked(*slot, decoderHandle);
             published = true;
         }
     }
@@ -4762,14 +4860,12 @@ bool DecoderNapi::BindVideoPipeline(
     {
         std::lock_guard<std::mutex> pipelineLock(ctx->pipelineMutex);
         // The peer-platform callback can update the owner-scoped mode before
-        // the decoder handle is published, or after publication while this
-        // transition still blocks direct decoder access. Consume the latest
-        // global value at this single finalization point. A later setter will
-        // see the published handle and serialize behind pipelineMutex.
+        // the decoder handle is published (copied into the context at
+        // publication above), or after publication while this transition still
+        // blocks direct decoder access (the setter then stores the context's
+        // value). Consume that latest value at this single finalization point.
         const Render::NativeImagePresentationMode finalPresentationMode =
-            g_activeNativeImagePresentationMode.load(std::memory_order_acquire);
-        ctx->presentationMode.store(
-            finalPresentationMode, std::memory_order_release);
+            ctx->presentationMode.load(std::memory_order_acquire);
         if (ctx->decoder) {
             ctx->decoder->SetNativeImagePresentationMode(finalPresentationMode);
         }
@@ -4786,12 +4882,7 @@ bool DecoderNapi::BindVideoPipeline(
 }
 
 bool DecoderNapi::DetachVideoPipeline(int64_t decoderHandle) {
-    DecoderSessionIdentity owner;
-    {
-        std::lock_guard<std::mutex> ownerLock(g_activeDecoderOwnerMutex);
-        owner = g_activeDecoderOwner;
-    }
-    return DetachVideoPipeline(decoderHandle, owner);
+    return DetachVideoPipeline(decoderHandle, OwnerForDecoderHandle(decoderHandle));
 }
 
 bool DecoderNapi::DetachVideoPipeline(
@@ -4801,7 +4892,7 @@ bool DecoderNapi::DetachVideoPipeline(
     }
     {
         std::lock_guard<std::mutex> ownerLock(g_activeDecoderOwnerMutex);
-        if (!Render::SessionOwnerMatches(g_activeDecoderOwner, owner)) {
+        if (ActiveDecoderSlotLocked(owner) == nullptr) {
             return false;
         }
     }
@@ -4851,8 +4942,10 @@ bool DecoderNapi::DetachVideoPipeline(
     }
     {
         std::lock_guard<std::mutex> ownerLock(g_activeDecoderOwnerMutex);
-        if (g_activeDecoderHandle.load(std::memory_order_acquire) == decoderHandle) {
-            g_activeDecoderHandle.store(0, std::memory_order_release);
+        if (ActiveDecoderSlot* slot = ActiveDecoderSlotLocked(owner)) {
+            if (slot->handle == decoderHandle) {
+                PublishActiveDecoderHandleLocked(*slot, 0);
+            }
         }
     }
     // Stop callback gates only after the pipeline mutex is released. A render
@@ -4892,12 +4985,7 @@ bool DecoderNapi::DetachVideoPipeline(
 }
 
 bool DecoderNapi::RequestDecoderRecovery(int64_t decoderHandle) {
-    DecoderSessionIdentity owner;
-    {
-        std::lock_guard<std::mutex> ownerLock(g_activeDecoderOwnerMutex);
-        owner = g_activeDecoderOwner;
-    }
-    return RequestDecoderRecovery(decoderHandle, owner);
+    return RequestDecoderRecovery(decoderHandle, OwnerForDecoderHandle(decoderHandle));
 }
 
 bool DecoderNapi::RequestDecoderRecovery(
@@ -4909,8 +4997,7 @@ bool DecoderNapi::RequestDecoderRecovery(
     DecoderHandleLease decoderLease;
     {
         std::lock_guard<std::mutex> ownerLock(g_activeDecoderOwnerMutex);
-        if (!Render::SessionOwnerMatches(g_activeDecoderOwner, owner) ||
-            g_activeDecoderHandle.load(std::memory_order_acquire) != decoderHandle) {
+        if (ActiveDecoderHandleLocked(owner) != decoderHandle) {
             return false;
         }
         decoderLease = g_decoderRegistry.acquire(decoderHandle, owner);
@@ -4960,10 +5047,11 @@ bool DecoderNapi::RequestActiveDecoderRecovery(const DecoderSessionIdentity& own
     DecoderHandleLease decoderLease;
     {
         std::lock_guard<std::mutex> ownerLock(g_activeDecoderOwnerMutex);
-        if (!Render::SessionOwnerMatches(g_activeDecoderOwner, owner)) {
+        const ActiveDecoderSlot* slot = ActiveDecoderSlotLocked(owner);
+        if (slot == nullptr) {
             return false;
         }
-        handle = g_activeDecoderHandle.load(std::memory_order_acquire);
+        handle = slot->handle;
         decoderLease = g_decoderRegistry.acquire(handle, owner);
     }
     if (!decoderLease) {
@@ -4998,7 +5086,7 @@ bool DecoderNapi::RebindOwnedVideoPipeline(
     }
     {
         std::lock_guard<std::mutex> ownerLock(g_activeDecoderOwnerMutex);
-        if (!Render::SessionOwnerMatches(g_activeDecoderOwner, owner)) {
+        if (ActiveDecoderSlotLocked(owner) == nullptr) {
             return false;
         }
     }
@@ -5061,10 +5149,11 @@ bool DecoderNapi::RebindActiveVideoPipeline(const DecoderSessionIdentity& owner)
     int64_t decoderHandle = 0;
     {
         std::lock_guard<std::mutex> ownerLock(g_activeDecoderOwnerMutex);
-        if (!Render::SessionOwnerMatches(g_activeDecoderOwner, owner)) {
+        const ActiveDecoderSlot* slot = ActiveDecoderSlotLocked(owner);
+        if (slot == nullptr) {
             return false;
         }
-        decoderHandle = g_activeDecoderHandle.load(std::memory_order_acquire);
+        decoderHandle = slot->handle;
     }
 
     const int64_t rendererHandle = RendererNapi::GetActiveRendererHandle(owner);

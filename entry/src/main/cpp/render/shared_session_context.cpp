@@ -4,9 +4,11 @@
 #include "gl_renderer.h"
 #include "hw_decoder.h"
 
+#include <vector>
+
 namespace Render {
 
-bool ActivateSharedSessionSinks(const DecoderSessionIdentity& owner) noexcept {
+bool ActivateSharedSessionSinks(const DecoderSessionIdentity& owner, bool exclusive) noexcept {
     if (!owner.valid()) {
         return false;
     }
@@ -17,7 +19,7 @@ bool ActivateSharedSessionSinks(const DecoderSessionIdentity& owner) noexcept {
         }
         {
             auto transition = SharedSessionSinkOwnerLease().acquireExclusive();
-            if (!transition.beginActivate(owner)) {
+            if (!transition.beginActivate(owner, exclusive)) {
                 return false;
             }
         }
@@ -73,17 +75,20 @@ void DeactivateAllSharedSessionSinks() noexcept {
         if (!transaction) {
             return;
         }
-        DecoderSessionIdentity owner;
+        // Every live picture session (several may share the sinks), each released on its own.
+        std::vector<DecoderSessionIdentity> owners;
         {
             auto transition = SharedSessionSinkOwnerLease().acquireExclusive();
-            owner = transition.activeSnapshot();
-            if (!owner.valid() || !transition.beginDeactivate(owner)) {
-                return;
+            owners = transition.owners();
+            for (const DecoderSessionIdentity& owner : owners) {
+                (void)transition.beginDeactivate(owner);
             }
         }
-        DecoderNapi::ClearActiveSessionId(owner);
-        RendererNapi::ClearActiveSessionOwner(owner);
-        AudioPlayerNapi::ClearActiveSessionOwner(owner);
+        for (const DecoderSessionIdentity& owner : owners) {
+            DecoderNapi::ClearActiveSessionId(owner);
+            RendererNapi::ClearActiveSessionOwner(owner);
+            AudioPlayerNapi::ClearActiveSessionOwner(owner);
+        }
     } catch (...) {
     }
 }

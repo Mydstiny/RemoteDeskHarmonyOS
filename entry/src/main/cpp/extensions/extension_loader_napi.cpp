@@ -175,34 +175,55 @@ struct SshSecretGuard {
 // 全局状态
 // ============================================================
 
-// 当前活跃连接
+// 当前活跃连接：最近激活、仍在运行的画面会话。分屏和 PC 多窗口时可能有几个会话同时运行
+// (g_liveConnections，按激活先后)；不带会话 id 的调用仍交给最近激活的那个。
 static std::shared_ptr<ProtocolAdapter> g_activeConnection = nullptr;
+struct LiveConnection {
+    uint64_t sessionId = 0;
+    std::shared_ptr<ProtocolAdapter> adapter;
+};
+static std::vector<LiveConnection> g_liveConnections;
 static std::mutex g_activeConnectionMutex;
+
+static void EraseLiveConnectionLocked(uint64_t sessionId) {
+    g_liveConnections.erase(
+        std::remove_if(g_liveConnections.begin(), g_liveConnections.end(),
+            [sessionId](const LiveConnection& live) { return live.sessionId == sessionId; }),
+        g_liveConnections.end());
+}
+
+static void PublishLatestLiveConnectionLocked() {
+    g_activeConnection = g_liveConnections.empty() ? nullptr : g_liveConnections.back().adapter;
+    InputHandler::instance().setActiveAdapter(g_activeConnection);
+}
 
 static bool ActivateSessionContext(
     const std::shared_ptr<ProtocolAdapter>& adapter,
     const DecoderSessionIdentity& owner) {
-    if (!Render::ActivateSharedSessionSinks(owner)) {
+    // A foreground SSH page keeps the old single-owner rule; picture sessions share the sinks with each other.
+    const bool exclusive = dynamic_cast<SshAdapter*>(adapter.get()) != nullptr;
+    if (!Render::ActivateSharedSessionSinks(owner, exclusive)) {
         return false;
     }
     std::lock_guard<std::mutex> lock(g_activeConnectionMutex);
-    g_activeConnection = adapter;
-    InputHandler::instance().setActiveAdapter(adapter);
+    EraseLiveConnectionLocked(owner.sessionId);
+    g_liveConnections.push_back(LiveConnection {owner.sessionId, adapter});
+    PublishLatestLiveConnectionLocked();
     return true;
 }
 
 static bool DeactivateSessionContextIfActive(
     const std::shared_ptr<ProtocolAdapter>& adapter,
     const DecoderSessionIdentity& owner) {
+    (void)adapter;
     if (!Render::DeactivateSharedSessionSinks(owner)) {
         return false;
     }
     {
+        // Only this session leaves; another live session (分屏的另一边) keeps its adapter.
         std::lock_guard<std::mutex> lock(g_activeConnectionMutex);
-        InputHandler::instance().setActiveAdapter(nullptr);
-        if (g_activeConnection == adapter) {
-            g_activeConnection = nullptr;
-        }
+        EraseLiveConnectionLocked(owner.sessionId);
+        PublishLatestLiveConnectionLocked();
     }
     return true;
 }
@@ -211,6 +232,7 @@ static void DeactivateAllSessionContexts() {
     Render::DeactivateAllSharedSessionSinks();
     {
         std::lock_guard<std::mutex> lock(g_activeConnectionMutex);
+        g_liveConnections.clear();
         g_activeConnection = nullptr;
         InputHandler::instance().setActiveAdapter(nullptr);
     }
@@ -1799,18 +1821,32 @@ static std::shared_ptr<ProtocolAdapter> FindAdapter(const std::string& protocolN
 }
 
 /**
- * SSH session adapter factory.
+ * Session adapter factory.
  *
  * The extension registry stores one prototype per protocol for discovery and
- * preflight. SSH protocol state is session-owned, so a real SSH connection
- * must receive a fresh SshAdapter instance. Other protocols keep their
- * existing factory/ownership path unchanged.
+ * preflight (certificate probes and the like). Protocol state is
+ * session-owned, and several picture sessions may be live at once (分屏、PC
+ * 多窗口, the same protocol more than once), so every real connection receives
+ * a fresh adapter instance.
  */
 static std::shared_ptr<ProtocolAdapter> CreateAdapterForSession(
     const std::string& protocolName) {
     EnsureExtensionsLoaded();
     if (protocolName == "ssh") {
         return std::make_shared<SshAdapter>();
+    }
+    if (protocolName == "rdp") {
+        return std::make_shared<FreeRdpAdapter>();
+    }
+    if (protocolName == "vnc") {
+        return std::make_shared<VncAdapter>();
+    }
+    if (protocolName == "rustdesk") {
+#ifdef RUSTDESK_USE_REAL_CORE
+        return std::make_shared<RustDeskBridge>(RustDeskMode::FFI);
+#else
+        return std::make_shared<RustDeskBridge>(RustDeskMode::IPC);
+#endif
     }
     return ExtensionSystem::instance().protocols.getByName("protocol", protocolName);
 }
@@ -6976,6 +7012,10 @@ static NativeDisconnectCoreResult ExecuteNapiDisconnectCore(
         if (const auto it = g_sessionRegistry.find(sessionId);
             it != g_sessionRegistry.end() && it->second) {
             resources.owner = it->second->identity();
+        } else if (sessionId > 0) {
+            // Several picture sessions may be live: only this session's own owner, never another one's.
+            resources.owner = Render::SharedSessionSinkOwnerLease().ownerForSession(
+                static_cast<uint64_t>(sessionId));
         } else {
             resources.owner = Render::SharedSessionSinkOwnerLease().snapshot();
         }
@@ -7311,6 +7351,11 @@ napi_value NapiDisconnectAll(napi_env env, napi_callback_info info) {
     resources.decoderHandle = GetOptionalHandle(env, argc, args, 1);
     resources.audioHandle = GetOptionalHandle(env, argc, args, 2);
     resources.owner = Render::SharedSessionSinkOwnerLease().snapshot();
+    if (!resources.owner.valid()) {
+        // Several picture sessions live (分屏、PC 多窗口): the handles passed are the calling page's, so their owner
+        // is the session the decoder is bound to.
+        resources.owner = DecoderNapi::BoundOwnerForDecoderHandle(resources.decoderHandle);
+    }
     // Stop protocol producers while the exact session owner is still
     // published.  DeactivateAllSessionContexts() closes the shared owner
     // gate; doing it first makes PrepareAdapterForTeardown() fail closed and
@@ -12194,7 +12239,7 @@ napi_value NapiDetachSshSession(napi_env env, napi_callback_info info) {
                     SessionContext::Lifecycle::Active) {
                 const DecoderSessionIdentity identity = session->identity();
                 const DecoderSessionIdentity activeOwner =
-                    Render::SharedSessionSinkOwnerLease().snapshot();
+                    Render::SharedSessionSinkOwnerLease().ownerForSession(identity.sessionId);
                 const bool activeOwnerMatches =
                     Render::SessionOwnerMatches(activeOwner, identity);
                 bool sharedSinkReleased = true;
@@ -13175,8 +13220,34 @@ napi_value NapiCancelSshOperation(napi_env env, napi_callback_info info) {
  * RDP: 发送 Refresh Rect PDU。RustDesk: 发送 refresh_video_display。
  */
 napi_value NapiRequestFrameRefresh(napi_env env, napi_callback_info info) {
-    (void)info;
-    const std::shared_ptr<ProtocolAdapter> activeConnection = GetActiveSessionAdapter();
+    // requestFrameRefresh(sessionId?): the named session's adapter (several picture sessions may be live); without
+    // it the most recently activated session, as before; a negative id refreshes nothing.
+    size_t argc = 1;
+    napi_value args[1] = {nullptr};
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    int32_t sessionId = 0;
+    if (argc >= 1 && args[0] != nullptr) {
+        napi_valuetype type = napi_undefined;
+        if (napi_typeof(env, args[0], &type) == napi_ok && type == napi_number) {
+            napi_get_value_int32(env, args[0], &sessionId);
+        }
+    }
+    // A negative id is a page whose session is not live yet: nothing to refresh.
+    std::shared_ptr<ProtocolAdapter> activeConnection;
+    if (sessionId < 0) {
+        activeConnection = nullptr;
+    } else if (sessionId > 0) {
+        const auto lookup = g_sessionRegistry.find(sessionId);
+        const std::shared_ptr<SessionContext> session =
+            lookup == g_sessionRegistry.end() ? nullptr : lookup->second;
+        if (session && session->lifecycle.load(std::memory_order_acquire) ==
+                SessionContext::Lifecycle::Active) {
+            std::lock_guard<std::mutex> adapterLock(session->adapterMutex);
+            activeConnection = session->adapter;
+        }
+    } else {
+        activeConnection = GetActiveSessionAdapter();
+    }
     if (activeConnection) {
         activeConnection->requestFrameRefresh();
         OH_LOG_INFO(LOG_APP, "[ExtLoader] requestFrameRefresh: sent to active adapter");
@@ -13192,6 +13263,28 @@ static napi_value NapiIsVideoPlaybackActive(napi_env env, napi_callback_info /*i
     napi_value active;
     napi_get_boolean(env, isRemoteVideoPlaybackActive(), &active);
     return active;
+}
+
+/**
+ * NAPI: getLivePictureSessionCount(): number
+ *
+ * Live RDP, RustDesk and VNC sessions in this process, every window included. ArkTS caps how many picture sessions
+ * may be open at once (PC 4, tablet 2, phone 1) before it connects another one.
+ */
+static napi_value NapiGetLivePictureSessionCount(napi_env env, napi_callback_info info) {
+    (void)info;
+    int32_t count = 0;
+    for (const auto& item : g_sessionRegistry.snapshot()) {
+        const std::shared_ptr<SessionContext>& session = item.second;
+        if (session && session->lifecycle.load(std::memory_order_acquire) == SessionContext::Lifecycle::Active &&
+            (session->protocolName == "rdp" || session->protocolName == "vnc" ||
+             session->protocolName == "rustdesk")) {
+            ++count;
+        }
+    }
+    napi_value result;
+    napi_create_int32(env, count, &result);
+    return result;
 }
 
 /**
@@ -13822,6 +13915,9 @@ napi_value ExtensionLoaderNapi::Init(napi_env env, napi_value exports) {
                          NapiIsVideoPlaybackActive, nullptr, &fn);
     napi_set_named_property(env, exports, "isVideoPlaybackActive", fn);
 
+    napi_create_function(env, "getLivePictureSessionCount", NAPI_AUTO_LENGTH,
+                         NapiGetLivePictureSessionCount, nullptr, &fn);
+    napi_set_named_property(env, exports, "getLivePictureSessionCount", fn);
     napi_create_function(env, "bindRendererToSession", NAPI_AUTO_LENGTH,
                          NapiBindRendererToSession, nullptr, &fn);
     napi_set_named_property(env, exports, "bindRendererToSession", fn);
