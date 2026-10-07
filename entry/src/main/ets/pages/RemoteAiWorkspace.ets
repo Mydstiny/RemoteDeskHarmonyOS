@@ -688,6 +688,8 @@ export struct RemoteAiWorkspace {
   @State flyRadius: number = 20;
   /** The text's own width inside the flyer, fixed for the flight so it never re-wraps while the bubble narrows. */
   @State flyTextW: number = 0;
+  /** As many lines as the bubble in the list has, so a rounding error can never add a line under the first. */
+  @State flyLines: number = 1;
   /** The rows above lift by the new bubble's height as it rises (they jumped at once before). */
   @State listLift: number = 0;
   private flyGeneration: number = 0;
@@ -770,7 +772,7 @@ export struct RemoteAiWorkspace {
       this.rootX = root.x; this.rootY = root.y;
       this.flyText = text.trim();
       this.flyX = from.x - root.x; this.flyY = from.y - root.y; this.flyW = from.w; this.flyH = from.h;
-      this.flyRadius = Math.min(from.h / 2, 22); this.flyTextW = Math.max(40, from.w - 28);
+      this.flyRadius = Math.min(from.h / 2, 22); this.flyTextW = Math.max(40, from.w - 28); this.flyLines = 99;
       // The rows above make room for the bubble as it rises rather than jumping when it is added.
       this.listLift = Math.max(40, from.h) + 18;
     } else {
@@ -804,9 +806,12 @@ export struct RemoteAiWorkspace {
     if (phase === 0) {
       // Beside the composer as it is now (it can have moved since the send).
       const base = this.box('composer') ?? from;
+      this.flyLines = Math.max(1, Math.round((target.h - 20) / Math.round(this.textSize * 1.5)));
       hilog.info(0x0000, 'RemoteAiFly', 'aim composerY=%{public}d targetY=%{public}d targetH=%{public}d',
         Math.round(base.y), Math.round(target.y), Math.round(target.h));
-      this.flyTextW = Math.max(20, target.w - 28);
+      // The bubble's own text width, plus a few vp of slack: measured to the last fraction, the same text wrapped its
+      // last character onto a second line that drew over the first. Left aligned, the slack falls in the padding.
+      this.flyTextW = Math.max(20, target.w - 28 + 6);
       ui.animateTo({ duration: 170, curve: Curve.FastOutSlowIn }, (): void => {
         this.flyW = target.w; this.flyH = target.h; this.flyX = tx;
         this.flyY = base.y - this.rootY + base.h - target.h; this.flyRadius = 18;
@@ -2085,7 +2090,8 @@ export struct RemoteAiWorkspace {
     if (this.flyText !== '') {
       Stack({ alignContent: Alignment.TopStart }) {
         Text(this.flyText).width(this.flyTextW).fontSize(this.textSize).lineHeight(Math.round(this.textSize * 1.5))
-          .fontFamily(AppConfig.fontFamily).fontColor(this.palette().text)
+          .fontFamily(AppConfig.fontFamily).fontColor(this.palette().text).textAlign(TextAlign.Start)
+          .maxLines(this.flyLines).textOverflow({ overflow: TextOverflow.Clip })
       }.position({ x: this.flyX, y: this.flyY }).width(this.flyW).height(this.flyH)
       .padding({ left: 14, right: 14, top: 10, bottom: 10 }).borderRadius(this.flyRadius)
       .backgroundColor(this.palette().userBubble).clip(true).hitTestBehavior(HitTestMode.None)

@@ -54,7 +54,7 @@ assert.ok(flight.includes('this.flyW = target.w; this.flyH = target.h; this.flyX
 assert.ok(flight.includes("const target = this.box('target');") && flight.includes('Math.abs(aim.y - target.y) > 1.5'),
   'the bubble\'s place is read every frame and the flyer steered to it (it never lands mid-screen and jumps)');
 assert.ok(flight.includes('curves.springMotion(0.42, 0.82)') && flight.includes('this.listLift = 0;'), 'it rises with the rows above');
-assert.ok(flight.includes('this.flyTextW = Math.max(20, target.w - 28);'), 'the text keeps its final width and never re-wraps mid-flight');
+assert.ok(flight.includes('this.flyTextW = Math.max(20, target.w - 28 + 6);') && flight.includes('this.flyLines = Math.max(1, Math.round((target.h - 20) / Math.round(this.textSize * 1.5)));'), 'the text keeps the bubble width (with slack) and its line count, so it never wraps a character over another');
 assert.ok(page.includes('.opacity(this.flyingRow(item) ? 0 : 1)') &&
   page.includes(".id(this.flyingRow(item) ? this.flyTargetId() : this.flyId('bubble-' + item.id))"),
   'each flight finds only its own bubble: an earlier message never keeps answering to the target id');
