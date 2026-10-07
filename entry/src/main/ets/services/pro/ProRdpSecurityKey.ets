@@ -1,3 +1,4 @@
+import { hilog } from '@kit.PerformanceAnalysisKit';
 import { common } from '@kit.AbilityKit';
 import { DEBUG } from 'BuildProfile';
 import rdpnapi, { RdpSecurityKeyRequest } from 'librdpnapi.so';
@@ -174,7 +175,11 @@ export class ProRdpSecurityKey {
   }
 
   answerConfirm(requestId: number, allowed: boolean): void {
-    if (!this.matches(requestId, 'confirm')) { return; }
+    if (!this.matches(requestId, 'confirm')) {
+      hilog.warn(0x0014, 'RemoteDesktop', 'security-key confirm ignored request=' + requestId.toString() +
+        ' current=' + (this.prompt === null ? 'none' : this.prompt.kind + ':' + this.prompt.requestId.toString()));
+      return;
+    }
     this.respond(requestId, allowed && ProRdpSecurityKey.available(), null, null);
     this.show(null);
   }

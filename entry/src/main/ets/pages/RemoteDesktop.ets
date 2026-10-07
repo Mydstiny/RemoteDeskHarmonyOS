@@ -1376,6 +1376,8 @@ struct RemoteDesktop {
   @State @Watch('onHarmonyShortcutInputOwnerChange') showRustDeskTwoFactorSheet: boolean = false;
   /** RDP security-key redirection: the prompt the session broker is waiting on, and this host's local choice. */
   @State rdpSecurityKeyPrompt: RdpSecurityKeyPrompt | null = null;
+  /** The sheet that shows rdpSecurityKeyPrompt (open while there is a request). */
+  @State showRdpSecurityKeySheet: boolean = false;
   @State rdpSecurityKeyEnabled: boolean = false;
   private rdpSecurityKey: ProRdpSecurityKey | null = null;
   @State @Watch('onHarmonyShortcutInputOwnerChange') showVncCertificateSheet: boolean = false;
@@ -6623,6 +6625,7 @@ struct RemoteDesktop {
     this.rdpSecurityKey = null;
     if (service !== null) { service.stop(); }
     this.rdpSecurityKeyPrompt = null;
+    this.showRdpSecurityKeySheet = false;
   }
 
   /**
@@ -6652,6 +6655,7 @@ struct RemoteDesktop {
       this.clearRemoteInputFocusSchedule();
     }
     this.rdpSecurityKeyPrompt = prompt;
+    this.showRdpSecurityKeySheet = prompt !== null;
     if ((prompt !== null) === wasOpen) { return; }
     this.syncHarmonyShortcutCapture(prompt !== null ? 'security-key-prompt-open' : 'security-key-prompt-close');
     if (prompt === null) {
@@ -24950,21 +24954,22 @@ struct RemoteDesktop {
           }
         })
 
-      if (this.rdpSecurityKeyPrompt !== null) {
-        RdpSecurityKeyPromptView({
-          prompt: this.rdpSecurityKeyPrompt,
-          onAllow: (requestId: number): void => { this.rdpSecurityKey?.answerConfirm(requestId, true); },
-          onDeny: (requestId: number): void => { this.rdpSecurityKey?.answerConfirm(requestId, false); },
-          onChoose: (requestId: number, key: string): void => { this.rdpSecurityKey?.chooseKey(requestId, key); },
-          onRefresh: (): void => { this.rdpSecurityKey?.refreshKeys(); },
-          onPhone: (requestId: number): void => { this.rdpSecurityKey?.choosePhone(requestId); },
-          onUseKey: (requestId: number): void => { this.rdpSecurityKey?.useSecurityKey(requestId); },
-          onPin: (requestId: number, pin: string): void => { this.rdpSecurityKey?.answerPin(requestId, pin); },
-          onCancel: (): void => { this.rdpSecurityKey?.cancel(); }
+      // The security-key request: its own bindSheet (the system sheet layer), so nothing in the session sits above it.
+      Column().width('100%').height('100%').hitTestBehavior(HitTestMode.None)
+        .bindSheet($$this.showRdpSecurityKeySheet, this.rdpSecurityKeySheetBuilder(), {
+          height: SheetSize.FIT_CONTENT,
+          preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
+          dragBar: false,
+          backgroundColor: this.pal().sheetBg,
+          showClose: false,
+          maskColor: 'rgba(0,0,0,0.45)',
+          onWillDismiss: (action: DismissSheetAction): void => {
+            // Swiping it away or tapping outside declines the request; the remote sees it cancelled.
+            if (this.rdpSecurityKeyPrompt !== null) { this.rdpSecurityKey?.cancel(); }
+            action.dismiss();
+          },
+          onDisappear: (): void => { this.showRdpSecurityKeySheet = false; }
         })
-          // Above every session layer (toolbars at 220–225, the input surfaces): its buttons must take the taps.
-          .zIndex(1000)
-      }
     }
     .width('100%').height('100%')
     .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
@@ -25490,6 +25495,23 @@ struct RemoteDesktop {
       onSpeed: (speed: number): void => { this.setCurrentProtocolWheelSpeed(speed); },
       onClose: (): void => { this.showVncWheelSheet = false; }
     })
+  }
+
+  @Builder rdpSecurityKeySheetBuilder() {
+    if (this.rdpSecurityKeyPrompt !== null) {
+      RdpSecurityKeyPromptView({
+        prompt: this.rdpSecurityKeyPrompt as RdpSecurityKeyPrompt,
+        inSheet: true,
+        onAllow: (requestId: number): void => { this.rdpSecurityKey?.answerConfirm(requestId, true); },
+        onDeny: (requestId: number): void => { this.rdpSecurityKey?.answerConfirm(requestId, false); },
+        onChoose: (requestId: number, key: string): void => { this.rdpSecurityKey?.chooseKey(requestId, key); },
+        onRefresh: (): void => { this.rdpSecurityKey?.refreshKeys(); },
+        onPhone: (requestId: number): void => { this.rdpSecurityKey?.choosePhone(requestId); },
+        onUseKey: (requestId: number): void => { this.rdpSecurityKey?.useSecurityKey(requestId); },
+        onPin: (requestId: number, pin: string): void => { this.rdpSecurityKey?.answerPin(requestId, pin); },
+        onCancel: (): void => { this.rdpSecurityKey?.cancel(); }
+      })
+    }
   }
 
   @Builder rdpSessionErrorSheet() {

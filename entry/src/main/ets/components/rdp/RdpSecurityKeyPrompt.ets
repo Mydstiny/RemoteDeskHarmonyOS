@@ -1,3 +1,4 @@
+import { hilog } from '@kit.PerformanceAnalysisKit';
 import { AppTheme, Palette, buildDark } from '../../common/Theme';
 import { RdpSecurityKeyPrompt, rdpSecurityKeyPinProblem } from '../../services/pro/ProRdpSecurityKey';
 import { ProUsbFidoKeyCandidate } from '../../services/pro/ProUsbFidoKey';
@@ -22,6 +23,13 @@ export struct RdpSecurityKeyPromptView {
   onUseKey: (requestId: number) => void = (_requestId: number): void => {};
   onPin: (requestId: number, pin: string) => void = (_requestId: number, _pin: string): void => {};
   onCancel: () => void = (): void => {};
+
+  /** Shown inside a bindSheet (the session page's): content only, no backdrop of its own. */
+  @Prop inSheet: boolean = false;
+  /** The button a finger went down on ('' when none), and the last press that ran (so click + touch run once). */
+  private pressed: string = '';
+  private lastFired: string = '';
+  private lastFiredAt: number = 0;
 
   private pal(): Palette { return buildDark(this.accentColor); }
 
@@ -52,13 +60,46 @@ export struct RdpSecurityKeyPromptView {
     }, 0);
   }
 
+  /**
+   * Fired on the finger lifting inside the button, not by the click recognizer: during an RDP session the click never
+   * reached these buttons (every touch did). One press runs the action once, whichever path sees it first.
+   */
   @Builder private button(label: string, primary: boolean, enabled: boolean, action: () => void) {
     Button(label, { type: ButtonType.Capsule, stateEffect: true })
       .fontSize(14).fontWeight(FontWeight.Medium).height(40).layoutWeight(1)
       .fontColor(primary ? Color.White : this.pal().text)
       .backgroundColor(primary ? this.accentColor : this.pal().surface)
       .enabled(enabled).opacity(enabled ? 1 : 0.5)
-      .onClick(action)
+      .onTouch((event: TouchEvent): void => { if (enabled) { this.pressTouch(label, event, action); } })
+      .onClick((): void => { this.fire(label, 'click', action); })
+  }
+
+  /** A press that ends inside the pressed control runs its action (see button()). */
+  private pressTouch(id: string, event: TouchEvent, action: () => void): void {
+    if (event.type === TouchType.Down) {
+      this.pressed = id;
+    } else if (event.type === TouchType.Up && this.pressed === id) {
+      this.pressed = '';
+      const point = event.changedTouches.length > 0 ? event.changedTouches[0] : null;
+      const width: number = Number(event.target.area.width);
+      const height: number = Number(event.target.area.height);
+      if (point !== null && point.x >= -8 && point.y >= -8 && point.x <= width + 8 && point.y <= height + 8) {
+        this.fire(id, 'touch', action);
+      }
+    } else if (event.type === TouchType.Cancel) {
+      this.pressed = '';
+    }
+  }
+
+  private fire(label: string, path: string, action: () => void): void {
+    const key: string = label + ':' + this.prompt.kind + ':' + this.prompt.requestId.toString();
+    const now: number = Date.now();
+    if (key === this.lastFired && now - this.lastFiredAt < 600) { return; }
+    this.lastFired = key;
+    this.lastFiredAt = now;
+    hilog.info(0x0014, 'RemoteDesktop', 'security-key prompt button=' + label + ' path=' + path + ' kind=' +
+      this.prompt.kind + ' request=' + this.prompt.requestId.toString());
+    action();
   }
 
   @Builder private keyRow(candidate: ProUsbFidoKeyCandidate) {
@@ -71,7 +112,14 @@ export struct RdpSecurityKeyPromptView {
     .width('100%').padding({ left: 12, right: 10, top: 10, bottom: 10 }).borderRadius(12)
     .backgroundColor(this.pal().surface).enabled(!this.prompt.busy)
     .accessibilityText('选择安全密钥 ' + candidate.label)
-    .onClick((): void => { this.onChoose(this.prompt.requestId, candidate.key); })
+    .onTouch((event: TouchEvent): void => {
+      if (!this.prompt.busy) {
+        this.pressTouch('key:' + candidate.key, event, (): void => { this.onChoose(this.prompt.requestId, candidate.key); });
+      }
+    })
+    .onClick((): void => {
+      this.fire('key:' + candidate.key, 'click', (): void => { this.onChoose(this.prompt.requestId, candidate.key); });
+    })
   }
 
   @Builder private body() {
@@ -100,7 +148,11 @@ export struct RdpSecurityKeyPromptView {
         }
         .width('100%').padding({ left: 12, right: 10, top: 10, bottom: 10 }).borderRadius(12)
         .backgroundColor(this.pal().surface).enabled(!this.prompt.busy)
-        .accessibilityText('使用手机通行密钥').onClick((): void => { this.onPhone(this.prompt.requestId); })
+        .accessibilityText('使用手机通行密钥')
+        .onTouch((event: TouchEvent): void => {
+          if (!this.prompt.busy) { this.pressTouch('phone', event, (): void => { this.onPhone(this.prompt.requestId); }); }
+        })
+        .onClick((): void => { this.fire('phone', 'click', (): void => { this.onPhone(this.prompt.requestId); }); })
       }
       if (this.prompt.candidates.length === 0) {
         Text('没有检测到安全密钥').fontSize(13).fontColor(this.pal().text3)
@@ -176,24 +228,34 @@ export struct RdpSecurityKeyPromptView {
     }
   }
 
-  build() {
-    Stack({ alignContent: Alignment.Center }) {
-      Column({ space: 12 }) {
-        Row({ space: 10 }) {
-          Stack({ alignContent: Alignment.Center }) {
-            SymbolGlyph($r('sys.symbol.checkmark_shield')).fontSize(20).fontColor([this.accentColor])
-          }.width(38).height(38).borderRadius(12).backgroundColor(this.pal().surface)
-          Text(this.title()).fontSize(17).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
-            .fontFamily(AppTheme.fontFamily).layoutWeight(1)
-        }.width('100%')
-        this.body()
-      }
-      .width('88%').constraintSize({ maxWidth: 380 }).padding(18).borderRadius(20)
-      // Opaque (the dark palette's card is see-through): the remote page must not show through the request.
-      .backgroundColor(this.pal().sheetBg).border({ width: 0.5, color: this.pal().cardBorder })
-      .shadow({ radius: 24, color: '#59000000', offsetY: 8 })
+  @Builder private card() {
+    Column({ space: 12 }) {
+      Row({ space: 10 }) {
+        Stack({ alignContent: Alignment.Center }) {
+          SymbolGlyph($r('sys.symbol.checkmark_shield')).fontSize(20).fontColor([this.accentColor])
+        }.width(38).height(38).borderRadius(12).backgroundColor(this.pal().surface)
+        Text(this.title()).fontSize(17).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
+          .fontFamily(AppTheme.fontFamily).layoutWeight(1)
+      }.width('100%')
+      this.body()
     }
-    .width('100%').height('100%').backgroundColor('rgba(0,0,0,0.45)')
-    .hitTestBehavior(HitTestMode.Block)
+  }
+
+  build() {
+    if (this.inSheet) {
+      // In the session page's own bindSheet (its layer, its modality): just the content.
+      Column() { this.card() }
+        .width('100%').padding({ left: 20, right: 20, top: 20, bottom: 24 }).backgroundColor(this.pal().sheetBg)
+    } else {
+      Stack({ alignContent: Alignment.Center }) {
+        Column() { this.card() }
+          .width('88%').constraintSize({ maxWidth: 380 }).padding(18).borderRadius(20)
+          // Opaque (the dark palette's card is see-through): the remote page must not show through the request.
+          .backgroundColor(this.pal().sheetBg).border({ width: 0.5, color: this.pal().cardBorder })
+          .shadow({ radius: 24, color: '#59000000', offsetY: 8 })
+      }
+      .width('100%').height('100%').backgroundColor('rgba(0,0,0,0.45)')
+      .hitTestBehavior(HitTestMode.Block)
+    }
   }
 }
