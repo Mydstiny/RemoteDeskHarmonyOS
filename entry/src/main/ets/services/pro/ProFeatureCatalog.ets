@@ -61,10 +61,12 @@ function connectionShare(): ProFeature {
 }
 function securityKeyRedirect(): ProFeature {
   const feature = planned('pro.security.webauthnRedirect', '安全密钥重定向',
-    '在鸿蒙 PC 上插入 USB 安全密钥，供远程 Windows 里的网站和应用注册、登录；每次使用都先在本机确认。', 23);
-  // Debug builds reach it through the experimental path; Release keeps it closed until device acceptance.
+    '在手机、平板或鸿蒙 PC 上插入 USB 安全密钥（或使用配对手机的通行密钥），供远程 Windows 里的网站和应用注册、登录；' +
+    '每次使用都先在本机确认。', 23);
+  // Debug builds reach it through the experimental path; Release keeps it closed until device acceptance. Phones and
+  // tablets too (2026-10-07): a USB-C key plugs in there as well, and the paired-phone path needs no USB at all.
   feature.availability = 'experimental';
-  feature.devices = ['pc'];
+  feature.devices = ['phone', 'tablet', 'pc'];
   feature.protocols = ['rdp'];
   feature.capabilities = ['SystemCapability.USB.USBManager'];
   return feature;
@@ -178,7 +180,7 @@ export function proFeatureProgress(id: string): string {
     case 'pro.ai.dsh': return '已开发（局域网连接） · 实机验收暂缓';
     case 'pro.ai.pi': return '已开发（局域网连接） · 电脑端插件已通过真实对话验收 · 待手机实机验收';
     case 'pro.ai.rustdeskTransport': return '规划中 · 等待 RustDesk 数据通道';
-    case 'pro.security.webauthnRedirect': return '开发中 · RDP 安全密钥通道已接入调试版，待鸿蒙 PC、安全密钥与 Windows 验收';
+    case 'pro.security.webauthnRedirect': return '开发中 · RDP 安全密钥通道已接入调试版（手机、平板、鸿蒙 PC），待安全密钥与 Windows 验收';
     case 'pro.security.phonePasskey': return '原型 · 调试版可在同账号设备间测试注册与登录；RDP 接入待鸿蒙 PC 验收';
     case 'pro.personalization': return '已完成 · 实机验收通过（自定义组合键与 SSH 终端皮肤）';
     case 'pro.workspaces':

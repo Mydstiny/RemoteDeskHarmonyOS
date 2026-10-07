@@ -39,6 +39,11 @@ export struct DiagnosticAiOrb {
   build() {
     if (this.visible) {
       Stack() {
+        // Dark mode: the glass sits on the host list's own black (the page background there), so it looks the same
+        // on every page instead of taking on whatever each page has behind its title.
+        if (this.theme === 'dark') {
+          Column().width(36).height(36).borderRadius(18).backgroundColor('#000000')
+        }
         AiLiquidGlassButton({ buttonSize: 36, dark: this.theme === 'dark', active: this.working(),
           reducedMotion: this.reducedMotion || this.storedReducedMotion })
       }

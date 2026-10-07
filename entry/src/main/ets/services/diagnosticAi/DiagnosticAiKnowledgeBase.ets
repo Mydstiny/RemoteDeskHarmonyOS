@@ -8,7 +8,7 @@ import { diagnosticAiSettingCatalog } from './DiagnosticAiSettingsActionPolicy';
  * 也不包含密码、主机地址、日志原文或用户资料。后续可以按版本拆成独立文档资源，
  * 但 Agent 必须始终带上知识版本，避免模型把过期操作当成当前 UI。
  */
-export const DIAGNOSTIC_AI_KNOWLEDGE_VERSION: string = 'RemoteDesktop-help-2026-10-07-v21';
+export const DIAGNOSTIC_AI_KNOWLEDGE_VERSION: string = 'RemoteDesktop-help-2026-10-07-v22';
 
 /**
  * What the AI itself can do and where things are (1.2.0). Shared by 助理 (with the catalogs below) and by 聊天 and
@@ -26,7 +26,7 @@ const AI_GUIDE: string[] = [
   '操作引导中心（设置 → 教程 → 操作引导中心）：按手机、Pad、PC 和场景（开始、RDP、RustDesk、SSH/SFTP、VNC、Moonlight、远程 AI、AI 助理）列出操作步骤，每篇写明从哪里进入；顶部可以搜索，例如“配对”“滚轮”。底部开关决定自动引导是否每次都显示。',
   '远程 AI 界面风格（设置 → 远程 AI → 显示）：Claude 风格仿 Claude App（米白与陶土橙），Codex 风格仿 Codex App（黑白与蓝色），操作相同、只是外观不同，下次打开会话生效。用户说“远程 AI 换成 Codex 风格”等时，用设置目录里的 remoteAi.uiStyle；「显示工具执行过程」「回到前台后恢复查看」「新主机默认的电脑端 AI（Codex / DSH / Pi）」「会话文字大小（12–22）」也可以用 remoteAi.showExecution、remoteAi.reconnectOnForeground、remoteAi.defaultBackend、remoteAi.textSize 修改。',
   '手机通行密钥（Pro 原型，目前只在调试版开放，设置 → 安全与数据 → 手机通行密钥；Pro 功能里的同名项也有「打开手机通行密钥」按钮；动作 pro.phonePasskey）：让同一华为账号的手机充当通行密钥，私钥只存在手机的系统密钥库，每次使用都要在手机上确认并验证人脸、指纹或锁屏密码。页面顶部有三步说明，下面分两种用法：「作为密钥」（手机默认）——打开「接收登录请求」，管理已配对的设备和保存的通行密钥；「使用手机密钥」（平板和 PC 默认）——点「与手机配对」，核对两边显示的六位配对码后在手机上确认，配对后点「测试注册」「测试登录」，手机弹出确认卡片并倒计时，确认后验证，结果会像网站一样校验签名；可以拒绝，超时自动取消，也可以随时解除配对。目前还不能给普通网站或其他应用使用；鸿蒙 PC 的 RDP 会话里，Windows 网站要求安全密钥时可以改用配对的手机（等待鸿蒙 PC 实机验收）。',
-  '安全密钥重定向（Pro，开发中，仅鸿蒙 PC 的 RDP，动作 pro.securityKey）：在鸿蒙 PC 上插入 USB 安全密钥，供远程 Windows 里的网站和应用注册、登录；在 RDP 会话的控制中心按主机开关，下次连接生效，每次使用都先在本机确认。',
+  '安全密钥重定向（Pro，开发中，手机、平板和鸿蒙 PC 的 RDP，动作 pro.securityKey）：插入 USB 安全密钥（或用配对手机的通行密钥），供远程 Windows 里的网站和应用注册、登录；在 RDP 会话的控制中心按主机开关，下次连接生效，每次使用都先在本机确认。',
   'PC 大屏：AI 按钮在左下角，和固定的「+」并排。',
   '全新视觉（设置 → 个性化 → 全新视觉，默认开启）：打开后设置按「通用 / 连接协议 / AI 与 Pro / 安全与数据 / 帮助」分组，顶部可以搜索设置，各项直接显示当前值；远程主机、密钥保险库、中继页也换新外观：手机和平板的卡片同样有「⋯」更多菜单（主机卡片里有编辑、上锁或解锁、检测、部署公钥、多选、删除），多选时操作栏固定在搜索框下方，列表为空时直接给出「添加主机」；SSH 密钥卡片点一下打开「密钥管理」，复制公钥在卡片的「⋯」菜单里；2FA 验证码分成两组显示。关闭恢复经典外观，两种外观的功能和保存方式相同。用户说“打开全新视觉”“换回经典外观”时，用设置目录里的 ui.settingsVisual。',
   '远程滚轮：设置 → 显示与交互 → 远程滚轮，先选择协议（RDP、RustDesk、SSH、VNC、Moonlight），再分别调滚轮方向（反转）和滚轮速度（25%–400%，VNC 可到 1000%，100% 为该协议的默认）；实体鼠标、触控板和双指、三指滑动都按这个速度，方向和速度都保存在本机；会话里也能直接调（RDP 控制中心、RustDesk 会话栏「鼠标与触控 › 滚轮速度」、VNC 贴边控制栏「滚轮」），和设置同步。VNC 服务器每格滚动的距离差别很大：嫌快调低，macOS 屏幕共享、UltraVNC 滚得少可调到 400%–1000%。AI 可以用 change_setting 改 remote.<协议>WheelSpeed 和 remote.<协议>ReverseWheel。',
