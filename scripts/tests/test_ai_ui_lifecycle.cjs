@@ -320,7 +320,8 @@ const cases = [
     assert.equal(state.page.listLength(), 17);
     // A running step already shows the turn at work: no second 正在思考 line below it.
     state.page.items = rows.concat([item('think', 'execution', 'thinking', { state: 'running' })]);
-    assert.equal(state.page.listLength(), 17, 'the running thinking row takes the working line\'s place');
+    assert.equal(state.page.listLength(), 18, 'the working line keeps its place (it only fades) so nothing shakes');
+    assert.equal(state.page.showWorkingRow(), false, 'and fades while the running thinking row shows the turn at work');
   }],
   ['Claude file edits can be allowed; Codex ones need the complete native item', async () => {
     const state = workspaceFixture(false);

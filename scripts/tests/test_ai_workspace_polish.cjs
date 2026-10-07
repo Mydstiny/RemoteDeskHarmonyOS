@@ -45,12 +45,13 @@ assert.ok(timeline.includes("case 'ls': return 'LS';"));
 const begin = page.slice(page.indexOf('private beginSend('), page.indexOf('private failSend('));
 assert.ok(begin.includes('this.pendingSend = {') && begin.includes("this.draft = ''") && begin.includes('this.followBottom = true;'));
 const flight = page.slice(page.indexOf('private beginSend('), page.indexOf('private endFlight('));
-assert.ok(flight.includes("const from = this.boxOf(this.flyId('composer')), root = this.boxOf(this.flyId('root'));") &&
+assert.ok(flight.includes("const from = this.box('composer'), root = this.box('root');") &&
+  flight.includes("this.flyMode = this.boxOf(this.flyId('composer')) !== null && this.boxOf(this.flyId('root')) !== null ? 'window' : 'area';") &&
   flight.includes('this.flyX = from.x - root.x; this.flyY = from.y - root.y; this.flyW = from.w; this.flyH = from.h;'),
   'the flight starts from the composer input itself, in the same window coordinates as its target');
-assert.ok(flight.includes('this.flyW = target.w; this.flyH = target.h; this.flyX = tx;') && flight.includes('from.y - this.rootY + from.h - target.h'),
+assert.ok(flight.includes('this.flyW = target.w; this.flyH = target.h; this.flyX = tx;') && flight.includes('base.y - this.rootY + base.h - target.h'),
   'it first takes the bubble size beside the composer (one line narrows, several lines keep the width)');
-assert.ok(flight.includes("const target = this.boxOf(this.flyId('target'));") && flight.includes('Math.abs(aim.y - target.y) > 1.5'),
+assert.ok(flight.includes("const target = this.box('target');") && flight.includes('Math.abs(aim.y - target.y) > 1.5'),
   'the bubble\'s place is read every frame and the flyer steered to it (it never lands mid-screen and jumps)');
 assert.ok(flight.includes('curves.springMotion(0.42, 0.82)') && flight.includes('this.listLift = 0;'), 'it rises with the rows above');
 assert.ok(flight.includes('this.flyTextW = Math.max(20, target.w - 28);'), 'the text keeps its final width and never re-wraps mid-flight');
@@ -103,8 +104,19 @@ assert.ok(page.includes('.bindMenu(this.permissionMenuShown, this.permissionMenu
 assert.ok(page.includes("return this.composerFocused || this.draft !== '' || this.composerHold;"));
 assert.ok(page.includes('getFocusController().clearFocus()'));
 // One working line: none below a row that already shows the turn at work; the Claude ✳ animates only itself.
-assert.ok(page.includes('if (this.showWorkingRow()) { ListItem() { this.workingRow() } }'));
-assert.ok(page.includes('AiSpinStar({') && !page.includes('.rotate({ angle: this.spin })'));
+assert.ok(page.includes('if (this.working()) {\n            ListItem() {') && page.includes('.opacity(this.showWorkingRow() ? 1 : 0)'),
+  'the working line keeps its slot for the whole turn and only fades');
+assert.ok(page.includes("AiThinkingIndicator({ indicatorSize: 20, style: 'aurora', opensFromDot: false })") && !page.includes('AiSpinStar'),
+  'the Claude style works under the app\'s own 极光环');
+// Rows open in place with an animation (keys no longer change when a row opens).
+assert.ok(!page.includes("':open'") && page.includes('this.getUIContext().animateTo({ duration: 260, curve: Curve.FastOutSlowIn }, (): void => { this.expandedIds = next; });'));
+assert.ok((page.match(/\.transition\(this\.unfoldEffect\(\)\)/g) || []).length >= 3);
+// The composer, its chips and approval cards float over the conversation's foot; the list keeps their room free.
+assert.ok(page.includes('Stack({ alignContent: Alignment.Bottom }) {') && page.includes('.contentEndOffset(this.listEndRoom)'));
+assert.ok(page.includes('}.width(\'100%\').hitTestBehavior(HitTestMode.Transparent)'));
+// Approval cards come and go with motion; the input keeps the keyboard while a send is under way.
+assert.ok(page.includes("this.getUIContext().animateTo({ curve: curves.springMotion(0.4, 0.86) }, (): void => { this.approvals = approvals; });"));
+assert.ok(page.includes(".enabled(this.allowed && this.operator() && !(this.sessionId !== '' && this.archived))"));
 // Opening and leaving a conversation slide; the page itself slides in and out.
 // Only navigation slides (open, back, continue in a copy); a reconnect or resume changes no view.
 assert.ok(page.includes("if (sessionChanged && this.slideNext !== 0 && (c.sessionId !== '') === (this.slideNext > 0)) {"));
