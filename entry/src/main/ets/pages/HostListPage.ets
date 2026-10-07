@@ -25,6 +25,7 @@ import {
 } from '../services/pro/ProFeatureCatalog';
 import { AiHostEditor } from '../components/ai/AiHostEditor';
 import { AiHostService, projectAiHost, aiHostId } from '../services/ai/AiHostService';
+import { AiPairTarget, aiPairTarget } from '../services/ai/AiWorkspacePairPolicy';
 import { AiHost } from '../services/ai/AiModels';
 import { AiAccess, AiAccountLease } from '../services/ai/AiAccess';
 import { AiLocalStore } from '../services/ai/AiLocalStore';
@@ -7303,6 +7304,19 @@ struct HostListPage {
    */
   private openProWorkspace(workspace: Workspace): void {
     if (!ProEntries.visible('pro.workspaces')) { return; }
+    // One or two remote AI conversations: one page, side by side (1:1) for two, each with its own connection.
+    const aiTargets = workspace.entries.slice().sort((left: WorkspaceEntry, right: WorkspaceEntry): number => left.order - right.order)
+      .map((entry: WorkspaceEntry): AiPairTarget | null => entry.protocol === 'ai' ? aiPairTarget(entry.hostRef) : null);
+    if (aiTargets.length >= 1 && aiTargets.length <= 2 && aiTargets.every((target: AiPairTarget | null): boolean => target !== null)) {
+      const firstTarget = aiTargets[0] as AiPairTarget;
+      const params: Record<string, string> = { 'hostId': firstTarget.hostId, 'sessionId': firstTarget.sessionId };
+      if (aiTargets.length === 2) {
+        const secondTarget = aiTargets[1] as AiPairTarget;
+        params['hostId2'] = secondTarget.hostId; params['sessionId2'] = secondTarget.sessionId;
+      }
+      void router.pushUrl({ url: 'pages/RemoteAiWorkspace', params: params });
+      return;
+    }
     if (this.proWorkspaceRun !== null && !workspaceRunFinished(this.proWorkspaceRun as WorkspaceRun) &&
       (this.proWorkspaceRun as WorkspaceRun).workspaceId !== workspace.id) {
       promptAction.showToast({ message: '已结束上一个工作区的打开进度', duration: 1600 });
@@ -13124,7 +13138,7 @@ struct HostListPage {
   }
 
   private hostPlatformText(host: RemoteHost): string {
-    if (host.protocol === 'ai') { return host.username === 'DSH' ? 'DSH' : 'Codex'; }
+    if (host.protocol === 'ai') { return host.username; }
     if (host.rustdeskProManaged && host.rustdeskProPlatform.trim() !== '') {
       return host.rustdeskProPlatform.trim();
     }

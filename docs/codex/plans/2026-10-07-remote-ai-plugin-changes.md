@@ -43,3 +43,17 @@
 - **测试客户端**：联调用的只读客户端 `clients/codex-native-test` 和 `clients/dsh-native-test`，在两个插件的设备列表里各占一条，可以撤销。
 
 修改前的原文件备份在本次 session 的 scratchpad `plugin-backup/` 目录。
+
+## 4. DSH 桌面版里的插件页（10 月 7 日晚）
+
+DSH 桌面版不读 RemoteDesk 安装目录，而是用自己 profile 里的一份插件副本（`~/.dsh/profiles/desktop/node_modules/@remotedesk/dsh-plugin`，10 月 2 日打包），所以它的插件设置页和「打开 Web UI」都是旧版。已做的改动：
+
+- **设置页二维码**：`src/web-panel.mjs` 的 `/api/remotedesk.invite` 同时返回 `qrText`（精简邀请，来自 `control-panel.mjs` 导出的 `compactInviteText`）。`lib/client.js` 用它画二维码，链接仍带完整邀请。
+- **设置页界面**：
+  - 新增「全部项目（含 DSH 工作区）」选项（`*`），没登记项目时也能生成邀请；
+  - 权限改为「可操作 / 只读」的白话说明；
+  - 二维码放大，旁边列出手机端的三步操作；
+  - 标题改为「配对手机」，按钮改为「生成 120 秒邀请」。
+- **同步副本**：把安装目录的 `src/*.mjs`、`lib/client.js` 和 bridge-core（`admin.mjs` 支持 `*`、`server.mjs` 支持本机对话导入）同步到 desktop 和 remotedesk 两个 profile。改前的文件备份在 scratchpad 的 `plugin-backup/dsh-*-before/`。
+- **bridge-core 去重**：Codex、DSH 和 Pi 的 bridge-core 都加了同一条规则：导入本机对话时，同一个原生对话只保留一个会话，不会因为项目变动出现重复。
+- **生效方式**：Codex、DSH 服务已经重启。DSH 桌面版要退出再打开，才会加载新的设置页。

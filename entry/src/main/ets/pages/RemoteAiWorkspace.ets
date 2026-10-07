@@ -22,6 +22,9 @@ import { AiDiffFile, AiToolView, aiConversationItem, aiDiffFiles, aiDiffSignatur
 import { AiRemoteMarkdown } from '../components/ai/AiRemoteMarkdown';
 import { AiDiffView } from '../components/ai/AiDiffView';
 import { AiShimmerText } from '../components/ai/AiShimmerText';
+import { WorkspaceStore } from '../services/pro/workspace/WorkspaceStore';
+import { Workspace, WORKSPACE_COLORS, newWorkspace, newWorkspaceEntry } from '../services/pro/workspace/WorkspacePolicy';
+import { aiPairRef } from '../services/ai/AiWorkspacePairPolicy';
 
 interface AiWsButton { label: string; primary: boolean; enabled: boolean; action: () => void; }
 interface AiWsIconButton { symbol: Resource; label: string; enabled: boolean; action: () => void; }
@@ -37,9 +40,36 @@ interface AiWsModes { values: string[]; selected: string; choose: (value: string
 interface AiWsChip { label: string; enabled: boolean; action: () => void; }
 interface AiWsRoundAction { symbol: Resource; label: string; primary: boolean; enabled: boolean; action: () => void; }
 interface AiQuestionValue { id: string; title: string; options: string[]; descriptions: string[]; multiple: boolean; selected: string[]; text: string; }
-@Entry
+/** What the page asks of a conversation view: back, its page hooks, and what it shows. */
+class AiViewHandle {
+  back: () => boolean = (): boolean => false;
+  pageShow: () => void = (): void => {};
+  pageHide: () => void = (): void => {};
+  hostId: () => string = (): string => '';
+  sessionId: () => string = (): string => '';
+  title: () => string = (): string => '';
+}
+
+/**
+ * One remote AI host's conversations. On a phone, and in each half of two conversations side by side, the list and
+ * then a conversation; on a Pad or PC the list on the left and the open conversation on the right (1:2).
+ */
 @Component
 export struct RemoteAiWorkspace {
+  /** The AI host to open ('' reads the page's route), a conversation to open at once, and the layout. */
+  hostId: string = '';
+  initialSession: string = '';
+  /** 'auto': list and conversation side by side on a wide Pad or PC; 'pane': a half of two conversations. */
+  layout: string = 'auto';
+  handle: AiViewHandle = new AiViewHandle();
+  /** Leaves the view (in a pane: closes it); opens another AI beside this one; keeps two panes as a workspace. */
+  onExit: () => void = (): void => {};
+  onSplit: (hostId: string) => void = (_hostId: string): void => {};
+  onSaveCombo: () => void = (): void => {};
+  @StorageProp('isPadDevice') isPadDevice: boolean = false;
+  @StorageProp('isDesktopDevice') isDesktopDevice: boolean = false;
+  @State sideRefreshing: boolean = false;
+  private sideScrollerValue: Scroller | null = null;
   @StorageProp('currentTheme') theme: string = 'light';
   @StorageProp('accentColor') accent: string = '#007DFF';
   @StorageProp('topRectHeight') topInset: number = 0;
@@ -185,6 +215,12 @@ export struct RemoteAiWorkspace {
   async aboutToAppear(): Promise<void> {
     const mount = ++this.mountGeneration;
     this.alive = true; this.controller.onChange = (): void => this.sync();
+    this.handle.back = (): boolean => this.onBackPress();
+    this.handle.pageShow = (): void => { this.onPageShow(); };
+    this.handle.pageHide = (): void => { this.onPageHide(); };
+    this.handle.hostId = (): string => this.host?.id ?? this.hostId;
+    this.handle.sessionId = (): string => this.sessionId;
+    this.handle.title = (): string => this.sessionId !== '' ? this.title : (this.host?.label ?? '远程 AI');
     try { this.pageAccount = AiAccess.getInstance().capture(); }
     catch (error) { this.error = aiErrorText((error as Error).message); return; }
     this.stopPageAccess = AiAccess.getInstance().subscribe((): void => {
@@ -217,7 +253,7 @@ export struct RemoteAiWorkspace {
     const params = router.getParams() as Record<string, string>;
     await AiHostService.getInstance().refresh(getContext(this) as common.UIAbilityContext);
     if (!this.alive || mount !== this.mountGeneration || this.pageAccount === null || !AiAccess.getInstance().current(this.pageAccount)) { return; }
-    this.host = AiHostService.getInstance().find(params['hostId'] ?? '');
+    this.host = AiHostService.getInstance().find(this.hostId !== '' ? this.hostId : (params['hostId'] ?? ''));
     if (this.host === null) { this.error = '主机不存在或当前账号已变化'; return; }
     this.canReconnect = this.accessible();
     try {
@@ -232,6 +268,10 @@ export struct RemoteAiWorkspace {
     this.inBackground = AppStorage.get<boolean>('remoteDesktopBgFlag') === true;
     if (this.inBackground || (this.pausedDuringSetup && !this.reconnectForeground)) { this.status = '已暂停连接'; return; }
     await this.reconnect();
+    // A workspace pair (or a link) names the conversation to open.
+    if (this.initialSession !== '' && this.alive && mount === this.mountGeneration && this.sessionId === '') {
+      this.sync(); await this.chooseSession(this.initialSession);
+    }
   }
   aboutToDisappear(): void {
     if (this.elapsedTimer >= 0) { clearInterval(this.elapsedTimer); this.elapsedTimer = -1; }
@@ -301,7 +341,7 @@ export struct RemoteAiWorkspace {
     } finally {
       if (timer >= 0) { clearTimeout(timer); }
       this.controller.close();
-      if (this.alive && mount === this.mountGeneration) { router.back(); }
+      if (this.alive && mount === this.mountGeneration) { if (this.layout === 'pane') { this.onExit(); } else { router.back(); } }
     }
   }
   /** Back from a conversation returns to the list (like the Codex and Claude apps); back from the list leaves. */
@@ -696,7 +736,7 @@ export struct RemoteAiWorkspace {
   }
   /** Rows in the list, the same way build() lays them out, so following knows where the bottom is. */
   private listLength(): number {
-    if (this.sessionId === '') { return 1 + this.homeRows().length; }
+    if (this.sessionId === '') { return this.wide() ? 1 : 1 + this.homeRows().length; }
     let count = (this.historyCursor !== '' ? 1 : 0) + (this.shownItems().length === 0 ? 1 : 0);
     count += this.stepEntries().length + (this.working() ? 1 : 0);
     if (this.changeSummary() !== '') { count++; }
@@ -1424,6 +1464,18 @@ export struct RemoteAiWorkspace {
     .bindMenu(this.moreMenu())
   }
   private goBack(): void { if (this.sessionId !== '') { void this.backToList(); } else { void this.leave(); } }
+  /** A Pad or PC window wide enough for the list beside the conversation (not a half of two conversations). */
+  private wide(): boolean { return this.layout === 'auto' && (this.isPadDevice || this.isDesktopDevice) && this.pageWidth >= 600; }
+  /** Every AI host of this account, this one included: the same host can sit beside itself (two conversations). */
+  private otherHosts(): AiHost[] { return AiHostService.getInstance().list().slice(0, 8); }
+  private sideScroller(): Scroller {
+    if (this.sideScrollerValue === null) { this.sideScrollerValue = new Scroller(); }
+    return this.sideScrollerValue;
+  }
+  private async refreshSide(): Promise<void> {
+    try { await this.run(async (): Promise<void> => { await this.controller.refreshSessions(); }); }
+    finally { this.sideRefreshing = false; }
+  }
   /** The conversation's ⋯ menu: settings, changes, background tasks, compaction, reconnect, archive. */
   private moreMenu(): MenuElement[] {
     const items: MenuElement[] = [
@@ -1451,6 +1503,16 @@ export struct RemoteAiWorkspace {
       } });
     }
     items.push({ value: '重新连接', action: (): void => { void this.reconnect(); } });
+    // Pad and PC: a second AI conversation beside this one (1:1); two panes can be kept as a workspace pair.
+    if (this.layout === 'auto' && this.wide()) {
+      this.otherHosts().forEach((host: AiHost): void => {
+        items.push({ value: '分屏打开「' + host.label + '」', action: (): void => { this.onSplit(host.id); } });
+      });
+    }
+    if (this.layout === 'pane') {
+      items.push({ value: '保存为工作区组合', action: (): void => { this.onSaveCombo(); } });
+      items.push({ value: '关闭这一侧', action: (): void => { void this.leave(); } });
+    }
     if (this.operator()) {
       items.push({ value: this.archived ? '恢复会话' : '归档会话', action: (): void => {
         void this.run(async (): Promise<void> => {
@@ -1486,7 +1548,15 @@ export struct RemoteAiWorkspace {
    * it works and a round ⋯.
    */
   @Builder private appHeader() {
-    if (this.sessionId === '') {
+    if (this.sessionId === '' && this.wide()) {
+      // The list (with back and search) is on the left; here only what to start and the ⋯ menu.
+      Row() {
+        Text('新对话').fontSize(17).fontWeight(FontWeight.Medium).fontFamily(AppConfig.fontFamily).fontColor(this.palette().text)
+          .layoutWeight(1)
+        Stack() { this.moreButton() }.borderRadius(22).backgroundColor(this.palette().raised)
+          .border({ width: 0.5, color: this.palette().border })
+      }.width('100%').padding({ left: 16, right: 12, top: 6, bottom: 6 })
+    } else if (this.sessionId === '') {
       Row() {
         this.circleButton({ symbol: $r('sys.symbol.chevron_left'), label: '返回', enabled: true, action: (): void => { this.goBack(); } })
         Blank()
@@ -1618,7 +1688,9 @@ export struct RemoteAiWorkspace {
       // A hairline from the title's start, as in the apps' lists, so each conversation reads on its own.
       Divider().color(this.palette().border).margin({ left: this.rowInset() + (this.uiStyle !== 'codex' ? 32 : 0) })
     }.width('100%').borderRadius(12)
-    .stateStyles({ normal: { .backgroundColor(Color.Transparent) }, pressed: { .backgroundColor(this.palette().surface) } })
+    // On a Pad or PC the open conversation stays marked in the list beside it.
+    .stateStyles({ normal: { .backgroundColor(this.wide() && session.id === this.sessionId ? this.palette().surface : Color.Transparent) },
+      pressed: { .backgroundColor(this.palette().surface) } })
     .enabled(this.allowed && !this.busy).focusable(true)
     .accessibilityText((session.origin === 'computer' ? '电脑上的对话 ' : '对话 ') + session.title + '，' +
       this.projectTitle(session.project) + '，' + aiRelativeTime(session.updatedAt))
@@ -2135,6 +2207,57 @@ export struct RemoteAiWorkspace {
       }, (mode: string): string => mode)
     }.width(310).padding({ bottom: 8 })
   }
+  /** Pad and PC: the conversation list beside the open conversation (a third of the width). */
+  @Builder private sidebar() {
+    Column() {
+      Row({ space: 8 }) {
+        this.circleButton({ symbol: $r('sys.symbol.chevron_left'), label: '返回', enabled: true, action: (): void => { void this.leave(); } })
+        Column({ space: 2 }) {
+          Text(this.host?.label ?? '远程 AI').fontSize(17).fontWeight(FontWeight.Medium).fontFamily(AppConfig.fontFamily)
+            .fontColor(this.palette().text).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+          Text(this.backendName() + ' · ' + this.status).fontSize(12).fontFamily(AppConfig.fontFamily)
+            .fontColor(this.palette().text3).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+        }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+        this.circleButton({ symbol: this.searching ? $r('sys.symbol.xmark') : $r('sys.symbol.magnifyingglass'),
+          label: this.searching ? '关闭搜索' : '搜索对话', enabled: true,
+          action: (): void => { this.searching = !this.searching; if (!this.searching) { this.query = ''; } } })
+      }.width('100%').padding({ left: 10, right: 10, top: 6, bottom: 6 })
+      Column() { this.conversationFilters() }.padding({ left: 10, right: 10 })
+      Refresh({ refreshing: $$this.sideRefreshing }) {
+        List({ space: 2, scroller: this.sideScroller() }) {
+          if (this.listedSessions().length === 0) {
+            ListItem() {
+              Text(this.allowed ? (this.projects.length === 0 ? '电脑还没有开放项目给这台设备' : '这里还没有对话') :
+                (this.status === '连接中' ? '正在连接电脑…' : '还没有连上电脑'))
+                .fontSize(14).fontFamily(AppConfig.fontFamily).fontColor(this.palette().text3).width('100%')
+                .textAlign(TextAlign.Center).padding({ top: 40 })
+            }
+          }
+          ForEach(this.homeRows(), (row: AiHomeRow): void => {
+            ListItem() {
+              if (row.session !== null) { this.conversationRow(row.session) }
+              else if (row.more > 0) { this.moreRow(row) }
+              else { this.projectHeader(row) }
+            }
+          }, (row: AiHomeRow): string => 'side:' + row.key)
+        }.width('100%').height('100%').padding({ left: 10, right: 10, bottom: 12 }).scrollBar(BarState.Auto)
+        .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
+      }.layoutWeight(1).pullToRefresh(this.allowed)
+      .onRefreshing((): void => { void this.refreshSide(); })
+    }.width('100%').height('100%').backgroundColor(this.palette().bg)
+  }
+  /** Pad and PC with no conversation open: what to do, above the composer that starts one. */
+  @Builder private splitPlaceholder() {
+    Column({ space: 12 }) {
+      SymbolGlyph($r('sys.symbol.ellipsis_bubble')).fontSize(40).fontColor([this.palette().text3])
+      Text('选择左边的对话，或在下面直接提问开始新对话').fontSize(15).fontFamily(AppConfig.fontFamily)
+        .fontColor(this.palette().text2).textAlign(TextAlign.Center)
+      if (this.otherHosts().length > 0 && this.layout === 'auto') {
+        Text('也可以在 ⋯ 里分屏打开另一个 AI，左右各一个对话').fontSize(13).fontFamily(AppConfig.fontFamily)
+          .fontColor(this.palette().text3).textAlign(TextAlign.Center)
+      }
+    }.width('100%').padding({ top: 80, bottom: 40, left: 24, right: 24 })
+  }
   @Builder private workspace() {
     Column() {
       Column() {
@@ -2147,7 +2270,9 @@ export struct RemoteAiWorkspace {
       }.width('100%').onAreaChange((_old: Area, next: Area): void => { this.topChrome = this.measured(next, this.topChrome); })
       Refresh({ refreshing: $$this.listRefreshing }) {
       List({ space: this.sessionId === '' ? 2 : 18, scroller: this.scroller() }) {
-        if (this.sessionId === '') {
+        if (this.sessionId === '' && this.wide()) {
+          ListItem() { this.splitPlaceholder() }
+        } else if (this.sessionId === '') {
           ListItem() { this.conversationFilters() }
           if (this.uiStyle !== 'codex' && this.query === '' && this.listedSessions().length > 0) {
             ListItem() {
@@ -2212,7 +2337,7 @@ export struct RemoteAiWorkspace {
         })
       }.height(this.transcriptHeight())
       // Pull down on the conversation list to read it again (the chat follows its own stream).
-      .pullToRefresh(this.sessionId === '' && this.allowed)
+      .pullToRefresh(this.sessionId === '' && this.allowed && !this.wide())
       .onRefreshing((): void => { void this.refreshList(); })
       Column() {
         if (this.approvals.length > 0 && this.sessionId !== '') {
@@ -2232,13 +2357,17 @@ export struct RemoteAiWorkspace {
     // One sheet per node: three bindSheets on the Row shared one slot, so the closed details/approval bindings
     // dismissed the picker the moment it opened (and its flag stayed true, so later taps did nothing).
     Row() {
+      if (this.wide()) {
+        Column() { this.sidebar() }.width('34%').height('100%')
+        Divider().vertical(true).color(this.palette().border).height('100%')
+      }
       Stack() {
         Scroll() { this.workspace() }.width('100%').height('100%')
           .scrollable(ScrollDirection.Vertical).scrollBar(BarState.Auto)
           .bindSheet($$this.showApproval, this.approvalSheet(), { height: SheetSize.LARGE, showClose: false, dragBar: false,
             preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
             keyboardAvoidMode: SheetKeyboardAvoidMode.RESIZE_ONLY, backgroundColor: this.pal().sheetBg, blurStyle: BlurStyle.NONE })
-      }.width('100%').height('100%')
+      }.layoutWeight(1).height('100%')
       .bindSheet($$this.showDetails, this.detailsSheet(), { height: SheetSize.LARGE, showClose: false, dragBar: false,
         preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
         keyboardAvoidMode: SheetKeyboardAvoidMode.RESIZE_ONLY, backgroundColor: this.pal().sheetBg, blurStyle: BlurStyle.NONE })
@@ -2252,5 +2381,76 @@ export struct RemoteAiWorkspace {
         if (Number.isFinite(width) && width > 0 && Math.abs(width - this.pageWidth) > 0.5) { this.pageWidth = width; }
         if (Number.isFinite(height) && height > 0 && Math.abs(height - this.pageHeight) > 0.5) { this.pageHeight = height; }
       })
+  }
+}
+
+/**
+ * The remote AI page: one host's conversations (on a Pad or PC the list beside the conversation), or two
+ * conversations side by side (1:1) — opened from a workspace pair or with ⋯ 分屏打开 — each with its own connection.
+ */
+@Entry
+@Component
+struct RemoteAiWorkspacePage {
+  @State firstHost: string = '';
+  @State firstSession: string = '';
+  @State secondHost: string = '';
+  @State secondSession: string = '';
+  private first: AiViewHandle = new AiViewHandle();
+  private second: AiViewHandle = new AiViewHandle();
+
+  aboutToAppear(): void {
+    const params = (router.getParams() ?? {}) as Record<string, string>;
+    this.firstHost = params['hostId'] ?? ''; this.firstSession = params['sessionId'] ?? '';
+    this.secondHost = params['hostId2'] ?? ''; this.secondSession = params['sessionId2'] ?? '';
+  }
+  // One keyboard owner: with two panes the first sets and restores the page's keyboard mode.
+  onPageShow(): void { this.first.pageShow(); }
+  onPageHide(): void { this.first.pageHide(); }
+  onBackPress(): boolean { return this.secondHost === '' ? this.first.back() : false; }
+
+  /** The open view becomes the left pane (at its conversation) and the chosen host opens on the right. */
+  private split(hostId: string): void {
+    this.firstSession = this.first.sessionId();
+    this.secondSession = ''; this.secondHost = hostId;
+  }
+  /** Closing one pane leaves the other alone on the page. */
+  private closePane(left: boolean): void {
+    if (left) { this.firstHost = this.secondHost; this.firstSession = this.second.sessionId(); }
+    else { this.firstSession = this.first.sessionId(); }
+    this.secondHost = ''; this.secondSession = '';
+  }
+  /** Keeps the two panes (hosts and open conversations) as a workspace: one tap opens them side by side again. */
+  private saveCombo(): void {
+    const store = WorkspaceStore.getInstance();
+    if (!store.canAdd()) { promptAction.showToast({ message: '工作区已达上限', duration: 2000 }); return; }
+    const firstRef = aiPairRef(this.first.hostId(), this.first.sessionId(), '');
+    const secondRef = aiPairRef(this.second.hostId(), this.second.sessionId(), firstRef);
+    const name = (this.first.title() + ' + ' + this.second.title()).slice(0, 48);
+    const workspace: Workspace = newWorkspace('workspace-' + Date.now().toString(36), name,
+      WORKSPACE_COLORS[store.list().length % WORKSPACE_COLORS.length], 'sym.message', store.list().length);
+    workspace.layout = 'split';
+    workspace.entries = [newWorkspaceEntry(firstRef, 'ai', 0), newWorkspaceEntry(secondRef, 'ai', 1)];
+    const saved = store.save(workspace);
+    promptAction.showToast({ message: saved ? '已保存工作区「' + name + '」，在主机列表的工作区里一键打开' : '没有保存，请确认 Pro 工作区可用',
+      duration: 2400 });
+  }
+
+  build() {
+    if (this.secondHost === '') {
+      RemoteAiWorkspace({ hostId: this.firstHost, initialSession: this.firstSession, layout: 'auto', handle: this.first,
+        onSplit: (hostId: string): void => { this.split(hostId); } })
+    } else {
+      Row() {
+        Column() {
+          RemoteAiWorkspace({ hostId: this.firstHost, initialSession: this.firstSession, layout: 'pane', handle: this.first,
+            onExit: (): void => { this.closePane(true); }, onSaveCombo: (): void => { this.saveCombo(); } })
+        }.layoutWeight(1).height('100%')
+        Divider().vertical(true).height('100%')
+        Column() {
+          RemoteAiWorkspace({ hostId: this.secondHost, initialSession: this.secondSession, layout: 'pane', handle: this.second,
+            onExit: (): void => { this.closePane(false); }, onSaveCombo: (): void => { this.saveCombo(); } })
+        }.layoutWeight(1).height('100%')
+      }.width('100%').height('100%')
+    }
   }
 }
