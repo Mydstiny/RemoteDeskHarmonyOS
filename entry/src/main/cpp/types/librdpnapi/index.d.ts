@@ -1891,6 +1891,8 @@ export interface AiTlsRequestOptions {
   serverName: string;
   port: number;
   ca: string;
+  /** Compact invite: SHA-256 (base64url) of the CA to take from the server's chain; path must be /v1/ca. */
+  caSha256?: string;
   certificate?: string;
   privateKey?: string;
   path: string;

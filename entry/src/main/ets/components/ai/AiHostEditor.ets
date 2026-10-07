@@ -1,5 +1,7 @@
 import { common } from '@kit.AbilityKit';
 import { pasteboard } from '@kit.BasicServicesKit';
+import { scanBarcode, scanCore } from '@kit.ScanKit';
+import { BreakpointUtil } from '../../utils/BreakpointUtil';
 import { AppConfig, Palette, buildDark, buildLight } from '../../common/Theme';
 import { appUiButtonText } from '../../common/AppUiColorPolicy';
 import { AppUiMetrics } from '../../common/AppUiMetrics';
@@ -94,6 +96,38 @@ export struct AiHostEditor {
   private onBackgroundChanged(): void {
     if (this.inBackground) {
       this.editGeneration++; this.invite = ''; this.inviteStatus = ''; this.stopLanScan();
+    } else {
+      this.applyScannedInvite();
+    }
+  }
+  /** The system scanner sends the app to the background (which clears the invite); its result waits for the return. */
+  private scannedInvite: string = '';
+  @State scanningInvite: boolean = false;
+  @State showPairingHelp: boolean = false;
+  private async scanInvite(): Promise<void> {
+    if (this.busy || this.defaultsPending || !this.allowed || this.inBackground || !this.alive || this.scanningInvite) { return; }
+    this.scanningInvite = true; this.scannedInvite = ''; this.inviteStatus = '正在打开扫码…';
+    try {
+      const options: scanBarcode.ScanOptions = { scanTypes: [scanCore.ScanType.QR_CODE], enableMultiMode: false,
+        enableAlbum: true };
+      const result: scanBarcode.ScanResult = await scanBarcode.startScanForResult(getContext(this), options);
+      this.scannedInvite = result?.originalValue ?? '';
+      if (this.scannedInvite === '') { this.inviteStatus = '没有识别到二维码，请对准电脑设置页上的配对二维码'; }
+    } catch (_error) {
+      this.inviteStatus = '没有完成扫码（已取消，或这台设备不能扫码）。也可以粘贴电脑上的邀请或链接';
+    } finally {
+      this.scanningInvite = false;
+    }
+    this.applyScannedInvite();
+  }
+  private applyScannedInvite(): void {
+    if (this.scannedInvite === '' || !this.alive || this.inBackground) { return; }
+    const value = this.scannedInvite; this.scannedInvite = '';
+    try {
+      parseAiInvite(value);
+      this.invite = value; this.inviteStatus = '已扫描有效邀请，请核对后保存或配对';
+    } catch (error) {
+      this.invite = ''; this.inviteStatus = aiErrorText((error as Error).message);
     }
   }
   private async loadDefaults(): Promise<void> {
@@ -433,27 +467,39 @@ export struct AiHostEditor {
     }
     Text('配对邀请').fontSize(14).fontFamily(AppConfig.fontFamily).fontWeight(FontWeight.Medium)
       .fontColor(this.pal().text).width('100%')
-    TextArea({ text: this.invite, placeholder: '粘贴电脑生成的 JSON、二维码扫描结果或配对链接；留空可先保存主机' })
+    if (!BreakpointUtil.isPC()) {
+      AiActionButton({ label: this.scanningInvite ? '正在扫码…' : '扫描电脑上的配对二维码', primary: true,
+        isEnabled: !this.busy && !this.defaultsPending && this.allowed && !this.inBackground && !this.scanningInvite,
+        onAction: (): void => { void this.scanInvite(); } })
+    }
+    TextArea({ text: this.invite, placeholder: '扫码后自动填入；也可以粘贴电脑生成的邀请或配对链接。留空可先保存主机' })
       .constraintSize({ minHeight: 112, maxHeight: 180 }).fontSize(13).fontFamily(AppConfig.fontFamily)
       .fontColor(this.pal().text).backgroundColor(this.pal().surface).borderRadius(12)
       .enabled(!this.busy && !this.defaultsPending && this.allowed && !this.inBackground).accessibilityText('配对邀请')
       .onChange((v: string): void => { if (this.alive && !this.inBackground && !this.busy && !this.defaultsPending && this.allowed) { this.invite = v; } }).maxLength(70000)
-    AiActionButton({ label: '从剪贴板粘贴邀请（二维码/链接）', isEnabled: !this.busy && !this.defaultsPending && this.allowed && !this.inBackground,
+    AiActionButton({ label: '从剪贴板粘贴邀请或链接', isEnabled: !this.busy && !this.defaultsPending && this.allowed && !this.inBackground,
       onAction: (): void => { void this.pasteInvite(); } })
     if (this.inviteStatus !== '') {
       Text(this.inviteStatus).fontSize(12).fontFamily(AppConfig.fontFamily).fontColor(this.pal().text2).width('100%')
     }
-    Text('电脑端生成方式').fontSize(13).fontFamily(AppConfig.fontFamily).fontWeight(FontWeight.Medium)
-      .fontColor(this.pal().text).width('100%')
-    Text(aiBackendName(this.backend) + '：在插件目录运行 node bin/remotedesk-' + this.backend +
-      '.mjs invite --state "$STATE" --projects <项目ID> --role operator --out "$STATE/invite.json"')
-      .fontSize(11).fontFamily('monospace').fontColor(this.pal().text2).width('100%')
-    Text('电脑端设置页默认显示二维码；扫描结果可以直接粘贴，二维码不可用时切换到链接配对并复制链接。邀请由电脑端本地签发，有效 120 秒且只能使用一次；完成配对后删除传输副本。')
+    Text('在电脑的 ' + aiBackendName(this.backend) + ' 设置页点「生成邀请」，二维码 120 秒内有效、只能用一次；配对凭据只保存在本机。')
       .fontSize(12).fontFamily(AppConfig.fontFamily).fontColor(this.pal().text2).width('100%')
-    Text('已配对主机可直接保存并连接。未配对主机请填写邀请，或先保存、稍后配对。')
-      .fontSize(12).fontFamily(AppConfig.fontFamily).fontColor(this.pal().text2).width('100%')
-    Text('配对凭据仅保存在本机。更换连接地址需要重新配对；配对邀请在退出或进入后台时清除。')
-      .fontSize(12).fontFamily(AppConfig.fontFamily).fontColor(this.pal().text2).width('100%')
+    Row({ space: 4 }) {
+      Text('其他配对方式与说明').fontSize(13).fontFamily(AppConfig.fontFamily).fontColor(this.pal().text2)
+      SymbolGlyph($r(this.showPairingHelp ? 'sys.symbol.chevron_up' : 'sys.symbol.chevron_down'))
+        .fontSize(14).fontColor([this.pal().text2])
+    }.width('100%').height(AppUiMetrics.minTouchTarget).onClick((): void => { this.showPairingHelp = !this.showPairingHelp; })
+    .accessibilityText(this.showPairingHelp ? '收起其他配对方式' : '展开其他配对方式')
+    if (this.showPairingHelp) {
+      Text('扫不出来时：在电脑设置页切换到「链接配对」，复制链接后点「从剪贴板粘贴」。')
+        .fontSize(12).fontFamily(AppConfig.fontFamily).fontColor(this.pal().text2).width('100%')
+      Text('命令行生成：在插件目录运行').fontSize(12).fontFamily(AppConfig.fontFamily).fontColor(this.pal().text2).width('100%')
+      Text('node bin/remotedesk-' + this.backend +
+        '.mjs invite --state "$STATE" --projects <项目ID> --role operator --out "$STATE/invite.json"')
+        .fontSize(12).fontFamily('monospace').fontColor(this.pal().text2).width('100%').copyOption(CopyOptions.LocalDevice)
+      Text('已经配对过的主机可以直接保存并连接；更换电脑地址后需要重新配对。应用进入后台时，未保存的邀请会被清除。')
+        .fontSize(12).fontFamily(AppConfig.fontFamily).fontColor(this.pal().text2).width('100%')
+    }
   }
   @Builder private actions() {
     if (this.wizard() && this.step === 1) {
@@ -461,10 +507,12 @@ export struct AiHostEditor {
         onAction: (): void => { this.nextStep(); } })
     } else {
       Row({ space: 10 }) {
-        AiActionButton({ label: '保存', isEnabled: !this.busy && !this.defaultsPending && this.allowed, onAction: (): void => { void this.save(false); } }).layoutWeight(1)
-        AiActionButton({ label: this.transport === 'rustdesk' ? '保存绑定' :
-          (this.busy ? '处理中…' : (this.invite.trim() === '' && !this.paired ? '保存主机' : '保存并连接')), primary: true,
-          isEnabled: !this.busy && !this.defaultsPending && this.allowed,
+        AiActionButton({ label: '仅保存', isEnabled: !this.busy && !this.defaultsPending && this.allowed, onAction: (): void => { void this.save(false); } }).layoutWeight(1)
+        // Without an invite or an earlier pairing there is nothing to connect with: the primary waits for the scan.
+        AiActionButton({ label: this.transport === 'rustdesk' ? '保存绑定' : (this.busy ? '处理中…' :
+          (this.invite.trim() !== '' ? '配对并连接' : (this.paired ? '保存并连接' : '扫码后可配对'))), primary: true,
+          isEnabled: !this.busy && !this.defaultsPending && this.allowed &&
+            (this.transport === 'rustdesk' || this.invite.trim() !== '' || this.paired),
           onAction: (): void => { void this.save(true); } }).layoutWeight(1)
       }.width('100%')
     }

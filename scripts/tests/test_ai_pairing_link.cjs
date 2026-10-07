@@ -1,6 +1,7 @@
 'use strict';
 // Pairing contract with the RemoteDesk host plugins (Codex, DSH, Claude Code): their control panels show the raw
-// invite JSON as a QR code and offer `remotedesk://pair?data=<base64url JSON>` as the link fallback.
+// invite JSON as a QR code and offer `remotedesk://pair?data=<base64url JSON>` as the link fallback. The QR carries the
+// compact invite (CA SHA-256 instead of the CA) so it stays scannable; the full invite still pastes as before.
 const fs = require('node:fs'), path = require('node:path'), vm = require('node:vm'), assert = require('node:assert/strict');
 const ts = require(process.env.AI_TYPESCRIPT_PATH || 'typescript');
 const base = path.resolve(__dirname, '../../entry/src/main/ets/services/ai') + '/';
@@ -32,8 +33,15 @@ const accepted = {
 };
 for (const [name, text] of Object.entries(accepted)) {
   const parsed = parseAiInvite(text, now);
-  assert.deepEqual({ ...parsed }, invite, name);
+  assert.deepEqual({ ...parsed }, { ...invite, caSha256: '' }, name);
 }
+const compact = { caSha256: 'n4bQgYhMfWWaL-qgxVrQFaO_TxsrC4Is0V1sFbDwCgg', code: invite.code, expires: invite.expires,
+  serverInstance: invite.serverInstance };
+for (const [name, text] of Object.entries({ 'compact QR': JSON.stringify(compact),
+  'compact link': link({ type: 'remotedesk-pair', version: 1, engine: 'dsh', invite: compact }) })) {
+  assert.deepEqual({ ...parseAiInvite(text, now) }, { ...compact, ca: '' }, name);
+}
+assert.ok(JSON.stringify(compact).length < 200, 'the compact QR payload stays small');
 const rejected = {
   'extra invite field': JSON.stringify({ ...invite, role: 'operator' }),
   'missing invite field': JSON.stringify({ code: invite.code, expires: invite.expires, ca: invite.ca }),
@@ -46,7 +54,11 @@ const rejected = {
   'padded base64 link': 'remotedesk://pair?data=' + Buffer.from(JSON.stringify({ type: 'remotedesk-pair', version: 1, invite })).toString('base64'),
   'non-base64 link': 'remotedesk://pair?data=@@@',
   'other scheme': link({ type: 'remotedesk-pair', version: 1, invite }).replace('remotedesk://', 'https://'),
-  'oversized text': 'x'.repeat(120001)
+  'oversized text': 'x'.repeat(120001),
+  'compact with CA too': JSON.stringify({ ...compact, ca: invite.ca }),
+  'compact short fingerprint': JSON.stringify({ ...compact, caSha256: 'abc' }),
+  'compact padded fingerprint': JSON.stringify({ ...compact, caSha256: compact.caSha256.slice(0, 42) + '=' }),
+  'compact expired': JSON.stringify({ ...compact, expires: now })
 };
 for (const [name, text] of Object.entries(rejected)) {
   assert.throws(() => parseAiInvite(text, now), /AI_INVITE_/, name);

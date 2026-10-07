@@ -115,9 +115,67 @@ void validate(const Request& cfg) {
         std::all_of(cfg.path.begin(), cfg.path.end(), [](unsigned char c) {
             return std::isalnum(c) || c == '/' || c == '?' || c == '=' || c == '&' || c == '_' || c == '-' || c == '%';
         });
-    need((cfg.stream && eventPath && cfg.body.empty()) ||
-        (!cfg.stream && (cfg.path == "/v1/rpc" || cfg.path == "/v1/pair")), "AI_REQUEST_PATH_INVALID");
+    const bool probe = !cfg.caSha256.empty();
+    need((cfg.stream && eventPath && cfg.body.empty() && !probe) ||
+        (!cfg.stream && !probe && (cfg.path == "/v1/rpc" || cfg.path == "/v1/pair")) ||
+        (!cfg.stream && probe && cfg.path == "/v1/ca"), "AI_REQUEST_PATH_INVALID");
+    if (probe) {
+        need(cfg.caSha256.size() == 43 && std::all_of(cfg.caSha256.begin(), cfg.caSha256.end(), [](unsigned char c) {
+            return std::isalnum(c) || c == '-' || c == '_';
+        }) && cfg.ca.empty() && cfg.certificate.empty() && cfg.privateKey.empty() && cfg.body.empty(), "AI_REQUEST_INVALID");
+        return;
+    }
     need(cfg.path == "/v1/pair" || (!cfg.certificate.empty() && !cfg.privateKey.empty()), "AI_IDENTITY_REQUIRED");
+}
+std::string base64Url(const unsigned char* data, unsigned int size) {
+    std::string text(4 * ((size + 2) / 3) + 1, '\0');
+    const int written = EVP_EncodeBlock(reinterpret_cast<unsigned char*>(text.data()), data, static_cast<int>(size));
+    text.resize(written > 0 ? static_cast<size_t>(written) : 0);
+    while (!text.empty() && text.back() == '=') text.pop_back();
+    for (char& c : text) { if (c == '+') c = '-'; else if (c == '/') c = '_'; }
+    return text;
+}
+void expectPeer(X509_VERIFY_PARAM* verification, const std::string& identity) {
+    unsigned char ip[16];
+    X509_VERIFY_PARAM_set_hostflags(verification, X509_CHECK_FLAG_NEVER_CHECK_SUBJECT | X509_CHECK_FLAG_NO_WILDCARDS);
+    if (inet_pton(AF_INET, identity.c_str(), ip) == 1 || inet_pton(AF_INET6, identity.c_str(), ip) == 1) {
+        need(X509_VERIFY_PARAM_set1_ip_asc(verification, identity.c_str()) == 1, "AI_SERVER_IDENTITY_INVALID");
+    } else {
+        need(identity.find(':') == std::string::npos &&
+            X509_VERIFY_PARAM_set1_host(verification, identity.c_str(), 0) == 1, "AI_SERVER_IDENTITY_INVALID");
+    }
+}
+/**
+ * The compact invite's trust step: the server's chain must hold a CA whose SHA-256 is the invite's, and the
+ * server certificate must verify against that CA alone for this address, exactly as a CA-pinned handshake would.
+ * Returns that CA so pairing (and every later request) pins it the ordinary way.
+ */
+Response trustedCa(SSL* tls, const std::string& identity, const std::string& fingerprint) {
+    need(SSL_version(tls) >= TLS1_3_VERSION, "AI_TLS_IDENTITY_REJECTED");
+    X509* leaf = SSL_get0_peer_certificate(tls);
+    STACK_OF(X509)* chain = SSL_get_peer_cert_chain(tls);
+    need(leaf != nullptr && chain != nullptr, "AI_TLS_IDENTITY_REJECTED");
+    X509* ca = nullptr;
+    for (int index = 0; index < sk_X509_num(chain) && ca == nullptr; ++index) {
+        X509* item = sk_X509_value(chain, index);
+        unsigned char digest[EVP_MAX_MD_SIZE]; unsigned int size = 0;
+        if (X509_digest(item, EVP_sha256(), digest, &size) == 1 && size == 32 &&
+            base64Url(digest, size) == fingerprint && X509_check_ca(item) > 0) ca = item;
+    }
+    need(ca != nullptr, "AI_CA_FINGERPRINT_MISMATCH");
+    Owned<X509_STORE, X509_STORE_free> store(X509_STORE_new(), X509_STORE_free);
+    need(store && X509_STORE_add_cert(store.get(), ca) == 1, "AI_CA_INVALID");
+    Owned<X509_STORE_CTX, X509_STORE_CTX_free> verify(X509_STORE_CTX_new(), X509_STORE_CTX_free);
+    need(verify && X509_STORE_CTX_init(verify.get(), store.get(), leaf, chain) == 1 &&
+        X509_STORE_CTX_set_purpose(verify.get(), X509_PURPOSE_SSL_SERVER) == 1, "AI_TLS_UNAVAILABLE");
+    expectPeer(X509_STORE_CTX_get0_param(verify.get()), identity);
+    need(X509_verify_cert(verify.get()) == 1, "AI_TLS_IDENTITY_REJECTED");
+    Owned<BIO, BIO_free> out(BIO_new(BIO_s_mem()), BIO_free);
+    need(out && PEM_write_bio_X509(out.get(), ca) == 1, "AI_CA_INVALID");
+    Response response;
+    response.status = 200;
+    response.body = bioString(out.get());
+    return response;
 }
 }
 Request::~Request() { if (!privateKey.empty()) OPENSSL_cleanse(privateKey.data(), privateKey.size()); }
@@ -279,12 +337,18 @@ Response request(const Request& cfg, Cancellation& cancel, const Chunk& chunk) {
     Owned<SSL_CTX, SSL_CTX_free> ctx(SSL_CTX_new(TLS_client_method()), SSL_CTX_free);
     need(ctx && SSL_CTX_set_min_proto_version(ctx.get(), TLS1_3_VERSION) == 1 &&
         SSL_CTX_set_max_proto_version(ctx.get(), TLS1_3_VERSION) == 1, "AI_TLS_UNAVAILABLE");
-    SSL_CTX_set_verify(ctx.get(), SSL_VERIFY_PEER, nullptr);
-    // No default paths/store: the out-of-band invite's private CA is the only trust root.
-    Owned<BIO, BIO_free> caBio(BIO_new_mem_buf(cfg.ca.data(), static_cast<int>(cfg.ca.size())), BIO_free);
-    Owned<X509, X509_free> ca(caBio ? PEM_read_bio_X509(caBio.get(), nullptr, nullptr, nullptr) : nullptr, X509_free);
-    need(ca && X509_check_ca(ca.get()) > 0 && X509_STORE_add_cert(SSL_CTX_get_cert_store(ctx.get()), ca.get()) == 1,
-        "AI_CA_INVALID");
+    const bool probe = !cfg.caSha256.empty();
+    if (probe) {
+        // Checked by trustedCa() before anything is accepted; a probe never writes a byte.
+        SSL_CTX_set_verify(ctx.get(), SSL_VERIFY_NONE, nullptr);
+    } else {
+        SSL_CTX_set_verify(ctx.get(), SSL_VERIFY_PEER, nullptr);
+        // No default paths/store: the out-of-band invite's private CA is the only trust root.
+        Owned<BIO, BIO_free> caBio(BIO_new_mem_buf(cfg.ca.data(), static_cast<int>(cfg.ca.size())), BIO_free);
+        Owned<X509, X509_free> ca(caBio ? PEM_read_bio_X509(caBio.get(), nullptr, nullptr, nullptr) : nullptr, X509_free);
+        need(ca && X509_check_ca(ca.get()) > 0 && X509_STORE_add_cert(SSL_CTX_get_cert_store(ctx.get()), ca.get()) == 1,
+            "AI_CA_INVALID");
+    }
     if (!cfg.certificate.empty()) {
         Owned<BIO, BIO_free> certBio(BIO_new_mem_buf(cfg.certificate.data(), static_cast<int>(cfg.certificate.size())), BIO_free);
         Owned<BIO, BIO_free> keyBio(BIO_new_mem_buf(cfg.privateKey.data(), static_cast<int>(cfg.privateKey.size())), BIO_free);
@@ -353,6 +417,7 @@ Response request(const Request& cfg, Cancellation& cancel, const Chunk& chunk) {
         if (rc == 1) break;
         retry(rc, "AI_TLS_IDENTITY_REJECTED");
     }
+    if (probe) return trustedCa(tls.get(), identity, cfg.caSha256);
     need(SSL_get_verify_result(tls.get()) == X509_V_OK && SSL_version(tls.get()) >= TLS1_3_VERSION,
         "AI_TLS_IDENTITY_REJECTED");
     const std::string authority = identity.find(':') == std::string::npos ? identity : "[" + identity + "]";

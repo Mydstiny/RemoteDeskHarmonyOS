@@ -16,14 +16,17 @@ export function aiNumber(value: Object | undefined | null, fallback: number = 0)
 export function aiArray(value: Object | undefined | null): Object[] {
   return Array.isArray(value) ? value as Object[] : [];
 }
+const AI_CA_SHA256_PATTERN: RegExp = /^[A-Za-z0-9_-]{43}$/;
 function parseRawAiInvite(raw: Record<string, Object>, now: number): AiInvite {
   const keys = Object.keys(raw).sort().join(',');
-  if (keys !== 'ca,code,expires,serverInstance') { throw new Error('AI_INVITE_INVALID'); }
-  const invite: AiInvite = { ca: aiString(raw['ca']), code: aiString(raw['code']),
+  const compact = keys === 'caSha256,code,expires,serverInstance';
+  if (keys !== 'ca,code,expires,serverInstance' && !compact) { throw new Error('AI_INVITE_INVALID'); }
+  const invite: AiInvite = { ca: aiString(raw['ca']), caSha256: aiString(raw['caSha256']), code: aiString(raw['code']),
     expires: aiNumber(raw['expires']), serverInstance: aiString(raw['serverInstance']) };
+  const trustValid = compact ? AI_CA_SHA256_PATTERN.test(invite.caSha256) :
+    invite.ca.length <= 65536 && invite.ca.includes('-----BEGIN CERTIFICATE-----');
   if (!aiIdValid(invite.code) || !aiIdValid(invite.serverInstance) ||
-    !Number.isSafeInteger(invite.expires) || !Number.isFinite(now) || invite.expires <= now ||
-    invite.ca.length > 65536 || !invite.ca.includes('-----BEGIN CERTIFICATE-----')) {
+    !Number.isSafeInteger(invite.expires) || !Number.isFinite(now) || invite.expires <= now || !trustValid) {
     throw new Error('AI_INVITE_EXPIRED_OR_INVALID');
   }
   return invite;
@@ -96,6 +99,7 @@ export function aiErrorText(code: string): string {
   if (code.includes('OPERATION_STORAGE_FULL')) { return '操作记录空间不足，请先核对待确认操作，并在 AI 设置中清理已确认记录'; }
   if (code.includes('ACCOUNT')) { return '账号已变化或暂不可用，请返回主机列表重试'; }
   if (code.includes('PRO_ACCESS')) { return '此功能需要有效 Pro 权益；当前尚未开放的功能仅供开发验证'; }
+  if (code.includes('CA_FINGERPRINT_MISMATCH')) { return '电脑证书与二维码不一致，请核对地址或在电脑上重新生成邀请'; }
   if (code.includes('TLS') || code.includes('CA_INVALID') || code.includes('IDENTITY')) {
     return '电脑身份校验失败，请核对地址、证书名称和配对信息';
   }

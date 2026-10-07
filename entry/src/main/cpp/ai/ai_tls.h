@@ -9,6 +9,9 @@ namespace RemoteAi {
 struct Identity { std::string privateKey; std::string csr; };
 struct Request {
     std::string address, serverName, ca, certificate, privateKey, path, body;
+    // A compact invite carries only the SHA-256 (base64url) of its private CA. With it set, the request is a
+    // probe: the CA is taken from the server's own chain when its fingerprint matches, and nothing is sent.
+    std::string caSha256;
     int port = 0;
     int timeoutMs = 45000;
     bool stream = false;

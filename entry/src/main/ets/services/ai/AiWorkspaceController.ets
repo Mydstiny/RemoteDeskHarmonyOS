@@ -1,4 +1,5 @@
 import { aiParams } from './AiWirePolicy';
+import { hilog } from '@kit.PerformanceAnalysisKit';
 import { AiAccess } from './AiAccess';
 import { AiBridgeClient } from './AiBridgeClient';
 import { aiRandomId } from './AiTransport';
@@ -89,8 +90,15 @@ export class AiWorkspaceController {
       this.assertGeneration(generation);
       this.projects = projects; this.status = '已连接'; this.busy = false;
       if (this.projects.length > 0) { await this.selectProject(this.projects[0].id); }
-    } catch (error) { if (generation === this.generation || (connected !== null && this.client === connected)) { this.error = aiErrorText((error as Error).message); this.status = '连接未完成'; } }
-    finally { if (generation === this.generation || (connected !== null && this.client === connected)) { this.busy = false; this.changed(); } }
+    } catch (error) {
+      hilog.warn(0x0000, 'RemoteAi', 'connect %{public}s ended %{public}s', host.backend, (error as Error).message);
+      if (generation === this.generation || (connected !== null && this.client === connected)) { this.error = aiErrorText((error as Error).message); this.status = '连接未完成'; }
+    }
+    finally {
+      hilog.info(0x0000, 'RemoteAi', 'connect %{public}s settled current=%{public}s', host.backend,
+        String(generation === this.generation));
+      if (generation === this.generation || (connected !== null && this.client === connected)) { this.busy = false; this.changed(); }
+    }
   }
   async selectProject(id: string): Promise<void> {
     if (this.client === null) { return; }

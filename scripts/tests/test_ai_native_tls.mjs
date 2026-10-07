@@ -7,7 +7,7 @@ import { join, dirname, resolve } from 'node:path';
 import { createRequire } from 'node:module';
 import { createServer } from 'node:tls';
 import { Worker } from 'node:worker_threads';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash, X509Certificate } from 'node:crypto';
 const root = resolve(import.meta.dirname, '../..');
 const work = mkdtempSync(join(tmpdir(), 'remotedesk-ai-tls-'));
 const opensslRoot = process.env.OPENSSL_ROOT || (process.platform === 'darwin'
@@ -93,6 +93,30 @@ try {
     const pair = await send(good.port, { path: '/v1/pair', certificate: '', privateKey: '' }).catch(e => e);
     assert.ok(pair instanceof Error); report('server mTLS rejection preserved');
   } finally { await good.close(); }
+  // Compact invite: only the CA's SHA-256 travels in the QR; the CA comes from the server's chain.
+  const caSha256 = createHash('sha256').update(new X509Certificate(pem('ca.pem')).raw).digest('base64url');
+  const probe = { path: '/v1/ca', ca: '', certificate: '', privateKey: '', body: '', caSha256 };
+  const silent = await server('server', () => assert.fail('a CA probe wrote application bytes'));
+  try {
+    const found = await send(silent.port, probe);
+    assert.equal(found.status, 200);
+    assert.equal(new X509Certificate(Buffer.from(found.body).toString()).fingerprint256,
+      new X509Certificate(pem('ca.pem')).fingerprint256); report('CA probe returns the pinned CA without writing');
+    assert.equal((await send(silent.port, { ...probe, serverName: '127.0.0.1' })).status, 200); report('CA probe IP SAN accepted');
+    const otherSha = createHash('sha256').update(new X509Certificate(pem('other.pem')).raw).digest('base64url');
+    await assert.rejects(send(silent.port, { ...probe, caSha256: otherSha }), /AI_CA_FINGERPRINT_MISMATCH/);
+    report('CA probe with another fingerprint rejected');
+    await assert.rejects(send(silent.port, { ...probe, serverName: '127.0.0.2' }), /AI_TLS_IDENTITY_REJECTED/);
+    report('CA probe still checks the server SAN');
+    await assert.rejects(send(silent.port, { ...probe, body: '{}' }), /AI_REQUEST_INVALID/); report('CA probe carries no body');
+    await assert.rejects(send(silent.port, { ...probe, path: '/v1/pair' }), /AI_REQUEST_PATH_INVALID/); report('CA probe cannot pair');
+    await assert.rejects(send(silent.port, { ...probe, caSha256: 'short' }), /AI_REQUEST_INVALID/); report('CA probe fingerprint shape checked');
+  } finally { await silent.close(); }
+  for (const name of ['wrong', 'expired']) {
+    const bad = await server(name, () => assert.fail('application bytes reached invalid server'));
+    try { await assert.rejects(send(bad.port, probe), /AI_TLS_IDENTITY_REJECTED/); report(name + ' identity rejected by CA probe'); }
+    finally { await bad.close(); }
+  }
   for (const name of ['wrong', 'cn', 'expired', 'wildcard']) {
     const bad = await server(name, () => assert.fail('application bytes reached invalid server'));
     try { await assert.rejects(send(bad.port, name === 'wildcard' ? { serverName: 'one.fixture.invalid' } : {}), /AI_TLS_IDENTITY_REJECTED/); report(name + ' identity rejected before HTTP'); }

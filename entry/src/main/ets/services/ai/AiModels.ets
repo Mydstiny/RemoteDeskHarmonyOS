@@ -39,7 +39,11 @@ export interface AiIdentity {
   deviceId: string;
   instance: string;
 }
-export interface AiInvite { code: string; expires: number; ca: string; serverInstance: string; }
+/**
+ * A pairing invite. The full form carries the private CA itself; the compact form (what the QR shows, so it stays
+ * scannable on small or low-resolution screens) carries only its SHA-256 and the CA is taken from the server's chain.
+ */
+export interface AiInvite { code: string; expires: number; ca: string; caSha256: string; serverInstance: string; }
 /** Look of the remote AI session page: Claude Code (conversation timeline) or Codex (task with tabs). */
 export type AiUiStyle = 'claude' | 'codex';
 export interface AiSettings {

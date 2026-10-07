@@ -1,0 +1,131 @@
+--- a/dsh/src/control-panel.mjs
++++ b/dsh/src/control-panel.mjs
+@@ -1,5 +1,5 @@
+ import { createServer } from "node:http";
+-import { randomBytes, timingSafeEqual } from "node:crypto";
++import { X509Certificate, createHash, randomBytes, timingSafeEqual } from "node:crypto";
+ import { readFileSync } from "node:fs";
+ import { readFile } from "node:fs/promises";
+ import { join, resolve } from "node:path";
+@@ -8,6 +8,20 @@
+ import { privateDirectory } from "@remotedesk/bridge-core/privacy";
+ import { controlPanelPage } from "./control-panel-page.mjs";
+ 
++/**
++ * The QR carries the compact invite: the CA's SHA-256 instead of the CA itself (about 190 bytes instead of 1.7 KB),
++ * so the code stays scannable on small or low-resolution screens. RemoteDesk takes the CA from this server's TLS
++ * chain only when its fingerprint matches. The text box and pairing link keep the full invite.
++ */
++function compactInviteText(created) {
++  return JSON.stringify({
++    caSha256: createHash("sha256").update(new X509Certificate(created.ca).raw).digest("base64url"),
++    code: created.code,
++    expires: created.expires,
++    serverInstance: created.serverInstance,
++  });
++}
++
+ const MAX_BODY = 100 * 1024;
+ const DEFAULT_PORTS = { codex: 9543, dsh: 9544 };
+ const QR_GENERATOR = readFileSync(new URL("../vendor/qrcode-generator-2.0.4.js", import.meta.url), "utf8");
+@@ -192,7 +206,8 @@
+           throw new Error("PROJECTS_REQUIRED");
+         const role = input.role === undefined ? "operator" : input.role;
+         if (!["viewer", "operator"].includes(role)) throw new Error("ROLE_INVALID");
+-        json(res, 200, { invite: await invite(state, { projects: input.projects, role }) });
++        const created = await invite(state, { projects: input.projects, role });
++        json(res, 200, { invite: created, qrText: compactInviteText(created) });
+         return;
+       }
+       if (req.method === "POST" && url.pathname === "/api/revoke") {
+--- a/dsh/src/control-panel-page.mjs
++++ b/dsh/src/control-panel-page.mjs
+@@ -217,7 +217,7 @@
+ async function copyText(value,message){try{if(navigator.clipboard?.writeText)await navigator.clipboard.writeText(value);else{const helper=document.createElement('textarea');helper.value=value;helper.style.position='fixed';helper.style.opacity='0';document.body.appendChild(helper);helper.select();const copied=document.execCommand('copy');helper.remove();if(!copied)throw new Error('COPY_UNAVAILABLE')}notice(message)}catch{notice('复制失败，请展开完整 JSON 后手动复制。',true)}}
+ function base64Url(value){const bytes=new TextEncoder().encode(value);let binary='';for(const byte of bytes)binary+=String.fromCharCode(byte);return btoa(binary).split('+').join('-').split('/').join('_').replace(/=+$/,'');}
+ function pairingLink(invite,data){const service=data?.service;const host=typeof service?.host==='string'?service.host.trim():'';const port=Number(service?.port);let url='';if(host!==''&&Number.isInteger(port)&&port>0&&port<65536){const authority=host.includes(':')&&!host.startsWith('[')?'['+host+']':host;url='https://'+authority+':'+String(port)}const payload={type:'remotedesk-pair',version:1,engine:data?.engine||ENGINE,...(url===''?{}:{url}),invite:{code:invite.code,expires:invite.expires,ca:invite.ca,serverInstance:invite.serverInstance}};return 'remotedesk://pair?data='+base64Url(JSON.stringify(payload));}
+-function qrMarkup(result,invite){if(typeof result.qrSvg==='string'&&result.qrSvg.startsWith('<svg'))return result.qrSvg;if(typeof qrcode==='function'){try{const generator=qrcode(0,'M');generator.addData(JSON.stringify(invite),'Byte');generator.make();return generator.createSvgTag(4,4,'RemoteDesk pairing QR','RemoteDesk');}catch{}}return '';}
++function qrMarkup(result,invite){if(typeof result.qrSvg==='string'&&result.qrSvg.startsWith('<svg'))return result.qrSvg;if(typeof qrcode==='function'){try{const generator=qrcode(0,'M');generator.addData(typeof result.qrText==='string'&&result.qrText?result.qrText:JSON.stringify(invite),'Byte');generator.make();return generator.createSvgTag(4,4,'RemoteDesk pairing QR','RemoteDesk');}catch{}}return '';}
+ function serviceStatus(service){if(service.running)return ['ok','运行中'];if(service.lock==='stale')return ['warn','锁文件陈旧'];return ['bad','未运行'];}
+ function renderService(data){const service=data.service;const [cls,label]=serviceStatus(service);$('service-pill').className='pill '+cls;$('service-pill-text').textContent=label;const address=esc(service.host)+':'+esc(service.port);const loopback=/^(127\\.|localhost$|::1$)/.test(String(service.host||''));$('service').innerHTML='<div class="kv-row"><span>状态</span><span class="chip '+cls+'">'+label+'</span></div><div class="kv-row"><span>监听地址</span><span class="mono">'+address+'</span></div>'+(loopback?'<div class="notice" style="margin-top:2px">当前只监听本机，手机和平板暂时无法连接。需要远程使用时，用局域网地址重新初始化服务。</div>':'')+'<div class="kv-row"><span>进程</span><span class="mono">'+esc(service.pid||'—')+'</span></div><div class="kv-row"><span>控制面板</span><span class="mono">127.0.0.1:'+esc(data.panel?.port||location.port)+'</span></div>';}
+ function kpi(label,value){return '<div class="kpi"><div class="kpi-label">'+label+'</div><div class="kpi-value">'+value+'</div></div>';}
+--- a/codex-and-claudecode/src/qr-code.mjs
++++ b/codex-and-claudecode/src/qr-code.mjs
+@@ -1,4 +1,5 @@
+ import { createRequire } from "node:module";
++import { X509Certificate, createHash } from "node:crypto";
+ 
+ const require = createRequire(import.meta.url);
+ const qrcode = require("./vendor/qrcode-generator-2.0.4.cjs");
+@@ -8,14 +9,23 @@
+   return "data:image/svg+xml;base64," + Buffer.from(svg, "utf8").toString("base64");
+ }
+ 
+-export function inviteQrSvg(invite) {
+-  const qr = qrcode(0, "M");
+-  qr.addData(JSON.stringify({
++/**
++ * The QR carries the compact invite: the CA's SHA-256 instead of the CA itself (about 190 bytes instead of 1.7 KB),
++ * so the code stays scannable on small or low-resolution screens. RemoteDesk takes the CA from this server's TLS
++ * chain only when its fingerprint matches. The pairing link keeps the full invite.
++ */
++export function compactInviteText(invite) {
++  return JSON.stringify({
++    caSha256: createHash("sha256").update(new X509Certificate(invite.ca).raw).digest("base64url"),
+     code: invite.code,
+     expires: invite.expires,
+-    ca: invite.ca,
+     serverInstance: invite.serverInstance,
+-  }), "Byte");
++  });
++}
++
++export function inviteQrSvg(invite) {
++  const qr = qrcode(0, "M");
++  qr.addData(compactInviteText(invite), "Byte");
+   qr.make();
+   return qr.createSvgTag(4, 4);
+ }
+--- a/codex/test/qr-code.test.mjs
++++ b/codex/test/qr-code.test.mjs
+@@ -1,17 +1,37 @@
+ import { test } from "node:test";
+ import assert from "node:assert/strict";
+-import { invitePairingLink, inviteQrDataUrl, inviteQrSvg } from "../src/qr-code.mjs";
++import { execFileSync } from "node:child_process";
++import { mkdtempSync, readFileSync, rmSync } from "node:fs";
++import { tmpdir } from "node:os";
++import { join } from "node:path";
++import { X509Certificate, createHash } from "node:crypto";
++import { compactInviteText, invitePairingLink, inviteQrDataUrl, inviteQrSvg } from "../src/qr-code.mjs";
+ 
+-test("pairing QR and link carry the exact invite fields", () => {
++function fixtureCa() {
++  const dir = mkdtempSync(join(tmpdir(), "remotedesk-qr-"));
++  try {
++    execFileSync("openssl", ["req", "-x509", "-newkey", "rsa:3072", "-nodes", "-keyout", join(dir, "ca.key"),
++      "-out", join(dir, "ca.pem"), "-days", "1", "-subj", "/CN=RemoteDesk private CA",
++      "-addext", "basicConstraints=critical,CA:TRUE"], { stdio: "ignore" });
++    return readFileSync(join(dir, "ca.pem"), "utf8");
++  } finally { rmSync(dir, { recursive: true, force: true }); }
++}
++
++test("pairing QR carries the compact invite and the link the exact invite fields", () => {
+   const invite = {
+     code: "invite-code-0123456789",
+     expires: Date.now() + 120000,
+-    ca: "-----BEGIN CERTIFICATE-----\\n" + "A".repeat(1440) + "\\n-----END CERTIFICATE-----\\n",
++    ca: fixtureCa(),
+     serverInstance: "server-instance-0123456789",
+   };
+   const qr = inviteQrDataUrl(invite);
+   assert.match(qr, /^data:image\/svg\+xml;base64,/);
+   assert.match(inviteQrSvg(invite), /^<svg /);
++  const compact = JSON.parse(compactInviteText(invite));
++  assert.deepEqual(Object.keys(compact).sort(), ["caSha256", "code", "expires", "serverInstance"]);
++  assert.equal(compact.caSha256, createHash("sha256").update(new X509Certificate(invite.ca).raw).digest("base64url"));
++  assert.match(compact.caSha256, /^[A-Za-z0-9_-]{43}$/);
++  assert.ok(compactInviteText(invite).length < 200, "small enough to scan on low-resolution screens");
+   const link = invitePairingLink(invite, { host: "192.168.1.10", port: 9443 }, "codex");
+   assert.match(link, /^remotedesk:\/\/pair\?data=/);
+   const payload = JSON.parse(Buffer.from(link.split("data=")[1], "base64url").toString("utf8"));

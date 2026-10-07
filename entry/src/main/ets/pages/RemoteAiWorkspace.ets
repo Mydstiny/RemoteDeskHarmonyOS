@@ -669,6 +669,8 @@ export struct RemoteAiWorkspace {
     this.resetView();
     await this.run(async (): Promise<void> => { this.resetDrafts(); await this.controller.create('新会话'); this.showSessionPicker = false; });
   }
+  /** The status bar height arrives in px; layout is in vp (it was used as vp, a ~3x gap above the header). */
+  private topVp(): number { return this.topInset > 0 ? px2vp(this.topInset) : 0; }
   @Builder private pillButton(label: string, primary: boolean, enabled: boolean, action: () => void) {
     Text(label).fontSize(14).fontWeight(FontWeight.Medium).fontFamily(AppConfig.fontFamily)
       .fontColor(primary ? this.palette().onAccent : this.palette().text).textAlign(TextAlign.Center)
@@ -1183,7 +1185,7 @@ export struct RemoteAiWorkspace {
           }
           if (this.working()) { ListItem() { this.workingRow() } }
         }
-      }.height(Math.max(180, this.pageHeight - this.topInset - (this.sessionId !== '' ? (this.uiStyle === 'codex' ? 250 : 206) : 90) -
+      }.height(Math.max(180, this.pageHeight - this.topVp() - (this.sessionId !== '' ? (this.uiStyle === 'codex' ? 250 : 206) : 90) -
         (this.approvals.length > 0 ? 170 : 0)))
         .width('100%').padding({ left: 16, right: 16 }).scrollBar(BarState.Auto).edgeEffect(EdgeEffect.Spring)
         .onScrollIndex((_start: number, end: number): void => { this.followBottom = end >= this.listLength() - 2; })
@@ -1191,14 +1193,14 @@ export struct RemoteAiWorkspace {
         Column() { this.approvalCard(this.approvals[0]) }.width('100%').padding({ left: 12, right: 12, top: 6 })
       }
       if (this.sessionId !== '') { this.composer() }
-    }.width('100%').constraintSize({ minHeight: Math.max(1, this.pageHeight - this.topInset - 12), maxWidth: 1100 })
+    }.width('100%').constraintSize({ minHeight: Math.max(1, this.pageHeight - this.topVp() - 12), maxWidth: 1100 })
   }
   build() {
     Row() {
       Scroll() { this.workspace() }.width('100%').height('100%')
         .scrollable(ScrollDirection.Vertical).scrollBar(BarState.Auto)
     }.justifyContent(FlexAlign.Center).width('100%').height('100%')
-      .padding({ top: this.topInset }).safeAreaPadding({ bottom: 12 }).backgroundColor(this.palette().bg)
+      .padding({ top: this.topVp() }).safeAreaPadding({ bottom: 12 }).backgroundColor(this.palette().bg)
       .onAreaChange((_old: Area, next: Area): void => {
         const width = Number(next.width), height = Number(next.height);
         if (Number.isFinite(width) && width > 0 && Math.abs(width - this.pageWidth) > 0.5) { this.pageWidth = width; }

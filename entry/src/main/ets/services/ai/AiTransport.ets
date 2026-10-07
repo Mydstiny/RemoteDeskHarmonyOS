@@ -126,6 +126,18 @@ export class AiTransport implements AiTransportPort {
       this.requests.delete(options.id); AiTransport.pending.delete(options.id); AiTransport.cancels.delete(options.id);
     }
   }
+  /**
+   * A compact invite's trust step: native takes the CA from the server's chain only when its SHA-256 is the
+   * invite's and the server certificate verifies against it for this address. Nothing is sent to the server.
+   */
+  async trustedCa(caSha256: string): Promise<string> {
+    const options = this.options('/v1/ca', '');
+    options.ca = ''; options.certificate = ''; options.privateKey = ''; options.caSha256 = caSha256;
+    const response = await this.request(options);
+    const pem = util.TextDecoder.create('utf-8', { fatal: true }).decodeToString(new Uint8Array(response.body));
+    if (response.status !== 200 || !pem.includes('-----BEGIN CERTIFICATE-----')) { throw new Error('AI_CA_INVALID'); }
+    return pem;
+  }
   async post(path: string, body: string): Promise<Record<string, Object>> {
     const response = await this.request(this.options(path, body));
     const text = util.TextDecoder.create('utf-8', { fatal: true }).decodeToString(new Uint8Array(response.body));

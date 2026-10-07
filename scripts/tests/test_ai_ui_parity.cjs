@@ -401,7 +401,12 @@ const cases = [
     assert.ok(editor.includes('局域网搜索') && editor.includes('搜索局域网 Agent'));
     assert.ok(editor.includes('selectLanAgent') && editor.includes('startLanScan'));
     assert.ok(editor.includes('从剪贴板粘贴邀请') && editor.includes('pasteInvite'));
-    assert.ok(editor.includes("'：在插件目录运行 node bin/remotedesk-' + this.backend") && editor.includes("'.mjs invite --state"));
+    // The phone scans the panel's QR directly (not on PC, no ScanKit); the command line stays folded under help.
+    assert.ok(editor.includes("Text('node bin/remotedesk-' + this.backend +") && editor.includes("'.mjs invite --state"));
+    assert.ok(editor.includes('if (this.showPairingHelp) {'));
+    assert.ok(editor.includes('if (!BreakpointUtil.isPC()) {') && editor.includes('scanBarcode.startScanForResult('));
+    assert.ok(editor.includes("} else {\n      this.applyScannedInvite();"), 'a scan result waits for the return to the foreground');
+    assert.ok(editor.includes("(this.transport === 'rustdesk' || this.invite.trim() !== '' || this.paired)"));
     const lanDiscovery = read('entry/src/main/ets/services/ai/AiLanDiscoveryService.ets');
     assert.ok(lanDiscovery.includes('aiLanCandidateAddresses') && lanDiscovery.includes('MAX_CONCURRENCY'));
     assert.ok(lanDiscovery.includes('getDefaultNet') && lanDiscovery.includes('CONNECT_TIMEOUT_MS: number = 320'));

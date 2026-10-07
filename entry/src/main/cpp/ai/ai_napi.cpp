@@ -149,6 +149,7 @@ napi_value start(napi_env env, napi_callback_info info, bool generate) {
             cfg.port = readInt(env, argv[0], "port");
             cfg.timeoutMs = readInt(env, argv[0], "timeoutMs");
             cfg.ca = readString(env, argv[0], "ca", 65536);
+            cfg.caSha256 = readString(env, argv[0], "caSha256", 64, true);
             cfg.certificate = readString(env, argv[0], "certificate", 65536, true);
             cfg.privateKey = readString(env, argv[0], "privateKey", 16384, true);
             cfg.path = readString(env, argv[0], "path", 500);

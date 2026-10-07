@@ -5,6 +5,7 @@ import { AiHost, AiIdentity, AiHandshake, AiOperationReceipt, AiPendingOperation
 import { AiTransport, aiRandomId } from './AiTransport';
 import { AiLifecycle } from './AiLifecycle';
 import { aiArray, aiNumber, aiRecord, aiString, parseAiInvite } from './AiWirePolicy';
+import { hilog } from '@kit.PerformanceAnalysisKit';
 
 const AI_CLEANUP_METHODS: string[] = ['turn.cancel', 'lease.release', 'terminal.stop'];
 export class AiBridgeClient {
@@ -61,7 +62,7 @@ export class AiBridgeClient {
     access.assertExecute(account, host.backend);
     const credential: AiIdentity = { ca: invite.ca, certificate: '', privateKey: '',
       deviceId: '', instance: invite.serverInstance };
-    const transport = new AiTransport(host, credential);
+    let transport = new AiTransport(host, credential);
     const id = aiRandomId();
     const unregister = AiLifecycle.register(id, host.id, (): void => transport.close());
     const stop = access.subscribe((): void => {
@@ -71,6 +72,13 @@ export class AiBridgeClient {
     try {
       access.assertExecute(account, host.backend);
       if (Date.now() >= invite.expires) { throw new Error('AI_INVITE_EXPIRED'); }
+      if (credential.ca === '') {
+        credential.ca = await transport.trustedCa(invite.caSha256);
+        // The transport copied the empty CA; pairing pins the CA just verified, like a full invite's.
+        transport.close(); transport = new AiTransport(host, credential);
+        access.assertExecute(account, host.backend);
+        if (Date.now() >= invite.expires) { throw new Error('AI_INVITE_EXPIRED'); }
+      }
       const response = await transport.post('/v1/pair', JSON.stringify({ code: invite.code,
         csr: identity.csr, name: deviceName.trim().slice(0, 80) || 'HarmonyOS' }));
       access.assertExecute(account, host.backend);
@@ -86,6 +94,11 @@ export class AiBridgeClient {
       await verified.greet(invite.serverInstance, credential.deviceId);
       access.assertExecute(account, host.backend);
       await AiLocalStore.getInstance().saveHost(account, host, credential);
+      hilog.info(0x0000, 'RemoteAi', 'pair %{public}s ok compact=%{public}s', host.backend, String(invite.ca === ''));
+    } catch (error) {
+      hilog.warn(0x0000, 'RemoteAi', 'pair %{public}s failed %{public}s compact=%{public}s', host.backend,
+        (error as Error).message, String(invite.ca === ''));
+      throw new Error((error as Error).message);
     } finally {
       identity.privateKey = ''; credential.privateKey = '';
       verified?.close(); transport.close(); unregister(); stop();
@@ -119,7 +132,17 @@ export class AiBridgeClient {
   }
   async read(method: string, params: Record<string, Object> = {}): Promise<Object> {
     this.current();
-    const response = await this.transport.post('/v1/rpc', JSON.stringify({ method, params }));
+    // Method, backend, timing and error code only: never params, results or identities.
+    const started = Date.now();
+    let response: Record<string, Object>;
+    try { response = await this.transport.post('/v1/rpc', JSON.stringify({ method, params })); }
+    catch (error) {
+      hilog.warn(0x0000, 'RemoteAi', 'read %{public}s %{public}s failed %{public}s after %{public}d ms',
+        this.host.backend, method, (error as Error).message, Date.now() - started);
+      throw new Error((error as Error).message);
+    }
+    hilog.info(0x0000, 'RemoteAi', 'read %{public}s %{public}s ok in %{public}d ms', this.host.backend, method,
+      Date.now() - started);
     this.current();
     if (response['result'] === undefined) { throw new Error('AI_RESPONSE_INVALID'); }
     return response['result'];

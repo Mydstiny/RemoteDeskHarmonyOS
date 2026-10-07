@@ -55,6 +55,7 @@ declare module 'librdpnapi.so' {
     serverName: string;
     port: number;
     ca: string;
+    caSha256?: string;
     certificate?: string;
     privateKey?: string;
     path: string;
