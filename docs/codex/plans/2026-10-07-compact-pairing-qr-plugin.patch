@@ -49,6 +49,88 @@
  function serviceStatus(service){if(service.running)return ['ok','运行中'];if(service.lock==='stale')return ['warn','锁文件陈旧'];return ['bad','未运行'];}
  function renderService(data){const service=data.service;const [cls,label]=serviceStatus(service);$('service-pill').className='pill '+cls;$('service-pill-text').textContent=label;const address=esc(service.host)+':'+esc(service.port);const loopback=/^(127\\.|localhost$|::1$)/.test(String(service.host||''));$('service').innerHTML='<div class="kv-row"><span>状态</span><span class="chip '+cls+'">'+label+'</span></div><div class="kv-row"><span>监听地址</span><span class="mono">'+address+'</span></div>'+(loopback?'<div class="notice" style="margin-top:2px">当前只监听本机，手机和平板暂时无法连接。需要远程使用时，用局域网地址重新初始化服务。</div>':'')+'<div class="kv-row"><span>进程</span><span class="mono">'+esc(service.pid||'—')+'</span></div><div class="kv-row"><span>控制面板</span><span class="mono">127.0.0.1:'+esc(data.panel?.port||location.port)+'</span></div>';}
  function kpi(label,value){return '<div class="kpi"><div class="kpi-label">'+label+'</div><div class="kpi-value">'+value+'</div></div>';}
+--- a/dsh/src/dsh-adapter.mjs
++++ b/dsh/src/dsh-adapter.mjs
+@@ -631,7 +631,8 @@
+         this.handles.set(s.id, handle);
+         this.checkpoint(s, {
+           ...current,
+-          upstream: s.id,
++          // An imported session is bound to the native session it came from; a created one uses its own id.
++          upstream: s.upstream || s.id,
+           permissionMode: s.permissionMode ?? "workspace-write",
+           executionProfile: "native-v1",
+           inputModalities:
+@@ -675,7 +676,69 @@
+   }
+   async resume(s, authorize = () => {}) {
+     await this.connect(s, false, undefined, authorize);
++  }
++  /**
++   * The folder's own DSH conversations (the DSH app or CLI), newest first: top-level sessions only. A cold
++   * session's title is read once from its log (the latest session/title, else the first typed prompt) and cached.
++   */
++  async nativeSessions(p, { limit = 100 } = {}) {
++    const records = await this.ctx.sessionQuery.listSessions(),
++      rows = [];
++    for (const record of records) {
++      const h = record.header;
++      if (h?.cwd !== p.path || h.parentSession !== undefined) continue;
++      if (rows.length >= limit) break;
++      const seen = await this.nativeSummary(h.id);
++      rows.push({
++        id: h.id,
++        upstream: h.id,
++        title: seen.title,
++        updatedAt: Math.max(h.createdAt ?? 0, seen.updatedAt),
++        archived: false,
++      });
++    }
++    return rows;
+   }
++  async nativeSummary(id) {
++    this.nativeSummaries ??= new Map();
++    const cached = this.nativeSummaries.get(id);
++    if (cached && Date.now() - cached.at < 60000) return cached;
++    let title = "",
++      prompt = "",
++      updatedAt = 0;
++    const observed = await this.ctx.sessionQuery.observeSession(id, {
++      projectionMode: "none",
++    });
++    try {
++      for (const e of observed.events) {
++        const at = Number(e.time ?? e.ts ?? e.timestamp ?? e.at ?? 0);
++        if (Number.isFinite(at) && at > updatedAt) updatedAt = at;
++        if (e.type === "session/title" && typeof e.data?.title === "string")
++          title = e.data.title;
++        if (!prompt && e.type === "user/message") {
++          const m = e.data?.message ?? e.data ?? {};
++          if (m.source?.kind === undefined || m.source.kind === "user") {
++            const content = m.content;
++            prompt =
++              typeof content === "string"
++                ? content
++                : (Array.isArray(content)
++                    ? content.find((b) => b?.type === "text")?.text
++                    : "") ?? "";
++          }
++        }
++      }
++    } finally {
++      observed[Symbol.dispose]();
++    }
++    const summary = {
++      at: Date.now(),
++      title: (title || prompt.split("\n").find((line) => line.trim()) || "").trim().slice(0, 120),
++      updatedAt,
++    };
++    this.nativeSummaries.set(id, summary);
++    return summary;
++  }
+   async read(s, { cursor, turnId } = {}) {
+     requireThat(s.upstream, "NATIVE_SESSION_RECONCILIATION_REQUIRED");
+     const observed = await this.ctx.sessionQuery.observeSession(s.upstream, {
 --- a/codex-and-claudecode/src/qr-code.mjs
 +++ b/codex-and-claudecode/src/qr-code.mjs
 @@ -1,4 +1,5 @@
@@ -129,3 +211,188 @@
    const link = invitePairingLink(invite, { host: "192.168.1.10", port: 9443 }, "codex");
    assert.match(link, /^remotedesk:\/\/pair\?data=/);
    const payload = JSON.parse(Buffer.from(link.split("data=")[1], "base64url").toString("utf8"));
+--- a/codex/src/codex-adapter.mjs
++++ b/codex/src/codex-adapter.mjs
+@@ -136,6 +136,14 @@
+     clearTimeout(timer);
+   }
+ };
++/** A thread without a name is titled by its first prompt line (skipping attached-file headings). */
++function threadPreviewTitle(preview) {
++  const lines = String(preview ?? "")
++    .split("\n")
++    .map((line) => line.trim())
++    .filter((line) => line && !line.startsWith("#") && !line.startsWith("<"));
++  return (lines[0] ?? "").slice(0, 120);
++}
+ export class CodexAdapter {
+   capabilities = {
+     sessions: true,
+@@ -585,6 +593,40 @@
+     try {
+       authorize();
+       return await rpc.request(method, { threadId: s.upstream, ...params });
++    } finally {
++      await rpc.close();
++    }
++  }
++  /**
++   * The folder's own Codex conversations (the Codex app, the CLI), newest first: top-level threads only (no
++   * sub-agents or ephemeral threads). The bridge binds each to a session by its thread id.
++   */
++  async nativeSessions(p, { limit = 100 } = {}) {
++    const rpc = await this.spawn(p),
++      rows = [];
++    try {
++      let cursor,
++        count = 0;
++      do {
++        const page = await rpc.request("thread/list", {
++          cwd: p.path,
++          archived: false,
++          modelProviders: [],
++          limit: 100,
++          ...(cursor ? { cursor } : {}),
++        });
++        for (const t of page.data ?? []) {
++          if (t.cwd !== p.path || t.ephemeral || t.parentThreadId || t.agentRole) continue;
++          rows.push({
++            upstream: t.id,
++            title: t.name || threadPreviewTitle(t.preview),
++            updatedAt: (t.recencyAt ?? t.updatedAt ?? t.createdAt ?? 0) * 1000,
++            archived: false,
++          });
++        }
++        cursor = page.nextCursor;
++      } while (cursor && rows.length < limit && ++count < 10);
++      return rows.slice(0, limit);
+     } finally {
+       await rpc.close();
+     }
+--- a/bridge-core/lib/server.mjs
++++ b/bridge-core/lib/server.mjs
+@@ -51,6 +51,10 @@
+   "session.compact",
+   "terminal.stop",
+ ]);
++// Imported native conversations share the session store with bridge-created ones.
++const SESSION_STORE_LIMIT = 5000;
++const NATIVE_IMPORT_LIMIT = 100;
++const NATIVE_RESCAN_MS = 15000;
+ export class Bridge {
+   constructor(directory, adapter) {
+     this.directory = directory;
+@@ -198,6 +202,67 @@
+       "DEVICE_REVOKED",
+     );
+     return now;
++  }
++  /**
++   * Registers the newest native conversations of a project folder (at most NATIVE_IMPORT_LIMIT, rescanned at most
++   * every NATIVE_RESCAN_MS) as sessions bound to their native thread, so read, resume, lease and turns work as for
++   * bridge-created sessions. A failed scan never fails the listing.
++   */
++  async importNative(project) {
++    if (typeof this.adapter.nativeSessions !== "function") return;
++    this.nativeScans ??= new Map();
++    const last = this.nativeScans.get(project.id) ?? 0;
++    if (Date.now() - last < NATIVE_RESCAN_MS) return;
++    this.nativeScans.set(project.id, Date.now());
++    let rows;
++    try {
++      rows = await this.adapter.nativeSessions(project, { limit: NATIVE_IMPORT_LIMIT });
++    } catch (e) {
++      process.stderr.write(
++        JSON.stringify({ nativeImport: project.id, error: String(e?.code ?? e?.message ?? e).slice(0, 200) }) + "\n",
++      );
++      return;
++    }
++    process.stderr.write(JSON.stringify({ nativeImport: project.id, found: rows.length }) + "\n");
++    const known = new Map(
++      this.store
++        .all("session")
++        .filter((s) => s.project === project.id && s.upstream)
++        .map((s) => [s.upstream, s]),
++    );
++    for (const row of rows.slice(0, NATIVE_IMPORT_LIMIT)) {
++      if (typeof row?.upstream !== "string" || !row.upstream) continue;
++      const title = String(row.title || "未命名会话").slice(0, 200);
++      const updatedAt = Number.isFinite(row.updatedAt) ? row.updatedAt : Date.now();
++      const existing = known.get(row.upstream);
++      if (existing) {
++        if (existing.nativeImported && (existing.title !== title || (existing.updatedAt ?? 0) < updatedAt))
++          this.store.put("session", existing.id, {
++            ...existing,
++            title,
++            updatedAt: Math.max(existing.updatedAt ?? 0, updatedAt),
++          });
++        continue;
++      }
++      if (this.store.all("session").length >= SESSION_STORE_LIMIT) break;
++      // An adapter whose events are keyed by the native id (DSH) asks for that id as the session id.
++      const id =
++        typeof row.id === "string" && /^[A-Za-z0-9_-]{1,100}$/.test(row.id) && !this.store.get("session", row.id)
++          ? row.id
++          : randomUUID();
++      const s = {
++        id,
++        project: project.id,
++        title,
++        archived: row.archived === true,
++        updatedAt,
++        upstream: row.upstream,
++        nativePhase: "ready",
++        nativeImported: true,
++      };
++      this.store.put("session", s.id, s);
++      known.set(row.upstream, s);
++    }
+   }
+   project(d, id) {
+     identifier(id);
+@@ -395,7 +460,10 @@
+         ["projectId", "cursor", "limit", "query", "archived"],
+         ["projectId"],
+       );
+-      this.project(d, p.projectId);
++      const listed = this.project(d, p.projectId);
++      // Conversations started on the computer itself (the Codex app, the DSH app) in this project's folder are
++      // listed too: the first page registers them as bridge sessions bound to their native thread.
++      if (p.cursor === undefined) await this.importNative(listed);
+       if (p.query !== undefined) string(p.query, 500);
+       if (p.archived !== undefined)
+         requireThat(typeof p.archived === "boolean", "ARCHIVED_INVALID");
+@@ -422,6 +490,7 @@
+             reasoningEffort,
+             updatedAt,
+             nativePhase,
++            nativeImported,
+           }) => ({
+             id,
+             project,
+@@ -432,6 +501,7 @@
+             reasoningEffort,
+             updatedAt,
+             nativePhase,
++            origin: nativeImported ? "computer" : "remote",
+           }),
+         );
+       if (p.limit === undefined && p.cursor === undefined) return rows;
+@@ -563,7 +633,7 @@
+     if (method === "session.create") {
+       fields(p, ["projectId", "title", "settings"], ["projectId"]);
+       const project = this.project(d, p.projectId);
+-      requireThat(this.store.all("session").length < 1000, "SESSION_LIMIT");
++      requireThat(this.store.all("session").length < SESSION_STORE_LIMIT, "SESSION_LIMIT");
+       const s = {
+         id: randomUUID(),
+         project: project.id,
+@@ -744,7 +814,7 @@
+       requireThat(!s.archived, "SESSION_ARCHIVED");
+       await this.adapter.quiescent?.(s);
+       requireThat(this.adapter.fork, "CAPABILITY_UNAVAILABLE");
+-      requireThat(this.store.all("session").length < 1000, "SESSION_LIMIT");
++      requireThat(this.store.all("session").length < SESSION_STORE_LIMIT, "SESSION_LIMIT");
+       if (p.lastTurnId !== undefined) string(p.lastTurnId, 500);
+       const child = {
+         ...s,
