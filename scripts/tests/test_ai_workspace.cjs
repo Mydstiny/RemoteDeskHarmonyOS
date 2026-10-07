@@ -19,7 +19,7 @@ function environment(){
     './AiLocalStore':{AiLocalStore:{getInstance:()=>({operations:async()=>[]})}}};
   function load(name){if(modules.has(name))return modules.get(name).exports;const module={exports:{}};modules.set(name,module);
     const source=ts.transpileModule(fs.readFileSync(base+name+'.ets','utf8'),{compilerOptions:{target:ts.ScriptTarget.ES2021,module:ts.ModuleKind.CommonJS}}).outputText;
-    vm.runInNewContext('(function(require,module,exports){'+source+'\n})',{Promise,Map,Set,Array,Object,JSON,Date,Number,Error,
+    vm.runInNewContext('(function(require,module,exports){'+source+'\n})',{Promise,Map,Set,Array,Object,JSON,Date,Number,Error,Math,
       setInterval:fn=>{timers.set(++tid,fn);return tid;},clearInterval:id=>timers.delete(id),setTimeout,clearTimeout})(key=>mocks[key]||load(key.slice(2)),module,module.exports);
     return module.exports;
   }
@@ -27,6 +27,32 @@ function environment(){
   return{load,c,client,timers,writes,reads,onRead(fn){readHook=fn;},onWrite(fn){writeHook=fn;}};
 }
 (async()=>{
+  {
+    // A dropped event stream comes back by itself: read again, approvals refreshed, the stream resumed.
+    const e=environment();let streams=0;const ends=[deferred(),deferred()];
+    e.client.events=async()=>{const n=streams++;if(n<ends.length){await ends[n].promise;return;}await new Promise(()=>{});};
+    e.c.selectSession('A');await new Promise(r=>setTimeout(r,20));
+    assert.equal(streams,1);const readsBefore=e.reads.filter(r=>r.method==='session.read').length;
+    ends[0].resolve();await new Promise(r=>setTimeout(r,20));
+    assert.equal(e.c.status,'连接中断，正在重连…');
+    await new Promise(r=>setTimeout(r,1100));
+    assert.ok(e.reads.filter(r=>r.method==='session.read').length>readsBefore,'the conversation is read again');
+    assert.ok(e.reads.filter(r=>r.method==='approval.list').length>=2,'approvals are read again');
+    assert.equal(streams,2,'the stream resumes');assert.equal(e.c.error,'');e.c.close();
+    console.log('PASS a dropped event stream resumes on its own after reading the conversation again');
+  }
+  {
+    // A lease the service forgot (it restarted) is taken again quietly; only a second failure is shown.
+    const e=environment();e.c.lease='old';e.c.leaseExpires=Date.now()+90000;
+    e.onWrite(async method=>{if(method==='lease.renew'){throw new Error('LEASE_INVALID');}
+      if(method==='lease.acquire'){return{lease:'fresh',expires:Date.now()+90000};}return{};});
+    await e.c['renew']();
+    assert.equal(e.c.lease,'fresh');assert.equal(e.c.error,'');
+    e.onWrite(async method=>{throw new Error(method==='lease.acquire'?'LEASE_BUSY':'LEASE_INVALID');});
+    await e.c['renew']();
+    assert.equal(e.c.lease,'');assert.notEqual(e.c.error,'');e.c.close();
+    console.log('PASS a forgotten lease is taken again quietly; a refused one is reported');
+  }
   {
     const e=environment(),pending=deferred();e.onWrite(async method=>method==='lease.acquire'?await pending.promise:{});
     const acquire=e.c.acquire();await e.c.selectSession('B');pending.resolve({lease:'leaseA',expires:Date.now()+90000});await assert.rejects(acquire,/AI_CONNECTION_CLOSED/);

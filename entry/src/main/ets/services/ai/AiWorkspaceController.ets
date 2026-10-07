@@ -58,6 +58,9 @@ export class AiWorkspaceController {
   private liveDirty: Set<number> = new Set();
   private streamToken: number = 0;
   private changeTimer: number = -1;
+  /** A dropped event stream comes back on its own: the next try, and how many tries since it last worked. */
+  private resumeTimer: number = -1;
+  private resumeAttempts: number = 0;
   /** execution.* events seen so far; an acknowledgement must not undo a turn end that came before it. */
   private executionEvents: number = 0;
   private stopAccess: () => void = (): void => {};
@@ -184,7 +187,7 @@ export class AiWorkspaceController {
     const generation = ++this.generation;
     await this.release();
     this.assertGeneration(generation);
-    this.client.stopEvents(); this.streamToken++; this.projectId = id; this.sessionId = '';
+    this.client.stopEvents(); this.streamToken++; this.stopResume(); this.projectId = id; this.sessionId = '';
     this.approvals = []; this.transcript.clear(); this.changed();
     this.sessions = await this.listSessions(generation); this.changed();
     await this.loadModels();
@@ -205,7 +208,7 @@ export class AiWorkspaceController {
     await this.release();
     this.assertGeneration(generation);
     this.rememberTranscript();
-    this.client.stopEvents(); this.streamToken++; this.sessionId = ''; this.title = ''; this.approvals = [];
+    this.client.stopEvents(); this.streamToken++; this.stopResume(); this.sessionId = ''; this.title = ''; this.approvals = [];
     this.transcript.clear(); this.diff = ''; this.terminals = []; this.historyCursor = ''; this.archived = false;
     this.changed();
     this.sessions = await this.listSessions(generation); this.changed();
@@ -215,7 +218,7 @@ export class AiWorkspaceController {
     const generation = ++this.generation;
     await this.release();
     this.assertGeneration(generation);
-    this.client.stopEvents(); this.streamToken++;
+    this.client.stopEvents(); this.streamToken++; this.stopResume();
     this.rememberTranscript();
     this.sessionId = id; this.approvals = []; this.diff = ''; this.terminals = []; this.transcript.clear();
     this.currentModel = ''; this.currentEffort = ''; this.currentPermission = ''; this.currentCollaboration = ''; this.contextUsed = 0; this.contextWindow = 0;
@@ -305,13 +308,68 @@ export class AiWorkspaceController {
         else { this.transcript.dshEvent(event.event, true); }
         if (type.startsWith('execution.')) { this.status = type.slice(10); this.executionEvents++; }
         if (type.startsWith('approval.')) { void this.refreshApprovals().catch((): void => {}); }
-        if (type === 'snapshot.required') { this.status = '需重新连接以恢复快照'; client.stopEvents(); this.changed(); }
+        if (type === 'snapshot.required') { client.stopEvents(); }
         else { this.changeSoon(); }
+        this.resumeAttempts = 0;
       });
-      if (token === this.streamToken) { this.status = '事件连接已断开，请重新连接'; this.changed(); }
+      this.streamLost(token, '');
     } catch (error) {
-      if (token === this.streamToken) { this.error = aiErrorText((error as Error).message); this.status = '事件连接已断开'; this.changed(); }
+      this.streamLost(token, (error as Error).message);
     }
+  }
+  /**
+   * The event stream ended (the network blinked, the computer's service restarted, the phone slept, or the service
+   * asked for a fresh snapshot): read the conversation again and resume, backing off from 1 s to 15 s. After eight
+   * failed tries in a row it stops and says so; 重新连接 or pulling down starts over.
+   */
+  private streamLost(token: number, code: string): void {
+    if (token !== this.streamToken || this.client === null || this.sessionId === '' || this.resumeTimer >= 0) { return; }
+    if (this.resumeAttempts >= 8) {
+      this.status = '事件连接已断开，请重新连接';
+      if (code !== '') { this.error = aiErrorText(code); }
+      this.changed();
+      return;
+    }
+    const delay = Math.min(15000, 1000 * Math.pow(2, this.resumeAttempts++));
+    const generation = this.generation;
+    this.status = '连接中断，正在重连…'; this.changed();
+    this.resumeTimer = setTimeout((): void => {
+      this.resumeTimer = -1;
+      if (generation === this.generation && token === this.streamToken) { void this.resumeStream(token, generation); }
+    }, delay);
+  }
+  private async resumeStream(token: number, generation: number): Promise<void> {
+    try {
+      await this.snapshot(false);
+      this.assertGeneration(generation);
+      if (token !== this.streamToken) { return; }
+      this.rememberTranscript();
+      // Leases do not survive a service restart: check ours now rather than at the next renewal.
+      if (this.lease !== '') { await this.renew(); }
+      await this.refreshApprovals();
+      this.error = '';
+      void this.stream(++this.streamToken);
+    } catch (error) {
+      if (generation === this.generation) { this.streamLost(token, (error as Error).message); }
+    }
+  }
+  private stopResume(): void {
+    if (this.resumeTimer >= 0) { clearTimeout(this.resumeTimer); this.resumeTimer = -1; }
+    this.resumeAttempts = 0;
+  }
+  /** Pull down / 重新连接 in a conversation: read it again now and resume the stream (also after giving up). */
+  async refreshConversation(): Promise<void> {
+    if (this.client === null || this.sessionId === '') { return; }
+    this.stopResume();
+    this.client.stopEvents();
+    const token = ++this.streamToken, generation = this.generation;
+    await this.snapshot(false);
+    this.assertGeneration(generation);
+    this.rememberTranscript();
+    if (this.lease !== '') { await this.renew(); }
+    await this.refreshApprovals(); await this.refreshOperations();
+    this.error = '';
+    if (token === this.streamToken) { void this.stream(++this.streamToken); }
   }
   private scheduleLiveSnapshot(token: number): void {
     this.liveDirty.add(token);
@@ -381,7 +439,17 @@ export class AiWorkspaceController {
     try {
       const result = await client.write('lease.renew', aiParams(["sessionId", "lease"], [this.sessionId, this.lease]), this.sessionId);
       this.assertGeneration(generation); this.leaseExpires = aiNumber(result['expires']);
-    } catch (error) { if (generation === this.generation) { this.clearTimers(); this.leaseExpires = 0; this.error = aiErrorText((error as Error).message); } }
+    } catch (error) {
+      if (generation !== this.generation) { return; }
+      // A lease the service no longer knows (it restarted, or the lease lapsed while the phone slept): take control
+      // again quietly. Only when that fails too (another device has it, or access is gone) is it worth saying.
+      this.clearTimers();
+      const key = this.key(), writer = this.writerOwners.get(key) ?? '';
+      this.lease = ''; this.leaseExpires = 0;
+      if (writer !== '') { this.dropWriter(key, writer); }
+      try { await this.acquire(); this.error = ''; }
+      catch (again) { if (generation === this.generation) { this.error = aiErrorText((again as Error).message); } }
+    }
     this.changed();
   }
   async release(): Promise<void> {
@@ -494,6 +562,7 @@ export class AiWorkspaceController {
   }
   close(): void {
     this.generation++; this.streamToken++; this.clearTimers(); this.stopAccess(); this.stopAccess = (): void => {};
+    this.stopResume();
     if (this.changeTimer >= 0) { clearTimeout(this.changeTimer); this.changeTimer = -1; }
     this.client?.close(); this.client = null;
     this.writerOwners.forEach((writer: string, key: string): void => { this.dropWriter(key, writer); }); this.lease = ''; this.leaseExpires = 0;

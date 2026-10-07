@@ -21,6 +21,7 @@ import { AiStepEntry, aiStepEntries, aiStepSummary, aiStepGroupIcon } from '../s
 import { AiDiffFile, AiToolView, aiConversationItem, aiDiffFiles, aiDiffSignature, aiDiffStats, aiItemDiff, aiStepState, aiToolView } from '../services/ai/AiTimeline';
 import { AiRemoteMarkdown } from '../components/ai/AiRemoteMarkdown';
 import { AiDiffView } from '../components/ai/AiDiffView';
+import { AiShimmerText } from '../components/ai/AiShimmerText';
 
 interface AiWsButton { label: string; primary: boolean; enabled: boolean; action: () => void; }
 interface AiWsIconButton { symbol: Resource; label: string; enabled: boolean; action: () => void; }
@@ -76,7 +77,6 @@ export struct RemoteAiWorkspace {
   @State showEffortList: boolean = false;
   @State showPermissionList: boolean = false;
   /** Drive the breathing 正在思考 and the turning ✳ (set once on appear; the animations repeat). */
-  @State pulse: boolean = false;
   @State spin: number = 0;
   /** When the running turn started and the clock it is measured against (the Codex app's 已运行). */
   @State workingSince: number = 0;
@@ -982,8 +982,10 @@ export struct RemoteAiWorkspace {
           this.contextCard()
           Text('从下一条消息开始生效').fontSize(13).fontFamily(AppConfig.fontFamily).fontColor(this.pal().text3).width('100%')
         }.padding({ left: 16, right: 16, top: 6, bottom: 24 }).width('100%')
-      }.layoutWeight(1).width('100%').align(Alignment.Top)
-    }.height('100%').width('100%').safeAreaPadding({ bottom: 16 }).backgroundColor(this.pal().surface)
+      }.width('100%').align(Alignment.Top)
+      // Sized to its content (FIT_CONTENT); a long model list scrolls within most of the window.
+      .constraintSize({ maxHeight: Math.max(240, this.pageHeight * 0.78) })
+    }.width('100%').safeAreaPadding({ bottom: 16 }).backgroundColor(this.pal().surface)
   }
   @Builder private modelCard() {
     Column() {
@@ -1540,10 +1542,9 @@ export struct RemoteAiWorkspace {
     Column({ space: 6 }) {
       Row({ space: 8 }) {
         if (aiStepState(item.state) === 'running') {
-          // 正在思考 breathes while the model reasons (the apps' shimmer).
-          Text('正在思考').fontSize(this.textSize).fontFamily(AppConfig.fontFamily).fontColor(this.palette().text2)
-            .opacity(this.pulse ? 0.35 : 1).animation({ duration: 900, iterations: -1, playMode: PlayMode.Alternate })
-            .onAppear((): void => { this.pulse = true; })
+          // 正在思考 with a band of light flowing across it while the model reasons (the apps' shimmer).
+          AiShimmerText({ text: '正在思考', fontSize: this.textSize, baseColor: this.palette().text3,
+            highlight: this.palette().text })
         } else {
           Text('已思考').fontSize(this.textSize - 1).fontFamily(AppConfig.fontFamily).fontColor(this.palette().text3)
         }
@@ -1591,13 +1592,12 @@ export struct RemoteAiWorkspace {
       this.toolRow(item)
     }
   }
-  /** While a turn runs: Codex 正在思考 breathing; Claude a turning clay ✳ and 正在工作… (Clauding…). */
+  /** While a turn runs: Codex 正在思考 with light flowing across it; Claude a turning clay ✳ and 正在工作… (Clauding…). */
   @Builder private workingRow() {
     if (this.uiStyle === 'codex') {
       Row({ space: 6 }) {
-        Text('正在思考').fontSize(this.textSize).fontFamily(AppConfig.fontFamily).fontColor(this.palette().text2)
-          .opacity(this.pulse ? 0.35 : 1).animation({ duration: 900, iterations: -1, playMode: PlayMode.Alternate })
-          .onAppear((): void => { this.pulse = true; })
+        AiShimmerText({ text: '正在思考', fontSize: this.textSize, baseColor: this.palette().text3,
+          highlight: this.palette().text })
         SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(12).fontColor([this.palette().text3])
       }.padding({ top: 2, bottom: 2 })
     } else {
@@ -1605,8 +1605,8 @@ export struct RemoteAiWorkspace {
         Text('✳').fontSize(20).fontColor(this.palette().accent)
           .rotate({ angle: this.spin }).animation({ duration: 1800, curve: Curve.Linear, iterations: -1 })
           .onAppear((): void => { this.spin = 360; })
-        Text(this.backendName() + ' 正在工作…').fontSize(this.textSize).fontFamily(AppConfig.fontFamily)
-          .fontColor(this.palette().accent)
+        AiShimmerText({ text: this.backendName() + ' 正在工作…', fontSize: this.textSize, baseColor: this.palette().accent,
+          highlight: this.palette().text })
         if (this.backgroundTasks()) {
           Text('· 后台任务运行中').fontSize(this.textSize).fontFamily(AppConfig.fontFamily).fontColor(this.palette().text3)
         }
@@ -1784,13 +1784,21 @@ export struct RemoteAiWorkspace {
     }
   }
   private composerExpanded(): boolean { return this.composerFocused || this.draft !== ''; }
+  /** One line of the composer: its height and the padding that centres it in the 40 vp row of + and send. */
+  private composerLine(): number { return Math.round((this.textSize + 1) * 1.375); }
+  private composerPad(): number { return Math.max(4, Math.floor((40 - this.composerLine()) / 2)); }
   @Builder private composerInput() {
     TextArea({ text: this.draft, placeholder: this.composerPlaceholder() })
-      .constraintSize({ minHeight: 40, maxHeight: this.composerMaxHeight() })
+      // The line height and padding add up to the 40 vp minimum, so one line (and the placeholder) sits in the middle
+      // of the row instead of riding high with the leftover space below it.
+      .constraintSize({ minHeight: this.composerLine() + 2 * this.composerPad(), maxHeight: this.composerMaxHeight() })
       // Codex sets the text between + and send in one row; in Claude's card it sits on its own line.
       .layoutWeight(this.uiStyle === 'codex' ? 1 : 0)
       .fontSize(this.textSize + 1).fontFamily(AppConfig.fontFamily).fontColor(this.palette().text)
-      .placeholderColor(this.palette().text3).backgroundColor(Color.Transparent).padding({ left: 6, right: 6, top: 8, bottom: 8 })
+      .lineHeight(this.composerLine())
+      .placeholderFont({ size: this.textSize + 1, family: AppConfig.fontFamily })
+      .placeholderColor(this.palette().text3).backgroundColor(Color.Transparent)
+      .padding({ left: 6, right: 6, top: this.composerPad(), bottom: this.composerPad() })
       .enabled(this.allowed && !this.busy && this.operator() && !(this.sessionId !== '' && this.archived))
       .accessibilityText('任务内容')
       .onFocus((): void => { this.getUIContext().animateTo({ duration: 220, curve: Curve.FastOutSlowIn }, (): void => { this.composerFocused = true; }); })
@@ -2004,7 +2012,9 @@ export struct RemoteAiWorkspace {
           }
           if (this.working()) { ListItem() { this.workingRow() } }
         }
-      }.width('100%').padding({ left: 16, right: 16 }).scrollBar(BarState.Auto).edgeEffect(EdgeEffect.Spring)
+      }.width('100%').height('100%').padding({ left: 16, right: 16 }).scrollBar(BarState.Auto)
+        // A short list (a few conversations) still takes the pull from anywhere in its area and hands it to Refresh.
+        .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
         .onScrollIndex((_start: number, end: number): void => {
           if (Date.now() < this.pinBottomUntil) { return; }
           this.followBottom = end >= this.listLength() - 2;
@@ -2043,7 +2053,7 @@ export struct RemoteAiWorkspace {
         keyboardAvoidMode: SheetKeyboardAvoidMode.RESIZE_ONLY, backgroundColor: this.pal().sheetBg, blurStyle: BlurStyle.NONE })
     }.justifyContent(FlexAlign.Center).width('100%').height('100%')
       .padding({ top: this.topVp() }).safeAreaPadding({ bottom: 12 }).backgroundColor(this.palette().bg)
-      .bindSheet($$this.showModelPicker, this.modelSheet(), { height: SheetSize.LARGE, showClose: false, dragBar: true,
+      .bindSheet($$this.showModelPicker, this.modelSheet(), { height: SheetSize.FIT_CONTENT, showClose: false, dragBar: true,
         preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER, backgroundColor: this.pal().surface,
         blurStyle: BlurStyle.NONE })
       .onAreaChange((_old: Area, next: Area): void => {
