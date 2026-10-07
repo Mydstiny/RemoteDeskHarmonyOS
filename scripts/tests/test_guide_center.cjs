@@ -72,7 +72,9 @@ test('the sheet searches, segments devices, shows category chips with counts and
   const ui = sheet.slice(sheet.indexOf('@Builder handsOnGuideSheet()'), sheet.indexOf('@Builder aboutAppSheet()'));
   assert.ok(ui.includes("placeholder: '搜索操作，例如 配对、滚轮、SFTP'"));
   assert.ok(ui.includes('this.guideSearchBar()') && ui.includes('this.guideAutoShowRow()'));
-  assert.ok(ui.includes("this.guideDeviceSegment('desktop')"));
+  // 手机 / Pad / PC is a sliding segment; the lessons slide in from the side chosen.
+  assert.ok(ui.includes("SlidingSegment({ labels: ['手机', 'Pad', 'PC'], selected: GUIDE_DEVICES.indexOf(this.guideDevice),"));
+  assert.ok(ui.includes('.transition(this.guideCardEffect())') && ui.includes('this.guideSlide * 28'));
   assert.ok(ui.includes('guideLessonCount(this.guideDevice, option.id)'));
   assert.ok(ui.includes('Toggle({ type: ToggleType.Switch, isOn: this.guideAlwaysVisible })'));
   assert.ok(ui.includes('lesson.path') && ui.includes('this.guideEmptyState()'));

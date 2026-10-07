@@ -4,6 +4,7 @@
  * 从 HostListPage.ets 提取。接收 aboutSheetMode 和关闭回调，
  * 通过 @StorageLink/@StorageProp 接入主题系统。
  */
+import { SlidingSegment } from './SlidingSegment';
 import { SearchBarSurface } from '../common/SearchBarSurface';
 import { common, Want } from '@kit.AbilityKit';
 import { AppSheetHeader } from './AppSheetHeader';
@@ -42,6 +43,8 @@ import { GuideShowcase, WhatsNewList } from './guide/GuideShowcase';
 import { ProShowcase } from './guide/ProShowcase';
 import { markProTrialStarted, proTrialStarted } from '../services/pro/ProTrialNotice';
 
+const GUIDE_DEVICES: GuideDevice[] = ['phone', 'tablet', 'desktop'];
+
 @Component
 export struct AboutSettingsSheet {
   @Prop @Watch('onAboutSheetModeChange') aboutSheetMode: number = 0;
@@ -62,6 +65,8 @@ export struct AboutSettingsSheet {
   @State usageGuideIndex: number = 0;
   private usageGuideController: SwiperController = new SwiperController();
   @State guideDevice: GuideDevice = 'phone';
+  /** Which way the last device switch went (1 to the right, -1 to the left), for the lessons' slide. */
+  private guideSlide: number = 0;
   @State guideProtocol: GuideProtocol = 'all';
   @State expandedGuideLessonId: string = 'common-first-host';
   @State guideLessonContentHeight: number = 0;
@@ -293,11 +298,9 @@ export struct AboutSettingsSheet {
       this.guideSearchBar()
 
       Column({ space: 6 }) {
-        Row({ space: 4 }) {
-          this.guideDeviceSegment('phone')
-          this.guideDeviceSegment('tablet')
-          this.guideDeviceSegment('desktop')
-        }.width('100%').padding(3).borderRadius(12).backgroundColor(this.pal().surface)
+        // The selected pill slides between 手机, Pad and PC; the lessons slide in from the side chosen.
+        SlidingSegment({ labels: ['手机', 'Pad', 'PC'], selected: GUIDE_DEVICES.indexOf(this.guideDevice),
+          onSelect: (index: number): void => { this.selectGuideDevice(GUIDE_DEVICES[index]); } })
         Text(guideDeviceLabel(this.guideDevice) + ' · ' + guideDeviceSummary(this.guideDevice))
           .fontSize(12).fontColor(this.pal().text3).fontFamily(this.font()).width('100%').maxLines(1)
           .textOverflow({ overflow: TextOverflow.Ellipsis })
@@ -333,7 +336,7 @@ export struct AboutSettingsSheet {
           } else {
             ForEach(this.operationGuideLessons(),
               (lesson: GuideLesson): void => {
-                this.guideLessonCard(lesson)
+                Column() { this.guideLessonCard(lesson) }.width('100%').transition(this.guideCardEffect())
               }, (lesson: GuideLesson): string => lesson.id + ':' + this.guideDevice)
           }
         }
@@ -410,24 +413,21 @@ export struct AboutSettingsSheet {
     .margin({ bottom: this.operationGuideLayout().compact ? 8 : 10 })
   }
 
-  @Builder guideDeviceSegment(device: GuideDevice) {
-    Text(device === 'phone' ? '手机' : (device === 'tablet' ? 'Pad' : 'PC'))
-      .fontSize(13).fontWeight(this.guideDevice === device ? FontWeight.Medium : FontWeight.Normal)
-      .fontFamily(this.font())
-      .fontColor(this.guideDevice === device ? this.pal().text : this.pal().text2)
-      .textAlign(TextAlign.Center).layoutWeight(1).height(34)
-      .backgroundColor(this.guideDevice === device ? this.pal().card : Color.Transparent)
-      .borderRadius(9)
-      .shadow(this.guideDevice === device ?
-        { radius: 6, color: this.theme === 'light' ? '#1A000000' : '#40000000', offsetY: 1 } :
-        { radius: 0, color: Color.Transparent })
-      .animation({ duration: 180, curve: Curve.FastOutSlowIn })
-      .accessibilityText((this.guideDevice === device ? '已选择 ' : '') + guideDeviceLabel(device))
-      .onClick((): void => {
-        if (this.guideDevice === device) { return; }
-        this.guideDevice = device;
-        this.resetExpandedGuideLesson();
-      })
+  /** Switches the device the lessons are for; the new lessons slide in from the side of the chosen tab. */
+  private selectGuideDevice(device: GuideDevice): void {
+    if (this.guideDevice === device) { return; }
+    this.guideSlide = GUIDE_DEVICES.indexOf(device) > GUIDE_DEVICES.indexOf(this.guideDevice) ? 1 : -1;
+    this.getUIContext().animateTo({ duration: 260, curve: Curve.FastOutSlowIn }, (): void => {
+      this.guideDevice = device;
+      this.resetExpandedGuideLesson();
+    });
+  }
+  /** A lesson card appearing after a device switch comes in from that side; leaving it just goes. */
+  private guideCardEffect(): TransitionEffect {
+    return TransitionEffect.asymmetric(
+      TransitionEffect.OPACITY.combine(TransitionEffect.translate({ x: this.guideSlide * 28 }))
+        .animation({ duration: 260, curve: Curve.FastOutSlowIn }),
+      TransitionEffect.IDENTITY);
   }
 
   @Builder guideProtocolChip(option: GuideProtocolOption) {

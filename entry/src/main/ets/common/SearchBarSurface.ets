@@ -1,5 +1,6 @@
 import { uiMaterial } from '@kit.ArkUI';
 import { deviceInfo } from '@kit.BasicServicesKit';
+import { hilog } from '@kit.PerformanceAnalysisKit';
 
 let immersiveState: number = -1;
 
@@ -11,6 +12,11 @@ export function immersiveMaterialAvailable(): boolean {
   if (immersiveState < 0) {
     try {
       immersiveState = deviceInfo.sdkApiVersion >= 26 && uiMaterial.isImmersiveMaterialSupported() ? 1 : 0;
+      // Once per launch: whether the search bars use the system glass, and why not when they do not.
+      const info = deviceInfo.sdkApiVersion >= 26 ? uiMaterial.getMaterialInfo() : null;
+      hilog.info(0x0000, 'RemoteMaterial', 'api=%{public}d supported=%{public}s level=%{public}d state=%{public}d',
+        deviceInfo.sdkApiVersion, String(immersiveState === 1),
+        deviceInfo.sdkApiVersion >= 26 ? uiMaterial.getGlobalMaterialLevel() : -1, info === null ? -1 : info.state);
     } catch (_error) {
       immersiveState = 0;
     }
@@ -46,8 +52,8 @@ export class SearchBarSurface<T extends CommonMethod<T>> implements AttributeMod
     if (immersiveMaterialAvailable()) {
       instance.systemMaterial(new uiMaterial.ImmersiveMaterial({
         style: uiMaterial.ImmersiveStyle.REGULAR,
-        // A faint tint keeps the glass visible over a plain page, as the system bars do.
-        materialColor: this.dark ? '#1AFFFFFF' : '#40F4F6FA',
+        // Tinted enough that the capsule reads over a plain page (a faint tint left only empty space there).
+        materialColor: this.dark ? '#33FFFFFF' : '#66E9ECF1',
         interactive: true,
         lightEffect: { color: Color.White }
       }));

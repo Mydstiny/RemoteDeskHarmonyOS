@@ -486,7 +486,7 @@ test('手机通行密钥 lives in 安全与数据: one entry check for every way
   assert.ok(sheet.includes("AppSheetHeader({ title: '手机通行密钥'") && sheet.includes('showProBadge: true'));
   assert.equal((sheet.match(/^  '[^']+',?$/gm) || []).length, 3, 'three short steps');
   assert.ok(sheet.includes("this.role = this.isDesktopDevice || this.isPadDevice ? 1 : 0;"), 'a phone opens as the key, a tablet or PC as its user');
-  assert.ok(sheet.includes("ForEach(['作为密钥', '使用手机密钥']"));
+  assert.ok(sheet.includes("SlidingSegment({ labels: ['作为密钥', '使用手机密钥']") && sheet.includes('.transition(this.roleEffect())'));
   const kb = read('services/diagnosticAi/DiagnosticAiKnowledgeBase.ets');
   assert.ok(kb.includes('设置 → 安全与数据 → 手机通行密钥') && !kb.includes('设置 → Pro 功能 → 手机通行密钥'));
   assert.ok(read('services/pro/ProRdpSecurityKey.ets').includes('设置 → 安全与数据 → 手机通行密钥'));

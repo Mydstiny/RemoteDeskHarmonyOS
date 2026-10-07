@@ -2,6 +2,7 @@ import { AppSheetHeader } from '../../AppSheetHeader';
 import { AppConfig, Palette, buildDark, buildLight } from '../../../common/Theme';
 import { appUiOnAccentText } from '../../../common/AppUiColorPolicy';
 import { ProPhonePasskeyPanel } from './ProPhonePasskeyPanel';
+import { SlidingSegment } from '../../SlidingSegment';
 
 /** The three steps of using it, short enough to read at a glance. */
 const PASSKEY_STEPS: string[] = [
@@ -24,6 +25,7 @@ export struct PhonePasskeySettingsSheet {
   @Prop viewportHeight: number = 0;
   onClose: () => void = (): void => {};
   @State role: number = 0;
+  private slide: number = 0;
 
   aboutToAppear(): void {
     this.role = this.isDesktopDevice || this.isPadDevice ? 1 : 0;
@@ -55,20 +57,12 @@ export struct PhonePasskeySettingsSheet {
     }.width('100%').padding(16).backgroundColor(this.pal().card).borderRadius(16)
   }
 
-  @Builder private roleSwitch() {
-    Row() {
-      ForEach(['作为密钥', '使用手机密钥'], (label: string, index: number): void => {
-        Text(label).fontSize(14).fontWeight(this.role === index ? FontWeight.Medium : FontWeight.Normal)
-          .fontColor(this.role === index ? this.pal().text : this.pal().text2).fontFamily(AppConfig.fontFamily)
-          .textAlign(TextAlign.Center).layoutWeight(1).height(36).borderRadius(18)
-          .backgroundColor(this.role === index ? this.pal().card : Color.Transparent)
-          .shadow(this.role === index ? { radius: 6, color: '#14000000', offsetY: 1 } : { radius: 0, color: Color.Transparent })
-          .accessibilityText(label + (this.role === index ? '，已选中' : ''))
-          .onClick((): void => {
-            this.getUIContext().animateTo({ duration: 220, curve: Curve.FastOutSlowIn }, (): void => { this.role = index; });
-          })
-      }, (label: string): string => label)
-    }.width('100%').padding(4).borderRadius(22).backgroundColor(this.pal().surface)
+  /** The new role's page comes in from the side of the tab chosen. */
+  private roleEffect(): TransitionEffect {
+    return TransitionEffect.asymmetric(
+      TransitionEffect.OPACITY.combine(TransitionEffect.translate({ x: this.slide * 32 }))
+        .animation({ duration: 280, curve: Curve.FastOutSlowIn }),
+      TransitionEffect.IDENTITY);
   }
 
   build() {
@@ -79,12 +73,24 @@ export struct PhonePasskeySettingsSheet {
         Column({ space: 14 }) {
           this.intro()
           this.steps()
-          this.roleSwitch()
-          Text(this.role === 0 ? '这台设备保存通行密钥，在这里确认别的设备发来的请求。' :
-            '这台设备向配对的手机请求通行密钥。')
-            .fontSize(12).fontColor(this.pal().text3).fontFamily(AppConfig.fontFamily).width('100%')
-          ProPhonePasskeyPanel({ role: this.role })
-            .transition(TransitionEffect.OPACITY.animation({ duration: 200 }))
+          SlidingSegment({ labels: ['作为密钥', '使用手机密钥'], selected: this.role, itemHeight: 36, radius: 18,
+            onSelect: (index: number): void => {
+              this.slide = index > this.role ? 1 : -1;
+              this.getUIContext().animateTo({ duration: 280, curve: Curve.FastOutSlowIn }, (): void => { this.role = index; });
+            } })
+          if (this.role === 0) {
+            Column({ space: 12 }) {
+              Text('这台设备保存通行密钥，在这里确认别的设备发来的请求。')
+                .fontSize(12).fontColor(this.pal().text3).fontFamily(AppConfig.fontFamily).width('100%')
+              ProPhonePasskeyPanel({ role: 0 })
+            }.width('100%').transition(this.roleEffect())
+          } else {
+            Column({ space: 12 }) {
+              Text('这台设备向配对的手机请求通行密钥。')
+                .fontSize(12).fontColor(this.pal().text3).fontFamily(AppConfig.fontFamily).width('100%')
+              ProPhonePasskeyPanel({ role: 1 })
+            }.width('100%').transition(this.roleEffect())
+          }
         }.width('100%').padding({ left: 20, right: 20, top: 4, bottom: 28 })
       }.width('100%').scrollBar(BarState.Off).edgeEffect(EdgeEffect.Spring, { alwaysEnabled: false })
       .align(Alignment.Top)
