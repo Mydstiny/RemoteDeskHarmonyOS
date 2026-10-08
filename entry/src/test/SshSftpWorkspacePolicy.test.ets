@@ -47,10 +47,10 @@ export default function sshSftpWorkspacePolicyTest(): void {
       expect(resolveSshSftpPaneLayout(1200, 'phone').mode).assertEqual('single');
     });
 
-    it('keeps_pc_sftp_in_a_centered_sheet_with_workbench_enabled', 0, (): void => {
+    it('opens_sftp_as_a_popup_on_every_device', 0, (): void => {
       expect(resolveSshSftpPresentation(true, true)).assertEqual('sheet');
       expect(resolveSshSftpPresentation(false, true)).assertEqual('sheet');
-      expect(resolveSshSftpPresentation(true, false)).assertEqual('workspace');
+      expect(resolveSshSftpPresentation(true, false)).assertEqual('sheet');
       expect(resolveSshSftpPresentation(false, false)).assertEqual('sheet');
     });
 

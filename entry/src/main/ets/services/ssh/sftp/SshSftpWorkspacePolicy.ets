@@ -116,11 +116,14 @@ export function closeSshSftpWorkspaceTab(_current: SshSftpWorkspaceTabState):
   return createSshSftpWorkspaceTabState();
 }
 
-/** PC keeps SFTP as a modal tool window; workbench tabs remain for touch devices. */
-export function resolveSshSftpPresentation(workbenchEnabled: boolean,
-  desktop: boolean): SshSftpPresentation {
-  if (desktop) { return 'sheet'; }
-  return workbenchEnabled ? 'workspace' : 'sheet';
+/**
+ * SFTP opens as a popup on every device (a bottom sheet on a phone, a centred one on Pad and PC); closing it
+ * returns to the terminal. The workbench tab form (2026-08-20) is no longer offered: users read the extra tab as
+ * the popup having gone missing.
+ */
+export function resolveSshSftpPresentation(_workbenchEnabled: boolean,
+  _desktop: boolean): SshSftpPresentation {
+  return 'sheet';
 }
 
 /** Container width wins over device class so a 360vp PC window degrades safely. */

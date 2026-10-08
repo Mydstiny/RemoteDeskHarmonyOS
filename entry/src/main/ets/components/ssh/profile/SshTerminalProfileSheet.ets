@@ -1,3 +1,4 @@
+import { appUiTint } from '../../../common/AppUiColorPolicy';
 import {
   cloneSshTerminalProfile,
   emptySshTerminalProfileSettings,
@@ -53,7 +54,7 @@ export struct SshTerminalProfileSheet {
     emptySshTerminalProfileSettings();
 
   private scopeBackground(active: boolean): string {
-    return active ? this.accentColor + 'CC' : 'rgba(255,255,255,0.08)';
+    return active ? appUiTint(this.accentColor, 'CC') : 'rgba(255,255,255,0.08)';
   }
 
   private beginCreate(): void {

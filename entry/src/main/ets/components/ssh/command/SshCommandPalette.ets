@@ -1,5 +1,6 @@
 import { SEARCH_CAPSULE_HEIGHT, SEARCH_CAPSULE_RADIUS, SEARCH_CAPSULE_TEXT, searchGlassSheen, searchGlassShadow } from '../../../common/SearchBarSurface';
 import { KeyCode } from '@kit.InputKit';
+import { appUiTint } from '../../../common/AppUiColorPolicy';
 import {
   rankSshCommands,
   SshCommandDescriptor
@@ -107,8 +108,8 @@ export struct SshCommandPalette {
 
   private rowBackground(command: SshCommandDescriptor, index: number): ResourceColor {
     if (!command.enabled) { return 'rgba(255,255,255,0.025)'; }
-    if (this.pressedId === command.id) { return this.accentColor + '33'; }
-    if (index === this.selectedIndex) { return this.accentColor + '1F'; }
+    if (this.pressedId === command.id) { return appUiTint(this.accentColor, '33'); }
+    if (index === this.selectedIndex) { return appUiTint(this.accentColor, '1F'); }
     if (this.hoveredId === command.id) { return 'rgba(255,255,255,0.09)'; }
     return 'rgba(255,255,255,0.045)';
   }
@@ -170,7 +171,7 @@ export struct SshCommandPalette {
           .fontColor([command.category === 'action' ? this.accentColor : 'rgba(242,244,247,0.80)'])
       }
       .width(36).height(36).borderRadius(11)
-      .backgroundColor(command.category === 'action' ? this.accentColor + '24' : 'rgba(255,255,255,0.08)')
+      .backgroundColor(command.category === 'action' ? appUiTint(this.accentColor, '24') : 'rgba(255,255,255,0.08)')
       .accessibilityText(this.categoryLabel(command))
       Column({ space: 3 }) {
         Row({ space: 6 }) {
@@ -203,7 +204,7 @@ export struct SshCommandPalette {
     .borderRadius(14)
     .backgroundColor(this.rowBackground(command, index))
     .border({ width: 1, color: index === this.selectedIndex && command.enabled
-      ? this.accentColor + '66' : Color.Transparent })
+      ? appUiTint(this.accentColor, '66') : Color.Transparent })
     .scale({ x: this.pressedId === command.id ? 0.98 : 1, y: this.pressedId === command.id ? 0.98 : 1 })
     .animation({ duration: 140, curve: Curve.FastOutSlowIn })
     .opacity(command.enabled ? 1 : 0.62)

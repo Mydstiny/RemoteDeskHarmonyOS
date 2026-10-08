@@ -1,3 +1,4 @@
+import { appUiTint } from '../../../common/AppUiColorPolicy';
 import {
   sshBroadcastTargetBlockReason,
   sshBroadcastTargetEligible,
@@ -61,7 +62,7 @@ export struct SshBroadcastSheet {
         .padding({ left: 10, right: 8 })
         .borderRadius(9)
         .backgroundColor(this.targetSelected(target.hostId) ?
-          this.accentColor + '38' : 'rgba(255,255,255,0.045)')
+          appUiTint(this.accentColor, '38') : 'rgba(255,255,255,0.045)')
       }, (target: SshBroadcastTargetV1): string => target.hostId)
       if (this.targets.length === 0) {
         Text('没有可见的 SSH 工作台会话；请先连接至少一个标签。')

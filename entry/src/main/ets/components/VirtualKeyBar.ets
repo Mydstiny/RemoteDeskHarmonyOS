@@ -140,6 +140,8 @@ export struct VirtualKeyBar {
         color: this.isPressed(label) ? this.accentTint('33') : 'rgba(0,0,0,0.10)',
         offsetY: 2
       })
+      .scale({ x: this.isPressed(label) ? 0.92 : 1, y: this.isPressed(label) ? 0.92 : 1 })
+      .animation({ duration: 120, curve: Curve.FastOutSlowIn })
       .margin({ left: 3, right: 3 })
       .gesture(TapGesture({ count: 1 }).onAction((): void => { this.pressKey(label, seq); }))
   }
@@ -163,6 +165,7 @@ export struct VirtualKeyBar {
         color: this.modifierActive(modifier) ? this.accentTint('66') : 'rgba(0,0,0,0.10)',
         offsetY: 2
       })
+      .animation({ duration: 160, curve: Curve.FastOutSlowIn })
       .margin({ left: 3, right: 3 })
       .gesture(TapGesture({ count: 1 })
         .onAction((): void => { this.toggleModifier(modifier, this.modifierActive(modifier)); }))
@@ -182,6 +185,8 @@ export struct VirtualKeyBar {
         color: this.isPressed(label) ? this.accentTint('33') : 'rgba(0,0,0,0.10)',
         offsetY: 2
       })
+      .scale({ x: this.isPressed(label) ? 0.92 : 1, y: this.isPressed(label) ? 0.92 : 1 })
+      .animation({ duration: 120, curve: Curve.FastOutSlowIn })
       .margin({ left: 3, right: 3 })
       .gesture(
         GestureGroup(GestureMode.Exclusive,
@@ -205,6 +210,8 @@ export struct VirtualKeyBar {
       .borderRadius(10).backgroundColor(this.isPressed('Enter') ? this.accent() : this.enterBg())
       .border({ width: 1, color: this.isPressed('Enter') ? '#FFFFFF' : this.accent() })
       .shadow({ radius: this.isPressed('Enter') ? 16 : 12, color: this.accentTint('44'), offsetY: 2 })
+      .scale({ x: this.isPressed('Enter') ? 0.92 : 1, y: this.isPressed('Enter') ? 0.92 : 1 })
+      .animation({ duration: 120, curve: Curve.FastOutSlowIn })
       .margin({ left: 3, right: 3 })
       .gesture(TapGesture({ count: 1 }).onAction((): void => { this.pressKey('Enter', '\r'); }))
   }

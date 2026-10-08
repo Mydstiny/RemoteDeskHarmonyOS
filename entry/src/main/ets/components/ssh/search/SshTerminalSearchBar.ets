@@ -1,4 +1,5 @@
 import { SEARCH_CAPSULE_HEIGHT, SEARCH_CAPSULE_RADIUS, SEARCH_CAPSULE_TEXT, searchGlassShadow, searchGlassSheen } from '../../../common/SearchBarSurface';
+import { appUiTint } from '../../../common/AppUiColorPolicy';
 import { KeyCode } from '@kit.InputKit';
 import {
   routeSshShortcut,
@@ -112,7 +113,7 @@ export struct SshTerminalSearchBar {
   }
 
   private toggleBackground(active: boolean, action: string): string {
-    if (active) { return this.accentColor + 'CC'; }
+    if (active) { return appUiTint(this.accentColor, 'CC'); }
     return this.actionBackground(action);
   }
 

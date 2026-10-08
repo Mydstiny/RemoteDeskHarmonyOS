@@ -72,3 +72,45 @@ check('Pro is described as a one-time purchase; intro and update buttons float o
   assert.match(read('components/guide/ProShowcase.ets'), /padding\(\{ top: 4, bottom: 12 \+ FLOATING_ACTION_ROOM \}\)/);
   assert.match(read('components/guide/GuideShowcase.ets'), /padding\(\{ top: 16, bottom: 12 \+ WHATS_NEW_ACTION_ROOM \}\)/);
 });
+
+check('SFTP is a popup on every device, with the redesigned pieces and every operation kept', () => {
+  const policy = read('services/ssh/sftp/SshSftpWorkspacePolicy.ets');
+  assert.match(policy, /export function resolveSshSftpPresentation\(_workbenchEnabled: boolean,\s*_desktop: boolean\): SshSftpPresentation \{\s*return 'sheet';\s*\}/);
+  assert.match(page, /private closeSftpPanel\(\): void \{[\s\S]{0,200}?if \(this\.sshWorkbenchEnabled && !this\.sftpUsesRootBindSheet\(\)\) \{/);
+  const sftp = page.slice(page.indexOf('// ==================== SFTP (popup on every device)'), page.indexOf('  SftpTransferSheet(rootSheetMountToken: number = 0) {'));
+  // No text-button toolbars left; icon tools, file rows, a selection bar and an inline name editor instead.
+  assert.doesNotMatch(sftp, /Button\('(上级|刷新|根目录|新建目录|跳转|重命名|进入目录|删除选中项)'\)/);
+  for (const piece of ['SftpIconButton({', 'SftpFileRow({', 'SftpActionButton({', 'SftpEmptyState({']) { assert.ok(sftp.includes(piece), piece); }
+  // Every operation the old buttons ran is still reachable.
+  for (const call of ['this.refreshSftp(this.parentRemotePath(this.sftpPath))', "this.refreshSftp('/')", 'this.gotoSftpPath()',
+    'this.refreshSftp(this.sftpPath)', "this.beginSftpName('mkdir')", "this.beginSftpName('rename')", 'void this.makeSftpDir()',
+    'void this.renameSftpSelected()', 'this.deleteSftpSelected()', 'this.openSftpSelectedDir()', 'void this.uploadSftpFile()',
+    'this.downloadSftpSelected()', 'this.pauseSftpTransfer()', 'void this.resumeSftpTransfer()', 'this.cancelSftpTransfer()',
+    'this.retrySftpTransfer()', 'void this.enqueueSftpRemoteBatch(false)', 'void this.enqueueSftpRemoteBatch(true)',
+    'this.transferSftpLocalSelectionToCurrent()', 'this.transferSftpCurrentSelectionToLocal()', 'void this.makeSftpPeerDir()',
+    'void this.renameSftpPeerSelected()', 'this.deleteSftpPeerSelected()', 'void this.refreshSftpPeer(this.sftpPeerPathInput)',
+    'this.useSftpLocalEndpoint()', 'this.openSftpPeerPicker()', 'this.changeSftpPeerHost()', 'void this.openSftpLocalParent()',
+    'void this.authorizeLocalProvider()', 'this.cancelRecoveredSftpTask(task)', 'void this.recoverSftpTask(task)']) {
+    assert.ok(sftp.includes(call), call);
+  }
+  // A selected folder opens on a second tap; files dragged in upload from the popup too.
+  const ui = read('components/ssh/sftp/SftpUi.ets');
+  assert.match(ui, /if \(this\.isDirectory && this\.selected\) \{ this\.onOpen\(\); return; \}/);
+  assert.match(page, /\.overlay\(this\.SftpDropHint\(\)\)\s*\.allowDrop\(rootSheetMountToken > 0 && /);
+  assert.match(page, /if \(!\(this\.sftpWorkbenchSurfaceActive\(\) \|\| this\.showSftpSheet\) \|\| this\.sftpBusy \|\|/);
+});
+
+check('SSH chrome: tints are #AARRGGBB, a single tab is not repeated, symbol back button, key press motion, menu icons', () => {
+  for (const file of ['pages/SshTerminal.ets', 'components/ssh/command/SshCommandPalette.ets', 'components/ssh/workspace/SshWorkspaceSideBar.ets',
+    'components/ssh/search/SshTerminalSearchBar.ets', 'components/ssh/workspace/SshWorkspacePaneChrome.ets', 'components/ssh/broadcast/SshBroadcastSheet.ets',
+    'components/ssh/profile/SshTerminalProfileSheet.ets', 'components/ssh/productivity/SshProductivitySheet.ets', 'components/ssh/sftp/SftpUi.ets']) {
+    assert.doesNotMatch(read(file), /accentColor \+ '[0-9A-Fa-f]{2}'/, file + ': an alpha after the RGB digits is a different colour');
+  }
+  assert.match(page, /private sshStandaloneTabStripVisible\(\): boolean \{\s*return \(this\.sshTabViews\.length > 1 \|\| this\.sftpWorkspaceTabState\.open \|\|/);
+  assert.match(page, /SymbolGlyph\(\$r\('sys\.symbol\.chevron_left'\)\)\.fontSize\(20\)\.fontColor\(\[this\.chromeText\(0\.9\)\]\)/);
+  assert.doesNotMatch(page, /Text\('<'\)\.fontSize\(20\)/);
+  const keys = read('components/VirtualKeyBar.ets');
+  assert.equal((keys.match(/\.scale\(\{ x: this\.isPressed\(/g) || []).length, 3, 'keys, arrows and Enter shrink when pressed');
+  assert.match(page, /private sshHeaderActionIcon\(action: SshHeaderAction\): Resource \{/);
+  assert.match(page, /SymbolGlyph\(this\.sshHeaderActionIcon\(action\)\)/);
+});

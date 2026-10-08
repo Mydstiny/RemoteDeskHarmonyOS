@@ -1,4 +1,5 @@
 import { util } from '@kit.ArkTS';
+import { appUiTint } from '../../../common/AppUiColorPolicy';
 import {
   buildSshQuickCommandSnippet,
   renderSshSnippet,
@@ -318,7 +319,7 @@ export struct SshProductivitySheet {
         .width('100%').constraintSize({ minHeight: 48 }).padding({ left: 10, right: 10 })
         .borderRadius(9)
         .backgroundColor(this.selectedSnippetId === snippet.id
-          ? this.accentColor + '38' : 'rgba(255,255,255,0.045)')
+          ? appUiTint(this.accentColor, '38') : 'rgba(255,255,255,0.045)')
         .onClick((): void => { this.selectSnippet(snippet); })
         .accessibilityText('选择片段 ' + snippet.title)
       }, (snippet: SshSnippetV1): string => snippet.id)

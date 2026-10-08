@@ -1,3 +1,4 @@
+import { appUiTint } from '../../../common/AppUiColorPolicy';
 /** Lightweight semantic controls around one terminal pane. */
 @Component
 export struct SshWorkspacePaneChrome {
@@ -147,7 +148,7 @@ export struct SshWorkspacePaneChrome {
                 Text('专注')
                   .fontSize(8).fontColor(this.accentColor)
                   .padding({ left: 5, right: 5, top: 1, bottom: 1 })
-                  .borderRadius(5).backgroundColor(this.accentColor + '20')
+                  .borderRadius(5).backgroundColor(appUiTint(this.accentColor, '20'))
               }
             }
           }
@@ -163,7 +164,7 @@ export struct SshWorkspacePaneChrome {
         }
         .width(48).height(48).padding(0)
         .borderRadius(8)
-        .backgroundColor(this.actionMenuVisible ? this.accentColor + '28' : Color.Transparent)
+        .backgroundColor(this.actionMenuVisible ? appUiTint(this.accentColor, '28') : Color.Transparent)
         .bindPopup(this.actionMenuVisible, {
           builder: this.PaneActionMenu(),
           placement: Placement.BottomRight,
