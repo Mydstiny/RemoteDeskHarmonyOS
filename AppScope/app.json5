@@ -14,6 +14,9 @@
       { "name": "rd_vivid", "icon": "$media:icon_rd_vivid" },
       { "name": "rd_soft", "icon": "$media:icon_rd_soft" },
       { "name": "rd_glow", "icon": "$media:icon_rd_glow" },
+      { "name": "rd_glow_mist", "icon": "$media:icon_rd_glow_mist" },
+      { "name": "rd_glow_night", "icon": "$media:icon_rd_glow_night" },
+      { "name": "rd_glow_frost", "icon": "$media:icon_rd_glow_frost" },
       { "name": "rd_vivid_night", "icon": "$media:icon_rd_vivid_night" },
       { "name": "rd_vivid_ocean", "icon": "$media:icon_rd_vivid_ocean" },
       { "name": "rd_vivid_aurora", "icon": "$media:icon_rd_vivid_aurora" }

@@ -270,7 +270,7 @@ test('real account transitions isolate Pro before their first await and through 
 function iconFixture(debug = true) {
   const f = fixture(debug); let selected = ''; let queries = 0; const applied = [];
   const { ProAppIconController } = f.load('entry/src/main/ets/services/pro/ProAppIconController.ets');
-  const icons = () => ['rd_white', 'rd_transparent', 'rd_night', 'rd_sky', 'rd_aurora', 'rd_vivid', 'rd_soft', 'rd_glow', 'rd_vivid_night', 'rd_vivid_ocean', 'rd_vivid_aurora']
+  const icons = () => ['rd_white', 'rd_transparent', 'rd_night', 'rd_sky', 'rd_aurora', 'rd_vivid', 'rd_soft', 'rd_glow', 'rd_glow_mist', 'rd_glow_night', 'rd_glow_frost', 'rd_vivid_night', 'rd_vivid_ocean', 'rd_vivid_aurora']
     .map(name => ({ name, enabled: selected === name }));
   const provider = { supported: () => true, query: async () => { queries++; return icons(); },
     apply: async name => { applied.push(name); selected = name; } };
@@ -299,7 +299,7 @@ test('every preset in the picker is a registered alternate icon and unknown name
   const manifest = fs.readFileSync(require('node:path').join(__dirname, '../../AppScope/app.json5'), 'utf8');
   const registered = [...manifest.matchAll(/"name": "(rd_[a-z_]+)", "icon": "\$media:([a-z_]+)"/g)];
   assert.deepEqual(registered.map(match => match[1]),
-    ['rd_white', 'rd_transparent', 'rd_night', 'rd_sky', 'rd_aurora', 'rd_vivid', 'rd_soft', 'rd_glow', 'rd_vivid_night', 'rd_vivid_ocean', 'rd_vivid_aurora']);
+    ['rd_white', 'rd_transparent', 'rd_night', 'rd_sky', 'rd_aurora', 'rd_vivid', 'rd_soft', 'rd_glow', 'rd_glow_mist', 'rd_glow_night', 'rd_glow_frost', 'rd_vivid_night', 'rd_vivid_ocean', 'rd_vivid_aurora']);
   // Every preset has its own picker thumbnail (a missing branch fell back to the default icon's).
   const panel = fs.readFileSync(require('node:path').join(__dirname,
     '../../entry/src/main/ets/components/ProAppIconPanel.ets'), 'utf8');
@@ -315,7 +315,7 @@ test('every preset in the picker is a registered alternate icon and unknown name
     assert.ok(layered.background && layered.foreground, resource + ' must be a layered icon like the default');
   }
   const f = iconFixture(); f.runtime.setDebugMode('pro');
-  for (const name of ['rd_night', 'rd_sky', 'rd_aurora', 'rd_vivid', 'rd_soft', 'rd_glow', 'rd_vivid_night', 'rd_vivid_ocean', 'rd_vivid_aurora']) {
+  for (const name of ['rd_night', 'rd_sky', 'rd_aurora', 'rd_vivid', 'rd_soft', 'rd_glow', 'rd_glow_mist', 'rd_glow_night', 'rd_glow_frost', 'rd_vivid_night', 'rd_vivid_ocean', 'rd_vivid_aurora']) {
     assert.equal(await f.controller.select(name, () => true), true);
     assert.equal(f.controller.snapshot().currentName, name);
   }

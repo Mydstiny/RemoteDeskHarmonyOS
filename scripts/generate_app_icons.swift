@@ -174,6 +174,12 @@ let presets: [Preset] = [
     background: whiteBackground, drawForeground: originalArtwork("design/app-icons/rd_soft.png")),
   Preset(name: "rd_glow", resource: "icon_rd_glow", foreground: "icon_rd_glow_fg",
     background: whiteBackground, drawForeground: originalArtwork("design/app-icons/rd_glow.png")),
+  Preset(name: "rd_glow_mist", resource: "icon_rd_glow_mist", foreground: "icon_rd_glow_mist_fg",
+    background: whiteBackground, drawForeground: originalArtwork("design/app-icons/rd_glow_mist.png")),
+  Preset(name: "rd_glow_night", resource: "icon_rd_glow_night", foreground: "icon_rd_glow_night_fg",
+    background: whiteBackground, drawForeground: originalArtwork("design/app-icons/rd_glow_night.png")),
+  Preset(name: "rd_glow_frost", resource: "icon_rd_glow_frost", foreground: "icon_rd_glow_frost_fg",
+    background: whiteBackground, drawForeground: originalArtwork("design/app-icons/rd_glow_frost.png")),
   Preset(name: "rd_vivid_night", resource: "icon_rd_vivid_night", foreground: "icon_rd_vivid_keyed", background: { context in
     linear(context, [(0x17264F, 0), (0x0A1128, 0.6), (0x05081A, 1)], angle: 180)
     glow(context, x: 0.8, y: 0.2, radius: 0.55, 0x1FC8FF, 0.32)
