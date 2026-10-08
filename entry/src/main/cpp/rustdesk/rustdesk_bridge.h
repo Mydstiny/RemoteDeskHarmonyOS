@@ -357,7 +357,10 @@ public:
     RustDeskTransferAuthSnapshot getTransferAuthentication(uint64_t transferId);
     bool submitTransferAuthentication(uint64_t transferId, uint64_t challengeId, uint32_t responseKind, const std::string& secret);
     RustDeskTransferResult getTransferResult(uint64_t transferId);
-    int64_t requestRemoteDirectory(const std::string& remotePath);
+    int64_t requestRemoteDirectory(const std::string& remotePath, bool includeHidden = false);
+    int64_t requestRemoteTree(const std::string& remotePath, bool includeHidden);
+    int64_t removeRemotePath(const std::string& remotePath, bool directory);
+    int64_t renameFileSessionPath(const std::string& remotePath, const std::string& newName);
     std::string getRemoteDirectoryPath(uint64_t transferId);
     std::vector<RustDeskRemoteFileEntry> getRemoteDirectoryEntries(uint64_t transferId);
     int64_t downloadFileToFd(const std::string& remotePath, int fd, uint64_t expectedSize, uint64_t modifiedTime);

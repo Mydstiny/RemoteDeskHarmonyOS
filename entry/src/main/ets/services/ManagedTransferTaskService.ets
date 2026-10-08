@@ -207,7 +207,10 @@ export class ManagedTransferTaskService {
       const key: string = runtime.queueKey();
       const lane: number = this.runningByKey.get(key) ?? 0;
       const local: boolean = key === 'local';
-      if (lane >= (local ? 1 : this.concurrency) || (!local && this.running >= this.networkLimit)) { index++; continue; }
+      // A RustDesk session runs its file jobs one after another on one reused connection (rustdesk_ffi file
+      // lanes); a second running task would only wait there while its idle clock ran.
+      const laneLimit: number = local || runtime.options.protocol === 'rustdesk' ? 1 : this.concurrency;
+      if (lane >= laneLimit || (!local && this.running >= this.networkLimit)) { index++; continue; }
       this.queue.splice(index, 1);
       if (!local) { this.running++; }
       this.runningByKey.set(key, lane + 1);

@@ -130,6 +130,10 @@ extern "C" {
     bool rustdesk_submit_transfer_authentication(void*, uint64_t, uint64_t, uint32_t, const uint8_t*, size_t);
     bool rustdesk_get_transfer_result(void*, uint64_t, RustDeskTransferResult*);
     int rustdesk_read_remote_directory(void*, uint64_t, const char*);
+    int rustdesk_read_remote_directory_v2(void*, uint64_t, const char*, bool);
+    int rustdesk_read_remote_tree(void*, uint64_t, const char*, bool);
+    int rustdesk_remove_remote_path(void*, uint64_t, const char*, bool);
+    int rustdesk_rename_remote_path(void*, uint64_t, const char*, const char*);
     int rustdesk_download_file_fd(void*, uint64_t, const char*, int, uint64_t, uint64_t);
     struct RustDeskFfiRemoteFileMetadata { uint32_t type; uint64_t size; uint64_t modified; };
     int rustdesk_get_remote_directory_count(void*, uint64_t);
@@ -4566,13 +4570,58 @@ RustDeskTransferResult RustDeskBridge::getTransferResult(uint64_t id) {
     return result;
 }
 
-int64_t RustDeskBridge::requestRemoteDirectory(const std::string& remotePath) {
+int64_t RustDeskBridge::requestRemoteDirectory(const std::string& remotePath, bool includeHidden) {
     int64_t result = -1;
 #ifdef RUSTDESK_USE_REAL_CORE
     (void)rdDispatchFfiOutbound(impl_.get(), mode_, RustDeskFfiOutboundLane::File,
-        [this, &remotePath, &result](void* handle) {
+        [this, &remotePath, includeHidden, &result](void* handle) {
             const uint64_t id = impl_->nextTransferId.fetch_add(1);
-            if (rustdesk_read_remote_directory(handle, id, remotePath.c_str()) == 0) {
+            if (rustdesk_read_remote_directory_v2(handle, id, remotePath.c_str(), includeHidden) == 0) {
+                result = static_cast<int64_t>(id);
+            }
+            return result > 0;
+        });
+#endif
+    return result;
+}
+
+int64_t RustDeskBridge::requestRemoteTree(const std::string& remotePath, bool includeHidden) {
+    int64_t result = -1;
+#ifdef RUSTDESK_USE_REAL_CORE
+    (void)rdDispatchFfiOutbound(impl_.get(), mode_, RustDeskFfiOutboundLane::File,
+        [this, &remotePath, includeHidden, &result](void* handle) {
+            const uint64_t id = impl_->nextTransferId.fetch_add(1);
+            if (rustdesk_read_remote_tree(handle, id, remotePath.c_str(), includeHidden) == 0) {
+                result = static_cast<int64_t>(id);
+            }
+            return result > 0;
+        });
+#endif
+    return result;
+}
+
+int64_t RustDeskBridge::removeRemotePath(const std::string& remotePath, bool directory) {
+    int64_t result = -1;
+#ifdef RUSTDESK_USE_REAL_CORE
+    (void)rdDispatchFfiOutbound(impl_.get(), mode_, RustDeskFfiOutboundLane::File,
+        [this, &remotePath, directory, &result](void* handle) {
+            const uint64_t id = impl_->nextTransferId.fetch_add(1);
+            if (rustdesk_remove_remote_path(handle, id, remotePath.c_str(), directory) == 0) {
+                result = static_cast<int64_t>(id);
+            }
+            return result > 0;
+        });
+#endif
+    return result;
+}
+
+int64_t RustDeskBridge::renameFileSessionPath(const std::string& remotePath, const std::string& newName) {
+    int64_t result = -1;
+#ifdef RUSTDESK_USE_REAL_CORE
+    (void)rdDispatchFfiOutbound(impl_.get(), mode_, RustDeskFfiOutboundLane::File,
+        [this, &remotePath, &newName, &result](void* handle) {
+            const uint64_t id = impl_->nextTransferId.fetch_add(1);
+            if (rustdesk_rename_remote_path(handle, id, remotePath.c_str(), newName.c_str()) == 0) {
                 result = static_cast<int64_t>(id);
             }
             return result > 0;
@@ -4615,8 +4664,9 @@ std::vector<RustDeskRemoteFileEntry> RustDeskBridge::getRemoteDirectoryEntries(u
 #ifdef RUSTDESK_USE_REAL_CORE
     (void)rdDispatchFfiTransferManagement(impl_.get(), mode_,
         [id, &result](void* handle) {
+            // A folder listing holds at most 4096 entries; a folder tree (every file below a folder) up to 20000.
             const int count = rustdesk_get_remote_directory_count(handle, id);
-            if (count < 0 || count > 4096) { return false; }
+            if (count < 0 || count > 20000) { return false; }
             result.reserve(static_cast<size_t>(count));
             for (int i = 0; i < count; ++i) {
                 char name[4097] = {};

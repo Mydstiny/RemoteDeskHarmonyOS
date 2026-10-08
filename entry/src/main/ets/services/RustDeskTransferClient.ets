@@ -67,9 +67,10 @@ export class RustDeskTransferClient {
       ' last=' + seen);
     return null;
   }
-  async list(path: string): Promise<SessionRemoteDirectory | null> {
+  async list(path: string, includeHidden: boolean = false): Promise<SessionRemoteDirectory | null> {
     if (!this.isCurrent()) { return null; }
-    const id: number = this.loader.requestSessionRemoteDirectory(this.lease.sessionId, this.lease.nativeGeneration, path);
+    const id: number = this.loader.requestSessionRemoteListing(this.lease.sessionId, this.lease.nativeGeneration, path,
+      includeHidden);
     this.log('list request id=' + id.toString() + ' session=' + this.lease.sessionId.toString() +
       ' generation=' + this.lease.nativeGeneration.toString() + ' pathLength=' + path.length.toString());
     if (id <= 0) { this.lastFailure = 'enqueue_failed'; return null; }
@@ -83,6 +84,64 @@ export class RustDeskTransferClient {
       }
       this.lastFailure = '';
       return this.loader.getSessionRemoteDirectory(this.lease.sessionId, this.lease.nativeGeneration, id);
+    } finally {
+      if (!drained) { drained = await this.cancelAndDrain(id); }
+      if (drained) { this.loader.releaseSessionFileTransfer(this.lease.sessionId, this.lease.nativeGeneration, id); }
+    }
+  }
+  /** Every file below `path`, names relative to it ('/' separated); folders without files are not listed. */
+  async tree(path: string, includeHidden: boolean = true): Promise<SessionRemoteDirectory | null> {
+    if (!this.isCurrent()) { return null; }
+    const id: number = this.loader.requestSessionRemoteTree(this.lease.sessionId, this.lease.nativeGeneration, path,
+      includeHidden);
+    return await this.collectDirectory(id, 7);
+  }
+  /** Removes a file, or a folder with everything in it. */
+  async remove(path: string, directory: boolean): Promise<boolean> {
+    if (!this.isCurrent()) { return false; }
+    return await this.acknowledged(
+      this.loader.removeSessionRemotePath(this.lease.sessionId, this.lease.nativeGeneration, path, directory), 5);
+  }
+  /** Renames the file or folder at `path` to `newName` in the same folder. */
+  async rename(path: string, newName: string): Promise<boolean> {
+    if (!this.isCurrent()) { return false; }
+    return await this.acknowledged(
+      this.loader.renameSessionRemotePath(this.lease.sessionId, this.lease.nativeGeneration, path, newName), 6);
+  }
+  private async collectDirectory(id: number, operationKind: number): Promise<SessionRemoteDirectory | null> {
+    if (id <= 0) { this.lastFailure = 'enqueue_failed'; return null; }
+    let drained: boolean = false;
+    try {
+      const status: SessionTransferStatus | null = await this.wait(id);
+      drained = status !== null;
+      if (!this.isCurrent() || status === null || [3, 6].indexOf(status.rustdeskTransferState) < 0) {
+        this.lastFailure = status !== null ? (status.diagnosticCode ?? '') : 'lost';
+        return null;
+      }
+      const result: SessionTransferResult = this.loader.getSessionTransferResult(this.lease.sessionId,
+        this.lease.nativeGeneration, id);
+      if (result.operationKind !== operationKind) { this.lastFailure = 'lost'; return null; }
+      this.lastFailure = '';
+      return this.loader.getSessionRemoteDirectory(this.lease.sessionId, this.lease.nativeGeneration, id);
+    } finally {
+      if (!drained) { drained = await this.cancelAndDrain(id); }
+      if (drained) { this.loader.releaseSessionFileTransfer(this.lease.sessionId, this.lease.nativeGeneration, id); }
+    }
+  }
+  private async acknowledged(id: number, operationKind: number): Promise<boolean> {
+    if (id <= 0) { this.lastFailure = 'enqueue_failed'; return false; }
+    let drained: boolean = false;
+    try {
+      const status: SessionTransferStatus | null = await this.wait(id);
+      drained = status !== null;
+      if (!this.isCurrent() || status === null || [3, 6].indexOf(status.rustdeskTransferState) < 0) {
+        this.lastFailure = status !== null ? (status.diagnosticCode ?? '') : 'lost';
+        return false;
+      }
+      const result: SessionTransferResult = this.loader.getSessionTransferResult(this.lease.sessionId,
+        this.lease.nativeGeneration, id);
+      this.lastFailure = '';
+      return result.operationKind === operationKind && result.remoteOperationAcknowledged;
     } finally {
       if (!drained) { drained = await this.cancelAndDrain(id); }
       if (drained) { this.loader.releaseSessionFileTransfer(this.lease.sessionId, this.lease.nativeGeneration, id); }

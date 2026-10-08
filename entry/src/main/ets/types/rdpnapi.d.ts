@@ -1067,6 +1067,18 @@ export interface SessionRemoteDirectory {
   entries: SessionRemoteFileEntry[];
 }
 export const requestSessionRemoteDirectory: (sessionId: number, generation: number, path: string) => number;
+/** A folder listing, optionally with hidden entries; read with getSessionRemoteDirectory. */
+export const requestSessionRemoteListing: (sessionId: number, generation: number, path: string,
+  includeHidden: boolean) => number;
+/** Every file below a folder (names relative to it, '/' separated); read with getSessionRemoteDirectory. */
+export const requestSessionRemoteTree: (sessionId: number, generation: number, path: string,
+  includeHidden: boolean) => number;
+/** Removes a file, or a folder with everything in it. */
+export const removeSessionRemotePath: (sessionId: number, generation: number, path: string,
+  directory: boolean) => number;
+/** Renames a file or folder within its folder. */
+export const renameSessionRemotePath: (sessionId: number, generation: number, path: string,
+  newName: string) => number;
 export const getSessionRemoteDirectory: (sessionId: number, generation: number, transferId: number) => SessionRemoteDirectory;
 export const downloadSessionFileToFd: (sessionId: number, generation: number, path: string, fd: number, size: number, modifiedTime: number) => number;
 

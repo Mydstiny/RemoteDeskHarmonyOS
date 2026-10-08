@@ -222,10 +222,16 @@ test('notification rejection cannot fail successful data transfer', async () => 
 test('phone defaults to one active data task while PC admits two', async () => {
   for (const [deviceType, expected] of [['phone', 1], ['2in1', 2]]) {
     const env = environment(new Map(), deviceType), service = env.service(), gate = deferred(); let active = 0;
-    const handles = [1,2,3].map(i => service.enqueue(options({taskId:'budget-'+i}), async () => { active++; return gate.promise; }));
+    const handles = [1,2,3].map(i => service.enqueue(options({taskId:'budget-'+i, protocol:'rdp'}), async () => { active++; return gate.promise; }));
     await drain(); assert.equal(active, expected); gate.resolve(outcome());
     await Promise.all(handles.map(h=>h.result)); await drain(); assert.equal(env.stops.length,3);
   }
+});
+test('a RustDesk session runs one file task at a time even on PC', async () => {
+  const env = environment(new Map(), '2in1'), service = env.service(), gate = deferred(); let active = 0;
+  const handles = [1,2].map(i => service.enqueue(options({taskId:'rd-'+i, queueKey:'rd-session'}), async () => { active++; return gate.promise; }));
+  await drain(); assert.equal(active, 1); gate.resolve(outcome());
+  await Promise.all(handles.map(h => h.result)); await drain(); assert.equal(active, 2);
 });
 test('100 queued attempts converge exactly once with isolated progress and notifications', async () => {
   const env = environment(), service = env.service(); let finalized=0;

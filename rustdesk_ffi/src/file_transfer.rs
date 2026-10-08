@@ -476,8 +476,21 @@ pub(crate) enum FileOperation {
         source: UploadSource,
         overwrite: bool,
     },
-    List,
+    List {
+        include_hidden: bool,
+    },
+    /// Every file below a folder (relative names), from the peer's own recursive listing.
+    Tree {
+        include_hidden: bool,
+    },
     CreateDirectory,
+    /// A file, or a folder with everything in it.
+    Remove {
+        directory: bool,
+    },
+    Rename {
+        new_name: String,
+    },
     Download(DownloadSink),
 }
 impl FileOperation {
@@ -485,7 +498,20 @@ impl FileOperation {
         match self {
             Self::Upload { source, .. } => source.size(),
             Self::Download(sink) => sink.expected_size,
-            Self::List | Self::CreateDirectory => 0,
+            _ => 0,
+        }
+    }
+
+    /// The `operation_kind` reported in FileOperationResult.
+    pub fn kind_code(&self) -> u32 {
+        match self {
+            Self::Upload { .. } => 1,
+            Self::List { .. } => 2,
+            Self::Download(_) => 3,
+            Self::CreateDirectory => 4,
+            Self::Remove { .. } => 5,
+            Self::Rename { .. } => 6,
+            Self::Tree { .. } => 7,
         }
     }
 }

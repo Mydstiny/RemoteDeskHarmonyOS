@@ -305,7 +305,7 @@ import { PcRemoteClipboardFileService, PcRemoteClipboardFileStatus } from '../se
 import { RdpClipboardContentService } from '../services/RdpClipboardContentService';
 import { listLegacyTransferCaches, importLegacyTransferCache, LegacyTransferCacheSummary } from '../services/LegacyTransferCacheRecovery';
 import { scanAuthorizedTransferDirectory, exportTransferArtifactTree, TransferDirectorySourceTree, TransferDirectoryExportResult } from '../services/TransferDirectoryProvider';
-import { collectRemoteTransferTree, sameRemoteTransferDirectory, RemoteTransferTree } from '../services/TransferRemoteTreePolicy';
+import { collectRemoteTransferTree, remoteTransferTreeFromFiles, sameRemoteTransferDirectory, RemoteTransferTree } from '../services/TransferRemoteTreePolicy';
 import { RustDeskTransferClient } from '../services/RustDeskTransferClient';
 import { TransferArtifactPublicationService } from '../services/TransferArtifactPublicationService';
 import { TransferArtifact, TransferArtifactBatch, TransferReceivedArtifactWriter, TransferNativeReceiveDirectory, TransferNativeReceivedEntry, TransferArtifactBatchInfo, TransferPlatformIncomingDirectory, recoverTransferArtifactInventory, cleanupOwnedTransferArtifactBatch, exportTransferArtifact, ensureTransferScopeDirectory, safeTransferFileName, transferScopeKey, transferStorageFailureCode } from '../services/TransferArtifactStore';
@@ -20494,8 +20494,11 @@ struct RemoteDesktop {
       async (control: ManagedTransferControl): Promise<ManagedTransferOutcome> => {
         try {
           const client: RustDeskTransferClient = this.transferControlClient(lease, control.isCurrent);
-          const tree: RemoteTransferTree = await collectRemoteTransferTree(root, entry.name,
-            (path: string): Promise<SessionRemoteDirectory | null> => client.list(path), control.isCurrent);
+          // One recursive listing from the peer (hidden files included); folder by folder only if the peer refuses it.
+          const listing: SessionRemoteDirectory | null = await client.tree(root, true);
+          const tree: RemoteTransferTree = listing !== null ? remoteTransferTreeFromFiles(root, entry.name, listing) :
+            await collectRemoteTransferTree(root, entry.name,
+              (path: string): Promise<SessionRemoteDirectory | null> => client.list(path, true), control.isCurrent);
           if (!control.isCurrent()) { return { stage: 'cancelled', evidence: 'none' }; }
           control.update({ totalBytes: tree.totalBytes });
           const rootArtifact: TransferArtifact = await batch.createDirectoryRoot(entry.name, control.isCurrent);
@@ -25428,7 +25431,11 @@ struct RemoteDesktop {
                 entry.type === 3 ? '驱动器' : '文件夹')
                 .fontSize(11).fontColor(this.pal().text2).width('100%')
             }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-            if (entry.type === 0 || entry.type === 3) {
+            if (receiving && entry.type === 0) {
+              Button('接收').fontSize(12).height(34)
+                .enabled(!this.remoteTransferBrowserBusy && !this.fileTransferBusy)
+                .onClick((): void => { void this.downloadRustDeskDirectory(entry); })
+            } else if (entry.type === 0 || entry.type === 3) {
               Text('进入').fontSize(12).fontColor(this.accentColor)
             } else if (receiving) {
               Button('接收').fontSize(12).height(34)

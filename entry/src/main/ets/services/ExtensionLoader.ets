@@ -1308,6 +1308,22 @@ export class ExtensionLoader implements RustDeskClipboardNative {
     try { return rdpnapi.requestSessionRemoteDirectory(sessionId, generation, path); }
     catch (_err) { return -1; }
   }
+  requestSessionRemoteListing(sessionId: number, generation: number, path: string, includeHidden: boolean): number {
+    try { return rdpnapi.requestSessionRemoteListing(sessionId, generation, path, includeHidden); }
+    catch (_err) { return -1; }
+  }
+  requestSessionRemoteTree(sessionId: number, generation: number, path: string, includeHidden: boolean): number {
+    try { return rdpnapi.requestSessionRemoteTree(sessionId, generation, path, includeHidden); }
+    catch (_err) { return -1; }
+  }
+  removeSessionRemotePath(sessionId: number, generation: number, path: string, directory: boolean): number {
+    try { return rdpnapi.removeSessionRemotePath(sessionId, generation, path, directory); }
+    catch (_err) { return -1; }
+  }
+  renameSessionRemotePath(sessionId: number, generation: number, path: string, newName: string): number {
+    try { return rdpnapi.renameSessionRemotePath(sessionId, generation, path, newName); }
+    catch (_err) { return -1; }
+  }
   getSessionRemoteDirectory(sessionId: number, generation: number, transferId: number): SessionRemoteDirectory {
     try { return rdpnapi.getSessionRemoteDirectory(sessionId, generation, transferId) as SessionRemoteDirectory; }
     catch (_err) { return { path: '', entries: [] }; }

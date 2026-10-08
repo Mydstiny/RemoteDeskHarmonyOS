@@ -30,6 +30,7 @@ pub mod crypto;
 pub mod crypto_channel;
 mod cursor_state;
 mod file_transfer;
+mod file_session;
 mod file_auth;
 mod file_clipboard;
 mod clipboard_publication;
@@ -162,20 +163,20 @@ fn finish_connect_epoch(epoch: u64, session_id: u64) {
 /// worker has fully stopped using it. Constructing this value before spawning
 /// is essential: a native cancel followed by rearm must still leave the
 /// already-admitted old worker's epoch cancelled when that worker starts late.
-struct ConnectEpochReservation {
+pub(crate) struct ConnectEpochReservation {
     epoch: u64,
     session_id: u64,
 }
 
 impl ConnectEpochReservation {
-    fn new(session_id: u64) -> Self {
+    pub(crate) fn new(session_id: u64) -> Self {
         Self {
             epoch: begin_connect_epoch(session_id),
             session_id,
         }
     }
 
-    fn epoch(&self) -> u64 {
+    pub(crate) fn epoch(&self) -> u64 {
         self.epoch
     }
 }
@@ -1648,6 +1649,8 @@ struct RustDeskClient {
     shutdown_stream: Option<PeerStream>,
     stream_handle: Option<std::thread::JoinHandle<io::Result<()>>>,
     transfers: Arc<Mutex<file_transfer::TransferRegistry>>,
+    /// Reused file connections (browsing, and uploads/downloads) for this session's file jobs.
+    file_lanes: file_session::FileLanes,
     remote_clipboard: Arc<Mutex<ClipboardSnapshot>>,
     publications: Mutex<clipboard_publication::Publications>,
     stream_stats: Arc<Mutex<RustDeskStreamStats>>,
@@ -1691,7 +1694,15 @@ fn split_remote_file_path(remote_path: &str) -> (&str, &str) {
         Some(idx) => {
             let dir = &remote_path[..idx];
             let name = &remote_path[idx + 1..];
-            (if dir.is_empty() { "." } else { dir }, name)
+            // A file in a root keeps the root ("/a" -> "/", "C:\\a" -> "C:\\").
+            let dir = if dir.is_empty() {
+                &remote_path[..1]
+            } else if dir.len() == 2 && dir.ends_with(':') {
+                &remote_path[..3]
+            } else {
+                dir
+            };
+            (dir, name)
         }
         None => (".", remote_path),
     }
@@ -2576,6 +2587,7 @@ fn rustdesk_connect_impl(
                 shutdown_stream,
                 stream_handle: Some(stream_handle),
                 transfers,
+                file_lanes: file_session::FileLanes::default(),
                 remote_clipboard,
                 publications: Mutex::new(clipboard_publication::Publications::default()),
                 stream_stats,
@@ -4163,7 +4175,62 @@ pub extern "C" fn rustdesk_read_remote_directory(
     id: u64,
     path: *const c_char,
 ) -> i32 {
-    start_file_operation(handle, id, path, file_transfer::FileOperation::List)
+    start_file_operation(handle, id, path, file_transfer::FileOperation::List { include_hidden: false })
+}
+
+/// Lists a folder, optionally with hidden entries.
+#[no_mangle]
+pub extern "C" fn rustdesk_read_remote_directory_v2(
+    handle: *mut c_void,
+    id: u64,
+    path: *const c_char,
+    include_hidden: bool,
+) -> i32 {
+    start_file_operation(handle, id, path, file_transfer::FileOperation::List { include_hidden })
+}
+
+/// Every file below a folder, names relative to it ('/' separated); read with the directory accessors.
+#[no_mangle]
+pub extern "C" fn rustdesk_read_remote_tree(
+    handle: *mut c_void,
+    id: u64,
+    path: *const c_char,
+    include_hidden: bool,
+) -> i32 {
+    start_file_operation(handle, id, path, file_transfer::FileOperation::Tree { include_hidden })
+}
+
+/// Removes a file, or a folder with everything in it.
+#[no_mangle]
+pub extern "C" fn rustdesk_remove_remote_path(
+    handle: *mut c_void,
+    id: u64,
+    path: *const c_char,
+    directory: bool,
+) -> i32 {
+    start_file_operation(handle, id, path, file_transfer::FileOperation::Remove { directory })
+}
+
+/// Renames the file or folder at `path` within its folder.
+#[no_mangle]
+pub extern "C" fn rustdesk_rename_remote_path(
+    handle: *mut c_void,
+    id: u64,
+    path: *const c_char,
+    new_name: *const c_char,
+) -> i32 {
+    if new_name.is_null() {
+        return -1;
+    }
+    let Ok(new_name) = unsafe { CStr::from_ptr(new_name) }.to_str() else {
+        return -1;
+    };
+    start_file_operation(
+        handle,
+        id,
+        path,
+        file_transfer::FileOperation::Rename { new_name: new_name.to_owned() },
+    )
 }
 #[no_mangle]
 pub extern "C" fn rustdesk_download_file_fd(
@@ -4303,6 +4370,191 @@ fn start_file_upload(
     )
 }
 
+/// How a session's file lanes reach the peer: the session's own route and credentials.
+#[derive(Clone)]
+struct FileRoute {
+    host: String,
+    port: u16,
+    relay_fallback_port: u16,
+    server_key: String,
+    shared_access_key: bool,
+    api_token: String,
+    peer_id: String,
+    password: String,
+    request_approval: bool,
+    direct_connection: bool,
+    connection_strategy: connector::RustDeskConnectionStrategy,
+    nat_config: connector::RustDeskNatTraversalConfig,
+    connection_id: u64,
+}
+
+/// Opens a logged-in file connection for a lane: direct, or by ID with the modern route first and the 1.0.7
+/// compatibility route as a fallback. `job` answers the login's authentication challenges.
+fn connect_file_route(
+    route: &FileRoute,
+    job: &file_transfer::TransferJob,
+    connect_epoch: u64,
+    remote_dir: &str,
+) -> io::Result<connector::RustDeskConnector> {
+    let FileRoute {
+        host,
+        port,
+        relay_fallback_port,
+        server_key,
+        shared_access_key,
+        api_token,
+        peer_id,
+        password,
+        request_approval,
+        direct_connection: _,
+        connection_strategy,
+        nat_config,
+        connection_id,
+    } = route.clone();
+    let route_deadline = connector::route_deadline_for_strategy(connection_strategy);
+        let connector = if route.direct_connection {
+            let mut candidate =
+                connector::RustDeskConnector::new_with_connection_id(connection_id, connect_epoch);
+            candidate.set_file_auth(Arc::clone(&job.auth));
+            candidate.connect_file_transfer_direct(&host, port, &password, &remote_dir)?;
+            candidate
+        } else {
+            // Modern peers advertise FILE_TRANSFER at rendezvous. HarmonyOS
+            // 1.0.7 used DEFAULT_CONN for the route and then identified the
+            // dedicated file session in LoginRequest.file_transfer. Keep the
+            // official modern route first, but retry a fresh connection with
+            // the proven 1.0.7 route when an older/custom hbbs does not answer.
+            let route_types = [
+                protocol::rendezvous_proto::ConnType::FILE_TRANSFER,
+                protocol::rendezvous_proto::ConnType::DEFAULT_CONN,
+            ];
+            let mut connected = None;
+            let mut route_errors = Vec::new();
+            let mut last_route_kind = std::io::ErrorKind::NotConnected;
+            // A reason the app explains (file transfer disabled, peer at the login window) is returned as is.
+            let mut reported_error: Option<std::io::Error> = None;
+            for conn_type in route_types {
+                let mut candidate =
+                    connector::RustDeskConnector::new_with_connection_id(connection_id, connect_epoch);
+                candidate.set_file_auth(Arc::clone(&job.auth));
+                match candidate.connect_file_transfer(
+                    &host,
+                    port,
+                    relay_fallback_port,
+                    &server_key,
+                    &api_token,
+                    &peer_id,
+                    &password,
+                    &remote_dir,
+                    request_approval,
+                    shared_access_key,
+                    conn_type,
+                    connection_strategy,
+                    nat_config,
+                    route_deadline,
+                ) {
+                    Ok(()) => {
+                        eprintln!(
+                            "[RustDesk-FFI] file-transfer route connected conn_type={:?}",
+                            conn_type
+                        );
+                        connected = Some(candidate);
+                        break;
+                    }
+                    Err(err) => {
+                        last_route_kind = err.kind();
+                        let fallback = should_retry_file_transfer_compat_route(
+                            conn_type,
+                            candidate.state(),
+                            err.kind(),
+                        );
+                        eprintln!(
+                                    "[RustDesk-FFI] file-transfer route failed conn_type={:?} stage={:?} kind={:?} fallback={}",
+                                    conn_type,
+                                    candidate.state(),
+                                    err.kind(),
+                                    fallback
+                                );
+                        route_errors.push(format!("{:?}:{:?}", conn_type, err.kind()));
+                        // Compatibility mode is only a rendezvous/relay
+                        // fallback. Never retry an authentication, peer-key,
+                        // permission, or upload failure as DEFAULT_CONN.
+                        if !fallback {
+                            if file_transfer::REPORTED_FILE_ERRORS.contains(&err.to_string().as_str()) {
+                                reported_error = Some(err);
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+            if let Some(error) = reported_error {
+                return Err(error);
+            }
+            connected.ok_or_else(|| {
+                std::io::Error::new(
+                    last_route_kind,
+                    format!(
+                        "file-transfer route failed for modern and 1.0.7 compatibility modes [{}]",
+                        route_errors.join(" | ")
+                    ),
+                )
+            })?
+        };
+    Ok(connector)
+}
+
+/// Runs one lane command on a logged-in file connection. `Ok(true)` keeps the connection for the next command.
+pub(crate) fn run_file_operation(
+    connector: &mut connector::RustDeskConnector,
+    command: &mut file_session::FileCommand,
+) -> io::Result<bool> {
+    let job = Arc::clone(&command.job);
+    // A peer that believes it is at the login window never starts the connection manager that serves file-system
+    // requests; only downloads from macOS and Linux peers bypass it. The connection is not kept: a later job logs
+    // in again and sees the peer's current state.
+    let needs_file_service = match &command.operation {
+        file_transfer::FileOperation::Download(_) => connector.file_peer_platform().eq_ignore_ascii_case("windows"),
+        _ => true,
+    };
+    if needs_file_service && connector.file_peer_prelogin() {
+        return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "peer_prelogin"));
+    }
+    let path = command.path.clone();
+    let operation = std::mem::replace(&mut command.operation, file_transfer::FileOperation::CreateDirectory);
+    let cancel_remote_read = matches!(&operation, file_transfer::FileOperation::Download(_));
+    let result: io::Result<()> = match operation {
+        file_transfer::FileOperation::Upload { source, overwrite } => {
+            connector.upload_file_stream(&path, source, &job, overwrite)
+        }
+        file_transfer::FileOperation::List { include_hidden } => connector
+            .read_remote_directory(&path, include_hidden, &job)
+            .and_then(|directory| {
+                *job.directory.lock().map_err(|_| io::Error::other("directory result lock"))? = Some(directory);
+                Ok(())
+            }),
+        file_transfer::FileOperation::Tree { include_hidden } => connector
+            .read_remote_tree(&path, include_hidden, &job)
+            .and_then(|tree| {
+                *job.directory.lock().map_err(|_| io::Error::other("directory result lock"))? = Some(tree);
+                Ok(())
+            }),
+        file_transfer::FileOperation::CreateDirectory => connector.create_remote_directory(&path, &job),
+        file_transfer::FileOperation::Remove { directory } => connector.remove_remote_path(&path, directory, &job),
+        file_transfer::FileOperation::Rename { new_name } => connector.rename_remote_path(&path, &new_name, &job),
+        file_transfer::FileOperation::Download(sink) => connector.download_file_stream(&path, sink, &job),
+    };
+    match result {
+        Ok(()) => Ok(true),
+        Err(error) => {
+            if cancel_remote_read || job.remote_write_started() {
+                connector.cancel_file_transfer_job();
+            }
+            Err(error)
+        }
+    }
+}
+
 fn start_file_operation(
     handle: *mut c_void,
     transfer_id: u64,
@@ -4315,7 +4567,7 @@ fn start_file_operation(
     let ctx = unsafe { &*(handle as *const RustDeskClient) };
     let path = match unsafe { CStr::from_ptr(remote_path) }.to_str() {
         Ok(path)
-            if !path.is_empty() || matches!(&operation, file_transfer::FileOperation::List) =>
+            if !path.is_empty() || matches!(&operation, file_transfer::FileOperation::List { .. }) =>
         {
             path.to_owned()
         }
@@ -4331,185 +4583,49 @@ fn start_file_operation(
         None => return -2,
     };
     if let Ok(mut result) = job.result.lock() {
-        result.operation_kind = match &operation {
-            file_transfer::FileOperation::Upload { .. } => 1,
-            file_transfer::FileOperation::List => 2,
-            file_transfer::FileOperation::Download(_) => 3,
-            file_transfer::FileOperation::CreateDirectory => 4,
-        };
+        result.operation_kind = operation.kind_code();
     }
     job.bind_permissions(Arc::clone(&ctx.controls));
     if let Err(error) = job.check() {
         job.finish(Err(error));
         return -1;
     }
-    let host = ctx.host.clone();
-    let port = ctx.port;
-    let relay_fallback_port = ctx.relay_fallback_port;
-    let server_key = ctx.server_key.clone();
-    let shared_access_key = ctx.shared_access_key;
-    let api_token = ctx.api_token.clone();
-    let peer_id = ctx.peer_id.clone();
-    let password = ctx.password.clone();
-    let request_approval = ctx.request_approval;
-    let direct_connection = ctx.direct_connection;
-    let connection_strategy = ctx.connection_strategy;
-    let nat_config = ctx.nat_config;
-    let connection_id = ctx.connection_id;
-    let remote_path_owned = path.clone();
-    let remote_dir = if matches!(&operation, file_transfer::FileOperation::List) {
-        path.clone()
-    } else {
-        split_remote_file_path(&path).0.to_string()
+    let route = FileRoute {
+        host: ctx.host.clone(),
+        port: ctx.port,
+        relay_fallback_port: ctx.relay_fallback_port,
+        server_key: ctx.server_key.clone(),
+        shared_access_key: ctx.shared_access_key,
+        api_token: ctx.api_token.clone(),
+        peer_id: ctx.peer_id.clone(),
+        password: ctx.password.clone(),
+        request_approval: ctx.request_approval,
+        direct_connection: ctx.direct_connection,
+        connection_strategy: ctx.connection_strategy,
+        nat_config: ctx.nat_config,
+        connection_id: ctx.connection_id,
     };
-    let spawn_failure_job = Arc::clone(&job);
-    // The shared production launcher reserves synchronously while native
-    // still holds continuity admission and the client-handle lease.
-    let spawn_result = spawn_reserved_file_transfer_worker(
-        transfer_id,
-        connection_id,
-        move |connect_epoch| {
-            job.bind_epoch(connect_epoch);
-            let route_deadline = connector::route_deadline_for_strategy(connection_strategy);
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                job.check()?;
-                let mut connector = if direct_connection {
-                    let mut candidate =
-                        connector::RustDeskConnector::new_with_connection_id(connection_id, connect_epoch);
-                    candidate.set_file_auth(Arc::clone(&job.auth));
-                    candidate.connect_file_transfer_direct(&host, port, &password, &remote_dir)?;
-                    candidate
-                } else {
-                    // Modern peers advertise FILE_TRANSFER at rendezvous. HarmonyOS
-                    // 1.0.7 used DEFAULT_CONN for the route and then identified the
-                    // dedicated file session in LoginRequest.file_transfer. Keep the
-                    // official modern route first, but retry a fresh connection with
-                    // the proven 1.0.7 route when an older/custom hbbs does not answer.
-                    let route_types = [
-                        protocol::rendezvous_proto::ConnType::FILE_TRANSFER,
-                        protocol::rendezvous_proto::ConnType::DEFAULT_CONN,
-                    ];
-                    let mut connected = None;
-                    let mut route_errors = Vec::new();
-                    let mut last_route_kind = std::io::ErrorKind::NotConnected;
-                    // A reason the app explains (file transfer disabled, peer at the login window) is returned as is.
-                    let mut reported_error: Option<std::io::Error> = None;
-                    for conn_type in route_types {
-                        let mut candidate =
-                            connector::RustDeskConnector::new_with_connection_id(connection_id, connect_epoch);
-                        candidate.set_file_auth(Arc::clone(&job.auth));
-                        match candidate.connect_file_transfer(
-                            &host,
-                            port,
-                            relay_fallback_port,
-                            &server_key,
-                            &api_token,
-                            &peer_id,
-                            &password,
-                            &remote_dir,
-                            request_approval,
-                            shared_access_key,
-                            conn_type,
-                            connection_strategy,
-                            nat_config,
-                            route_deadline,
-                        ) {
-                            Ok(()) => {
-                                eprintln!(
-                                    "[RustDesk-FFI] file-transfer route connected conn_type={:?}",
-                                    conn_type
-                                );
-                                connected = Some(candidate);
-                                break;
-                            }
-                            Err(err) => {
-                                last_route_kind = err.kind();
-                                let fallback = should_retry_file_transfer_compat_route(
-                                    conn_type,
-                                    candidate.state(),
-                                    err.kind(),
-                                );
-                                eprintln!(
-                                            "[RustDesk-FFI] file-transfer route failed conn_type={:?} stage={:?} kind={:?} fallback={}",
-                                            conn_type,
-                                            candidate.state(),
-                                            err.kind(),
-                                            fallback
-                                        );
-                                route_errors.push(format!("{:?}:{:?}", conn_type, err.kind()));
-                                // Compatibility mode is only a rendezvous/relay
-                                // fallback. Never retry an authentication, peer-key,
-                                // permission, or upload failure as DEFAULT_CONN.
-                                if !fallback {
-                                    if file_transfer::REPORTED_FILE_ERRORS.contains(&err.to_string().as_str()) {
-                                        reported_error = Some(err);
-                                    }
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                    if let Some(error) = reported_error {
-                        return Err(error);
-                    }
-                    connected.ok_or_else(|| {
-                        std::io::Error::new(
-                            last_route_kind,
-                            format!(
-                                "file-transfer route failed for modern and 1.0.7 compatibility modes [{}]",
-                                route_errors.join(" | ")
-                            ),
-                        )
-                    })?
-                };
-                // Login owns its approval / 2FA deadlines; data idle time starts after authentication.
-                job.progress(0);
-                // A peer that believes it is at the login window never starts the connection manager that serves
-                // file-system requests; only downloads from macOS and Linux peers bypass it.
-                let needs_file_service = match &operation {
-                    file_transfer::FileOperation::Download(_) => {
-                        connector.file_peer_platform().eq_ignore_ascii_case("windows")
-                    }
-                    _ => true,
-                };
-                if needs_file_service && connector.file_peer_prelogin() {
-                    return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "peer_prelogin"));
-                }
-                let cancel_remote_read = matches!(&operation, file_transfer::FileOperation::Download(_));
-                let operation_result = match operation {
-                    file_transfer::FileOperation::Upload { source, overwrite } => {
-                        connector.upload_file_stream(&remote_path_owned, source, &job, overwrite)
-                    }
-                    file_transfer::FileOperation::List => {
-                        let entries = connector.read_remote_directory(&remote_path_owned, &job)?;
-                        *job.directory
-                            .lock()
-                            .map_err(|_| io::Error::other("directory result lock"))? = Some(entries);
-                        Ok(())
-                    }
-                    file_transfer::FileOperation::CreateDirectory => {
-                        connector.create_remote_directory(&remote_path_owned, &job)
-                    }
-                    file_transfer::FileOperation::Download(sink) => {
-                        connector.download_file_stream(&remote_path_owned, sink, &job)
-                    }
-                };
-                if operation_result.is_err() && (cancel_remote_read || job.remote_write_started()) {
-                    connector.cancel_file_transfer_job();
-                }
-                operation_result
-            }))
-            .unwrap_or_else(|_| {
-                Err(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    "file-transfer worker panic",
-                ))
-            });
-            job.finish(result);
-        },
-    );
-    if let Err(error) = spawn_result {
-        spawn_failure_job.finish(Err(error));
+    let remote_dir = match &operation {
+        file_transfer::FileOperation::List { .. } | file_transfer::FileOperation::Tree { .. } => path.clone(),
+        _ => split_remote_file_path(&path).0.to_string(),
+    };
+    // Admission is reserved synchronously, as for the per-job workers before: a native cancel followed by a rearm
+    // still leaves this job's epoch cancelled when its lane reaches it late.
+    let reservation = ConnectEpochReservation::new(route.connection_id);
+    let command = file_session::FileCommand {
+        job: Arc::clone(&job),
+        operation,
+        path,
+        remote_dir,
+        reservation: Some(reservation),
+    };
+    let backend = file_session::ConnectorBackend {
+        connect: Arc::new(move |job: &file_transfer::TransferJob, epoch: u64, dir: &str| {
+            connect_file_route(&route, job, epoch, dir)
+        }),
+    };
+    if let Err(error) = ctx.file_lanes.dispatch(backend, command) {
+        job.finish(Err(error));
         return -2;
     }
     0
@@ -5348,6 +5464,7 @@ mod tests {
             shutdown_stream: None,
             stream_handle: None,
             transfers: Arc::new(Mutex::new(file_transfer::TransferRegistry::default())),
+            file_lanes: file_session::FileLanes::default(),
             remote_clipboard: Arc::clone(&controls.remote_clipboard),
             publications: Mutex::new(clipboard_publication::Publications::default()),
             stream_stats: Arc::new(Mutex::new(RustDeskStreamStats::default())),

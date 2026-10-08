@@ -9262,6 +9262,72 @@ napi_value NapiRequestSessionRemoteDirectory(napi_env env, napi_callback_info in
     napi_value result; napi_create_int64(env, id, &result); return result;
 }
 
+static bool ReadStrictNapiBoolArg(napi_env env, napi_value value, bool& out) {
+    napi_valuetype type = napi_undefined;
+    return napi_typeof(env, value, &type) == napi_ok && type == napi_boolean &&
+        napi_get_value_bool(env, value, &out) == napi_ok;
+}
+
+static bool ReadRemoteFilePathArg(napi_env env, napi_value value, std::string& path) {
+    return ReadBoundedNapiStringValue(env, value, 32768, path) && !path.empty() && path.find('\0') == std::string::npos;
+}
+
+// (sessionId, generation, path, includeHidden) -> transfer id: a folder listing, optionally with hidden entries.
+napi_value NapiRequestSessionRemoteListing(napi_env env, napi_callback_info info) {
+    napi_value args[5]; int64_t id = -1;
+    if (ReadExactNapiCallbackArgs(env, info, 4, args, 5)) {
+        auto adapter = TransferAdapterForOwner(env, args[0], args[1]);
+        auto* bridge = adapter ? dynamic_cast<RustDeskBridge*>(adapter.get()) : nullptr;
+        std::string path; bool includeHidden = false;
+        if (bridge && ReadBoundedNapiStringValue(env, args[2], 32768, path) && path.find('\0') == std::string::npos &&
+            ReadStrictNapiBoolArg(env, args[3], includeHidden))
+            id = bridge->requestRemoteDirectory(path, includeHidden);
+    }
+    napi_value result; napi_create_int64(env, id, &result); return result;
+}
+
+// (sessionId, generation, path, includeHidden) -> transfer id: every file below a folder, read with
+// getSessionRemoteDirectory (names relative to the folder, '/' separated).
+napi_value NapiRequestSessionRemoteTree(napi_env env, napi_callback_info info) {
+    napi_value args[5]; int64_t id = -1;
+    if (ReadExactNapiCallbackArgs(env, info, 4, args, 5)) {
+        auto adapter = TransferAdapterForOwner(env, args[0], args[1]);
+        auto* bridge = adapter ? dynamic_cast<RustDeskBridge*>(adapter.get()) : nullptr;
+        std::string path; bool includeHidden = false;
+        if (bridge && ReadRemoteFilePathArg(env, args[2], path) && ReadStrictNapiBoolArg(env, args[3], includeHidden))
+            id = bridge->requestRemoteTree(path, includeHidden);
+    }
+    napi_value result; napi_create_int64(env, id, &result); return result;
+}
+
+// (sessionId, generation, path, directory) -> transfer id: removes a file, or a folder with everything in it.
+napi_value NapiRemoveSessionRemotePath(napi_env env, napi_callback_info info) {
+    napi_value args[5]; int64_t id = -1;
+    if (ReadExactNapiCallbackArgs(env, info, 4, args, 5)) {
+        auto adapter = TransferAdapterForOwner(env, args[0], args[1]);
+        auto* bridge = adapter ? dynamic_cast<RustDeskBridge*>(adapter.get()) : nullptr;
+        std::string path; bool directory = false;
+        if (bridge && ReadRemoteFilePathArg(env, args[2], path) && ReadStrictNapiBoolArg(env, args[3], directory))
+            id = bridge->removeRemotePath(path, directory);
+    }
+    napi_value result; napi_create_int64(env, id, &result); return result;
+}
+
+// (sessionId, generation, path, newName) -> transfer id: renames within the same folder.
+napi_value NapiRenameSessionRemotePath(napi_env env, napi_callback_info info) {
+    napi_value args[5]; int64_t id = -1;
+    if (ReadExactNapiCallbackArgs(env, info, 4, args, 5)) {
+        auto adapter = TransferAdapterForOwner(env, args[0], args[1]);
+        auto* bridge = adapter ? dynamic_cast<RustDeskBridge*>(adapter.get()) : nullptr;
+        std::string path, newName;
+        if (bridge && ReadRemoteFilePathArg(env, args[2], path) &&
+            ReadBoundedNapiStringValue(env, args[3], 1024, newName) && !newName.empty() &&
+            newName.find_first_of(std::string("/\\") + '\0') == std::string::npos)
+            id = bridge->renameFileSessionPath(path, newName);
+    }
+    napi_value result; napi_create_int64(env, id, &result); return result;
+}
+
 napi_value NapiGetSessionRemoteDirectory(napi_env env, napi_callback_info info) {
     napi_value args[4], result, entries;
     napi_create_object(env, &result);
@@ -9274,7 +9340,7 @@ napi_value NapiGetSessionRemoteDirectory(napi_env env, napi_callback_info info) 
         if (bridge && ReadStrictNapiInt64Value(env, args[2], id) && id > 0) {
             path = bridge->getRemoteDirectoryPath(static_cast<uint64_t>(id));
             const auto files = bridge->getRemoteDirectoryEntries(static_cast<uint64_t>(id));
-            for (size_t i = 0; i < files.size() && i < 4096; ++i) {
+            for (size_t i = 0; i < files.size() && i < 20000; ++i) {
                 napi_value entry; napi_create_object(env, &entry);
                 SetObjectString(env, entry, "name", files[i].name);
                 SetObjectInt32(env, entry, "type", files[i].type);
@@ -13716,6 +13782,14 @@ napi_value ExtensionLoaderNapi::Init(napi_env env, napi_value exports) {
     napi_set_named_property(env, exports, "requestSessionRemoteDirectory", fn);
     napi_create_function(env, "getSessionRemoteDirectory", NAPI_AUTO_LENGTH, NapiGetSessionRemoteDirectory, nullptr, &fn);
     napi_set_named_property(env, exports, "getSessionRemoteDirectory", fn);
+    napi_create_function(env, "requestSessionRemoteListing", NAPI_AUTO_LENGTH, NapiRequestSessionRemoteListing, nullptr, &fn);
+    napi_set_named_property(env, exports, "requestSessionRemoteListing", fn);
+    napi_create_function(env, "requestSessionRemoteTree", NAPI_AUTO_LENGTH, NapiRequestSessionRemoteTree, nullptr, &fn);
+    napi_set_named_property(env, exports, "requestSessionRemoteTree", fn);
+    napi_create_function(env, "removeSessionRemotePath", NAPI_AUTO_LENGTH, NapiRemoveSessionRemotePath, nullptr, &fn);
+    napi_set_named_property(env, exports, "removeSessionRemotePath", fn);
+    napi_create_function(env, "renameSessionRemotePath", NAPI_AUTO_LENGTH, NapiRenameSessionRemotePath, nullptr, &fn);
+    napi_set_named_property(env, exports, "renameSessionRemotePath", fn);
     napi_create_function(env, "downloadSessionFileToFd", NAPI_AUTO_LENGTH, NapiDownloadSessionFileToFd, nullptr, &fn);
     napi_set_named_property(env, exports, "downloadSessionFileToFd", fn);
     napi_create_function(env, "publishSessionRdpClipboardContent", NAPI_AUTO_LENGTH, NapiPublishSessionRdpClipboardContent, nullptr, &fn);

@@ -9,7 +9,7 @@ function fixture(){
  vm.runInNewContext(ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2021,module:ts.ModuleKind.CommonJS}}).outputText,
   {module,exports:module.exports,Date:FakeDate,setTimeout:fn=>{state.now+=200;state.steps++;state.afterWait?.();fn();}});
  const lease={sessionId:7,nativeGeneration:11};
- const loader={requestSessionRemoteDirectory:()=>29,createSessionRemoteDirectory:()=>29,
+ const loader={requestSessionRemoteDirectory:()=>29,requestSessionRemoteListing:()=>29,createSessionRemoteDirectory:()=>29,
   getSessionFileTransfer:(sid,gen,id)=>{assert.deepEqual([sid,gen,id],[7,11,29]);return {transferId:29,rustdeskTransferState:state.status};},
   getSessionTransferAuthentication:()=>({transferId:29,challengeId:87,state:1}),
   getSessionRemoteDirectory:()=>({path:'/selected',entries:[]}),
