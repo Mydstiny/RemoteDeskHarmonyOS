@@ -193,6 +193,8 @@ private:
     GLint  canvasRotationLocation_; // uniform uCanvasRotation 位置
     GLint  canvasFlipXLocation_; // uniform uCanvasFlipX 位置
     GLint  canvasFlipYLocation_; // uniform uCanvasFlipY 位置
+    // The OES texture the current OES program was linked for (0: none sampled yet).
+    GLuint oesProgramTexture_ = 0;
 
     // GL 资源 (原始 BGRA 像素路径 — RDP GDI)
     GLuint rawShaderProgram_;   // BGRA→RGB 着色器程序
@@ -293,6 +295,7 @@ private:
     bool InitGL();
     GLuint CompileShader(GLenum type, const char* source);
     GLuint CreateShaderProgram();
+    bool InstallOesProgram();
     GLuint CreateRawShaderProgram();
     void   CreateQuadGeometry();
     void   SetupRawTexture(int width, int height);

@@ -448,11 +448,16 @@ export struct RemoteSessionTopBar {
     this.clearAutoCollapseTimer();
   }
 
+  /**
+   * The bar's width for exactly the buttons primaryActionButtons draws (the same list, portrait and AI included).
+   * Capping it at maxVisibleButtons let the PC bar (nine tools plus the AI) draw past its own frame.
+   */
   private toolbarWidth(): number {
     const actionCount: number = remoteSessionPrimaryActionIds(
-      this.protocol, this.layout.deviceClass, this.rustDeskPhoneTarget, false, this.diagnosticAiVisible()).length +
+      this.protocol, this.layout.deviceClass, this.rustDeskPhoneTarget, this.portraitDisplayEnabled,
+      this.diagnosticAiVisible()).length +
       (this.protocol === 'rustdesk' && this.explicitPhone ? 1 : 0);
-    const count: number = Math.max(1, Math.min(this.layout.maxVisibleButtons, actionCount));
+    const count: number = Math.max(1, actionCount);
     return count * this.layout.iconSize + (count + 1) * this.layout.itemGap;
   }
 
@@ -749,13 +754,11 @@ export struct RemoteSessionTopBar {
       }))
   }
 
-  private openSubMenu(itemId: string, hovered: boolean, clicked: boolean): void {
-    if (!hovered && !clicked) {
-      return;
-    }
+  // Sub-menus open on click only: hovering must not expand them (PC pointer users found that disorienting).
+  private openSubMenu(itemId: string): void {
     const next: RustDeskTopBarSubMenuState = reduceRustDeskTopBarSubMenuState(
       { active: this.activeSubMenu as RustDeskTopBarSubMenuId | '', pinned: this.subMenuPinned },
-      itemId, clicked ? 'click' : 'hover-enter');
+      itemId, 'click');
     this.activeSubMenu = next.active;
     this.subMenuPinned = next.pinned;
     this.noteUserActivity();
@@ -803,13 +806,8 @@ export struct RemoteSessionTopBar {
     .borderRadius(6)
     .focusable(false)
     .focusOnTouch(false)
-    .onHover((isHover: boolean): void => {
-      if (remoteSessionActionAvailability(actionId, this.protocol, this.capabilities).enabled) {
-        this.openSubMenu(itemId, isHover, false);
-      }
-    })
     .onClick((): void => {
-      this.runAction(actionId, (): void => { this.openSubMenu(itemId, false, true); });
+      this.runAction(actionId, (): void => { this.openSubMenu(itemId); });
     })
   }
 

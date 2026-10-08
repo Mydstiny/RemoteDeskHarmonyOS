@@ -89,4 +89,17 @@ check('the 显示 menu: virtual displays for Windows peers, privacy / audio / co
   assert.ok(read('services/diagnosticAi/DiagnosticAiKnowledgeBase.ets').includes('RustDesk 连接中的「显示」菜单'));
 });
 
+check('top bar sub-menus open on click only; each decoder texture gets a freshly linked OES program', () => {
+  const bar = read('components/RemoteSessionTopBar.ets');
+  assert.ok(!bar.includes("'hover-enter'"), 'hovering must not expand a sub-menu');
+  assert.ok(bar.includes('this.runAction(actionId, (): void => { this.openSubMenu(itemId); });'));
+  const renderer = readRoot('entry/src/main/cpp/render/gl_renderer.cpp');
+  assert.ok(renderer.includes('if (textureId != oesProgramTexture_) {\n        if (InstallOesProgram()) {'),
+    'the PC emulator drew a reused OES program upside down');
+  assert.ok(renderer.includes('if (!InstallOesProgram()) {\n        return false;'), 'InitGL still validates the program');
+  const decoder = readRoot('entry/src/main/cpp/render/hw_decoder.cpp');
+  assert.ok(decoder.includes('if (!surfaceImageReady_) {\n        return;\n    }'), 'no present before the first image');
+  assert.ok(decoder.includes('surfaceImageReady_ = true;'));
+});
+
 console.log('rustdesk live options: ' + passed + ' checks passed');

@@ -107,7 +107,8 @@ test('maximum numeric evidence with four failures fits the per-event byte limit'
   assert.equal(exporter.serializeDiagnosticCapture(runtime.frozenCapture()).ok, true);
 });
 const selfTest = (codec, mode) => ({ codec, mode, stage: 15, platformCode: 0, hardware: 1, outputPixelFormat: 3,
-  outputRotation: 0, outputTransformType: 0, bufferTransform: 0, v2Class: 3, v1Class: 1, identityOrientation: 1,
+  outputRotation: 0, outputTransformType: 0, bufferTransform: 0, v2Class: 3, v1Class: 1, referenceOrientation: 3,
+  identityOrientation: 1,
   appliedOrientation: 3, identityCorners0: 0xfe0000ff, identityCorners1: 0x00ff01ff, identityCorners2: 0x0000ffff,
   identityCorners3: 0xffffffff, appliedCorners0: 0x0000ffff, appliedCorners1: 0xffffffff, appliedCorners2: 0xfe0000ff,
   appliedCorners3: 0x00ff01ff, elapsedMs: 420, decoderName: 'OMX.hisi.video.decoder.avc', glVendor: 'Huawei',
@@ -122,6 +123,7 @@ test('orientation self-tests survive the export roundtrip and reject free text',
     orientationSelfTests: [selfTest(0, 4), selfTest(1, 4)] });
   assert.equal(facts.video.orientationSelfTests.length, 2);
   assert.equal(facts.video.orientationSelfTests[0].appliedOrientation, 3);
+  assert.equal(facts.video.orientationSelfTests[0].referenceOrientation, 3, 'the readback reference travels with the test');
   assert.equal(JSON.stringify(facts.video.orientationSelfTests[0].appliedCorners),
     JSON.stringify([0x0000ffff, 0xffffffff, 0xfe0000ff, 0x00ff01ff]));
   assert.equal(facts.video.orientationSelfTests[0].glRenderer, 'Maleoon 910 (GPU)');

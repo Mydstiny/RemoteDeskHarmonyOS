@@ -28,6 +28,7 @@ function sheetBodyMaxHeight(): number {
 @Component
 export struct HostGroupBar {
   @StorageProp('currentTheme') theme: string = 'light';
+  @StorageProp('currentBreakpoint') breakpoint: string = 'sm';
   @StorageProp('accentColor') accent: string = '#007DFF';
   /** PC: horizontal strips show a scrollbar (a mouse wheel does not scroll them sideways). */
   @StorageProp('isDesktopDevice') isDesktopDevice: boolean = false;
@@ -150,7 +151,9 @@ export struct HostGroupBar {
     }
     .width('100%').padding({ top: 2, bottom: 6 })
     .bindSheet($$this.showManager, this.managerSheet(), {
-      height: SheetSize.FIT_CONTENT, dragBar: true, showClose: false, backgroundColor: this.pal().sheetBg,
+      // An explicit type: without one a 2in1 PC shows the sheet as a small popup hanging from the chip bar.
+      height: SheetSize.FIT_CONTENT, preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
+      dragBar: this.breakpoint === 'sm', showClose: false, backgroundColor: this.pal().sheetBg,
       onWillDismiss: (action: DismissSheetAction): void => { action.dismiss(); }
     })
   }

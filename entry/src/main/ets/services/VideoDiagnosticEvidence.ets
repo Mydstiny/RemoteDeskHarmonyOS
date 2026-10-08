@@ -13,7 +13,7 @@ export {
   VideoDiagnosticEvidence
 };
 
-const VIDEO_EVIDENCE_VERSION: number = 2;
+const VIDEO_EVIDENCE_VERSION: number = 3;
 const PLATFORM_TEXT: RegExp = /^[A-Za-z0-9 ._()\/-]{0,64}$/;
 
 function platformText(value: string | undefined): string {
@@ -76,6 +76,7 @@ function nativeSelfTest(source: NativeOrientationSelfTest): OrientationSelfTestE
     bufferTransform: bounded(source.bufferTransform),
     v2Class: bounded(source.v2Class),
     v1Class: bounded(source.v1Class),
+    referenceOrientation: bounded(source.referenceOrientation),
     identityOrientation: bounded(source.identityOrientation),
     appliedOrientation: bounded(source.appliedOrientation),
     identityCorners: [bounded(source.identityCorners0, 0), bounded(source.identityCorners1, 0),
@@ -94,7 +95,8 @@ function copySelfTest(source: OrientationSelfTestEvidence): OrientationSelfTestE
     codec: source.codec, mode: source.mode, stage: source.stage, platformCode: source.platformCode,
     hardware: source.hardware, outputPixelFormat: source.outputPixelFormat, outputRotation: source.outputRotation,
     outputTransformType: source.outputTransformType, bufferTransform: source.bufferTransform,
-    v2Class: source.v2Class, v1Class: source.v1Class, identityOrientation: source.identityOrientation,
+    v2Class: source.v2Class, v1Class: source.v1Class, referenceOrientation: source.referenceOrientation,
+    identityOrientation: source.identityOrientation,
     appliedOrientation: source.appliedOrientation, identityCorners: source.identityCorners.slice(),
     appliedCorners: source.appliedCorners.slice(), elapsedMs: source.elapsedMs,
     decoderName: source.decoderName, glVendor: source.glVendor, glRenderer: source.glRenderer
@@ -229,8 +231,8 @@ function selfTestsAreValid(value: Object): boolean {
   const tests: Object[] = value as Object[];
   if (tests.length > 4) { return false; }
   const numberFields: string[] = ['codec', 'mode', 'stage', 'platformCode', 'hardware', 'outputPixelFormat',
-    'outputRotation', 'outputTransformType', 'bufferTransform', 'v2Class', 'v1Class', 'identityOrientation',
-    'appliedOrientation', 'elapsedMs'];
+    'outputRotation', 'outputTransformType', 'bufferTransform', 'v2Class', 'v1Class', 'referenceOrientation',
+    'identityOrientation', 'appliedOrientation', 'elapsedMs'];
   const textFields: string[] = ['decoderName', 'glVendor', 'glRenderer'];
   const cornerFields: string[] = ['identityCorners', 'appliedCorners'];
   for (let index: number = 0; index < tests.length; index++) {

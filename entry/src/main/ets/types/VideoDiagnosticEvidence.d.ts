@@ -46,7 +46,8 @@ export interface DecoderAttemptEvidence {
  * The known four-colour picture decoded through this device's decoder →
  * NativeImage → GPU path. Classes are NativeImageTransformClass values
  * (0 not sampled, 1 identity, 2 flip x, 3 flip y, 4 rotate 180, 5 rotate 90,
- * 6 rotate 270, 7 transpose, 8 transverse, 9 other, 10 read failed); mode is
+ * 6 rotate 270, 7 transpose, 8 transverse, 9 other, 10 read failed), identity and applied made relative to the
+ * ordinary-texture reference; mode is
  * the presentation mode (0 identity, 4 top-left producer). Corners are RGBA
  * read at TL, TR, BL, BR. Strings are platform names limited to
  * [A-Za-z0-9 ._()/-], at most 64 characters.
@@ -63,6 +64,8 @@ export interface OrientationSelfTestEvidence {
   bufferTransform: number;
   v2Class: number;
   v1Class: number;
+  /** The same picture as an ordinary texture, read back the same way: the readback's own turn (1 = conformant). */
+  referenceOrientation: number;
   identityOrientation: number;
   appliedOrientation: number;
   identityCorners: number[];
@@ -85,6 +88,7 @@ export interface NativeOrientationSelfTest {
   bufferTransform?: number;
   v2Class?: number;
   v1Class?: number;
+  referenceOrientation?: number;
   identityOrientation?: number;
   appliedOrientation?: number;
   identityCorners0?: number;

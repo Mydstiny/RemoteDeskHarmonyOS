@@ -97,7 +97,9 @@ const GLOSSARY: string[] = [
     '如 259 为在纹理空间纠正上下颠倒，否则在画面空间纠正）；' +
     'streamDisplayOrientation 为码流里的显示方向 SEI（0 没有）。orientationSelfTests 为方向自检：把已知的四色画面' +
     '（左上红、右上绿、左下蓝、右下白）用本机真实的解码器 → NativeImage → GPU 路径解码，再读回四角颜色；' +
-    'mode 0 为直接采样（手机、平板、RDP），4 为生产者矩阵模式（鸿蒙 PC 的 RustDesk）；stage 15 为完成，其它为停下的步骤' +
+    'mode 0 为直接采样（手机、平板、RDP），4 为生产者矩阵模式（鸿蒙 PC 的 RustDesk）；referenceOrientation 为同一张图当作普通' +
+    '纹理（RDP 和软解走的路径，各设备都显示正常）用同样方式读回的方向：1 表示读回正常，其它值表示这块缓冲区的读回本身转了，' +
+    'identityOrientation 和 appliedOrientation 已按它换算成屏幕上的方向；stage 15 为完成，其它为停下的步骤' +
     '（1 EGL、2 纹理、3 NativeImage、4 NativeWindow、5 创建解码器、6 配置、7 绑定 Surface、8 启动、9 送入码流、10 等待输出、' +
     '11 等待帧、12 更新纹理、13 渲染、14 读回），platformCode 为该步骤的返回值；identityOrientation 为不加变换采样时的方向，' +
     'appliedOrientation 为会话实际所用变换下的方向；方向类：1 正常、2 左右镜像、3 上下颠倒、4 旋转 180°、5 旋转 90°、' +

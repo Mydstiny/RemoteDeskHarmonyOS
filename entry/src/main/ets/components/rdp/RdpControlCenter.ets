@@ -180,7 +180,9 @@ export struct RdpControlCenter {
     .accessibilityText('远端显示方案，Pro')
     .onClick((): void => { this.displayProfileShown = true; })
     .bindSheet($$this.displayProfileShown, this.displayProfileSheet(), {
-      height: SheetSize.FIT_CONTENT, dragBar: true, showClose: true,
+      // An explicit type: without one a 2in1 PC shows the sheet as a small popup hanging from this row.
+      height: SheetSize.FIT_CONTENT, preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
+      dragBar: this.breakpoint === 'sm', showClose: true,
       backgroundColor: this.pal().sheetBg, maskColor: 'rgba(0,0,0,0.4)'
     })
   }

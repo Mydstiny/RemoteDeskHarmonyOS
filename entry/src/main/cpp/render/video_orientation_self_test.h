@@ -58,6 +58,13 @@ struct OrientationSelfTestResult {
     int32_t v1ReadResult = -1;
     NativeImageTransform v1Matrix = IdentityNativeImageTransform();
     NativeImageTransformClass v1Class = NativeImageTransformClass::NotSampled;
+    /**
+     * The same four-colour picture as an ordinary GL_TEXTURE_2D (the path RDP and software decoding take, which
+     * shows upright on every device), drawn and read back in the same framebuffer. Identity where the readback is
+     * conformant; otherwise it is the readback's own turn, and the OES classes below are measured relative to it.
+     */
+    NativeImageTransformClass referenceOrientation = NativeImageTransformClass::NotSampled;
+    std::array<uint32_t, 4> referenceCorners {};
     /** What the screen shows relative to the picture when sampled with no transform. */
     NativeImageTransformClass identityOrientation = NativeImageTransformClass::NotSampled;
     /** The same with the transform the session would apply in `mode` (before manual flips). */
@@ -111,5 +118,6 @@ void EnsureVideoOrientationSelfTest(OrientationSelfTestCodec codec, NativeImageP
 std::vector<OrientationSelfTestResult> AllVideoOrientationSelfTests();
 
 const char* OrientationSelfTestStageName(OrientationSelfTestStage stage);
+
 
 } // namespace Render

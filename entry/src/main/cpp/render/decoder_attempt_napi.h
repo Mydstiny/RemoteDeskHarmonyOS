@@ -93,6 +93,7 @@ inline void SetOrientationSelfTestEvidence(napi_env env, napi_value object) {
         set("v2ReadResult", r.v2ReadResult);
         set("v1Class", static_cast<int64_t>(r.v1Class));
         set("v1ReadResult", r.v1ReadResult);
+        set("referenceOrientation", static_cast<int64_t>(r.referenceOrientation));
         set("identityOrientation", static_cast<int64_t>(r.identityOrientation));
         set("appliedOrientation", static_cast<int64_t>(r.appliedOrientation));
         set("identityCorners0", r.identityCorners[0]);

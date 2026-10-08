@@ -420,6 +420,8 @@ private:
     // Orientation self-test correction composed on the PC desktop path, as the
     // NativeImageTransformClass value it undoes (-1 none); logged on change.
     int32_t orientationCorrectionLogged_ = -1;
+    // The texture has held a decoded image since Init (set by Init before the render thread starts, then by it).
+    bool surfaceImageReady_ = false;
     bool producerExtrasLogged_ = false;
     int32_t lastBufferTransform_ = -2;
     // First key frames of this decoder: NAL / SEI summary for diagnostics.

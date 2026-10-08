@@ -178,7 +178,18 @@ void main() {
 }
 )";
 
-GLuint CompileProgram() {
+/** The reference picture's sampler: an ordinary GL_TEXTURE_2D, as RDP and software decoding present. */
+const char* kReferenceFragmentShader = R"(#version 300 es
+precision mediump float;
+in vec2 vTexCoord;
+uniform sampler2D uTexture;
+out vec4 fragColor;
+void main() {
+    fragColor = texture(uTexture, vTexCoord);
+}
+)";
+
+GLuint CompileProgram(const char* fragmentSource = kFragmentShader) {
     const auto compile = [](GLenum type, const char* source) -> GLuint {
         const GLuint shader = glCreateShader(type);
         if (shader == 0) { return 0; }
@@ -190,7 +201,7 @@ GLuint CompileProgram() {
         return shader;
     };
     const GLuint vertex = compile(GL_VERTEX_SHADER, kVertexShader);
-    const GLuint fragment = compile(GL_FRAGMENT_SHADER, kFragmentShader);
+    const GLuint fragment = compile(GL_FRAGMENT_SHADER, fragmentSource);
     if (vertex == 0 || fragment == 0) {
         if (vertex != 0) { glDeleteShader(vertex); }
         if (fragment != 0) { glDeleteShader(fragment); }
@@ -214,7 +225,7 @@ GLuint CompileProgram() {
  * centres as TL, TR, BL, BR. glReadPixels rows start at the bottom.
  */
 bool RenderAndReadCorners(GLuint program, GLuint texture, const NativeImageTransform& transform,
-                          std::array<uint32_t, 4>& corners) {
+                          std::array<uint32_t, 4>& corners, GLenum textureTarget = GL_TEXTURE_EXTERNAL_OES) {
     static const GLfloat kVertices[] = {
         -1.0f,  1.0f, 0.0f, 0.0f,  // top-left
         -1.0f, -1.0f, 0.0f, 1.0f,  // bottom-left
@@ -226,7 +237,7 @@ bool RenderAndReadCorners(GLuint program, GLuint texture, const NativeImageTrans
     glClear(GL_COLOR_BUFFER_BIT);
     glUseProgram(program);
     glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_EXTERNAL_OES, texture);
+    glBindTexture(textureTarget, texture);
     glUniform1i(glGetUniformLocation(program, "uTexture"), 0);
     glUniformMatrix4fv(glGetUniformLocation(program, "uTexTransform"), 1, GL_FALSE, transform.data());
     glBindBuffer(GL_ARRAY_BUFFER, 0);
@@ -250,6 +261,39 @@ bool RenderAndReadCorners(GLuint program, GLuint texture, const NativeImageTrans
     corners = { at(quarter, threeQuarters), at(threeQuarters, threeQuarters),
                 at(quarter, quarter), at(threeQuarters, quarter) };
     return true;
+}
+
+/**
+ * The four-colour picture as an ordinary GL_TEXTURE_2D (first memory row = picture top, as RDP and software frames
+ * are uploaded and shown upright everywhere), drawn and read back in the current framebuffer exactly like the OES
+ * texture. It tells how this framebuffer's readback is turned, so the OES measurements can be made relative to it.
+ */
+NativeImageTransformClass MeasureReference(std::array<uint32_t, 4>& corners) {
+    static const uint8_t kPixels[16] = {
+        255, 0, 0, 255,    0, 255, 0, 255,      // top row: red, green
+        0, 0, 255, 255,    255, 255, 255, 255,  // bottom row: blue, white
+    };
+    const GLuint program = CompileProgram(kReferenceFragmentShader);
+    GLuint reference = 0;
+    glGenTextures(1, &reference);
+    if (program == 0 || reference == 0) {
+        if (program != 0) { glDeleteProgram(program); }
+        if (reference != 0) { glDeleteTextures(1, &reference); }
+        return NativeImageTransformClass::ReadFailed;
+    }
+    glBindTexture(GL_TEXTURE_2D, reference);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 2, 2, 0, GL_RGBA, GL_UNSIGNED_BYTE, kPixels);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    const NativeImageTransformClass shown = RenderAndReadCorners(program, reference, IdentityNativeImageTransform(),
+        corners, GL_TEXTURE_2D) ? ClassifyQuadrantCorners(corners) : NativeImageTransformClass::ReadFailed;
+    glBindTexture(GL_TEXTURE_2D, 0);
+    glDeleteTextures(1, &reference);
+    glDeleteProgram(program);
+    return shown;
 }
 
 struct EglScope {
@@ -333,6 +377,7 @@ OrientationSelfTestResult RunOnCurrentThread(OrientationSelfTestCodec codec, Nat
         releaseGl();
         return finish(OrientationSelfTestStage::Texture, static_cast<int32_t>(glGetError()));
     }
+    result.referenceOrientation = MeasureReference(result.referenceCorners);
 
     OH_NativeImage* image = OH_NativeImage_Create(texture, GL_TEXTURE_EXTERNAL_OES);
     if (image == nullptr) {
@@ -517,8 +562,11 @@ OrientationSelfTestResult RunOnCurrentThread(OrientationSelfTestCodec codec, Nat
     if (!RenderAndReadCorners(program, texture, applied, result.appliedCorners)) {
         return fail(OrientationSelfTestStage::ReadPixels, static_cast<int32_t>(glGetError()));
     }
-    result.identityOrientation = ClassifyQuadrantCorners(result.identityCorners);
-    result.appliedOrientation = ClassifyQuadrantCorners(result.appliedCorners);
+    // Relative to the ordinary-texture reference, so a framebuffer whose readback is itself turned cancels out.
+    result.identityOrientation = OrientationRelativeToReference(
+        ClassifyQuadrantCorners(result.identityCorners), result.referenceOrientation);
+    result.appliedOrientation = OrientationRelativeToReference(
+        ClassifyQuadrantCorners(result.appliedCorners), result.referenceOrientation);
     releaseDecoder();
     releaseImage();
     return finish(OrientationSelfTestStage::Done, 0);
@@ -556,8 +604,8 @@ void LogResult(const OrientationSelfTestResult& result) {
         "hardware=%{public}d decoder=%{public}s gl=%{public}s/%{public}s output=%{public}dx%{public}d "
         "stride=%{public}d slice=%{public}d pixfmt=%{public}d rotation=%{public}d transformType=%{public}d "
         "crop=%{public}d,%{public}d,%{public}d,%{public}d bufferTransform=%{public}d "
-        "v2=%{public}s(ret=%{public}d) v1=%{public}s(ret=%{public}d) identity=%{public}s applied=%{public}s "
-        "corners=%{public}08x,%{public}08x,%{public}08x,%{public}08x elapsedMs=%{public}lld",
+        "v2=%{public}s(ret=%{public}d) v1=%{public}s(ret=%{public}d) reference=%{public}s identity=%{public}s "
+        "applied=%{public}s corners=%{public}08x,%{public}08x,%{public}08x,%{public}08x elapsedMs=%{public}lld",
         result.codec == 1 ? "h265" : "h264", NativeImagePresentationModeName(result.mode),
         OrientationSelfTestStageName(result.stage), result.platformCode, result.hardware,
         result.decoderName.c_str(), result.glVendor.c_str(), result.glRenderer.c_str(),
@@ -566,6 +614,7 @@ void LogResult(const OrientationSelfTestResult& result) {
         result.outputCropTop, result.outputCropBottom, result.outputCropLeft, result.outputCropRight,
         result.bufferTransform, NativeImageTransformClassName(result.v2Class), result.v2ReadResult,
         NativeImageTransformClassName(result.v1Class), result.v1ReadResult,
+        NativeImageTransformClassName(result.referenceOrientation),
         NativeImageTransformClassName(result.identityOrientation),
         NativeImageTransformClassName(result.appliedOrientation),
         result.appliedCorners[0], result.appliedCorners[1], result.appliedCorners[2], result.appliedCorners[3],
@@ -574,7 +623,8 @@ void LogResult(const OrientationSelfTestResult& result) {
         "[VideoOrientation] self-test codec=%{public}s v2=[%{public}f,%{public}f,%{public}f,%{public}f | "
         "%{public}f,%{public}f,%{public}f,%{public}f | %{public}f,%{public}f,%{public}f,%{public}f] "
         "v1=[%{public}f,%{public}f,%{public}f,%{public}f | %{public}f,%{public}f,%{public}f,%{public}f | "
-        "%{public}f,%{public}f,%{public}f,%{public}f] identityCorners=%{public}08x,%{public}08x,%{public}08x,%{public}08x",
+        "%{public}f,%{public}f,%{public}f,%{public}f] identityCorners=%{public}08x,%{public}08x,%{public}08x,%{public}08x "
+        "referenceCorners=%{public}08x,%{public}08x,%{public}08x,%{public}08x",
         result.codec == 1 ? "h265" : "h264",
         result.v2Matrix[0], result.v2Matrix[1], result.v2Matrix[4], result.v2Matrix[5],
         result.v2Matrix[12], result.v2Matrix[13], result.v2Matrix[10], result.v2Matrix[15],
@@ -582,7 +632,8 @@ void LogResult(const OrientationSelfTestResult& result) {
         result.v1Matrix[0], result.v1Matrix[1], result.v1Matrix[4], result.v1Matrix[5],
         result.v1Matrix[12], result.v1Matrix[13], result.v1Matrix[10], result.v1Matrix[15],
         result.v1Matrix[2], result.v1Matrix[6], result.v1Matrix[8], result.v1Matrix[9],
-        result.identityCorners[0], result.identityCorners[1], result.identityCorners[2], result.identityCorners[3]);
+        result.identityCorners[0], result.identityCorners[1], result.identityCorners[2], result.identityCorners[3],
+        result.referenceCorners[0], result.referenceCorners[1], result.referenceCorners[2], result.referenceCorners[3]);
 }
 
 void Store(const OrientationSelfTestResult& result) {

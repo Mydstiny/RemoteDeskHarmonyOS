@@ -816,23 +816,42 @@ bool GLRenderer::InitEGL(const std::string& xcomponentId) {
     return true;
 }
 
-bool GLRenderer::InitGL() {
-    // 创建 NV12/OES 着色器程序 (硬解路径)
-    shaderProgram_ = CreateShaderProgram();
-    if (shaderProgram_ == 0) {
+/**
+ * Link the OES program and look up its uniforms; the current program stays when either fails.
+ */
+bool GLRenderer::InstallOesProgram() {
+    const GLuint program = CreateShaderProgram();
+    if (program == 0) {
         return false;
     }
-    samplerLocation_ = glGetUniformLocation(shaderProgram_, "uTexture");
-    oesTransformLocation_ = glGetUniformLocation(shaderProgram_, "uTexTransform");
-    canvasRotationLocation_ = glGetUniformLocation(shaderProgram_, "uCanvasRotation");
-    canvasFlipXLocation_ = glGetUniformLocation(shaderProgram_, "uCanvasFlipX");
-    canvasFlipYLocation_ = glGetUniformLocation(shaderProgram_, "uCanvasFlipY");
-    if (samplerLocation_ < 0 || oesTransformLocation_ < 0 || canvasRotationLocation_ < 0 ||
-        canvasFlipXLocation_ < 0 || canvasFlipYLocation_ < 0) {
+    const GLint sampler = glGetUniformLocation(program, "uTexture");
+    const GLint transform = glGetUniformLocation(program, "uTexTransform");
+    const GLint rotation = glGetUniformLocation(program, "uCanvasRotation");
+    const GLint flipX = glGetUniformLocation(program, "uCanvasFlipX");
+    const GLint flipY = glGetUniformLocation(program, "uCanvasFlipY");
+    if (sampler < 0 || transform < 0 || rotation < 0 || flipX < 0 || flipY < 0) {
         OH_LOG_ERROR(LOG_APP,
                      "[GL] OES shader uniforms missing sampler=%{public}d transform=%{public}d rotation=%{public}d flipX=%{public}d flipY=%{public}d",
-                     samplerLocation_, oesTransformLocation_, canvasRotationLocation_,
-                     canvasFlipXLocation_, canvasFlipYLocation_);
+                     sampler, transform, rotation, flipX, flipY);
+        glDeleteProgram(program);
+        return false;
+    }
+    if (shaderProgram_ != 0) {
+        glDeleteProgram(shaderProgram_);
+    }
+    shaderProgram_ = program;
+    samplerLocation_ = sampler;
+    oesTransformLocation_ = transform;
+    canvasRotationLocation_ = rotation;
+    canvasFlipXLocation_ = flipX;
+    canvasFlipYLocation_ = flipY;
+    oesProgramTexture_ = 0;
+    return true;
+}
+
+bool GLRenderer::InitGL() {
+    // 创建 NV12/OES 着色器程序 (硬解路径)
+    if (!InstallOesProgram()) {
         return false;
     }
 
@@ -1430,6 +1449,15 @@ RdpPresentMetrics GLRenderer::PresentFrame(
     lastVpH_ = viewportH;
     PublishViewportSnapshot(viewportX, viewportY, viewportW, viewportH);
 
+    // On the HarmonyOS PC emulator an OES program that had already drawn showed a new decoder's texture upside
+    // down with identity transform and uniforms, while the same source linked afresh drew it upright. Each decoder
+    // brings a new texture, so link a fresh program for it; once per decoder costs one small link.
+    if (textureId != oesProgramTexture_) {
+        if (InstallOesProgram()) {
+            OH_LOG_INFO(LOG_APP, "[GL] OES program relinked for texture=%{public}u", textureId);
+        }
+        oesProgramTexture_ = textureId;
+    }
     glUseProgram(shaderProgram_);
 
     // 绑定外部纹理
@@ -1843,6 +1871,7 @@ void GLRenderer::Destroy() {
     if (hasCurrent && shaderProgram_) {
         glDeleteProgram(shaderProgram_);
         shaderProgram_ = 0;
+        oesProgramTexture_ = 0;
     }
     if (hasCurrent && rawShaderProgram_) {
         glDeleteProgram(rawShaderProgram_);
@@ -1884,6 +1913,7 @@ void GLRenderer::Destroy() {
         if (detachedWindowSurface) {
             OH_LOG_WARN(LOG_APP, "[GL] Destroy: surface already detached, skip EGL/window teardown to avoid double free");
             shaderProgram_ = 0;
+            oesProgramTexture_ = 0;
             rawShaderProgram_ = 0;
             rawTexture_ = 0;
             rawTextureWidth_ = 0;

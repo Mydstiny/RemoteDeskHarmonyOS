@@ -667,6 +667,7 @@ int HardwareDecoder::Init(int width, int height, CodecType codec, int64_t render
     textureTransform_ = Render::IdentityNativeImageTransform();
     resolvedTextureTransform_ = Render::IdentityNativeImageTransform();
     orientationCorrectionLogged_ = -1;
+    surfaceImageReady_ = false;
     producerExtrasLogged_ = false;
     lastBufferTransform_ = -2;
     {
@@ -1629,6 +1630,7 @@ void HardwareDecoder::handleOutputBuffer(uint32_t /*index*/) {
                 Render::NativeImageUpdateRetryDelayMs(retryCount)));
         }
         if (updated) {
+            surfaceImageReady_ = true;
             // This runs on the existing GL owner thread, after a successful
             // UpdateSurfaceImage. AtTime scheduling is a separate timestamp.
             // Unknown platform mappings stay unmatched: no scale/nearest guess.
@@ -1760,6 +1762,10 @@ void HardwareDecoder::handleOutputBuffer(uint32_t /*index*/) {
         }
     }
 
+    // A redraw before the first decoded image would sample a texture with no image behind it.
+    if (!surfaceImageReady_) {
+        return;
+    }
     // 通知渲染器: 纹理就绪
     frameCallbackGate_.Invoke(textureId_, width_, height_, textureTransform_,
                               std::atomic_load(&phoneRetainedFrame_));

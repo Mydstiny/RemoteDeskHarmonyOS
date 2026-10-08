@@ -15229,7 +15229,8 @@ struct HostListPage {
       // Page-level host for the PC workspace 连接准备 sheet.
       Column().width(0).height(0)
         .bindSheet($$this.showWorkspacePrep, this.workspacePrepSheet(), {
-          height: SheetSize.FIT_CONTENT, dragBar: true, showClose: false, backgroundColor: this.pal().sheetBg,
+          height: SheetSize.FIT_CONTENT, preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
+          dragBar: this.breakpoint === 'sm', showClose: false, backgroundColor: this.pal().sheetBg,
           onWillDismiss: (action: DismissSheetAction): void => { action.dismiss(); },
           onDisappear: (): void => {
             // Dismissed without 开始连接: nothing was started, so the run ends.
@@ -15244,7 +15245,8 @@ struct HostListPage {
       // Page-level host for the Pro workspace editor (see workspaceEditorSheet).
       Column().width(0).height(0)
         .bindSheet($$this.showWorkspaceEditor, this.workspaceEditorSheet(), {
-          height: SheetSize.FIT_CONTENT, dragBar: true, showClose: false, backgroundColor: this.pal().sheetBg
+          height: SheetSize.FIT_CONTENT, preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
+          dragBar: this.breakpoint === 'sm', showClose: false, backgroundColor: this.pal().sheetBg
         })
       Column().width('100%').height('100%').backgroundColor(this.pal().bg)
       // 所有连接/安全弹窗共用一个 bindSheet 宿主。面板内容由 mode 路由，
@@ -17846,7 +17848,8 @@ struct HostListPage {
       }
       .width('100%').height('100%')
       .bindSheet($$this.showHostImportSheet, this.hostImportSheet(), {
-        height: SheetSize.LARGE, dragBar: true, showClose: false, backgroundColor: this.pal().sheetBg
+        height: SheetSize.LARGE, preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
+        dragBar: this.breakpoint === 'sm', showClose: false, backgroundColor: this.pal().sheetBg
       })
 
     }

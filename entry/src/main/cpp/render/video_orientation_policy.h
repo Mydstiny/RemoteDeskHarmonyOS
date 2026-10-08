@@ -221,4 +221,25 @@ inline NativeImageTransform CorrectedNativeImageTransform(const NativeImageTrans
         MultiplyNativeImageTransforms(applied, inverse);
 }
 
+/** Whether a class is one of the eight axis-aligned orientations (identity included). */
+inline bool OrientationIsAxisAligned(NativeImageTransformClass shown) {
+    return shown == NativeImageTransformClass::Identity || OrientationIsCorrectable(shown);
+}
+
+/**
+ * A class read back from a framebuffer, made relative to a reference picture drawn and read the same way. When
+ * the readback is turned by D, a picture shown as S reads back as S * D (D applied first); the reference (shown
+ * upright) reads back as D itself, so S = measured * D^-1. A reference that is not axis-aligned (or identity)
+ * leaves the measurement as it is.
+ */
+inline NativeImageTransformClass OrientationRelativeToReference(NativeImageTransformClass measured,
+                                                               NativeImageTransformClass reference) {
+    if (!OrientationIsAxisAligned(measured) || !OrientationIsCorrectable(reference)) {
+        return measured;
+    }
+    const NativeImageTransform relative = MultiplyNativeImageTransforms(
+        NativeImageTransformForClass(measured), NativeImageTransformForClass(InverseOrientationClass(reference)));
+    return ClassifyNativeImageProducerTransform(0, relative.data());
+}
+
 } // namespace Render

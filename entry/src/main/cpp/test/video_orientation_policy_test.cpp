@@ -164,6 +164,31 @@ RDP_TEST_CASE(video_orientation_texture_space_keeps_crop_on_a_quarter_turned_tex
         NativeImageTransformClass::Other);
 }
 
+RDP_TEST_CASE(video_orientation_measurements_are_relative_to_the_readback_reference) {
+    // A framebuffer whose readback is upside down reads an upright reference as FlipY and an upside-down
+    // picture as upright: relative to the reference the picture is upside down again.
+    RDP_ASSERT(Render::OrientationRelativeToReference(NativeImageTransformClass::Identity,
+        NativeImageTransformClass::FlipY) == NativeImageTransformClass::FlipY);
+    RDP_ASSERT(Render::OrientationRelativeToReference(NativeImageTransformClass::FlipY,
+        NativeImageTransformClass::FlipY) == NativeImageTransformClass::Identity);
+    // A conformant readback (identity reference) or a failed reference leaves the measurement alone.
+    RDP_ASSERT(Render::OrientationRelativeToReference(NativeImageTransformClass::FlipX,
+        NativeImageTransformClass::Identity) == NativeImageTransformClass::FlipX);
+    RDP_ASSERT(Render::OrientationRelativeToReference(NativeImageTransformClass::FlipX,
+        NativeImageTransformClass::ReadFailed) == NativeImageTransformClass::FlipX);
+    RDP_ASSERT(Render::OrientationRelativeToReference(NativeImageTransformClass::ReadFailed,
+        NativeImageTransformClass::FlipY) == NativeImageTransformClass::ReadFailed);
+    // Every pair: the screen class S read back through D is S * D, and the reference removes D again.
+    for (NativeImageTransformClass shown : kAxisClasses) {
+        for (NativeImageTransformClass readback : kAxisClasses) {
+            const NativeImageTransformClass measured = Render::ClassifyNativeImageProducerTransform(0,
+                Render::MultiplyNativeImageTransforms(Render::NativeImageTransformForClass(shown),
+                    Render::NativeImageTransformForClass(readback)).data());
+            RDP_ASSERT(Render::OrientationRelativeToReference(measured, readback) == shown);
+        }
+    }
+}
+
 RDP_TEST_CASE(video_stream_inspection_reads_h264_units_and_display_orientation_sei) {
     // SPS(7), PPS(8), SEI(6) with display orientation (payload 47): cancel=0,
     // hor=0, ver=1, rotation=0x8000, then IDR(5). 3- and 4-byte start codes.

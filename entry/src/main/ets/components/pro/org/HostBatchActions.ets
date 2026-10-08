@@ -58,6 +58,7 @@ function batchView(host: RemoteHost): HostBatchHost {
 @Component
 export struct HostBatchActions {
   @StorageProp('currentTheme') theme: string = 'light';
+  @StorageProp('currentBreakpoint') breakpoint: string = 'sm';
   @StorageProp('accentColor') accent: string = '#007DFF';
   /** PC: horizontal strips show a scrollbar (a mouse wheel does not scroll them sideways). */
   @StorageProp('isDesktopDevice') isDesktopDevice: boolean = false;
@@ -488,7 +489,9 @@ export struct HostBatchActions {
     .border({ width: 0.5, color: this.pal().floatBorder })
     .shadow({ radius: 18, color: '#22000000', offsetY: 6 })
     .bindSheet($$this.showSheet, this.sheetBody(), {
-      height: SheetSize.FIT_CONTENT, dragBar: true, showClose: false,
+      // An explicit type: without one a 2in1 PC shows the sheet as a small popup hanging from the action bar.
+      height: SheetSize.FIT_CONTENT, preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
+      dragBar: this.breakpoint === 'sm', showClose: false,
       backgroundColor: this.pal().sheetBg
     })
   }
