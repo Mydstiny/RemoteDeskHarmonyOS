@@ -16,6 +16,7 @@ import { AiTriageHost, DiagnosticAiHostBridge } from '../services/diagnosticAi/D
 import { RDP_CERTIFICATE_BYPASS, RDP_CERTIFICATE_CANCEL, RDP_CERTIFICATE_CONTINUE_ONCE, RDP_CERTIFICATE_TRUST, recordRdpCertificateDecision } from '../services/RdpDiagnosticEvents';
 import { DiagnosticAiAppActionId, diagnosticAiAppActionId } from '../services/diagnosticAi/DiagnosticAiAppActionPolicy';
 import { PRO_ORDER_PENDING_KEY } from '../services/ProIntroRegistry';
+import { proCloneLabel } from '../services/pro/ProClonePolicy';
 import { settingsUsageGuidePages } from '../services/GuideContentRegistry';
 import { ProBadgeSettingsPanel, ProFeatureDetailPanel } from '../components/ProFeatureManagerPanel';
 import { SshSkinSettingsPanel } from '../components/ssh/skin/SshSkinSettingsPanel';
@@ -2704,7 +2705,9 @@ struct HostListPage {
     });
     this.proUnsubscribe?.();
     this.proUnsubscribe = ProAppRuntime.getInstance().runtime.subscribe((): void => {
-      this.proStatusLabel = ProAppRuntime.getInstance().runtime.snapshot().label;
+      const pro = ProAppRuntime.getInstance().runtime.snapshot();
+      // 应用分身 cannot sign in, so it cannot buy or restore Pro: name that instead of 免费版.
+      this.proStatusLabel = proCloneLabel(AppCloneContext.getInstance().isClone(), pro.effectiveState, pro.label);
     });
     const appClone: AppCloneContext = AppCloneContext.getInstance();
     appClone.init(getContext(this) as common.Context);

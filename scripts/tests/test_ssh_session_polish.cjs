@@ -114,3 +114,29 @@ check('SSH chrome: tints are #AARRGGBB, a single tab is not repeated, symbol bac
   assert.match(page, /private sshHeaderActionIcon\(action: SshHeaderAction\): Resource \{/);
   assert.match(page, /SymbolGlyph\(this\.sshHeaderActionIcon\(action\)\)/);
 });
+
+check('the SSH authentication sheet follows its measured content instead of a fixed tall height', () => {
+  assert.match(page, /bindSheet\(\$\$this\.showSshAuthPromptSheet, this\.SshAuthPromptSheet\(\), \{[\s\S]{0,400}?height: this\.sshAuthPromptSheetHeight\(\),/);
+  const sizing = page.slice(page.indexOf('private sshAuthPromptSheetHeight(): number {'), page.indexOf('private sshAuthPromptSheetHeight(): number {') + 700);
+  assert.ok(sizing.includes('this.sshAuthPromptContentH + (this.isDesktopDevice ? 0 : 24)'), 'content plus the drag bar');
+  assert.ok(sizing.includes('this.kbHeight'), 'within the room above the keyboard');
+  assert.ok(!sizing.includes('SheetSize.FIT_CONTENT'), 'still a bounded height (API 23 closes a FIT_CONTENT sheet early)');
+  // Measured on an inner column, which wraps the content even when the Sheet stretches its root.
+  assert.match(page, /\/\/ Measured on this inner column[^\n]*\n\s*Column\(\) \{\s*if \(this\.sshAuthPrompt !== null\) \{/);
+});
+
+check('应用分身 says it cannot use Pro instead of offering a purchase that fails (plan B)', () => {
+  const policy = read('services/pro/ProClonePolicy.ets');
+  assert.ok(policy.includes("export const PRO_CLONE_UNSUPPORTED_LABEL: string = '应用分身暂不支持 Pro';"));
+  assert.match(policy, /return isClone && effectiveState === 'free' \? PRO_CLONE_UNSUPPORTED_LABEL : label;/);
+  const sheet = read('components/ProPurchaseSheet.ets');
+  assert.match(sheet, /\} else if \(this\.clone\) \{[\s\S]{0,300}?Text\(PRO_CLONE_UNSUPPORTED_LABEL\)[\s\S]{0,200}?Text\(PRO_CLONE_NOTICE\)/);
+  const cloneFooter = sheet.slice(sheet.indexOf('} else if (this.clone) {'), sheet.indexOf('} else {', sheet.indexOf('} else if (this.clone) {')));
+  assert.ok(!cloneFooter.includes("this.operate("), 'no buy or restore in a clone');
+  assert.ok(sheet.includes('Text(PRO_CLONE_TRIAL_NOTICE)'));
+  assert.ok(sheet.includes('this.proLabel = proCloneLabel(this.clone, snapshot.effectiveState, snapshot.label);'));
+  assert.ok(read('pages/HostListPage.ets').includes('this.proStatusLabel = proCloneLabel(AppCloneContext.getInstance().isClone(), pro.effectiveState, pro.label);'));
+  const reader = read('services/pro/ProFeatureStatusReader.ets');
+  assert.ok(reader.includes("if (status.label === '需要 Pro') { status.detail = proCloneLockedDetail(AppCloneContext.getInstance().isClone(), status.detail); }"));
+  assert.ok(fs.existsSync(path.resolve(__dirname, '../../docs/codex/plans/2026-10-08-app-clone-pro-plan.md')), 'plan A is recorded');
+});

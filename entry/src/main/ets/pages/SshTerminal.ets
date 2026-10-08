@@ -697,6 +697,8 @@ struct SshTerminal {
   @State sshTabViews: SshTerminalTabView[] = [];
   @State showSshTabPicker: boolean = false;
   @State @Watch('onSshCommandPaletteVisibilityChange') showSshCommandPalette: boolean = false;
+  /** The authentication sheet's measured content height (0 until measured). */
+  @State sshAuthPromptContentH: number = 0;
   /** The page's own size, for the floating command palette. */
   @State sshPageAreaW: number = 0;
   @State sshPageAreaH: number = 0;
@@ -1918,6 +1920,8 @@ struct SshTerminal {
   @Builder
   SshAuthPromptSheet() {
     Column() {
+    // Measured on this inner column: it wraps the content even when the Sheet stretches its root.
+    Column() {
       if (this.sshAuthPrompt !== null) {
         Row() {
           Column() {
@@ -2039,7 +2043,7 @@ struct SshTerminal {
                 : '信任并连接')
               : '提交'))
             .height(40).layoutWeight(1).margin({ left: 10 })
-            .backgroundColor(this.accentColor).fontColor('#FFFFFF')
+            .backgroundColor(this.accentColor).fontColor(appUiOnAccentText(this.accentColor))
             .borderRadius(8)
             .enabled(!this.sshAuthPromptSubmitting)
             .onClick((): void => { this.submitSshAuthPrompt(); })
@@ -2061,9 +2065,30 @@ struct SshTerminal {
       }
     }
       .width('100%')
-      .constraintSize({ maxWidth: this.isDesktopDevice ? 560 : 620 })
       .padding({ left: 20, right: 20, top: 20, bottom: 20 })
+      .onAreaChange((_oldArea: Area, newArea: Area): void => {
+        const height: number = newArea.height as number;
+        if (Number.isFinite(height) && height > 0 && Math.abs(height - this.sshAuthPromptContentH) >= 1) {
+          this.sshAuthPromptContentH = height;
+        }
+      })
+    }
+      .width('100%')
+      .constraintSize({ maxWidth: this.isDesktopDevice ? 560 : 620 })
+      .justifyContent(FlexAlign.Start)
       .backgroundColor(this.pal().sheetBg)
+  }
+
+  /**
+   * The authentication sheet's height: its measured content (plus the drag bar on touch devices), within the room
+   * above the keyboard. Before the first measurement it keeps the old bounded height, never FIT_CONTENT.
+   */
+  private sshAuthPromptSheetHeight(): number {
+    const room: number = (this.shellAreaH > 0 ? this.shellAreaH : 720) + 60 - this.kbHeight;
+    const cap: number = Math.max(200, Math.min(this.isDesktopDevice ? 560 : 520, room));
+    if (this.sshAuthPromptContentH <= 0) { return Math.max(200, Math.min(320, cap)); }
+    const content: number = this.sshAuthPromptContentH + (this.isDesktopDevice ? 0 : 24);
+    return Math.max(160, Math.min(cap, Math.ceil(content)));
   }
 
   /**
@@ -19812,9 +19837,9 @@ struct SshTerminal {
         .bindSheet($$this.showSshAuthPromptSheet, this.SshAuthPromptSheet(), {
           // API 23 can close a FIT_CONTENT sheet while its builder is still
           // resolving dynamic prompt rows. A bounded height keeps the
-          // official Sheet measurable through the first render.
-          height: Math.max(320, Math.min(this.isDesktopDevice ? 560 : 520,
-            (this.shellAreaH > 0 ? this.shellAreaH : 720) + 60 - this.kbHeight)),
+          // official Sheet measurable through the first render; it then
+          // follows the measured content so no empty band is left below.
+          height: this.sshAuthPromptSheetHeight(),
           preferType: this.isDesktopDevice ? SheetType.CENTER : SheetType.BOTTOM,
           width: this.isDesktopDevice ? '560vp' : '100%',
           dragBar: !this.isDesktopDevice,

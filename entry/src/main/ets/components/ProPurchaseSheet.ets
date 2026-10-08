@@ -11,6 +11,8 @@ import { Palette, buildDark, buildLight } from '../common/Theme';
 import { ProFeature, proFeatureProgress, proFeatures } from '../services/pro/ProFeatureCatalog';
 import { markProTrialStarted, proTrialStarted } from '../services/pro/ProTrialNotice';
 import { PRO_TRIAL_STORY } from '../services/ProTrialStory';
+import { AppCloneContext } from '../services/AppCloneContext';
+import { PRO_CLONE_NOTICE, PRO_CLONE_TRIAL_NOTICE, PRO_CLONE_UNSUPPORTED_LABEL, proCloneLabel } from '../services/pro/ProClonePolicy';
 import {
   HuaweiProBillingProvider, ProStoreProduct, ProPurchaseCoordinator,
   PRO_LAUNCH_PRICE, PRO_REGULAR_PRICE, proBillingError, proRefundError
@@ -30,6 +32,8 @@ export struct ProPurchaseSheet {
   /** 1.2.0 free trial: Pro for everyone, so the page offers 立即试用 instead of a purchase. */
   @State trial: boolean = false;
   @State trialStarted: boolean = false;
+  /** This instance is an 应用分身 (no Huawei account, so no purchase or restore). */
+  private clone: boolean = AppCloneContext.getInstance().isClone();
   private unsubscribe: (() => void) | null = null;
   @State productId: string = '';
   @State storePrice: string = '';
@@ -49,7 +53,7 @@ export struct ProPurchaseSheet {
     this.unsubscribe = ProAppRuntime.getInstance().runtime.subscribe((): void => {
       this.syncBilling();
       const snapshot = ProAppRuntime.getInstance().runtime.snapshot();
-      this.proLabel = snapshot.label;
+      this.proLabel = proCloneLabel(this.clone, snapshot.effectiveState, snapshot.label);
       this.debugMode = snapshot.mode;
       this.purchased = snapshot.effectiveState === 'active';
       this.trial = snapshot.complimentary;
@@ -258,7 +262,18 @@ export struct ProPurchaseSheet {
             .enabled(!this.trialStarted)
             .onClick((): void => { this.startTrial(); })
           Text('试用无需付款，也不会自动扣费').fontSize(11).fontColor(this.pal().text3)
+          if (this.clone) {
+            Text(PRO_CLONE_TRIAL_NOTICE).fontSize(11).fontColor(this.pal().text3).textAlign(TextAlign.Center)
+          }
         }.width('100%').padding({ left: 24, right: 24, top: 12, bottom: 20 })
+        .backgroundColor(this.pal().sheetBg)
+      } else if (this.clone) {
+        // 应用分身 cannot sign in, so it can neither buy nor restore: explain instead of a purchase that fails.
+        Column({ space: 8 }) {
+          Text(PRO_CLONE_UNSUPPORTED_LABEL).fontSize(16).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
+          Text(PRO_CLONE_NOTICE).fontSize(12).fontColor(this.pal().text2).lineHeight(18)
+            .width('100%').textAlign(TextAlign.Center)
+        }.width('100%').padding({ left: 24, right: 24, top: 12, bottom: 24 })
         .backgroundColor(this.pal().sheetBg)
       } else {
       Column({ space: 8 }) {
