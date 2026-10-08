@@ -39,10 +39,13 @@ export class RustDeskTransferClient {
     return false;
   }
   private async wait(id: number): Promise<SessionTransferStatus | null> {
-    const deadline: number = Date.now() + 120000;
+    // 120 seconds without progress: a long job (removing a large folder) keeps going while it advances.
+    let deadline: number = Date.now() + 120000;
+    let progressed: number = -1;
     let seen: string = '';
     while (this.isCurrent() && Date.now() < deadline) {
       const status: SessionTransferStatus = this.status(id);
+      if (status.transferredBytes !== progressed) { progressed = status.transferredBytes; deadline = Date.now() + 120000; }
       if (status.transferId !== id || status.rustdeskTransferState === 0) {
         this.log('transfer id=' + id.toString() + ' lost state=' + status.rustdeskTransferState.toString() +
           ' reported=' + status.transferId.toString());

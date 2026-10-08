@@ -4521,6 +4521,7 @@ pub(crate) fn run_file_operation(
         return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "peer_prelogin"));
     }
     let path = command.path.clone();
+    connector.begin_file_job();
     let operation = std::mem::replace(&mut command.operation, file_transfer::FileOperation::CreateDirectory);
     let cancel_remote_read = matches!(&operation, file_transfer::FileOperation::Download(_));
     let result: io::Result<()> = match operation {
@@ -4545,7 +4546,8 @@ pub(crate) fn run_file_operation(
         file_transfer::FileOperation::Download(sink) => connector.download_file_stream(&path, sink, &job),
     };
     match result {
-        Ok(()) => Ok(true),
+        // An upload the peer has not yet confirmed may still be answered; the next job then gets a new connection.
+        Ok(()) => Ok(!connector.file_replies_pending()),
         Err(error) => {
             if cancel_remote_read || job.remote_write_started() {
                 connector.cancel_file_transfer_job();

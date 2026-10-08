@@ -35,6 +35,7 @@ test('a recursive listing becomes the same tree, with the folders its files live
  assert.equal(windows.items[2].path,'C:\\Data\\x\\y.txt');
  for(const bad of ['../x','a//b','a/./b']) assert.throws(()=>fromFiles('/root','root',{path:'/root',entries:[file(bad,1)]}),/collision/);
  assert.throws(()=>fromFiles('/root','root',{path:'/root',entries:[file('A',1),file('a',1)]}),/collision/);
+ assert.throws(()=>fromFiles('/root','root',{path:'/root',entries:[file('a/x',1),file('A/y',1)]}),/collision/);
  assert.throws(()=>fromFiles('/root','root',{path:'/root',entries:Array.from({length:1024},(_,i)=>file('f'+i))}),/count/);
 });
 (async()=>{for(const t of tests){await t.run();console.log('PASS '+t.name);}console.log(tests.length+' remote tree tests passed');})().catch(e=>{console.error(e);process.exitCode=1;});

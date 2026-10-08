@@ -66,16 +66,19 @@ export function remoteTransferTreeFromFiles(root: string, rootName: string,
   if (!remoteTransferPathIsAbsolute(root) || !rootName || /[\\/\x00-\x1f]/.test(rootName) ||
     rootName === '.' || rootName === '..') { throw new Error('remote_tree_root_invalid'); }
   const result: RemoteTransferTree = { items: [], totalBytes: 0 };
-  const names: Set<string> = new Set<string>();
+  // Case/Unicode-folded key -> exact spelling: a folder named again with the same spelling is the same folder;
+  // two spellings that fold together collide, as in collectRemoteTransferTree.
+  const names: Map<string, string> = new Map<string, string>();
   result.items.push({ path: root, relativePath: rootName, entry: { name: rootName, type: 0, size: 0, modifiedTime: 0 } });
-  names.add(rootName.normalize('NFC').toLowerCase());
+  names.set(rootName.normalize('NFC').toLowerCase(), rootName);
   const add = (path: string, relativePath: string, entry: SessionRemoteFileEntry): void => {
     const key: string = relativePath.normalize('NFC').toLowerCase();
-    if (names.has(key)) {
-      if (entry.type === 0) { return; }
+    const existing: string | undefined = names.get(key);
+    if (existing !== undefined) {
+      if (entry.type === 0 && existing === relativePath) { return; }
       throw new Error('remote_tree_unsupported_or_collision');
     }
-    names.add(key);
+    names.set(key, relativePath);
     if (result.items.length >= 1024) { throw new Error('remote_tree_count'); }
     result.items.push({ path, relativePath, entry });
   };

@@ -49,6 +49,13 @@ pub(crate) struct FileCommand {
     pub reservation: Option<crate::ConnectEpochReservation>,
 }
 
+impl Drop for FileCommand {
+    /// A command dropped without running (its lane stopped) ends its job instead of leaving it running forever.
+    fn drop(&mut self) {
+        self.job.finish(Err(io::Error::other("file lane stopped")));
+    }
+}
+
 /// How a lane opens its connection and runs a job on it; production uses the RustDesk connector, tests a fake.
 pub(crate) trait FileLaneBackend: Send + 'static {
     type Connection: Send + 'static;
@@ -77,6 +84,15 @@ static LANE_GENERATION: AtomicU64 = AtomicU64::new(0);
 #[derive(Default)]
 pub(crate) struct FileLanes {
     lanes: LaneMap,
+}
+
+impl Drop for FileLanes {
+    /// The session is gone: its lanes finish their current job and close their connections.
+    fn drop(&mut self) {
+        if let Ok(mut lanes) = self.lanes.lock() {
+            lanes.clear();
+        }
+    }
 }
 
 impl FileLanes {
@@ -126,9 +142,13 @@ fn run_lane<B: FileLaneBackend>(
             }
             Err(RecvTimeoutError::Timeout) => {
                 if let Some(open) = connection.as_mut() {
-                    if crate::connect_cancelled(open.reservation.epoch())
-                        || backend.pump_idle(&mut open.connection).is_err()
-                    {
+                    let alive = !crate::connect_cancelled(open.reservation.epoch())
+                        && std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            backend.pump_idle(&mut open.connection)
+                        }))
+                        .map(|result| result.is_ok())
+                        .unwrap_or(false);
+                    if !alive {
                         connection = None;
                     }
                 }
@@ -174,8 +194,12 @@ fn execute<B: FileLaneBackend>(
     {
         connection = None;
     }
+    // Cancelled while queued: nothing was sent, so a connection stays usable for the next job.
+    if let Err(error) = job.check() {
+        job.finish(Err(error));
+        return connection;
+    }
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> io::Result<bool> {
-        job.check()?;
         if connection.is_none() {
             let connected = backend.connect(&job, epoch, &command.remote_dir)?;
             // The opening job's epoch now belongs to the connection (a cancel of that job, or of the session,
@@ -185,6 +209,8 @@ fn execute<B: FileLaneBackend>(
                 .take()
                 .ok_or_else(|| io::Error::other("file lane admission"))?;
             connection = Some(LaneConnection { connection: connected, reservation });
+            // Login owns its approval and 2FA deadlines; the job's idle time starts after it.
+            job.progress(0);
         }
         let open = connection.as_mut().expect("lane connection");
         backend.run(&mut open.connection, &mut command)
@@ -207,7 +233,9 @@ impl FileLaneBackend for ConnectorBackend {
     type Connection = RustDeskConnector;
 
     fn connect(&self, job: &TransferJob, epoch: u64, remote_dir: &str) -> io::Result<RustDeskConnector> {
-        (self.connect)(job, epoch, remote_dir)
+        let mut connector = (self.connect)(job, epoch, remote_dir)?;
+        connector.consume_login_directory_push(job)?;
+        Ok(connector)
     }
 
     fn run(&self, connector: &mut RustDeskConnector, command: &mut FileCommand) -> io::Result<bool> {
