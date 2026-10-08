@@ -17,7 +17,7 @@ export interface ReleaseNotePage {
 
 /** One-line summary shown under the version in the 1.1.6+ 「新功能」 list. */
 export function releaseHeadline(version: string): string {
-  if (version === '1.2.0') { return 'AI 助理与远程 AI 登场，全新视觉默认开启，三指滚动更顺手；所有 Pro 功能免费试用。'; }
+  if (version === '1.2.0') { return 'AI 助理与远程 AI 登场，全新视觉默认开启，SSH 与 PC 体验全面打磨；所有 Pro 功能免费试用。'; }
   if (version === '1.1.6') { return 'RDP 会话内传文件、VNC 多显示器切换、竖屏会话更顺手，连接、终端与设置体验全面打磨。'; }
   return '';
 }
@@ -95,6 +95,21 @@ function currentReleasePages(): ReleaseNotePage[] {
       id: 'release-rustdesk-display', symbol: $rawfile('icons/computer-desktop.svg'), glyph: $r('sys.symbol.display'),
       tag: '新功能', title: 'RustDesk 连接中调整显示',
       desc: '侧栏里直接切换远端显示器、分辨率、编解码和画质；Windows 被控端还能开隐私模式、插入虚拟显示器，断开后自动恢复。'
+    },
+    {
+      id: 'release-ssh-polish', symbol: $rawfile('icons/command-line.svg'), glyph: $r('sys.symbol.folder_fill'),
+      tag: '改进', title: 'SSH 与 SFTP 焕新',
+      desc: 'SFTP 回到弹窗并重新设计，带过渡动画，可以直接把文件拖进来上传；命令面板的搜索框不再被输入法挡住；画中画多次退出到后台也都能出现。PC 上默认开启 SSH 工作台，「更多」里可以直接调终端字号。'
+    },
+    {
+      id: 'release-pc-polish', symbol: $rawfile('icons/computer-desktop.svg'), glyph: $r('sys.symbol.display'),
+      tag: '改进', title: 'PC 上更顺手',
+      desc: 'RDP 默认按整块屏幕的分辨率连接，窗口怎么缩放都按比例显示；想让远端分辨率跟着窗口变，在 RDP 控制里打开「分辨率跟随窗口」。RDP、VNC、Moonlight 的顶栏不再把「断开」挤出框外，高级主机管理的弹窗居中显示，顶栏子菜单改为点按展开。修复部分 PC 上 RustDesk 硬件解码画面倒置。'
+    },
+    {
+      id: 'release-pro-clarity', symbol: $rawfile('icons/key.svg'), glyph: $r('sys.symbol.checkmark_shield'),
+      tag: '改进', title: 'Pro 写得更清楚',
+      desc: 'Pro 页面逐项写明每个功能的状态，还没完成的说明原因，AI 助理也照此回答。价格页说明 Pro 是买断制；应用分身暂不支持 Pro，会直接说明，不再给出必然失败的购买入口。'
     },
     {
       id: 'release-1-1-6-summary', symbol: $rawfile('icons/folder-open.svg'), glyph: $r('sys.symbol.folder_fill'),

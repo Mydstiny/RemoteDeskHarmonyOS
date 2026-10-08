@@ -80,7 +80,10 @@ test('1.2.0 notes lead with the free Pro trial; the 1.1.6 notes are kept as they
   assert.equal(notes.CURRENT_RELEASE_VERSION, '1.2.0');
   assert.equal(notes.CURRENT_RELEASE_VERSION_CODE, 1001008);
   const pages = notes.pagesForReleasedVersion(notes.CURRENT_RELEASE_VERSION);
-  assert.equal(pages.length, 12);
+  assert.equal(pages.length, 15);
+  for (const id of ['release-ssh-polish', 'release-pc-polish', 'release-pro-clarity']) {
+    assert.ok(pages.some(page => page.id === id), id);
+  }
   assert.equal(pages[0].id, 'release-pro-trial');
   assert.match(pages[0].desc, /年底前 25 元，明年起 38\.8 元/);
   for (const id of ['release-remote-ai', 'release-new-look', 'release-touch-scroll', 'release-rustdesk-display']) {

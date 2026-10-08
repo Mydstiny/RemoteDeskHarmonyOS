@@ -425,7 +425,7 @@ import {
   SSH_WORKBENCH_V2_DEFAULT_ENABLED,
   SSH_WORKBENCH_V2_FLAG_KEY
 } from '../services/ssh/workspace/SshWorkspaceCapabilityPolicy';
-import { SshWorkspaceCapabilityStore } from
+import { SshWorkspaceCapabilityStore, sshWorkbenchHostIsPc } from
   '../services/ssh/workspace/SshWorkspaceCapabilityStore';
 import { SshProxyProfileV1 } from '../services/SshProxyProfilePolicy';
 import { SshProxyProfileStore } from '../services/SshProxyProfileStore';
@@ -2732,7 +2732,7 @@ struct HostListPage {
     this.refreshHaloPresets();
     this.sshSettings.init(getContext(this) as common.Context);
     this.sshWorkbenchEnabled = this.sshWorkspaceCapabilityStore.load(
-      getContext(this) as common.Context);
+      getContext(this) as common.Context, sshWorkbenchHostIsPc(this.isDesktopDevice));
     this.refreshSshNotificationAuthorization();
     this.sshProxyProfilesReady = this.sshProxyProfiles.init(getContext(this) as common.Context);
     this.proSync.init(getContext(this) as common.Context);

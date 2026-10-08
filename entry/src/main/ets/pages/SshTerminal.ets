@@ -354,7 +354,7 @@ import {
   SshBroadcastMode,
   SshBroadcastTargetV1
 } from '../services/ssh/broadcast/SshBroadcastPolicy';
-import { SshWorkspaceCapabilityStore } from
+import { SshWorkspaceCapabilityStore, sshWorkbenchHostIsPc } from
   '../services/ssh/workspace/SshWorkspaceCapabilityStore';
 import {
   SSH_TAB_STRIP_HEIGHT_VP,
@@ -11060,7 +11060,8 @@ struct SshTerminal {
       // AppStorage. Read the durable appearance here as well so mobile xterm
       // never boots with a default font that masks the user's saved choice.
       const sshContext: common.Context = getContext(this) as common.Context;
-      this.sshWorkbenchEnabled = this.sshWorkspaceCapabilityStore.load(sshContext);
+      this.sshWorkbenchEnabled = this.sshWorkspaceCapabilityStore.load(sshContext,
+        sshWorkbenchHostIsPc(this.isDesktopDevice));
       this.refreshSshWorkspaceCapabilitySelection();
       this.sshProductivityReady = this.sshProductivityStore.init(sshContext);
       this.refreshSshProductivityDocument();

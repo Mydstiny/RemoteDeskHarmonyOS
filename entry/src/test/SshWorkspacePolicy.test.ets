@@ -86,6 +86,16 @@ class MemorySshWorkspaceCapabilityPreferences
     this.value = enabled;
     return true;
   }
+
+  pcApplied: boolean = false;
+
+  pcDefaultApplied(_context: common.Context): boolean {
+    return this.pcApplied;
+  }
+
+  markPcDefaultApplied(_context: common.Context): void {
+    this.pcApplied = true;
+  }
 }
 
 class MemorySshWorkspacePersistence implements SshWorkspacePersistencePort {
@@ -256,6 +266,21 @@ export default function sshWorkspacePolicyTest(): void {
       expect(store.load(context)).assertFalse();
       expect(store.save(context, true)).assertTrue();
       expect(adapter.value as boolean).assertTrue();
+      setSshWorkspaceCapabilityPreferenceAdapterForTest(null);
+    });
+
+    it('pc_turns_the_workbench_on_once_then_keeps_the_users_choice', 0, (): void => {
+      const adapter: MemorySshWorkspaceCapabilityPreferences =
+        new MemorySshWorkspaceCapabilityPreferences();
+      adapter.exists = true;
+      adapter.value = false;
+      setSshWorkspaceCapabilityPreferenceAdapterForTest(adapter);
+      const store: SshWorkspaceCapabilityStore = new SshWorkspaceCapabilityStore();
+      const context: common.Context = {} as common.Context;
+      expect(store.load(context, false)).assertFalse();
+      expect(store.load(context, true)).assertTrue();
+      expect(store.save(context, false)).assertTrue();
+      expect(store.load(context, true)).assertFalse();
       setSshWorkspaceCapabilityPreferenceAdapterForTest(null);
     });
 
