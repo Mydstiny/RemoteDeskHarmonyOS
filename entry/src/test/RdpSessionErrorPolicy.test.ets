@@ -9,7 +9,8 @@ import {
   rdpSessionErrorSheetPrefersLandscapeCenter,
   RdpSessionErrorSource,
   shouldCleanupRdpSessionBeforeErrorDismiss,
-  shouldShowRdpSessionErrorAfterControlPanelDismiss
+  shouldShowRdpSessionErrorAfterControlPanelDismiss,
+  rdpErrorSuggestsTlsWithoutNla
 } from '../main/ets/services/RdpSessionErrorPolicy';
 
 export default function rdpSessionErrorPolicyTest() {
@@ -177,6 +178,15 @@ export default function rdpSessionErrorPolicyTest() {
     it('rdp_error_sheet_should_prefer_landscape_center_layout', 0, (): void => {
       expect(rdpSessionErrorSheetPrefersLandscapeCenter(true)).assertTrue();
       expect(rdpSessionErrorSheetPrefersLandscapeCenter(false)).assertFalse();
+    });
+
+    it('offers_tls_sign_in_only_after_an_nla_failure', 0, (): void => {
+      expect(rdpErrorSuggestsTlsWithoutNla('0x20009')).assertTrue();
+      expect(rdpErrorSuggestsTlsWithoutNla('0x20014')).assertTrue();
+      expect(rdpErrorSuggestsTlsWithoutNla('0x2000C')).assertTrue();
+      expect(rdpErrorSuggestsTlsWithoutNla('0x2000c')).assertTrue();
+      expect(rdpErrorSuggestsTlsWithoutNla('0x20008')).assertFalse();
+      expect(rdpErrorSuggestsTlsWithoutNla('0x10')).assertFalse();
     });
   });
 }

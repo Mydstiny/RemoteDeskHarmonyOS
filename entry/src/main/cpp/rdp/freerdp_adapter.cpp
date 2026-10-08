@@ -254,6 +254,9 @@ bool resolveRdpEndpointRoute(const ConnectionConfig& cfg,
     return true;
 }
 
+constexpr std::chrono::milliseconds kRdpProbeResolveBudget { 8000 };
+constexpr std::chrono::milliseconds kRdpProbeConnectBudget { 5000 };
+
 RdpPreflightResult makeRdpPreflightError(const RdpPreflightRequest& request,
                                          const std::string& stage,
                                          const std::string& errorCode,
@@ -748,15 +751,19 @@ RdpCertificateInfo probeGatewayCertificateOverTls(const std::string& host, int p
     }
 
     const std::string portText = std::to_string(effectivePort);
+    // Resolution and connection keep separate budgets: a slow resolver must
+    // not be reported as an unresolvable name, nor eat the connect time.
+    const remotedesk::net::ResolveResult resolution =
+        remotedesk::net::ResolveTcpAddresses(
+            host, portText, std::chrono::steady_clock::now() + kRdpProbeResolveBudget, cancelled);
     remotedesk::net::ConnectOptions connectOptions;
-    connectOptions.deadline = std::chrono::steady_clock::now() +
-        std::chrono::milliseconds(5000);
+    connectOptions.deadline = std::chrono::steady_clock::now() + kRdpProbeConnectBudget;
     connectOptions.cancelled = cancelled;
     connectOptions.restoreBlocking = false;
     remotedesk::net::ConnectResult connection;
-    const remotedesk::net::ResolveResult resolution =
-        remotedesk::net::ResolveAndConnectTcp(
-            host, portText, connectOptions, connection);
+    if (resolution.status == remotedesk::net::ResolveStatus::Ready) {
+        connection = remotedesk::net::ConnectTcpCandidates(resolution.addresses, connectOptions);
+    }
     if (resolution.status != remotedesk::net::ResolveStatus::Ready) {
         if (resolution.status == remotedesk::net::ResolveStatus::Cancelled ||
             rdpProbeCancelled(cancelled)) {
@@ -931,9 +938,10 @@ RdpCertificateInfo probeGatewayCertificateOverTls(const std::string& host, int p
     return info;
 }
 
-RdpCertificateInfo probeRdpCertificateOverTls(const std::string& host, int port,
-                                              const std::string& serverName,
-                                              const std::function<bool()>& cancelled) {
+RdpCertificateInfo probeRdpCertificateOverTlsAttempt(const std::string& host, int port,
+                                                     const std::string& serverName,
+                                                     const std::function<bool()>& cancelled,
+                                                     bool legacyTls, std::string& connectedAddress) {
     const int effectivePort = port > 0 ? port : kDefaultRdpPort;
     const std::string verifyName = serverName.empty() ? host : serverName;
     const std::string logHost = SafeLog::MaskHost(host);
@@ -949,15 +957,19 @@ RdpCertificateInfo probeRdpCertificateOverTls(const std::string& host, int port,
     }
 
     const std::string portText = std::to_string(effectivePort);
+    // Resolution and connection keep separate budgets: a slow resolver must
+    // not be reported as an unresolvable name, nor eat the connect time.
+    const remotedesk::net::ResolveResult resolution =
+        remotedesk::net::ResolveTcpAddresses(
+            host, portText, std::chrono::steady_clock::now() + kRdpProbeResolveBudget, cancelled);
     remotedesk::net::ConnectOptions connectOptions;
-    connectOptions.deadline = std::chrono::steady_clock::now() +
-        std::chrono::milliseconds(5000);
+    connectOptions.deadline = std::chrono::steady_clock::now() + kRdpProbeConnectBudget;
     connectOptions.cancelled = cancelled;
     connectOptions.restoreBlocking = false;
     remotedesk::net::ConnectResult connection;
-    const remotedesk::net::ResolveResult resolution =
-        remotedesk::net::ResolveAndConnectTcp(
-            host, portText, connectOptions, connection);
+    if (resolution.status == remotedesk::net::ResolveStatus::Ready) {
+        connection = remotedesk::net::ConnectTcpCandidates(resolution.addresses, connectOptions);
+    }
     if (resolution.status != remotedesk::net::ResolveStatus::Ready) {
         if (resolution.status == remotedesk::net::ResolveStatus::Cancelled ||
             rdpProbeCancelled(cancelled)) {
@@ -980,6 +992,7 @@ RdpCertificateInfo probeRdpCertificateOverTls(const std::string& host, int port,
                     static_cast<long long>((probeNowUs() - startedUs) / 1000));
         return makeProbeError(host, effectivePort, -12, "Unable to connect to RDP host");
     }
+    connectedAddress = connection.numericAddress;
     const int fd = connection.descriptor;
     timeval tv {};
     tv.tv_sec = 8;
@@ -1115,6 +1128,13 @@ RdpCertificateInfo probeRdpCertificateOverTls(const std::string& host, int port,
         return makeProbeError(host, effectivePort, -15, "Unable to create TLS context");
     }
     SSL_CTX_set_verify(sslCtx, SSL_VERIFY_NONE, nullptr);
+    if (legacyTls) {
+        // Only to read the certificate of a host that cannot do better; no
+        // credentials travel on this connection.
+        SSL_CTX_set_min_proto_version(sslCtx, TLS1_VERSION);
+        SSL_CTX_set_security_level(sslCtx, 0);
+        SSL_CTX_set_cipher_list(sslCtx, "ALL:@SECLEVEL=0");
+    }
     SSL* ssl = SSL_new(sslCtx);
     if (!ssl) {
         SSL_CTX_free(sslCtx);
@@ -1228,6 +1248,7 @@ RdpCertificateInfo probeRdpCertificateOverTls(const std::string& host, int port,
     info.host = host;
     info.port = effectivePort;
     info.serverName = verifyName;
+    info.tlsProtocol = SSL_get_version(ssl) != nullptr ? SSL_get_version(ssl) : "";
     info.commonName = x509CommonName(cert);
     info.subject = x509NameToString(X509_get_subject_name(cert));
     info.issuer = x509NameToString(X509_get_issuer_name(cert));
@@ -1287,6 +1308,38 @@ RdpCertificateInfo probeRdpCertificateOverTls(const std::string& host, int port,
                 info.hostMismatch ? "true" : "false",
                 static_cast<long long>((probeNowUs() - startedUs) / 1000));
     return info;
+}
+
+/**
+ * Probe the target certificate. A TLS handshake the client's defaults cannot
+ * complete is retried once with legacy parameters (TLS 1.0+, security level
+ * 0) only to read the certificate; success is flagged LEGACY_TLS so the user
+ * decides whether to connect with those parameters.
+ */
+RdpCertificateInfo probeRdpCertificateOverTls(const std::string& host, int port,
+                                              const std::string& serverName,
+                                              const std::function<bool()>& cancelled) {
+    std::string connectedAddress;
+    RdpCertificateInfo info = probeRdpCertificateOverTlsAttempt(
+        host, port, serverName, cancelled, false, connectedAddress);
+    info.connectedAddress = connectedAddress;
+    if (info.ok || info.errorCode != -22 || rdpProbeCancelled(cancelled)) {
+        return info;
+    }
+    std::string legacyAddress;
+    RdpCertificateInfo legacy = probeRdpCertificateOverTlsAttempt(
+        host, port, serverName, cancelled, true, legacyAddress);
+    legacy.connectedAddress = legacyAddress;
+    const std::string logHost = SafeLog::MaskHost(host);
+    if (!legacy.ok) {
+        OH_LOG_WARN(LOG_APP, "[RDP-CERT] legacy TLS probe failed too host=%{public}s code=%{public}d",
+                    logHost.c_str(), legacy.errorCode);
+        return info;
+    }
+    RdpPreflightPolicy::addUniqueRiskFlag(legacy.riskFlags, RdpPreflightPolicy::kRiskLegacyTls);
+    OH_LOG_WARN(LOG_APP, "[RDP-CERT] target needs legacy TLS host=%{public}s protocol=%{public}s",
+                logHost.c_str(), legacy.tlsProtocol.c_str());
+    return legacy;
 }
 
 } // namespace
@@ -8166,6 +8219,14 @@ void FreeRdpAdapter::connectThreadFunc(
     freerdp_settings_set_bool(s, FreeRDP_CertificateCallbackPreferPEM, TRUE);
     freerdp_settings_set_bool(s, FreeRDP_IgnoreCertificate, FALSE);
     freerdp_settings_set_uint32(s, FreeRDP_TcpConnectTimeout, 30000);
+    if (cfg.rdpAllowLegacyTls) {
+        // The user chose to connect to a host that only completes TLS below
+        // the defaults (TLS 1.0/1.1, weak keys or ciphers).
+        freerdp_settings_set_uint16(s, FreeRDP_TLSMinVersion, TLS1_VERSION);
+        freerdp_settings_set_uint32(s, FreeRDP_TlsSecLevel, 0);
+        freerdp_settings_set_string(s, FreeRDP_AllowedTlsCiphers, "DEFAULT:@SECLEVEL=0");
+        OH_LOG_WARN(LOG_APP, "[RDP] legacy TLS allowed by the user for this connection");
+    }
     // HarmonyOS 侧没有可用的 Kerberos/U2U 凭据缓存，NLA/CredSSP 只允许 NTLM，避免 Negotiate 第二轮返回 SEC_E_NO_CREDENTIALS。
     freerdp_settings_set_string(s, FreeRDP_AuthenticationPackageList, "ntlm");
     // Match FreeRDP's official /restricted-admin path: it pairs the

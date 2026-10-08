@@ -38,6 +38,8 @@ add_custom_target(remotedesk_build_identity ALL
 set(COMMON_SOURCES
     common/endpoint_address_policy.cpp
     common/happy_eyeballs_connector.cpp
+    common/local_name_resolver.cpp
+    common/local_name_resolver_napi.cpp
     common/network_generation_fence.cpp
     common/safe_log.cpp
     input/remote_cursor_snapshot.cpp
@@ -392,6 +394,7 @@ if(RDP_BUILD_TESTS)
         test/connection_port_policy_test.cpp
         test/happy_eyeballs_connector_test.cpp
         test/video_orientation_policy_test.cpp
+        test/local_name_resolver_test.cpp
         test/network_generation_fence_test.cpp
         test/native_network_observer_state_test.cpp
         test/moonlight_host_api_test.cpp

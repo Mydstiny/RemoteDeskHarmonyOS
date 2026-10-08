@@ -94,3 +94,58 @@ export function rdpDnsFallbackProbeCanReuseTransport(errorCode: number): boolean
       return false;
   }
 }
+
+/**
+ * Names a Windows client resolves without DNS: a computer name (one label of
+ * letters, digits and hyphens) through LLMNR / NetBIOS, or "<name>.local"
+ * through multicast DNS. Only these are worth asking the local network.
+ */
+export function rdpLocalNameEligible(host: string): boolean {
+  const name: string = host.trim().replace(/\.$/, '');
+  if (name.length === 0 || name.length > 253) {
+    return false;
+  }
+  const labels: string[] = name.split('.');
+  const label = /^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$/;
+  if (!labels.every((part: string): boolean => label.test(part))) {
+    return false;
+  }
+  if (labels.length === 1) {
+    return !/^[0-9]+$/.test(name);
+  }
+  return labels[labels.length - 1].toLowerCase() === 'local';
+}
+
+/**
+ * The DNS search suffixes a network hands out (DHCP option 15, e.g. "lan",
+ * "corp.example.com"), applied to a computer name as mstsc does. At most
+ * three, in order, without duplicates.
+ */
+export function rdpSearchDomainNames(host: string, domains: string): string[] {
+  const name: string = host.trim().replace(/\.$/, '');
+  if (name.length === 0 || name.indexOf('.') >= 0) {
+    return [];
+  }
+  const result: string[] = [];
+  const parts: string[] = domains.split(/[\s,;]+/);
+  for (let index = 0; index < parts.length && result.length < 3; index++) {
+    const suffix: string = parts[index].trim().replace(/^\.+|\.+$/g, '');
+    if (suffix.length === 0 || !/^[A-Za-z0-9.-]+$/.test(suffix)) {
+      continue;
+    }
+    const candidate: string = name + '.' + suffix;
+    if (result.indexOf(candidate) < 0) {
+      result.push(candidate);
+    }
+  }
+  return result;
+}
+
+/**
+ * A probe failure the name resolution fallback can help with: the name did
+ * not resolve (-11) or no resolved address accepted the TCP connection (-12).
+ * Anything later reached the RDP service and its address is already known.
+ */
+export function rdpDnsFallbackNeedsResolution(errorCode: number): boolean {
+  return errorCode === -11 || errorCode === -12 || errorCode === -10;
+}

@@ -668,6 +668,13 @@ export const VERSION: SessionVersionInfo;
    * keep how it lands on screen; once per codec and mode per process.
    */
   export function ensureVideoOrientationSelfTest(codec: number, desktop: boolean): void;
+  export interface LocalHostNameResolution {
+    addresses: string[];
+    /** 'mdns' | 'llmnr' | 'netbios' | '' */
+    method: string;
+  }
+  /** Resolve a computer name or "<name>.local" on the local network (mDNS, LLMNR, NetBIOS). */
+  export function resolveLocalHostName(name: string, timeoutMs: number): Promise<LocalHostNameResolution>;
 
   export function initAudioPlayer(sampleRate?: number, channels?: number, sessionId?: number): number;
   export function destroyAudioPlayer(handle: number): void;
@@ -767,6 +774,10 @@ export interface RdpCertificateInfo {
   errorMessage: string;
   preflightStatus: RdpPreflightStatus;
   riskFlags: string[];
+  /** TLS version the probe negotiated, e.g. "TLSv1"; empty without a handshake. */
+  tlsProtocol?: string;
+  /** Numeric address the probe reached (runtime only). */
+  connectedAddress?: string;
 }
 
 export type RdpPreflightStatus = 'completed' | 'inconclusive' | 'unavailable' | 'transportFailed';
@@ -1494,6 +1505,8 @@ export interface SessionConfig {
   /** Skip independent preflight; live callback accepts an unpinned peer only via strict PKI validation. */
   rdpVerifyCertificateOnConnect?: boolean;
   rdpAllowStandardSecurityOnce?: boolean;
+  /** The user agreed to legacy TLS (1.0/1.1, security level 0) for this host. */
+  rdpAllowLegacyTls?: boolean;
   /** Explicit direct TLS compatibility mode. Default false; never enables Standard RDP Security. */
   rdpTlsWithoutNla?: boolean;
   rdpCertificateAllowTimeAnomalyOnce?: boolean;

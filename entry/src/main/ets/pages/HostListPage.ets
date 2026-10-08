@@ -386,10 +386,13 @@ import {
   rdpPreflightStatusLabel,
   rdpCertificateWarningMessage,
   shouldEnableStandardRdpSecurityOnce,
+  shouldAllowRdpLegacyTls,
+  rdpLegacyTlsNeedsDecision,
   shouldRouteRdpCertificateAfterSheetDisappear,
   shouldShowRdpCertificateProbeSheetBeforeProbe,
   shouldPersistRdpCertificateTrust
 } from '../services/RdpCertificatePreflightPolicy';
+import { RdpLegacyTlsConsentStore } from '../services/RdpLegacyTlsConsentStore';
 import {
   ExtensionLoader,
   NativeDisconnectIdentity,
@@ -465,10 +468,12 @@ import {
   nextRdpCertificateProbeGeneration,
   shouldApplyRdpCertificateProbeResult
 } from '../services/RdpCertificateProbeLifecyclePolicy';
-import { resolveRdpDnsFallback } from '../services/RdpDnsFallback';
+import { RdpNameResolution, RdpNameResolutionVia, resolveRdpHostCandidates } from '../services/RdpDnsFallback';
 import {
   rdpDnsFallbackShouldEnumerate,
-  rdpDnsFallbackProbeCanReuseTransport
+  rdpDnsFallbackProbeCanReuseTransport,
+  rdpDnsFallbackNeedsResolution,
+  normalizeRdpDnsCandidate
 } from '../services/RdpDnsFallbackPolicy';
 import {
   classifyVncCertificateProbeForOwner,
@@ -1445,6 +1450,8 @@ struct HostListPage {
   @State rdpCertificateHostLabel: string = '';
   @State rdpCertificateWarning: string = '';
   @State rdpCertificateInfo: RdpCertificateInfo | null = null;
+  /** Which step the RDP certificate probe is on, under 「正在检查 RDP 证书…」. */
+  @State rdpCertificateProgress: string = '';
   @State rdpGatewayCertificateInfo: RdpCertificateInfo | null = null;
   @State rdpCertificateRouteResult: RdpPreflightResult | null = null;
   @State rdpCertificateError: string = '';
@@ -8858,6 +8865,7 @@ struct HostListPage {
     this.rdpCertificateOwnerScopeId = host.userId;
     this.rdpCertificateHostLabel = host.host;
     this.rdpCertificateState = RdpCertificatePreflightState.PROBING;
+    this.rdpCertificateProgress = '';
     this.rdpCertificateWarning = '';
     this.rdpCertificateInfo = null;
     this.rdpGatewayCertificateInfo = null;
@@ -9051,6 +9059,7 @@ struct HostListPage {
       this.isCurrentRdpCertificateProbe(host, generation);
     const targetServerName: string = host.customHostname.trim() !== ''
       ? host.customHostname : host.host;
+    this.rdpCertificateProgress = '正在连接并读取证书';
     let info: RdpCertificateInfo = await this.loader.probeRdpCertificateAsync(
       host.host,
       host.port,
@@ -9060,25 +9069,48 @@ struct HostListPage {
     if (!rdpDnsFallbackShouldEnumerate(host.host, endpointMode)) {
       return { info, transportHost: '' };
     }
-    const candidates: string[] = await resolveRdpDnsFallback(host.host);
+    // The probe reached the RDP service: the live connection uses the very
+    // address the probe verified, so FreeRDP cannot pick another answer.
+    const reached: string = normalizeRdpDnsCandidate(info.connectedAddress ?? '');
+    if (reached !== '' && (info.ok || rdpDnsFallbackProbeCanReuseTransport(info.errorCode))) {
+      return { info, transportHost: reached };
+    }
+    if (!rdpDnsFallbackNeedsResolution(info.errorCode)) {
+      return { info, transportHost: '' };
+    }
+    // The name did not resolve or nothing answered there: ask the way mstsc
+    // would — DNS through HarmonyOS, the network's search suffixes, then the
+    // local network (mDNS / LLMNR / NetBIOS) for a computer name.
+    const resolution: RdpNameResolution = await resolveRdpHostCandidates(host.host,
+      (name: string): Promise<string[]> => this.loader.resolveLocalHostName(name),
+      (stage: RdpNameResolutionVia): void => {
+        if (probeIsCurrent()) {
+          this.rdpCertificateProgress = stage === 'local' ? '正在局域网中查找这台电脑' :
+            stage === 'dns-suffix' ? '正在按网络的域名后缀查找' : '正在解析地址';
+        }
+      });
     if (!probeIsCurrent()) {
       return { info, transportHost: '' };
     }
+    const candidates: string[] = resolution.addresses;
     if (candidates.length === 0) {
       hilog.warn(0x0001, 'HostList',
-        'RDP DNS fallback returned no numeric candidate host=' + maskHost(host.host));
+        'RDP name resolution returned no numeric candidate host=' + maskHost(host.host));
       return { info, transportHost: '' };
     }
 
     hilog.info(0x0001, 'HostList',
-      'RDP DNS fallback candidates host=' + maskHost(host.host) +
-      ' count=' + candidates.length.toString());
+      'RDP name resolution candidates host=' + maskHost(host.host) +
+      ' count=' + candidates.length.toString() + ' via=' + resolution.via);
     let lastCandidateInfo: RdpCertificateInfo = info;
     let lastCandidateTransportHost: string = '';
     for (let index = 0; index < candidates.length; index++) {
       if (!probeIsCurrent()) {
         return { info, transportHost: '' };
       }
+      this.rdpCertificateProgress = candidates.length > 1 ?
+        '正在尝试第 ' + (index + 1).toString() + '/' + candidates.length.toString() + ' 个地址' :
+        '已找到地址，正在读取证书';
       const candidate: string = candidates[index];
       const candidateInfo: RdpCertificateInfo =
         await this.loader.probeRdpCertificateAsync(candidate, host.port, targetServerName);
@@ -9087,15 +9119,14 @@ struct HostListPage {
       }
       if (candidateInfo.ok && candidateInfo.fingerprintSha256.length > 0) {
         hilog.info(0x0001, 'HostList',
-          'RDP DNS fallback probe succeeded host=' + maskHost(host.host) +
+          'RDP name resolution probe succeeded host=' + maskHost(host.host) +
             ' candidate=' + maskHost(candidate));
         return { info: candidateInfo, transportHost: candidate };
       }
-      // Once NetworkKit has resolved the name, a TCP/TLS/negotiation result is
-      // more actionable than the original resolver error. Keep the last such
-      // observation for the certificate sheet. If it reached the service but
-      // could not expose a certificate, the candidate is still reusable after
-      // an explicit Continue Once decision.
+      // Once a candidate answered, a TCP/TLS/negotiation result is more
+      // actionable than the original resolver error. Keep the last such
+      // observation for the certificate sheet; a candidate that reached the
+      // service is still reusable after an explicit Continue Once decision.
       if (rdpDnsFallbackProbeCanReuseTransport(candidateInfo.errorCode)) {
         lastCandidateInfo = candidateInfo;
         lastCandidateTransportHost = candidate;
@@ -9103,7 +9134,7 @@ struct HostListPage {
     }
     if (lastCandidateTransportHost !== '') {
       hilog.info(0x0001, 'HostList',
-        'RDP DNS fallback selected reachable candidate host=' + maskHost(host.host) +
+        'RDP name resolution selected reachable candidate host=' + maskHost(host.host) +
           ' candidate=' + maskHost(lastCandidateTransportHost) +
           ' originalProbeCode=' + info.errorCode.toString());
     }
@@ -9329,6 +9360,7 @@ struct HostListPage {
       const generation: number = nextRdpCertificateProbeGeneration(this.rdpCertificateProbeGeneration);
       this.rdpCertificateProbeGeneration = generation;
       this.rdpCertificateState = RdpCertificatePreflightState.PROBING;
+      this.rdpCertificateProgress = '';
       this.rdpCertificateError = '';
       this.doRdpCertificateProbe(host, generation);
     }
@@ -9683,6 +9715,11 @@ struct HostListPage {
         savedAllowUntrustedRoot: host.rdpCertificateAllowUntrustedRoot,
         savedAllowHostMismatch: host.rdpCertificateAllowHostMismatch
       });
+      // A host that only completes legacy TLS stops here until its user agreed to it, even with a trusted pin.
+      if (this.rdpCertificateState === RdpCertificatePreflightState.TRUSTED_MATCH &&
+        rdpLegacyTlsNeedsDecision(probeView.riskFlags ?? [], this.rdpLegacyTlsConsented(host, probeRouteIdentity))) {
+        this.rdpCertificateState = RdpCertificatePreflightState.TRUST_FIRST_TIME;
+      }
       const oneTimeGatewayTrust: boolean =
         this.rdpGatewayPreflightOneTimeFingerprint.length > 0 &&
         rdpCertificateRouteIsCurrent(
@@ -9933,6 +9970,7 @@ struct HostListPage {
       this.rdpCertificateProbeGeneration);
     this.rdpCertificateProbeGeneration = generation;
     this.rdpCertificateState = RdpCertificatePreflightState.PROBING;
+    this.rdpCertificateProgress = '';
     this.rdpCertificateInfo = null;
     this.rdpCertificateRouteResult = null;
     this.rdpCertificateError = '';
@@ -9973,6 +10011,15 @@ struct HostListPage {
     this.doRdpCertificateRoute(routed, result, true);
   }
 
+  private rdpLegacyTlsConsented(host: RemoteHost, routeIdentity: string): boolean {
+    try {
+      return RdpLegacyTlsConsentStore.getInstance().allowed(getContext(this) as common.UIAbilityContext,
+        host.id, routeIdentity);
+    } catch (_error) {
+      return false;
+    }
+  }
+
   private doRdpCertificateTrust(host: RemoteHost): void {
     if (!this.renewRdpSessionCredentialForHost(host)) {
       this.rejectExpiredRdpSessionCredential(host);
@@ -9999,6 +10046,12 @@ struct HostListPage {
       result,
       RdpCertificatePreflightDecision.TRUST
     );
+    // Trusting a host the sheet showed as legacy TLS also agrees to legacy TLS for this route.
+    if ((result.targetRiskFlags || []).indexOf('LEGACY_TLS') >= 0 ||
+      (this.rdpCertificateInfo?.riskFlags ?? []).indexOf('LEGACY_TLS') >= 0) {
+      RdpLegacyTlsConsentStore.getInstance().allow(getContext(this) as common.UIAbilityContext,
+        host.id, result.routeIdentity);
+    }
     if (!this.srv.updateHost(updated)) {
       // Saving a pin can fail independently of connection viability. Leave
       // the user at the decision point rather than converting it into a
@@ -10071,6 +10124,9 @@ struct HostListPage {
       params['rdpAllowStandardSecurityOnce'] = shouldEnableStandardRdpSecurityOnce(
         userApprovedAdvisory, targetRiskFlags.length > 0
           ? targetRiskFlags : diagnosticResult.riskFlags);
+      params['rdpAllowLegacyTls'] = shouldAllowRdpLegacyTls(
+        targetRiskFlags.length > 0 ? targetRiskFlags : (diagnosticResult.riskFlags || []),
+        userApprovedAdvisory, this.rdpLegacyTlsConsented(host, diagnosticResult.routeIdentity));
       if (target.present && target.fingerprintSha256.length > 0) {
         params['rdpCertificateOneTimeFingerprintSha256'] = target.fingerprintSha256;
         params['rdpCertificateOneTimeAllowUntrustedRoot'] = !target.rootTrusted;
@@ -20582,9 +20638,15 @@ struct HostListPage {
       if (this.rdpCertificateState === RdpCertificatePreflightState.PROBING) {
         Row() {
           LoadingProgress().width(32).height(32).color(this.accentColor)
-          Text('正在检查 RDP 证书...')
-            .fontSize(17).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
-            .fontFamily(this.font()).margin({ left: 12 }).layoutWeight(1)
+          Column({ space: 4 }) {
+            Text('正在检查 RDP 证书...')
+              .fontSize(17).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
+              .fontFamily(this.font())
+            if (this.rdpCertificateProgress.length > 0) {
+              Text(this.rdpCertificateProgress)
+                .fontSize(13).fontColor(this.pal().text2).fontFamily(this.font())
+            }
+          }.alignItems(HorizontalAlign.Start).margin({ left: 12 }).layoutWeight(1)
         }.width('100%').margin({ bottom: 18 })
         Text(this.rdpCertificateHostLabel)
           .fontSize(13).fontColor(this.pal().text3).fontFamily(this.font()).width('100%')

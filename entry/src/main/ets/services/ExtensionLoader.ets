@@ -2266,6 +2266,19 @@ export class ExtensionLoader implements RustDeskClipboardNative {
 
   // ====== 渲染管线操作 ======
 
+  /** A computer name or "<name>.local" resolved on the local network; empty when nothing answered. */
+  async resolveLocalHostName(name: string, timeoutMs: number = 1500): Promise<string[]> {
+    try {
+      const result = await rdpnapi.resolveLocalHostName(name, timeoutMs);
+      hilog.info(DOMAIN, TAG, '[ExtensionLoader] local name resolution method=' +
+        (result.method || 'none') + ' count=' + (result.addresses ?? []).length.toString());
+      return result.addresses ?? [];
+    } catch (err) {
+      hilog.warn(DOMAIN, TAG, '[ExtensionLoader] resolveLocalHostName: ' + JSON.stringify(err));
+      return [];
+    }
+  }
+
   /** Start the background orientation self-test for H.264 / H.265 on this device's decode path. */
   ensureVideoOrientationSelfTest(desktop: boolean): void {
     try {

@@ -31,7 +31,9 @@ import {
   shouldPersistRdpCertificateTrust,
   shouldRequireRdpCertificateConfirmation,
   shouldFallbackToNativeRdpConnectionAfterResolverFailure,
-  RDP_CERTIFICATE_UNKNOWN_TRUST_MODE
+  RDP_CERTIFICATE_UNKNOWN_TRUST_MODE,
+  shouldAllowRdpLegacyTls,
+  rdpLegacyTlsNeedsDecision
 } from '../main/ets/services/RdpCertificatePreflightPolicy';
 
 export default function rdpCertificatePreflightPolicyTest() {
@@ -436,6 +438,19 @@ export default function rdpCertificatePreflightPolicyTest() {
       expect(shouldFallbackToNativeRdpConnectionAfterResolverFailure(
         -11, RDP_CERTIFICATE_EXPLICIT_TRUST_MODE, 'SHA256:same',
         'route-old', 'route-current')).assertFalse();
+    });
+
+    it('legacy_tls_needs_the_users_consent', 0, (): void => {
+      const legacy: string[] = ['UNTRUSTED_ROOT', 'LEGACY_TLS'];
+      expect(shouldAllowRdpLegacyTls(legacy, false, false)).assertFalse();
+      expect(shouldAllowRdpLegacyTls(legacy, true, false)).assertTrue();
+      expect(shouldAllowRdpLegacyTls(legacy, false, true)).assertTrue();
+      expect(shouldAllowRdpLegacyTls(['UNTRUSTED_ROOT'], true, true)).assertFalse();
+      expect(rdpLegacyTlsNeedsDecision(legacy, false)).assertTrue();
+      expect(rdpLegacyTlsNeedsDecision(legacy, true)).assertFalse();
+      expect(rdpLegacyTlsNeedsDecision(['UNTRUSTED_ROOT'], false)).assertFalse();
+      expect(rdpCertificateRiskSummary(['LEGACY_TLS']).indexOf('旧版 TLS') >= 0).assertTrue();
+      expect(rdpCertificateWarningMessage('pc', false, false, legacy).indexOf('降低 TLS 安全要求') >= 0).assertTrue();
     });
   });
 }

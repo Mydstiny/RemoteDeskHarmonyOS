@@ -134,6 +134,8 @@ static napi_value InitVersionInfo(napi_env env, napi_value exports) {
 /**
  * 主初始化函数 — 注册所有子系统的 NAPI 方法
  */
+namespace LocalNameResolverNapi { void Init(napi_env env, napi_value exports); }
+
 static napi_value Init(napi_env env, napi_value exports) {
     OH_LOG_INFO(LOG_APP, "[NAPI] 初始化 rdpnapi 模块...");
 
@@ -153,6 +155,8 @@ static napi_value Init(napi_env env, napi_value exports) {
 
     DecoderNapi::Init(env, exports);
     OH_LOG_INFO(LOG_APP, "[NAPI] Decoder 已注册");
+
+    LocalNameResolverNapi::Init(env, exports);
 
     // 音频管线
     AudioPlayerNapi::Init(env, exports);

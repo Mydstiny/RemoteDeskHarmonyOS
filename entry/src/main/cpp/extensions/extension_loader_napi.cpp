@@ -2351,6 +2351,8 @@ static napi_value CreateRdpCertificateInfoValue(napi_env env, const RdpCertifica
     SetObjectBool(env, result, "hostMismatch", cert.hostMismatch);
     SetObjectInt32(env, result, "errorCode", cert.errorCode);
     SetObjectString(env, result, "errorMessage", cert.errorMessage);
+    SetObjectString(env, result, "tlsProtocol", cert.tlsProtocol);
+    SetObjectString(env, result, "connectedAddress", cert.connectedAddress);
     napi_value riskFlags;
     napi_create_array_with_length(env, cert.riskFlags.size(), &riskFlags);
     for (size_t index = 0; index < cert.riskFlags.size(); ++index) {
@@ -5248,6 +5250,7 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
         getBool("rdpCertificateAllowUnpinnedOnce", cfg.rdpCertificateAllowUnpinnedOnce);
         getBool("rdpVerifyCertificateOnConnect", cfg.rdpVerifyCertificateOnConnect);
         getBool("rdpAllowStandardSecurityOnce", cfg.rdpAllowStandardSecurityOnce);
+        getBool("rdpAllowLegacyTls", cfg.rdpAllowLegacyTls);
         getBool("rdpTlsWithoutNla", cfg.rdpTlsWithoutNla);
         getBool("rdpCertificateAllowTimeAnomalyOnce", cfg.rdpCertificateAllowTimeAnomalyOnce);
         getBool("rdpGatewayAllowUntrustedRoot", cfg.rdpGatewayAllowUntrustedRoot);

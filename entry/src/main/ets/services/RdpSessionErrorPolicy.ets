@@ -14,6 +14,15 @@ export interface RdpSessionErrorDialogModel {
   message: string;
   code: string;
   source: RdpSessionErrorSource;
+  /** NLA (CredSSP / NTLM) did not pass: the user may choose TLS sign-in without NLA for this host. */
+  suggestTlsWithoutNla?: boolean;
+}
+
+/** FreeRDP connect errors from the NLA stage: authentication failed, logon failure, security negotiation. */
+const RDP_NLA_FAILURE_CODES: string[] = ['0x20009', '0x20014', '0x2000C'];
+
+export function rdpErrorSuggestsTlsWithoutNla(code: string): boolean {
+  return RDP_NLA_FAILURE_CODES.indexOf(code.toUpperCase().replace('0X', '0x')) >= 0;
 }
 
 function extractBracketedHexCode(text: string, marker: string): string {
@@ -193,7 +202,18 @@ function modelForCode(code: string, source: RdpSessionErrorSource): RdpSessionEr
       title: 'RDP 账号认证失败',
       message: '请核对 Windows 账号、用户名/域格式、密码和远程登录权限。若使用 AD UPN（user@domain），检查全局“RDP 身份格式”；若当前选择 Microsoft Account 域模式，邮箱会按该域发送。域策略禁用 NTLM 时，当前 NLA 认证也可能不兼容。此码也可能来自本地 CredSSP/SSPI 凭据失败，不能单独证明密码错误。',
       code,
-      source
+      source,
+      suggestTlsWithoutNla: true
+    };
+  }
+  if (source === RdpSessionErrorSource.CONNECT_FAILURE && rdpErrorSuggestsTlsWithoutNla(code)) {
+    return {
+      title: '网络级身份验证没有通过',
+      message: '这台电脑在登录前要求的网络级身份验证（NLA）没有通过。我们只能用 NTLM 完成 NLA，' +
+        '域策略禁用 NTLM、或只允许 Kerberos 时会出现这种情况；也可能是账号或密码不对。',
+      code,
+      source,
+      suggestTlsWithoutNla: true
     };
   }
   if (source === RdpSessionErrorSource.CONNECT_FAILURE) {

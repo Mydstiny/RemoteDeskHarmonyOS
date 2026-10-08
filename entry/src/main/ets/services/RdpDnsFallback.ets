@@ -1,6 +1,6 @@
 import { connection } from '@kit.NetworkKit';
 import { parseEndpointHost } from './EndpointAddressPolicy';
-import { rdpDnsFallbackCandidates } from './RdpDnsFallbackPolicy';
+import { rdpDnsFallbackCandidates, rdpLocalNameEligible, rdpSearchDomainNames } from './RdpDnsFallbackPolicy';
 
 const RDP_DNS_FALLBACK_TIMEOUT_MS: number = 5000;
 
@@ -38,4 +38,64 @@ export async function resolveRdpDnsFallback(
       clearTimeout(timer);
     }
   }
+}
+
+const RDP_SEARCH_DOMAIN_TIMEOUT_MS: number = 3000;
+
+/** How a name was finally resolved: DNS, DNS with a search suffix, the local network, or not at all. */
+export type RdpNameResolutionVia = 'dns' | 'dns-suffix' | 'local' | '';
+
+export interface RdpNameResolution {
+  addresses: string[];
+  via: RdpNameResolutionVia;
+}
+
+async function networkSearchDomains(): Promise<string> {
+  try {
+    const handle: connection.NetHandle = await connection.getDefaultNet();
+    const properties: connection.ConnectionProperties = await connection.getConnectionProperties(handle);
+    return properties.domains ?? '';
+  } catch (_error) {
+    return '';
+  }
+}
+
+/**
+ * Resolve an RDP host name the way mstsc would reach it: DNS through the
+ * HarmonyOS network stack, then the network's DNS search suffixes for a
+ * computer name, then the local network itself (mDNS for "<name>.local",
+ * LLMNR and NetBIOS for a computer name). `localResolver` performs the last
+ * step; `onStage` reports which step is running for the progress text.
+ */
+export async function resolveRdpHostCandidates(
+  host: string,
+  localResolver: (name: string) => Promise<string[]>,
+  onStage: (stage: RdpNameResolutionVia) => void = (_stage: RdpNameResolutionVia): void => {}
+): Promise<RdpNameResolution> {
+  onStage('dns');
+  const direct: string[] = await resolveRdpDnsFallback(host);
+  if (direct.length > 0) {
+    return { addresses: direct, via: 'dns' };
+  }
+  const suffixed: string[] = rdpSearchDomainNames(host, await networkSearchDomains());
+  if (suffixed.length > 0) {
+    onStage('dns-suffix');
+    for (let index = 0; index < suffixed.length; index++) {
+      const found: string[] = await resolveRdpDnsFallback(suffixed[index], RDP_SEARCH_DOMAIN_TIMEOUT_MS);
+      if (found.length > 0) {
+        return { addresses: found, via: 'dns-suffix' };
+      }
+    }
+  }
+  if (!rdpLocalNameEligible(host)) {
+    return { addresses: [], via: '' };
+  }
+  onStage('local');
+  let local: string[] = [];
+  try {
+    local = rdpDnsFallbackCandidates(await localResolver(host.trim()));
+  } catch (_error) {
+    local = [];
+  }
+  return { addresses: local, via: local.length > 0 ? 'local' : '' };
 }

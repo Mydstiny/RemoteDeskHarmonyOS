@@ -185,6 +185,10 @@ inline constexpr const char* kRiskCertificateMetadataUnavailable =
     "CERTIFICATE_METADATA_UNAVAILABLE";
 inline constexpr const char* kRiskStandardRdpSecurity = "STANDARD_RDP_SECURITY";
 inline constexpr const char* kRiskTlsProbeReset = "TLS_PROBE_RESET";
+// The target only completes a TLS handshake below this client's defaults
+// (TLS 1.0/1.1, or keys/ciphers under security level 2): Windows 7 / 2008 R2
+// without the TLS 1.2 update and some appliances. Connecting needs consent.
+inline constexpr const char* kRiskLegacyTls = "LEGACY_TLS";
 inline constexpr const char* kRiskGatewayCertificate = "GATEWAY_CERTIFICATE_RISK";
 inline constexpr const char* kRiskTargetCertificate = "TARGET_CERTIFICATE_RISK";
 inline constexpr const char* kRiskUnknownGatewayProtocol = "UNKNOWN_GATEWAY_PROTOCOL";

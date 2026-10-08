@@ -273,6 +273,8 @@ export function rdpCertificateRiskLabel(flag: string): string {
       return '目标 RDP 证书存在风险';
     case 'UNKNOWN_GATEWAY_PROTOCOL':
       return '当前预检无法识别该网关协议';
+    case 'LEGACY_TLS':
+      return '这台电脑只支持旧版 TLS（1.0/1.1 或弱加密），加密强度较低';
     default:
       return flag;
   }
@@ -506,7 +508,24 @@ export function rdpCertificateWarningMessage(
   if (hostMismatch) {
     message += ' 证书名称与当前主机不匹配。';
   }
+  if (riskFlags.indexOf('LEGACY_TLS') >= 0) {
+    message += ' 这台电脑只支持旧版 TLS（常见于未更新的 Windows 7 / Server 2008 R2），连接的加密强度较低。' +
+      '选择继续或信任，表示你同意为这台电脑降低 TLS 安全要求。';
+  }
   return message;
+}
+
+/**
+ * Legacy TLS (TLS 1.0/1.1, security level 0) is used only after the user
+ * agreed: on the certificate sheet now, or earlier for this route.
+ */
+export function shouldAllowRdpLegacyTls(riskFlags: string[], userApproved: boolean, consentStored: boolean): boolean {
+  return riskFlags.indexOf('LEGACY_TLS') >= 0 && (userApproved || consentStored);
+}
+
+/** A trusted certificate still stops for the user when the host needs legacy TLS nobody agreed to. */
+export function rdpLegacyTlsNeedsDecision(riskFlags: string[], consentStored: boolean): boolean {
+  return riskFlags.indexOf('LEGACY_TLS') >= 0 && !consentStored;
 }
 
 export function shouldRequireRdpCertificateConfirmation(

@@ -169,6 +169,7 @@ struct ConnectionConfig {
     bool        rdpCertificateAllowUnpinnedOnce; // RDP: 用户已明确允许本次未知证书
     bool        rdpVerifyCertificateOnConnect; // direct RDP: strict live PKI when no saved pin
     bool        rdpAllowStandardSecurityOnce; // RDP: 用户已明确允许本次 Standard Security
+    bool        rdpAllowLegacyTls; // RDP: 用户已明确允许旧版 TLS（1.0/1.1、安全等级 0）
     bool        rdpTlsWithoutNla; // RDP: explicit direct TLS compatibility mode; not a host field
     bool        rdpCertificateAllowTimeAnomalyOnce; // RDP: 用户已明确允许本次时间异常
     bool        rdpGatewayAllowUntrustedRoot;
@@ -226,6 +227,7 @@ struct ConnectionConfig {
           rdDriveName("RemoteDesktop"), rdpAllowUntrustedRoot(false), rdpAllowHostMismatch(false),
           rdpCertificateAllowUnpinnedOnce(false), rdpVerifyCertificateOnConnect(false),
           rdpAllowStandardSecurityOnce(false),
+          rdpAllowLegacyTls(false),
           rdpTlsWithoutNla(false),
           rdpCertificateAllowTimeAnomalyOnce(false),
           rdpGatewayAllowUntrustedRoot(false), rdpGatewayAllowHostMismatch(false),
@@ -303,6 +305,10 @@ struct RdpCertificateInfo {
     std::string errorMessage;
     std::string preflightStatus = "unavailable";
     std::vector<std::string> riskFlags;
+    /** The TLS version the probe negotiated (e.g. "TLSv1"), empty when no handshake completed. */
+    std::string tlsProtocol;
+    /** Numeric address the probe's TCP connection reached (runtime only; empty before a connection). */
+    std::string connectedAddress;
 };
 
 /**

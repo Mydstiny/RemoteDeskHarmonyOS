@@ -312,6 +312,7 @@ import { TransferArtifact, TransferArtifactBatch, TransferReceivedArtifactWriter
 import { scheduleTransferArtifactMaintenance } from '../services/TransferArtifactMaintenance';
 import { rustDeskFileFailureText, rustDeskTransferFailureCode, transferFailureReason } from '../services/TransferUserTextPolicy';
 import { appUiOnAccentText, appUiTint } from '../common/AppUiColorPolicy';
+import { RdpLegacyTlsConsentStore } from '../services/RdpLegacyTlsConsentStore';
 import { SlidingSegment } from '../components/SlidingSegment';
 import {
   RdpPasteHereBanner,
@@ -1409,6 +1410,10 @@ struct RemoteDesktop {
   @State rdpSessionErrorTitle: string = '你的会话已断开';
   @State rdpSessionErrorMessage: string = '';
   @State rdpSessionErrorCode: string = '';
+  /** The failed sign-in was NLA and this host may instead sign in over TLS (user's choice). */
+  @State rdpSessionErrorSuggestTls: boolean = false;
+  /** Whether the current RDP attempt signs in over TLS without NLA. */
+  private rdpConnectionTlsWithoutNla: boolean = false;
   @State @Watch('onHarmonyShortcutInputOwnerChange') showRustDeskAuthSheet: boolean = false;
   @State @Watch('onHarmonyShortcutInputOwnerChange') showRustDeskTwoFactorSheet: boolean = false;
   /** RDP security-key redirection: the prompt the session broker is waiting on, and this host's local choice. */
@@ -1632,6 +1637,8 @@ struct RemoteDesktop {
   // to the real FreeRDP callback path. They are never persisted in RemoteHost.
   private rdpCertificateAllowUnpinnedOnce: boolean = false;
   private rdpAllowStandardSecurityOnce: boolean = false;
+  /** The user agreed to legacy TLS for this route (certificate sheet, or earlier for this host). */
+  private rdpAllowLegacyTls: boolean = false;
   private rdpCertificateAllowTimeAnomalyOnce: boolean = false;
   private rdpGatewayCertificateAllowUnpinnedOnce: boolean = false;
   private rdpGatewayCertificateAllowTimeAnomalyOnce: boolean = false;
@@ -14360,6 +14367,7 @@ struct RemoteDesktop {
     }
     this.rdpCertificateAllowUnpinnedOnce = false;
     this.rdpAllowStandardSecurityOnce = false;
+    this.rdpAllowLegacyTls = false;
     this.rdpCertificateAllowTimeAnomalyOnce = false;
     this.rdpGatewayCertificateAllowUnpinnedOnce = false;
     this.rdpGatewayCertificateAllowTimeAnomalyOnce = false;
@@ -14371,6 +14379,7 @@ struct RemoteDesktop {
       (params['rdpCertificateAllowUnpinnedOnce'] as boolean) === true;
     const allowStandardSecurityOnce: boolean =
       (params['rdpAllowStandardSecurityOnce'] as boolean) === true;
+    const allowLegacyTls: boolean = (params['rdpAllowLegacyTls'] as boolean) === true;
     const targetTimeAnomalyOnce: boolean =
       (params['rdpCertificateAllowTimeAnomalyOnce'] as boolean) === true;
     const gatewayUnpinnedOnce: boolean =
@@ -14378,7 +14387,7 @@ struct RemoteDesktop {
     const gatewayTimeAnomalyOnce: boolean =
       (params['rdpGatewayCertificateAllowTimeAnomalyOnce'] as boolean) === true;
     if (fingerprint.length === 0 && gatewayFingerprint.length === 0 &&
-      !targetUnpinnedOnce && !allowStandardSecurityOnce && !targetTimeAnomalyOnce &&
+      !targetUnpinnedOnce && !allowStandardSecurityOnce && !allowLegacyTls && !targetTimeAnomalyOnce &&
       !gatewayUnpinnedOnce && !gatewayTimeAnomalyOnce) {
       return host;
     }
@@ -14391,6 +14400,7 @@ struct RemoteDesktop {
     this.rdpCertificateTransientRouteIdentity = routeIdentity;
     this.rdpCertificateAllowUnpinnedOnce = targetUnpinnedOnce;
     this.rdpAllowStandardSecurityOnce = allowStandardSecurityOnce;
+    this.rdpAllowLegacyTls = allowLegacyTls;
     this.rdpCertificateAllowTimeAnomalyOnce = targetTimeAnomalyOnce;
     this.rdpGatewayCertificateAllowUnpinnedOnce = gatewayUnpinnedOnce;
     this.rdpGatewayCertificateAllowTimeAnomalyOnce = gatewayTimeAnomalyOnce;
@@ -14526,6 +14536,11 @@ struct RemoteDesktop {
     this.rdpSessionErrorTitle = model.title;
     this.rdpSessionErrorMessage = model.message;
     this.rdpSessionErrorCode = model.code;
+    const host: RemoteHost | null = this.pendingHost;
+    this.rdpSessionErrorSuggestTls = model.suggestTlsWithoutNla === true && host !== null &&
+      host.protocol === 'rdp' && !this.rdpConnectionTlsWithoutNla &&
+      shouldUseRdpTlsWithoutNla(true, normalizeRdpEndpointMode(host.rdpEndpointMode, host.gatewayHost),
+        normalizeRdpAuthMode(host.rdpAuthMode));
     this.rdpSessionErrorBackPending = false;
     this.rdpSessionErrorPendingCleanupReason = cleanupReason;
     void this.applyRdpOrientationPolicy('ERROR');
@@ -14535,6 +14550,33 @@ struct RemoteDesktop {
       return;
     }
     this.showRdpSessionErrorSheet = true;
+  }
+
+  /**
+   * NLA failed on this host: the user chose to sign in over TLS without NLA
+   * for it. Confirmed once more, remembered for this host and route only, and
+   * used from the next connection.
+   */
+  private chooseRdpTlsSignInForHost(): void {
+    const host: RemoteHost | null = this.pendingHost;
+    if (host === null) { return; }
+    promptAction.showDialog({
+      title: '对这台电脑改用 TLS 登录？',
+      message: '不再在连接前做网络级身份验证（NLA），密码在 TLS 加密通道里交给 Windows 登录界面校验。' +
+        '这台电脑强制要求 NLA 时仍然连不上。只对这台电脑生效，可以随时在 RDP 设置里关闭 TLS 兼容登录。',
+      buttons: [
+        { text: '取消', color: this.pal().text2 },
+        { text: '改用 TLS 登录', color: this.accentColor }
+      ]
+    }).then((result: Object): void => {
+      const response: Record<string, number> = result as Record<string, number>;
+      if (response['index'] !== 1) { return; }
+      RdpLegacyTlsConsentStore.getInstance().allowKind(getContext(this) as common.UIAbilityContext,
+        'tls-without-nla', host.id, rdpRouteIdentity(host));
+      hilog.info(RD_DOMAIN, RD_TAG, 'RDP TLS sign-in without NLA chosen for host=' + maskHost(host.host));
+      promptAction.showToast({ message: '已对这台电脑改用 TLS 登录，请重新连接', duration: 2600 });
+      this.closeRdpSessionErrorSheet();
+    }).catch((_error: Error): void => {});
   }
 
   private closeRdpSessionErrorSheet(): void {
@@ -16261,6 +16303,7 @@ struct RemoteDesktop {
       let rdpTargetAllowUnpinnedOnce: boolean = false;
       let rdpVerifyCertificateOnConnect: boolean = false;
       let rdpAllowStandardSecurityOnce: boolean = false;
+      let rdpAllowLegacyTls: boolean = false;
       let rdpTlsWithoutNla: boolean = false;
       let rdpTargetAllowTimeAnomalyOnce: boolean = false;
       let rdpGatewayAllowUntrustedRoot: boolean = false;
@@ -16269,11 +16312,15 @@ struct RemoteDesktop {
       let rdpGatewayAllowTimeAnomalyOnce: boolean = false;
       if (host.protocol === 'rdp') {
         const routeMode: string = normalizeRdpEndpointMode(host.rdpEndpointMode, host.gatewayHost);
+        const routeIdentity: string = rdpRouteIdentity(host);
+        // The global TLS sign-in setting, or this host's own choice after NLA failed on it.
         rdpTlsWithoutNla = shouldUseRdpTlsWithoutNla(
-          AppStorage.get<boolean>('rdpTlsWithoutNla') ?? false,
+          (AppStorage.get<boolean>('rdpTlsWithoutNla') ?? false) ||
+            RdpLegacyTlsConsentStore.getInstance().allowedKind(getContext(this) as common.UIAbilityContext,
+              'tls-without-nla', host.id, routeIdentity),
           routeMode,
           normalizeRdpAuthMode(host.rdpAuthMode));
-        const routeIdentity: string = rdpRouteIdentity(host);
+        this.rdpConnectionTlsWithoutNla = rdpTlsWithoutNla;
         rdpVerifyCertificateOnConnect = rdpCertificatePreflightSkipAllowed(
           this.rdpVerifyCertificateOnConnectRouteIdentity === routeIdentity,
           routeMode);
@@ -16291,6 +16338,7 @@ struct RemoteDesktop {
           this.rdpCertificateAllowUnpinnedOnce;
         rdpAllowStandardSecurityOnce = transientRouteMatches &&
           this.rdpAllowStandardSecurityOnce;
+        rdpAllowLegacyTls = transientRouteMatches && this.rdpAllowLegacyTls;
         rdpTargetAllowTimeAnomalyOnce = transientRouteMatches &&
           this.rdpCertificateAllowTimeAnomalyOnce;
         if (routeMode === 'microsoft_rd_gateway') {
@@ -16691,6 +16739,7 @@ struct RemoteDesktop {
         rdpCertificateAllowUnpinnedOnce: rdpTargetAllowUnpinnedOnce,
         rdpVerifyCertificateOnConnect: rdpVerifyCertificateOnConnect,
         rdpAllowStandardSecurityOnce: rdpAllowStandardSecurityOnce,
+        rdpAllowLegacyTls: rdpAllowLegacyTls,
         rdpTlsWithoutNla: rdpTlsWithoutNla,
         rdpCertificateAllowTimeAnomalyOnce: rdpTargetAllowTimeAnomalyOnce,
         rdpGatewayAllowUntrustedRoot: rdpGatewayAllowUntrustedRoot,
@@ -26103,15 +26152,35 @@ struct RemoteDesktop {
         .textAlign(TextAlign.Center)
         .width('100%')
         .margin({ top: 12 })
+      if (this.rdpSessionErrorSuggestTls) {
+        Text('如果这台电脑没有强制要求 NLA，可以改用 TLS 登录：在加密通道里直接进入 Windows 登录界面，' +
+          '不再预先做 NLA 认证。安全性略低，只对这台电脑生效。')
+          .fontSize(13)
+          .fontColor(this.pal().text2)
+          .lineHeight(19)
+          .textAlign(TextAlign.Center)
+          .width('100%')
+          .margin({ top: 14 })
+        Button('改用 TLS 登录')
+          .fontSize(16)
+          .fontWeight(FontWeight.Medium)
+          .height(48)
+          .width('100%')
+          .backgroundColor(appUiTint(this.accentColor, '1F'))
+          .fontColor(this.accentColor)
+          .borderRadius(14)
+          .margin({ top: 20 })
+          .onClick(() => { this.chooseRdpTlsSignInForHost(); })
+      }
       Button('断开')
         .fontSize(16)
         .fontWeight(FontWeight.Medium)
         .height(48)
         .width('100%')
         .backgroundColor(this.accentColor)
-        .fontColor('#FFFFFF')
+        .fontColor(appUiOnAccentText(this.accentColor))
         .borderRadius(14)
-        .margin({ top: 26 })
+        .margin({ top: this.rdpSessionErrorSuggestTls ? 10 : 26 })
         .onClick(() => { this.closeRdpSessionErrorSheet(); })
     }
     .width('100%')
