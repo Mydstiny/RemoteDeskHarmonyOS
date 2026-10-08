@@ -4,3 +4,7 @@ entry/src/main/cpp/moonlight/upstream/moonlight-common-c/** -text whitespace=-bl
 server/pro-entitlement/agc/pkix/licenses/** -text whitespace=-blank-at-eof
 libs/fido2-ohos/** -text whitespace=-blank-at-eol,-blank-at-eof,-space-before-tab,cr-at-eol
 entry/src/main/resources/rawfile/ssh-terminal/fonts/** -text whitespace=-blank-at-eol,-blank-at-eof,-space-before-tab,cr-at-eol
+# Hashed by scripts/verify_fido2_dependencies.py: a CRLF checkout (Windows CI) would change their bytes.
+scripts/build_fido2_ohos.py text eol=lf
+docs/compliance/FIDO2_DEPENDENCIES.lock.json text eol=lf
+libs/openssl/install/** -text
