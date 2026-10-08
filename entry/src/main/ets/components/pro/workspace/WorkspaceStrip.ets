@@ -2,7 +2,6 @@ import { appUiOnAccentText } from '../../../common/AppUiColorPolicy';
 import { display } from '@kit.ArkUI';
 import { ProSymbolIcon } from '../ProSymbolIcon';
 import { AppConfig, buildDark, buildLight, Palette } from '../../../common/Theme';
-import { ProBadge } from '../../ProBadge';
 import { ProEntries } from '../../../services/pro/ProEntries';
 import { newWorkspace, Workspace } from '../../../services/pro/workspace/WorkspacePolicy';
 import { WorkspaceStore } from '../../../services/pro/workspace/WorkspaceStore';
@@ -112,26 +111,17 @@ export struct WorkspaceStrip {
     }.width('100%').backgroundColor(this.pal().sheetBg)
   }
 
+  /** Nothing to show: no workspace yet. */
+  private stripEmpty(): boolean {
+    return !ProEntries.visible('pro.workspaces') || this.workspaces(this.revision).length === 0;
+  }
+
   build() {
     Column() {
       if (ProEntries.visible('pro.workspaces')) {
-        if (this.workspaces(this.revision).length === 0) {
-          Row({ space: 8 }) {
-            SymbolGlyph($r('sys.symbol.rectangle_on_rectangle')).fontSize(16).fontColor([this.accent])
-            Text('工作区').fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
-            ProBadge()
-            Text('点「+」→「工作区」新建').fontSize(12).fontColor(this.pal().text3).layoutWeight(1).maxLines(1)
-              .textOverflow({ overflow: TextOverflow.Ellipsis })
-            if (this.activeRefs.length > 0) {
-              Text('保存当前会话').fontSize(12).fontColor(this.accent).padding(4)
-                .onClick((): void => { this.saveCurrent(); })
-            }
-          }
-          .width('100%').height(44).padding({ left: 14, right: 10 }).borderRadius(16)
-          .backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
-          .border({ width: 0.5, color: this.pal().cardBorder })
-          .margin({ left: 16, right: 16 })
-        } else {
+        // No workspace yet: nothing here (the Pro badge stays on the workspaces themselves, and 「+」 → 「工作区」
+        // creates one).
+        if (this.workspaces(this.revision).length > 0) {
           Scroll() {
             Row() {
               ForEach(this.workspaces(this.revision), (workspace: Workspace): void => { this.card(workspace) },
@@ -145,7 +135,8 @@ export struct WorkspaceStrip {
         }
       }
     }
-    .width('100%').padding({ top: 2, bottom: 6 })
+    .width('100%')
+    .padding({ top: this.stripEmpty() ? 0 : 2, bottom: this.stripEmpty() ? 0 : 6 })
     .bindSheet($$this.showEditor, this.editorSheet(), {
       height: SheetSize.FIT_CONTENT, dragBar: true, showClose: false, backgroundColor: this.pal().sheetBg
     })

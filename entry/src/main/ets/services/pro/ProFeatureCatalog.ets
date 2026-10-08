@@ -84,6 +84,11 @@ function personalization(): ProFeature {
   feature.availability = 'available';
   return feature;
 }
+/**
+ * Pro 反馈 (the Pro-only 畅联群 and QQ 群) is closed to users for now (2026-10-09): it is left out of the catalog, so
+ * its 反馈 tab and its Pro listings do not show. The groups stay ready behind this switch.
+ */
+export const PRO_FEEDBACK_OPEN: boolean = false;
 function proFeedback(): ProFeature {
   const feature = planned('pro.feedback', 'Pro 反馈',
     '加入 Pro 专属畅联群或 QQ 群，选择适合你的反馈渠道。');
@@ -163,7 +168,7 @@ export function proFeatures(): ProFeature[] {
     knockTransfer(),
     connectionShare(),
     continuation(),
-    proFeedback(),
+    ...(PRO_FEEDBACK_OPEN ? [proFeedback()] : []),
     securityKeyRedirect(),
     phonePasskey()
   ];

@@ -140,3 +140,25 @@ check('应用分身 says it cannot use Pro instead of offering a purchase that f
   assert.ok(reader.includes("if (status.label === '需要 Pro') { status.detail = proCloneLockedDetail(AppCloneContext.getInstance().isClone(), status.detail); }"));
   assert.ok(fs.existsSync(path.resolve(__dirname, '../../docs/codex/plans/2026-10-08-app-clone-pro-plan.md')), 'plan A is recorded');
 });
+
+check('acceptance round 2026-10-09: Pro 反馈 closed, no empty workspace banner or extra add button, sheets fit a Pad window', () => {
+  const catalog = read('services/pro/ProFeatureCatalog.ets');
+  assert.ok(catalog.includes('export const PRO_FEEDBACK_OPEN: boolean = false;'));
+  assert.ok(catalog.includes('...(PRO_FEEDBACK_OPEN ? [proFeedback()] : []),'));
+  const host = read('pages/HostListPage.ets');
+  const strip = read('components/pro/workspace/WorkspaceStrip.ets');
+  assert.ok(!strip.includes('点「+」→「工作区」新建'), 'no banner for a user without workspaces');
+  assert.match(strip, /if \(this\.workspaces\(this\.revision\)\.length > 0\) \{\s*Scroll\(\) \{/, 'the strip shows only once there is a workspace');
+  // PC: the AI sits beside 「+」 only in the large-screen (sidebar) layout, as a labelled capsule; smaller windows keep it
+  // in the title like a Pad.
+  assert.match(host, /private pcAiBesideFab\(\): boolean \{\s*return this\.isDesktopDevice && this\.breakpoint === 'xl';/);
+  assert.equal((host.match(/\.visibility\(this\.hostAiOrbShown\(\) && !this\.pcAiBesideFab\(\) \? Visibility\.Visible : Visibility\.Hidden\)/g) || []).length, 2);
+  assert.match(host, /if \(this\.pcAiBesideFab\(\) && this\.hostAiOrbAvailable\(\)\) \{\s*Row\(\{ space: 8 \}\) \{[\s\S]{0,240}?Text\('AI 助理'\)/);
+  const empty = host.slice(host.indexOf("Text(this.hostSearchOrFilterActive() ? '没有找到匹配的主机' : '还没有远程主机')"),
+    host.indexOf("} else if (!this.groupedHostCardsActive()) {"));
+  assert.ok(!empty.includes("Text('添加主机')") && !empty.includes('this.onFabAddClick()'), 'the empty list has no add button of its own');
+  const about = read('components/AboutSettingsSheet.ets');
+  assert.ok(about.includes("(this.breakpoint === 'sm' ? 600 : this.centredSheetHeight(640))"));
+  assert.ok(about.includes("this.phoneSheetHeight(0.88, 640, 820) : this.centredSheetHeight(680))"));
+  assert.match(about, /private centredSheetHeight\(preferred: number\): number \{[\s\S]*?Math\.min\(preferred, viewport - 80, viewport \* 0\.86\)/);
+});

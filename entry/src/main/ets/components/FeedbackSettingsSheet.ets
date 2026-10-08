@@ -26,6 +26,7 @@ import {
   PRO_FEEDBACK_QQ_MANIFEST_URL
 } from '../services/pro/ProFeedbackPolicy';
 import { ProEntries } from '../services/pro/ProEntries';
+import { PRO_FEEDBACK_OPEN } from '../services/pro/ProFeatureCatalog';
 import { ProBadge } from './ProBadge';
 
 const FEEDBACK_QR_DECODE_EDGE: number = 640;
@@ -205,7 +206,7 @@ export struct FeedbackSettingsSheet {
   }
 
   private proVisible(): boolean {
-    return this.proFeedbackVisible && ProEntries.visible(PRO_FEEDBACK_FEATURE);
+    return PRO_FEEDBACK_OPEN && this.proFeedbackVisible && ProEntries.visible(PRO_FEEDBACK_FEATURE);
   }
 
   private clearProQrPixelMaps(): void {

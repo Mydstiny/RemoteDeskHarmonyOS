@@ -215,7 +215,7 @@ export struct AboutSettingsSheet {
       }
     }
     .width('100%')
-    .height(this.releaseNotesItems.length === 0 ? 180 : (this.breakpoint === 'sm' ? 600 : 640))
+    .height(this.releaseNotesItems.length === 0 ? 180 : (this.breakpoint === 'sm' ? 600 : this.centredSheetHeight(640)))
     .constraintSize({ maxWidth: 760 })
     .clip(true)
     .backgroundColor(this.pal().sheetBg)
@@ -234,6 +234,17 @@ export struct AboutSettingsSheet {
     return Math.round(Math.max(min, Math.min(max, viewport * share)));
   }
 
+  /**
+   * A centred sheet's height on Pad and PC: its preferred height, but never taller than the window (landscape Pad
+   * windows are shorter than 640vp, and the system clipped the bottom button off).
+   */
+  private centredSheetHeight(preferred: number): number {
+    const viewport: number = Number.isFinite(this.guideViewportHeight) && this.guideViewportHeight > 0 ?
+      this.guideViewportHeight : 720;
+    // The system keeps a centred sheet inside a margin of the window: stay below both a fixed and a relative one.
+    return Math.round(Math.max(320, Math.min(preferred, viewport - 80, viewport * 0.86)));
+  }
+
   @Builder proIntroSheet() {
     Column() {
       // Opened from 设置 → 教程, so it can be closed; its one button starts the trial (or carries on with it).
@@ -245,7 +256,7 @@ export struct AboutSettingsSheet {
       })
     }
     .width('100%')
-    .height(this.breakpoint === 'sm' ? this.phoneSheetHeight(0.88, 640, 820) : 680)
+    .height(this.breakpoint === 'sm' ? this.phoneSheetHeight(0.88, 640, 820) : this.centredSheetHeight(680))
     .constraintSize({ maxWidth: 760 })
     .clip(true)
     .backgroundColor(this.pal().sheetBg)

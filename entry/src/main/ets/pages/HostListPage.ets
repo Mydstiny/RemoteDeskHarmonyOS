@@ -15452,20 +15452,24 @@ struct HostListPage {
             this.handleAddSheetDisappear();
           }
         })
-        // PC: the AI beside 「+」 at the bottom left — the same round size, a glass disc holding the AI orb (which keeps
-        // its states: thinking, capturing, hold to talk).
-        if (this.isDesktopDevice && this.hostAiOrbAvailable()) {
-          Stack() {
+        // PC large screen (the sidebar layout): the AI beside 「+」 at the bottom left, as a capsule that says what it
+        // is — the AI orb (which keeps its states: thinking, capturing, hold to talk) and 「AI 助理」. A smaller PC
+        // window keeps it at the top right of the title, as on a Pad.
+        if (this.pcAiBesideFab() && this.hostAiOrbAvailable()) {
+          Row({ space: 8 }) {
             DiagnosticAiOrb({ visible: true, state: this.diagnosticAiOrbState as DiagnosticAiOrbState,
               onOpen: (): void => { this.openDiagnosticAiSection(1); } })
+            Text('AI 助理').fontSize(15).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
+              .fontFamily(this.font())
           }
-          .width(hostListFabSizeVp(this.breakpoint))
           .height(hostListFabSizeVp(this.breakpoint))
+          .padding({ left: 10, right: 20 })
           .borderRadius(hostListFabSizeVp(this.breakpoint) / 2)
           .backgroundColor(this.pal().card)
           .border({ width: 0.5, color: this.pal().cardBorder })
           .shadow({ radius: 14, color: '#26000000', offsetY: 4 })
           .margin({ left: 16 })
+          .stateStyles({ pressed: { .opacity(0.8) }, normal: { .opacity(1) } })
           .accessibilityText('AI 助理')
           .onClick((): void => { this.openDiagnosticAiSection(1); })
         }
@@ -17695,16 +17699,9 @@ struct HostListPage {
                 Button('清除搜索和筛选').height(this.settingsModern() ? 44 : 40).fontSize(14).borderRadius(10).margin({ top: 16 })
                   .backgroundColor(this.pal().surface).fontColor(this.accentColor)
                   .onClick((): void => { this.clearHostSearchAndFilters(); })
-              } else if (this.settingsModern()) {
-                Button() {
-                  Row({ space: 6 }) {
-                    SymbolGlyph($r('sys.symbol.plus')).fontSize(18).fontColor([appUiOnAccentText(this.accentColor)])
-                    Text('添加主机').fontSize(15).fontWeight(FontWeight.Medium).fontColor(appUiOnAccentText(this.accentColor))
-                  }
-                }.height(44).padding({ left: 20, right: 20 }).borderRadius(22).margin({ top: 18 })
-                  .backgroundColor(this.accentColor)
-                  .onClick((): void => { this.onFabAddClick(); })
               }
+              // No add button of its own: the page's 「+」 is the one way to add (a second one here read as clutter).
+
             }.width('100%').constraintSize({ minHeight: 400 }).justifyContent(FlexAlign.Center)
               .alignItems(HorizontalAlign.Center)
           }
@@ -17756,8 +17753,8 @@ struct HostListPage {
                   DiagnosticAiOrb({ visible: true, state: this.diagnosticAiOrbState as DiagnosticAiOrbState,
                     onOpen: (): void => { this.openDiagnosticAiSection(1); } })
                     .margin({ right: 12 })
-                    // PC: the AI is at the bottom left beside 「+」; the title keeps the room so its row never moves.
-                    .visibility(this.hostAiOrbShown() && !this.isDesktopDevice ? Visibility.Visible : Visibility.Hidden)
+                    // PC large screen: the AI is at the bottom left beside 「+」; the title keeps the room so its row never moves.
+                    .visibility(this.hostAiOrbShown() && !this.pcAiBesideFab() ? Visibility.Visible : Visibility.Hidden)
                 }
               Row() {
                 this.hostSearchLeadingIcon()
@@ -17784,7 +17781,7 @@ struct HostListPage {
                 if (this.hostAiOrbAvailable()) {
                   DiagnosticAiOrb({ visible: true, state: this.diagnosticAiOrbState as DiagnosticAiOrbState,
                     onOpen: (): void => { this.openDiagnosticAiSection(1); } })
-                    .visibility(this.hostAiOrbShown() && !this.isDesktopDevice ? Visibility.Visible : Visibility.Hidden)
+                    .visibility(this.hostAiOrbShown() && !this.pcAiBesideFab() ? Visibility.Visible : Visibility.Hidden)
                 }
               }.width('100%').padding({ left: 24, right: 24, bottom: 8 })
               Row() {
@@ -21519,7 +21516,7 @@ struct HostListPage {
           if (this.hostAiOrbAvailable()) {
             DiagnosticAiOrb({ visible: true, state: this.diagnosticAiOrbState as DiagnosticAiOrbState,
               onOpen: (): void => { this.openDiagnosticAiSection(1); } })
-              .visibility(this.isDesktopDevice ? Visibility.Hidden : Visibility.Visible)
+              .visibility(this.pcAiBesideFab() ? Visibility.Hidden : Visibility.Visible)
           }
         }.width('100%').padding({ left: 24, right: 24, bottom: 8 })
       }.width('100%')
@@ -22532,6 +22529,11 @@ struct HostListPage {
   /** The assistant entry sits at the right end of the page title on every tab. */
   private hostAiOrbShown(): boolean {
     return this.hostAiOrbAvailable();
+  }
+
+  /** PC in its large-screen (sidebar) layout puts the AI beside 「+」; every other window keeps it in the title. */
+  private pcAiBesideFab(): boolean {
+    return this.isDesktopDevice && this.breakpoint === 'xl';
   }
 
   /** The entry exists for this account; whether it shows depends on the tab. */

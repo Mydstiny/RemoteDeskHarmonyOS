@@ -188,14 +188,15 @@ const catalogSource = entryTs.transpileModule(fs.readFileSync(catalogPath, 'utf8
 }).outputText;
 vm.runInNewContext(catalogSource, { module: entryModule, exports: entryModule.exports, require: () => ({}) }, { filename: catalogPath });
 const proCatalog = entryModule.exports.proFeatures();
-for (const id of ['pro.workspaces', 'pro.hostManagement', 'pro.feedback']) {
+// Pro 反馈 is closed to users for now: out of the catalog (so its 反馈 tab is hidden) until the switch opens it.
+assert.equal(entryModule.exports.PRO_FEEDBACK_OPEN, false);
+assert.equal(proCatalog.some(item => item.id === 'pro.feedback'), false);
+assert.match(entryModule.exports.proFeatureProgress('pro.feedback'), /Pro.*畅联群.*QQ 群/);
+assert.match(fs.readFileSync(path.resolve(__dirname, '../../entry/src/main/ets/components/FeedbackSettingsSheet.ets'), 'utf8'),
+  /return PRO_FEEDBACK_OPEN && this\.proFeedbackVisible && ProEntries\.visible\(PRO_FEEDBACK_FEATURE\);/);
+for (const id of ['pro.workspaces', 'pro.hostManagement']) {
   const item = proCatalog.find(item => item.id === id); assert.ok(item);
   assert.equal(item.requiredEntitlementId, 'pro.lifetime');
-  if (id === 'pro.feedback') {
-    assert.equal(item.availability, 'available');
-    assert.match(entryModule.exports.proFeatureProgress(id), /Pro.*畅联群.*QQ 群/);
-    continue;
-  }
   assert.equal(item.availability, 'available');
   assert.ok(item.devices.includes('phone')); assert.ok(item.devices.includes('tablet')); assert.ok(item.devices.includes('pc'));
 }
