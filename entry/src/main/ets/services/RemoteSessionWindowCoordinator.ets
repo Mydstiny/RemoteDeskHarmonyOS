@@ -513,6 +513,8 @@ export interface RemoteSessionWindowRecord {
   nativeHandoff: AppliedRemoteSessionWindowNativeHandoff | null;
   readinessBarrier: RemoteSessionWindowReadinessBarrier;
   closeTarget: (() => void) | null;
+  /** The window's system window id once its stage exists; a notification tap brings it forward by this id. */
+  nativeWindowId: number;
 }
 
 export class RemoteSessionWindowCoordinator {
@@ -557,7 +559,8 @@ export class RemoteSessionWindowCoordinator {
       frameController: new RemoteSessionWindowFrameController(),
       nativeHandoff: null,
       readinessBarrier: new RemoteSessionWindowReadinessBarrier(),
-      closeTarget: null
+      closeTarget: null,
+      nativeWindowId: 0
     };
     if (nativeHandoff !== null && !this.applyNativeHandoff(record, nativeHandoff)) {
       return null;
@@ -579,6 +582,17 @@ export class RemoteSessionWindowCoordinator {
     if (record === undefined || record.state === 'closing') { return false; }
     record.closeTarget = closeTarget;
     return true;
+  }
+
+  registerNativeWindow(id: string, nativeWindowId: number): void {
+    const record: RemoteSessionWindowRecord | undefined = this.records.get(id.trim());
+    if (record !== undefined && record.state !== 'closing' && nativeWindowId > 0) { record.nativeWindowId = nativeWindowId; }
+  }
+
+  /** The system window id of an open session window, or 0. */
+  nativeWindowIdFor(id: string): number {
+    const record: RemoteSessionWindowRecord | undefined = this.records.get(id.trim());
+    return record === undefined || record.state === 'closing' ? 0 : record.nativeWindowId;
   }
 
   markPageReady(id: string): boolean {

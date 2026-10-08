@@ -39,7 +39,7 @@ function fixture() {
     control.isCurrent=()=>state.control && options.isCurrent();
     return { accepted:true,taskId:'test-task',attemptId:1,result:state.skipRunner ? Promise.resolve({stage:'cancelled',evidence:'none',diagnosticCode:'cancelled_before_start'}).then(async outcome=>{await options.onFinalize?.(outcome);return outcome;}) : runner(control) };
   }};
-  const methods=['transferRouteIdentity','captureTransferLease','transferLeaseIsCurrent','clipboardLeaseIsCurrent',
+  const methods=['transferRouteIdentity','captureTransferLease','transferLeaseIsCurrent','transferQueueKey','activeTransferPanelLease','clipboardLeaseIsCurrent',
     'releaseNativeTransfer','observeTransferAuthentication','clearTransferAuthentication','submitTransferAuthentication','waitClipboardPublication','publishClipboardForLease','cancelAndDrainNativeTransfer','sendRustDeskFile','submitFileToRustDesk','pickAndSendFile','prepareAndOfferRdpFiles',
     'rdpClipboardHierarchyIsSafe','receiveRdpClipboardEntries','rustDeskClipboardFilesAllowed','offerRustDeskClipboardFiles','observeRustDeskLocalClipboardChange','prepareAndOfferRdpDirectory','pickAndSendDirectory','handleRdpSystemFilePaste','transferClipboardSourceIsCurrent','startDeferredRdpFileDrop','createTransferArtifactBatch'];
   const module={exports:{}};
@@ -50,6 +50,7 @@ function fixture() {
     stat:async()=>({size:state.fileSize,isFile:()=>true}),close:async file=>state.closes.push(file.fd),
     openSync:()=>({fd:42}),statSync:()=>({size:state.fileSize,isFile:()=>true}),closeSync:file=>state.closes.push(file.fd)};
   vm.runInNewContext(code,{module,exports:module.exports,AccountSessionCoordinator:{getInstance:()=>({currentScope:()=>scope})},
+    transferStorageFailureCode:(error,fallback)=>['transfer_space_limit','transfer_size_limit'].includes(error?.message)?error.message:fallback,
     TransferArtifactBatch:class {
       constructor(){this.id='incoming';}
       async stage(uri,name,size,current,progress){assert.ok(current());progress(size,size);return {name,path:'/private/staged',size};}

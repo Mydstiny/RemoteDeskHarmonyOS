@@ -11,10 +11,13 @@ import {
   makeTransferStatusText,
   makeTransferTitle
 } from './FileTransferProgressModel';
+import { FOCUS_SESSION_WINDOW_PARAM } from './SessionWindowFocusParam';
 
 const TAG = 'FileTransferLiveTask';
 const NOTIFY_BASE_ID = 604200;
 const LIVE_VIEW_TYPE_UPLOAD_DOWNLOAD = 8;
+/** The main ability: session windows are multiton and close themselves when started without their launch record. */
+const NOTIFICATION_TARGET_ABILITY = 'EntryAbility';
 
 class ActiveTransferTask {
   taskId: string = '';
@@ -29,6 +32,11 @@ class ActiveTransferTask {
   stopAttempts: number = 0;
 }
 
+function transferSnapshotFinished(snapshot: FileTransferProgressSnapshot): boolean {
+  return ['completed', 'failed', 'cancelled', 'handedOff', 'interrupted', 'paused', 'commitUnknown', 'expired']
+    .indexOf(snapshot.state) >= 0;
+}
+
 export class FileTransferLiveTaskService {
   private static instance: FileTransferLiveTaskService | null = null;
   private activeTasks: Map<string, ActiveTransferTask> = new Map<string, ActiveTransferTask>();
@@ -41,7 +49,8 @@ export class FileTransferLiveTaskService {
     return FileTransferLiveTaskService.instance;
   }
 
-  async begin(context: common.UIAbilityContext, snapshot: FileTransferProgressSnapshot): Promise<void> {
+  async begin(context: common.UIAbilityContext, snapshot: FileTransferProgressSnapshot,
+    windowId: string = ''): Promise<void> {
     const key: string = this.taskKey(snapshot);
     const existing: ActiveTransferTask | undefined = this.activeTasks.get(key);
     if (existing !== undefined) { await existing.tail; return; }
@@ -49,7 +58,7 @@ export class FileTransferLiveTaskService {
     task.taskId = key;
     task.notificationId = this.allocateNotificationId();
     this.activeTasks.set(key, task);
-    task.tail = this.startLiveTask(context, task).then(async (): Promise<void> => {
+    task.tail = this.startLiveTask(context, task, windowId).then(async (): Promise<void> => {
       if (!task.finishing) { await this.publishProgress(task, snapshot); }
     });
     await task.tail;
@@ -100,12 +109,16 @@ export class FileTransferLiveTaskService {
     return this.nextFallbackId;
   }
 
-  private async startLiveTask(context: common.UIAbilityContext, task: ActiveTransferTask): Promise<void> {
+  private async startLiveTask(context: common.UIAbilityContext, task: ActiveTransferTask,
+    windowId: string): Promise<void> {
     try {
+      const parameters: Record<string, Object> = {};
+      if (windowId.length > 0) { parameters[FOCUS_SESSION_WINDOW_PARAM] = windowId; }
       const agentInfo: wantAgent.WantAgentInfo = {
         wants: [{
           bundleName: context.abilityInfo.bundleName,
-          abilityName: context.abilityInfo.name
+          abilityName: NOTIFICATION_TARGET_ABILITY,
+          parameters
         }],
         actionType: wantAgent.OperationType.START_ABILITY,
         requestCode: task.notificationId,
@@ -237,9 +250,9 @@ export class FileTransferLiveTaskService {
       id: notificationId,
       notificationSlotType: notificationManager.SlotType.SERVICE_INFORMATION,
       template,
-      tapDismissed: snapshot.state === 'completed' || snapshot.state === 'failed' || snapshot.state === 'cancelled',
+      tapDismissed: transferSnapshotFinished(snapshot),
       isAlertOnce: true,
-      autoDeletedTime: snapshot.state === 'completed' || snapshot.state === 'failed' || snapshot.state === 'cancelled' ? Date.now() + 6000 : 0
+      autoDeletedTime: transferSnapshotFinished(snapshot) ? Date.now() + 6000 : 0
     };
   }
 }

@@ -308,13 +308,13 @@ import { scanAuthorizedTransferDirectory, exportTransferArtifactTree, TransferDi
 import { collectRemoteTransferTree, sameRemoteTransferDirectory, RemoteTransferTree } from '../services/TransferRemoteTreePolicy';
 import { RustDeskTransferClient } from '../services/RustDeskTransferClient';
 import { TransferArtifactPublicationService } from '../services/TransferArtifactPublicationService';
-import { TransferArtifact, TransferArtifactBatch, TransferReceivedArtifactWriter, TransferNativeReceiveDirectory, TransferNativeReceivedEntry, TransferArtifactBatchInfo, TransferPlatformIncomingDirectory, recoverTransferArtifactInventory, cleanupOwnedTransferArtifactBatch, exportTransferArtifact, ensureTransferScopeDirectory, safeTransferFileName, transferScopeKey } from '../services/TransferArtifactStore';
+import { TransferArtifact, TransferArtifactBatch, TransferReceivedArtifactWriter, TransferNativeReceiveDirectory, TransferNativeReceivedEntry, TransferArtifactBatchInfo, TransferPlatformIncomingDirectory, recoverTransferArtifactInventory, cleanupOwnedTransferArtifactBatch, exportTransferArtifact, ensureTransferScopeDirectory, safeTransferFileName, transferScopeKey, transferStorageFailureCode } from '../services/TransferArtifactStore';
+import { scheduleTransferArtifactMaintenance } from '../services/TransferArtifactMaintenance';
 import { ManagedTransferTaskService, ManagedTransferControl } from '../services/ManagedTransferTaskService';
 import { FileTransferTaskList } from '../components/FileTransferTaskList';
 import { renamedRemoteTransferFileName, joinRemoteTransferPath, remoteTransferPathIsAbsolute, parentRemoteTransferPath, remoteTransferEntryPath } from '../services/TransferRemotePathPolicy';
 import { ManagedTransferOutcome } from '../services/ManagedTransferTaskPolicy';
 import { AppCloneContext } from '../services/AppCloneContext';
-import { FileTransferLiveTaskService } from '../services/FileTransferLiveTaskService';
 import { RemoteSessionBackgroundTaskService, RemoteSessionBgInfo } from '../services/RemoteSessionBackgroundTaskService';
 import { RemoteSessionLiveViewService, LiveViewConnectionInfo } from '../services/RemoteSessionLiveViewService';
 import { LiveViewMode } from '../services/LiveViewTypes';
@@ -683,7 +683,7 @@ import {
   RustDeskMultiCanvasPreviewDecision,
   selectRustDeskMultiCanvasPreview
 } from '../services/RustDeskMultiCanvasPreviewPolicy';
-import { createTransferSnapshot, TransferProtocol, TransferState } from '../services/FileTransferProgressModel';
+import { TransferProtocol, TransferState } from '../services/FileTransferProgressModel';
 import { isRemoteCompletionConfirmed } from '../services/TransferSessionPolicy';
 import {
   PC_SESSION_TOP_BAR_HIDDEN_KEY,
@@ -1535,6 +1535,7 @@ struct RemoteDesktop {
   private bgRestorePending: boolean = false; // T-252: 后台保活恢复待处理 (替代 AppStorage 时序问题)
   private activeSessionRegistry: RemoteSessionRecordRegistry = ActiveRemoteSessionRegistry.getInstance();
   private sessionWindowId: string = '';
+  private transferPanelStaleNoticeAt: number = 0;
   // Desktop RDP/VNC uses this page only to establish the native session after
   // HostList preflight. Only a fully connected native session is moved into a
   // new UIAbility; preflight alone must never create a window.
@@ -12065,7 +12066,8 @@ struct RemoteDesktop {
       protocolLabel: this.backgroundSessionInfo.protocolLabel,
       hostAddress: this.backgroundSessionInfo.hostAddress,
       hasAudio: media.hasAudio,
-      hasVideo: media.hasVideo
+      hasVideo: media.hasVideo,
+      windowId: this.backgroundSessionInfo.windowId
     };
     this.backgroundSessionInfo = nextInfo;
     RemoteSessionBackgroundTaskService.getInstance().updateAudioPlaybackMode(ctx, nextInfo)
@@ -18452,7 +18454,8 @@ struct RemoteDesktop {
             (this.pendingHost.protocol === 'vnc' ? 'VNC' : 'RustDesk'),
           hostAddress: this.pendingHost.host,
           hasAudio: backgroundMedia.hasAudio,
-          hasVideo: backgroundMedia.hasVideo
+          hasVideo: backgroundMedia.hasVideo,
+          windowId: this.sessionWindowId
         };
         this.startRemoteSessionBackgroundTask(ctx, info).then((started: boolean): void => {
           if (started) {
@@ -19084,6 +19087,27 @@ struct RemoteDesktop {
     const scope = AccountSessionCoordinator.getInstance().currentScope();
     return scope.ownerScopeId === lease.accountScopeId && scope.generation === lease.accountGeneration &&
       this.loader.ownsDisconnectIdentity(lease.nativeOwner);
+  }
+
+  /**
+   * The file panel's session. When it reconnected or ended since the panel opened, the panel's buttons cannot act;
+   * say so instead of doing nothing (callers still check the lease and stop).
+   */
+  private activeTransferPanelLease(): RemoteTransferLease | null {
+    const lease: RemoteTransferLease | null = this.transferPanelLease;
+    if (lease === null || this.transferLeaseIsCurrent(lease)) { return lease; }
+    const now: number = Date.now();
+    if (this.showFileTransferPanel && now - this.transferPanelStaleNoticeAt > 3000) {
+      this.transferPanelStaleNoticeAt = now;
+      promptAction.showToast({ message: this.connected ? '连接已重新建立，请关闭文件面板后重新打开' :
+        '连接已断开，文件操作暂不可用', duration: 2600 });
+    }
+    return lease;
+  }
+
+  /** Transfers of one remote session share a queue lane; other sessions (split screen, windows) run beside them. */
+  private transferQueueKey(lease: RemoteTransferLease): string {
+    return lease.windowId + ':' + lease.sessionId.toString() + ':' + lease.nativeGeneration.toString();
   }
 
   private clipboardLeaseIsCurrent(lease: RemoteTransferLease): boolean {
@@ -19724,49 +19748,6 @@ struct RemoteDesktop {
     }
   }
 
-  private createFileTransferTaskId(protocol: TransferProtocol, fileName: string): string {
-    return protocol + '-' + Date.now().toString() + '-' + fileName.length.toString();
-  }
-
-  private async beginLiveFileTransfer(protocol: TransferProtocol, fileName: string, total: number,
-    statusText: string): Promise<string> {
-    const ctx: common.UIAbilityContext | null = this.getFileTransferContext();
-    if (ctx === null) {
-      return '';
-    }
-    const taskId: string = this.createFileTransferTaskId(protocol, fileName);
-    await FileTransferLiveTaskService.getInstance().begin(ctx,
-      createTransferSnapshot(taskId, protocol, fileName, 0, total, 'preparing', statusText));
-    return taskId;
-  }
-
-  private async updateLiveFileTransfer(taskId: string, protocol: TransferProtocol, fileName: string,
-    transferred: number, total: number, state: TransferState, statusText: string): Promise<void> {
-    if (taskId.length === 0) {
-      return;
-    }
-    await FileTransferLiveTaskService.getInstance().update(
-      createTransferSnapshot(taskId, protocol, fileName, transferred, total, state, statusText));
-  }
-
-  private async finishLiveFileTransfer(taskId: string, protocol: TransferProtocol, fileName: string,
-    transferred: number, total: number, failed: boolean, statusText: string): Promise<void> {
-    if (taskId.length === 0) {
-      return;
-    }
-    const ctx: common.UIAbilityContext | null = this.getFileTransferContext();
-    if (ctx === null) {
-      return;
-    }
-    if (failed) {
-      await FileTransferLiveTaskService.getInstance().fail(ctx,
-        createTransferSnapshot(taskId, protocol, fileName, transferred, total, 'failed', statusText));
-      return;
-    }
-    await FileTransferLiveTaskService.getInstance().complete(ctx,
-      createTransferSnapshot(taskId, protocol, fileName, total, total, 'completed', statusText));
-  }
-
   private async prepareAndOfferRdpFiles(sources: TransferFileSource[], lease: RemoteTransferLease,
     origin: string, expectedSource?: TransferClipboardSourceIdentity,
     preparedBatch?: TransferArtifactBatch, preparedArtifacts?: TransferArtifact[], automaticCurrent?: () => boolean): Promise<boolean> {
@@ -19799,6 +19780,7 @@ struct RemoteDesktop {
       if (!Number.isSafeInteger(total) || total > RDP_FILE_MAX_BYTES) { return false; }
     }
     const handle = service.enqueue({ accountScopeId: lease.accountScopeId, hostId: lease.hostId,
+      queueKey: this.transferQueueKey(lease), windowId: this.sessionWindowId,
       leaseId: lease.nativeGeneration.toString(),
       onFinalize: (): void => { batch.release(); },
       protocol: 'rdp', direction: 'upload', batchId: batch.id, fileName: sources.length === 1 ? sources[0].name :
@@ -19852,10 +19834,10 @@ struct RemoteDesktop {
             }
           }
           // CLIPRDR offer/read success does not acknowledge destination persistence.
-          return { stage: 'paused', evidence: 'offered', diagnosticCode: 'target_write_unconfirmed' };
+          return { stage: 'handedOff', evidence: 'offered', diagnosticCode: 'target_write_unconfirmed' };
         } catch (_err) {
           return { stage: control.isCancellationRequested() ? 'cancelled' : 'failed', evidence: 'none',
-            diagnosticCode: 'staging_incomplete' };
+            diagnosticCode: transferStorageFailureCode(_err as Error, 'staging_incomplete') };
         } finally {
           // Published offers retain their durable hold independently of preparation.
           try { batch.release(); } catch (_err) {}
@@ -19939,7 +19921,7 @@ struct RemoteDesktop {
   }
 
   private async createRemoteTransferDirectory(): Promise<void> {
-    const lease: RemoteTransferLease | null = this.transferPanelLease;
+    const lease: RemoteTransferLease | null = this.activeTransferPanelLease();
     const parent: string = this.remoteTransferDirectory;
     const name: string = this.transferNewDirectoryName;
     const path: string = joinRemoteTransferPath(parent, name);
@@ -20053,6 +20035,7 @@ struct RemoteDesktop {
     const batch: TransferArtifactBatch | null = this.createTransferArtifactBatch(context, lease, 'clipboard');
     if (batch === null) { return; }
     const handle = service.enqueue({ accountScopeId: lease.accountScopeId, hostId: lease.hostId,
+      queueKey: this.transferQueueKey(lease), windowId: this.sessionWindowId,
       leaseId: lease.nativeGeneration.toString(),
       onFinalize: (): void => { batch.release(); },
       protocol: 'rdp', direction: 'upload', fileName: tree.rootName, totalBytes: tree.totalBytes, batchId: batch.id,
@@ -20077,7 +20060,7 @@ struct RemoteDesktop {
           if (this.clipboardLeaseIsCurrent(lease)) {
             this.keyDispatcher.sendShortcutSequence(this.loader, lease.sessionId, [KEYCODE_CTRL_LEFT, KEY_V], 'RDP directory paste');
           }
-          return { stage: 'paused', evidence: 'offered', diagnosticCode: 'target_write_unconfirmed' };
+          return { stage: 'handedOff', evidence: 'offered', diagnosticCode: 'target_write_unconfirmed' };
         } catch (_error) { return { stage: 'failed', evidence: 'none', diagnosticCode: 'directory_staging_incomplete' }; }
         finally { batch.release(); }
       });
@@ -20112,6 +20095,7 @@ struct RemoteDesktop {
       const service: ManagedTransferTaskService = ManagedTransferTaskService.getInstance();
       if (!service.init(context)) { return; }
       const handle = service.enqueue({ accountScopeId: lease.accountScopeId, hostId: lease.hostId,
+        queueKey: this.transferQueueKey(lease), windowId: this.sessionWindowId,
         leaseId: lease.nativeGeneration.toString(),
         protocol: 'rustdesk', direction: 'upload', fileName: tree.rootName, totalBytes: tree.totalBytes,
         sourceKind: 'authorized-directory-tree', isCurrent: current },
@@ -20194,6 +20178,7 @@ struct RemoteDesktop {
     const service: ManagedTransferTaskService = ManagedTransferTaskService.getInstance();
     if (!service.init(context)) { return 'failed'; }
     const handle = service.enqueue({ accountScopeId: lease.accountScopeId, hostId: lease.hostId,
+      queueKey: this.transferQueueKey(lease), windowId: this.sessionWindowId,
       leaseId: lease.nativeGeneration.toString(),
       protocol: 'rustdesk', direction: 'upload', fileName, totalBytes: fileSize,
       sourceKind: 'authorized-file',
@@ -20215,7 +20200,7 @@ struct RemoteDesktop {
   }
 
   private async requestRdpRemoteClipboardFiles(): Promise<void> {
-    const lease: RemoteTransferLease | null = this.transferPanelLease;
+    const lease: RemoteTransferLease | null = this.activeTransferPanelLease();
     if (lease === null || lease.protocol !== 'rdp' || !this.transferLeaseIsCurrent(lease)) { return; }
     if (!this.rdpFileTransferEnabledForSession(lease.sessionId, lease.attemptId)) {
       this.rdpReceiveOffer = { sequence: 0, state: 'unavailable', streamSupported: false, lockSupported: false,
@@ -20283,7 +20268,7 @@ struct RemoteDesktop {
   }
 
   private async receiveRdpClipboardEntries(entries: SessionRdpClipboardFileEntry[]): Promise<void> {
-    const lease: RemoteTransferLease | null = this.transferPanelLease;
+    const lease: RemoteTransferLease | null = this.activeTransferPanelLease();
     const offer: SessionRdpClipboardFiles = this.rdpReceiveOffer;
     if (lease === null || !this.transferLeaseIsCurrent(lease) || lease.protocol !== 'rdp' ||
       offer.state !== 'ready' || !this.rdpClipboardHierarchyIsSafe(offer) || entries.length === 0 || entries.length > 1024 ||
@@ -20302,6 +20287,7 @@ struct RemoteDesktop {
     this.setFileTransferStatus('正在接收远端文件清单', 0, true);
     this.transferArtifactBatches.set(batch.directory, batch);
     const handle = service.enqueue({ accountScopeId: lease.accountScopeId, hostId: lease.hostId,
+      queueKey: this.transferQueueKey(lease), windowId: this.sessionWindowId,
       leaseId: lease.nativeGeneration.toString(),
       onFinalize: (): void => { batch.release(); }, protocol: 'rdp',
       direction: 'download', fileName: entries.length === 1 ? safeTransferFileName(entries[0].relativeName.split('/').pop() || '文件') :
@@ -20357,7 +20343,8 @@ struct RemoteDesktop {
           }
         } catch (_err) {
           if (id > 0 && !drained) { drained = await this.cancelAndDrainRdpReceive(lease, id); }
-          return { stage: id > 0 && !drained ? 'paused' : 'failed', evidence: 'none', diagnosticCode: 'receive_failed' };
+          return { stage: id > 0 && !drained ? 'paused' : 'failed', evidence: 'none',
+            diagnosticCode: transferStorageFailureCode(_err as Error, 'receive_failed') };
         } finally {
           if (id > 0 && drained) { this.loader.releaseSessionRdpClipboardReceive(lease.sessionId, lease.nativeGeneration, id); }
           if (slot !== null && !committed) {
@@ -20376,13 +20363,13 @@ struct RemoteDesktop {
   }
 
   private refreshRdpSharedFiles(): void {
-    const lease: RemoteTransferLease | null = this.transferPanelLease;
+    const lease: RemoteTransferLease | null = this.activeTransferPanelLease();
     if (lease === null || !this.transferLeaseIsCurrent(lease) || lease.protocol !== 'rdp') { return; }
     this.rdpSharedDrive = this.loader.getSessionRdpDrive(lease.sessionId, lease.nativeGeneration);
   }
 
   private async freezeRdpSharedFile(fact: SessionRdpReceivedFileFact): Promise<void> {
-    const lease: RemoteTransferLease | null = this.transferPanelLease;
+    const lease: RemoteTransferLease | null = this.activeTransferPanelLease();
     if (lease === null || !this.transferLeaseIsCurrent(lease) || !fact.remoteClosed || fact.activeHandles > 0 || fact.uncertain) { return; }
     const root: string = this.ensureRdpTransferDir();
     const relative: string = fact.relativePath.replace(/\\/g, '/').replace(/^\/+/, '');
@@ -20406,6 +20393,7 @@ struct RemoteDesktop {
         transferScopeKey(lease.accountScopeId, lease.hostId + ':' + lease.routeIdentity), 'received');
       this.transferArtifactBatches.set(batch.directory, batch);
       const handle = service.enqueue({ accountScopeId: lease.accountScopeId, hostId: lease.hostId,
+        queueKey: this.transferQueueKey(lease), windowId: this.sessionWindowId,
         leaseId: lease.nativeGeneration.toString(),
         protocol: 'rdp', direction: 'download', fileName: safeTransferFileName(this.fileBaseName(path)),
         totalBytes: info.size, batchId: batch.id, sourceKind: 'shared-drive', isCurrent: stillClosed,
@@ -20471,7 +20459,8 @@ struct RemoteDesktop {
           }
         } catch (_err) {
           if (id > 0 && !drained) { drained = (await this.cancelAndDrainNativeTransfer(lease, id)) !== null; }
-          return { stage: id > 0 && !drained ? 'paused' : 'failed', evidence: 'none', diagnosticCode: 'download_failed' };
+          return { stage: id > 0 && !drained ? 'paused' : 'failed', evidence: 'none',
+            diagnosticCode: transferStorageFailureCode(_err as Error, 'download_failed') };
         } finally {
           if (id > 0 && drained) { this.releaseNativeTransfer(lease, id); }
           if (slot !== null && !committed) {
@@ -20483,7 +20472,7 @@ struct RemoteDesktop {
   }
 
   private async downloadRustDeskDirectory(entry: SessionRemoteFileEntry): Promise<void> {
-    const lease: RemoteTransferLease | null = this.transferPanelLease;
+    const lease: RemoteTransferLease | null = this.activeTransferPanelLease();
     const context: common.UIAbilityContext | null = this.getFileTransferContext();
     const root: string = joinRemoteTransferPath(this.remoteTransferDirectory, entry.name);
     if (lease === null || context === null || entry.type !== 0 || root.length === 0 ||
@@ -20493,9 +20482,10 @@ struct RemoteDesktop {
     const batch: TransferArtifactBatch | null = this.createTransferArtifactBatch(context, lease, 'received');
     if (batch === null) { return; }
     const handle = service.enqueue({ accountScopeId: lease.accountScopeId, hostId: lease.hostId,
+      queueKey: this.transferQueueKey(lease), windowId: this.sessionWindowId,
       leaseId: lease.nativeGeneration.toString(),
       onFinalize: (): void => { batch.release(); },
-      protocol: 'rustdesk', direction: 'download', fileName: entry.name, batchId: batch.id,
+      protocol: 'rustdesk', direction: 'download', fileName: safeTransferFileName(entry.name), batchId: batch.id,
       totalBytes: 0, sourceKind: 'remote-directory-tree', isCurrent: (): boolean =>
         this.transferLeaseIsCurrent(lease) && this.currentSessionCapabilities().fileDownload.enabled },
       async (control: ManagedTransferControl): Promise<ManagedTransferOutcome> => {
@@ -20522,7 +20512,7 @@ struct RemoteDesktop {
           return { stage: 'completed', evidence: 'metadataVerified' };
         } catch (_error) {
           return { stage: control.isCancellationRequested() ? 'cancelled' : 'failed', evidence: 'none',
-            diagnosticCode: 'directory_tree_incomplete' };
+            diagnosticCode: transferStorageFailureCode(_error as Error, 'directory_tree_incomplete') };
         } finally { batch.release(); }
       });
     if (!handle.accepted) { batch.release(); }
@@ -20535,7 +20525,7 @@ struct RemoteDesktop {
   }
 
   private async downloadRustDeskFile(entry: SessionRemoteFileEntry): Promise<void> {
-    const lease: RemoteTransferLease | null = this.transferPanelLease;
+    const lease: RemoteTransferLease | null = this.activeTransferPanelLease();
     const remotePath: string = joinRemoteTransferPath(this.remoteTransferDirectory, entry.name);
     if (lease === null || !this.transferLeaseIsCurrent(lease) || lease.protocol !== 'rustdesk' ||
       entry.type !== 4 || remotePath.length === 0 || !this.currentSessionCapabilities().fileDownload.enabled) { return; }
@@ -20547,6 +20537,7 @@ struct RemoteDesktop {
     if (batch === null) { return; }
     this.transferArtifactBatches.set(batch.directory, batch);
     const handle = service.enqueue({ accountScopeId: lease.accountScopeId, hostId: lease.hostId,
+      queueKey: this.transferQueueKey(lease), windowId: this.sessionWindowId,
       leaseId: lease.nativeGeneration.toString(),
       onFinalize: (): void => { batch.release(); },
       protocol: 'rustdesk', direction: 'download', fileName: safeTransferFileName(entry.name),
@@ -20565,7 +20556,7 @@ struct RemoteDesktop {
   }
 
   private async saveReceivedTransferArtifact(artifact: TransferArtifact): Promise<void> {
-    const lease: RemoteTransferLease | null = this.transferPanelLease;
+    const lease: RemoteTransferLease | null = this.activeTransferPanelLease();
     if (lease === null || artifact.directory === true || !this.transferLeaseIsCurrent(lease)) { return; }
     const context: common.UIAbilityContext | null = this.getFileTransferContext();
     if (context === null) { return; }
@@ -20578,13 +20569,16 @@ struct RemoteDesktop {
       if (!service.init(context)) { return; }
       const protocol: TransferProtocol = lease.protocol === 'rdp' ? 'rdp' : 'rustdesk';
       const handle = service.enqueue({ accountScopeId: lease.accountScopeId, hostId: lease.hostId,
+        queueKey: this.transferQueueKey(lease), windowId: this.sessionWindowId,
         leaseId: lease.nativeGeneration.toString(),
         protocol, direction: 'download', fileName: artifact.name, totalBytes: artifact.size, sourceKind: 'local-export',
-        isCurrent: (): boolean => this.transferLeaseIsCurrent(lease) },
+        // Saving a received copy is local work: it continues if the session drops and stays cancellable.
+        local: true, isCurrent: (): boolean => true },
         async (control: ManagedTransferControl): Promise<ManagedTransferOutcome> => {
           if (!await control.enterCommit()) { return { stage: 'cancelled', evidence: 'none' }; }
+          // The save dialog returned this file: the user chose it, including replacing one that exists.
           const result = await exportTransferArtifact(artifact, target, control.isCurrent,
-            (written: number, _total: number): void => { control.update({ writtenBytes: written }); });
+            (written: number, _total: number): void => { control.update({ writtenBytes: written }); }, true);
           if (result.status === 'saved') { return { stage: 'completed', evidence: 'exported' }; }
           return { stage: result.status, evidence: 'none', diagnosticCode: result.diagnosticCode };
         });
@@ -20600,7 +20594,7 @@ struct RemoteDesktop {
   }
 
   private async saveReceivedTransferDirectory(root: TransferArtifact): Promise<void> {
-    const lease: RemoteTransferLease | null = this.transferPanelLease;
+    const lease: RemoteTransferLease | null = this.activeTransferPanelLease();
     const context: common.UIAbilityContext | null = this.getFileTransferContext();
     const batch: TransferArtifactBatch | null = TransferArtifactBatch.owner(root);
     if (lease === null || context === null || batch === null || !root.directory || !this.transferLeaseIsCurrent(lease)) { return; }
@@ -20614,10 +20608,11 @@ struct RemoteDesktop {
       if (!service.init(context)) { return; }
       const total: number = artifacts.reduce((sum: number, artifact: TransferArtifact): number => sum + artifact.size, 0);
       const handle = service.enqueue({ accountScopeId: lease.accountScopeId, hostId: lease.hostId,
+        queueKey: this.transferQueueKey(lease), windowId: this.sessionWindowId,
         leaseId: lease.nativeGeneration.toString(),
         protocol: lease.protocol === 'rdp' ? 'rdp' : 'rustdesk', direction: 'download', fileName: root.name,
         batchId: batch.id, totalBytes: total, sourceKind: 'local-directory-export',
-        isCurrent: (): boolean => this.transferLeaseIsCurrent(lease) },
+        local: true, isCurrent: (): boolean => true },
         async (control: ManagedTransferControl): Promise<ManagedTransferOutcome> => {
           if (!await control.enterCommit()) { return { stage: 'cancelled', evidence: 'none' }; }
           const result: TransferDirectoryExportResult = await exportTransferArtifactTree(artifacts, targets[0], control.isCurrent,
@@ -20635,7 +20630,7 @@ struct RemoteDesktop {
   }
 
   private publishReceivedTransferArtifact(artifact: TransferArtifact): void {
-    const lease: RemoteTransferLease | null = this.transferPanelLease;
+    const lease: RemoteTransferLease | null = this.activeTransferPanelLease();
     if (lease === null || artifact.directory === true || !this.clipboardLeaseIsCurrent(lease)) { return; }
     const batch: TransferArtifactBatch | null = TransferArtifactBatch.owner(artifact);
     if (batch === null) { return; }
@@ -20657,7 +20652,7 @@ struct RemoteDesktop {
   }
 
   private async showLegacyTransferCaches(): Promise<void> {
-    const lease: RemoteTransferLease | null = this.transferPanelLease;
+    const lease: RemoteTransferLease | null = this.activeTransferPanelLease();
     const context: common.UIAbilityContext | null = this.getFileTransferContext();
     if (lease === null || context === null || !this.transferLeaseIsCurrent(lease) || this.legacyTransferBusy) { return; }
     this.legacyTransferBusy = true; this.legacyTransferCaches = [];
@@ -20674,7 +20669,7 @@ struct RemoteDesktop {
   }
 
   private async recoverLegacyTransferCache(item: LegacyTransferCacheSummary): Promise<void> {
-    const lease: RemoteTransferLease | null = this.transferPanelLease;
+    const lease: RemoteTransferLease | null = this.activeTransferPanelLease();
     const context: common.UIAbilityContext | null = this.getFileTransferContext();
     if (lease === null || context === null || !item.available || !this.transferLeaseIsCurrent(lease)) { return; }
     const service: ManagedTransferTaskService = ManagedTransferTaskService.getInstance();
@@ -20682,6 +20677,7 @@ struct RemoteDesktop {
     const batch: TransferArtifactBatch | null = this.createTransferArtifactBatch(context, lease, 'received');
     if (batch === null) { return; }
     const handle = service.enqueue({ accountScopeId: lease.accountScopeId, hostId: lease.hostId,
+      queueKey: this.transferQueueKey(lease), windowId: this.sessionWindowId,
       leaseId: lease.nativeGeneration.toString(),
       onFinalize: (): void => { batch.release(); },
       protocol: lease.protocol === 'rdp' ? 'rdp' : 'rustdesk', direction: 'download', fileName: item.name,
@@ -20704,7 +20700,7 @@ struct RemoteDesktop {
   }
 
   private refreshTransferCache(): void {
-    const lease: RemoteTransferLease | null = this.transferPanelLease;
+    const lease: RemoteTransferLease | null = this.activeTransferPanelLease();
     const context: common.UIAbilityContext | null = this.getFileTransferContext();
     if (lease === null || context === null || !this.transferLeaseIsCurrent(lease)) { return; }
     const scope: string = transferScopeKey(lease.accountScopeId, lease.hostId + ':' + lease.routeIdentity);
@@ -20723,7 +20719,7 @@ struct RemoteDesktop {
   }
 
   private async cleanupTransferCacheBatch(info: TransferArtifactBatchInfo): Promise<void> {
-    const lease: RemoteTransferLease | null = this.transferPanelLease;
+    const lease: RemoteTransferLease | null = this.activeTransferPanelLease();
     const context: common.UIAbilityContext | null = this.getFileTransferContext();
     if (lease === null || context === null || !info.canCleanup || !this.transferLeaseIsCurrent(lease)) { return; }
     const result = await cleanupOwnedTransferArtifactBatch(context.filesDir,
@@ -20803,6 +20799,8 @@ struct RemoteDesktop {
       this.fileTransferPanelMode = 'chooser';
       this.showFileTransferPanel = true;
       hilog.info(RD_DOMAIN, RD_TAG, 'RustDesk file panel opened after click settle');
+      const maintenanceContext: common.UIAbilityContext | null = this.getFileTransferContext();
+      if (maintenanceContext !== null) { scheduleTransferArtifactMaintenance(maintenanceContext.filesDir); }
       this.refreshTransferCache();
       if (lease.protocol === 'rdp') { this.refreshRdpSharedFiles(); }
       if (lease.protocol === 'rustdesk' && this.remoteTransferDirectory.length === 0) {
@@ -20812,7 +20810,7 @@ struct RemoteDesktop {
   }
 
   private async browseRemoteTransferDirectory(path: string): Promise<void> {
-    const lease: RemoteTransferLease | null = this.transferPanelLease;
+    const lease: RemoteTransferLease | null = this.activeTransferPanelLease();
     if (lease === null || !this.transferLeaseIsCurrent(lease) || lease.protocol !== 'rustdesk') {
       hilog.warn(RD_DOMAIN, RD_TAG, 'RustDesk remote directory request skipped lease current=' +
         (lease !== null && this.transferLeaseIsCurrent(lease) ? '1' : '0') +
@@ -21038,6 +21036,7 @@ struct RemoteDesktop {
     const batch: TransferArtifactBatch | null = this.createTransferArtifactBatch(context, lease, 'clipboard');
     if (batch === null) { return false; }
     const handle = service.enqueue({ accountScopeId: lease.accountScopeId, hostId: lease.hostId,
+      queueKey: this.transferQueueKey(lease), windowId: this.sessionWindowId,
       leaseId: lease.nativeGeneration.toString(),
       protocol: 'rustdesk', direction: 'upload', fileName: sources.length === 1 ? sources[0].name : sources.length.toString() + ' 个文件',
       batchId: batch.id, totalBytes: total, sourceKind: origin, isCurrent: current,
@@ -21073,7 +21072,7 @@ struct RemoteDesktop {
           if (automaticCurrent === undefined && this.clipboardLeaseIsCurrent(lease)) {
             this.keyDispatcher.sendShortcutSequence(this.loader, lease.sessionId, [modifier, KEY_V], 'RustDesk file paste');
           }
-          return { stage: 'paused', evidence: 'offered', diagnosticCode: 'target_write_unconfirmed' };
+          return { stage: 'handedOff', evidence: 'offered', diagnosticCode: 'target_write_unconfirmed' };
         } catch (_error) { return { stage: 'failed', evidence: 'none', diagnosticCode: 'clipboard_staging_failed' }; }
         finally { for (const file of opened) { try { await fileIo.close(file); } catch (_error) {} } }
       });
@@ -21089,7 +21088,7 @@ struct RemoteDesktop {
   }
 
   private async refreshRustDeskClipboardFiles(): Promise<void> {
-    const lease: RemoteTransferLease | null = this.transferPanelLease;
+    const lease: RemoteTransferLease | null = this.activeTransferPanelLease();
     if (lease === null || !this.rustDeskClipboardFilesAllowed(lease, false)) { return; }
     const current = (): boolean => this.rustDeskClipboardFilesAllowed(lease, false) && this.showFileTransferPanel;
     const client: RustDeskClipboardClient = new RustDeskClipboardClient(this.loader, lease.sessionId, lease.nativeGeneration, current);
@@ -21115,7 +21114,7 @@ struct RemoteDesktop {
   }
 
   private async receiveRustDeskClipboardFiles(): Promise<void> {
-    const lease: RemoteTransferLease | null = this.transferPanelLease;
+    const lease: RemoteTransferLease | null = this.activeTransferPanelLease();
     const revision: number = this.rustdeskClipboardRevision;
     const context: common.UIAbilityContext | null = this.getFileTransferContext();
     if (lease === null || context === null || !this.rustDeskClipboardFilesAllowed(lease, false)) { return; }
@@ -21130,6 +21129,7 @@ struct RemoteDesktop {
     if (batch === null) { return; }
     const total: number = entries.reduce((bytes: number, entry: RustDeskClipboardEntry): number => bytes + entry.size, 0);
     const handle = service.enqueue({ accountScopeId: lease.accountScopeId, hostId: lease.hostId,
+      queueKey: this.transferQueueKey(lease), windowId: this.sessionWindowId,
       leaseId: lease.nativeGeneration.toString(), protocol: 'rustdesk',
       direction: 'download', fileName: entries.length.toString() + ' 个剪贴板条目', batchId: batch.id, totalBytes: total,
       sourceKind: 'remote-clipboard', isCurrent: current, onFinalize: (): void => { batch.release(); } },

@@ -75,8 +75,7 @@ export class SensitiveDataBarrier {
       return false;
     }
     await RemoteSessionLiveViewService.getInstance().stop(this.context);
-    await RemoteSessionBackgroundTaskService.getInstance()
-      .stopSessionTask(this.context);
+    await RemoteSessionBackgroundTaskService.getInstance().stopAllSessionTasks();
     try {
       ExtensionLoader.getInstance().disconnectAll();
     } catch (err) {

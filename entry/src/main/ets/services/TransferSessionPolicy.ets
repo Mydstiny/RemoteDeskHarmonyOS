@@ -14,7 +14,9 @@ export type TransferStage =
   | 'waitingConnection'
   | 'cancelling'
   | 'commitUnknown'
-  | 'expired';
+  | 'expired'
+  | 'handedOff'
+  | 'interrupted';
 
 export interface TransferSession {
   id: string;

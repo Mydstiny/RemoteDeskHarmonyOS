@@ -28,6 +28,7 @@ import remotePointerModePolicyTest from './RemotePointerModePolicy.test';
 import remotePointerFocusPolicyTest from './RemotePointerFocusPolicy.test';
 import remoteInputGuardPolicyTest from './RemoteInputGuardPolicy.test';
 import settingsAccordionPolicyTest from './SettingsAccordionPolicy.test';
+import transferUserTextPolicyTest from './TransferUserTextPolicy.test';
 import remoteSessionMediaStatePolicyTest from './RemoteSessionMediaStatePolicy.test';
 import haloColorPolicyTest from './HaloColorPolicy.test';
 import remoteSessionCapabilityPolicyTest from './RemoteSessionCapabilityPolicy.test';
@@ -587,4 +588,5 @@ export default function testsuite() {
   vncSharedPreferencePolicyTest();
   moonlightDesktopFlipPolicyTest();
   moonlightDesktopFlipStoreTest();
+  transferUserTextPolicyTest();
 }

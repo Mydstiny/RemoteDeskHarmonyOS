@@ -596,8 +596,8 @@ export class TransferArtifactBatch {
   private assertPath(): void {
     validateBatchPath(this.filesDir, this.manifest.scopeKey, this.manifest.purpose as ArtifactPurpose, this.id);
   }
-  private saveManifest(): void {
-    this.assertPath(); this.manifest.updatedAt = Date.now();
+  private saveManifest(touch: boolean = true): void {
+    this.assertPath(); if (touch) { this.manifest.updatedAt = Date.now(); }
     const path: string = this.directory + '/manifest.pending';
     const file: fileIo.File = fileIo.openSync(path,
       fileIo.OpenMode.WRITE_ONLY | fileIo.OpenMode.CREATE | fileIo.OpenMode.TRUNC | fileIo.OpenMode.NOFOLLOW);
@@ -702,14 +702,14 @@ export class TransferArtifactBatch {
   async beginReceive(displayName: string, size: number, isCurrent: () => boolean): Promise<TransferReceivedArtifactWriter> {
     this.startStaging(isCurrent);
     try { return await this.openWriter(displayName, size, isCurrent); }
-    catch (error) { this.staging = false; throw new Error('transfer_artifact_operation_failed'); }
+    catch (error) { this.staging = false; throw new Error(transferStorageFailureCode(error as Error, 'transfer_artifact_operation_failed')); }
   }
 
   async beginNativeReceive(displayName: string, size: number, isCurrent: () => boolean): Promise<TransferReceivedArtifactWriter> {
     if (!validCount(size) || size > TRANSFER_FILE_LIMIT_BYTES) { throw new Error('transfer_size_limit'); }
     this.startStaging(isCurrent);
     try { return await this.openWriter(displayName, size, isCurrent, true); }
-    catch (error) { this.staging = false; throw new Error('transfer_artifact_operation_failed'); }
+    catch (error) { this.staging = false; throw new Error(transferStorageFailureCode(error as Error, 'transfer_artifact_operation_failed')); }
   }
 
   private assertLogicalPath(relativePath: string, directory: boolean): void {
@@ -889,7 +889,7 @@ export class TransferArtifactBatch {
     } catch (_error) {
       if (file !== null) { try { await fileIo.close(file); } catch (_closeError) {} }
       if (reserved) { this.finishWriter(expectedBytes); } else { this.staging = false; }
-      throw new Error('transfer_directory_receive_failed');
+      throw new Error(transferStorageFailureCode(_error as Error, 'transfer_directory_receive_failed'));
     }
   }
   nativeDirectoryPath(id: string): string {
@@ -1077,7 +1077,7 @@ export class TransferArtifactBatch {
       safeProgress(progress, size, size); return result;
     } catch (error) {
       if (writer !== null) { await writer.abort(); }
-      throw new Error('transfer_artifact_operation_failed');
+      throw new Error(transferStorageFailureCode(error as Error, 'transfer_artifact_operation_failed'));
     } finally {
       if (input !== null) { try { await fileIo.close(input); } catch (_closeError) {} }
       this.staging = false;
@@ -1141,6 +1141,49 @@ export class TransferArtifactBatch {
     }
     return null;
   }
+  /**
+   * A batch restored from disk that this process has never held. When its exclusive lock is also free, no live owner
+   * exists in any process: holders, publications and unfinished receive trees recorded by an earlier run are stale.
+   * They are cleared (the unfinished trees' files are removed) without moving the batch's age, so it can expire.
+   * Batches this process created or holds are never touched.
+   */
+  reconcileStale(): boolean {
+    if (!this.restored || this.staging || this.cleaning || this.mutationFile !== null || this.localHolders.size > 0 ||
+      this.localPublications.size > 0 || this.locallyPublished) { return false; }
+    try { this.acquireMutationLock(); } catch (_error) { return false; }
+    let changed: boolean = false;
+    try {
+      if (this.manifest.holders.length > 0 || this.manifest.publications.length > 0 ||
+        this.manifest.published || this.manifest.untrackedPublished) {
+        this.manifest.holders = []; this.manifest.publications = [];
+        this.manifest.published = false; this.manifest.untrackedPublished = false; changed = true;
+      }
+      const stale = (owners: NativeDirectoryManifest[], prefix: string): void => {
+        for (const owner of owners) {
+          if (owner.state !== 'active' && owner.state !== 'retained') { continue; }
+          const root: string = this.directory + '/' + prefix + owner.id;
+          assertDirectory(root);
+          for (const child of fileIo.listFileSync(root, { recursion: false })) {
+            const path: string = root + '/' + child;
+            const info: fileIo.Stat = fileIo.lstatSync(path);
+            if (info.isDirectory() && !info.isSymbolicLink()) { fileIo.rmdirSync(path); } else { fileIo.unlinkSync(path); }
+          }
+          for (const entry of this.manifest.artifacts) {
+            if (entry.storageRelativePath.startsWith(prefix + owner.id + '/')) { entry.state = 'removed'; }
+          }
+          owner.state = 'aborted'; changed = true;
+        }
+      };
+      stale(this.manifest.nativeDirectories, 'native-');
+      stale(this.manifest.platformDirectories, 'incoming-');
+      if (changed) { this.saveManifest(false); }
+      return changed;
+    } catch (_error) {
+      return false;
+    } finally { this.closeMutationLock(); }
+  }
+  isRestored(): boolean { return this.restored; }
+
   async cleanupExpired(ttlMs: number): Promise<TransferArtifactCleanupResult> {
     if (this.cleaning) { return { removedFiles: 0, removedBytes: 0, retainedBatches: 1, invalidBatches: 0 }; }
     try { this.acquireMutationLock(); } catch (_error) { return { removedFiles: 0, removedBytes: 0, retainedBatches: 1, invalidBatches: 0 }; }
@@ -1489,11 +1532,33 @@ function measuredTreeBytes(path: string, depth: number, budget: number[]): numbe
   }
   return total;
 }
+/** The measured size of the store is reused for a short while; in-flight reservations are counted separately. */
+const MEASURED_BYTES_REUSE_MS: number = 30000;
+let measuredBytesDir: string = '';
+let measuredBytes: number = 0;
+let measuredBytesAt: number = 0;
 function managedArtifactBytes(filesDir: string): number {
   // Count regular-file allocation conservatively even for unknown or retained ownership.
   // Quota measurement never reads payloads, follows symlinks, or grants deletion rights.
+  const now: number = Date.now();
+  if (measuredBytesDir === filesDir && now - measuredBytesAt < MEASURED_BYTES_REUSE_MS && now >= measuredBytesAt) {
+    return measuredBytes;
+  }
+  let bytes: number = TRANSFER_CACHE_QUOTA_BYTES;
   try { const root: string = filesDir + '/transfer-artifacts-v1'; assertDirectory(root);
-    return measuredTreeBytes(root, 0, [100000]); } catch (_error) { return TRANSFER_CACHE_QUOTA_BYTES; }
+    bytes = measuredTreeBytes(root, 0, [100000]); } catch (_error) { bytes = TRANSFER_CACHE_QUOTA_BYTES; }
+  measuredBytesDir = filesDir; measuredBytes = bytes; measuredBytesAt = now;
+  return bytes;
+}
+/** After files were removed the next reservation measures again. */
+function forgetMeasuredArtifactBytes(): void { measuredBytesAt = 0; }
+
+const STORAGE_FAILURE_CODES: string[] = ['transfer_space_limit', 'transfer_size_limit', 'transfer_batch_size_limit',
+  'transfer_cancelled', 'transfer_source_changed', 'transfer_batch_unavailable'];
+/** Keeps the reasons a user can act on (space, size, a changed source); everything else becomes `fallback`. */
+export function transferStorageFailureCode(error: Error | null | undefined, fallback: string): string {
+  const message: string = error !== null && error !== undefined && typeof error.message === 'string' ? error.message : '';
+  return STORAGE_FAILURE_CODES.indexOf(message) >= 0 ? message : fallback;
 }
 
 export function recoverTransferArtifactBatches(filesDir: string, scopeKey: string,
@@ -1529,7 +1594,38 @@ export async function cleanupExpiredTransferArtifacts(filesDir: string, scopeKey
   return result;
 }
 
-/** Recovery never infers that an old holder died from age or a successful file lock. */
+/**
+ * Maintenance across every account and host: stale ownership left by an earlier run is cleared (see
+ * TransferArtifactBatch.reconcileStale), staged upload copies are removed as soon as nothing holds them, and received
+ * copies expire after `ttlMs` without use.
+ */
+export async function reconcileTransferArtifactStorage(filesDir: string,
+  ttlMs: number = DEFAULT_ARTIFACT_TTL_MS): Promise<TransferArtifactCleanupResult> {
+  const result: TransferArtifactCleanupResult = { removedFiles: 0, removedBytes: 0, retainedBatches: 0, invalidBatches: 0 };
+  let scopes: string[] = [];
+  try {
+    validateFilesDir(filesDir);
+    const root: string = filesDir + '/transfer-artifacts-v1'; assertDirectory(root);
+    scopes = fileIo.listFileSync(root, { recursion: false }).filter((name: string): boolean => /^[a-f0-9]{64}$/.test(name));
+  } catch (_error) { return result; }
+  const purposes: ArtifactPurpose[] = ['clipboard', 'received'];
+  for (const scope of scopes) {
+    for (const purpose of purposes) {
+      for (const batch of recoverTransferArtifactBatches(filesDir, scope, purpose)) {
+        try {
+          batch.reconcileStale();
+          const removed: TransferArtifactCleanupResult = await batch.cleanupExpired(purpose === 'clipboard' ? 0 : ttlMs);
+          result.removedFiles += removed.removedFiles; result.removedBytes += removed.removedBytes;
+          result.retainedBatches += removed.retainedBatches; result.invalidBatches += removed.invalidBatches;
+        } catch (_error) { result.invalidBatches++; }
+      }
+    }
+  }
+  if (result.removedFiles > 0) { forgetMeasuredArtifactBytes(); }
+  return result;
+}
+
+/** Inventory never infers ownership; only reconcileTransferArtifactStorage clears stale holders, under its own rules. */
 export function recoverTransferArtifactInventory(filesDir: string, scopeKey: string,
   purpose: ArtifactPurpose = 'received'): TransferArtifactInventory {
   const result: TransferArtifactInventory = { artifacts: [], batches: [], invalidBatches: 0 };
@@ -1564,7 +1660,9 @@ export async function cleanupOwnedTransferArtifactBatch(filesDir: string, scopeK
   const batch: TransferArtifactBatch | null = TransferArtifactBatch.recover(filesDir, scopeKey, purpose, batchId);
   if (batch === null) { return { removedFiles: 0, removedBytes: 0, retainedBatches: 0, invalidBatches: 1 }; }
   if (!batch.getInfo().canCleanup) { return { removedFiles: 0, removedBytes: 0, retainedBatches: 1, invalidBatches: 0 }; }
-  return await batch.cleanupExpired(0);
+  const result: TransferArtifactCleanupResult = await batch.cleanupExpired(0);
+  if (result.removedFiles > 0) { forgetMeasuredArtifactBytes(); }
+  return result;
 }
 
 /** Picker owns destination authorization. No source deletion and no atomic-export claim. */
@@ -1639,8 +1737,19 @@ async function exportTransferArtifactImpl(artifact: TransferArtifact, pickerUri:
     result.status = 'saved'; result.evidence = 'writtenAndSynced'; safeProgress(progress, artifact.size, artifact.size);
     return result;
   } catch (error) {
-    result.status = destinationTouched ? 'commitUnknown' : (current(isCurrent) ? 'failed' : 'cancelled');
-    result.diagnosticCode = destinationTouched ? 'export_destination_retained' : 'export_not_committed';
+    // A file the save dialog returned holds only this export's bytes: a half-written one is emptied and removed.
+    let cleared: boolean = false;
+    if (destinationTouched && destination !== null) {
+      try { await fileIo.truncate(destination.fd, 0); cleared = true; } catch (_truncateError) { cleared = false; }
+    }
+    result.status = destinationTouched && !cleared ? 'commitUnknown' : (current(isCurrent) ? 'failed' : 'cancelled');
+    result.diagnosticCode = destinationTouched ? (cleared ? 'export_destination_cleared' : 'export_destination_retained') :
+      'export_not_committed';
+    if (cleared) {
+      try { await fileIo.close(destination as fileIo.File); } catch (_closeError) {}
+      destination = null;
+      try { await fileIo.unlink(pickerUri); } catch (_unlinkError) { /* An empty file may remain; it holds no partial data. */ }
+    }
     return result;
   } finally {
     if (source !== null) { try { await fileIo.close(source); } catch (_error) {} }

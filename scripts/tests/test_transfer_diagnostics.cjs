@@ -11,7 +11,7 @@ function environment() {
   const cache = new Map(), logs = [], updates = [], observed = [];
   let now = 1000, failLog = false;
   class FakeDate extends Date { static now() { return now; } }
-  class Store { list() { observed.push('list'); return []; } }
+  class Store { list() { observed.push('list'); return []; } setActivePredicate() {} }
   const live = { update(value) { updates.push(value); return Promise.resolve(); } };
   function load(relative) {
     const file = path.resolve(root, relative);

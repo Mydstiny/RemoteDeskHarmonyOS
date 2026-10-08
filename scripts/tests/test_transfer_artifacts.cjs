@@ -56,6 +56,7 @@ function environment() {
     write: async (fd, buffer) => write(fd, buffer), fsyncSync: fd => fs.fsyncSync(fd), fsync: async fd => fs.fsyncSync(fd),
     renameSync: (a, b) => fs.renameSync(a, b), rename: async (a, b) => fs.renameSync(a, b),
     unlink: async p => { deleted.push(p); fs.unlinkSync(p); }, listFileSync: p => fs.readdirSync(p),
+    unlinkSync: p => { deleted.push(p); fs.unlinkSync(p); }, rmdirSync: p => { deleted.push(p); fs.rmSync(p, { recursive: true }); },
     truncate: async (fd, size) => fs.ftruncateSync(fd, size)
   };
   class Decoder { constructor(encoding, options) { this.decoder = new TextDecoder(encoding, options); } decodeToString(bytes) { return this.decoder.decode(bytes); } }
@@ -199,14 +200,22 @@ test('export writes selected destination, never deletes source and refuses overw
   assert.equal(alias.status, 'failed'); assert.deepEqual(fs.readFileSync(artifact.path), bytes);
   assert.equal(env.descriptors.size, 0);
 }));
-test('export cancellation after target write reports unknown and preserves partial and source', () => using(async env => {
+test('export cancellation after target write removes the half-written file and preserves the copy and source', () => using(async env => {
   const source = env.source('source', crypto.randomBytes(100)), batch = env.batch();
   const artifact = await batch.stage(source, 'file', 100, () => true, () => {}), destination = path.join(env.directory, 'partial-export');
   let active = true; env.limitWrite(5); env.onWrite(name => { if (name === destination) active = false; });
   const result = await env.api.exportTransferArtifact(artifact, destination, () => active, () => {});
-  assert.equal(result.status, 'commitUnknown'); assert.equal(result.writtenBytes, 5);
-  assert.ok(fs.existsSync(destination)); assert.ok(fs.existsSync(artifact.path)); assert.ok(fs.existsSync(source));
+  assert.equal(result.status, 'cancelled'); assert.equal(result.writtenBytes, 5);
+  assert.equal(result.diagnosticCode, 'export_destination_cleared');
+  assert.equal(fs.existsSync(destination), false); assert.ok(fs.existsSync(artifact.path)); assert.ok(fs.existsSync(source));
   assert.equal(env.descriptors.size, 0);
+}));
+test('a save that replaces a file the user picked overwrites it', () => using(async env => {
+  const bytes = crypto.randomBytes(40), source = env.source('source', bytes), batch = env.batch('received');
+  const artifact = await batch.stage(source, 'file', bytes.length, () => true, () => {}), destination = path.join(env.directory, 'picked');
+  fs.writeFileSync(destination, 'an older version of the file');
+  const result = await env.api.exportTransferArtifact(artifact, destination, () => true, () => {}, true);
+  assert.equal(result.status, 'saved'); assert.deepEqual(fs.readFileSync(destination), bytes);
 }));
 function nativeTree(slot, entries) {
   fs.mkdirSync(path.join(slot.path, 'receive-42/files'), { recursive: true });
@@ -344,6 +353,51 @@ test('recovered holders stay unknown even if a caller can acquire the lease lock
   const info = recovered.getInfo(); assert.equal(info.held, true); assert.equal(info.unknown, true); assert.equal(info.canCleanup, false);
   assert.throws(() => recovered.release()); await assert.rejects(recovered.beginReceive('new', 0, () => true));
   assert.equal((await env.api.cleanupOwnedTransferArtifactBatch(env.filesDir, env.scope, 'received', batch.id)).removedFiles, 0);
+}));
+test('after a restart, stale holders are cleared: staged upload copies go at once, received copies after the TTL', () => using(async env => {
+  const day = 24 * 60 * 60 * 1000;
+  const received = env.batch('received'), source = env.source('source', Buffer.from('abc'));
+  const kept = await received.stage(source, 'file', 3, () => true, () => {});
+  const upload = env.batch('clipboard'), publisher = env.publisher();
+  const offered = await upload.stage(source, 'offer', 3, () => true, () => {});
+  publisher.registerNativeOffer(upload, publicationOwner());
+  received.closeMutationLock(); upload.closeMutationLock(); env.api.TransferArtifactBatch.batches.clear();
+  const first = await env.api.reconcileTransferArtifactStorage(env.filesDir, 7 * day);
+  assert.equal(first.removedFiles, 1); assert.equal(fs.existsSync(offered.path), false); assert.ok(fs.existsSync(kept.path));
+  const info = env.api.recoverTransferArtifactInventory(env.filesDir, env.scope, 'received').batches[0];
+  assert.equal(info.held, false); assert.equal(info.unknown, false); assert.equal(info.canCleanup, true);
+  env.advance(6 * day); assert.equal((await env.api.reconcileTransferArtifactStorage(env.filesDir, 7 * day)).removedFiles, 0);
+  env.advance(2 * day); assert.equal((await env.api.reconcileTransferArtifactStorage(env.filesDir, 7 * day)).removedFiles, 1);
+  assert.equal(fs.existsSync(kept.path), false); assert.equal(fs.readFileSync(source, 'utf8'), 'abc');
+}));
+test('reconcile never clears a batch held in this process or whose lock someone else holds', () => using(async env => {
+  const source = env.source('source', Buffer.from('abc'));
+  const live = env.batch('received'); const liveArtifact = await live.stage(source, 'live', 3, () => true, () => {});
+  assert.equal((await env.api.reconcileTransferArtifactStorage(env.filesDir, 0)).removedFiles, 0);
+  assert.equal(live.getInfo().held, true); assert.ok(fs.existsSync(liveArtifact.path));
+  const other = env.batch('received'); await other.stage(source, 'other', 3, () => true, () => {});
+  other.closeMutationLock(); env.api.TransferArtifactBatch.batches.delete(other.directory);
+  const unlock = env.claimBatchLock(other);
+  const restored = env.api.TransferArtifactBatch.recover(env.filesDir, env.scope, 'received', other.id);
+  assert.equal(restored.reconcileStale(), false); assert.equal(restored.getInfo().held, true); unlock();
+  assert.equal(restored.reconcileStale(), true); assert.equal(restored.getInfo().held, false);
+}));
+test('a stale unfinished receive tree is emptied and its batch becomes cleanable', () => using(async env => {
+  const batch = env.batch('received'), directory = await batch.createNativeReceiveDirectory(() => true, 200);
+  fs.mkdirSync(path.join(directory.path, 'receive-1')); fs.writeFileSync(path.join(directory.path, 'receive-1', 'half'), 'xx');
+  await directory.abandon(); batch.closeMutationLock(); env.api.TransferArtifactBatch.batches.clear();
+  await env.api.reconcileTransferArtifactStorage(env.filesDir, 7 * 24 * 60 * 60 * 1000);
+  assert.deepEqual(fs.readdirSync(directory.path), []);
+  const info = env.api.recoverTransferArtifactInventory(env.filesDir, env.scope, 'received').batches[0];
+  assert.equal(info.unknown, false); assert.equal(info.canCleanup, true);
+}));
+test('storage failures keep the space and size reasons a user can act on', () => using(async env => {
+  const batch = env.batch('received'), source = env.source('source', Buffer.from('abc'));
+  env.freeSpace(1); await assert.rejects(batch.stage(source, 'file', 3, () => true, () => {}), /transfer_space_limit/);
+  env.freeSpace(12 * 1024 ** 3);
+  await assert.rejects(batch.beginReceive('big', 3 * 1024 ** 3, () => true), /transfer_size_limit/);
+  assert.equal(env.api.transferStorageFailureCode(new Error('weird'), 'fallback_code'), 'fallback_code');
+  assert.equal(env.api.transferStorageFailureCode(new Error('transfer_space_limit'), 'x'), 'transfer_space_limit');
 }));
 test('a contended file lock blocks cleanup of an otherwise unheld batch', () => using(async env => {
   const batch = env.batch('received'), source = env.source('source', Buffer.from('abc'));

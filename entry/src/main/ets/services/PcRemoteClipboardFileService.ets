@@ -366,6 +366,7 @@ export class PcRemoteClipboardFileService {
         transferScopeKey(this.lease.accountScopeId, this.lease.hostId + ':' + this.lease.routeIdentity), 'received');
       batch = ownedBatch;
       const handle = service.enqueue({ accountScopeId: this.lease.accountScopeId, hostId: this.lease.hostId,
+        queueKey: this.lease.windowId + ':' + this.lease.sessionId.toString() + ':' + this.lease.nativeGeneration.toString(),
         leaseId: this.lease.nativeGeneration.toString(), protocol: rdp ? 'rdp' : 'rustdesk', direction: 'download',
         fileName: '远端剪贴板文件', totalBytes: total, batchId: ownedBatch.id, sourceKind: 'remote-clipboard',
         isCurrent: current, onFinalize: (): void => { ownedBatch.release(); } },

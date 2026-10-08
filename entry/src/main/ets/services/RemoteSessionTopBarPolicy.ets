@@ -488,7 +488,7 @@ export function remoteSessionActionAvailability(actionId: string, protocol: stri
   if (protocol !== 'rdp') {
     return { enabled: false, reason: '当前协议不支持该会话工具栏操作' };
   }
-  if (actionId === 'fileTransfer') { return capabilities.fileUpload; }
+  if (actionId === 'fileTransfer') { return fileTransferAvailability(capabilities); }
   if (actionId === 'toggleClipboard') { return capabilities.clipboardSend; }
   if (actionId === 'disconnect' || actionId === 'refreshFrame' ||
       actionId === 'ctrlAltDel' || actionId === 'toggleKeyboard' ||
@@ -497,6 +497,12 @@ export function remoteSessionActionAvailability(actionId: string, protocol: stri
     return capabilities.connect;
   }
   return { enabled: false, reason: 'RDP 当前未提供该操作' };
+}
+
+/** The file panel opens when either direction works (an RDP shared folder can receive while clipboard sending is off). */
+export function fileTransferAvailability(capabilities: RemoteSessionCapabilities): RemoteTopBarActionAvailability {
+  return capabilities.fileUpload.enabled ? capabilities.fileUpload :
+    capabilities.fileDownload.enabled ? capabilities.fileDownload : capabilities.fileUpload;
 }
 
 function knownRustDeskCapabilities(): RemoteSessionCapabilities {
@@ -510,7 +516,10 @@ function knownRustDeskCapabilities(): RemoteSessionCapabilities {
 
 export function rustDeskActionAvailability(actionId: string,
   capabilities: RemoteSessionCapabilities = knownRustDeskCapabilities()): RemoteTopBarActionAvailability {
-  if (actionId === 'fileTransfer' || actionId === 'toggleFilePaste') {
+  if (actionId === 'fileTransfer') {
+    return fileTransferAvailability(capabilities);
+  }
+  if (actionId === 'toggleFilePaste') {
     return capabilities.fileUpload;
   }
   if (actionId === 'toggleClipboard') {

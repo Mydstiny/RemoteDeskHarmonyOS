@@ -45,6 +45,8 @@ import { RemoteSessionPipService } from '../services/RemoteSessionPipService';
 import { SshTerminalBackgroundTaskService } from '../services/SshTerminalBackgroundTaskService';
 import { SshTerminalPipService } from '../services/SshTerminalPipService';
 import { RemoteSessionWindowCoordinator } from '../services/RemoteSessionWindowCoordinator';
+import { FOCUS_SESSION_WINDOW_PARAM } from '../services/SessionWindowFocusParam';
+import { scheduleTransferArtifactMaintenance } from '../services/TransferArtifactMaintenance';
 import { recordDiagnosticAppLifecycleEvent } from '../services/DiagnosticCaptureRuntime';
 import { AppFaultHistoryService } from '../services/AppFaultHistoryService';
 import { GuideVisibilityService } from '../services/GuideVisibilityService';
@@ -390,6 +392,7 @@ export default class EntryAbility extends UIAbility {
   }
 
   onNewWant(want: Want, launch: AbilityConstant.LaunchParam): void {
+    this.focusSessionWindow(want);
     this.acceptProContinuationWant(want, launch);
     this.acceptProConnectionShareWant(want, launch);
     this.acceptAiShareWant(want, launch);
@@ -402,6 +405,18 @@ export default class EntryAbility extends UIAbility {
         });
       } catch (_error) {}
     }
+  }
+
+  /** A tap on a session window's notification (file transfer, background session) brings that window forward. */
+  private focusSessionWindow(want: Want): void {
+    const raw: Object | undefined = want.parameters?.[FOCUS_SESSION_WINDOW_PARAM];
+    if (typeof raw !== 'string' || raw.length === 0 || this.windowStage === null) { return; }
+    const target: number = RemoteSessionWindowCoordinator.getInstance().nativeWindowIdFor(raw);
+    if (target <= 0) { return; }
+    try {
+      const source: number = this.windowStage.getMainWindowSync().getWindowProperties().id;
+      window.shiftAppWindowFocus(source, target).catch((): void => {});
+    } catch (_error) { /* The main window stays in front. */ }
   }
 
   private acceptProConnectionShareWant(want: Want, launch: AbilityConstant.LaunchParam): void {
@@ -484,6 +499,8 @@ export default class EntryAbility extends UIAbility {
       hilog.warn(DOMAIN, TAG, '预初始化 ArkUI environment 失败: %{public}s', JSON.stringify(err));
     }
     await this.loadStartupContent(windowStage);
+    // Stale transfer copies of an earlier run are cleared once the app has settled.
+    scheduleTransferArtifactMaintenance(this.context.filesDir, 20000);
   }
 
   private async loadStartupContent(windowStage: window.WindowStage): Promise<void> {

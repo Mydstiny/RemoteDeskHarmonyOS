@@ -53,6 +53,12 @@ export function makeTransferTitle(protocol: TransferProtocol, state: TransferSta
   if (state === 'cancelled') {
     return name + ' 文件传输已取消';
   }
+  if (state === 'handedOff') {
+    return name + ' 文件已交给远端';
+  }
+  if (state === 'interrupted') {
+    return name + ' 文件传输中断';
+  }
   return name + ' 文件传输';
 }
 
@@ -69,7 +75,9 @@ export function makeTransferStatusText(snapshot: FileTransferProgressSnapshot): 
   if (snapshot.state === 'waitingConnection') { return '等待重新连接 ' + snapshot.fileName; }
   if (snapshot.state === 'cancelling') { return '正在取消 ' + snapshot.fileName; }
   if (snapshot.state === 'expired') { return '文件任务已过期 ' + snapshot.fileName; }
-  if (snapshot.state === 'paused') { return '文件任务已暂停 ' + snapshot.fileName; }
+  if (snapshot.state === 'paused') { return '已停止 ' + snapshot.fileName; }
+  if (snapshot.state === 'handedOff') { return '已交给远端，可在远端粘贴或保存 ' + snapshot.fileName; }
+  if (snapshot.state === 'interrupted') { return '传输中断 ' + snapshot.fileName; }
   if (snapshot.state === 'preparing') {
     return '正在准备 ' + snapshot.fileName;
   }

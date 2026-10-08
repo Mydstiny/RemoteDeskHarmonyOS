@@ -10,6 +10,11 @@ import { ManagedTransferOutcome, ManagedTransferRecord, ManagedTransferProgress,
   applyManagedTransferProgress, managedTransferCode,
   managedTransferEvidenceValid, managedTransferIdentifier } from './ManagedTransferTaskPolicy';
 
+/** A persisted progress tick at most this often; stage changes and results persist at once. */
+const PROGRESS_PERSIST_INTERVAL_MS: number = 5000;
+/** A user's cancel waits this long for the remote to stop before the result is called unknown. */
+const USER_CANCEL_GRACE_MS: number = 15000;
+
 export interface ManagedTransferOptions {
   accountScopeId: string;
   hostId: string;
@@ -29,6 +34,12 @@ export interface ManagedTransferOptions {
   /** No byte/stage progress for this duration requests cancellation; default 5 minutes. */
   idleTimeoutMs?: number;
   cancelGraceMs?: number;
+  /** Tasks with the same key (one remote session) run one at a time (two on PC); different keys run side by side. */
+  queueKey?: string;
+  /** A purely local task (saving a received copy): its own queue, never bound to the session, cancellable throughout. */
+  local?: boolean;
+  /** The session window the task belongs to; a tap on its notification brings that window forward. */
+  windowId?: string;
 }
 export interface ManagedTransferControl {
   taskId: string;
@@ -70,8 +81,13 @@ class ManagedTransferRuntime {
   outcome: ManagedTransferOutcome | null = null;
   settlementTail: Promise<void> = Promise.resolve();
   lastPublishedAt: number = 0;
+  lastPersistedAt: number = 0;
   started: boolean = false;
+  /** Between enterCommit and the next stage: received data is being saved locally and must not be torn down. */
+  inCommit: boolean = false;
+  cancelCode: string = '';
   constructor(options: ManagedTransferOptions) { this.options = options; }
+  queueKey(): string { return this.options.local === true ? 'local' : 'net:' + (this.options.queueKey ?? ''); }
 }
 
 class ManagedTransferQueued {
@@ -91,7 +107,18 @@ export class ManagedTransferTaskService {
   private listeners: ManagedTransferSubscription[] = [];
   private queue: ManagedTransferQueued[] = [];
   private running: number = 0;
+  private runningByKey: Map<string, number> = new Map<string, number>();
+  /** Per remote session; PC sessions get two lanes. */
   private concurrency: number = deviceInfo.deviceType === '2in1' ? 2 : 1;
+  /** Across all sessions, so split screen and several windows each make progress. */
+  private networkLimit: number = deviceInfo.deviceType === '2in1' ? 4 : 2;
+  private appInBackground: boolean = false;
+  private appStateObserved: boolean = false;
+
+  constructor() {
+    this.store.setActivePredicate((record: ManagedTransferRecord): boolean =>
+      this.active.has(this.key(record.accountScopeId, record.taskId, record.attemptId)));
+  }
 
   static getInstance(): ManagedTransferTaskService {
     if (ManagedTransferTaskService.instance === null) { ManagedTransferTaskService.instance = new ManagedTransferTaskService(); }
@@ -99,9 +126,33 @@ export class ManagedTransferTaskService {
   }
   init(context: common.UIAbilityContext): boolean {
     if (!this.store.init(context)) { return false; }
-    this.context = context; return true;
+    this.context = context; this.observeApplicationState(context); return true;
   }
   setConcurrency(limit: number): void { this.concurrency = limit <= 1 ? 1 : 2; this.drain(); }
+  /** Whether the task is still waiting for a free lane. */
+  isQueued(accountScopeId: string, taskId: string, attemptId: number): boolean {
+    const runtime: ManagedTransferRuntime | undefined = this.active.get(this.key(accountScopeId, taskId, attemptId));
+    return runtime !== undefined && !runtime.started && !runtime.resultSettled;
+  }
+  /** Removes the host's finished records from the list; running tasks stay. */
+  clearFinished(accountScopeId: string, hostId: string): number {
+    const removed: number = this.store.removeSettled(accountScopeId,
+      (record: ManagedTransferRecord): boolean => record.hostId === hostId);
+    if (removed > 0) { this.notifyListeners(accountScopeId); }
+    return removed;
+  }
+  /** While no window of the app is in the foreground the system may freeze it; idle time is not counted then. */
+  setAppInBackground(value: boolean): void { this.appInBackground = value; }
+  private observeApplicationState(context: common.UIAbilityContext): void {
+    if (this.appStateObserved) { return; }
+    try {
+      context.getApplicationContext().on('applicationStateChange', {
+        onApplicationForeground: (): void => { this.setAppInBackground(false); },
+        onApplicationBackground: (): void => { this.setAppInBackground(true); }
+      });
+      this.appStateObserved = true;
+    } catch (_error) { /* Without the observer the idle clock simply keeps running. */ }
+  }
   list(accountScopeId: string): ManagedTransferRecord[] { return this.store.list(accountScopeId); }
   subscribe(accountScopeId: string, listener: ManagedTransferListener): () => void {
     const entry: ManagedTransferSubscription = new ManagedTransferSubscription();
@@ -142,25 +193,40 @@ export class ManagedTransferTaskService {
   }
 
   private drain(): void {
-    while (this.running < this.concurrency && this.queue.length > 0) {
-      const queued: ManagedTransferQueued | undefined = this.queue.shift();
-      if (queued === undefined) { return; }
+    let index: number = 0;
+    while (index < this.queue.length) {
+      const queued: ManagedTransferQueued = this.queue[index];
       const runtime: ManagedTransferRuntime = queued.runtime;
-      if (runtime.resultSettled) { continue; }
-      this.running++; runtime.started = true;
+      if (runtime.resultSettled) { this.queue.splice(index, 1); continue; }
+      const key: string = runtime.queueKey();
+      const lane: number = this.runningByKey.get(key) ?? 0;
+      const local: boolean = key === 'local';
+      if (lane >= (local ? 1 : this.concurrency) || (!local && this.running >= this.networkLimit)) { index++; continue; }
+      this.queue.splice(index, 1);
+      if (!local) { this.running++; }
+      this.runningByKey.set(key, lane + 1);
+      runtime.started = true;
       runtime.startedAt = Date.now(); runtime.lastProgressAt = runtime.startedAt;
       runtime.deadlineTimer = setInterval(() => { this.checkDeadline(runtime); }, 1000);
+      this.publish(runtime, true);
       this.run(runtime, queued.runner).catch(async (): Promise<void> => {
         runtime.runnerFinished = true;
         await this.settle(runtime, { stage: runtime.commitEntered ? 'commitUnknown' : 'failed', evidence: 'none',
           diagnosticCode: 'runner_failed' });
-      }).finally(() => { this.running--; this.drain(); });
+      }).finally(() => {
+        if (!local) { this.running--; }
+        const remaining: number = (this.runningByKey.get(key) ?? 1) - 1;
+        if (remaining > 0) { this.runningByKey.set(key, remaining); } else { this.runningByKey.delete(key); }
+        this.drain();
+      });
     }
   }
 
   cancel(accountScopeId: string, taskId: string, attemptId: number): boolean {
     const runtime: ManagedTransferRuntime | undefined = this.active.get(this.key(accountScopeId, taskId, attemptId));
     if (runtime === undefined || runtime.resultSettled || runtime.runnerFinished) { return false; }
+    // Received data being saved locally finishes; stopping halfway would leave an unusable copy behind.
+    if (runtime.inCommit && runtime.options.local !== true) { return false; }
     this.requestCancel(runtime, 'cancelled_by_user');
     if (!runtime.started) {
       this.queue = this.queue.filter((item: ManagedTransferQueued): boolean => item.runtime !== runtime);
@@ -177,7 +243,10 @@ export class ManagedTransferTaskService {
     try { return options.isCurrent(); } catch (error) { return false; }
   }
   private current(runtime: ManagedTransferRuntime): boolean {
-    return !runtime.resultSettled && !runtime.cancelRequested && !runtime.runnerFinished && this.currentOptions(runtime.options);
+    if (runtime.resultSettled || runtime.cancelRequested || runtime.runnerFinished) { return false; }
+    // Saving received data is local work: a disconnect or reconnect of the session does not interrupt it.
+    if (runtime.inCommit && runtime.options.local !== true) { return true; }
+    return this.currentOptions(runtime.options);
   }
   private control(runtime: ManagedTransferRuntime): ManagedTransferControl {
     return {
@@ -191,7 +260,7 @@ export class ManagedTransferTaskService {
       },
       enterCommit: async (): Promise<boolean> => {
         if (!this.current(runtime)) { return false; }
-        runtime.commitEntered = true;
+        runtime.commitEntered = true; runtime.inCommit = true;
         runtime.record.commitStarted = true;
         runtime.record.stage = 'committing'; runtime.record.updatedAt = Date.now();
         this.store.upsert(runtime.record); this.publish(runtime, true);
@@ -211,7 +280,8 @@ export class ManagedTransferTaskService {
     }
     const context: common.UIAbilityContext | null = runtime.context;
     if (context !== null) {
-      try { await FileTransferLiveTaskService.getInstance().begin(context, this.snapshot(runtime.record)); }
+      try { await FileTransferLiveTaskService.getInstance().begin(context, this.snapshot(runtime.record),
+        runtime.options.windowId ?? ''); }
       catch (error) { /* Notifications cannot prevent an authorized transfer. */ }
     }
     if (!this.current(runtime)) {
@@ -226,14 +296,18 @@ export class ManagedTransferTaskService {
     if (!this.current(runtime)) { return false; }
     const next: ManagedTransferRecord | null = applyManagedTransferProgress(runtime.record, progress);
     if (next === null) { return false; }
-    if (next.stage !== runtime.record.stage || next.readBytes !== runtime.record.readBytes ||
+    const stageChanged: boolean = next.stage !== runtime.record.stage;
+    if (stageChanged || next.readBytes !== runtime.record.readBytes ||
       next.sentBytes !== runtime.record.sentBytes || next.writtenBytes !== runtime.record.writtenBytes ||
       next.verifiedBytes !== runtime.record.verifiedBytes) { runtime.lastProgressAt = Date.now(); }
-    runtime.record = next; this.store.upsert(next); this.publish(runtime, false); return true;
+    if (stageChanged && next.stage !== 'committing') { runtime.inCommit = false; }
+    const persist: boolean = stageChanged || Date.now() - runtime.lastPersistedAt >= PROGRESS_PERSIST_INTERVAL_MS;
+    if (persist) { runtime.lastPersistedAt = Date.now(); }
+    runtime.record = next; this.store.upsert(next, persist); this.publish(runtime, stageChanged); return true;
   }
   private requestCancel(runtime: ManagedTransferRuntime, code: string): void {
     if (runtime.cancelRequested) { return; }
-    runtime.cancelRequested = true; runtime.cancelAt = Date.now();
+    runtime.cancelRequested = true; runtime.cancelAt = Date.now(); runtime.cancelCode = code;
     runtime.record.stage = 'cancelling'; runtime.record.diagnosticCode = code;
     this.store.upsert(runtime.record); this.publish(runtime, true); this.invokeCancel(runtime);
   }
@@ -250,12 +324,17 @@ export class ManagedTransferTaskService {
   private checkDeadline(runtime: ManagedTransferRuntime): void {
     if (runtime.resultSettled) { return; }
     const now: number = Date.now();
+    // While saving locally, or while the app is in the background, the session and the idle clock do not count.
+    if (runtime.inCommit && runtime.options.local !== true) { runtime.lastProgressAt = now; return; }
+    if (this.appInBackground) { runtime.lastProgressAt = now; }
     if (!this.currentOptions(runtime.options)) { this.requestCancel(runtime, 'lease_revoked'); }
     const idleMs: number = this.duration(runtime.options.idleTimeoutMs, 300000);
     const totalMs: number = this.duration(runtime.options.timeoutMs, 0);
     if (!runtime.cancelRequested && ((totalMs > 0 && now - runtime.startedAt >= totalMs) ||
       now - runtime.lastProgressAt >= idleMs)) { this.requestCancel(runtime, 'transfer_deadline'); }
-    if (runtime.cancelRequested && now - runtime.cancelAt >= this.duration(runtime.options.cancelGraceMs, 5000)) {
+    const graceMs: number = this.duration(runtime.options.cancelGraceMs,
+      runtime.cancelCode === 'cancelled_by_user' ? USER_CANCEL_GRACE_MS : 5000);
+    if (runtime.cancelRequested && now - runtime.cancelAt >= graceMs) {
       // Still retain runner/cancel closures until it drains. No early artifact cleanup.
       this.settle(runtime, { stage: runtime.commitEntered || runtime.record.sentBytes > 0 ||
         runtime.record.writtenBytes > 0 ? 'commitUnknown' : 'paused', evidence: 'none', diagnosticCode: 'cancel_drain_pending' }).catch(() => {});
@@ -269,14 +348,14 @@ export class ManagedTransferTaskService {
   }
   private async settleOnce(runtime: ManagedTransferRuntime, outcome: ManagedTransferOutcome): Promise<void> {
     if (!runtime.resultSettled) {
-      const stages: string[] = ['completed', 'failed', 'cancelled', 'paused', 'commitUnknown'];
+      const stages: string[] = ['completed', 'failed', 'cancelled', 'paused', 'commitUnknown', 'handedOff', 'interrupted'];
       let accepted: ManagedTransferOutcome = { stage: outcome.stage, evidence: outcome.evidence,
         diagnosticCode: managedTransferCode(outcome.diagnosticCode) };
       if (stages.indexOf(outcome.stage) < 0 || !managedTransferEvidenceValid(outcome.evidence) ||
         (outcome.stage === 'completed' && (outcome.evidence === 'none' || outcome.evidence === 'offered'))) {
         accepted = { stage: runtime.commitEntered ? 'commitUnknown' : 'failed', evidence: 'none', diagnosticCode: 'invalid_completion_evidence' };
       }
-      runtime.resultSettled = true; runtime.outcome = accepted;
+      runtime.resultSettled = true; runtime.outcome = accepted; runtime.inCommit = false;
       if (runtime.deadlineTimer >= 0) { clearInterval(runtime.deadlineTimer); runtime.deadlineTimer = -1; }
       runtime.record.stage = accepted.stage; runtime.record.evidence = accepted.evidence;
       runtime.record.diagnosticCode = managedTransferCode(accepted.diagnosticCode); runtime.record.updatedAt = Date.now();
@@ -288,7 +367,8 @@ export class ManagedTransferTaskService {
       }
     }
     if (runtime.resultSettled && runtime.runnerFinished && runtime.outcome !== null &&
-      (runtime.outcome.stage === 'commitUnknown' || runtime.outcome.stage === 'paused') &&
+      (runtime.outcome.stage === 'commitUnknown' || runtime.outcome.stage === 'paused' ||
+        runtime.outcome.stage === 'interrupted') &&
       outcome.stage === 'completed' && managedTransferEvidenceValid(outcome.evidence) &&
       outcome.evidence !== 'none' && outcome.evidence !== 'offered') {
       // A late actual success refines the retained unknown result; no retry or deletion is inferred.
@@ -311,7 +391,9 @@ export class ManagedTransferTaskService {
     if (runtime.outcome !== null) { runtime.resolve(runtime.outcome); }
   }
   private snapshot(record: ManagedTransferRecord): FileTransferProgressSnapshot {
-    const transferred: number = record.direction === 'upload' ? record.sentBytes : record.writtenBytes;
+    // An RDP upload only reads and stages locally; its progress is the larger of read, sent and written bytes.
+    const transferred: number = record.direction === 'upload' ?
+      Math.max(record.readBytes, record.sentBytes, record.writtenBytes) : record.writtenBytes;
     const text: string = record.evidence === 'senderCompleted' && record.stage === 'completed' ?
       '发送结束，尚未验证远端保存结果' : '';
     const result: FileTransferProgressSnapshot = createTransferSnapshot(record.taskId, record.protocol,
@@ -327,14 +409,18 @@ export class ManagedTransferTaskService {
       if (immediate) { hilog.info(0x0001, 'TransferTask', '%{public}s', diagnostic); }
       else { hilog.debug(0x0001, 'TransferTask', '%{public}s', diagnostic); }
     } catch (_error) { /* Diagnostics must never change task or notification outcomes. */ }
+    this.notifyListeners(runtime.record.accountScopeId);
+    // Progress ticks and stage changes of a running task reach the notification; start and result have their own calls.
+    if (!immediate || (runtime.started && !runtime.resultSettled)) {
+      FileTransferLiveTaskService.getInstance().update(this.snapshot(runtime.record)).catch(() => {});
+    }
+  }
+  private notifyListeners(accountScopeId: string): void {
     for (let i: number = 0; i < this.listeners.length; i++) {
       const entry: ManagedTransferSubscription = this.listeners[i];
-      if (entry.accountScopeId === runtime.record.accountScopeId) {
+      if (entry.accountScopeId === accountScopeId) {
         try { entry.listener(this.list(entry.accountScopeId)); } catch (error) { /* Observer isolation. */ }
       }
-    }
-    if (!immediate) {
-      FileTransferLiveTaskService.getInstance().update(this.snapshot(runtime.record)).catch(() => {});
     }
   }
 }

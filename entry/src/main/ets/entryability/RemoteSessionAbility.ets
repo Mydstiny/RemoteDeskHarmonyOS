@@ -130,6 +130,7 @@ export default class RemoteSessionAbility extends UIAbility {
     this.uiStorage = storage;
     const mainWindow: window.Window = windowStage.getMainWindowSync();
     this.nativeWindowId = mainWindow.getWindowProperties().id;
+    RemoteSessionWindowCoordinator.getInstance().registerNativeWindow(this.sessionWindowId, this.nativeWindowId);
     try {
       await windowStage.loadContent('pages/RemoteSessionWindowBootstrap', storage);
     } catch (err) {

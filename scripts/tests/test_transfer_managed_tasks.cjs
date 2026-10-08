@@ -151,7 +151,7 @@ test('account manifests are isolated, minimally projected, immutable to subscrib
   const listed = service.list('account-a'); listed[0].fileName = 'mutated'; assert.equal(service.list('account-a')[0].fileName, 'example.bin');
   await service.store.flush(); const serialized = env.seed.get('account:account-a');
   assert.equal(serialized.includes('must-not-persist'), false); assert.equal(serialized.includes('isCurrent'), false);
-  const restored = new env.Store(); restored.init(env.context); assert.equal(restored.list('account-a')[0].stage, 'paused');
+  const restored = new env.Store(); restored.init(env.context); assert.equal(restored.list('account-a')[0].stage, 'interrupted');
   assert.equal(restored.list('account-b').length, 0); assert.equal(callbacks, 1); assert.equal(env.starts.length, 1);
   gate.resolve(outcome('cancelled', 'none')); await drain();
 });
@@ -237,6 +237,88 @@ test('100 queued attempts converge exactly once with isolated progress and notif
   assert.equal(results.filter(r=>r.stage==='completed').length,100);assert.equal(finalized,100);
   assert.equal(new Set(env.starts).size,100);assert.equal(new Set(env.stops).size,100);
   assert.equal(service.active.size,0);assert.equal(service.queue.length,0);
+});
+test('different sessions run side by side; one session queues; local saves have their own lane', async () => {
+  const env = environment(new Map(), 'tablet'), service = env.service(), gate = deferred(); let started = [];
+  const run = name => async () => { started.push(name); return gate.promise; };
+  const a1 = service.enqueue(options({ taskId: 'a1', queueKey: 'session-a' }), run('a1'));
+  const a2 = service.enqueue(options({ taskId: 'a2', queueKey: 'session-a' }), run('a2'));
+  const b1 = service.enqueue(options({ taskId: 'b1', queueKey: 'session-b' }), run('b1'));
+  const save = service.enqueue(options({ taskId: 's1', local: true, direction: 'download' }), run('s1'));
+  await drain(); assert.deepEqual(started.sort(), ['a1', 'b1', 's1']);
+  assert.equal(service.isQueued('account-a', 'a2', 1), true); assert.equal(service.isQueued('account-a', 'a1', 1), false);
+  gate.resolve(outcome()); await Promise.all([a1, a2, b1, save].map(h => h.result)); await drain();
+  assert.equal(started.length, 4); assert.equal(service.isQueued('account-a', 'a2', 1), false);
+});
+test('saving received data ignores cancel and disconnect; the next file of the task may follow', async () => {
+  const env = environment(), service = env.service(), gate = deferred(); let control, current = true;
+  const handle = service.enqueue(options({ direction: 'download', isCurrent: () => current }), async c => { control = c; return gate.promise; });
+  await drain(); assert.equal(control.update({ stage: 'transferring', writtenBytes: 4 }), true);
+  assert.equal(control.update({ stage: 'verifying' }), true); assert.equal(await control.enterCommit(), true);
+  assert.equal(service.cancel('account-a', handle.taskId, 1), false);
+  current = false; env.advance(10000); await drain();
+  assert.equal(control.isCurrent(), true); assert.equal(control.isCancellationRequested(), false);
+  // The first file is saved; the next one transfers, and from then on the session counts again.
+  assert.equal(control.update({ stage: 'transferring', writtenBytes: 6 }), true);
+  env.advance(1000); await drain(); assert.equal(control.isCancellationRequested(), true);
+  gate.resolve(outcome('cancelled', 'none')); assert.equal((await handle.result).stage, 'cancelled'); await drain();
+});
+test('a local save stays cancellable while it writes and does not depend on the session', async () => {
+  const env = environment(), service = env.service(), gate = deferred(); let control;
+  const handle = service.enqueue(options({ local: true, direction: 'download' }), async c => { control = c; return gate.promise; });
+  await drain(); assert.equal(await control.enterCommit(), true);
+  assert.equal(service.cancel('account-a', handle.taskId, 1), true); assert.equal(control.isCurrent(), false);
+  gate.resolve(outcome('cancelled', 'none')); await handle.result; await drain();
+});
+test('the idle clock stops while the app is in the background', async () => {
+  const env = environment(), service = env.service(), gate = deferred(); let control;
+  const handle = service.enqueue(options(), async c => { control = c; return gate.promise; }); await drain();
+  service.setAppInBackground(true); env.advance(600000); await drain(); assert.equal(control.isCancellationRequested(), false);
+  service.setAppInBackground(false); env.advance(301000); await drain(); assert.equal(control.isCancellationRequested(), true);
+  gate.resolve(outcome('cancelled', 'none')); await handle.result; await drain();
+});
+test('records found at start are settled: offers handed off, saves unknown, the rest interrupted', async () => {
+  const env = environment(), policy = env.policy;
+  const make = (taskId, stage, extra = {}) => Object.assign(new policy.ManagedTransferRecord(), { schemaVersion: 1,
+    taskId, accountScopeId: 'account-a', hostId: 'host-a', fileName: 'a.bin', stage, createdAt: 99000, updatedAt: 99000 }, extra);
+  env.seed.set('account:account-a', JSON.stringify([
+    make('offer', 'paused', { evidence: 'offered', diagnosticCode: 'target_write_unconfirmed' }),
+    make('saving', 'committing', { commitStarted: true }), make('running', 'transferring'),
+    make('waiting', 'paused', { diagnosticCode: 'offer_ack_unconfirmed' }), { broken: true }]));
+  const store = new env.Store(); store.init(env.context);
+  const byId = new Map(store.list('account-a').map(r => [r.taskId, r]));
+  assert.equal(byId.size, 4);
+  assert.equal(byId.get('offer').stage, 'handedOff'); assert.equal(byId.get('saving').stage, 'commitUnknown');
+  assert.equal(byId.get('running').stage, 'interrupted'); assert.equal(byId.get('running').diagnosticCode, 'interrupted');
+  assert.equal(byId.get('waiting').stage, 'interrupted'); assert.equal(byId.get('waiting').diagnosticCode, 'offer_ack_unconfirmed');
+  for (const stage of ['handedOff', 'interrupted', 'commitUnknown', 'paused', 'completed']) assert.equal(policy.managedTransferSettled(stage), true);
+  assert.equal(policy.managedTransferSettled('transferring'), false);
+});
+test('the oldest settled records make room; running tasks and old records are handled', async () => {
+  const env = environment(), service = env.service(), policy = env.policy, gate = deferred();
+  const make = (i, stage, updatedAt) => Object.assign(new policy.ManagedTransferRecord(), { taskId: 'old-' + i,
+    accountScopeId: 'account-a', hostId: i % 2 === 0 ? 'host-a' : 'host-b', fileName: 'a.bin', stage, createdAt: updatedAt, updatedAt });
+  const seeded = []; for (let i = 0; i < 512; i++) seeded.push(make(i, 'completed', 99000 + i));
+  seeded.push(make(999, 'completed', 99000 - 15 * 24 * 60 * 60 * 1000));
+  env.seed.set('account:account-a', JSON.stringify(seeded));
+  assert.equal(service.list('account-a').length, 512);
+  const handle = service.enqueue(options({ taskId: 'fresh' }), () => gate.promise); assert.equal(handle.accepted, true); await drain();
+  const ids = service.list('account-a').map(r => r.taskId);
+  assert.equal(ids.length, 512); assert.equal(ids.includes('old-0'), false); assert.equal(ids.includes('fresh'), true);
+  const removed = service.clearFinished('account-a', 'host-a');
+  assert.ok(removed > 0); assert.equal(service.list('account-a').some(r => r.hostId === 'host-a' && r.taskId !== 'fresh'), false);
+  assert.equal(service.list('account-a').some(r => r.taskId === 'fresh'), true);
+  gate.resolve(outcome('cancelled', 'none')); await handle.result; await drain();
+});
+test('progress ticks persist at most every five seconds; stage changes persist at once', async () => {
+  const env = environment(), service = env.service(), gate = deferred(); let control;
+  const handle = service.enqueue(options({ totalBytes: 100 }), async c => { control = c; return gate.promise; }); await drain();
+  control.update({ stage: 'transferring', sentBytes: 1 }); env.advance(300); await drain();
+  const persisted = () => JSON.parse(env.seed.get('account:account-a'))[0];
+  assert.equal(persisted().stage, 'transferring');
+  control.update({ sentBytes: 2 }); env.advance(300); await drain(); assert.equal(persisted().sentBytes, 1);
+  env.advance(5000); control.update({ sentBytes: 3 }); env.advance(300); await drain(); assert.equal(persisted().sentBytes, 3);
+  gate.resolve(outcome('cancelled', 'none')); await handle.result; await drain();
 });
 (async () => {
   for (const { name, run } of tests) { await run(); console.log('PASS ' + name); }

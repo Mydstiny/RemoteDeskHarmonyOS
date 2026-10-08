@@ -3,7 +3,12 @@ import { TransferProtocol } from './FileTransferProgressModel';
 
 export type ManagedTransferEvidence = 'none' | 'offered' | 'senderCompleted' |
   'metadataVerified' | 'contentVerified' | 'exported';
-export type ManagedTransferResultStage = 'completed' | 'failed' | 'cancelled' | 'paused' | 'commitUnknown';
+/**
+ * handedOff: the content was handed to the remote (RDP/RustDesk clipboard offer) and nothing more can be observed.
+ * interrupted: the app stopped while the task ran; nothing will resume it.
+ */
+export type ManagedTransferResultStage = 'completed' | 'failed' | 'cancelled' | 'paused' | 'commitUnknown' |
+  'handedOff' | 'interrupted';
 export interface ManagedTransferOutcome {
   stage: ManagedTransferResultStage;
   evidence: ManagedTransferEvidence;
@@ -19,7 +24,7 @@ export interface ManagedTransferProgress {
 }
 /** Persisted projection: never add URI grants, source paths, payloads or credentials. */
 export class ManagedTransferRecord {
-  schemaVersion: number = 1;
+  schemaVersion: number = 2;
   taskId: string = '';
   attemptId: number = 1;
   batchId: string = '';
@@ -43,7 +48,12 @@ export class ManagedTransferRecord {
   updatedAt: number = 0;
 }
 export function managedTransferTerminal(stage: TransferStage): boolean {
-  return stage === 'completed' || stage === 'failed' || stage === 'cancelled' || stage === 'expired';
+  return stage === 'completed' || stage === 'failed' || stage === 'cancelled' || stage === 'expired' ||
+    stage === 'handedOff' || stage === 'interrupted';
+}
+/** No runner moves the record again: a terminal stage, or a paused/unknown result its runner settled. */
+export function managedTransferSettled(stage: TransferStage): boolean {
+  return managedTransferTerminal(stage) || stage === 'paused' || stage === 'commitUnknown';
 }
 export function managedTransferInteger(value: number): boolean {
   return Number.isSafeInteger(value) && value >= 0;
@@ -62,7 +72,7 @@ export function managedTransferEvidenceValid(value: ManagedTransferEvidence): bo
 export function managedTransferStageValid(value: TransferStage): boolean {
   return ['preparing', 'ready', 'offered', 'transferring', 'senderCompleted', 'verifying',
     'committing', 'waitingConnection', 'waitingRemote', 'paused', 'cancelling', 'commitUnknown',
-    'completed', 'failed', 'cancelled', 'expired'].indexOf(value) >= 0;
+    'completed', 'failed', 'cancelled', 'expired', 'handedOff', 'interrupted'].indexOf(value) >= 0;
 }
 export function copyManagedTransferRecord(record: ManagedTransferRecord): ManagedTransferRecord {
   const result: ManagedTransferRecord = new ManagedTransferRecord();
@@ -78,7 +88,7 @@ export function copyManagedTransferRecord(record: ManagedTransferRecord): Manage
 }
 export function normalizeManagedTransferRecord(value: ManagedTransferRecord,
   accountScopeId: string): ManagedTransferRecord | null {
-  if (value === null || typeof value !== 'object' || value.schemaVersion !== 1 ||
+  if (value === null || typeof value !== 'object' || (value.schemaVersion !== 1 && value.schemaVersion !== 2) ||
     value.accountScopeId !== accountScopeId || !managedTransferIdentifier(value.taskId) ||
     !managedTransferIdentifier(value.hostId) || !managedTransferInteger(value.attemptId) || value.attemptId < 1 ||
     typeof value.sourceKind !== 'string' || (value.sourceKind.length > 0 && !managedTransferIdentifier(value.sourceKind)) ||
@@ -96,11 +106,24 @@ export function normalizeManagedTransferRecord(value: ManagedTransferRecord,
   result.diagnosticCode = managedTransferCode(value.diagnosticCode);
   return result;
 }
+/**
+ * A record found when the app starts belongs to no runner. An offer the remote received stays handed off; a task that
+ * began saving is unknown; anything else was interrupted. Every result is settled, so old records can be evicted.
+ */
 export function recoverManagedTransferRecord(value: ManagedTransferRecord): ManagedTransferRecord {
   const result: ManagedTransferRecord = copyManagedTransferRecord(value);
-  if (!managedTransferTerminal(result.stage)) {
-    result.stage = result.commitStarted || result.stage === 'committing' || result.stage === 'commitUnknown' ? 'commitUnknown' : 'paused';
-    result.diagnosticCode = result.stage === 'commitUnknown' ? 'interrupted_commit' : 'interrupted_requires_authorization';
+  if (managedTransferTerminal(result.stage)) { return result; }
+  if (result.stage === 'paused' && result.evidence === 'offered') {
+    result.stage = 'handedOff';
+  } else if (result.stage === 'commitUnknown') {
+    result.diagnosticCode = result.diagnosticCode.length > 0 ? result.diagnosticCode : 'interrupted_commit';
+  } else if (result.commitStarted || result.stage === 'committing') {
+    result.stage = 'commitUnknown'; result.diagnosticCode = 'interrupted_commit';
+  } else {
+    // A paused result keeps the reason its runner gave; a task that was still running gets 'interrupted'.
+    result.diagnosticCode = result.stage === 'paused' && result.diagnosticCode.length > 0 ?
+      result.diagnosticCode : 'interrupted';
+    result.stage = 'interrupted';
   }
   return result;
 }
@@ -115,6 +138,8 @@ export function canTransitionManagedTransfer(from: TransferStage, to: TransferSt
   if (from === 'senderCompleted') { return to === 'verifying' || to === 'waitingRemote'; }
   if (from === 'waitingRemote') { return to === 'verifying' || to === 'transferring' || to === 'senderCompleted'; }
   if (from === 'paused' || from === 'waitingConnection') { return to === 'preparing' || to === 'transferring'; }
+  // A task of several files commits each file and then moves on to the next one.
+  if (from === 'committing') { return to === 'transferring' || to === 'verifying'; }
   return false;
 }
 export function applyManagedTransferProgress(record: ManagedTransferRecord,
