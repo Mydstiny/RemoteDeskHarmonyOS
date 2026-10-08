@@ -439,6 +439,9 @@ pub struct RustDeskConnector {
     /// The last upload ended before the peer confirmed it wrote the file: its reply may still arrive, so the
     /// connection is not reused.
     file_replies_pending: bool,
+    /// The peer's file service answered on this connection (its login push or a reply): a later slow answer is a
+    /// slow folder, not a missing service.
+    file_service_seen: bool,
     state: ConnState,
     keypair: KeyPair,
     peer_pk: Option<[u8; 32]>,
@@ -534,6 +537,7 @@ impl RustDeskConnector {
         Self {
             file_job_id: 1,
             file_replies_pending: false,
+            file_service_seen: false,
             state: ConnState::Disconnected,
             keypair: crypto::generate_keypair(),
             peer_pk: None,
@@ -1559,7 +1563,7 @@ impl RustDeskConnector {
         crypto.set_write_timeout(Some(Duration::from_secs(10)))?;
         // Login may have left an immediate file-channel revocation buffered.
         // Consume it before even publishing this attempt's source metadata.
-        Self::drain_upload_control(crypto, job, 1, Duration::ZERO, false)?;
+        Self::drain_upload_control(crypto, job, self.file_job_id, Duration::ZERO, false)?;
         crypto.set_read_timeout(Some(Duration::from_millis(250)))?;
         let (dir, name) = Self::split_remote_file_path(remote_path);
         if name.is_empty() || name == "." || name == ".." {
@@ -1886,8 +1890,14 @@ impl RustDeskConnector {
                     }
                     match message.union {
                         Some(Message_oneof_union::file_response(response)) => match response.union {
-                            Some(FileResponse_oneof_union::dir(directory)) if directory.get_id() == 0 => return Ok(()),
-                            Some(FileResponse_oneof_union::error(error)) if error.get_id() == 0 => return Ok(()),
+                            Some(FileResponse_oneof_union::dir(directory)) if directory.get_id() == 0 => {
+                                self.file_service_seen = true;
+                                return Ok(());
+                            }
+                            Some(FileResponse_oneof_union::error(error)) if error.get_id() == 0 => {
+                                self.file_service_seen = true;
+                                return Ok(());
+                            }
                             _ => {}
                         },
                         Some(Message_oneof_union::test_delay(delay)) => Self::echo_file_test_delay(crypto, delay)?,
@@ -2097,7 +2107,7 @@ impl RustDeskConnector {
         let id = self.file_job_id;
         let crypto = self.prepare_file_channel()?;
         crypto.set_read_timeout(Some(Duration::from_millis(1)))?;
-        Self::drain_upload_control(crypto, job, 1, Duration::ZERO, false)?;
+        Self::drain_upload_control(crypto, job, id, Duration::ZERO, false)?;
         crypto.set_read_timeout(Some(Duration::from_millis(100)))?;
         let mut create = crate::protocol::message_proto::FileDirCreate::new();
         create.set_id(id);
@@ -2212,6 +2222,7 @@ impl RustDeskConnector {
         rejected: &'static str,
     ) -> io::Result<()> {
         job.check()?;
+        let service_seen = self.file_service_seen;
         let crypto = self.prepare_file_channel()?;
         let mut file_action = FileAction::new();
         file_action.union = Some(action);
@@ -2219,7 +2230,7 @@ impl RustDeskConnector {
         message.union = Some(Message_oneof_union::file_action(file_action));
         Self::send_message_encrypted(crypto, &message)?;
         let started = Instant::now();
-        let mut file_service_answered = false;
+        let mut file_service_answered = service_seen;
         loop {
             job.check()?;
             let elapsed = started.elapsed();
@@ -2288,6 +2299,7 @@ impl RustDeskConnector {
         let id = Self::next_file_action_id();
         // Windows peers join relative names with '\\'; on other peers it is an ordinary character of a name.
         let windows_peer = self.file_peer_platform().eq_ignore_ascii_case("windows");
+        let service_seen = self.file_service_seen;
         let crypto = self.prepare_file_channel()?;
         let mut request = crate::protocol::message_proto::ReadAllFiles::new();
         request.set_id(id);
@@ -2299,7 +2311,7 @@ impl RustDeskConnector {
         message.union = Some(Message_oneof_union::file_action(action));
         Self::send_message_encrypted(crypto, &message)?;
         let started = Instant::now();
-        let mut file_service_answered = false;
+        let mut file_service_answered = service_seen;
         loop {
             job.check()?;
             if started.elapsed() >= Duration::from_secs(120) {
@@ -2391,8 +2403,10 @@ impl RustDeskConnector {
     /// Whether `path` is an absolute path below a root: no `.` or `..` component, not a root, not a UNC or
     /// device path. Removal refuses anything else.
     fn removable_remote_path(path: &str) -> bool {
-        if path.is_empty() || path.len() > 32768 || path.contains('\0') || path.starts_with("\\\\")
-            || path.starts_with("//")
+        // Two leading separators of any kind ("//", "\\\\", "/\\") name a network or device path on Windows.
+        let leading = path.as_bytes();
+        if path.is_empty() || path.len() > 32768 || path.contains('\0')
+            || (leading.len() >= 2 && matches!(leading[0], b'/' | b'\\') && matches!(leading[1], b'/' | b'\\'))
         {
             return false;
         }
@@ -2599,6 +2613,7 @@ impl RustDeskConnector {
         job: &crate::file_transfer::TransferJob,
     ) -> io::Result<crate::file_transfer::RemoteDirectory> {
         job.check()?;
+        let service_seen = self.file_service_seen;
         let crypto = self.prepare_file_channel()?;
         let mut request = crate::protocol::message_proto::ReadDir::new();
         request.set_path(path.to_owned());
@@ -2612,7 +2627,7 @@ impl RustDeskConnector {
         let deadline = started + Duration::from_secs(30);
         // The peer's connection manager answers every directory request, and pushes the login's initial directory
         // on its own; silence from it while the connection itself is alive means it is not running.
-        let mut file_service_answered = false;
+        let mut file_service_answered = service_seen;
         loop {
             job.check()?;
             let now = Instant::now();
@@ -8309,7 +8324,7 @@ mod tests {
     #[test]
     fn file_transfer_removal_refuses_roots_relative_and_dot_paths() {
         for refused in ["", "/", "C:\\", "C:\\\\", "C:/", "/.", "/home/u/Documents/..", ".", "relative/x",
-            "\\\\server\\share", "\\\\?\\C:\\", "//server/share/x"]
+            "\\\\server\\share", "\\\\?\\C:\\", "//server/share/x", "/\\server\\share\\x"]
         {
             assert!(!RustDeskConnector::removable_remote_path(refused), "{refused}");
         }

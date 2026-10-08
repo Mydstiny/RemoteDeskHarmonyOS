@@ -6,7 +6,9 @@
 #include <freerdp/utils/cliprdr_utils.h>
 #include <winpr/shell.h>
 
+#include <algorithm>
 #include <cstdlib>
+#include <sys/stat.h>
 
 namespace {
 
@@ -110,6 +112,17 @@ RdpFileClipboardOfferResult RdpFileClipboardBridge::publishLocalFiles(
         return result;
     }
     resetReadProgressLocked(offer_.snapshot().generation);
+    // A request may reach past a file's end; reads of plain files are counted only up to their size.
+    for (const auto& path : paths) {
+        struct stat info {};
+        offeredFileSizes_.push_back(stat(path.c_str(), &info) == 0 && S_ISREG(info.st_mode) ?
+            static_cast<uint64_t>(info.st_size) : 0);
+        if (offeredFileSizes_.back() == 0 || !S_ISREG(info.st_mode)) {
+            // A folder expands into many list entries: no index-to-size mapping is reliable then.
+            offeredFileSizes_.clear();
+            break;
+        }
+    }
     if (!channel_) {
         offer_.clear();
         return RdpFileClipboardOfferResult::InvalidPath;
@@ -142,6 +155,7 @@ RdpFileClipboardOfferResult RdpFileClipboardBridge::publishLocalFiles(
 void RdpFileClipboardBridge::resetReadProgressLocked(uint64_t generation) {
     readGeneration_ = generation;
     requestedEndByIndex_.clear();
+    offeredFileSizes_.clear();
     readRequests_ = 0;
     lastReadRequest_ = {};
 }
@@ -224,8 +238,10 @@ UINT RdpFileClipboardBridge::handleFileContentsRequest(
     if ((request->dwFlags & FILECONTENTS_RANGE) != 0) {
         const uint64_t end = ((static_cast<uint64_t>(request->nPositionHigh) << 32) | request->nPositionLow) +
             request->cbRequested;
+        const uint64_t bounded = request->listIndex < offeredFileSizes_.size() ?
+            std::min(end, offeredFileSizes_[request->listIndex]) : end;
         uint64_t& furthest = requestedEndByIndex_[request->listIndex];
-        if (end > furthest) furthest = end;
+        if (bounded > furthest) furthest = bounded;
     }
     return helperRequest_(context, request);
 }

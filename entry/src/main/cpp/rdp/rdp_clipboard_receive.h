@@ -15,8 +15,8 @@ struct RdpClipboardFileRequest {
     uint32_t clipDataId = 0;
 };
 struct RdpClipboardReceiveOptions {
-    /** A stalled transfer stops when one request goes this long without an answer. */
-    uint32_t requestTimeoutMs = 15000;
+    /** A stalled transfer stops when one request (up to 512 KiB) goes this long without an answer. */
+    uint32_t requestTimeoutMs = 60000;
     /** A steady transfer is not cut off: 24 hours bounds only a runaway one (it used to be 30 minutes). */
     uint32_t overallTimeoutMs = 86400000;
     uint64_t maxTotalBytes = 2ULL * 1024 * 1024 * 1024;

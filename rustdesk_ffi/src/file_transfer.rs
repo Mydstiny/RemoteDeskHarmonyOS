@@ -203,7 +203,9 @@ impl TransferJob {
     pub fn progress(&self, bytes: u64) {
         if let Ok(mut status) = self.status.lock() {
             if status.0.state == 2 {
-                status.0.transferred_bytes = bytes.min(status.0.total_bytes);
+                // A job without a byte total (removing a folder counts its files) reports its count as is.
+                status.0.transferred_bytes =
+                    if status.0.total_bytes > 0 { bytes.min(status.0.total_bytes) } else { bytes };
             }
         }
         if let Ok(mut last) = self.last_progress.lock() {

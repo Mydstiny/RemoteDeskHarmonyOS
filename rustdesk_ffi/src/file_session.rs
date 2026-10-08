@@ -234,6 +234,8 @@ impl FileLaneBackend for ConnectorBackend {
 
     fn connect(&self, job: &TransferJob, epoch: u64, remote_dir: &str) -> io::Result<RustDeskConnector> {
         let mut connector = (self.connect)(job, epoch, remote_dir)?;
+        // Login (approval, 2FA) has its own deadlines; the job's idle time starts after it.
+        job.progress(0);
         connector.consume_login_directory_push(job)?;
         Ok(connector)
     }

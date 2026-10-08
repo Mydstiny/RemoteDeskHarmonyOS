@@ -219,10 +219,10 @@ test('notification rejection cannot fail successful data transfer', async () => 
   const handle = service.enqueue(options(), async c => { c.update({ stage: 'transferring', sentBytes: 8 }); return outcome(); });
   assert.equal((await handle.result).stage, 'completed'); await drain(); assert.equal(env.stops.length, 1);
 });
-test('phone defaults to one active data task while PC admits two', async () => {
-  for (const [deviceType, expected] of [['phone', 1], ['2in1', 2]]) {
+test('one task per session; phones run two sessions side by side, PC up to four', async () => {
+  for (const [deviceType, expected] of [['phone', 2], ['2in1', 3]]) {
     const env = environment(new Map(), deviceType), service = env.service(), gate = deferred(); let active = 0;
-    const handles = [1,2,3].map(i => service.enqueue(options({taskId:'budget-'+i, protocol:'rdp'}), async () => { active++; return gate.promise; }));
+    const handles = [1,2,3].map(i => service.enqueue(options({taskId:'budget-'+i, protocol:'rdp', queueKey:'session-'+i}), async () => { active++; return gate.promise; }));
     await drain(); assert.equal(active, expected); gate.resolve(outcome());
     await Promise.all(handles.map(h=>h.result)); await drain(); assert.equal(env.stops.length,3);
   }

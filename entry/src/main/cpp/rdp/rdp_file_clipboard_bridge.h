@@ -77,6 +77,8 @@ private:
     pcCliprdrServerFileContentsResponse helperResponse_ = nullptr;
     uint64_t readGeneration_ = 0;
     std::map<UINT32, uint64_t> requestedEndByIndex_;
+    /** Size of each offered regular file by list index (0 = unknown, e.g. inside an offered folder). */
+    std::vector<uint64_t> offeredFileSizes_;
     uint32_t readRequests_ = 0;
     std::chrono::steady_clock::time_point lastReadRequest_ {};
 };

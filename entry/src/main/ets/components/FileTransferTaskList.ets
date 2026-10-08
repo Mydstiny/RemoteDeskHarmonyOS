@@ -52,7 +52,9 @@ export struct FileTransferTaskList {
   }
 
   private progressPercent(record: ManagedTransferRecord): number {
-    const done: number = Math.max(record.readBytes, record.sentBytes, record.writtenBytes);
+    // An upload shows what the remote took once that started; before, its local staging.
+    const done: number = record.direction === 'upload' && record.sentBytes > 0 ? record.sentBytes :
+      Math.max(record.readBytes, record.writtenBytes, record.sentBytes);
     return Math.min(100, Math.floor(done * 100 / record.totalBytes));
   }
 

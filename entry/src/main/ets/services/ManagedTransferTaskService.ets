@@ -207,9 +207,11 @@ export class ManagedTransferTaskService {
       const key: string = runtime.queueKey();
       const lane: number = this.runningByKey.get(key) ?? 0;
       const local: boolean = key === 'local';
-      // A RustDesk session runs its file jobs one after another on one reused connection (rustdesk_ffi file
-      // lanes); a second running task would only wait there while its idle clock ran.
-      const laneLimit: number = local || runtime.options.protocol === 'rustdesk' ? 1 : this.concurrency;
+      // One running task per remote session: a RustDesk session runs its file jobs one after another on one reused
+      // connection (a second running task would only wait there while its idle clock ran), and an RDP clipboard
+      // offer is followed until the remote read it (a second offer would replace it). Several sessions run side by
+      // side up to the global limit.
+      const laneLimit: number = 1;
       if (lane >= laneLimit || (!local && this.running >= this.networkLimit)) { index++; continue; }
       this.queue.splice(index, 1);
       if (!local) { this.running++; }
@@ -408,9 +410,9 @@ export class ManagedTransferTaskService {
     if (runtime.outcome !== null) { runtime.resolve(runtime.outcome); }
   }
   private snapshot(record: ManagedTransferRecord): FileTransferProgressSnapshot {
-    // An RDP upload only reads and stages locally; its progress is the larger of read, sent and written bytes.
-    const transferred: number = record.direction === 'upload' ?
-      Math.max(record.readBytes, record.sentBytes, record.writtenBytes) : record.writtenBytes;
+    // An upload shows what the remote took (sent) once that started; before, its local staging (read, written).
+    const transferred: number = record.direction === 'upload' ? (record.sentBytes > 0 ? record.sentBytes :
+      Math.max(record.readBytes, record.writtenBytes)) : record.writtenBytes;
     const text: string = record.evidence === 'senderCompleted' && record.stage === 'completed' ?
       '发送结束，尚未验证远端保存结果' : '';
     const result: FileTransferProgressSnapshot = createTransferSnapshot(record.taskId, record.protocol,
