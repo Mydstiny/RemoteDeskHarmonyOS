@@ -102,4 +102,38 @@ check('top bar sub-menus open on click only; each decoder texture gets a freshly
   assert.ok(decoder.includes('surfaceImageReady_ = true;'));
 });
 
+check('the codec preference belongs to RustDesk alone: RDP always opens an H.264 decoder', () => {
+  const page = read('pages/RemoteDesktop.ets');
+  assert.ok(page.includes("const rdCodecVal: number = host.protocol === 'rustdesk' ? (AppStorage.get<number>('rustdeskCodec') ?? 0) : 0;"));
+  assert.ok(!page.includes("const rdCodecVal: number = isVnc ? 0 :"), 'an H.265 RustDesk choice once broke RDP connects');
+});
+
+check('PC top toolbars of RDP, Moonlight and VNC fit every button; RDP layout follows its own window', () => {
+  const rdp = read('components/rdp/RdpSessionToolbar.ets');
+  assert.ok(!rdp.includes('maxWidth: 480'), 'a fixed cap hid 断开 past the bar');
+  assert.ok(rdp.includes('.width(sessionToolbarPcWidth(this.items().length, 52, layout.itemGap, 44, this.viewportWidth))'));
+  assert.ok(read('components/moonlight/MoonlightSessionToolbar.ets').includes(
+    'return sessionToolbarPcWidth(this.items().length, 50, this.layout().itemGap, 44, this.viewportWidth);'));
+  const vnc = read('components/VncSessionToolbar.ets');
+  assert.ok(vnc.includes('const content: number = count * 56 + (count - 1) * 5 + 12;') && !vnc.includes('Math.min(480'));
+  const ui = read('services/MoonlightUiPolicy.ets');
+  assert.ok(ui.includes('const content: number = count * itemWidth + count * gap + trailingWidth + 18;'));
+  const page = read('pages/RemoteDesktop.ets');
+  assert.ok(page.includes('viewportWidth: this.remoteSidebarWindowWidth,'));
+  assert.ok(page.includes('this.sessionId > 0 && !this.cleanupStarted && !this.currentAbilityBackgroundState() &&'),
+    'a minimised main window must not stop the session window from resizing the remote desktop');
+});
+
+check('RDP on PC: 分辨率跟随窗口 is a switch, off by default (the whole screen\'s size, scaled into any window)', () => {
+  const page = read('pages/RemoteDesktop.ets');
+  assert.ok(page.includes("@StorageLink('rdpFollowWindow') rdpFollowWindow: boolean = false;"));
+  assert.ok(page.includes("this.rdpFollowWindow = prefs.getSync('rdpFollowWindow', false) === true;"));
+  assert.ok(page.includes("(this.isDesktopDevice && effectiveResolutionId === 'auto' && !this.rdpFollowWindow)) {"));
+  assert.ok(page.includes('(windowFollowingOnly && !this.rdpFollowWindow)) {'), 'window resizes do not renegotiate');
+  assert.ok(page.includes("this.persistSessionPref('rdpFollowWindow', on);"));
+  const center = read('components/rdp/RdpControlCenter.ets');
+  assert.ok(center.includes("this.toggleRow('分辨率跟随窗口'"));
+  assert.equal(center.split('this.followWindowRow()').length - 1, 2, 'shown with and without the Pro display profile');
+});
+
 console.log('rustdesk live options: ' + passed + ' checks passed');

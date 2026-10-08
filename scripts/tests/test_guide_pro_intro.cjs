@@ -124,7 +124,14 @@ test('Pro 功能介绍 has one button, 立即试用, and the startup popup canno
   assert.equal(showcase.includes("previewStyle: 'warp'"), false);
   const guidePage = read('entry/src/main/ets/pages/GuidePage.ets');
   assert.match(guidePage, /actionLabel: '立即试用',\s*onAction: \(\): void => \{ this\.startProTrial\(\); \}/);
-  assert.match(guidePage, /onWillDismiss: \(action: DismissSheetAction\): void => \{\s*if \(this\.stage === 'pro' && !this\.isFinishing && !this\.reflowingSheet && !this\.appInBackground\) \{ return; \}\s*action\.dismiss\(\);/);
+  assert.match(guidePage, /onWillDismiss: \(action: DismissSheetAction\): void => \{\s*if \(this\.stage === 'pro' && this\.proIntroShown && !this\.isFinishing && !this\.reflowingSheet &&\s*!this\.appInBackground\) \{ return; \}\s*action\.dismiss\(\);/);
+  // A new user is never trapped: until its content shows, the popup can be dismissed; a popup that has not shown in
+  // 3 s, or a second 开始使用, completes the guide; and the app is entered exactly once.
+  assert.match(guidePage, /const PRO_INTRO_SHOW_DEADLINE_MS = 3000;/);
+  assert.match(guidePage, /\.onAppear\(\(\): void => \{\s*this\.proIntroShown = true;/);
+  assert.match(guidePage, /if \(this\.stage === 'pro'\) \{[\s\S]{0,160}?this\.startProTrial\(\);\s*return;/);
+  assert.match(guidePage, /if \(!this\.usesGuideSheet\(\) \|\| \(this\.stage === 'pro' && !this\.proIntroShown\)\) \{/);
+  assert.equal((guidePage.match(/router\.replaceUrl\(/g) || []).length, 1, 'one guarded hand-off to the app');
   assert.match(guidePage, /markProTrialStarted\(getContext\(this\)\);[\s\S]{0,240}this\.finish\(\);/);
   const about = read('entry/src/main/ets/components/AboutSettingsSheet.ets');
   assert.match(about, /actionLabel: proTrialStarted\(getContext\(this\)\) \? '继续使用 Pro' : '立即试用'/);

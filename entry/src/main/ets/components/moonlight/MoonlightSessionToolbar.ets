@@ -7,7 +7,8 @@ import {
   MoonlightToolbarLayout,
   moonlightToolbarAutoHideDelayMs,
   moonlightToolbarItems,
-  moonlightToolbarLayout
+  moonlightToolbarLayout,
+  sessionToolbarPcWidth
 } from '../../services/MoonlightUiPolicy';
 import {
   REMOTE_SESSION_COLLAPSED_RAIL_BACKGROUND,
@@ -308,9 +309,7 @@ export struct MoonlightSessionToolbar {
   }
 
   private pcExpandedToolbarWidth(): number {
-    const available: number = Number.isFinite(this.viewportWidth) && this.viewportWidth > 0 ?
-      Math.max(1, this.viewportWidth - 24) : 560;
-    return Math.min(560, available);
+    return sessionToolbarPcWidth(this.items().length, 50, this.layout().itemGap, 44, this.viewportWidth);
   }
 
   @Builder private toolItem(item: MoonlightToolbarItem, layout: MoonlightToolbarLayout) {

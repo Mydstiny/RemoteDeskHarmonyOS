@@ -63,6 +63,8 @@ export struct RdpControlCenter {
   @Prop surfaceWidthPx: number = 0;
   @Prop surfaceHeightPx: number = 0;
   @Prop remoteUiScale: string = 'auto';
+  /** PC 自适应 renegotiates with every window size (off: the whole screen's size, scaled into the window). */
+  @Prop followWindow: boolean = false;
   @Prop desktopScaleMode: string = 'auto';
   @Prop desktopScalePercent: number = 100;
   @Prop colorDepth: number = 32;
@@ -93,6 +95,7 @@ export struct RdpControlCenter {
   onResolution: (id: string) => void = (_id: string): void => {};
   onCustomResolution: (width: string, height: string) => void = (_width: string, _height: string): void => {};
   onRemoteUiScale: (value: string) => void = (_value: string): void => {};
+  onFollowWindow: (on: boolean) => void = (_on: boolean): void => {};
   onDesktopScalePercent: (value: string) => void = (_value: string): void => {};
   onColorDepth: (depth: number) => void = (_depth: number): void => {};
   onAudio: (enabled: boolean) => void = (_enabled: boolean): void => {};
@@ -133,7 +136,8 @@ export struct RdpControlCenter {
     const assessment: RdpResolutionAspectAssessment = rdpResolutionAspectAssessment(
       this.resolutionSelected(), this.surfaceWidthPx, this.surfaceHeightPx, this.customWidth, this.customHeight);
     if (assessment.followsWindow) {
-      return this.isDesktopDevice ? '跟随当前窗口，自动协商，完整适应时不产生比例黑边' :
+      return this.isDesktopDevice ? (this.followWindow ? '跟随当前窗口，自动协商，完整适应时不产生比例黑边' :
+        '按整块屏幕的分辨率，窗口里按比例完整显示') :
         '下次连接时适应设备画面；手机与平板不进行窗口实时重协商';
     }
     if (assessment.avoidsRatioBars) {
@@ -239,6 +243,12 @@ export struct RdpControlCenter {
       SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(14).fontColor([this.pal().text3])
     }.width('100%').height(60).padding({ left: 10, right: 12, top: 7, bottom: 7 })
       .onClick(action)
+  }
+
+  @Builder private followWindowRow() {
+    this.toggleRow('分辨率跟随窗口', this.followWindow ? '窗口大小一变，远端分辨率随之改变' :
+      '关闭：远端用整块屏幕的分辨率，窗口缩放时按比例显示',
+      this.followWindow, (on: boolean): void => { this.onFollowWindow(on); })
   }
 
   @Builder private toggleRow(title: string, detail: string, value: boolean,
@@ -398,6 +408,9 @@ export struct RdpControlCenter {
           this.displayProfileEntry()
           Text(this.resolutionSelectionSummary()).fontSize(9)
             .fontColor(this.pal().text3).width('100%').margin({ top: 6, bottom: 10 })
+          if (this.isDesktopDevice && this.resolutionSelected() === 'auto') {
+            this.followWindowRow()
+          }
         } else {
           Text('Windows 远端分辨率').fontSize(11).fontColor(this.pal().text2)
             .width('100%').margin({ bottom: 6 })
@@ -412,6 +425,9 @@ export struct RdpControlCenter {
           }.width('100%').height(38).scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off)
           Text(this.resolutionSelectionSummary()).fontSize(9)
             .fontColor(this.pal().text3).width('100%').margin({ top: 5, bottom: 10 })
+          if (this.isDesktopDevice && this.resolutionSelected() === 'auto') {
+            this.followWindowRow()
+          }
           Divider().color(this.pal().divider)
           Text('远端界面大小').fontSize(11).fontColor(this.pal().text2)
             .width('100%').margin({ top: 10, bottom: 6 })

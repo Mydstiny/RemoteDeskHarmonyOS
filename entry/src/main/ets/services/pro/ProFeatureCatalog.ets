@@ -158,7 +158,7 @@ export function proFeatures(): ProFeature[] {
     rdpAdvancedDisplay(),
     rustDeskAdvancedDisplay(),
     personalization(),
-    remoteAi('pro.ai.workspace', '远程 AI 工作台', '在自己的电脑上运行 AI，查看执行过程、批准操作并恢复会话。'),
+    remoteAi('pro.ai.workspace', '远程 AI 工作台', '在自己的电脑上运行 AI（Codex、DSH、Pi），查看执行过程、批准操作并恢复会话；目前限同一局域网。'),
     remoteAi('pro.ai.codex', 'Codex 远程控制', '连接电脑端 Codex 插件，使用原生会话、审批与文件差异。'),
     remoteAi('pro.ai.dsh', 'DSH 远程控制', '连接电脑端 DSH 插件，使用已配置的模型与原生工具。'),
     remoteAi('pro.ai.pi', 'Pi 远程控制',
@@ -173,34 +173,57 @@ export function proFeatures(): ProFeature[] {
     phonePasskey()
   ];
 }
-/** Where each feature stands in development and device acceptance; shown on the Pro page. */
+/**
+ * Where each feature stands in development and device acceptance; shown on the Pro page and given to the AI (its
+ * knowledge lists every feature with this text). A feature that is not finished says why, in plain words.
+ */
 export function proFeatureProgress(id: string): string {
   switch (id) {
-    case 'pro.personalization.appIcon': return '已完成 · 实机验收通过 · 仅鸿蒙 7（API 26）及以上可用';
-    case 'pro.connection.continuation': return '已完成 · 手机与平板实机验收通过（SSH、RDP、RustDesk、VNC）；PC 待验证';
-    case 'pro.file.knockTransfer': return '已开发 · 等待鸿蒙 PC 实机验证，暂不开放';
-    case 'pro.connection.knockShare': return '已开发 · 等待应用链接域名配置，暂不开放';
+    case 'pro.personalization.appIcon': return '已完成 · 实机验收通过 · 系统要求鸿蒙 7（API 26）及以上，更低版本不显示';
+    case 'pro.connection.continuation':
+      return '已上线（试用） · 手机与平板实机验收通过（SSH、RDP、RustDesk、VNC） · PC 端待验证：作者还没有鸿蒙 PC 真机';
+    case 'pro.file.knockTransfer':
+      return '已开发 · 暂不开放：碰一碰要在鸿蒙 PC 真机上验证，作者还没有真机，模拟器也不支持碰一碰';
+    case 'pro.connection.knockShare':
+      return '已开发 · 暂不开放：需要先在华为开发者后台配置应用链接（App Linking）域名，目前还没有配置';
     case 'pro.ai.workspace':
     case 'pro.ai.codex':
-    case 'pro.ai.dsh': return '已开发（局域网连接） · 实机验收暂缓';
-    case 'pro.ai.pi': return '已开发（局域网连接） · 电脑端插件已通过真实对话验收 · 待手机实机验收';
-    case 'pro.ai.rustdeskTransport': return '规划中 · 等待 RustDesk 数据通道';
-    case 'pro.security.webauthnRedirect': return '开发中 · RDP 安全密钥通道已接入调试版（手机、平板、鸿蒙 PC），待安全密钥与 Windows 验收';
-    case 'pro.security.phonePasskey': return '原型 · 调试版可在同账号设备间测试注册与登录；RDP 接入待鸿蒙 PC 验收';
+    case 'pro.ai.dsh':
+      return '已开发（局域网连接） · 试用开放 · 排在 Pi 之后，电脑端插件的真实对话验收还没有做，使用中可能遇到问题';
+    case 'pro.ai.pi': return '已开发（局域网连接） · 试用开放 · 电脑端插件已通过真实对话验收 · 手机端实机验收进行中';
+    case 'pro.ai.rustdeskTransport': return '规划中 · 还不能用：RustDesk 的数据通道尚未接入，目前只能在同一局域网内连接电脑上的 AI';
+    case 'pro.security.webauthnRedirect':
+      return '开发中 · 仅调试版：需要用实体 USB 安全密钥和远程 Windows 逐项验证注册、登录，验收完成前正式版不开放';
+    case 'pro.security.phonePasskey':
+      return '原型 · 仅调试版：目前只能在本应用内测试注册与登录，还不能给普通网站和其他应用使用；RDP 接入待鸿蒙 PC 真机验收';
     case 'pro.personalization': return '已完成 · 实机验收通过（自定义组合键与 SSH 终端皮肤）';
     case 'pro.workspaces':
-      return '已开发 · 试用开放 · 平板 SSH + RustDesk 实机通过；RustDesk + RDP 与 PC 窗口摆放待验收；手机默认关闭';
-    case 'pro.hostManagement': return '已开发 · 试用开放 · 分组、标签、智能分组、批量操作与导入导出待实机验收';
-    case PRO_RDP_ADVANCED_DISPLAY_FEATURE: return '已开发 · 试用开放 · RDP 自定义尺寸与 Windows 缩放待真实 Windows 矩阵验收';
-    case PRO_RUSTDESK_ADVANCED_DISPLAY_FEATURE: return '已开发 · 试用开放 · 能力感知自定义分辨率待 RustDesk peer/设备矩阵验收';
-    case 'pro.feedback': return '已上线 · 实机验收通过 · Pro 专属畅联群与 QQ 群';
+      return '已上线（试用） · 平板 SSH + RustDesk 实机通过 · PC 按布局摆放窗口待验证（作者还没有鸿蒙 PC 真机） · 手机屏幕小，默认关闭';
+    case 'pro.hostManagement': return '已上线（试用） · 分组、标签、批量操作与导入导出在手机、平板和鸿蒙 PC 模拟器上验收通过';
+    case PRO_RDP_ADVANCED_DISPLAY_FEATURE:
+      return '已上线（试用） · 自定义尺寸与 Windows 缩放已在作者的 Windows 上可用；不同 Windows 版本和显示器组合还在逐一验证';
+    case PRO_RUSTDESK_ADVANCED_DISPLAY_FEATURE:
+      return '已上线（试用） · 能否改分辨率取决于被控端的 RustDesk 版本、显示器和权限，各种组合还在逐一验证';
+    case 'pro.feedback': return '暂不开放 · Pro 专属畅联群与 QQ 群已准备好，开放时间另行通知';
     case PRO_DIAGNOSTICS_FEATURE:
-      return '已上线（试用） · 聊天、助理诊断、AI 语音（Beta）、文档与数据管理、需求收集；更多服务商的实机验收进行中';
+      return '已上线（试用） · 聊天、助理诊断、AI 语音（Beta）、文档与数据管理、需求收集 · 各家 AI 服务的接口不完全一样，仍在逐家实测';
     case PRO_DIAGNOSTICS_PROVIDER_FEATURE: return '已上线（试用） · 多家服务商、本机安全存储密钥、模型列表';
     case PRO_DIAGNOSTICS_ASSISTANT_FEATURE: return '已上线（试用） · 主页、设置、PC 左下角与各协议连接中的入口，悬浮球与语音模式';
-    case PRO_DIAGNOSTICS_EMAIL_FEATURE: return '已上线（试用） · 结构化诊断邮件与日志附件；各邮件应用的附件兼容性待实机验收';
+    case PRO_DIAGNOSTICS_EMAIL_FEATURE:
+      return '已上线（试用） · 结构化诊断邮件与日志附件 · 各家邮件应用处理附件的方式不同，兼容性仍在逐个实测';
     default: return '';
   }
+}
+
+/** Every Pro feature with its state, one line each: what the AI knows about Pro (kept with the Pro page text). */
+export function proFeatureStatusKnowledge(): string {
+  const lines: string[] = [];
+  for (const feature of proFeatures()) {
+    if (feature.id === 'core.connection') { continue; }
+    const progress: string = proFeatureProgress(feature.id);
+    lines.push('- ' + feature.title + '：' + feature.description + (progress.length > 0 ? '（状态：' + progress + '）' : ''));
+  }
+  return lines.join('\n');
 }
 
 export function proDevice(type: string): ProDevice {

@@ -185,10 +185,14 @@ export struct VncSessionToolbar {
     return this.placement.railRect.height > 0 ? this.placement.railRect.height : fallback;
   }
 
+  /** Every button (56vp, 5vp apart, 6vp padding, 复位 always before 断开) in one row; narrower only with the window. */
   private pcExpandedToolbarWidth(): number {
+    const count: number = vncToolbarPrimaryActionIds(
+      this.displayCount, this.portraitDisplayEnabled, this.aiVisible).length + 1;
+    const content: number = count * 56 + (count - 1) * 5 + 12;
     const available: number = Number.isFinite(this.viewportWidth) && this.viewportWidth > 0 ?
-      Math.max(1, this.viewportWidth - 24) : 480;
-    return Math.min(480, available);
+      Math.max(1, this.viewportWidth - 24) : content;
+    return Math.min(content, available);
   }
 
   private resetRailSwipe(): void {

@@ -701,6 +701,18 @@ export function moonlightRemoteInputSurfaceWidth(viewportWidth: number): number 
   return Number.isFinite(viewportWidth) ? Math.max(1, viewportWidth) : 1;
 }
 
+/**
+ * A PC top toolbar's width: every button in one row (its 8vp padding and 1vp border on each side), narrowed to the
+ * window (where it then scrolls) only when the window is narrower. A fixed cap once hid RDP's 断开 past the bar.
+ */
+export function sessionToolbarPcWidth(itemCount: number, itemWidth: number, gap: number,
+  trailingWidth: number, viewportWidth: number): number {
+  const count: number = Math.max(0, Math.round(itemCount));
+  const content: number = count * itemWidth + count * gap + trailingWidth + 18;
+  if (!Number.isFinite(viewportWidth) || viewportWidth <= 0) { return content; }
+  return Math.min(content, Math.max(1, viewportWidth - 24));
+}
+
 export function moonlightToolbarAutoHideDelayMs(layout: MoonlightToolbarLayout,
   pinned: boolean, menuOpen: boolean = false): number {
   if (pinned || menuOpen || layout.autoHideMs <= 0) { return 0; }

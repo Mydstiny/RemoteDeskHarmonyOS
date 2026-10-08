@@ -31,6 +31,8 @@ const GUIDE_KEY = 'guide_shown_v4';
 const LAST_SEEN_RELEASE_KEY = 'last_seen_release_version';
 const GUIDE_SHEET_ENTER_DELAY_MS = 120;
 const GUIDE_SHEET_REFLOW_DELAY_MS = 80;
+/** A Pro 功能介绍 whose content has not shown by now is given up: the guide completes instead of leaving a blank sheet. */
+const PRO_INTRO_SHOW_DEADLINE_MS = 3000;
 // Set true only during explicit release acceptance to show the update Swiper
 // on every launch regardless of the persisted read marker.
 const FORCE_RELEASE_NOTES_REVIEW: boolean = false;
@@ -61,6 +63,10 @@ struct GuidePage {
   private reflowingSheet: boolean = false;
   private guideSheetEnterTimer: number = -1;
   private guideSheetReopenTimer: number = -1;
+  /** The Pro 功能介绍 content is on screen; until then the sheet may be dismissed, so it can never trap a new user. */
+  private proIntroShown: boolean = false;
+  private proIntroDeadlineTimer: number = -1;
+  private routedToLogin: boolean = false;
 
   async aboutToAppear(): Promise<void> {
     this.refreshTutorialPages();
@@ -73,7 +79,7 @@ struct GuidePage {
       this.mode = resolveStartupMode(shown, lastSeen, CURRENT_RELEASE_VERSION,
         releasePages.length > 0, FORCE_RELEASE_NOTES_REVIEW);
       if (this.mode === StartupMode.LOGIN) {
-        router.replaceUrl({ url: 'pages/LoginPage' });
+        this.goToLogin();
         return;
       }
       this.releaseItems = releasePages;
@@ -136,9 +142,28 @@ struct GuidePage {
 
   /** Both flows end with the Pro 功能介绍 sheet; its button or dismissal completes the startup guide. */
   private showProIntro(): void {
-    if (this.isFinishing || this.stage === 'pro') { return; }
+    if (this.isFinishing) { return; }
+    if (this.stage === 'pro') {
+      // 开始使用 tapped again: the sheet did not come up over the guide. Finish rather than leave the user stuck.
+      this.startProTrial();
+      return;
+    }
     this.stage = 'pro';
     this.showGuideSheet = true;
+    this.cancelProIntroDeadline();
+    this.proIntroDeadlineTimer = setTimeout((): void => {
+      this.proIntroDeadlineTimer = -1;
+      if (!this.proIntroShown && !this.isFinishing && !this.appInBackground) {
+        this.startProTrial();
+      }
+    }, PRO_INTRO_SHOW_DEADLINE_MS);
+  }
+
+  private cancelProIntroDeadline(): void {
+    if (this.proIntroDeadlineTimer !== -1) {
+      clearTimeout(this.proIntroDeadlineTimer);
+      this.proIntroDeadlineTimer = -1;
+    }
   }
 
   private onBackgroundFlagChange(): void {
@@ -211,6 +236,10 @@ struct GuidePage {
         onAction: (): void => { this.startProTrial(); }
       })
       .width('100%').height('100%')
+      .onAppear((): void => {
+        this.proIntroShown = true;
+        this.cancelProIntroDeadline();
+      })
       .backgroundColor(this.pal().sheetBg)
     } else if (this.mode === StartupMode.RELEASE_NOTES) {
       WhatsNewList({
@@ -265,7 +294,8 @@ struct GuidePage {
       // The Pro 功能介绍 closes only through 立即试用; finishing, a reflow at a new breakpoint and going to the
       // background still close it as before, and so does everything about the release notes.
       onWillDismiss: (action: DismissSheetAction): void => {
-        if (this.stage === 'pro' && !this.isFinishing && !this.reflowingSheet && !this.appInBackground) { return; }
+        if (this.stage === 'pro' && this.proIntroShown && !this.isFinishing && !this.reflowingSheet &&
+          !this.appInBackground) { return; }
         action.dismiss();
       },
       onDisappear: (): void => { this.handleGuideSheetDisappear(); }
@@ -275,6 +305,7 @@ struct GuidePage {
   aboutToDisappear(): void {
     this.cancelGuideSheetEnter();
     this.cancelGuideSheetReopen();
+    this.cancelProIntroDeadline();
   }
 
   private persistCompletion(): void {
@@ -288,19 +319,26 @@ struct GuidePage {
 
   private handleGuideSheetDisappear(): void {
     if (this.isFinishing) {
-      router.replaceUrl({ url: 'pages/LoginPage' });
+      this.goToLogin();
       return;
     }
     if (this.stage === 'pro' && !this.appInBackground && !this.reflowingSheet) {
       // Swiping the Pro 功能介绍 away is the same as tapping 开始使用.
       this.finish();
-      router.replaceUrl({ url: 'pages/LoginPage' });
+      this.goToLogin();
       return;
     }
     // 系统弹窗、后台切换或断点变化都可能让 Sheet 先消失；这不代表用户完成了引导。
     this.reflowingSheet = false;
     this.showGuideSheet = false;
     this.scheduleGuideSheetReopen();
+  }
+
+  /** The one hand-off to the app: a sheet callback arriving after a direct route must not route a second time. */
+  private goToLogin(): void {
+    if (this.routedToLogin) { return; }
+    this.routedToLogin = true;
+    router.replaceUrl({ url: 'pages/LoginPage' });
   }
 
   /** 立即试用: the trial is on for everyone; record that the user was told, say so, and carry on. */
@@ -317,10 +355,13 @@ struct GuidePage {
     this.isFinishing = true;
     this.cancelGuideSheetEnter();
     this.cancelGuideSheetReopen();
+    this.cancelProIntroDeadline();
     this.persistCompletion();
-    if (!this.usesGuideSheet()) {
+    if (!this.usesGuideSheet() || (this.stage === 'pro' && !this.proIntroShown)) {
       // 首次引导不是 Sheet，没有 onDisappear 回调负责路由；完成后直接进入登录页。
-      router.replaceUrl({ url: 'pages/LoginPage' });
+      // A Pro 功能介绍 that never showed has no onDisappear to rely on either.
+      this.showGuideSheet = false;
+      this.goToLogin();
       return;
     }
     this.showGuideSheet = false;

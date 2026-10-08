@@ -162,3 +162,12 @@ check('acceptance round 2026-10-09: Pro 反馈 closed, no empty workspace banner
   assert.ok(about.includes("this.phoneSheetHeight(0.88, 640, 820) : this.centredSheetHeight(680))"));
   assert.match(about, /private centredSheetHeight\(preferred: number\): number \{[\s\S]*?Math\.min\(preferred, viewport - 80, viewport \* 0\.86\)/);
 });
+
+check('SSH on PC: one tab shows no tab chip, 返回 uses the system chevron, the status glow is a real ARGB tint', () => {
+  const ssh = read('pages/SshTerminal.ets');
+  assert.match(ssh, /if \(!this\.sshWorkbenchEnabled\) \{[\s\S]{0,160}?return this\.sshTabViews\.length > 1 &&/);
+  assert.match(ssh, /SymbolGlyph\(\$r\('sys\.symbol\.chevron_left'\)\)\.fontSize\(18\)[\s\S]{0,160}?Text\('返回'\)\.fontSize\(14\)/);
+  assert.ok(ssh.includes("this.SshFontSizeRow()") && ssh.includes("this.SshFontSizeStep($r('sys.symbol.plus'), 1, '增大终端字号')"),
+    'PC chooses the terminal size in 更多 (no pinch there)');
+  assert.ok(ssh.includes("color: appUiTint(this.connectionDotColor(), '66')"));
+});

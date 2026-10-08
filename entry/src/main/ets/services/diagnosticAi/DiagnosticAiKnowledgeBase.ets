@@ -1,5 +1,6 @@
 import { diagnosticAiAppActionCatalog } from './DiagnosticAiAppActionPolicy';
 import { diagnosticAiSettingCatalog } from './DiagnosticAiSettingsActionPolicy';
+import { proFeatureStatusKnowledge } from '../pro/ProFeatureCatalog';
 
 /**
  * RemoteDesktop AI 助手的本地知识基线。
@@ -8,7 +9,7 @@ import { diagnosticAiSettingCatalog } from './DiagnosticAiSettingsActionPolicy';
  * 也不包含密码、主机地址、日志原文或用户资料。后续可以按版本拆成独立文档资源，
  * 但 Agent 必须始终带上知识版本，避免模型把过期操作当成当前 UI。
  */
-export const DIAGNOSTIC_AI_KNOWLEDGE_VERSION: string = 'RemoteDesktop-help-2026-10-09-v25';
+export const DIAGNOSTIC_AI_KNOWLEDGE_VERSION: string = 'RemoteDesktop-help-2026-10-09-v26';
 
 /**
  * What the AI itself can do and where things are (1.2.0). Shared by 助理 (with the catalogs below) and by 聊天 and
@@ -95,6 +96,8 @@ function knowledge(): string {
     '入口：主机列表标题栏（PC 在左下角）、设置和各协议连接的侧栏里都有 AI 入口；抓取或思考时会变成不遮挡内容的浮动胶囊。',
     '隐私：Provider API Key 只保存在本机安全存储；不进入日志、云同步、备份、导出或邮件。外发前显示数据范围、Provider、模型和地区。',
     'Pro：AI 配置、AI 助手、设置建议和诊断分析属于 Pro（1.2.0 免费试用期间全部开放）；传统脱敏日志保留独立入口。账号切换会取消请求并清理内存秘密。',
+    'Pro 功能清单（每项的介绍与当前状态；没有完成的写明了原因，用户问某项为什么不能用、什么时候能用时照此回答，不要猜测上线日期）：\n' +
+      proFeatureStatusKnowledge(),
     '回答约束：先给直接答案，再给操作步骤；不确定时明确说明；不捏造设备、网络、Provider、付款或邮件发送结果。',
     '动作目录（只能从这里选择 appActions；mode=execute 执行后回到卡片，mode=floating 进入悬浮球，mode=inline 留在当前卡片；confirm 必须先让用户确认）：\n' +
       diagnosticAiAppActionCatalog(),

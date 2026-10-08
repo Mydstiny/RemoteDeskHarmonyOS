@@ -260,6 +260,8 @@ import { VirtualKeyBar } from '../components/VirtualKeyBar';
 import {
   SSH_DEFAULT_TERMINAL_FONT_SIZE,
   SSH_SESSION_LOCALE_KEY,
+  SSH_TERMINAL_FONT_SIZE_MAX,
+  SSH_TERMINAL_FONT_SIZE_MIN,
   normalizeSshTerminalLineSpacing,
   normalizeSshSessionLocale,
   sshTerminalFontSizeForPinch,
@@ -6787,6 +6789,20 @@ struct SshTerminal {
       SSH_DEFAULT_TERMINAL_FONT_SIZE;
   }
 
+  /** 「更多 → 终端字号」 on PC: the same live session size a pinch sets, one step at a time. */
+  private setSshTerminalFontSizeFromMore(size: number): void {
+    const next: number = Math.max(SSH_TERMINAL_FONT_SIZE_MIN, Math.min(SSH_TERMINAL_FONT_SIZE_MAX, Math.round(size)));
+    if (next === this.activeSshTerminalFontSize()) { return; }
+    this.terminalPinchActive = false;
+    this.clearTerminalZoomIndicatorTimer();
+    if (this.terminalProfileEnabled()) {
+      this.terminalEffectiveFontSize = next;
+      this.setCurrentSshTerminalFontOverride(next);
+    } else {
+      this.fontSize = this.sshSettings.saveFontSize(next);
+    }
+  }
+
   private resetSshTerminalFontSizeFromMore(): void {
     this.terminalPinchActive = false;
     this.clearTerminalZoomIndicatorTimer();
@@ -7042,8 +7058,8 @@ struct SshTerminal {
     // remain in the header's More menu regardless of the window breakpoint.
     if (!this.isDesktopDevice && !this.isPadDevice) { return false; }
     if (!this.sshWorkbenchEnabled) {
-      // Exact pre-M2 behavior while the rollout flag is disabled.
-      return this.sshTabViews.length > 0 &&
+      // Pre-M2 chrome: a single tab only repeated the host and status beside it, so tabs appear from the second.
+      return this.sshTabViews.length > 1 &&
         (this.isDesktopDevice || this.breakpoint !== 'sm');
     }
     // Narrow free-form PC windows use the same full-width strip as phones so
@@ -7177,6 +7193,46 @@ struct SshTerminal {
   }
 
   @Builder
+  private SshFontSizeStep(symbol: Resource, delta: number, label: string) {
+    Button() {
+      SymbolGlyph(symbol).fontSize(14).fontColor([this.pal().text])
+    }
+    .width(32).height(32).padding(0).borderRadius(16)
+    .backgroundColor(this.pal().surface)
+    .enabled(delta < 0 ? this.activeSshTerminalFontSize() > SSH_TERMINAL_FONT_SIZE_MIN :
+      this.activeSshTerminalFontSize() < SSH_TERMINAL_FONT_SIZE_MAX)
+    .onClick((): void => { this.setSshTerminalFontSizeFromMore(this.activeSshTerminalFontSize() + delta); })
+    .accessibilityText(label)
+  }
+
+  /** PC has no pinch: the size is chosen here, and the number restores the default. */
+  @Builder
+  private SshFontSizeRow() {
+    Row({ space: 12 }) {
+      Stack() {
+        SymbolGlyph($r('sys.symbol.textformat')).fontSize(16).fontColor([this.pal().text2])
+      }
+      .width(32).height(32).borderRadius(10).backgroundColor(this.pal().surface)
+      Column({ space: 2 }) {
+        Text('终端字号').fontSize(14).fontColor(this.pal().text).maxLines(1)
+        Text('默认 ' + this.sshTerminalFontResetTarget().toString() + ' 号 · 点数字恢复')
+          .fontSize(11).fontColor(this.pal().text3).maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+      }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+      Row({ space: 6 }) {
+        this.SshFontSizeStep($r('sys.symbol.minus'), -1, '减小终端字号')
+        Text(this.activeSshTerminalFontSize().toString())
+          .fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
+          .width(30).textAlign(TextAlign.Center)
+          .onClick((): void => { this.resetSshTerminalFontSizeFromMore(); })
+          .accessibilityText('终端字号 ' + this.activeSshTerminalFontSize().toString() + '，点按恢复默认')
+        this.SshFontSizeStep($r('sys.symbol.plus'), 1, '增大终端字号')
+      }
+    }
+    .width('100%').constraintSize({ minHeight: 52 }).padding({ left: 12, right: 12 })
+  }
+
+  @Builder
   private SshHeaderActionRow(label: string, detail: string, action: SshHeaderAction) {
     Row({ space: 12 }) {
       Stack() {
@@ -7254,8 +7310,12 @@ struct SshTerminal {
         if (this.terminalProfileEnabled()) {
           this.SshHeaderActionRow('终端外观', '字体、配色与光标', 'profile')
         }
-        this.SshHeaderActionRow('恢复终端字号',
-          '回到 ' + this.sshTerminalFontResetTarget().toString() + ' 号字', 'reset-font')
+        if (this.isDesktopDevice) {
+          this.SshFontSizeRow()
+        } else {
+          this.SshHeaderActionRow('恢复终端字号',
+            '回到 ' + this.sshTerminalFontResetTarget().toString() + ' 号字', 'reset-font')
+        }
 
         Divider().strokeWidth(0.5).color(this.pal().cardBorder).width('100%')
         this.SshHeaderActionRow('语言与地区',
@@ -18940,18 +19000,42 @@ struct SshTerminal {
     }
   }
 
+  /** 碰一碰接收: one SFTP-styled row — what it does (with its Pro mark beside the title), what is happening, one button. */
   @Builder
   SftpKnockControl() {
-    Column({ space: 6 }) {
-      Row() { Blank(); ProBadge() }.width('100%')
-      Button(this.sftpKnockActive ? '停止接收手机文件' : '准备碰一碰接收')
-        .height(44).fontSize(13).enabled(this.sftpKnockActive || !this.sftpBusy)
-        .onClick((): void => { this.armSftpKnock(); })
-        .accessibilityText(this.sftpKnockActive ? '停止本次碰一碰文件投递' : '准备向当前 SSH 目录接收手机文件')
-      if (this.sftpKnockStatus.length > 0) {
-        Text(this.sftpKnockStatus).fontSize(12).fontColor(this.sshPal().text2).width('100%')
+    Row({ space: 12 }) {
+      Stack() {
+        SymbolGlyph($r('sys.symbol.phone_fill')).fontSize(18)
+          .fontColor([this.sftpKnockActive ? appUiOnAccentText(this.accentColor) : this.accentColor])
       }
-    }.width('100%').alignItems(HorizontalAlign.Start).margin({ bottom: 10 })
+      .width(40).height(40).borderRadius(12)
+      .backgroundColor(this.sftpKnockActive ? this.accentColor : appUiTint(this.accentColor, '24'))
+      Column({ space: 3 }) {
+        Row({ space: 6 }) {
+          Text('碰一碰接收手机文件').fontSize(14).fontWeight(FontWeight.Medium)
+            .fontColor(this.sshPal().text).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+            .flexShrink(1)
+          ProBadge()
+        }.alignItems(VerticalAlign.Center)
+        Text(this.sftpKnockStatus.length > 0 ? this.sftpKnockStatus :
+          (this.sftpKnockActive ? '等待手机碰一碰当前窗口，文件会存到当前远端目录' :
+            '手机碰一碰当前窗口，文件直接传到当前远端目录'))
+          .fontSize(11).fontColor(this.sshPal().text2).maxLines(2)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+      }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+      SftpActionButton({
+        icon: this.sftpKnockActive ? $r('sys.symbol.xmark') : $r('sys.symbol.arrow_down_to_line'),
+        label: this.sftpKnockActive ? '停止接收' : '准备接收',
+        tone: this.sftpKnockActive ? 'tonal' : 'primary', barHeight: 36, colors: this.sftpColors(),
+        usable: this.sftpKnockActive || !this.sftpBusy,
+        onTap: (): void => { this.armSftpKnock(); }
+      }).width(116)
+    }
+    .width('100%').padding({ left: 12, right: 12, top: 10, bottom: 10 })
+    .borderRadius(16).backgroundColor(this.sftpColors().card)
+    .margin({ bottom: 10 })
+    .accessibilityGroup(true)
+    .accessibilityText(this.sftpKnockActive ? '碰一碰接收已准备，点按停止' : '准备碰一碰接收手机文件到当前远端目录')
   }
 
   @Builder
@@ -19095,7 +19179,8 @@ struct SshTerminal {
       Row() {
         if (this.isDesktopDevice) {
           Row() {
-            Text('←').fontSize(18).fontColor(this.chromeText(0.9)).margin({ right: 6 })
+            SymbolGlyph($r('sys.symbol.chevron_left')).fontSize(18).fontColor([this.chromeText(0.9)])
+              .margin({ right: 4 })
             Text('返回').fontSize(14).fontColor(this.chromeText(0.9))
           }
           .height(36).padding({ left: 12, right: 14 })
@@ -19238,7 +19323,7 @@ struct SshTerminal {
         Row() {
           Column().width(8).height(8).borderRadius(4)
             .backgroundColor(this.connectionDotColor())
-            .shadow({ radius: 8, color: this.connectionDotColor() + '66', offsetY: 0 })
+            .shadow({ radius: 8, color: appUiTint(this.connectionDotColor(), '66'), offsetY: 0 })
           if (!this.sshCompactChrome()) {
             Text(this.connectionLabel())
               .fontSize(11).fontColor(this.chromeText(0.70)).margin({ left: 6 })

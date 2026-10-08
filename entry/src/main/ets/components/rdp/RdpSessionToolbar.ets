@@ -4,7 +4,8 @@ import { Palette, buildDark } from '../../common/Theme';
 import {
   MoonlightToolbarLayout,
   moonlightToolbarAutoHideDelayMs,
-  moonlightToolbarLayout
+  moonlightToolbarLayout,
+  sessionToolbarPcWidth
 } from '../../services/MoonlightUiPolicy';
 import {
   REMOTE_SESSION_COLLAPSED_RAIL_BACKGROUND,
@@ -51,6 +52,8 @@ export struct RdpSessionToolbar {
   /** Pro AI 助理: its button sits right after RDP 控制. */
   @Prop aiVisible: boolean = false;
   @Prop @Watch('onAvailableHeightChange') availableHeight: number = 640;
+  /** The session window's width (vp); 0 while unknown. */
+  @Prop viewportWidth: number = 0;
   @State @Watch('publishRail') private expanded: boolean = false;
   /** The session AI is up: its button shows it on (a tap there closes it). */
   @StorageProp(AI_SESSION_OPEN) sessionAiOpen: boolean = false;
@@ -356,7 +359,7 @@ export struct RdpSessionToolbar {
         .padding(8).backgroundColor(this.pal().floatBg).backdropBlur(18).borderRadius(18)
         .border({ width: 1, color: this.pal().floatBorder })
         .shadow({ radius: 18, color: this.pal().fabShadow, offsetY: 5 })
-      }.width('100%').constraintSize({ maxWidth: 480 }).height(68)
+      }.width(sessionToolbarPcWidth(this.items().length, 52, layout.itemGap, 44, this.viewportWidth)).height(68)
         .scrollable(ScrollDirection.Horizontal)
         .scrollBar(BarState.Auto).edgeEffect(EdgeEffect.Spring)
     }

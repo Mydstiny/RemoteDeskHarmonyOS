@@ -200,8 +200,16 @@ for (const id of ['pro.workspaces', 'pro.hostManagement']) {
   assert.equal(item.availability, 'available');
   assert.ok(item.devices.includes('phone')); assert.ok(item.devices.includes('tablet')); assert.ok(item.devices.includes('pc'));
 }
-assert.match(entryModule.exports.proFeatureProgress('pro.workspaces'), /已开发/);
-assert.match(entryModule.exports.proFeatureProgress('pro.hostManagement'), /已开发/);
+assert.match(entryModule.exports.proFeatureProgress('pro.workspaces'), /已上线（试用）.*作者还没有鸿蒙 PC 真机/);
+assert.match(entryModule.exports.proFeatureProgress('pro.hostManagement'), /已上线（试用）.*验收通过/);
+// Every unfinished feature says why, and the AI knows each feature's state.
+for (const id of ['pro.file.knockTransfer', 'pro.connection.knockShare', 'pro.ai.rustdeskTransport',
+  'pro.security.webauthnRedirect', 'pro.security.phonePasskey']) {
+  assert.match(entryModule.exports.proFeatureProgress(id), /：/, id + ' gives its reason');
+}
+const knowledge = entryModule.exports.proFeatureStatusKnowledge();
+assert.equal(knowledge.split('\n').length, proCatalog.length - 1, 'one line per Pro feature');
+assert.ok(knowledge.includes('碰一碰传文件') && knowledge.includes('作者还没有真机'));
 const hostPage = fs.readFileSync(path.resolve(__dirname, '../../entry/src/main/ets/pages/HostListPage.ets'), 'utf8');
 assert.equal(hostPage.includes('加入 ops 工作组'), false); assert.equal(hostPage.includes('移出工作组'), false);
 console.log('PASS Pro workspace/host-management entry gating');

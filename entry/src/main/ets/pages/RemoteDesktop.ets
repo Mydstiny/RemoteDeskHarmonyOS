@@ -1371,6 +1371,8 @@ struct RemoteDesktop {
   @StorageLink('rdpCustomWidth') rdpCustomWidth: number = 1920;
   @StorageLink('rdpCustomHeight') rdpCustomHeight: number = 1080;
   @StorageLink('rdpRemoteUiScale') rdpRemoteUiScale: string = 'auto';
+  /** PC 自适应: renegotiate the remote resolution with every window size (off: the whole screen's size). */
+  @StorageLink('rdpFollowWindow') rdpFollowWindow: boolean = false;
   @StorageLink('rdpDesktopScaleMode') rdpDesktopScaleMode: string = 'auto';
   @StorageLink('rdpDesktopScalePercent') rdpDesktopScalePercent: number = 100;
   @StorageLink('rdpDeviceScaleMode') rdpDeviceScaleMode: string = 'auto';
@@ -5786,6 +5788,7 @@ struct RemoteDesktop {
       this.rdpCustomHeight = customGeometry.accepted ? customGeometry.height : 1080;
       const savedRemoteUiScale: string = prefs.getSync('rdpRemoteUiScale', 'auto') as string;
       this.rdpRemoteUiScale = normalizeRdpRemoteUiScalePreference(savedRemoteUiScale);
+      this.rdpFollowWindow = prefs.getSync('rdpFollowWindow', false) === true;
       const savedDesktopMode: string = prefs.getSync('rdpDesktopScaleMode', 'auto') as string;
       this.rdpDesktopScaleMode = savedDesktopMode === 'custom' || savedDesktopMode === 'preset' ?
         savedDesktopMode : (this.rdpRemoteUiScale === 'auto' ? 'auto' : 'preset');
@@ -6322,6 +6325,19 @@ struct RemoteDesktop {
       promptAction.showToast({ message: '已请求自定义 RDP 远端分辨率', duration: 1800 });
     } else {
       this.showRdpReconnectPreferenceToast('自定义远端分辨率');
+    }
+  }
+
+  private setRdpFollowWindowPreference(on: boolean): void {
+    this.bumpRdpControlCenterSelectionRevision();
+    this.cancelRdpDynamicLayout('follow-window-preference');
+    this.rdpFollowWindow = on;
+    this.persistSessionPref('rdpFollowWindow', on);
+    if (this.requestRdpDynamicLayoutNow('follow-window-preference')) {
+      promptAction.showToast({ message: on ? '远端分辨率会跟随窗口大小' : '远端分辨率已改为整块屏幕的大小',
+        duration: 1600 });
+    } else {
+      promptAction.showToast({ message: '已保存，下次连接生效', duration: 1600 });
     }
   }
 
@@ -10316,7 +10332,10 @@ struct RemoteDesktop {
     let densityDpi: number = 160;
     try {
       const currentDisplay: display.Display = this.currentSessionDisplay();
-      if (surfaceWidthPx <= 0 || surfaceHeightPx <= 0) {
+      // PC 自适应 without window following: the remote desktop takes the whole screen's size, and any window shows
+      // it scaled in proportion (a small first window once gave Windows a tiny desktop with huge icons).
+      if (surfaceWidthPx <= 0 || surfaceHeightPx <= 0 ||
+        (this.isDesktopDevice && effectiveResolutionId === 'auto' && !this.rdpFollowWindow)) {
         surfaceWidthPx = currentDisplay.width;
         surfaceHeightPx = currentDisplay.height;
       }
@@ -13096,10 +13115,11 @@ struct RemoteDesktop {
   }
 
   private canRequestRdpDynamicLayout(): boolean {
+    // The session's own window state: an RDP session in its independent window kept its small first layout after
+    // being maximised while the main window was minimised (the app-wide flag said "background").
     return this.isDesktopDevice && this.isRdpRemoteSession() && this.connected &&
-      this.sessionId > 0 && !this.cleanupStarted && !this.remoteDesktopBgFlag &&
-      !this.sessionWindowBackground && !this.renderPreservedInPip &&
-      !this.pipSurfaceTransferInProgress;
+      this.sessionId > 0 && !this.cleanupStarted && !this.currentAbilityBackgroundState() &&
+      !this.renderPreservedInPip && !this.pipSurfaceTransferInProgress;
   }
 
   private requestRdpDynamicLayoutNow(reason: string): boolean {
@@ -13161,7 +13181,8 @@ struct RemoteDesktop {
     // Decide before clearing: a fixed-resolution surface settle must not eat a
     // pending cross-display auto-DPI refresh queued with windowFollowingOnly=false.
     if (!shouldReplaceRdpDynamicLayoutTimer(this.rdpDesktopResolutionId,
-      windowFollowingOnly) || !this.canRequestRdpDynamicLayout()) {
+      windowFollowingOnly) || !this.canRequestRdpDynamicLayout() ||
+      (windowFollowingOnly && !this.rdpFollowWindow)) {
       return;
     }
     if (this.rdpDynamicLayoutTimer >= 0) {
@@ -16459,7 +16480,9 @@ struct RemoteDesktop {
       // it must never create or bind the shared encoded-video decoder. For
       // RustDesk auto, start with H264: the FFI balanced profile requests H264
       // and the old value 3 incorrectly forced VP9 before the first frame.
-      const rdCodecVal: number = isVnc ? 0 : (AppStorage.get<number>('rustdeskCodec') ?? 0);
+      // The codec preference is RustDesk's own: RDP streams H.264, and an H.265 choice made in a RustDesk session
+      // once made RDP open an HEVC decoder (which a device without one cannot create).
+      const rdCodecVal: number = host.protocol === 'rustdesk' ? (AppStorage.get<number>('rustdeskCodec') ?? 0) : 0;
       let decoderCodec: number = 0;
       if (!isVnc) {
         if (rdCodecVal === 1) { decoderCodec = 2; }
@@ -24810,6 +24833,7 @@ struct RemoteDesktop {
               portraitDisplayEnabled: this.remotePortraitDisplayEnabledForCurrentProtocol(),
               portraitDisplayActive: this.remotePortraitDisplayActiveForCurrentProtocol(),
               availableHeight: this.rdpToolbarAvailableHeight(),
+              viewportWidth: this.remoteSidebarWindowWidth,
               aiVisible: this.sessionAiVisible(),
               onAction: (action: RdpToolbarAction): void => { this.handleRdpToolbarAction(action); }
             })
@@ -24844,6 +24868,7 @@ struct RemoteDesktop {
             surfaceWidthPx: this.renderWidthPx,
             surfaceHeightPx: this.renderHeightPx,
             remoteUiScale: normalizeRdpRemoteUiScalePreference(this.rdpRemoteUiScale),
+            followWindow: this.rdpFollowWindow,
             desktopScaleMode: this.rdpDesktopScaleMode,
             desktopScalePercent: this.rdpDesktopScalePercent,
             colorDepth: normalizeRdpSessionColorDepth(this.rdpColorDepth),
@@ -24875,6 +24900,9 @@ struct RemoteDesktop {
             },
             onRemoteUiScale: (value: string): void => {
               this.setRdpRemoteUiScalePreference(value);
+            },
+            onFollowWindow: (on: boolean): void => {
+              this.setRdpFollowWindowPreference(on);
             },
             onDesktopScalePercent: (value: string): void => {
               this.setRdpDesktopScalePercent(value);

@@ -44,8 +44,8 @@ const PRO_INTRO_ITEMS: ProIntroItem[] = [
   {
     id: 'pro-intro-ai', glyph: $r('sys.symbol.code_square'),
     title: '远程 AI 工作台', hue: '#7B61FF', hue2: '#E25B8A',
-    desc: '连接自己电脑上的 Codex 或 DSH，查看执行过程、批准操作、恢复会话，代码在你的电脑上运行。',
-    tags: ['Codex', 'DSH', '局域网']
+    desc: '连接自己电脑上的 Codex、DSH 或 Pi，查看执行过程、批准操作、恢复会话，代码在你的电脑上运行；目前限同一局域网。',
+    tags: ['Codex · DSH · Pi', '局域网']
   },
   {
     id: 'pro-intro-workspaces', glyph: $r('sys.symbol.rectangle_on_rectangle'),
