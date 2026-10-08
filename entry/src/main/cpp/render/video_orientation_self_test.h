@@ -89,6 +89,8 @@ struct DesktopOrientationCorrection {
     NativeImageTransformClass shown = NativeImageTransformClass::NotSampled;
     /** The GPU texture itself was turned (sampling with no transform already showed it turned). */
     bool textureSpace = false;
+    /** How the texture itself is turned (sampling with no transform): what texture-space correction undoes. */
+    NativeImageTransformClass textureShown = NativeImageTransformClass::NotSampled;
 };
 
 /**

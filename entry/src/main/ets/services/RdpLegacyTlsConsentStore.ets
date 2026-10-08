@@ -30,6 +30,8 @@ export class RdpLegacyTlsConsentStore {
     if (this.store !== null) { return this.store; }
     try {
       this.store = preferences.getPreferencesSync(context, { name: 'RdpSecurityDowngrades' });
+      // The first version kept legacy-TLS consents unscoped in another file; they are not read any more.
+      preferences.deletePreferences(context, { name: 'RdpLegacyTlsConsent' }).catch((): void => {});
     } catch (error) {
       hilog.warn(0x0001, 'RdpDowngrade', 'consent store unavailable: ' + JSON.stringify(error));
       this.store = null;

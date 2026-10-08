@@ -938,6 +938,33 @@ RdpCertificateInfo probeGatewayCertificateOverTls(const std::string& host, int p
     return info;
 }
 
+/** Whether the pending OpenSSL error is a refusal a legacy (TLS 1.0/1.1, level 0) host would cause. */
+bool openSslQueueShowsLegacyTlsRefusal() {
+    const auto legacy = [](unsigned long error) {
+        if (error == 0 || ERR_GET_LIB(error) != ERR_LIB_SSL) { return false; }
+        switch (ERR_GET_REASON(error)) {
+            case SSL_R_TLSV1_ALERT_PROTOCOL_VERSION:
+            case SSL_R_UNSUPPORTED_PROTOCOL:
+            case SSL_R_NO_PROTOCOLS_AVAILABLE:
+            case SSL_R_VERSION_TOO_LOW:
+            case SSL_R_SSLV3_ALERT_HANDSHAKE_FAILURE:
+            case SSL_R_TLSV1_ALERT_INSUFFICIENT_SECURITY:
+            case SSL_R_NO_SHARED_CIPHER:
+            case SSL_R_NO_CIPHERS_AVAILABLE:
+            case SSL_R_DH_KEY_TOO_SMALL:
+            case SSL_R_EE_KEY_TOO_SMALL:
+            case SSL_R_CA_KEY_TOO_SMALL:
+            case SSL_R_CA_MD_TOO_WEAK:
+            case SSL_R_LEGACY_SIGALG_DISALLOWED_OR_UNSUPPORTED:
+            case SSL_R_NO_SUITABLE_SIGNATURE_ALGORITHM:
+                return true;
+            default:
+                return false;
+        }
+    };
+    return legacy(ERR_peek_error()) || legacy(ERR_peek_last_error());
+}
+
 RdpCertificateInfo probeRdpCertificateOverTlsAttempt(const std::string& host, int port,
                                                      const std::string& serverName,
                                                      const std::function<bool()>& cancelled,
@@ -1208,6 +1235,8 @@ RdpCertificateInfo probeRdpCertificateOverTlsAttempt(const std::string& host, in
             sslError = SSL_get_error(ssl, tlsResult);
         }
         const int socketError = sslError == SSL_ERROR_SYSCALL ? errno : 0;
+        // Read before openSslErrorStack() drains the queue.
+        const bool legacyReason = sslError == SSL_ERROR_SSL && openSslQueueShowsLegacyTlsRefusal();
         const std::string opensslDetails = openSslErrorStack();
         std::ostringstream message;
         message << "RDP TLS handshake failed (sslError=" << sslErrorName(sslError)
@@ -1226,10 +1255,11 @@ RdpCertificateInfo probeRdpCertificateOverTlsAttempt(const std::string& host, in
                     "[RDP-CERT] tls handshake failed host=%{public}s:%{public}d sslError=%{public}d errno=%{public}d detail=%{public}s",
                     logHost.c_str(), effectivePort, sslError, socketError,
                     message.str().c_str());
-        // A refusal inside TLS itself (protocol version, ciphers, key sizes) —
-        // not a reset, an end of stream or a timeout — may be a host that only
-        // speaks TLS below our defaults.
-        tlsAlertFailure = sslError == SSL_ERROR_SSL && waitError == 0 &&
+        // Only a refusal for protocol version, ciphers, key sizes or signature
+        // algorithms may be a host that speaks TLS below our defaults. OpenSSL
+        // 3 also reports an end of stream as SSL_ERROR_SSL; that, a reset and
+        // a timeout are not such a refusal.
+        tlsAlertFailure = legacyReason && waitError == 0 &&
             std::chrono::steady_clock::now() < tlsDeadline;
         return makeProbeError(host, effectivePort, -22, message.str());
     }

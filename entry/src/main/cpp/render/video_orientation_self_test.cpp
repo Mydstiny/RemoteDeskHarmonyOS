@@ -535,7 +535,7 @@ struct SelfTestRegistry {
     std::map<std::pair<int32_t, int32_t>, bool> running;
     std::map<std::pair<int32_t, int32_t>, int> attempts;
     std::map<std::pair<int32_t, int32_t>, std::chrono::steady_clock::time_point> lastAttempt;
-    // Packed DesktopOrientationCorrection per codec: class | textureSpace << 8.
+    // Packed DesktopOrientationCorrection per codec: shown | textureSpace << 8 | textureShown << 16.
     std::atomic<int32_t> desktopCorrection[2] = {
         { static_cast<int32_t>(NativeImageTransformClass::NotSampled) },
         { static_cast<int32_t>(NativeImageTransformClass::NotSampled) },
@@ -596,7 +596,8 @@ void Store(const OrientationSelfTestResult& result) {
         // The GPU texture itself is turned when sampling it with no transform already showed it turned.
         const bool textureSpace = OrientationIsCorrectable(result.identityOrientation);
         registry.desktopCorrection[result.codec].store(
-            static_cast<int32_t>(result.appliedOrientation) | (textureSpace ? 0x100 : 0),
+            static_cast<int32_t>(result.appliedOrientation) | (textureSpace ? 0x100 : 0) |
+                (static_cast<int32_t>(result.identityOrientation) << 16),
             std::memory_order_release);
     }
 }
@@ -668,6 +669,7 @@ DesktopOrientationCorrection DesktopOrientationCorrectionFor(int32_t codec) {
     const int32_t packed = Registry().desktopCorrection[codec].load(std::memory_order_acquire);
     correction.shown = static_cast<NativeImageTransformClass>(packed & 0xff);
     correction.textureSpace = (packed & 0x100) != 0;
+    correction.textureShown = static_cast<NativeImageTransformClass>((packed >> 16) & 0xff);
     return correction;
 }
 
